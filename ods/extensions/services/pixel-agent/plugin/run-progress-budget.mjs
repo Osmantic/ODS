@@ -14,6 +14,13 @@ export const RUN_PROGRESS_STOP_REASON =
   'Saved files and previously verified publications were preserved. ' +
   'The full request was not completed; continue from the preserved work with a corrected approach.';
 
+const PROGRESS_LANES = new Set(['workspace', 'extension']);
+export function progressLaneStopReason(lane) {
+  return `The ${lane === 'extension' ? 'extension' : 'workspace'} portion of this response stopped after repeated failures. ` +
+    'Do not retry that portion in this response. Continue the separately requested work that remains available. ' +
+    'Preserve saved files and accepted operations; the full request remains incomplete.';
+}
+
 export function failedToolOutcome(event) {
   if (event?.error) return true;
   let result = event?.result;
@@ -33,28 +40,42 @@ export function createRunProgressBudget() {
   let terminal = false;
   const seenCalls = new Set();
   const successes = new Map();
+  const laneFailures = new Map();
+  const exhaustedLanes = new Set();
   return {
     get exhausted() { return terminal; },
+    get exhaustedLanes() { return [...exhaustedLanes]; },
+    laneExhausted(lane) { return exhaustedLanes.has(lane); },
     beginModelRound() {
       if (++rounds > RUN_PROGRESS_LIMITS.roundsWithoutProgress) terminal = true;
       return terminal;
     },
-    observeResult({ callId, tool, params, failed, pending = false }) {
+    observeResult({ callId, tool, params, failed, pending = false, discovery = false, lane }) {
       if (terminal || typeof callId !== 'string' || !callId || seenCalls.has(callId)) return;
       seenCalls.add(callId);
       if (seenCalls.size > 256) seenCalls.delete(seenCalls.values().next().value);
+      const classifiedLane = PROGRESS_LANES.has(lane) ? lane : undefined;
       if (failed) {
         failures += 1;
-        consecutiveFailures += 1;
-        terminal = consecutiveFailures >= RUN_PROGRESS_LIMITS.consecutiveFailures ||
+        if (classifiedLane) {
+          const count = (laneFailures.get(classifiedLane) ?? 0) + 1;
+          laneFailures.set(classifiedLane, count);
+          if (count >= RUN_PROGRESS_LIMITS.consecutiveFailures) exhaustedLanes.add(classifiedLane);
+        } else consecutiveFailures += 1;
+        // A mixed task may retain its other lane, never an unlimited retry
+        // allowance. Unknown calls retain the strict global consecutive fuse;
+        // every failure still consumes the unchanged total/global round caps.
+        terminal = exhaustedLanes.size === PROGRESS_LANES.size ||
+          consecutiveFailures >= RUN_PROGRESS_LIMITS.consecutiveFailures ||
           failures >= RUN_PROGRESS_LIMITS.totalFailures;
         return;
       }
       // Discovery changes the available schemas, not the task's outcome. A
       // successful search between failed actions must not erase their history
       // or let differently worded searches keep a run alive indefinitely.
-      if (tool === 'tool_search' || tool === 'tool_describe' || tool === 'pixel_ods_skill') return;
+      if (discovery || tool === 'tool_search' || tool === 'tool_describe' || tool === 'pixel_ods_skill') return;
       consecutiveFailures = 0;
+      if (classifiedLane) laneFailures.set(classifiedLane, 0);
       // An actual running-process receipt is a verified wait, not a failure.
       // Plain text saying "running" must never be supplied as this signal.
       if (pending) { rounds = 0; return; }

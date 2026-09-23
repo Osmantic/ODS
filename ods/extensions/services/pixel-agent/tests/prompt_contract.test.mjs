@@ -16,6 +16,7 @@ import {
   ODS_TOOL_REPLY_CONTRACT,
   ODS_VERIFICATION_FAILED_CONTRACT,
   ODS_VERIFICATION_PENDING_CONTRACT,
+  ODS_WORKSPACE_NEW_STATIC_CONTRACT,
   ODS_WORKSPACE_PREVIEW_CONTRACT,
   ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT,
   githubSourceContract,
@@ -23,6 +24,39 @@ import {
   operationsRequestContract,
   promptContractForAgent,
 } from "../plugin/prompt-contract.mjs";
+import { AGENT_SKILLS } from "../plugin/agent-skills.mjs";
+import { workspacePreviewMode } from "../plugin/tool-loop-guard.mjs";
+
+test('framework workspace guidance requires real build output and nested-path asset verification', () => {
+  assert.match(AGENT_SKILLS.workspace, /run the framework's real build/);
+  assert.match(AGENT_SKILLS.workspace, /Never handwrite dist files/);
+  assert.match(AGENT_SKILLS.workspace, /relative asset URLs/);
+  assert.match(AGENT_SKILLS.workspace, /for Vite, --base=\.\//);
+  assert.match(AGENT_SKILLS.workspace, /scripts\/styles load and the application boots at the exact published URL/);
+});
+
+function expectedWorkspaceContract(prompt) {
+  const route = workspacePreviewMode([], prompt);
+  const contract = route === "new-static"
+    ? ODS_WORKSPACE_NEW_STATIC_CONTRACT
+    : ODS_WORKSPACE_PREVIEW_CONTRACT;
+  return `${ODS_COMPACT_CONVERSATION_CONTRACT} ${contract} ${AGENT_SKILLS.workspace}`;
+}
+
+test('ordinary coding guidance requires real CLI entry points and owner-derived acceptance checks', () => {
+  const contract = promptContractForAgent(
+    {agentId:'pixel', contextTokenBudget:65536}, 'pixel',
+    {prompt:'Implement a Python CLI that reads usage records and writes a JSON report.'},
+    {configuredLeanPrompt:true}
+  ).appendSystemContext;
+  assert.match(contract, /documented command in a separate process/);
+  assert.match(contract, /output artifacts, and normal\/malformed input exit status/);
+  assert.match(contract, /import-only tests are insufficient/);
+  assert.match(contract, /exact requested keys\/paths and follow-up corrections/);
+  assert.match(contract, /Preserve protected inputs\/tests/);
+  assert.match(AGENT_SKILLS.workspace, /calling main in a test does not verify its entry point/);
+  assert.doesNotMatch(contract, /call write once/);
+});
 
 test('every model contract distinguishes page reads from authorized execution and forbids nested transports', () => {
   for (const contract of [ODS_CONVERSATION_CONTRACT, ODS_COMPACT_CONVERSATION_CONTRACT]) {
@@ -35,24 +69,27 @@ test('every model contract distinguishes page reads from authorized execution an
 });
 
 test("preview guidance preserves project planning and requires publication evidence", () => {
+  const freshPrompt =
+    "Build a fresh polished interactive website demo in a new workspace directory and show it to me.";
   const preview = promptContractForAgent(
     { agentId: "pixel", contextTokenBudget: 65536 },
     "pixel",
     {
-      prompt:
-        "Build a fresh polished interactive website demo in a new workspace directory and show it to me.",
+      prompt: freshPrompt,
     },
     { configuredLeanPrompt: true }
   );
   assert.equal(
     preview.appendSystemContext,
-    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_WORKSPACE_PREVIEW_CONTRACT}`
+    expectedWorkspaceContract(freshPrompt)
   );
   assert.match(preview.appendSystemContext, /pixel_ods_workspace_preview/);
+  assert.match(ODS_WORKSPACE_NEW_STATIC_CONTRACT, /first productive tool step/);
+  assert.match(ODS_WORKSPACE_NEW_STATIC_CONTRACT, /call write once/);
   assert.match(ODS_WORKSPACE_PREVIEW_CONTRACT, /no first tool or fixed sequence/);
   assert.match(ODS_WORKSPACE_PREVIEW_CONTRACT, /Preserve existing source files and the requested framework/);
   assert.match(ODS_WORKSPACE_PREVIEW_CONTRACT, /does not establish a URL reachable by the owner/);
-  assert.doesNotMatch(ODS_WORKSPACE_PREVIEW_CONTRACT, /first tool step|Do not call exec|Only after.*may you reply/);
+  assert.doesNotMatch(ODS_WORKSPACE_PREVIEW_CONTRACT, /first productive tool step|Do not call exec|Only after.*may you reply/);
   assert.match(preview.appendSystemContext, /ODS supplies no creative artifact bytes/);
   assert.doesNotMatch(preview.appendSystemContext, /under 7000 characters/);
   assert.doesNotMatch(preview.appendSystemContext, /<!doctype html>/i);
@@ -66,7 +103,7 @@ test("preview guidance preserves project planning and requires publication evide
   );
   assert.equal(
     custom.appendSystemContext,
-    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_WORKSPACE_PREVIEW_CONTRACT}`
+    expectedWorkspaceContract("Build and show me a website for Acme's accounting product.")
   );
   assert.match(custom.appendSystemContext, /semantic interactive elements such as button/);
   assert.match(custom.appendSystemContext, /responsive layout/);
@@ -85,7 +122,7 @@ test("preview guidance preserves project planning and requires publication evide
   );
   assert.equal(
     visualDemo.appendSystemContext,
-    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_WORKSPACE_PREVIEW_CONTRACT}`
+    expectedWorkspaceContract("Make the coolest visual demo you can to show what you can do.")
   );
 
   const specifiedDemo = promptContractForAgent(
@@ -99,7 +136,7 @@ test("preview guidance preserves project planning and requires publication evide
   );
   assert.equal(
     specifiedDemo.appendSystemContext,
-    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_WORKSPACE_PREVIEW_CONTRACT}`
+    expectedWorkspaceContract("Build and open a website demo named swiss-watch-preview with a theme button and a counter button.")
   );
 
   const breakout = promptContractForAgent(
@@ -110,7 +147,7 @@ test("preview guidance preserves project planning and requires publication evide
   );
   assert.equal(
     breakout.appendSystemContext,
-    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_WORKSPACE_PREVIEW_CONTRACT}`
+    expectedWorkspaceContract("Now make a Breakout-style videogame.")
   );
   assert.doesNotMatch(breakout.appendSystemContext, /template breakout|host generates/);
 
@@ -127,7 +164,7 @@ test("preview guidance preserves project planning and requires publication evide
     );
     assert.equal(
       result.appendSystemContext,
-      `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_WORKSPACE_PREVIEW_CONTRACT}`
+      expectedWorkspaceContract(visual)
     );
     assert.doesNotMatch(result.appendSystemContext, /scaffold|template (?:voxel|animated-svg|task-board)/);
   }
@@ -150,7 +187,7 @@ test("preview guidance preserves project planning and requires publication evide
     );
     assert.equal(
       result.appendSystemContext,
-      `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_WORKSPACE_PREVIEW_CONTRACT}`
+      expectedWorkspaceContract(prompt)
     );
   }
 
@@ -195,7 +232,7 @@ test("routes natural visual follow-ups to a read-edit-republish contract", () =>
     );
     assert.equal(
       result.appendSystemContext,
-      `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT}`,
+      `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT} ${AGENT_SKILLS.workspace}`,
       prompt
     );
   }
@@ -207,7 +244,7 @@ test("routes natural visual follow-ups to a read-edit-republish contract", () =>
   );
   assert.equal(
     fresh.appendSystemContext,
-    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_WORKSPACE_PREVIEW_CONTRACT}`
+    expectedWorkspaceContract("Make a new Breakout game.")
   );
 });
 

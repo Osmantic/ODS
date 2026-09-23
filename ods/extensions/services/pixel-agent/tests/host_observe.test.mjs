@@ -11,6 +11,20 @@ import {
   testing,
 } from "../plugin/host-observe.mjs";
 
+test('catalog model query pattern keeps the runtime character and length allowlist', () => {
+  const pattern = createExtensionReadTool().parameters.properties.query.pattern;
+  assert.ok(!pattern.includes('\\-'), 'GBNF does not support an escaped hyphen');
+  const modelPattern = new RegExp(pattern);
+  const runtimePattern = /^[A-Za-z0-9 _/+:#.\-]{1,80}$/;
+  for (let code = 0; code < 256; code++) {
+    const value = `x${String.fromCharCode(code)}x`;
+    assert.equal(modelPattern.test(value), runtimePattern.test(value), `character ${code}`);
+  }
+  for (const value of ['', 'a'.repeat(80), 'a'.repeat(81), 'local-model', 'c++', 'web/search', 'name:tag']) {
+    assert.equal(modelPattern.test(value), runtimePattern.test(value), value);
+  }
+});
+
 // Match the external broker's atomic_json contract: a visible result is final,
 // never an empty file between open() and write(). Invalid final bytes still fail.
 async function publishResult(filename, value) {

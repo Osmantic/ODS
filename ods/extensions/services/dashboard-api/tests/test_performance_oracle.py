@@ -46,6 +46,25 @@ def _model():
     }
 
 
+def test_phi4_dashboard_defaults_to_fitting_context(data_dir, tmp_path):
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    raw = next(item for item in _official_model_catalog() if item["id"] == "phi4-mini-q4")
+    payload = build_models_payload(
+        _gpu(), None, 0, install_dir, data_dir, catalog=[raw], evidence=[],
+        downloaded_files_override={},
+    )
+    model = next(item for item in payload["models"] if item["id"] == raw["id"])
+    assert model["contextLength"] == 32768
+    recommended = [option for option in model["contextOptions"] if option["recommended"]]
+    assert len(recommended) == 1
+    assert recommended[0]["contextLength"] == 32768
+    assert recommended[0]["fitsVram"] is True
+    maximum = next(option for option in model["contextOptions"] if option["fullContext"])
+    assert maximum["contextLength"] == 128000
+    assert maximum["fitsVram"] is False
+
+
 def test_performance_env_readers_share_matching_quote_contract(monkeypatch, tmp_path):
     (tmp_path / ".env").write_text(
         "PAIRED='catalog-v2'\n"
@@ -1618,7 +1637,7 @@ def test_jamba_reasoning_3b_catalog_profile_fits_4gb_at_agent_context(data_dir, 
     assert model["recommended"] is False
 
 
-def test_pre_download_ranker_falls_back_to_smallest_model_without_gpu_info(data_dir):
+def test_pre_download_ranker_does_not_assume_large_gpu_without_hardware_info(data_dir):
     catalog = [
         _model(),
         {
@@ -1638,7 +1657,7 @@ def test_pre_download_ranker_falls_back_to_smallest_model_without_gpu_info(data_
 
     ranked = rank_pre_download_models(catalog, None, profile="qwen", limit=2)
 
-    assert [model["id"] for model in ranked] == ["qwen3.5-9b-q4"]
+    assert ranked == []
 
 
 def test_windows_amd_host_runtime_uses_install_ram_when_gpu_probe_is_unavailable(data_dir, tmp_path):

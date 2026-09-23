@@ -23,6 +23,7 @@ import {
   CANCELLABLE_EXEC_UNAVAILABLE_REASON,
   EXEC_ARGUMENTS_REQUIRE_COMMAND_REASON,
   WORKSPACE_PREVIEW_REQUIRES_FILES_REASON,
+  WORKSPACE_PREVIEW_FRESH_ENTRY_REASON,
   CLIENT_CANCELLED_REASON,
   DEFAULT_WEB_TOOL_LIMITS,
   canonicalGitHubSourceMatches,
@@ -121,6 +122,7 @@ import {
   userMessageRequestsWorkspaceMutation,
   userMessageRequestsWorkspacePreview,
   userMessageRequestsWorkspacePreviewInspection,
+  workspacePreviewMode,
   userMessageWorkspaceContinuationPath,
   userMessageWorkspaceDirectoryPath,
   userMessageRequestsOperationsEvidenceArtifact,
@@ -595,6 +597,8 @@ for (const prompt of [
   "Never create and publish a website.",
   "Read the files without showing a preview.",
   "Do not edit, publish, run or delete anything.",
+  "Read Playground/mac-preview-1790150681/index.html and report its h1 text exactly. Do not edit files or publish anything.",
+  "Read the index. Do not run commands, edit files, or republish anything.",
 ]) {
   test("exact index read cannot override the owner's publication constraint: " + prompt, () => {
     const { write, params, details } = seedNamedPreview(createToolLoopGuard());
@@ -607,6 +611,44 @@ for (const prompt of [
     assert.equal(guard.verificationForRun("run-1").status, "failed");
   });
 }
+
+test("publication fails closed when a tool hook has no observed owner run", () => {
+  for (const wrapped of [false, true]) {
+    const guard = createToolLoopGuard();
+    const event = wrapped
+      ? { toolName: "tool_call", params: { id: "openclaw:pixel-ods:pixel_ods_workspace_preview", args: { relativeDirectory: "demo" } } }
+      : { toolName: "pixel_ods_workspace_preview", params: { relativeDirectory: "demo" } };
+    for (const context of [{ agentId: "pixel" }, { agentId: "pixel", sessionId: "unknown-session" },
+      { agentId: "pixel", runId: "unobserved-run", sessionId: "unknown-session" }]) {
+      const result = guard.beforeToolCall(event, context);
+      assert.equal(result?.block, true);
+      assert.match(result.blockReason, /current owner request is unavailable/);
+    }
+  }
+});
+
+test("a coordinated no-publication constraint also blocks wrapped preview calls", () => {
+  const guard = createToolLoopGuard();
+  const context = { agentId: "pixel", runId: "run-1", sessionId: "session-1" };
+  guard.observeRun(context, "pixel", {
+    prompt: "Read Playground/mac-preview-1790150681/index.html and report its h1 text exactly. Do not edit files or publish anything.",
+  });
+  const result = guard.beforeToolCall({toolName:"tool_call", params:{
+    id:"openclaw:pixel-ods:pixel_ods_workspace_preview", args:{relativeDirectory:"Playground/mac-preview-1790150681"},
+  }}, context);
+  assert.equal(result?.block, true);
+  assert.match(result.blockReason, /explicitly prohibits/);
+});
+
+test("an edit prohibition does not block an independently requested existing preview", () => {
+  const { write, params } = seedNamedPreview(createToolLoopGuard());
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", {
+    prompt: `Do not edit files, but publish the existing ${write.path}.`,
+  });
+  afterCall(guard, "read", { event: { params: { path: write.path }, result: { content: [{ type: "text", text: write.content }] } } });
+  assert.notEqual(call(guard, "pixel_ods_workspace_preview", { event: { params } })?.block, true);
+});
 
 test("optional workspace evidence does not require publishing a preview", () => {
   const guard = createToolLoopGuard();
@@ -11998,12 +12040,12 @@ test("sandbox testing servers do not establish a verified preview", () => {
   assert.equal(reply(guard).payload.text, WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX);
 });
 
-test("preview preparation permits mkdir without claiming publication", () => {
+test("new static preview starts with an entry write instead of shell scaffolding", () => {
   const guard = createToolLoopGuard();
   guard.observeRun(
     { agentId: "pixel", runId: "run-1", sessionId: "session-1" },
     "pixel",
-    { prompt: "Build a fresh interactive website demo and show it to me." }
+    { prompt: "Build a fresh static HTML website demo and show it to me." }
   );
   const mkdir = call(guard, "tool_call", {
     event: {
@@ -12016,11 +12058,20 @@ test("preview preparation permits mkdir without claiming publication", () => {
       },
     },
   });
-  assert.notEqual(mkdir?.block, true);
+  assert.deepEqual(mkdir, {
+    block: true,
+    blockReason: WORKSPACE_PREVIEW_FRESH_ENTRY_REASON,
+  });
   assert.equal(
     reply(guard).payload.text,
     WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX
   );
+
+  const entry = {
+    path: "Playground/demo-interactive/index.html",
+    content: "<!doctype html><button>Try it</button>",
+  };
+  assert.notEqual(call(guard, "write", { event: { params: entry } })?.block, true);
 
   const unrelated = createToolLoopGuard();
   unrelated.observeRun(
@@ -12034,6 +12085,32 @@ test("preview preparation permits mkdir without claiming publication", () => {
     }).block,
     true
   );
+});
+
+test("workspace preview modes keep the static fast path narrow", () => {
+  for (const prompt of [
+    "Create one small static HTML page under Playground/mac-preview/index.html and show me its working preview URL.",
+    "Build a basic static HTML website and publish it.",
+    "Make me a basic website.",
+    "Build a basic responsive website and publish it.",
+  ]) assert.equal(workspacePreviewMode([], prompt), "new-static", prompt);
+  for (const prompt of [
+    "Repair the existing React website project and publish its Vite build output.",
+    "Research the official sources, build a new visit planner in trip/planner.html, and open a preview.",
+    "Build and show a website, testing it before publication.",
+    "Create a new website matching the uploaded screenshot and preview it.",
+    "Build a dashboard using sales.csv and show me a preview.",
+    "Create a website from the brand assets and publish it.",
+    "Read the brief first. Create and publish a website.",
+    "Create and preview a website for https://example.org/ using its public content.",
+    "Now make a breakout style videogame.",
+    "Build a fresh interactive website demo and show it to me.",
+  ]) assert.equal(workspacePreviewMode([], prompt), "existing-project", prompt);
+  assert.equal(workspacePreviewMode([], "Create a Python CLI and run its tests."), undefined);
+  assert.equal(workspacePreviewMode([{ role: "user", content: [
+    { type: "text", text: "Create and preview a website." },
+    { type: "image", data: "opaque-test-image", mimeType: "image/png" },
+  ] }]), "existing-project");
 });
 
 for (const wrapped of [false, true]) {

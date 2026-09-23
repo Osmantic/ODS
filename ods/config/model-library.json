@@ -428,6 +428,10 @@
       "size_mb": 2490,
       "vram_required_gb": 4,
       "context_length": 128000,
+      "block_count": 32,
+      "embedding_length": 3072,
+      "attention_head_count": 24,
+      "attention_head_count_kv": 8,
       "quantization": "Q4_K_M",
       "specialty": "Balanced",
       "description": "Microsoft's compact model with 128K context. Punches above its weight on reasoning and code.",
@@ -608,7 +612,29 @@
             "extraction": "identity"
           }
         ]
-      }
+      },
+      "runtime_profiles": [
+        {
+          "id": "apple-silicon-8gb-16k",
+          "label": "Apple Silicon 8GB 16K context with Q4 KV cache",
+          "backend": "apple",
+          "host_arch": [
+            "arm64"
+          ],
+          "memory_type": "unified",
+          "system_ram_min_gb": 7,
+          "system_ram_max_gb": 10,
+          "context_length": 16384,
+          "estimated_required_gb": 4.35,
+          "fit_label": "16K 8GB Q4 KV profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "auto",
+            "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q4_0"
+          }
+        }
+      ]
     },
     {
       "id": "phi3.5-mini-q4",

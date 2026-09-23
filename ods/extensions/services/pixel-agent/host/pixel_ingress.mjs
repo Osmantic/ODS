@@ -897,11 +897,37 @@ async function verificationForRun(runId, token, gatewayPort, signal, deps) {
   }
 }
 
+function missingVisibleAssistantText(content) {
+  return typeof content === 'string' && (!content.trim() ||
+    ['NO_REPLY', 'No response from OpenClaw.', EMPTY_ASSISTANT_RESPONSE].includes(content.trim()));
+}
+
+function deliveryVerification(completion, verification) {
+  const choice = completion?.choices?.length === 1 ? completion.choices[0] : undefined;
+  const content = choice?.message?.content;
+  // Missing/non-text content is a malformed gateway envelope, not evidence of
+  // a model that completed silently. Reject it consistently for JSON and SSE.
+  if (typeof content !== 'string') throw new HttpError(502, 'invalid upstream response');
+  // A completed transport/run is not proof of a useful answer. The harness can
+  // skip before_agent_finalize for an empty assistant message, so classify its
+  // terminal result here, after reading the same run's trusted evidence. This
+  // never resubmits the owner request or repeats a possibly completed effect.
+  if (!missingVisibleAssistantText(content) || choice.finish_reason === 'tool_calls' ||
+      choice.message.tool_calls?.length || verification.text || verification.status === 'pending') return verification;
+  const { suppressStaleExecWarning, ...evidence } = verification;
+  return {
+    ...evidence, status:'failed',
+    text:'Pixel ended without a visible answer or a delivered result. This request is incomplete. ' +
+      'Earlier tool activity may have completed; check its receipts before repeating any action. ' +
+      'No detailed failure reason was returned.',
+  };
+}
+
 function applyVerificationToCompletion(completion, verification) {
   if (verification.deliveryMode === "append") {
     const choice = completion?.choices?.[0];
     const content = choice?.message?.content;
-    if (typeof content === "string" && content.trim()) {
+    if (typeof content === "string" && !missingVisibleAssistantText(content)) {
       // Both input components already have transport bounds. Preserve the
       // model's work summary; a verified observation is not the entire task.
       const scope = verification.preview
@@ -1243,13 +1269,13 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
           gatewayPort, controller.signal, deps);
         completionRunId = completion?.id;
         deliveryStage = "verification";
-        const verification = await verificationForRun(
+        const verification = deliveryVerification(completion, await verificationForRun(
           completion?.id,
           token,
           gatewayPort,
           controller.signal,
           deps
-        );
+        ));
         await hooks.onComplete?.(completion,verification);
         deliveryStage = "delivery";
         res.end(completionSse(
@@ -1280,13 +1306,13 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       gatewayPort, controller.signal, deps);
     completion = await maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
       gatewayPort, controller.signal, deps);
-    const verification = await verificationForRun(
+    const verification = deliveryVerification(completion, await verificationForRun(
       completion?.id,
       token,
       gatewayPort,
       controller.signal,
       deps
-    );
+    ));
     await hooks.onComplete?.(completion,verification);
     const verifiedCompletion = applyVerificationToCompletion(completion, verification);
     const responseBody = verifiedCompletion === completion && completion === originalCompletion
@@ -1351,6 +1377,51 @@ export async function checkGatewayReachable(gatewayPort, deps = defaultDeps) {
   } finally {
     deps.clearTimeout(timer);
   }
+}
+
+export function projectRuntimeIdentity(value) {
+  const identity = value?.identities, schemas = value?.toolSchemas;
+  const nullableHash = item => item === null || typeof item === 'string' && /^[a-f0-9]{64}$/.test(item);
+  const reasons = {partial:'release-binding-unavailable', mismatch:'runtime-files-changed', unavailable:'runtime-identity-unavailable'};
+  if (!value || value.schemaVersion !== 1 || !Object.hasOwn(reasons, value.state)
+      || value.reasonCode !== reasons[value.state] || value.boundary !== 'initialization-files-not-evaluated-code-or-release-proof'
+      || !['match','mismatch','unavailable'].includes(value.diskComparison)
+      || (value.state === 'mismatch') !== (value.diskComparison === 'mismatch')
+      || value.runtimeMatchesRelease !== (value.state === 'mismatch' ? false : null)
+      || typeof value.observedAt !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.observedAt)
+      || !Number.isFinite(Date.parse(value.observedAt)) || Math.abs(Date.now() - Date.parse(value.observedAt)) > 120000
+      || !identity || identity.odsReleaseCommit !== null || identity.pixelSourceRevision !== null || identity.previewImageDigest !== null
+      || !nullableHash(identity.pluginSha256) || !nullableHash(identity.openclawModuleSha256)
+      || !(identity.openclawVersion === null || typeof identity.openclawVersion === 'string' && /^[0-9]{4}\.[0-9]+\.[0-9]+(?:-[0-9]+)?$/.test(identity.openclawVersion))
+      || !schemas || schemas.boundary !== 'latest-created-plugin-tools-not-offered-surface'
+      || !Number.isInteger(schemas.registeredPluginToolCount) || schemas.registeredPluginToolCount < 0 || schemas.registeredPluginToolCount > 64
+      || !nullableHash(schemas.registeredPluginToolSchemasSha256)
+      || (schemas.registeredPluginToolCount === 0) !== (schemas.registeredPluginToolSchemasSha256 === null)
+      || schemas.offeredToolCount !== null || schemas.offeredToolSchemasSha256 !== null) throw new Error('invalid runtime identity');
+  return {
+    schemaVersion:1, state:value.state, diskComparison:value.diskComparison, runtimeMatchesRelease:value.runtimeMatchesRelease,
+    reasonCode:value.reasonCode, observedAt:value.observedAt, boundary:value.boundary,
+    identities:Object.fromEntries(['odsReleaseCommit','pixelSourceRevision','pluginSha256','openclawVersion','openclawModuleSha256','previewImageDigest'].map(key=>[key,identity[key]])),
+    toolSchemas:Object.fromEntries(['boundary','registeredPluginToolCount','registeredPluginToolSchemasSha256','offeredToolCount','offeredToolSchemasSha256'].map(key=>[key,schemas[key]])),
+  };
+}
+
+async function handleRuntimeIdentity(res, token, gatewayPort, deps) {
+  const controller = new AbortController();
+  const timer = deps.setTimeout(() => controller.abort(), GATEWAY_PROBE_TIMEOUT_MS);
+  try {
+    const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/runtime-identity`, {
+      headers:{Authorization:`Bearer ${token}`, Accept:'application/json'}, redirect:'error', signal:controller.signal,
+    });
+    if (response.status !== 200 || !response.headers.get('content-type')?.startsWith('application/json')) throw new Error('unavailable');
+    let raw = '';
+    for await (const chunk of response.body) {
+      raw += Buffer.from(chunk).toString('utf8');
+      if (Buffer.byteLength(raw) > 8192) throw new Error('unavailable');
+    }
+    sendJson(res, 200, projectRuntimeIdentity(JSON.parse(raw)));
+  } catch { sendJson(res, 503, {error:'runtime-identity-unavailable'}); }
+  finally { deps.clearTimeout(timer); }
 }
 
 function execFilePromise(execImpl, command, args, options) {
@@ -1618,6 +1689,12 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
         });
         res.end(JSON.stringify({ status: ready ? "ok" : "unavailable" }));
       });
+      return;
+    }
+
+    if (pathname === '/v1/runtime-identity') {
+      if (req.method !== 'GET' || req.url !== pathname) { sendError(res, 400, 'invalid request'); return; }
+      void handleRuntimeIdentity(res, token, gatewayPort, deps);
       return;
     }
 

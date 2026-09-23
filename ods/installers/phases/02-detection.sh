@@ -586,7 +586,12 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
                     "$@" \
                     --env
             }
-            _selector_env="$(_run_catalog_selector 2>>"$LOG_FILE" || true)"
+            _selector_status=0
+            _selector_env="$(_run_catalog_selector 2>>"$LOG_FILE")" || _selector_status=$?
+            if [[ "$_selector_status" -eq 2 ]]; then
+                error "No catalog model fits the detected memory and selected profile. Choose a smaller model profile or use cloud mode; refusing an unsafe tier-map fallback."
+                exit 1
+            fi
             if [[ "$_pixel_default_selector" == true && -n "$_selector_env" ]]; then
                 log "Pixel default selected the strongest installable hardware-fit model; catalog qualification remains advisory"
             fi

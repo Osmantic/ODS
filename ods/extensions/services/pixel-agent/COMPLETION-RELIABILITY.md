@@ -60,6 +60,20 @@ A model can still miss a suitable clarification or produce unsupported wording.
 
 ## Focused verification
 
+For an explicitly published repair naming one workspace file, recognized
+"do not create new files" or "do not edit other files" instructions activate a
+narrow existing-file intent gate. Direct and Tool Search calls must target that
+exact file after a successful read in the current run. Only update-only patch
+syntax is admitted; add/delete/move, other paths, arbitrary shell/process calls
+and excluded web tools are blocked. A later failed read invalidates that read
+evidence. Ordinary unconstrained repairs retain their existing tools.
+
+This gate is not a general natural-language permission parser, shell sandbox,
+or atomic filesystem existence check. Core file tools and sandbox policy still
+own path/link/race containment. Source guard tests in
+`tests/workspace_general_routing.test.mjs` do not establish installed runtime
+behavior or general-task success.
+
 Run `node --test tests/completion_assurance.test.mjs` and the existing tool-loop,
 progress-budget, prompt-contract and task-activity tests from this directory.
 `tests/runtime_completion_assurance.integration.mjs` additionally runs the real

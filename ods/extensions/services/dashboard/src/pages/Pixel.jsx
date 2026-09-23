@@ -23,6 +23,9 @@ import {goalCommand,continueGoal} from '../lib/portalGoal'
 import PortalContextRing from '../components/PortalContextRing'
 import {compactCommand,CONTEXT_REQUEST_ID,historySnapshot,usePortalContext} from '../lib/portalContext'
 import PortalModelSelector from '../components/PortalModelSelector'
+import PortalRuntimeIdentity from '../components/PortalRuntimeIdentity'
+import PortalReadiness from '../components/PortalReadiness'
+import { pixelReadinessView } from '../lib/pixelReadiness'
 import PortalAgentActivity from '../components/PortalAgentActivity'
 import PortalExtensionSetup from '../components/PortalExtensionSetup'
 import PortalExtensionProgress from '../components/PortalExtensionProgress'
@@ -56,6 +59,8 @@ import {
   Square,
   Terminal,
 } from 'lucide-react'
+
+const MODEL_CAPABILITY_DETAIL = 'The active model is recorded as not agent-qualified. Tool-driven tasks may be unreliable; chat and experiments remain available.'
 
 const MARKDOWN_COMPONENTS = {
   p: ({ children }) => <p className="break-words [&:not(:first-child)]:mt-3">{children}</p>,
@@ -550,6 +555,8 @@ export default function Pixel({ systemStatus = null }) {
   const [agentRuntime, setAgentRuntime] = useState(null)
   const [contextRuntime, setContextRuntime] = useState(null)
   const [modelSupport, setModelSupport] = useState(null)
+  const [runtimeIdentity, setRuntimeIdentity] = useState(null)
+  const [runtimeReadiness, setRuntimeReadiness] = useState(null)
   const [modelSwitching,setModelSwitching]=useState(false)
   const [modelStatusRefresh,setModelStatusRefresh]=useState(0)
   const [preview, setPreview] = useState(() => initialChat?.preview || null)
@@ -733,10 +740,12 @@ export default function Pixel({ systemStatus = null }) {
     let poll = null
     async function fetchStatus() {
       try {
-        const response = await fetch('/api/pixel/status', { signal: controller.signal })
+        const response = await fetch('/api/pixel/status', { signal: controller.signal, cache: 'no-store' })
         if (!response.ok) throw new Error('status unavailable')
         const data = await response.json()
         if (stopped) return
+        setRuntimeIdentity(data?.runtimeIdentity ?? null)
+        setRuntimeReadiness(data?.readiness ?? null)
         const runtime = data?.runtime
         const runtimeKeys = runtime && typeof runtime === 'object' && !Array.isArray(runtime)
           ? Object.keys(runtime).sort().join('\n')
@@ -789,14 +798,11 @@ export default function Pixel({ systemStatus = null }) {
         // Treat the former hard-gate status as an advisory during rolling
         // upgrades so a stale API cannot make the new UI exclude a model.
         const legacyAdaptive = data.state === 'model_incompatible'
-        setModelSupport(validatedSupport || (legacyAdaptive
-          ? {
-              tier: 'adaptive',
-              detail: typeof data.detail === 'string' && data.detail.trim()
-                ? data.detail
-                : 'Pixel is ready and will adapt its tool flow for this model.',
-            }
-          : null))
+        // Older APIs called this tier "adaptive" and claimed readiness. That
+        // label records lack of qualification, not measured tool adaptation.
+        setModelSupport(validatedSupport || legacyAdaptive
+          ? { tier: 'adaptive', detail: MODEL_CAPABILITY_DETAIL }
+          : null)
         setStatus(data.available === true || legacyAdaptive
           ? 'available'
           : data.state === 'model_switching'
@@ -806,6 +812,8 @@ export default function Pixel({ systemStatus = null }) {
       } catch (error) {
         if (!stopped && error?.name !== 'AbortError') {
           setAgentRuntime(null)
+          setRuntimeIdentity(null)
+          setRuntimeReadiness(null)
           setStatus('unavailable')
           setStatusDetail('Could not reach Pixel backend')
         }
@@ -1126,7 +1134,7 @@ export default function Pixel({ systemStatus = null }) {
       }
       if (attempt.kind === 'adaptive') {
         setStatus('available')
-        setModelSupport({ tier: 'adaptive', detail: attempt.detail })
+        setModelSupport({ tier: 'adaptive', detail: MODEL_CAPABILITY_DETAIL })
         setInput(trimmed)
         contextStartRef.current = originalContextStart
         setMessages(messages)
@@ -1165,7 +1173,7 @@ export default function Pixel({ systemStatus = null }) {
           setMessages(messages)
           setInput(trimmed)
           setStatus('available')
-          setModelSupport({ tier: 'adaptive', detail: attempt.detail })
+          setModelSupport({ tier: 'adaptive', detail: MODEL_CAPABILITY_DETAIL })
           return
         }
         if (!attempt.receivedError && attempt.receivedDone && attempt.recoveryEligible) {
@@ -1366,6 +1374,7 @@ export default function Pixel({ systemStatus = null }) {
     sendMessage,
   })
   const workingElapsed = formatElapsed(workingElapsedSeconds)
+  const readinessView = pixelReadinessView(runtimeReadiness, status === 'available')
   const statusLabel = contextControl.busy ? (contextControl.phase==='unknown'?'Checking context':'Compacting') : stopping
     ? 'Stopping'
     : teams.busy
@@ -1379,7 +1388,7 @@ export default function Pixel({ systemStatus = null }) {
     : interrupted && restoredActivity === 'unknown'
       ? 'Activity unknown'
     : status === 'available'
-      ? 'Available'
+      ? (readinessView.attention ? 'Needs attention' : 'Available')
       : status === 'switching'
         ? 'Switching model...'
       : status === 'loading'
@@ -1424,6 +1433,7 @@ export default function Pixel({ systemStatus = null }) {
             }}/>
             <PixelHandoffApproval label="Approvals" />
             <details className="pixel-chat-options-advanced"><summary>Advanced tools</summary><div>
+              <PortalRuntimeIdentity identity={runtimeIdentity} runtime={agentRuntime} />
               <PixelAdvice canInsert={!sending && !contextControl.busy} onInsert={text => setInput(current => current ? `${current}\n\n${text}` : text)} />
               <PixelProviderScopes chatId={chatIdRef.current} sending={sending} />
             </div></details>
@@ -1449,23 +1459,25 @@ export default function Pixel({ systemStatus = null }) {
             className={`inline-flex items-center gap-1.5 text-[11px] font-medium ${
             sending
               ? 'text-theme-accent-light'
-              : status === 'available'
-              ? 'text-emerald-400'
               : 'text-amber-300'
           }`}
           >
             {sending || status === 'loading' || status === 'switching' ? (
               <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
-              <span className={`h-1.5 w-1.5 rounded-full ${
-                status === 'available' ? 'bg-emerald-400' : 'bg-amber-300'
-              }`} />
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
             )}
             {statusLabel}
             {sending && <span className="font-mono text-[10px] opacity-80">{workingElapsed}</span>}
           </span>
         </div>
       </header>
+      {status === 'available' && <PortalReadiness readiness={runtimeReadiness} />}
+      {status === 'available' && modelSupport && (
+        <p role="status" aria-label="Model capability" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-amber-300 sm:px-6">
+          {modelSupport.detail}
+        </p>
+      )}
       <div role="region" aria-label="Conversation messages" tabIndex={-1} onScroll={chatScroll.onScroll} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
         {interrupted && !sending && (
           <div role="status" className="mx-auto w-full max-w-5xl rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">

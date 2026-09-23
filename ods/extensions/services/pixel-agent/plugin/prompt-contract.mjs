@@ -24,7 +24,9 @@ import {
   userMessageRequestsWorkspacePreview,
   userMessageRequestsWorkspaceTools,
   userMessageRequestsNewPlaygroundProject,
+  workspacePreviewMode,
 } from "./tool-loop-guard.mjs";
+import { AGENT_SKILLS } from "./agent-skills.mjs";
 
 const PLAYGROUND_PROJECT_CONTRACT =
   "For a new project, choose one short descriptive folder under Playground, for example Playground/snake-game or Playground/weather-tool, and create every project file there. This is a real workspace folder, not a display label. Use the exact canonical paths returned by tools, including any collision suffix, for later reads, edits, exec workdir and preview relativeDirectory. Preserve explicitly requested paths and existing projects in their current locations; never move them into Playground. Keep shell commands relative to the chosen workdir; never invent host-specific paths.";
@@ -37,6 +39,7 @@ export const ODS_COMPACT_CONVERSATION_CONTRACT = [
   "Tool Search finds tools, not files. Discover read/write/edit/apply_patch/exec/process by name. List with exec ls, find or rg --files; read needs a file. Use workspace-relative paths without a workspace/ prefix. An empty search or failed read does not prove absence.",
   "For static demos, write index.html and local assets in one directory, then pixel_ods_workspace_preview. Sandbox servers are not browser-accessible. Share only its readbackVerified true, HTTP 200 URL. Static readback does not prove a button was clicked or an interaction worked; that needs interaction-tool evidence.",
   "Use write for new files; read before edit/apply_patch; run the requested focused verification and inspect its exit status before claiming success.",
+  "For CLI work, verify the documented command in a separate process, its output artifacts, and normal/malformed input exit status; import-only tests are insufficient. Check exact requested keys/paths and follow-up corrections. Preserve protected inputs/tests.",
   "Generic exec is sandbox evidence, never ODS-host evidence. Never bypass private-network or credential boundaries with shell.",
   "Research with web_search and web_fetch/pixel_ods_web_extract, or an exposed browser. pixel_ods_research is optional. Cite sources, make requested recommendations, and state uncertainty. Share private data only with owner authorization.",
   "Operations require the owner's live request and exact target/scope. Stay in broker tools through terminal evidence, never self-approve or call pending work complete.",
@@ -99,6 +102,9 @@ export const ODS_EXACT_DOWNLOAD_CONTRACT =
 
 export const ODS_WORKSPACE_PREVIEW_CONTRACT =
   "The owner requested a browser-visible result. Choose the inspection, implementation, build and verification tools needed for the project; no first tool or fixed sequence is required. Preserve existing source files and the requested framework. The managed pixel_ods_workspace_preview capability publishes a static directory containing index.html and local assets; inspect the actual build output when the project uses a build step. A server running inside the sandbox can support local testing but does not establish a URL reachable by the owner. Publish through the managed capability and report only its readback-verified URL. A failed build or publication is a limitation to report, not a reason to replace the project with a different static demo. ODS supplies no creative artifact bytes. Use semantic interactive elements such as button for requested controls, responsive layout, keyboard access, and reduced-motion behavior where applicable. The publication receipt proves publication and HTTP readback only: never claim a requested interaction was exercised unless an interaction-capable tool produced evidence for it." + ` ${PLAYGROUND_PROJECT_CONTRACT}`;
+
+export const ODS_WORKSPACE_NEW_STATIC_CONTRACT =
+  "The owner requested a new static browser artifact, not framework scaffolding. In the first productive tool step, call write once with a fresh workspace-relative path ending in /index.html and a complete useful entry document. Do not inspect unrelated files, call exec or process, install packages, start a server, use extension tools, or spend a turn planning before that write. Parent directories are created by write. After index.html exists, write any requested local CSS, JavaScript, SVG, image or data assets in that same directory, perform only relevant checks, then call pixel_ods_workspace_preview with exactly that directory. Never substitute a template or placeholder for the requested behavior. ODS supplies no creative artifact bytes. Use semantic interactive elements such as button for requested controls, responsive layout, keyboard access, and reduced-motion behavior where applicable. Reply only after the publication receipt reports readbackVerified true and HTTP 200. That receipt proves publication and static readback only; never claim a requested interaction was exercised unless an interaction-capable tool produced evidence for it." + ` ${PLAYGROUND_PROJECT_CONTRACT}`;
 
 export const ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT =
   "The owner is naturally continuing the most recently readback-verified visual artifact in this same Pixel chat. In the first tool step call tool_call with id read and args path index.html; the ODS guard binds that basename to the exact verified artifact directory. Then use only a focused edit on the returned path to make the requested change, and call pixel_ods_workspace_preview with that same directory. Do not call write, apply_patch, exec, process, mkdir, start a server, create another directory, or use a generated scaffold. The new preview receipt proves publication and static readback only; never claim an interaction was exercised without interaction-capable evidence.";
@@ -268,24 +274,29 @@ export function promptContractForAgent(
     )
       ? ` ${ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT}`
       : "";
+  const previewMode = workspacePreviewMode(event?.messages, event?.prompt);
   const workspacePreview = workspaceVisualContinuation ||
-    (userMessageRequestsWorkspacePreview(
-    event?.messages,
-    event?.prompt
-  )
-    ? ` ${ODS_WORKSPACE_PREVIEW_CONTRACT}`
-    : "");
+    (previewMode
+      ? ` ${previewMode === "new-static"
+        ? ODS_WORKSPACE_NEW_STATIC_CONTRACT
+        : ODS_WORKSPACE_PREVIEW_CONTRACT}`
+      : "");
+  const workspaceToolsRequested =
+    userMessageRequestsWorkspaceTools(event?.messages, event?.prompt) ||
+    userMessageRequestsNewPlaygroundProject(event?.messages, event?.prompt);
+  const workspaceGuide = workspacePreview || workspaceToolsRequested
+    ? ` ${AGENT_SKILLS.workspace}`
+    : "";
   const verification =
     verificationStatus === "pending"
       ? ` ${ODS_VERIFICATION_PENDING_CONTRACT}`
       : verificationStatus === "failed"
         ? ` ${ODS_VERIFICATION_FAILED_CONTRACT}`
         : "";
-  const project = !workspacePreview && (userMessageRequestsWorkspaceTools(event?.messages,event?.prompt)
-    || userMessageRequestsNewPlaygroundProject(event?.messages,event?.prompt))
+  const project = !workspacePreview && workspaceToolsRequested
     ? ` ${PLAYGROUND_PROJECT_CONTRACT}` : "";
   return {
     appendSystemContext:
-      `${extensionLifecycle ? `${extensionLifecycle} ` : ""}${conversationContract}${githubSource}${githubExtension}${extensionInventory}${extensionCatalog}${operationsContinuation}${operationsInventory}${operationsRequest}${exactDownload}${workspacePreview}${project}${recovery}${verification}${privateUrl}`,
+      `${extensionLifecycle ? `${extensionLifecycle} ` : ""}${conversationContract}${githubSource}${githubExtension}${extensionInventory}${extensionCatalog}${operationsContinuation}${operationsInventory}${operationsRequest}${exactDownload}${workspacePreview}${workspaceGuide}${project}${recovery}${verification}${privateUrl}`,
   };
 }

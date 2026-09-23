@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Activity, Cpu, ShieldCheck, RefreshCw } from 'lucide-react'
 import MetalMetricIcon from '../MetalMetricIcon'
+import { pixelReadinessView } from '../../lib/pixelReadiness'
 
 const checks = [
   { id: 'agent', label: 'Agent connection', path: '/api/pixel/status', icon: Activity },
@@ -17,9 +18,11 @@ export function summarizeCheck(id, data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Invalid status')
   if (id === 'agent') {
     if (typeof data.available !== 'boolean') throw new Error('Invalid status')
-    return { state: data.available ? 'Ready' : 'Unavailable', ok: data.available,
-      detail: text(data.detail) || 'The gateway did not report additional detail.',
-      rows: data.runtime ? [['Agent model', text(data.runtime.model) || 'Not reported'], ['Context window', context(data.runtime.contextLength)]] : [],
+    const readiness = pixelReadinessView(data.readiness, data.available)
+    return { state: readiness.label, ok: false,
+      detail: readiness.detail,
+      rows: [['Model route', data.available ? 'Available' : 'Unavailable'], ['Host access', readiness.access], ['Release readiness', readiness.release],
+        ...(data.runtime ? [['Agent model', text(data.runtime.model) || 'Not reported'], ['Context window', context(data.runtime.contextLength)]] : [])],
     }
   }
   if (id === 'model') {
@@ -33,10 +36,13 @@ export function summarizeCheck(id, data) {
     }
   }
   if (typeof data.available !== 'boolean') throw new Error('Invalid status')
-  const verified = data.available && data.runtime_verified === true && ['sandboxed', 'full-access'].includes(data.effective_mode)
-  return { state: verified ? 'Verified' : 'Not verified', ok: verified,
+  const verified = data.available && data.runtime_verified === true && data.pending !== true && ['sandboxed', 'full-access'].includes(data.effective_mode)
+  const failed = data.available === false && data.pending !== true
+  return { state: failed ? 'Failed' : verified ? 'Verified' : 'Not verified', ok: verified,
     detail: data.pending ? 'An access transition is unfinished.' : data.busy ? 'Portal is working; access changes must wait.'
-      : verified ? 'The host verified the effective access mode.' : 'The host has not verified an effective access mode. Do not infer permissions from chat availability.',
+      : failed ? data.reason === 'inspection-failed' ? 'The host access inspection failed. Effective permissions are unverified.'
+        : 'The host access check failed. Effective permissions are unverified.'
+        : verified ? 'The host verified the effective access mode.' : 'The host has not verified an effective access mode. Do not infer permissions from chat availability.',
     rows: [['Configured', mode(data.configured_mode)], ['Effective', verified ? mode(data.effective_mode) : 'Not verified']],
   }
 }

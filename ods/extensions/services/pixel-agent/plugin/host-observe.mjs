@@ -476,7 +476,9 @@ export function createExtensionReadTool({ requestDir = REQUEST_DIR, resultDir, t
       properties: {
         action: { type: "string", enum: ["search", "list", "inspect"] },
         target: { type: "string", minLength: 2, maxLength: 64 },
-        query: { type: "string", minLength: 1, maxLength: 80, pattern: "^[A-Za-z0-9 _/+:#.\\-]{1,80}$", description: "Short catalog keywords; defaults to all when omitted for search." },
+        // A literal hyphen last in the class preserves the same allowlist.
+        // Escaped \\- becomes an unsupported GBNF escape in llama.cpp.
+        query: { type: "string", minLength: 1, maxLength: 80, pattern: "^[A-Za-z0-9 _/+:#.-]{1,80}$", description: "Short catalog keywords; defaults to all when omitted for search." },
         serviceId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]{0,63}$", description: "Exact catalog extension ID required for inspect." },
         offset: {type: "integer", minimum: 0, description: "List only: first inventory entry, default 0. Use returned nextOffset for further pages."},
         limit: {type: "integer", minimum: 1, maximum: 20, description: "List only: entries per page, default 10. Complete broker evidence remains in the operation receipt."},

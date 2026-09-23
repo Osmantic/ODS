@@ -13,7 +13,7 @@ const state=()=>({schemaVersion:1,status:'ready',sessionExists:true,sessionRevis
 const listen=server=>new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve(server.address().port)));
 async function fixture(t) {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ods-ingress-history-'));fs.chmodSync(dir,0o700);
-  const ledger=createChatHistoryLedger(dir),calls=[],native=state();let chatFailure=false;
+  const ledger=createChatHistoryLedger(dir),calls=[],native=state();let chatFailure=false,answer='answer';
   const gateway=http.createServer(async(req,res)=>{
     if(req.url==='/health') {res.setHeader('content-type','application/json');return res.end('{"ok":true}');}
     let raw='';for await(const part of req) raw+=part;
@@ -23,7 +23,7 @@ async function fixture(t) {
     if(req.url==='/pixel-ods/history') return res.end(JSON.stringify({schemaVersion:1,hydrated:true}));
     if(req.url==='/pixel-ods/compact') {native.status='ready';native.compaction={...native.compaction,status:'completed',requestId:body.request_id,count:native.compaction.count+1};return res.end(JSON.stringify(native));}
     if(req.url==='/pixel-ods/verification') return res.end(JSON.stringify({status:'none'}));
-    if(req.url==='/v1/chat/completions') {if(chatFailure){res.statusCode=500;return res.end('{}')}return res.end(JSON.stringify({id:runId,choices:[{message:{role:'assistant',content:'answer'}}]}));}
+    if(req.url==='/v1/chat/completions') {if(chatFailure){res.statusCode=500;return res.end('{}')}return res.end(JSON.stringify({id:runId,choices:[{message:{role:'assistant',content:answer}}]}));}
     res.statusCode=404;res.end('{}');
   });
   const port=await listen(gateway),ingress=createIngressServer({token:'test-token',gatewayPort:port,historyLedger:ledger});
@@ -31,7 +31,7 @@ async function fixture(t) {
   t.after(async()=>{await Promise.all([new Promise(r=>ingress.close(r)),new Promise(r=>gateway.close(r))]);fs.rmSync(dir,{recursive:true,force:true})});
   async function post(route,body) {const response=await fetch(`http://127.0.0.1:${ingressPort}${route}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});return {status:response.status,value:await response.json()}}
   const chat=(request_id,messages)=>post('/v1/chat/completions',{user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages:[{role:'system',content:'Trusted identity'},...messages.slice(-3,-1),u(messages.at(-1).content+'\nDelivery contract')],stream:false});
-  return {ledger,calls,native,post,chat,setFailure:(value=true)=>{chatFailure=value}};
+  return {ledger,calls,native,post,chat,setFailure:(value=true)=>{chatFailure=value},setAnswer:value=>{answer=value}};
 }
 test('ingress delivers a delta with the edge contract, persists full snapshot and replays without rerunning',async t=>{
   const f=await fixture(t);
@@ -49,6 +49,17 @@ test('initial archived conversation is hydrated and compacted before current inp
   const paths=f.calls.map(c=>c.path);assert.ok(paths.indexOf('/pixel-ods/history')<paths.indexOf('/pixel-ods/compact'));assert.ok(paths.indexOf('/pixel-ods/compact')<paths.indexOf('/v1/chat/completions'));
   assert.deepEqual(f.calls.find(c=>c.path==='/pixel-ods/history').body.messages,history.slice(0,-1));
   assert.deepEqual(f.calls.find(c=>c.path==='/v1/chat/completions').body.messages,[{role:'system',content:'Trusted identity'},u('new request\nDelivery contract')]);
+});
+
+test('missing answer persists its incomplete outcome and cached delivery never reruns the task',async t=>{
+  const f=await fixture(t);f.setAnswer('NO_REPLY');
+  const first=await f.chat('silent',[u('Check the existing report without modifying it')]);
+  assert.equal(first.status,200);
+  assert.match(first.value.choices[0].message.content,/request is incomplete/);
+  assert.equal(f.ledger.read(user).lastResult.verification.status,'failed');
+  const again=await f.chat('silent',[u('Check the existing report without modifying it')]);
+  assert.deepEqual(again,first);
+  assert.equal(f.calls.filter(c=>c.path==='/v1/chat/completions').length,1);
 });
 test('unconfirmed execution is retained as unknown and refuses silent resubmission',async t=>{
   const f=await fixture(t);f.setFailure();assert.equal((await f.chat('failed',[u('execute')])).status,502);

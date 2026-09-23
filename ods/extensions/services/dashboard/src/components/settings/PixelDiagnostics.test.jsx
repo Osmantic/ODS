@@ -12,7 +12,7 @@ it('reports each real check independently and only performs reads', async () => 
   vi.stubGlobal('fetch', fetch)
   show()
   expect(await screen.findByRole('button', {name:'Refresh checks'})).toBeEnabled()
-  expect(screen.getByText('Ready')).toBeVisible()
+  expect(screen.getByText('Available · unverified')).toBeVisible()
   expect(screen.getByText(`${(65536).toLocaleString()} tokens`)).toBeVisible()
   expect(within(screen.getByRole('region', {name:'Access verification'})).getByText('Unavailable')).toBeVisible()
   expect(fetch).toHaveBeenCalledTimes(3)
@@ -45,11 +45,12 @@ it('clears stale success on refresh and allows retry after errors', async () => 
   vi.stubGlobal('fetch', fetch)
   show()
   await screen.findByRole('button', {name:'Refresh checks'})
-  expect(screen.getByText('Ready')).toBeVisible()
+  expect(screen.getByText('Available · unverified')).toBeVisible()
   fetch.mockRejectedValue(new Error('private upstream details must not be shown'))
   fireEvent.click(screen.getByRole('button', {name:'Refresh checks'}))
   await waitFor(() => expect(screen.getAllByText('Unavailable')).toHaveLength(3))
   expect(screen.queryByText('Ready')).toBeNull()
+  expect(screen.queryByText('Available · unverified')).toBeNull()
   expect(screen.queryByText(/private upstream details/)).toBeNull()
 })
 it('aborts pending reads when the section is closed', () => {
@@ -68,4 +69,13 @@ it('does not mistake configured access for verified access', () => {
   expect(summarizeCheck('access',{available:true,effective_mode:'sandboxed',runtime_verified:true}).ok).toBe(true)
   expect(() => summarizeCheck('agent',{})).toThrow()
   expect(() => summarizeCheck('model',{})).toThrow()
+})
+
+it('shows an explicit failed access inspection even with a legacy available route', () => {
+  expect(summarizeCheck('agent',{available:true,detail:'Owner agent ready'}))
+    .toMatchObject({state:'Available · unverified',ok:false})
+  expect(summarizeCheck('access',{available:false,effective_mode:'unknown',configured_mode:'unknown',
+    runtime_verified:false,pending:false,busy:false,reason:'inspection-failed',surface:'darwin'}))
+    .toMatchObject({state:'Failed',ok:false,detail:'The host access inspection failed. Effective permissions are unverified.'})
+  expect(summarizeCheck('access',{available:true,effective_mode:'sandboxed',runtime_verified:true,pending:true}).ok).toBe(false)
 })

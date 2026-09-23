@@ -1476,6 +1476,7 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_TIE
             fi
         fi
         if [[ -n "$_selector_python" ]]; then
+            _selector_status=0
             _selector_env="$("$_selector_python" "$_selector_script" \
                 --catalog "$_selector_catalog" \
                 --backend "apple" \
@@ -1487,7 +1488,11 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_TIE
                 --max-size-mb "${LLM_MODEL_SIZE_MB:-0}" \
                 --host-arch "$(uname -m 2>/dev/null || echo unknown)" \
                 --installable-only \
-                --env 2>>"$ODS_LOG_FILE" || true)"
+                --env 2>>"$ODS_LOG_FILE")" || _selector_status=$?
+            if [[ "$_selector_status" -eq 2 ]]; then
+                ai_warn "No catalog model fits the detected memory and selected profile. Choose a smaller model profile or use cloud mode; refusing an unsafe tier-map fallback."
+                exit 1
+            fi
             if [[ -n "$_selector_env" ]]; then
                 load_model_selector_env_from_output <<< "$_selector_env"
                 ai "Model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"

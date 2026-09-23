@@ -19,7 +19,7 @@ import { projectWebResult } from "./web-result-projection.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
 import { createExtensionCompletionGate } from "./extension-completion-gate.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
-import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
+import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLaneStopReason, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
@@ -42,6 +42,18 @@ const EXTENSION_DECISION_READ_TOOLS = new Set([
   'pixel_ods_extension_request_status', 'web_fetch', 'web_search',
   'pixel_ods_web_extract', 'pixel_ods_research', 'read', 'memory_search', 'memory_get',
 ]);
+const EXTENSION_REQUEST_TOOLS = new Set([
+  'pixel_ods_extensions', 'pixel_ods_extension_request_status',
+  'pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance',
+  'pixel_ods_extension_request_retry', 'pixel_ods_python_library_proposal',
+  'pixel_ods_source_proposal', 'pixel_ods_extension_proposal',
+]);
+const EXTENSION_METADATA_TOOLS = new Set(['pixel_ods_extensions', 'pixel_ods_extension_request_status']);
+const EXTENSION_MUTATION_TOOLS = new Set([...EXTENSION_REQUEST_TOOLS].filter(name => !EXTENSION_METADATA_TOOLS.has(name)));
+export const WORKSPACE_EXTENSION_SCOPE_REASON =
+  "The current owner request is workspace work, with no extension mutation task. Do not call extension preparation, installation, retry, or proposal tools for this turn. Read-only catalog/status metadata remains available when useful. Continue the requested files, tests, research, or preview; a saved extension request or tool result does not expand the current task.";
+export const EXTENSION_MUTATION_EXCLUDED_REASON =
+  "The owner excluded extension mutation in the current request. Read-only catalog and status tools remain available; do not prepare, install, advance, retry, or submit a coordinating proposal. A previously authorized saved request does not override this restriction.";
 
 export const WEB_BUDGET_EXHAUSTED_REASON =
   "Pixel's web-research budget is exhausted for this response. Do not call web tools again. Finish using the evidence already collected and any otherwise-authorized tools, including saving the requested report. Preserve existing evidence and clearly state any missing external information.";
@@ -172,6 +184,20 @@ export const EXEC_ARGUMENTS_REQUIRE_COMMAND_REASON =
 
 export const WORKSPACE_PREVIEW_REQUIRES_FILES_REASON =
   "Pixel cannot publish this website yet because this response has not created or inspected an index.html in the requested workspace directory. Create the static site files first, then call pixel_ods_workspace_preview with that one relative directory.";
+
+export const WORKSPACE_PREVIEW_FRESH_ENTRY_REASON =
+  "This is a new static browser artifact. Start with exactly one write of the complete entry document to a fresh workspace-relative path ending in /index.html. Do not inspect unrelated files, run commands, start a server, scaffold a framework, or use extension tools before that entry file exists. After the entry write succeeds, create any requested local assets, verify what the owner asked for, and publish that exact directory.";
+
+const WORKSPACE_PREVIEW_FAILURE_REASONS = Object.freeze({
+  unsupported_file_type: "the directory contains an unsupported preview file type",
+  missing_entry: "the directory lacks a nonempty index.html entry",
+  too_many_files: "the directory exceeds the preview file-count limit",
+  snapshot_too_large: "the directory exceeds the preview size limit",
+  unsafe_file: "a file failed the preview safety checks",
+  unsafe_directory: "the directory failed the preview path or permission checks",
+  cancelled: "waiting for the preview was cancelled; publication may still be pending",
+  unavailable: "the preview was unavailable; the tool supplied no more specific verified cause",
+});
 
 export const WORKSPACE_PREVIEW_REQUIRES_READBACK_REASON =
   "The host verified the published snapshot. The owner also requested file inspection; complete the remaining file reads alongside any other requested checks. Static publication does not prove functional behavior.";
@@ -3612,10 +3638,23 @@ const EXTENSION_READ_ACTIONS = new Set([
 ]);
 
 function extensionDiscoveryEligible(state) {
-  return state && !state.operationsHostCommandRequested &&
+  return state && !state.workspaceExtensionIsolated && !state.operationsHostCommandRequested &&
     !state.operationsExpectedExtensionLifecycle && !state.operationsContinuation &&
     !state.exactDownloadRequested &&
     [...state.operationsRequiredActions].every((action) => EXTENSION_READ_ACTIONS.has(action));
+}
+
+function toolProgressLane(state, tool, wrappedTarget) {
+  // Opt in only for current, explicitly mixed owner scope. This attribution is
+  // accounting, not authority: all existing tool/broker boundaries still run.
+  if (!state?.workspaceLaneRequested || state.workspaceExtensionIsolated) return undefined;
+  const source = ['read','write','edit','apply_patch','exec','process'].includes(tool) ? 'core' : 'pixel-ods';
+  if (wrappedTarget !== undefined && ![tool,`openclaw:${source}:${tool}`].includes(wrappedTarget)) return undefined;
+  if (EXTENSION_REQUEST_TOOLS.has(tool)) return 'extension';
+  if (['read','write','edit','apply_patch','exec','process',WORKSPACE_PREVIEW_TOOL,
+    EVIDENCE_REPORT_TOOL,EVIDENCE_READBACK_TOOL,'pixel_ods_download_promote'].includes(tool)) return 'workspace';
+  // Missing hooks, malformed IDs and shared research remain globally bounded.
+  return undefined;
 }
 
 function extensionDiscoveryActive(state) {
@@ -4218,6 +4257,56 @@ function currentOwnerIntentText(messages, prompt = undefined) {
     : currentText;
 }
 
+function ownerLaneText(text) {
+  // Classify only current owner prose. Embedded examples cannot opt a workspace
+  // turn into extension work; identifiers quoted as operands remain usable.
+  return String(text ?? '')
+    .replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g, ' ')
+    .replace(/^\s*>[^\n]*/gm, ' ')
+    .replace(/"[^"\n]*"|`[^`\n]*`|(?<!\w)'[^'\n]*'(?!\w)|“[^”\n]*”/g,
+      value => /\s/.test(value.slice(1, -1)) ? ' ' : value);
+}
+
+function ownerWorkspaceLaneRequested(text, workspaceRequested) {
+  if (workspaceRequested) return true;
+  // Repository investigation named within an extension slash route belongs to
+  // that extension task, not a second implicit coding obligation.
+  text = text.replace(/^\s*(?:\/goal\s+)?\/extensions?[^;\n]*/i, '');
+  if (requestsNewPlaygroundProject(text)) return true;
+  return text.split(/[!?;\n]+|\.(?=\s|$)/).some(clause =>
+    !/^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|avoid|skip|explain|describe)\b/i.test(clause) &&
+    /\b(?:create|write|build|implement|edit|fix|repair|debug|refactor|test|run|update|inspect|read)\b/i.test(clause) &&
+    /\b(?:code|source\s+files?|repository|repo|script|CLI|unit\s+tests?|test\s+suite|Python|JavaScript|TypeScript|webpage|website|page)\b|\b[A-Za-z0-9_-]+\.(?:py|[cm]?[jt]sx?|html?|css|json|rs|go|java|sh)\b/i.test(clause));
+}
+
+function ownerExtensionLaneRequested(text) {
+  const clauses = text.split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|and(?:\s+then)?|then)\s+/i);
+  return clauses.some(value => {
+    const clause = value.trim().replace(/^(?:(?:also|now|please)[,\s]+)+/i, '')
+      .replace(/^(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)/i, '');
+    if (/^(?:\/goal\s+)?\/extensions?\b/i.test(clause)) return true;
+    // An artifact that describes installing extensions is still artifact work.
+    // Require a separate owner directive before reusing the existing selectors.
+    if (!/^(?:check|inspect|research|install|enable|disable|remove|uninstall|prepare|advance|retry|continue|resume|use|propose|submit|status|finish|show|list|find|search|browse|tell\s+me|what|which|is|has)\b/i.test(clause)) return false;
+    return Boolean(userMessageExtensionLifecycleIntent([], clause)) ||
+      userMessageRequestsExtensionCatalog([], clause) ||
+      userMessageRequestsExtensionInventory([], clause) ||
+      (/\b(?:check|inspect|research|install|prepare|advance|retry|continue|resume|use|propose|submit|status|finish)\b/i.test(clause) &&
+        /\b(?:ODS\s+extensions?|extension\s+(?:request|installation|recipe|status)|(?:pending|saved|managed)\s+(?:request|installation)|(?:corrected|accepted)\s+recipe|pixel_ods_extension_\w+|pixel_ods_(?:source|python_library)_proposal)\b/i.test(clause));
+  });
+}
+
+function ownerExcludesExtensionMutation(text, extensionContext) {
+  return text.split(/[!?;\n]+|\.(?=\s|$)/).some(clause => {
+    const excluded = clause.match(/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b([^.!?;\n]{1,240})/i)?.[1];
+    if (!excluded) return false;
+    const tools = /\bpixel_ods_(?:extension_(?:request_(?:prepare|advance|retry)|proposal)|source_proposal|python_library_proposal)\b/i;
+    return tools.test(excluded) ||
+      (/\b(?:prepar(?:e|ing)|advanc(?:e|ing)|retry(?:ing)?|install(?:ing)?|reinstall(?:ing)?)\b/i.test(excluded) &&
+        (extensionContext || /\b(?:extensions?|installation|anything)\b/i.test(excluded)));
+  });
+}
+
 function explicitlyRejectsOdsTool(text, toolPattern) {
   const actionNegation = new RegExp(
     `\\b(?:do\\s+not|don't|never|must\\s+not|should\\s+not)\\s+` +
@@ -4627,7 +4716,12 @@ export function userMessageRequestsExtensionInventory(messages, prompt = undefin
     /\b(?:which|what|list|show|inspect|audit|inventory|report|tell\s+me)\b/i;
   // File extensions and a later request to report source hashes are unrelated
   // to installed ODS extensions. Do not combine those clauses into host work.
-  const clauses = text.split(/[!?;\n]+|\.(?=\s|$)/).filter((clause) =>
+  const clauses = text.split(/[!?;\n]+|\.(?=\s|$)/).map(clause =>
+    // A saved request's status/source is coordinator metadata, not a request
+    // to inventory installed extensions. Remove only that compound noun so
+    // an independently requested installed inventory in the same clause stays.
+    clause.replace(/\b(?:ODS\s+)?extensions?\s+(?:(?:installation|integration|install)\s+)?requests?\b/gi, 'managed request')
+  ).filter((clause) =>
     !/^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|avoid|skip|omit)\b/i.test(clause) &&
     !/\b(?:file|filename)\s+extensions?\b/i.test(clause));
   return clauses.some((clause) =>
@@ -5276,7 +5370,14 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
   // Preserve explicit owner constraints without requiring a positive visual
   // vocabulary to use the local snapshot tool. These are delivery actions,
   // not filenames, quoted examples, or another clause's edit restriction.
-  return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
+  // A coordinated prohibition can include objects: "Do not edit files or
+  // publish anything". Stop at contrast/sentence boundaries so "do not edit
+  // files, but publish the existing site" remains a publication request.
+  const coordinatedProhibition = text
+    .split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
+    .some((clause) => /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
+  if (coordinatedProhibition) return true;
+  return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
 }
 
 function portuguesePreviewForbidden(text) {
@@ -5335,7 +5436,7 @@ function hasPortugueseWorkspacePreviewDirective(text) {
   return false;
 }
 
-function workspacePreviewInstructionText(text) {
+function workspacePreviewInstructionText(text, {preserveFileTargets = false} = {}) {
   // This is an intent projection only. Keep the owner's original message and
   // tool contents intact; quoted examples must not become delivery commands.
   let projected = text
@@ -5350,7 +5451,9 @@ function workspacePreviewInstructionText(text) {
     " "
   );
   const quotedTarget = (value) =>
-    /^(?:\.\.?\/)?[A-Za-z0-9_/-][A-Za-z0-9._/-]*\.html?$/i.test(value.trim())
+    (preserveFileTargets
+      ? /^(?:\.\.?\/)?[A-Za-z0-9_/-][A-Za-z0-9._/-]*\.[A-Za-z0-9]{1,10}$/
+      : /^(?:\.\.?\/)?[A-Za-z0-9_/-][A-Za-z0-9._/-]*\.html?$/i).test(value.trim())
       ? value
       : " ";
   // Preserve a quoted HTML filename as an action target, but not arbitrary
@@ -5360,7 +5463,7 @@ function workspacePreviewInstructionText(text) {
     // named by their segments (for example portal-check/notes.txt). Preserve
     // HTML/SVG targets because explicit visual delivery can name those files.
     .replace(/\b[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,10}\b/g,
-      path => /\.(?:html?|svg)$/i.test(path) ? path : " ")
+      path => preserveFileTargets || /\.(?:html?|svg)$/i.test(path) ? path : " ")
     .replace(/"((?:\\.|[^"\\])*)"|`((?:\\.|[^`\\])*)`/g,
       (_match, quoted, inline) => quotedTarget(quoted ?? inline))
     .replace(/(^|[\s(=,:])'((?:\\.|[^'\\])*)'(?=$|[\s).,;:!?])/g,
@@ -5369,10 +5472,11 @@ function workspacePreviewInstructionText(text) {
 
 function hasExplicitWorkspacePreviewDirective(text) {
   if (hasPortugueseWorkspacePreviewDirective(text)) return true;
+  if (/(?:^|[.!?;\n]|\b(?:and|then|now)\s+)\s*(?:please\s+)?(?:call|use|invoke)\s+(?:the\s+)?pixel_ods_workspace_preview\b/i.test(text)) return true;
   // A requested delivery action can follow a diagnosis or code repair. Do not
   // mistake a subordinate "why we should publish" for that owner command.
   const commands = text.matchAll(
-    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then)\s+)\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(display|preview|publish|republish|serve|open|show|view)\s+([^!?;\n]{1,512})/gi
+    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then|now)\s+)\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:try\s+to\s+)?(display|preview|publish|republish|serve|open|show|view)\s+([^!?;\n]{1,512})/gi
   );
   return [...commands].some((match) => {
     const target = match[2].split(/\.(?=\s|$)|\b(?:and|then|but|however|instead)\b/i)[0];
@@ -5423,6 +5527,106 @@ function requestsNamedSessionPreview(text, preview) {
   return !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:publish(?:ing)?|republish(?:ing)?|preview(?:ing)?|display(?:ing)?|show(?:ing)?|open(?:ing)?|view(?:ing)?)\b/i.test(ownerText);
 }
 
+function workspacePreviewRestrictions(text) {
+  // A positive repair does not erase the owner's independent exclusions.
+  // Only a single explicitly named file gets the narrow existing-file gate;
+  // this is not a general natural-language permission parser or filesystem sandbox.
+  const positive = workspacePreviewInstructionText(text, {preserveFileTargets:true}).replace(
+    /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without|no)\b(?:(?!\b(?:but|instead|then)\b)[^.!?;\n])*/gi, " ");
+  const authorship = /\b(?:build|create|develop|generate|implement|make|write|edit|fix|repair|modify|update|add|change|remove|delete|rename|move|patch|improve)\b/i.test(positive);
+  const excluded = text.split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
+    .map(clause => clause.match(/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|without)\b([^.!?;\n]{1,320})/i)?.[1] ?? "")
+    .join("\n");
+  const paths = new Set([...text.matchAll(/(?:^|[\s`"'])(?:\/workspace\/)?([A-Za-z0-9][A-Za-z0-9._-]{0,127}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}){1,11})(?=$|[\s`"',;!?]|\.(?:\s|$))/g)]
+    .map(match => match[1].replace(/[.!?;,]+$/, "").replace(/\/index\.html$/i, "")));
+  const noNewFiles = /\b(?:create|add|write)\b[^\n]{0,48}\b(?:new|any)\b[^\n]{0,24}\bfiles?\b/i.test(excluded);
+  const noOtherFiles = /\b(?:edit|modify|change|write)\b[^\n]{0,48}\bother\s+files?\b/i.test(excluded);
+  const repairTargets = new Set([...positive.matchAll(
+    /\b(?:edit|update|fix|repair|modify|patch|improve)\s+(?:(?:the|existing|current)\s+)*(?:file\s+)?((?:\.\/|\/workspace\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}){0,11}\.[A-Za-z0-9]{1,10})(?=$|[\s,;.!?])/gi
+  )].map(match => normalizeWorkspaceFilePath(match[1])));
+  const existingFile = (noNewFiles || noOtherFiles) && repairTargets.size === 1
+    ? [...repairTargets][0] : undefined;
+  return {
+    mutation: !authorship && /\b(?:create|write|edit|modify|change|delete)\b[^\n]{0,64}\b(?:files?|directories|anything)\b/i.test(excluded),
+    existingFile,
+    // Arbitrary commands cannot be checked against a single-file edit boundary.
+    exec: Boolean(existingFile) || /\b(?:run|use|execute)\b[^\n]{0,48}\b(?:shell|commands?|exec)\b/i.test(excluded),
+    web: /\b(?:contact|visit|fetch|browse|use)\b[^\n]{0,48}\b(?:external|websites?|sites?|network|web|internet)\b/i.test(excluded),
+    directory: paths.size === 1 ? [...paths][0] : undefined,
+  };
+}
+
+function scopedExistingFileMutationAllowed(state, tool, params) {
+  const path = state?.workspacePreviewRestrictions?.existingFile;
+  if (!path) return true;
+  // This is current-turn read evidence, not an atomic filesystem existence
+  // check. Core file tools and the sandbox still own race/link containment.
+  if (!state.successfulReadPaths.has(path)) return false;
+  if (tool === 'write' || tool === 'edit') {
+    const keys = tool === 'write' ? ['path', 'content'] : ['path', 'edits'];
+    return params && typeof params === 'object' && !Array.isArray(params) &&
+      Object.keys(params).every(key => keys.includes(key)) &&
+      normalizeWorkspaceFilePath(params.path) === path;
+  }
+  // Accept only one explicit update with bounded, ordinary patch hunks. The
+  // actual patch tool still checks context; Add/Delete/Move and unknown syntax
+  // never get inferred or silently rewritten into an update of the target.
+  if (tool !== 'apply_patch' || !params || Object.keys(params).length !== 1 ||
+      typeof params.input !== 'string' || params.input.length > 131072) return false;
+  const lines = params.input.replace(/\r\n?/g, '\n').trim().split('\n');
+  if (lines.length > 4096 || lines[0] !== '*** Begin Patch' || lines.at(-1) !== '*** End Patch' ||
+      !lines[1]?.startsWith('*** Update File: ') ||
+      normalizeWorkspaceFilePath(lines[1].slice('*** Update File: '.length)) !== path) return false;
+  let hunk = false, changed = false;
+  for (let index = 2; index < lines.length - 1; index += 1) {
+    const line = lines[index];
+    if (line === '@@' || line.startsWith('@@ ')) { hunk = true; continue; }
+    if (line === '*** End of File' && index === lines.length - 2 && changed) continue;
+    if (!hunk || !/^[ +\-]/.test(line)) return false;
+    if (/^[+\-]/.test(line)) changed = true;
+  }
+  return hunk && changed;
+}
+
+function workspacePreviewRestrictionReason(state, tool, params) {
+  const restriction = state?.workspacePreviewRestrictions;
+  if (!restriction) return undefined;
+  const scopedMutation = restriction.existingFile &&
+    ['write', 'edit', 'apply_patch', 'move', 'rename', 'delete', 'mkdir',
+      EVIDENCE_REPORT_TOOL, 'pixel_ods_download_promote'].includes(tool);
+  if ((scopedMutation && !scopedExistingFileMutationAllowed(state, tool, params)) ||
+      (restriction.mutation && ['write', 'edit', 'apply_patch'].includes(tool)) ||
+      (restriction.exec && ['exec', 'process'].includes(tool)) ||
+      (restriction.web && ['web_search', 'web_fetch', 'pixel_ods_research', 'pixel_ods_web_extract', 'browser'].includes(tool))) {
+    return restriction.existingFile
+      ? `The owner restricted this repair to the existing file ${restriction.existingFile}. Read that exact file successfully in this turn, then edit it or use an Update File-only patch. Do not create, rename, move, delete, or change other files, and do not use shell commands or excluded web tools to bypass this boundary.`
+      : 'The owner requested publication of existing files and explicitly excluded this action. Use the preview tool for the requested directory, then report its actual result; do not create a replacement or substitute another capability.';
+  }
+  return undefined;
+}
+
+function clauseRequestsVisualArtifact(clause, actionPattern, targetPattern) {
+  // The visual noun must be the requested object, not the subject of a
+  // report/test or a modifier of a different program ("website checker").
+  // This is a conservative delivery hint, not a grammar for all owner tasks.
+  const targets = clause.matchAll(new RegExp(targetPattern.source, "gi"));
+  for (const target of targets) {
+    const prefix = clause.slice(0, target.index);
+    const actions = [...prefix.matchAll(new RegExp(actionPattern.source, "gi"))];
+    const action = actions.at(-1);
+    const tail = clause.slice(target.index + target[0].length);
+    if (!action && /\b(?:keep|preserve)\b/i.test(prefix) &&
+        /^\s+and\s+(?:add|change|edit|improve|make|modify|patch|refresh|remove|tweak|update)\b/i.test(tail)) return true;
+    if (!action) continue;
+    if (/\b(?:how|why|whether)\s+(?:to\s+|(?:(?:we|you|one|they|I)\s+)?(?:should|could|can|would)\s+)?$/i.test(prefix.slice(0, action.index))) continue;
+    const objectPrefix = prefix.slice(action.index + action[0].length).replace(/\bfrom\s+scratch\b/gi, " ");
+    if (objectPrefix.length > 128 || /\b(?:about|for|of|on|from|using|to|that|which|explaining|describing|discussing|covering|regarding)\b/i.test(objectPrefix)) continue;
+    if (/^\s+(?!(?:in|with|for|about|from|using|to|and|that|which|you|we|I|me)\b)(?:[\w-]+\s+){0,2}(?:reports?|tests?|test\s+plans?|checkers?|validators?|scrapers?|crawlers?|scanners?|monitors?|generators?|utilities|utility|tools?|letters?|checklists?|articles?|documentation|audits?)\b/i.test(tail)) continue;
+    return true;
+  }
+  return false;
+}
+
 export function userMessageRequestsWorkspacePreview(messages, prompt = undefined) {
   const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt));
   if (!text) return false;
@@ -5450,8 +5654,9 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
   const websitePattern =
     /\b(?:browser\b[^.!?;\n]{0,32}\bapps?|dashboards?|frontends?|landing\s+pages?|portals?|sites?|web\b[^.!?;\n]{0,32}\bapps?|web\s*pages?|websites?)\b/i;
   const website = websitePattern.test(actionText);
+  const browserInterfacePattern = /\b(?:forms?|user\s+interfaces?|ui\s+demos?|wireframes?)\b/i;
   const browserInterface =
-    /\b(?:forms?|user\s+interfaces?|ui\s+demos?|wireframes?)\b/i.test(actionText) ||
+    browserInterfacePattern.test(actionText) ||
     (/\bprototypes?\b/i.test(actionText) &&
       /\b(?:browser|checkout|flow|form|interface|onboarding|screen|sign[- ]?up|ui|ux|web)\b/i.test(actionText));
   const buildAction =
@@ -5466,8 +5671,8 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
   // scheduled-work request into a mandatory website build.
   const websiteAction = actionText
     .split(/[!?;\n]+|\.(?=\s|$)|\b(?:and|then|but|however|instead)\s+(?=(?:build|create|develop|design|generate|implement|make|write)\b)/i)
-    .some((clause) => websitePattern.test(clause) &&
-      (buildAction.test(clause) || reviseAction.test(clause)));
+    .some((clause) => clauseRequestsVisualArtifact(clause, buildAction, websitePattern) ||
+      clauseRequestsVisualArtifact(clause, reviseAction, websitePattern));
   // A timer or another named utility can be explicitly requested as HTML
   // without using a fixed vocabulary of website/app names. Bind its creation
   // to the same sentence so an earlier saved HTML file grants no authority.
@@ -5478,14 +5683,15 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
   // because a later clause asks for an unrelated JSON file or workflow.
   const application = actionText
     .split(/[.!?;\n]+|\b(?:and|then|but|however|instead)\s+(?=(?:build|create|develop|design|generate|implement|make|write|add|change|continue|edit|improve|keep|modify|patch|refresh|remove|republish|tweak|update|work)\b)/i)
-    .some((clause) => /\b(?:apps?|applications?)\b/i.test(clause) &&
-      (buildAction.test(clause) || reviseAction.test(clause)));
+    .some((clause) => clauseRequestsVisualArtifact(clause, buildAction, /\b(?:apps?|applications?)\b/i) ||
+      clauseRequestsVisualArtifact(clause, reviseAction, /\b(?:apps?|applications?)\b/i));
   // An output format alone does not require an HTML wrapper. SVG files may
   // be delivered directly; explicit browser publication still requires proof.
-  const browserVisual =
-    /\b(?:artworks?|animated\s+(?:art|illustrations?|scenes?)|interactive\s+(?:art|charts?|diagrams?))\b/i.test(actionText) ||
-    /\b(?:breakout|brick[- ]?breakers?|browser[- ]?games?|canvas\s+(?:demos?|games?)|interactive\s+(?:demos?|experiences?|visuali[sz]ations?)|task\s+boards?|to-?do\s+(?:apps?|boards?|lists?)|video\s*games?|videogames?|visual\s+(?:demos?|showcases?)|visuali[sz]ations?|voxel(?:[- ](?:based|styles?))?|webgl\s+(?:demos?|scenes?))\b/i.test(actionText) ||
-    /\b(?:arcade|board|card|puzzle|racing|rhythm|strategy|word)?\s*games?\b/i.test(actionText);
+  const browserVisual = [
+    /\b(?:artworks?|animated\s+(?:art|illustrations?|scenes?)|interactive\s+(?:art|charts?|diagrams?))\b/i,
+    /\b(?:breakout|brick[- ]?breakers?|browser[- ]?games?|canvas\s+(?:demos?|games?)|interactive\s+(?:demos?|experiences?|visuali[sz]ations?)|task\s+boards?|to-?do\s+(?:apps?|boards?|lists?)|video\s*games?|videogames?|visual\s+(?:demos?|showcases?)|visuali[sz]ations?|voxel(?:[- ](?:based|styles?))?|webgl\s+(?:demos?|scenes?))\b/i,
+    /\b(?:arcade|board|card|puzzle|racing|rhythm|strategy|word)?\s*games?\b/i,
+  ].some(pattern => clauseRequestsVisualArtifact(actionText, buildAction, pattern));
   const explicitBrowser =
     website || /\b(?:browser|canvas|html|svg|webgl)\b/i.test(actionText);
   const nativeImplementation =
@@ -5545,11 +5751,15 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
     /\b(?:controls?|interacti(?:ve|on)|keyboard|mobile|phone|touch)\b/i.test(text);
   return directPreview || unreachableLocalPreview || interactiveDelivery ||
     websiteAction ||
-    ((application || browserInterface || htmlCreation) && (build || revise)) ||
+    ((application || (browserInterface && (
+      clauseRequestsVisualArtifact(actionText, buildAction, browserInterfacePattern) ||
+      clauseRequestsVisualArtifact(actionText, reviseAction, browserInterfacePattern) ||
+      clauseRequestsVisualArtifact(actionText, buildAction, /\bprototypes?\b/i)
+    )) || htmlCreation) && (build || revise)) ||
     (browserVisual && build) || portugueseWorkspaceBuildRequest(text);
 }
 
-function userMessageRequiresWorkspacePreviewAuthorship(
+export function userMessageRequiresWorkspacePreviewAuthorship(
   messages,
   prompt = undefined
 ) {
@@ -5578,6 +5788,105 @@ function userMessageRequiresWorkspacePreviewAuthorship(
     /\b(?:show|open|view|preview)\s+(?:me\s+)?(?:the|that|this|our|my)\b[^.!?;\n]{0,64}\b(?:apps?|applications?|artwork|animation|chart|diagram|game|illustration|site|website)\b/i.test(text);
   if (reuseExisting && !explicitCreation) return false;
   return (create.test(text) || portugueseWorkspaceBuildRequest(text)) && !rejectsCreation.test(text);
+}
+
+function directBasicSiteCreation(text) {
+  // This default is deliberately narrower than general website/app intent.
+  // Match the owner's direct creation request, not an example, report topic,
+  // checker, or a suggested implementation inside retrieved/quoted material.
+  const prose = text.replace(/(?:`{3}|~{3})[\s\S]*?(?:`{3}|~{3})/g, " ")
+    .replace(/^\s*>[^\n]*/gm, " ").replace(/"[^"\n]*"|`[^`\n]*`/g, " ")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  let creation = false;
+  const clauses = prose.split(/[!?;\n]+|\.(?=\s|$)/).filter(clause => clause.trim());
+  for (const clause of clauses) {
+    const request = clause.trim().replace(/^please[,\s]+/i, "")
+      .replace(/^(?:can|could|would)\s+you\s+(?:please\s+)?/i, "")
+      .replace(/^por\s+favor[,\s]+/i, "");
+    const match = request.match(/^(?:build|create|make|design|generate)\s+(?:(?:me|us)\s+)?(?:a|an)\s+(?:new\s+)?(?:(?:polished|responsive|accessible|clean|modern|small)[,\s]+){0,4}(?:basic|simple|one[- ]page|single[- ]page)[,\s]+(?:(?:polished|responsive|accessible|clean|modern|small|one[- ]page|single[- ]page)[,\s]+){0,4}(?:website|site|web\s*page|landing\s+page)\b/i)
+      ?? request.match(/^(?:crie|criar|faca|fazer|construa|construir)\s+(?:para\s+mim\s+)?(?:um|uma)\s+(?:(?:novo|nova)\s+)?(?:site|website|pagina\s+web|landing\s+page)\s+(?:simples|basico|basica|de\s+uma\s+pagina)\b/i);
+    if (match) {
+      const tail = request.slice(match[0].length).trim();
+      // A bare noun after "website" may be the real object (crawler, content
+      // analyzer, or an unknown future tool). Do not force HTML by guessing.
+      if (tail && !/^(?:[,:(]|(?:for|with|without|in|on|about|from|using|via|leveraging|and|then|that|which|to|called|named|para|com|sem|em|e)\b)/i.test(tail)) return false;
+      creation = true;
+    } else if (!/^(?:(?:and|then|now|e|depois)\s+)?(?:publish|preview|show|display|serve|publique|mostre)\b/i.test(request)) {
+      // Unknown additional instructions can contain prerequisites. Preserve
+      // ordinary tools instead of trying to enumerate every inspection verb.
+      return false;
+    }
+  }
+  return creation;
+}
+
+export function workspacePreviewMode(messages, prompt = undefined) {
+  if (!userMessageRequestsWorkspacePreview(messages, prompt)) return undefined;
+  if (userMessageRequestsWorkspaceVisualContinuation(messages, prompt)) return "continuation";
+  if (!userMessageRequiresWorkspacePreviewAuthorship(messages, prompt)) return "existing-project";
+  const text = currentOwnerIntentText(messages, prompt) ?? "";
+  // A requested framework or existing source tree needs inspection, dependency
+  // work and a real build. The deterministic entry-file fast path is only for
+  // a fresh static artifact where those steps add failure modes, not value.
+  const frameworkOrBuild =
+    /\b(?:angular|astro|bun|gatsby|jsx|next(?:\.js)?|node(?:\.js)?|npm|nuxt|parcel|pnpm|react|remix|rollup|svelte|tsx|typescript|vite|vue|webpack|yarn)\b/i.test(text) ||
+    /\b(?:build\s+command|build\s+output|compile|dependencies|package\.json|source\s+tree)\b/i.test(text);
+  const existingProject =
+    /\b(?:existing|current|previous|prior|already[- ]created|updated|revised|corrected|repair|fix|debug|migrate|upgrade|rename|move)\b/i.test(text) ||
+    /\b(?:preserve|keep)\b[^.!?;\n]{0,96}\b(?:framework|source|project)\b/i.test(text) ||
+    /\b(?:research|inspect|read|review)\b[^.!?;\n]{0,96}\b(?:before|then|and)\b/i.test(text) ||
+    /\btest(?:ing)?\b[^.!?;\n]{0,64}\bbefore\s+(?:publication|publishing)\b/i.test(text) ||
+    /\b(?!index\.html\b)[A-Za-z0-9._-]+\.html\b/i.test(text);
+  // Explicit static HTML and a direct basic-site request have a useful default
+  // implementation. An unspecified app/dashboard does not. Additional stack,
+  // backend or independent deliverable requirements defeat the basic default,
+  // including implementations not named in the framework list above.
+  const explicitStaticTarget = /\b(?:static\s+(?:html\s+)?(?:page|site|website)|(?:plain|vanilla)\s+html|self[- ]contained\s+html|single[- ]file\s+html)\b/i.test(text);
+  const normalizedText = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const namedImplementation = [...text.matchAll(/\b(in|on|with|em|com|via|leveraging)\s+([^!?;\n]{1,192})/gi)]
+    .some(([, preposition, target]) => {
+      if (/^(?:(?:plain|vanilla|static)\s+)?html\b|^(?:\.?\/?[A-Za-z0-9._/-]+\/)?index\.html\b/i.test(target)) return false;
+      // Case cannot distinguish a stack from prose. Only an explicit HTML/
+      // entry path or a clear presentation phrase retains this optimization;
+      // unknown "in/with quux" implementations keep their normal tools.
+      return !(/^(?:with|com)$/i.test(preposition) &&
+        /^(?:(?:a|an|the|um|uma|o)\s+)?(?:blue|red|green|black|white|dark|light|hero|menu|footer|header|heading|title|contact|navigation|button|section|background)\b/i.test(target));
+    });
+  const nonStaticImplementation =
+    /\b(?:without|not|no|avoid|do\s+not\s+use|don't\s+use)\s+(?:an?\s+)?(?:(?:plain|static|single[- ]file|self[- ]contained)\s+)?(?:html|static(?:\s+(?:site|website|page))?)\b/i.test(text) ||
+    /\b(?:as|in)\s+(?:an?\s+)?(?:svg|pdf|png|jpeg|image)\b/i.test(text);
+  const implementationPrerequisites =
+    /\b(?:using|usando|utilizando|framework|backend|back[- ]end|server[- ]side|database|databases|sql|sqlite|postgresql|authentication|autenticacao|banco\s+de\s+dados|servidor|oauth|api|dependencies|dependencias|dependency|packages?|install|compile|compilation|repository|codebase)\b/i.test(normalizedText) ||
+    /\b(?:built\s+(?:with|in)|implemented\s+(?:with|in)|powered\s+by|build\s+(?:command|output|pipeline))\b/i.test(text) ||
+    namedImplementation || nonStaticImplementation ||
+    /\b(?:and|then|also|plus)\b[^.!?;\n]{0,96}\b(?:report|script|cli|program|tests?|documentation)\b/i.test(text);
+  const simpleStaticTarget = explicitStaticTarget || directBasicSiteCreation(text);
+  // Creating a new site can still require evidence/assets before any write.
+  // Do not force a placeholder index ahead of requested inspection or inputs.
+  const latestUser = Array.isArray(messages)
+    ? [...messages].reverse().find((message) => message?.role === "user")
+    : undefined;
+  const suppliedMedia = Array.isArray(latestUser?.content) && latestUser.content.some(
+    // Unknown/nontext owner inputs may require inspection too. A text projection
+    // alone cannot prove the model has no supplied media or file prerequisites.
+    (part) => part && typeof part === "object" && !["text", "input_text"].includes(part.type)
+  );
+  const inputDependent = suppliedMedia ||
+    /\b(?:attachments?|uploaded|screenshots?|references?|datasets?|csv|spreadsheets?|pdf)\b/i.test(text) ||
+    /\b(?:from|using|based\s+on|match(?:ing)?|copy|recreate)\b[^.!?;\n]{0,96}\b(?:images?|photos?|logos?|files?|data|documents?|designs?|assets?|audio|videos?|recordings?|transcripts?)\b/i.test(text) ||
+    /\b(?:imagem|imagens|dados|planilha|planilhas|anexo|anexos|gravacao|video|arquivo|arquivos)\b/i.test(normalizedText) ||
+    /\b(?:from|using|based\s+on|matching)\b[^.!?;\n]{0,96}\b(?:brief|brand\s+guide|project|workspace|folder|directory|repository|template)\b/i.test(text) ||
+    /\b(?:before|after)\b[^.!?;\n]{0,96}\b(?:ask|questions?|generate|assets?|decide|choose|confirm)\b/i.test(text) ||
+    /\b(?:ask|clarify|confirm|decide|generate|download)\b[^.!?;\n]{0,96}\b(?:first|before|then)\b/i.test(text) ||
+    /\b(?:check|examine|survey|look\s+(?:at|around|through))\b[^.!?;\n]{0,96}\b(?:workspace|project|folder|directory|source|first|before)\b/i.test(text) ||
+    /\b(?:start|begin)\s+(?:by|with)\b/i.test(text) ||
+    /\b(?:read|inspect|research|review|fetch|search)\b/i.test(text) ||
+    (text.match(/\b[A-Za-z0-9_-][A-Za-z0-9._/-]*\.[A-Za-z0-9]{1,10}\b/gi) ?? [])
+      .some(file => !/(?:^|\/)index\.html$/i.test(file)) ||
+    /https?:\/\//i.test(text);
+  return !simpleStaticTarget || frameworkOrBuild || implementationPrerequisites || existingProject || inputDependent
+    ? "existing-project"
+    : "new-static";
 }
 
 export function userMessageRequestsWorkspacePreviewInspection(
@@ -6232,7 +6541,8 @@ export function createToolLoopGuard({
     selectedToolName,
     selectedParams,
     verificationFingerprint,
-    transport
+    transport,
+    selectedToolTarget
   ) {
     if (typeof toolCallId !== "string" || !toolCallId) return;
     if (pendingToolRuns.has(toolCallId)) pendingToolRuns.delete(toolCallId);
@@ -6245,6 +6555,7 @@ export function createToolLoopGuard({
       selectedParams,
       verificationFingerprint,
       transport,
+      selectedToolTarget,
     });
   }
 
@@ -6268,6 +6579,9 @@ export function createToolLoopGuard({
       state = {
         completionAssurance: createCompletionAssurance(),
         extensionCompletionGate: undefined,
+        workspaceLaneRequested: false,
+        workspaceExtensionIsolated: false,
+        extensionMutationExcluded: false,
         extensionReadOnlyRecovery: {statusCalls:0, completedStatusCalls:0, otherToolSeen:false},
         extensionDecisionRecovery: {prepareCalls:0, unsafeToolSeen:false, gateRevisionRequested:false},
         progressBudget: createRunProgressBudget(),
@@ -6358,6 +6672,7 @@ export function createToolLoopGuard({
         workspaceVerificationRequested: false,
         workspacePreviewRequired: false,
         workspacePreviewForbidden: false,
+        workspacePreviewMode: undefined,
         workspacePreviewAuthorshipRequired: false,
         workspacePreviewModelAuthored: false,
         workspaceVisualContinuationRequested: false,
@@ -6492,10 +6807,24 @@ export function createToolLoopGuard({
     // policy and deterministic routing active from runId alone; operations
     // that truly need a session still fail closed on the optional sessionId.
     const state = runId ? stateFor(runId) : undefined;
-    if (state?.extensionPendingHandoff) return {
-      block:true, blockReason:'Managed installation observation has handed off as pending. No further tools in this turn; do not replay the accepted build.',
-    };
     const delegatedName=typeof toolName==='string' && toolName==='tool_call' ? String((normalizedParams ?? event?.params)?.id ?? '').split(':').at(-1) : toolName;
+    const requestedRestriction = workspacePreviewRestrictionReason(state, delegatedName,
+      toolName === 'tool_call' ? (normalizedParams ?? event?.params)?.args : normalizedParams ?? event?.params);
+    if (requestedRestriction) return {block:true, blockReason:requestedRestriction};
+    if (state?.extensionPendingHandoff &&
+        (!state.workspaceLaneRequested || EXTENSION_REQUEST_TOOLS.has(delegatedName))) return {
+      block:true, blockReason:state.workspaceLaneRequested
+        ? 'Managed installation observation has handed off as pending. Do not replay or retry the accepted extension build. Continue the separately requested workspace work; report the installation as pending.'
+        : 'Managed installation observation has handed off as pending. No further tools in this turn; do not replay the accepted build.',
+    };
+    if (state?.extensionMutationExcluded && EXTENSION_MUTATION_TOOLS.has(delegatedName)) {
+      return {block:true, blockReason:EXTENSION_MUTATION_EXCLUDED_REASON};
+    }
+    if (state?.workspaceExtensionIsolated && EXTENSION_MUTATION_TOOLS.has(delegatedName)) {
+      // A corrective refusal must not activate Operations or a saved install
+      // handoff. The ordinary run budget still bounds repeated bad selections.
+      return {block:true, blockReason:WORKSPACE_EXTENSION_SCOPE_REASON};
+    }
     if (state?.extensionCompletionGate?.active) {
       // OpenClaw marks every plugin tool replay-unsafe. An ODS-owned second
       // model turn can be considered only when this entire run used exactly
@@ -6519,6 +6848,16 @@ export function createToolLoopGuard({
     if (state?.progressBudget.exhausted) {
       return { block: true, blockReason: RUN_PROGRESS_STOP_REASON };
     }
+    const progressLane = toolProgressLane(state, delegatedName,
+      toolName === 'tool_call' ? (normalizedParams ?? event?.params)?.id : undefined);
+    const progressParams = toolName === 'tool_call'
+      ? (normalizedParams ?? event?.params)?.args : normalizedParams ?? event?.params;
+    const observesPendingProcess = delegatedName === 'process' && progressParams?.action === 'poll' &&
+      state?.pendingExecSessions.has(progressParams?.sessionId);
+    if (state?.progressBudget.laneExhausted(progressLane) &&
+        !EXTENSION_METADATA_TOOLS.has(delegatedName) && !observesPendingProcess) {
+      return {block:true, blockReason:progressLaneStopReason(progressLane)};
+    }
     if (state?.githubExtensionRequest && ['write','edit','apply_patch','exec','process'].includes(delegatedName)
         && state.preparationExecutionHost !== 'sandbox') {
       return {block:true,blockReason:'Isolated extension preparation is unavailable in this execution mode. Workspace commands would run outside the sandbox. Research and managed request tools remain available; do not use host commands as a substitute for isolated experiments.'};
@@ -6540,6 +6879,9 @@ export function createToolLoopGuard({
         existingPaths:[...state.successfulReadPaths]});
       if (projectRoute?.block) return projectRoute;
       if (projectRoute?.params) normalizedParams = projectRoute.params;
+      const routedRestriction = workspacePreviewRestrictionReason(state, delegatedName,
+        toolName === 'tool_call' ? (normalizedParams ?? event?.params)?.args : normalizedParams ?? event?.params);
+      if (routedRestriction) return {block:true, blockReason:routedRestriction};
       const projectDirectory = state.playgroundRouting.binding?.directory;
       if (projectDirectory && !state.workspaceTaskDirectory) {
         state.workspaceTaskDirectory = projectDirectory;
@@ -6976,8 +7318,8 @@ export function createToolLoopGuard({
       toolName === "tool_call" && typeof pendingParams?.id === "string"
         ? pendingParams.id.split(":").at(-1)
         : toolName;
-    if (state && pendingSelectedName === WORKSPACE_PREVIEW_TOOL) {
-      if (!state.ownerIntentObserved || state.workspacePreviewForbidden) {
+    if (pendingSelectedName === WORKSPACE_PREVIEW_TOOL) {
+      if (!state?.ownerIntentObserved || state.workspacePreviewForbidden) {
         return {
           block: true,
           blockReason:
@@ -7012,8 +7354,15 @@ export function createToolLoopGuard({
       const directory = hasRelativeDirectory || hasDirectory
         ? providedDirectory
         : observedDirectory;
+      if (state.workspaceVisualContinuationRequested && directory !== state.workspaceTaskDirectory) {
+        return {block:true, blockReason:WORKSPACE_VISUAL_CONTINUATION_SCOPE_REASON};
+      }
       const validDirectory = typeof directory === "string" && directory.length > 0 &&
         directory.split("/").every((part) => WORKSPACE_PATH_COMPONENT.test(part));
+      if (state.workspacePreviewRestrictions?.mutation && state.workspacePreviewRestrictions.directory &&
+          directory !== state.workspacePreviewRestrictions.directory) {
+        return {block:true, blockReason:"The owner requested publication of one exact existing directory. Do not substitute another directory or create a replacement."};
+      }
       const requiresAuthoredSnapshot = workspacePreviewRequiresAuthoredSnapshot(state, directory);
       const hasObservedIndex = validDirectory &&
         (state.successfulWritePaths.has(`${directory}/index.html`) ||
@@ -7062,6 +7411,33 @@ export function createToolLoopGuard({
       !Array.isArray(pendingParams.args)
         ? pendingParams.args
         : pendingParams;
+    // Re-check after transport/runner aliases and path routing. An innocuous
+    // outer name must not become an excluded exec or a different file later.
+    const selectedRestriction = workspacePreviewRestrictionReason(state, selectedToolName, selectedParams);
+    if (selectedRestriction) return {block:true, blockReason:selectedRestriction};
+    if (
+      state?.workspacePreviewMode === "new-static" &&
+      ![...state.successfulWritePaths].some((value) =>
+        typeof value === "string" && value.endsWith("/index.html")
+      )
+    ) {
+      const entryPath = selectedToolName === "write"
+        ? normalizeWorkspaceFilePath(selectedParams?.path)
+        : undefined;
+      const validEntryWrite =
+        selectedToolName === "write" &&
+        typeof selectedParams?.content === "string" &&
+        selectedParams.content.length > 0 &&
+        typeof entryPath === "string" &&
+        entryPath.endsWith("/index.html") &&
+        entryPath.split("/").every((part) => WORKSPACE_PATH_COMPONENT.test(part));
+      const workspaceBootstrapTool = [
+        "read", "write", "edit", "apply_patch", "exec", "process", WORKSPACE_PREVIEW_TOOL,
+      ].includes(selectedToolName);
+      if (!validEntryWrite && workspaceBootstrapTool) {
+        return { block: true, blockReason: WORKSPACE_PREVIEW_FRESH_ENTRY_REASON };
+      }
+    }
     // No broker submission does not mean no work happened. A clean-context
     // replay is safe only before any tool execution was attempted; a failed
     // or disconnected call may still have produced effects. Discovery alone
@@ -7090,7 +7466,8 @@ export function createToolLoopGuard({
           .split("/")
           .every((part) => WORKSPACE_PATH_COMPONENT.test(part));
       if (
-        !["read", "write", "edit", "exec", "process", "tool_search", "tool_describe", WORKSPACE_PREVIEW_TOOL].includes(selectedToolName) ||
+        (!["read", "write", "edit", "exec", "process", "tool_search", "tool_describe", WORKSPACE_PREVIEW_TOOL].includes(selectedToolName) &&
+          !(state.workspaceExtensionIsolated && EXTENSION_METADATA_TOOLS.has(selectedToolName))) ||
         (FILE_PATH_TOOLS.has(selectedToolName) && !insideContinuationDirectory)
       ) {
         return {
@@ -7170,7 +7547,8 @@ export function createToolLoopGuard({
         selectedToolName === "exec"
           ? verificationExecFingerprint(selectedParams)
           : undefined,
-        toolName
+        toolName,
+        selectedToolTarget
       );
       if (
         selectedToolName !== SYNCHRONOUS_HOST_OBSERVE_TOOL &&
@@ -7312,7 +7690,9 @@ export function createToolLoopGuard({
     if (effectiveToolName === SYNCHRONOUS_HOST_OBSERVE_TOOL) {
       const selected = toolName === "tool_call"
         ? wrappedToolParams?.args : normalizedParams ?? event?.params;
-      const params = permittedHostObservationParams(selected, state?.hostObservationPolicy);
+      const unrelatedWorkspaceObservation = state?.workspaceExtensionIsolated && !state.operationsRequired;
+      const params = unrelatedWorkspaceObservation ? undefined
+        : permittedHostObservationParams(selected, state?.hostObservationPolicy);
       if (!params) return {
         block: true,
         blockReason: "Pixel could not validate this host observation against the current request. " +
@@ -7433,6 +7813,7 @@ export function createToolLoopGuard({
       OPERATIONS_TOOLS.has(effectiveToolName) &&
       // Capability metadata is read-only and grants no action authority.
       effectiveToolName !== "pixel_ops_inventory" &&
+      !(state.workspaceExtensionIsolated && effectiveToolName === EXTENSION_READ_TOOL) &&
       // Public downloads are a normal research/development capability. The
       // broker enforces network, size, redirect, and quarantine policy; the
       // promoter independently verifies bytes and a create-only destination.
@@ -8203,8 +8584,8 @@ export function createToolLoopGuard({
       const state = stateFor(runId);
       state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
-      state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);
-      if (/^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(ownerIntent ?? '')) state.githubExtensionRequest = true;
+      if (ownerIntent) state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);
+      if (ownerIntent) state.githubExtensionRequest = /^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(ownerIntent);
       if (capabilities !== undefined) state.preparationExecutionHost = capabilities.executionHost;
       if (ownerIntent) state.playgroundOwnerIntent = ownerIntent;
       if (ownerIntent) state.ownerQuestionIntent=requestsChoiceQuestion(ownerIntent);
@@ -8262,6 +8643,9 @@ export function createToolLoopGuard({
           Boolean(trustedSessionPreview) || state.workspaceVisualArtifactProduced ||
           ((!visualContinuationRequested || explicitDelivery) && previewRequested)
         );
+        state.workspacePreviewMode = state.workspacePreviewRequired
+          ? (trustedSessionPreview ? "continuation" : workspacePreviewMode(event?.messages, event?.prompt))
+          : undefined;
         state.workspacePreviewAuthorshipRequired = Boolean(
           state.workspacePreviewRequired &&
           !trustedSessionPreview &&
@@ -8270,6 +8654,9 @@ export function createToolLoopGuard({
             event?.prompt
           )
         );
+        state.workspacePreviewRestrictions = explicitDelivery && !state.workspacePreviewAuthorshipRequired
+          ? workspacePreviewRestrictions(ownerIntent)
+          : undefined;
         state.workspacePreviewInspectionRequested =
           userMessageRequestsWorkspacePreviewInspection(
             event?.messages,
@@ -8278,6 +8665,16 @@ export function createToolLoopGuard({
         state.workspaceTaskRequested =
           state.workspacePreviewRequired ||
           userMessageRequestsWorkspaceTools(event?.messages, event?.prompt);
+        const laneText = ownerLaneText(ownerIntent);
+        state.workspaceLaneRequested = ownerWorkspaceLaneRequested(laneText,
+          state.workspacePreviewRequired || userMessageRequestsWorkspaceTools([], laneText));
+        const extensionLaneRequested = ownerExtensionLaneRequested(laneText);
+        state.workspaceExtensionIsolated = state.workspaceLaneRequested && !extensionLaneRequested;
+        state.extensionMutationExcluded = ownerExcludesExtensionMutation(laneText, extensionLaneRequested);
+        if (state.workspaceExtensionIsolated || state.extensionMutationExcluded) {
+          state.extensionCompletionGate = undefined;
+          state.extensionPendingHandoff = false;
+        }
         state.workspaceMutationRequested =
           state.workspacePreviewRequired ||
           userMessageRequestsWorkspaceMutation(event?.messages, event?.prompt);
@@ -8392,6 +8789,8 @@ export function createToolLoopGuard({
       for (const [name, pattern] of [
         ["pixel_ods_status", "ODS\\s+status|pixel_ods_status"],
         ["pixel_ods_apps_list", "ODS\\s+(?:apps?|applications?)|pixel_ods_apps_list"],
+        ["pixel_ods_extensions", "(?:ODS\\s+)?extensions?|extension\\s+(?:catalog|inventory)|pixel_ods_extensions"],
+        ["pixel_ods_extension_request_status", "extension\\s+request\\s+status|pixel_ods_extension_request_status"],
       ]) {
         if (explicitlyRejectsOdsTool(observationIntent, pattern)) state.odsExcludedTools.add(name);
       }
@@ -8460,7 +8859,7 @@ export function createToolLoopGuard({
     const runId = context?.runId;
     const state = runs.get(runId);
     if (!state || !context?.sessionId || context.sessionId !== state.currentSessionId) return;
-    if (state.extensionPendingHandoff && !state.extensionPendingAbortAcknowledged &&
+    if (state.extensionPendingHandoff && !state.workspaceLaneRequested && !state.extensionPendingAbortAcknowledged &&
         !state.clientCancelled && !state.progressBudget.exhausted &&
         sessionRuns.get(context.sessionId) === runId) {
       // This ends only the model continuation at the established safe boundary.
@@ -8519,7 +8918,7 @@ export function createToolLoopGuard({
     if (typeof runId !== "string" || !runId) return;
     const state = stateFor(runId);
     state.completionAssurance.observe(toolName, event);
-    if (state.extensionCompletionGate) {
+    if (state.extensionCompletionGate && !state.workspaceExtensionIsolated && !state.extensionMutationExcluded) {
       for (const name of [
         'pixel_ods_extension_request_status', 'pixel_ods_extension_request_prepare',
         'pixel_ods_extension_request_advance', 'pixel_ods_extension_request_retry',
@@ -8556,8 +8955,13 @@ export function createToolLoopGuard({
       const running = selected?.result?.details?.status === 'running' &&
         typeof selected?.params?.sessionId === 'string' &&
         state.pendingExecSessions.has(selected.params.sessionId);
+      const effectiveProgressTool = toolName === 'tool_call'
+        ? String(event.params?.id ?? '').split(':').at(-1) : toolName;
       state.progressBudget.observeResult({callId: toolCallId, tool: toolName,
-        params: event.params, failed: failedToolOutcome(event), pending: running});
+        params: event.params, failed: failedToolOutcome(event), pending: running,
+        discovery:state.workspaceLaneRequested && (EXTENSION_METADATA_TOOLS.has(effectiveProgressTool) ||
+          effectiveProgressTool === 'pixel_ops_inventory'),
+        lane:toolProgressLane(state, effectiveProgressTool,toolName === 'tool_call' ? event.params?.id : undefined)});
     }
     if (
       toolName === "tool_call" &&
@@ -8757,6 +9161,11 @@ export function createToolLoopGuard({
         : undefined;
     if (failedRead) {
       const readPath = normalizeWorkspaceFilePath(failedRead.params?.path);
+      if (state.workspacePreviewRestrictions?.existingFile === readPath) {
+        // A later failed read cannot leave stale existence evidence usable by
+        // this constrained repair. This does not change ordinary repair state.
+        state.successfulReadPaths.delete(readPath);
+      }
       const result = failedRead.result;
       const details = result?.details;
       const missingDetails = details && typeof details === "object" &&
@@ -8800,6 +9209,11 @@ export function createToolLoopGuard({
         previewEvent?.params?.relativeDirectory
       );
       if (requestedDirectory) state.workspacePreviewDirectory = requestedDirectory;
+      const failedPreview = previewEvent.result?.details;
+      state.workspacePreviewFailureCode = previewEvent.result?.isError === true &&
+        failedPreview?.schemaVersion === 1 && failedPreview.kind === "ods-pixel-workspace-preview" &&
+        failedPreview.status === "failed" && Object.hasOwn(WORKSPACE_PREVIEW_FAILURE_REASONS, failedPreview.errorCode)
+        ? failedPreview.errorCode : undefined;
       const preview = state.ownerIntentObserved && !state.workspacePreviewForbidden && workspacePreviewOutcome(
         previewEvent,
         state.workspacePreviewDirectory,
@@ -9308,6 +9722,7 @@ export function createToolLoopGuard({
   function trustedOperationsContinuation(state, runId) {
     if (!state?.operationsRequired) return undefined;
     if (extensionDiscoveryActive(state)) return undefined;
+    if (state.progressBudget.laneExhausted('extension') && state.operationsExpectedExtensionLifecycle) return undefined;
     if (state.operationsExpectedExtensionLifecycle?.action === "install-next") {
       return catalogInstallationContinuation(state);
     }
@@ -9459,6 +9874,9 @@ export function createToolLoopGuard({
     ) {
       return undefined;
     }
+    // A failed publish-only probe is the requested evidence. Do not retry it
+    // or manufacture the missing artifact when the owner prohibited writes.
+    if (state.workspacePreviewRestrictions?.mutation && state.workspacePreviewAttempted && !state.workspacePreview) return undefined;
     if (state.workspacePreview) {
       if (workspacePreviewReadbackComplete(state)) return undefined;
       const nextPath = workspacePreviewNextKnownReadPath(state);
@@ -9470,8 +9888,13 @@ export function createToolLoopGuard({
           : `The published snapshot is verified. Complete the requested unread static files inside ${state.workspacePreview.relativeDirectory} and any remaining owner-requested checks before replying.`,
       };
     }
-    const directory = workspacePreviewDirectoryFromState(state);
+    const directory = (state.workspacePreviewRestrictions?.mutation && state.workspacePreviewRestrictions.directory) ||
+      workspacePreviewDirectoryFromState(state);
     if (!directory) {
+      if (state.workspacePreviewRestrictions?.mutation) return {
+        stage: "workspace-preview-existing",
+        instruction: "Call pixel_ods_workspace_preview with the exact directory requested by the owner. Do not create or change files or substitute a different directory. Report the tool's actual result, including failure; do not invent a preview URL.",
+      };
       return {
         stage: "workspace-preview-files",
         instruction:
@@ -9512,14 +9935,19 @@ export function createToolLoopGuard({
     if (state?.extensionCompletionGate?.active &&
         message.toolName !== 'pixel_ods_extension_request_status')
       state.extensionReadOnlyRecovery.otherToolSeen = true;
+    const progressLane = toolProgressLane(state, pending?.selectedToolName ?? message.toolName,
+      pending?.transport === 'tool_call' ? pending.selectedToolTarget : undefined);
     // Native loop blocks can bypass before/after_tool_call entirely. Count
     // their persisted error receipt too; call IDs prevent double accounting.
     if (state && message.isError === true) {
       state.progressBudget.observeResult({callId: toolCallId, tool: message.toolName,
-        failed: true});
+        failed: true, lane:progressLane});
     }
     if (state?.progressBudget.exhausted) {
       return {message: {...message, content: [{type: 'text', text: RUN_PROGRESS_STOP_REASON}]}};
+    }
+    if (message.isError === true && state?.progressBudget.laneExhausted(progressLane)) {
+      return {message:{...message,content:[...(message.content ?? []),{type:'text',text:progressLaneStopReason(progressLane)}]}};
     }
     const compactWebResult = pending?.transport === "tool_call" &&
       ["web_search", "web_fetch"].includes(pending.selectedToolName) &&
@@ -9532,7 +9960,7 @@ export function createToolLoopGuard({
       ? undefined
       : compactWorkspaceCoreResult(message, pending, state);
     const workspaceStageInstruction = (() => {
-      if (!compactCoreResult || !state?.workspaceTaskDirectory) return undefined;
+      if (!compactCoreResult || !state?.workspaceTaskDirectory || state.progressBudget.laneExhausted('workspace')) return undefined;
       const nextFile = state.workspaceMutationRequested
         ? state.workspaceRequestedFiles.find((file) =>
           !state.successfulWritePaths.has(`${state.workspaceTaskDirectory}/${file}`)
@@ -9574,6 +10002,7 @@ export function createToolLoopGuard({
       return undefined;
     })();
     const previewStageInstruction = (() => {
+      if (state?.progressBudget.laneExhausted('workspace')) return undefined;
       if (state?.workspacePreviewRequired && !state.workspacePreview && !state.workspacePreviewVerifiedDirectory &&
           !state.workspacePreviewForbidden && !state.operationsRequired && !state.exactDownloadRequested) {
         const directory = workspacePreviewDirectoryFromState(state);
@@ -9692,13 +10121,17 @@ export function createToolLoopGuard({
     }
     if (state?.ownerQuestions) return {action:'finalize', reason:'Waiting for the owner clarification answer.'};
     if (state?.recursiveDeleteDenied || state?.progressBudget.exhausted || state?.clientCancelled || state?.webLoopAborted) return undefined;
+    const extensionStopped = state?.progressBudget.laneExhausted('extension');
+    const workspaceStopped = state?.progressBudget.laneExhausted('workspace');
     const continuation =
       trustedOperationsContinuation(state, runId) ??
-      trustedWorkspacePreviewContinuation(state);
+      (workspaceStopped ? undefined : trustedWorkspacePreviewContinuation(state));
     if (!continuation) {
-      const decision = state?.extensionCompletionGate?.active
+      const decision = state?.extensionCompletionGate?.active && !extensionStopped
         ? state.extensionCompletionGate.finalize()
-        : state?.completionAssurance.finalize(event?.lastAssistantMessage ?? '');
+        // Generic promise recovery cannot distinguish the suspended portion
+        // from remaining work. Only the scoped continuations above may retry.
+        : extensionStopped || workspaceStopped ? undefined : state?.completionAssurance.finalize(event?.lastAssistantMessage ?? '');
       if (state?.extensionCompletionGate?.active)
         state.extensionDecisionRecovery.gateRevisionRequested = decision?.action === 'revise';
       return decision;
@@ -9715,6 +10148,37 @@ export function createToolLoopGuard({
   }
 
   function verificationForRun(runId) {
+    const verification = mixedTaskVerificationForRun(runId);
+    const stopped = runs.get(runId)?.progressBudget.exhaustedLanes ?? [];
+    if (!stopped.length) return verification;
+    return {...verification,status:'failed',
+      text:[verification.text,...stopped.map(progressLaneStopReason)].filter(Boolean).join('\n\n')};
+  }
+
+  function mixedTaskVerificationForRun(runId) {
+    let verification = taskVerificationForRun(runId);
+    const state = runs.get(runId);
+    if (!state?.workspaceLaneRequested || !state.extensionCompletionGate?.active) return verification;
+    const extension = state.extensionCompletionGate.verification ?? {
+      status:'failed', text:'ODS did not observe a verified managed installation receipt for this extension request.',
+    };
+    if (verification.status === 'none') {
+      const workspaceObserved = state.successfulWritePaths.size > 0 || state.successfulEditPaths.size > 0 ||
+        state.successfulExecBlocks.size > 0 || (!state.workspaceMutationRequested && state.successfulReadPaths.size > 0);
+      if (workspaceObserved) return extension;
+      verification = {status:'failed',text:'ODS did not observe successful work for the separately requested workspace task. The extension receipt does not complete that task.'};
+    }
+    // A mixed request has two obligations. Readiness for an extension cannot
+    // hide missing tests/preview, and a working artifact cannot finish a still
+    // pending installation. Preserve the artifact receipt in either case.
+    const statuses = [verification.status, extension.status];
+    return {...verification,
+      status:statuses.includes('failed') ? 'failed' : statuses.includes('pending') ? 'pending' : 'passed',
+      text:[verification.text,extension.text].filter(Boolean).join('\n\n'),
+    };
+  }
+
+  function taskVerificationForRun(runId) {
     if (typeof runId !== "string" || !runId) return { status: "none" };
     const state = runs.get(runId);
     if (!state) return { status: "none" };
@@ -9732,13 +10196,19 @@ export function createToolLoopGuard({
     if ((state.operationsRequired || state.exactDownloadPromotion) && state.latestVerificationStatus === "pending") {
       return { status: "pending", text: VERIFICATION_PENDING_DELIVERY_PREFIX };
     }
-    if (state.extensionCompletionGate?.verification) return state.extensionCompletionGate.verification;
+    if (!state.workspaceLaneRequested && state.extensionCompletionGate?.verification) return state.extensionCompletionGate.verification;
     if (
       (state.workspacePreviewRequired || state.workspacePreviewAttempted) &&
       !state.operationsRequired &&
       !state.exactDownloadRequested
     ) {
       if (!state.workspacePreview) {
+        if (state.workspacePreviewRestrictions?.mutation && state.workspacePreviewAttempted) return {
+          status: "failed",
+          text: "ODS could not publish that directory: " +
+            (WORKSPACE_PREVIEW_FAILURE_REASONS[state.workspacePreviewFailureCode] ?? "no valid publication receipt was returned") +
+            ". No verified preview URL was returned; the requested no-edit restriction remains in effect.",
+        };
         // A command may have changed the workspace, but it cannot change the
         // immutable host publication. Retain its usable link without treating
         // it as verification of the latest workspace or a completed request.

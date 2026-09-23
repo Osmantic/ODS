@@ -22,8 +22,9 @@ import sys
 from datetime import datetime
 from urllib.parse import quote, urlsplit
 
-from aiohttp import web, ClientSession, UnixConnector, TCPConnector, ClientTimeout
+from aiohttp import web, ClientSession, UnixConnector, TCPConnector, ClientTimeout, ClientError
 from transition_gate import TransitionGate, GateError, strict_json, valid_binding
+from runtime_identity import project_runtime_identity, unknown_runtime_identity
 from chat_context import project_context, valid_history_snapshot
 from access_mode import (public_status as public_access_status, valid_change as valid_access_change,
                          valid_model_control, public_model_control)
@@ -774,6 +775,30 @@ async def handle_models(request: web.Request):
 
     data = [{"id": m, "object": "model", "owned_by": "pixel"} for m in _ALLOWED_MODELS]
     return web.json_response({"object": "list", "data": data})
+
+
+async def handle_runtime_identity(request: web.Request):
+    fail = _check_auth(request)
+    if fail is not None:
+        return fail
+    if request.query_string:
+        return web.json_response({"error": "invalid request"}, status=400)
+    try:
+        connector = UnixConnector(path=_SOCKET_PATH)
+        timeout = ClientTimeout(total=3, sock_connect=2, sock_read=2)
+        async with ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.get("http://pixel-upstream/v1/runtime-identity", allow_redirects=False) as response:
+                if response.status != 200 or response.content_type != "application/json":
+                    raise ValueError("unavailable")
+                raw = bytearray()
+                async for chunk in response.content.iter_chunked(4096):
+                    raw.extend(chunk)
+                    if len(raw) > 8192:
+                        raise ValueError("too large")
+                result = project_runtime_identity(strict_json(bytes(raw)))
+    except (ValueError, TypeError, OSError, asyncio.TimeoutError, ClientError, RecursionError):
+        result = unknown_runtime_identity()
+    return web.json_response(result, headers={"Cache-Control": "no-store"})
 
 
 async def handle_activity(request: web.Request):
@@ -1541,6 +1566,7 @@ def create_app() -> web.Application:
     app.router.add_get("/health", handle_health)
     app.router.add_get("/preview/{site_id}/{tail:.*}", handle_preview)
     app.router.add_get("/v1/models", handle_models)
+    app.router.add_get("/v1/runtime-identity", handle_runtime_identity, allow_head=False)
     app.router.add_get("/v1/activity", handle_activity)
     app.router.add_get('/v1/access-mode', handle_access_mode, allow_head=False)
     app.router.add_post('/v1/access-mode', handle_access_mode)

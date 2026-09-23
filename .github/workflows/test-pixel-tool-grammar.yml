@@ -5,6 +5,12 @@ on:
     paths:
       - 'ods/extensions/services/pixel-agent/plugin/**'
       - 'ods/extensions/services/pixel-agent/tests/tool*grammar*'
+      - 'ods/extensions/services/pixel-agent/tests/extension_proposal.test.mjs'
+      - 'ods/extensions/services/pixel-agent/tests/runtime_tool_surface.integration.mjs'
+      - 'ods/extensions/services/pixel-agent/tests/runtime_image_envelope.integration.mjs'
+      - 'ods/extensions/services/pixel-agent/tests/test_openclaw_tool_recovery.py'
+      - 'ods/extensions/services/pixel-agent/host/openclaw-image-envelope.json'
+      - 'ods/extensions/services/pixel-agent/host/openclaw_tool_recovery.py'
       - 'ods/docker-compose.base.yml'
       - '.github/workflows/test-pixel-tool-grammar.yml'
   workflow_dispatch:
@@ -20,7 +26,30 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '20'
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install the exact reviewed OpenClaw package without lifecycle scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/pixel-grammar-openclaw"
+          mkdir -p "$runtime"
+          npm pack openclaw@2026.6.33 --silent --pack-destination "$runtime"
+          archive="$runtime/openclaw-2026.6.33.tgz"
+          echo "96880d5a9fe3ef6b3d2ec0ac016e48f99fff7b1af4e22b7c814db6357c163952  $archive" | sha256sum --check
+          # Install as a dependency: npm ci in the unpacked upstream package
+          # incorrectly validates its unpublished dev dependency lock entries.
+          npm install --prefix "$runtime" --omit=dev --ignore-scripts --no-audit --no-fund "$archive"
+          package="$runtime/node_modules/openclaw"
+          python ods/extensions/services/pixel-agent/host/openclaw_tool_recovery.py \
+            --openclaw-bin "$package/openclaw.mjs" --state-dir "$runtime/repair-state" --image-envelope
+          echo "OPENCLAW_TOOL_SEARCH_MODULE=$package/dist/tool-search-BInRpkE3.js" >> "$GITHUB_ENV"
+          echo "OPENCLAW_STATE_DIR=$runtime/state" >> "$GITHUB_ENV"
+          echo "ODS_TEST_GRAMMAR_WORKSPACE=$runtime/workspace" >> "$GITHUB_ENV"
+          mkdir -p "$runtime/state" "$runtime/workspace"
+          python -m pip install pytest
       - name: Fetch the default Compose runtime's exact source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -50,5 +79,12 @@ jobs:
         run: |
           set -euo pipefail
           export ODS_TEST_LLAMA_SCHEMA="$RUNNER_TEMP/pixel-tool-schema-grammar"
+          export ODS_TEST_LLAMA_CHAT_TEMPLATE="$PWD/.llama-grammar-source/models/templates/Qwen3.5-4B.jinja"
           test -x "$ODS_TEST_LLAMA_SCHEMA"
-          node --test ods/extensions/services/pixel-agent/tests/tool_schema_grammar.test.mjs
+          node --test --test-timeout=180000 \
+            ods/extensions/services/pixel-agent/tests/tool_schema_grammar.test.mjs \
+            ods/extensions/services/pixel-agent/tests/tool_grammar_surface.integration.mjs \
+            ods/extensions/services/pixel-agent/tests/extension_proposal.test.mjs \
+            ods/extensions/services/pixel-agent/tests/runtime_tool_surface.integration.mjs \
+            ods/extensions/services/pixel-agent/tests/runtime_image_envelope.integration.mjs
+          python -m pytest -q ods/extensions/services/pixel-agent/tests/test_openclaw_tool_recovery.py

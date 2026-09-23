@@ -29,7 +29,7 @@ from helpers import (
     get_recorded_model_performance,
     is_plausible_single_request_tps,
 )
-from model_memory import required_model_memory_gb
+from model_memory import context_fitting_model, memory_metadata, required_model_memory_gb
 from models import GPUInfo
 
 
@@ -244,6 +244,7 @@ def normalize_catalog_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
         aliases.add(str(raw["llm_model_name"]))
 
     model = {
+        **memory_metadata(raw),
         "id": str(model_id),
         "name": raw.get("name") or str(model_id),
         "family": raw.get("family"),
@@ -713,7 +714,8 @@ def _selector_required_memory_gb(model: dict[str, Any]) -> float:
     return required_model_memory_gb(model)
 
 
-def _hardware_matching_runtime_profiles(model: dict[str, Any], gpu_info: Optional[GPUInfo]) -> list[dict[str, Any]]:
+def _hardware_matching_runtime_profiles(model: dict[str, Any], gpu_info: Optional[GPUInfo],
+                                       system_ram_gb: int | None = None) -> list[dict[str, Any]]:
     """Return profiles anchored to the detected GPU before system-RAM filtering."""
     if not gpu_info:
         return []
@@ -727,6 +729,7 @@ def _hardware_matching_runtime_profiles(model: dict[str, Any], gpu_info: Optiona
     )
     host_arch = _normalize_host_arch(platform.machine())
     vram_gb = float(gpu_info.memory_total_mb or 0) / 1024.0
+    ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
     matches: list[dict[str, Any]] = []
     for profile in model.get("runtime_profiles", []) or []:
         if not isinstance(profile, dict):
@@ -740,6 +743,10 @@ def _hardware_matching_runtime_profiles(model: dict[str, Any], gpu_info: Optiona
         if required_memory_type and required_memory_type != memory_type:
             continue
         try:
+            # Above a profile's RAM ceiling, use the generic fit calculation
+            # instead of rejecting this model as a failed RAM prerequisite.
+            if profile.get("system_ram_max_gb") is not None and float(ram_gb or 0) > float(profile["system_ram_max_gb"]):
+                continue
             if profile.get("vram_min_gb") is not None and vram_gb < float(profile["vram_min_gb"]):
                 continue
             if profile.get("vram_max_gb") is not None and vram_gb > float(profile["vram_max_gb"]):
@@ -753,9 +760,11 @@ def _hardware_matching_runtime_profiles(model: dict[str, Any], gpu_info: Optiona
 def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo],
                               system_ram_gb: int | None = None) -> dict[str, Any] | None:
     ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
-    for profile in _hardware_matching_runtime_profiles(model, gpu_info):
+    for profile in _hardware_matching_runtime_profiles(model, gpu_info, ram_gb):
         try:
             if profile.get("system_ram_min_gb") is not None and float(ram_gb or 0) < float(profile["system_ram_min_gb"]):
+                continue
+            if profile.get("system_ram_max_gb") is not None and float(ram_gb or 0) > float(profile["system_ram_max_gb"]):
                 continue
         except (TypeError, ValueError):
             continue
@@ -854,13 +863,17 @@ def _context_options(
     ]
 
 
-def _usable_model_memory_gb(gpu_info: Optional[GPUInfo]) -> float:
+def _usable_model_memory_gb(gpu_info: Optional[GPUInfo], system_ram_gb: int | None = None) -> float:
     if not gpu_info:
         return 0.0
     total_gb = gpu_info.memory_total_mb / 1024
     backend = normalize_key(gpu_info.gpu_backend)
-    if backend == "apple" or "strix-halo" in normalize_key(gpu_info.name):
-        return max(total_gb * 0.55, 2.0)
+    if backend == "apple" or normalize_key(gpu_info.memory_type) == "unified" or "strix-halo" in normalize_key(gpu_info.name):
+        ram_gb = system_ram_gb if system_ram_gb is not None else total_gb
+        return max(ram_gb * 0.55, 2.0)
+    if backend in {"cpu", "none", "unknown"} or total_gb <= 0:
+        ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
+        return min(max(ram_gb * 0.35, 3.0), 8.0)
     return total_gb
 
 
@@ -1234,7 +1247,7 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
         return []
 
     normalized_profile = _model_profile(explicit_profile=profile)
-    capacity_gb = _usable_model_memory_gb(gpu_info) if gpu_info else 4.0
+    capacity_gb = _usable_model_memory_gb(gpu_info, system_ram_gb) if gpu_info else 4.0
 
     candidates = []
     for model in catalog:
@@ -1243,9 +1256,10 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
         if not _family_allowed_for_profile(model, normalized_profile):
             continue
         runtime_profile = _matching_runtime_profile(model, gpu_info, system_ram_gb)
-        if runtime_profile is None and _hardware_matching_runtime_profiles(model, gpu_info):
+        if runtime_profile is None and _hardware_matching_runtime_profiles(model, gpu_info, system_ram_gb):
             continue
         candidate_model = {**model, "_runtime_profile": runtime_profile} if runtime_profile else model
+        candidate_model = context_fitting_model(candidate_model, capacity_gb)
         required = _effective_required_memory_gb(candidate_model, runtime_profile)
         fits = _fits_declared_vram(required, capacity_gb)
         if not fits:
@@ -1259,10 +1273,13 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
         fallback_pool = [
             model for model in catalog
             if (not installable_only or model.get("gguf_url")) and _family_allowed_for_profile(model, normalized_profile)
-            and not _hardware_matching_runtime_profiles(model, gpu_info)
+            and _fits_declared_vram(_selector_required_memory_gb(model), capacity_gb)
+            and not _hardware_matching_runtime_profiles(model, gpu_info, system_ram_gb)
         ] or [
             model for model in catalog
-            if not _hardware_matching_runtime_profiles(model, gpu_info)
+            if not _hardware_matching_runtime_profiles(model, gpu_info, system_ram_gb)
+            and (not installable_only or model.get("gguf_url"))
+            and _fits_declared_vram(_selector_required_memory_gb(model), capacity_gb)
         ]
         if not fallback_pool:
             return []
@@ -1455,8 +1472,12 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         runtime_profile = _matching_runtime_profile(model, gpu_info, install_ram_gb or None)
         profile_ram_ineligible = bool(
             runtime_profile is None
-            and _hardware_matching_runtime_profiles(model, gpu_info)
+            and _hardware_matching_runtime_profiles(model, gpu_info, install_ram_gb or None)
         )
+        if not runtime_profile and not profile_ram_ineligible:
+            model = context_fitting_model(
+                model, _usable_model_memory_gb(gpu_info, install_ram_gb or None) if gpu_info else 4.0,
+            )
         profile_context = _effective_context_length(model, runtime_profile)
         configured_context = recommendation.get("contextLength") if is_configured else None
         actual_context = (
@@ -1480,6 +1501,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         memory_model = {**model, **metadata}
         context_model = {
             **memory_model,
+            "context_length": actual_context,
             "max_context_length": max_context_length,
             "context_limit_known": context_limit_known,
         }

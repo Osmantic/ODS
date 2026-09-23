@@ -7,8 +7,10 @@
 #          ready now and which need attention.
 #
 # Input format for ods_readiness_summary:
-#   name|health_url|container_name|open_url
+#   name|health_url|container_name|open_url|probe_type
 #   container_name may be empty for host-native services.
+#   probe_type defaults to HTTP; external-model verifies the selected model
+#   through the same provider discovery used by installer health checks.
 # ============================================================================
 
 _ods_readiness_http_code() {
@@ -49,6 +51,25 @@ _ods_readiness_is_ready_code() {
     [[ "$code" =~ ^(2|3) || "$code" == "401" || "$code" == "403" ]]
 }
 
+_ods_readiness_external_model_available() {
+    local url="$1" provider="${EXTERNAL_LLM_PROVIDER:-}" model="${EXTERNAL_LLM_MODEL:-}"
+    [[ -n "$url" && -n "$provider" && -n "$model" ]] || return 1
+    declare -F external_llm_resolve_model >/dev/null 2>&1 || return 1
+    external_llm_resolve_model "$provider" "$url" "$model" "$model" >/dev/null 2>&1
+}
+
+ods_readiness_model_line() {
+    local llama_port="${1:-8080}" llama_health="${2:-/health}"
+    local llama_container="${3:-}" litellm_port="${4:-4000}"
+    if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
+        printf 'External LLM|%s||http://localhost:%s/v1|external-model\n' \
+            "$EXTERNAL_LLM_URL" "$litellm_port"
+    elif [[ "${ODS_MODE:-local}" != "cloud" ]]; then
+        printf 'llama-server|http://127.0.0.1:%s%s|%s|http://localhost:%s/v1\n' \
+            "$llama_port" "$llama_health" "$llama_container" "$llama_port"
+    fi
+}
+
 ods_readiness_summary() {
     local status_cmd="${1:-ods status}"
     local log_file="${2:-}"
@@ -62,31 +83,41 @@ ods_readiness_summary() {
         launch_record="$INSTALL_DIR/logs/compose-launch.txt"
     fi
 
-    while IFS='|' read -r name health_url container open_url; do
+    while IFS='|' read -r name health_url container open_url probe_type; do
         [[ -n "$name" ]] || continue
         total=$((total + 1))
         [[ -n "$open_url" ]] || open_url="$health_url"
 
         local http_code container_state state detail line
-        http_code="$(_ods_readiness_http_code "$health_url" 3)"
-
-        if _ods_readiness_is_ready_code "$http_code"; then
-            state="ready"
-            detail="HTTP $http_code"
-        else
-            # HTTP readiness already decides the result. Consult Docker only
-            # to explain a failed probe; a stalled daemon must not hold up
-            # services that are already reachable.
-            container_state="$(_ods_readiness_container_state "$container")"
-            if [[ "$container_state" == "running" || "$container_state" == "starting" || "$container_state" == "host" ]]; then
-                state="starting"
-                detail="HTTP $http_code"
-            elif [[ "$container_state" == "missing" || "$container_state" == "docker-unavailable" ]]; then
-                state="not detected"
-                detail="$container_state"
+        if [[ "$probe_type" == "external-model" ]]; then
+            if _ods_readiness_external_model_available "$health_url"; then
+                state="ready"
+                detail="selected model available"
             else
                 state="needs attention"
-                detail="container $container_state, HTTP $http_code"
+                detail="external model unavailable"
+            fi
+        else
+            http_code="$(_ods_readiness_http_code "$health_url" 3)"
+
+            if _ods_readiness_is_ready_code "$http_code"; then
+                state="ready"
+                detail="HTTP $http_code"
+            else
+                # HTTP readiness already decides the result. Consult Docker only
+                # to explain a failed probe; a stalled daemon must not hold up
+                # services that are already reachable.
+                container_state="$(_ods_readiness_container_state "$container")"
+                if [[ "$container_state" == "running" || "$container_state" == "starting" || "$container_state" == "host" ]]; then
+                    state="starting"
+                    detail="HTTP $http_code"
+                elif [[ "$container_state" == "missing" || "$container_state" == "docker-unavailable" ]]; then
+                    state="not detected"
+                    detail="$container_state"
+                else
+                    state="needs attention"
+                    detail="container $container_state, HTTP $http_code"
+                fi
             fi
         fi
 

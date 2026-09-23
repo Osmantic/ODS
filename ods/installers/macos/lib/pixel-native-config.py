@@ -53,15 +53,7 @@ def private_answers(path):
     return value
 
 
-SERVICE_SOURCES = {
-    'manager/extension_manager.py': 'extensions/services/pixel-agent/host/extension_manager.py',
-    'manager/unix_peer.py': 'extensions/services/pixel-agent/host/unix_peer.py',
-    'promoter/artifact_promoter.py': 'extensions/services/pixel-agent/host/artifact_promoter.py',
-    'promoter/unix_peer.py': 'extensions/services/pixel-agent/host/unix_peer.py',
-    'promoter/pixel_macos_custody.py': 'bin/pixel_macos_custody.py',
-    'helpers/extension_search.py': 'extensions/services/pixel-agent/host/extension_search.py',
-    'helpers/system_observe.py': 'extensions/services/pixel-agent/host/system_observe.py',
-}
+SERVICE_SOURCES = bundle.ODS_SERVICE_SOURCES
 
 
 def service_catalog(ods_source):
@@ -105,6 +97,8 @@ def stage_services(*, source, ref, ods_source, candidate, destination):
         raise ValueError('new-native-service-destination-required')
     destination = destination.parent.resolve(strict=True) / destination.name
     bootstrap.selected_release(source, ref)
+    selected_source = bundle._selected_release_source(ods_source, (), wrapper=False, repairs=False,
+                                                     source_paths=set(SERVICE_SOURCES.values()))
     receipt = json.loads(service_snapshot(candidate, 'candidate.json', private=True))
     if (type(receipt) is not dict or receipt.get('pixelSourceRef') != ref or receipt.get('status') != 'staged'
             or receipt.get('requiresServiceQualification') is not True):
@@ -131,6 +125,7 @@ def stage_services(*, source, ref, ods_source, candidate, destination):
     config_digest = hashlib.sha256(service_snapshot(candidate, 'openclaw.json', private=True)).hexdigest()
     manifest = {'schemaVersion': 1, 'status': 'staged', 'requiresServiceQualification': True,
         'pixelSourceRef': ref, 'candidateConfigSha256': config_digest,
+        'sourceProvenance': bundle.service_source_provenance(selected_source, files),
         'files': {name: {'sha256': hashlib.sha256(body).hexdigest(), 'bytes': len(body)}
                   for name, body in sorted(files.items())}}
     manifest_body = (json.dumps(manifest, sort_keys=True, separators=(',', ':')) + '\n').encode()
@@ -162,6 +157,7 @@ def verified_services(root, *, expected_digest, expected_ref, expected_config_di
     if hashlib.sha256(body).hexdigest() != expected_digest:
         raise ValueError('native-service-manifest-digest-mismatch')
     manifest = json.loads(body)
+    bundle.validate_service_manifest_provenance(manifest)
     names = set(SERVICE_SOURCES) | {'operations/broker.py', 'operations/policy.json', 'helpers/extension-catalog.json'}
     if (type(manifest) is not dict or type(manifest.get('schemaVersion')) is not int
             or manifest['schemaVersion'] != 1 or manifest.get('status') != 'staged'
@@ -304,7 +300,8 @@ def validate_candidate(config, *, node, entrypoint, expected, env, cwd):
             raise ValueError('native-config-plugin-not-loaded')
 
 
-def stage_bundle(*, source, ref, candidate, node, runtime, destination, services_digest=None):
+def stage_bundle(*, source, ref, candidate, node, runtime, destination, services_digest=None,
+                 services_bundle=None, ods_source=None):
     """Package exactly the configured plugins and prove their relocated loader.
 
     The candidate configuration is not edited. Protected publication still uses
@@ -347,6 +344,12 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination, services
         expected[plugin_id] = 'plugins/' + str(index)
     if set(expected) != set(allowed):
         raise ValueError('native-bundle-plugin-mapping-incomplete')
+    service_manifest = None
+    if services_bundle is not None:
+        services_bundle = Path(services_bundle).resolve(strict=True)
+        verified_services(services_bundle, expected_digest=services_digest, expected_ref=ref,
+            expected_config_digest=hashlib.sha256(service_snapshot(candidate, 'openclaw.json', private=True)).hexdigest())
+        service_manifest = json.loads(service_snapshot(services_bundle, 'services.json'))
     destination = Path(destination)
     if not destination.is_absolute() or os.path.lexists(destination):
         raise ValueError('new-native-bundle-destination-required')
@@ -362,7 +365,9 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination, services
         digest = bundle.build(node=protected_node, runtime=runtime / 'node_modules/openclaw',
             destination=staged, plugins=paths, expected_version=release['openclaw'],
             stream_progress_fix=True, shared_runtime_repairs=True, services_digest=services_digest,
-            exec_wrapper=Path(__file__).resolve().parents[3] / 'extensions/services/pixel-agent/host/cancellable-exec.sh')
+            exec_wrapper=Path(__file__).resolve().parents[3] / 'extensions/services/pixel-agent/host/cancellable-exec.sh',
+            ods_source=ods_source or Path(__file__).resolve().parents[3], pixel_source_ref=ref,
+            ods_plugin_indices=[int(expected['pixel-ods'].split('/')[-1])], service_manifest=service_manifest)
         relocated = copy.deepcopy(config)
         relocated['plugins']['load']['paths'] = [str(staged / ('plugins/' + str(i)))
                                                 for i in range(len(paths))]
@@ -531,10 +536,13 @@ def bundle_main(argv):
     parser = argparse.ArgumentParser(description='Stage and qualify a native candidate runtime bundle')
     for name in ('source', 'source-ref', 'candidate', 'node', 'runtime', 'destination'):
         parser.add_argument('--' + name, required=True)
+    for name in ('ods-source', 'services-bundle', 'services-digest'):
+        parser.add_argument('--' + name)
     args = parser.parse_args(argv)
     try:
         digest = stage_bundle(source=args.source, ref=args.source_ref, candidate=args.candidate,
-                              node=args.node, runtime=args.runtime, destination=args.destination)
+            node=args.node, runtime=args.runtime, destination=args.destination,
+            ods_source=args.ods_source, services_bundle=args.services_bundle, services_digest=args.services_digest)
     except (OSError, ValueError, KeyError, TypeError, bootstrap.subprocess.SubprocessError):
         print('error: native-pixel-bundle-staging-failed', file=sys.stderr)
         return 1

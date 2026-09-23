@@ -103,18 +103,30 @@ test('only the trusted configured root maps to a workspace-relative path',()=>{
   assert.deepEqual(canonicalWorkspaceParams('tool_call',other,root),other);
 });
 
-test('absolute reads qualify relative previews only inside the configured workspace',()=>{
+test('framework entry reads qualify relative previews only inside the configured workspace',()=>{
   const macRoot='/Users/test/ods/data/pixel-native/workspace';
   for (const [file, allowed] of [[macRoot+'/demo/index.html',true],
     [macRoot+'-other/demo/index.html',false], ['/tmp/demo/index.html',false]]) {
     const guard=createToolLoopGuard();
-    guard.observeRun(context,'pixel',{prompt:'Create and publish a new website in demo.'},{workspaceRoot:macRoot});
+    guard.observeRun(context,'pixel',{prompt:'Create and publish a new React website in demo.'},{workspaceRoot:macRoot});
     guard.afterToolCall({toolName:'read',params:{path:file},
       result:{content:[{type:'text',text:'<!doctype html><html><body>Test</body></html>'}]}},context);
     const result=guard.beforeToolCall({toolName:'pixel_ods_workspace_preview',
       params:{relativeDirectory:'demo'}},context);
     assert.equal(result?.block===true,!allowed,file);
   }
+});
+
+test('a read cannot stand in for authoring a requested new static entry',()=>{
+  const guard=createToolLoopGuard();
+  // Write-first authorship applies only when the owner requests a static
+  // implementation with an unambiguous output path; a bare "in <name>" may
+  // name a framework, so that ambiguity retains normal inspection/builds.
+  guard.observeRun(context,'pixel',{prompt:'Create and publish a new static HTML website at demo/index.html.'},{workspaceRoot:root});
+  guard.afterToolCall({toolName:'read',params:{path:root+'/demo/index.html'},
+    result:{content:[{type:'text',text:'<!doctype html><html><body>Old</body></html>'}]}},context);
+  assert.equal(guard.beforeToolCall({toolName:'pixel_ods_workspace_preview',
+    params:{relativeDirectory:'demo'}},context).block,true);
 });
 
 test('preview path alias is exact and cannot silently replace conflicting fields',()=>{

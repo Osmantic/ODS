@@ -37,6 +37,28 @@ authenticated LiteLLM gateway used by other ODS consumers. Gateway readiness
 proves that the route is callable; it does not claim that every underlying
 model has equal intelligence or tool-use skill.
 
+## Availability and runtime readiness
+
+The authenticated `/api/pixel/status` response keeps model-route `available`
+separate from its additive `readiness` projection. A callable model route does
+not establish effective host permissions or an installed-release match.
+Readiness version 1 reports current access verification and partial runtime
+identity, with states `unverified`, `attention`, or `unavailable`; it cannot
+report `ready`. Runtime identity version 1 leaves `runtimeMatchesRelease` null
+unless observed file drift establishes a mismatch (`false`).
+
+The readiness checks are read-only, concurrent, and individually bounded by a
+four-second whole-request deadline. Missing older endpoints, timeouts, and
+invalid proof remain unverified. A valid failed host access inspection or an
+unfinished access transition is shown as needing attention. `busy` alone is
+activity, not failed proof; `pending: false` does not establish that admission
+is open. No paths, credentials, or raw upstream errors enter this projection.
+
+Portal shows the readiness warning separately from model availability. Unknown
+readiness does not itself disable chat, select another model, change access,
+or bypass existing admission and recovery controls. During rolling upgrades,
+missing or unsupported readiness data is displayed as unverified, not Ready.
+
 ## Legal and release boundary
 
 Pixel source is included in ODS at [`vendor/pixel`](../vendor/pixel) under the

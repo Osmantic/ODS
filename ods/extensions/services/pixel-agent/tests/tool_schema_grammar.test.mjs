@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createDownloadPromoteTool } from "../plugin/download-promote.mjs";
 import { createPerplexicaResearchTool } from "../plugin/perplexica-research.mjs";
 import { createHostCommandProposeTool } from "../plugin/host-observe.mjs";
+import {registeredPixelTools, combinedToolSchema} from './tool-grammar-registration.mjs';
 
 const promotion = {
   jobId: "ops-1788130169655-22b40ab50141", filename: "reference.html",
@@ -14,11 +15,40 @@ const promotion = {
 };
 const longUrl = length => "https://example.org/" + "a".repeat(length - 20);
 const nativeGrammar = process.env.ODS_TEST_LLAMA_SCHEMA;
+const nativeOnly = {skip: !nativeGrammar && 'set ODS_TEST_LLAMA_SCHEMA to the pinned native test bridge'};
+const registered = await registeredPixelTools();
+const libraryProposal = {repository: 'https://github.com/o/r', serviceId: 'example', name: 'Example',
+  pythonVersion: '3.12', pythonImports: ['example']};
+
+function compileSchema(schema) {
+  const result = spawnSync(nativeGrammar, [], {
+    input: JSON.stringify({schema, compileOnly: true}), encoding: 'utf8', timeout: 30000,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr.slice(0, 2000));
+  assert.ok(JSON.parse(result.stdout).grammarBytes > 0);
+}
+
+test('grammar inventory captures every actual Pixel registration', () => {
+  assert.equal(registered.length, 23);
+  for (const name of ['pixel_ods_workspace_preview', 'pixel_ods_source_proposal',
+    'pixel_ods_python_library_proposal', 'pixel_ods_extension_request_retry']) {
+    assert.ok(registered.some(tool => tool.name === name), name);
+  }
+});
+
+for (const tool of registered) {
+  test(`${tool.name} registered schema compiles in llama.cpp`, nativeOnly, () => compileSchema(tool.parameters));
+}
+test('all registered Pixel schemas compile together, including deferred specialists', nativeOnly,
+  () => compileSchema(combinedToolSchema(registered)));
 
 for (const [tool, samples] of [
   [createDownloadPromoteTool(), [promotion, { ...promotion, sourceUrl: longUrl(4096) }]],
   [createPerplexicaResearchTool(), [{ query: "Find public sources" }, { query: "a".repeat(16000) }]],
   [createHostCommandProposeTool(), [{ command: "pwd" }, { command: "a".repeat(16384) }]],
+  [registered.find(tool => tool.name === 'pixel_ods_python_library_proposal'),
+    [libraryProposal, {...libraryProposal, pythonVerification: {expression: 'a'.repeat(2048), expected: 'a'.repeat(2048)}}]],
 ]) {
   test(`${tool.name} schema compiles and accepts short and full-size arguments in llama.cpp`,
     { skip: !nativeGrammar && "set ODS_TEST_LLAMA_SCHEMA to the pinned native test bridge" }, () => {

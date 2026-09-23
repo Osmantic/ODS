@@ -7,6 +7,19 @@ import re
 from typing import Any
 
 
+MEMORY_METADATA_KEYS = (
+    "total_params_b", "params_b", "block_count", "embedding_length",
+    "attention_head_count", "head_count", "attention_head_count_kv",
+    "head_count_kv", "attention_head_dimension", "head_dimension",
+    "attention_key_length", "attention_value_length", "kv_cache_element_bytes",
+)
+
+
+def memory_metadata(model: dict[str, Any]) -> dict[str, Any]:
+    """Preserve architecture inputs when normalizing catalog records."""
+    return {key: model[key] for key in MEMORY_METADATA_KEYS if key in model}
+
+
 def _positive_number(value: object) -> float:
     try:
         number = float(value)
@@ -140,3 +153,29 @@ def required_model_memory_gb(
         else 0.0
     )
     return round(max(declared_gb, size_and_kv_gb), 2)
+
+
+def context_fitting_model(
+    model: dict[str, Any], capacity_gb: float, *, tolerance_gb: float = 0.25,
+) -> dict[str, Any]:
+    """Reduce catalog context using architecture metadata, never a measured profile.
+
+    Leave unqualified catalog entries unchanged. The ranker still checks fit
+    afterward, including when even the minimum context cannot fit.
+    """
+    if model.get("_runtime_profile") or not _positive_number(model.get("block_count")):
+        return model
+    maximum = int(_positive_number(model.get("context_length")))
+    if maximum <= 8192 or not _positive_number(capacity_gb):
+        return model
+    choices = {maximum, *(n for n in (8192, 16384, 32768, 65536, 131072, 262144) if n <= maximum)}
+    for context in sorted(choices, reverse=True):
+        if required_model_memory_gb(model, context_length=context) <= capacity_gb + tolerance_gb:
+            if context == maximum:
+                return model
+            return {
+                **model,
+                "max_context_length": model.get("max_context_length") or maximum,
+                "context_length": context,
+            }
+    return model

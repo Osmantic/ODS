@@ -1681,6 +1681,9 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                             raise RouterError(502, 'response_identity_mismatch', 'Backend response identity changed')
                         for event in events:
                             yield event
+                        
+                        if await request.is_disconnected():
+                            break
                     tail = rewriter.finish()
                     if pinned_route and not rewriter.identity_matches:
                         raise RouterError(502, 'response_identity_mismatch', 'Backend response identity changed')

@@ -1,4 +1,6 @@
 import {createAgentSkillTool} from './agent-skills.mjs';
+import {createRuntimeIdentity} from './runtime-identity.mjs';
+import {fileURLToPath} from 'node:url';
 import {createActivityTool, ACTIVITY_CONTRACT} from './activity-display.mjs';
 import {compactToolResultEnvelope} from './tool-result-envelope.mjs';
 import {withPiToolErrorContract} from './pi-tool-result.mjs';
@@ -71,6 +73,7 @@ import {createExtensionProposalTool, createSourceProposalTool, createPythonLibra
 import { createOpenClawCodingTools, resolveSandboxContext, OPENCLAW_VERSION } from "openclaw/plugin-sdk/agent-harness";
 
 const AGENT_ID = process.env.PIXEL_AGENT_ID ?? "pixel";
+let runtimeIdentity;
 const ABORT_BODY_LIMIT = 256;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const toolLoopGuardRegistry = createToolLoopGuardRegistry();
@@ -87,8 +90,12 @@ const evidenceArtifactWriter = createEvidenceArtifactWriter();
 // Restrict tool registration to the Pixel agent. Tools are only offered to the
 // agent id declared by this plugin (see openclaw.plugin.json); this guards the
 // registration path regardless of how the plugin is loaded.
-const onlyPixel = (factory) => (context) =>
-  context.agentId === AGENT_ID ? withPiToolErrorContract(factory(context)) : null;
+const onlyPixel = (factory) => (context) => {
+  if (context.agentId !== AGENT_ID) return null;
+  const tool = withPiToolErrorContract(factory(context));
+  runtimeIdentity?.observeTool(tool);
+  return tool;
+};
 
 function registerTool(api, tool, opts) {
   const names = opts.names || [tool.name];
@@ -229,6 +236,16 @@ export default definePluginEntry({
   name: "Pixel ODS Integration",
   description: "Read-only ODS status and strictly guarded public-page evidence for Pixel.",
   register(api) {
+    // Discovery tools and build-time schema captures must never read host state.
+    // Failure to collect diagnostics must also never prevent agent registration.
+    if (api.registrationMode !== 'discovery' && !runtimeIdentity) {
+      let pluginRoot, modulePath;
+      try {
+        pluginRoot = fileURLToPath(new URL('.', import.meta.url));
+        modulePath = fileURLToPath(new URL('../tool-search-BInRpkE3.js', import.meta.resolve('openclaw/plugin-sdk/agent-harness')));
+      } catch { /* preserve explicit unknown observations */ }
+      runtimeIdentity = createRuntimeIdentity({pluginRoot, modulePath, openclawVersion:OPENCLAW_VERSION});
+    }
     execCancellationControl ??= createExecCancellationControl({
       executionHost: executionHostForAgent(api.config, AGENT_ID),
     });
@@ -342,6 +359,15 @@ export default definePluginEntry({
         taskActivity.after(event, context);
         return toolLoopGuard.afterToolCall(event, context, AGENT_ID);
       }
+    });
+    api.registerHttpRoute({path: '/pixel-ods/runtime-identity', auth: 'gateway', match: 'exact',
+      handler: async (req, res) => {
+        if (req.url !== '/pixel-ods/runtime-identity') { sendJson(res, 400, {error: 'invalid request'}); return true; }
+        if (req.method !== 'GET') { sendJson(res, 405, {error: 'method not allowed'}); return true; }
+        res.setHeader('Cache-Control', 'no-store');
+        if (!runtimeIdentity) { sendJson(res, 503, {error:'runtime-identity-unavailable'}); return true; }
+        sendJson(res, 200, runtimeIdentity()); return true;
+      },
     });
     api.registerHttpRoute({path: "/pixel-ods/access-runtime", auth: "gateway", match: "exact",
       handler: async (req, res) => {

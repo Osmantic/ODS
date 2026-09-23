@@ -16,6 +16,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "extensions/services/dashboard-api"))
+from model_memory import (
+    context_fitting_model,
+    estimated_context_kv_gb,
+    estimated_param_billions,
+    memory_metadata,
+    required_model_memory_gb,
+)
+
 
 VRAM_FIT_TOLERANCE_GB = 0.25
 POLICY = "context-aware-largest-capable-general-v1"
@@ -110,6 +119,7 @@ def normalize_model(raw: dict[str, Any]) -> dict[str, Any] | None:
         else {}
     )
     return {
+        **memory_metadata(raw),
         "id": str(model_id),
         "name": raw.get("name") or str(model_id),
         "family": raw.get("family") or "",
@@ -166,42 +176,13 @@ def fits(required_gb: float, capacity_gb: float) -> bool:
     return required_gb <= capacity_gb + VRAM_FIT_TOLERANCE_GB
 
 
-def estimated_param_billions(model: dict[str, Any]) -> float:
-    for key in ("total_params_b", "params_b"):
-        try:
-            value = float(model.get(key) or 0)
-            if value > 0:
-                return value
-        except (TypeError, ValueError):
-            pass
-    numbers: list[float] = []
-    for text in (model.get("id"), model.get("name"), model.get("llm_model_name"), model.get("gguf_file")):
-        numbers.extend(float(match) for match in re.findall(r"(\d+(?:\.\d+)?)\s*b", str(text or ""), re.I))
-    if numbers:
-        return max(numbers)
-    size_mb = float(model.get("size_mb") or 0)
-    if size_mb > 0:
-        return max(size_mb / 600.0, 1.0)
-    return 4.0
-
-
-def estimated_context_kv_gb(model: dict[str, Any]) -> float:
-    context = max(int(model.get("context_length") or 0), 8192)
-    params_b = estimated_param_billions(model)
-    kv_per_32k_gb = min(max(params_b * 0.12, 0.35), 3.5)
-    return round(kv_per_32k_gb * (context / 32768.0), 2)
-
-
 def selector_required_memory_gb(model: dict[str, Any]) -> float:
-    declared = float(model.get("vram_required_gb") or 0)
-    size_gb = float(model.get("size_mb") or 0) / 1024.0
-    if size_gb <= 0:
-        return round(declared, 2)
-    return round(max(declared, size_gb + estimated_context_kv_gb(model)), 2)
+    return required_model_memory_gb(model)
 
 
 def hardware_matching_profiles(model: dict[str, Any], backend: str, memory_type: str,
-                               vram_mb: int, host_arch: str) -> list[dict[str, Any]]:
+                               vram_mb: int, host_arch: str,
+                               ram_gb: int | None = None) -> list[dict[str, Any]]:
     """Return profiles anchored to this hardware before system-RAM filtering.
 
     Once a catalog model has a profile for this exact backend/architecture/
@@ -226,6 +207,10 @@ def hardware_matching_profiles(model: dict[str, Any], backend: str, memory_type:
         if required_memory_type and required_memory_type != memory_key:
             continue
         try:
+            # A RAM ceiling scopes the profile to a class of machines; it is
+            # not an unmet prerequisite on machines above that class.
+            if ram_gb is not None and profile.get("system_ram_max_gb") is not None and float(ram_gb) > float(profile["system_ram_max_gb"]):
+                continue
             if profile.get("vram_min_gb") is not None and vram_gb < float(profile["vram_min_gb"]):
                 continue
             if profile.get("vram_max_gb") is not None and vram_gb > float(profile["vram_max_gb"]):
@@ -239,10 +224,12 @@ def hardware_matching_profiles(model: dict[str, Any], backend: str, memory_type:
 def matching_runtime_profile(model: dict[str, Any], backend: str, memory_type: str,
                              vram_mb: int, ram_gb: int, host_arch: str) -> dict[str, Any] | None:
     for profile in hardware_matching_profiles(
-        model, backend, memory_type, vram_mb, host_arch
+        model, backend, memory_type, vram_mb, host_arch, ram_gb
     ):
         try:
             if profile.get("system_ram_min_gb") is not None and float(ram_gb or 0) < float(profile["system_ram_min_gb"]):
+                continue
+            if profile.get("system_ram_max_gb") is not None and float(ram_gb or 0) > float(profile["system_ram_max_gb"]):
                 continue
         except (TypeError, ValueError):
             continue
@@ -345,7 +332,7 @@ def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
                 model, backend, memory_type, vram_mb, ram_gb, host_arch
             )
             if runtime_profile is None and hardware_matching_profiles(
-                model, backend, memory_type, vram_mb, host_arch
+                model, backend, memory_type, vram_mb, host_arch, ram_gb
             ):
                 continue
             candidate_model = (
@@ -353,6 +340,7 @@ def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
                 if runtime_profile
                 else model
             )
+            candidate_model = context_fitting_model(candidate_model, capacity_gb)
             required = effective_required_memory_gb(candidate_model, runtime_profile)
             if not fits(required, capacity_gb):
                 continue
@@ -395,10 +383,11 @@ def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
             continue
         runtime_profile = matching_runtime_profile(model, backend, memory_type, vram_mb, ram_gb, host_arch)
         if runtime_profile is None and hardware_matching_profiles(
-            model, backend, memory_type, vram_mb, host_arch
+            model, backend, memory_type, vram_mb, host_arch, ram_gb
         ):
             continue
         candidate_model = {**model, "_runtime_profile": runtime_profile} if runtime_profile else model
+        candidate_model = context_fitting_model(candidate_model, capacity_gb)
         required = effective_required_memory_gb(candidate_model, runtime_profile)
         if not fits(required, capacity_gb):
             continue
@@ -409,16 +398,18 @@ def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
         fallback_pool = [
             model for model in catalog
             if (not installable_only or install_recommendation_allowed(model))
+            and fits(selector_required_memory_gb(model), capacity_gb)
             and family_allowed(model, profile)
             and size_within_ceiling(model, max_size_mb)
             and not hardware_matching_profiles(
-                model, backend, memory_type, vram_mb, host_arch
+                model, backend, memory_type, vram_mb, host_arch, ram_gb
             )
         ] or [
             model for model in catalog
             if (not installable_only or install_recommendation_allowed(model)) and family_allowed(model, profile)
+            and fits(selector_required_memory_gb(model), capacity_gb)
             and not hardware_matching_profiles(
-                model, backend, memory_type, vram_mb, host_arch
+                model, backend, memory_type, vram_mb, host_arch, ram_gb
             )
         ]
         if not fallback_pool:
@@ -602,6 +593,12 @@ def main() -> int:
             catalog, args.tier, profile, args.host_arch, args.memory_type,
             args.installable_only, ranked[0],
         )
+    if arch_selected:
+        arch_candidates = rank_models(
+            [arch_selected], capacity_gb, profile, args.installable_only,
+            args.backend, args.memory_type, args.vram_mb, args.ram_gb, args.host_arch,
+        )
+        arch_selected = arch_candidates[0] if arch_candidates else None
     if arch_selected:
         selected = arch_selected
         alternatives = [selected] + [

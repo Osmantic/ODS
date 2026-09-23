@@ -422,7 +422,8 @@ function Get-CatalogRuntimeProfile {
     param(
         [object]$Model,
         [hashtable]$GpuInfo,
-        [int]$SystemRamGB
+        [int]$SystemRamGB,
+        [switch]$IgnoreRamMinimum
     )
 
     if (-not $Model.PSObject.Properties["runtime_profiles"]) { return $null }
@@ -446,7 +447,8 @@ function Get-CatalogRuntimeProfile {
         try {
             if ($null -ne $runtimeProfile.vram_min_gb -and $vramGB -lt [double]$runtimeProfile.vram_min_gb) { continue }
             if ($null -ne $runtimeProfile.vram_max_gb -and $vramGB -gt [double]$runtimeProfile.vram_max_gb) { continue }
-            if ($null -ne $runtimeProfile.system_ram_min_gb -and [double]$SystemRamGB -lt [double]$runtimeProfile.system_ram_min_gb) { continue }
+            if (-not $IgnoreRamMinimum -and $null -ne $runtimeProfile.system_ram_min_gb -and [double]$SystemRamGB -lt [double]$runtimeProfile.system_ram_min_gb) { continue }
+            if ($null -ne $runtimeProfile.system_ram_max_gb -and [double]$SystemRamGB -gt [double]$runtimeProfile.system_ram_max_gb) { continue }
         } catch {
             continue
         }
@@ -519,6 +521,25 @@ function Get-CatalogModelEstimatedContextKvGB {
 
     $context = if ($RuntimeProfile -and $RuntimeProfile.context_length) { [int]$RuntimeProfile.context_length } else { [int]$Model.context_length }
     $context = [Math]::Max($context, 8192)
+    $blocks = [double]$Model.block_count
+    $heads = if ($Model.attention_head_count) { [double]$Model.attention_head_count } else { [double]$Model.head_count }
+    $kvHeads = if ($Model.attention_head_count_kv) { $Model.attention_head_count_kv } else { $Model.head_count_kv }
+    $dimension = if ($Model.attention_head_dimension) { [double]$Model.attention_head_dimension } else { [double]$Model.head_dimension }
+    if ($dimension -le 0 -and $heads -gt 0) { $dimension = [double]$Model.embedding_length / $heads }
+    $keyDimension = if ($Model.attention_key_length) { [double]$Model.attention_key_length } else { $dimension }
+    $valueDimension = if ($Model.attention_value_length) { [double]$Model.attention_value_length } else { $dimension }
+    $layerHeads = 0.0
+    if ($kvHeads -is [array]) {
+        if ($blocks -gt 0 -and $kvHeads.Count -eq $blocks) {
+            $layerHeads = ($kvHeads | Measure-Object -Sum).Sum
+        }
+    } elseif ($blocks -gt 0 -and [double]$kvHeads -gt 0) {
+        $layerHeads = $blocks * [double]$kvHeads
+    }
+    if ($layerHeads -gt 0 -and $keyDimension -gt 0 -and $valueDimension -gt 0) {
+        $elementBytes = if ([double]$Model.kv_cache_element_bytes -gt 0) { [double]$Model.kv_cache_element_bytes } else { 2.0 }
+        return [Math]::Round(($layerHeads * ($keyDimension + $valueDimension) * $elementBytes * $context / 1GB), 2)
+    }
     $paramsB = Get-CatalogModelEstimatedParamBillions -Model $Model
     $kvPer32kGb = [Math]::Min([Math]::Max(($paramsB * 0.12), 0.35), 3.5)
     return [Math]::Round(($kvPer32kGb * ([double]$context / 32768.0)), 2)
@@ -538,6 +559,24 @@ function Get-CatalogModelSelectorRequiredGB {
     if ($sizeGb -le 0) { return [Math]::Round($declared, 2) }
     $withContext = $sizeGb + (Get-CatalogModelEstimatedContextKvGB -Model $Model -RuntimeProfile $RuntimeProfile)
     return [Math]::Round([Math]::Max($declared, $withContext), 2)
+}
+
+function Get-CatalogModelFittingContext {
+    param([object]$Model, [double]$CapacityGB, [object]$RuntimeProfile = $null)
+
+    if ($RuntimeProfile -or [double]$Model.block_count -le 0) { return $Model }
+    $maximum = [int]$Model.context_length
+    if ($maximum -le 8192 -or $CapacityGB -le 0) { return $Model }
+    $choices = @($maximum, 8192, 16384, 32768, 65536, 131072, 262144) |
+        Where-Object { $_ -le $maximum } | Sort-Object -Descending -Unique
+    foreach ($context in $choices) {
+        $candidate = $Model.PSObject.Copy()
+        $candidate.context_length = $context
+        if ((Get-CatalogModelSelectorRequiredGB -Model $candidate) -le ($CapacityGB + 0.25)) {
+            return $candidate
+        }
+    }
+    return $Model
 }
 
 function Get-CatalogModelScore {
@@ -622,7 +661,7 @@ function Resolve-CatalogModelRecommendation {
 
     if ($Tier -eq "NV_ULTRA" -and $modelProfileName -eq "qwen" -and $hostArchName -eq "arm64") {
         $selectedArchModel = Get-CatalogModelById -Catalog $catalog -ModelId $script:SPARK_AARCH64_MODEL_ID
-        if ($selectedArchModel -and $selectedArchModel.gguf_url) {
+        if ($selectedArchModel -and $selectedArchModel.gguf_url -and (Get-CatalogModelSelectorRequiredGB -Model $selectedArchModel) -le ($capacityGb + 0.25)) {
             $selectedRequiredGb = Get-CatalogModelSelectorRequiredGB -Model $selectedArchModel
             $contextK = [int]([int]$selectedArchModel.context_length / 1024)
             $reason = "Arch-aware catalog policy ($script:SPARK_AARCH64_POLICY): $($selectedArchModel.name) is selected for arm64 NV_ULTRA Spark-class NVIDIA hosts because qwen3-coder-next is excluded on this architecture by the tier map. It needs about ${selectedRequiredGb}GB including context/KV, fits $([Math]::Round($capacityGb, 1))GB $($memory.Label), and gives ${contextK}K context. Throughput requires a local benchmark after first launch."
@@ -647,7 +686,7 @@ function Resolve-CatalogModelRecommendation {
 
     if ($isAmdUnifiedStrixLarge) {
         $selectedUnifiedModel = Get-CatalogModelById -Catalog $catalog -ModelId $script:UNIFIED_MEMORY_MODEL_ID
-        if ($selectedUnifiedModel -and $selectedUnifiedModel.gguf_url) {
+        if ($selectedUnifiedModel -and $selectedUnifiedModel.gguf_url -and (Get-CatalogModelSelectorRequiredGB -Model $selectedUnifiedModel) -le ($capacityGb + 0.25)) {
             $selectedRequiredGb = Get-CatalogModelSelectorRequiredGB -Model $selectedUnifiedModel
             $contextK = [int]([int]$selectedUnifiedModel.context_length / 1024)
             $reason = "Arch-aware catalog policy ($script:UNIFIED_MEMORY_POLICY): $($selectedUnifiedModel.name) is selected for AMD unified-memory SH_LARGE hosts because Qwen3.6-35B-A3B is the fleet-proven Windows Lemonade target. Dense 70B and Coder Next defaults are avoided for first-run recovery. It needs about ${selectedRequiredGb}GB including context/KV, fits $([Math]::Round($capacityGb, 1))GB $($memory.Label), and gives ${contextK}K context. Throughput requires a local benchmark after first launch."
@@ -677,6 +716,8 @@ function Resolve-CatalogModelRecommendation {
         if (-not (Test-CatalogModelInstallRecommendationAllowed -Model $model)) { continue }
         if (-not (Test-CatalogModelFamilyAllowed -Model $model -ModelProfileName $modelProfileName)) { continue }
         $runtimeProfile = Get-CatalogRuntimeProfile -Model $model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB
+        if (-not $runtimeProfile -and (Get-CatalogRuntimeProfile -Model $model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -IgnoreRamMinimum)) { continue }
+        $model = Get-CatalogModelFittingContext -Model $model -CapacityGB $capacityGb -RuntimeProfile $runtimeProfile
         $requiredGb = Get-CatalogModelSelectorRequiredGB -Model $model -RuntimeProfile $runtimeProfile
         if ($requiredGb -gt ($capacityGb + 0.25)) { continue }
         $candidates += [pscustomobject]@{
@@ -687,7 +728,7 @@ function Resolve-CatalogModelRecommendation {
         }
     }
     if ($candidates.Count -eq 0) {
-        return $TierConfig
+        throw "No catalog model fits the detected memory and selected profile. Choose a smaller model profile or use cloud mode; refusing an unsafe tier-map fallback."
     }
 
     $ranked = $candidates | Sort-Object -Property `
