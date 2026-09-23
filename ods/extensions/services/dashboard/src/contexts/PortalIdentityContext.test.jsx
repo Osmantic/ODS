@@ -49,6 +49,17 @@ it('preserves an unsaved name through refresh and offers explicit adoption of th
   expect(input).toHaveValue('Other')
 })
 
+it('restores focus to the refresh control after reloading the saved name', async () => {
+  fetch.mockResolvedValueOnce(response(identity('Old', 2))).mockResolvedValueOnce(response(identity('New', 3)))
+  render(editor())
+  await waitFor(() => expect(saveButton()).toBeEnabled())
+  const refreshButton = screen.getByRole('button', { name: 'Refresh saved name' })
+  refreshButton.focus()
+  refresh()
+  await waitFor(() => expect(saved()).toBe('New'))
+  expect(refreshButton).toHaveFocus()
+})
+
 it('keeps the proposed name after a conflict and saves only against the refreshed revision', async () => {
   fetch.mockResolvedValueOnce(response(identity('Old',2)))
     .mockResolvedValueOnce(new globalThis.Response('{}',{status:409}))
