@@ -3,13 +3,13 @@ import { render } from '../test/test-utils'
 import Extensions from './Extensions'
 
 const json = (body, status = 200) => ({ ok: status < 400, status, json: async () => body })
-async function openConsole(readLogs) {
+async function openConsole(readLogs, progressStatus = 'idle') {
   vi.stubGlobal('fetch', vi.fn(async url => {
     if (url === '/api/extensions/catalog') return json({ agent_available: true, extensions: [{
       id: 'gitea', name: 'Gitea', status: 'enabled', source: 'user', features: [],
     }] })
     if (url === '/api/templates') return json({ templates: [] })
-    if (url === '/api/extensions/gitea/progress') return json({ status: 'idle' })
+    if (url === '/api/extensions/gitea/progress') return json({ status: progressStatus })
     if (url === '/api/extensions/gitea/logs') return readLogs()
     throw new Error(`Unexpected request: ${url}`)
   }))
@@ -67,4 +67,12 @@ test('releases the read gate after both automatic and manual failures', async ()
   expect(readLogs).toHaveBeenCalledTimes(3)
   expect(consoleView.getByText('Recovered logs')).toBeInTheDocument()
   expect(consoleView.queryByText('Host agent unavailable')).not.toBeInTheDocument()
+})
+
+test('stops automatic log polling after terminal install progress', async () => {
+  const readLogs = vi.fn().mockResolvedValue(json({ logs: 'Terminal snapshot' }))
+  const consoleView = await openConsole(readLogs, 'started')
+  expect(consoleView.getByText('Terminal snapshot')).toBeInTheDocument()
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+  expect(readLogs).toHaveBeenCalledTimes(1)
 })
