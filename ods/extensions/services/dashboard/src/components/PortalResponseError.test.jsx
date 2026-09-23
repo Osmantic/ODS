@@ -11,3 +11,9 @@ it('retains actionable runtime error text',()=>{
   render(<PortalResponseError content="Could not save the request for recovery. No task was started. Check browser storage and try again."/>);
   expect(screen.getByRole('status')).toHaveTextContent('Check browser storage and try again.')
 })
+it('bounds untrusted API error text',()=>{
+  render(<PortalResponseError content={'x'.repeat(900)}/>);
+  const message=screen.getByRole('status').textContent
+  expect(message).toHaveLength(500)
+  expect(message.endsWith('…')).toBe(true)
+})
