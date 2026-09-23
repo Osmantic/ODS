@@ -271,6 +271,8 @@ run_phase06_env_cycle() (
 
     local install_dir="$TEMP_DIR/phase06-install"
     mkdir -p "$install_dir"
+    export HOME="$install_dir/test-home"
+    mkdir -p "$HOME"
     tar -C "$ROOT_DIR" \
         --exclude='./.env' \
         --exclude='./extensions/services/dashboard/node_modules' \
@@ -379,6 +381,8 @@ run_phase06_amd_external() (
 
     local install_dir="$TEMP_DIR/phase06-amd"
     mkdir -p "$install_dir"
+    export HOME="$install_dir/test-home"
+    mkdir -p "$HOME"
     tar -C "$ROOT_DIR" \
         --exclude='./.env' \
         --exclude='./extensions/services/dashboard/node_modules' \
