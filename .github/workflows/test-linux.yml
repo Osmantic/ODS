@@ -409,6 +409,7 @@ jobs:
 
       - name: Installer Contract Checks
         run: |
+          python3 tests/test_pre_download_tier_arg.py
           bash tests/contracts/test-installer-contracts.sh
           bash tests/test-linux-ollama-port-override.sh
           bash tests/test-external-services.sh
