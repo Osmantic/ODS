@@ -15507,6 +15507,52 @@ test("later failed preview work retains only the same session's historical publi
   }
 });
 
+test("historical preview cannot hide a later coding stop from the final reply", () => {
+  for (const deferred of [false, true]) {
+    const guard = createToolLoopGuard({ limits: { failedExecRetries: 1, failedVerificationAttempts: 1 } });
+    const {details} = seedNamedPreview(guard);
+    const context = {agentId: "pixel", runId: "coding-run", sessionId: "session-1"};
+    guard.observeRun(context, "pixel", {prompt: "Build a Python CLI with unittest tests in /workspace/code. Create public/index.html and publish public as a verified Pixel workspace preview."});
+    const invoke = (name, params) => {
+      const event = deferred
+        ? {toolName: "tool_call", params: {id: `openclaw:core:${name}`, args: params}}
+        : {toolName: name, params};
+      return guard.beforeToolCall(event, context, "pixel");
+    };
+    const params = {command: "python3 -m unittest", workdir: "/workspace/code"};
+    assert.notEqual(invoke("exec", params)?.block, true);
+    guard.afterToolCall({toolName: "exec", params, result: {
+      isError: true, details: {status: "completed", exitCode: 1},
+      content: [{type: "text", text: "NameError: name 'sys' is not defined"}],
+    }}, context, "pixel");
+    assert.equal(invoke("exec", params).blockReason, CODING_RETRY_EXHAUSTED_REASON);
+    const result = reply(guard, {event: {runId: "coding-run", payload: {text: ""}}});
+    assert.match(result.payload.text, /stopped the coding loop/);
+    assert.ok(result.payload.text.includes(VERIFICATION_FAILED_DELIVERY_PREFIX));
+    assert.ok(result.payload.text.includes(details.url));
+    assert.match(result.payload.text, /last published preview/);
+    assert.doesNotMatch(result.payload.text, /publish again to verify/);
+    assert.equal(guard.verificationForRun("coding-run").status, "failed");
+  }
+});
+
+test("historical publication preserves failed and pending verification truth", () => {
+  for (const status of ["failed", "pending"]) {
+    const guard = createToolLoopGuard();
+    const {details} = seedNamedPreview(guard);
+    const params = {command: "npm test", workdir: "/workspace/log-viewer-lab"};
+    call(guard, "exec", {event: {params}});
+    afterCall(guard, "exec", {event: {params, result: {details: status === "pending"
+      ? {status: "running", sessionId: "pending-check"} : {status: "completed", exitCode: 1}}}});
+    const result = reply(guard);
+    assert.ok(result.payload.text.includes(status === "pending"
+      ? VERIFICATION_PENDING_DELIVERY_PREFIX : VERIFICATION_FAILED_DELIVERY_PREFIX));
+    assert.ok(result.payload.text.includes(details.url));
+    assert.match(result.payload.text, /last published preview/);
+    assert.equal(guard.verificationForRun("run-1").status, "failed");
+  }
+});
+
 
 test("publication preserves its receipt without hiding a failed or pending check", () => {
   for (const status of ["failed", "pending"]) {

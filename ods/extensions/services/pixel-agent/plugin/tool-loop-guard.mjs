@@ -10274,13 +10274,24 @@ export function createToolLoopGuard({
         // it as verification of the latest workspace or a completed request.
         if (state.workspaceLastVerifiedPreview) {
           const preview = state.workspaceLastVerifiedPreview;
+          const checkText = state.latestVerificationStatus === "failed"
+            ? VERIFICATION_FAILED_DELIVERY_PREFIX
+            : state.latestVerificationStatus === "pending" ? VERIFICATION_PENDING_DELIVERY_PREFIX : "";
+          const stopText = state.codingExhausted
+            ? "Pixel stopped the coding loop before the requested work was complete. Saved files are preserved."
+            : "";
           return {
             status: "failed",
             text:
+              (stopText ? `${stopText}\n\n` : "") +
+              (checkText ? `${checkText}\n\n` : "") +
               "Your last published preview is still available.\n\n" +
               `[Open last published preview](${preview.url})\n\n` +
               "The workspace has not been verified again since later tool activity. " +
-              "This snapshot may not include subsequent changes; publish again to verify the current files.",
+              "This snapshot may not include subsequent changes and does not verify completion of this request. " +
+              (state.codingExhausted
+                ? "Start a fresh message to continue repairing, verifying, and publishing the current files."
+                : "Ask Pixel to verify and publish the current files."),
             preview: {
               schemaVersion: 1,
               kind: "ods-pixel-workspace-preview",
