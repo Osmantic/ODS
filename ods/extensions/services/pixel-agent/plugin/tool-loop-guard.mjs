@@ -449,6 +449,36 @@ export function nativeRuntimeExecWrapper(executable = process.execPath, platform
   return wrapper;
 }
 
+// Preserve the SDK's synchronous resolver/abort semantics. The optional
+// observer is supplied only by the guard's owned progress-exhaustion path.
+export function createRunAbortAdapter({resolveSessionId, abort}) {
+  return (sessionId, sessionKey, observe) => {
+    let resolved;
+    let stage = 'resolve';
+    const report = (value, threw = false) => {
+      if (typeof observe !== 'function') return;
+      try {
+        observe({sessionKeyPresent:Boolean(sessionKey), resolverMatched:Boolean(resolved),
+          targetOrigin:resolved ? 'session-key' : 'session-id',
+          resolvedMatchesTrackedSession:Boolean(resolved) && resolved === sessionId,
+          acknowledged:value === true, callbackThrew:threw,
+          exceptionStage:threw ? stage : undefined,
+          reasonUnavailable:value !== true});
+      } catch { /* Logging must never alter cancellation. */ }
+    };
+    try {
+      resolved = sessionKey && resolveSessionId(sessionKey);
+      stage = 'abort';
+      const value = abort(resolved || sessionId);
+      report(value);
+      return value;
+    } catch (error) {
+      report(undefined, true);
+      throw error;
+    }
+  };
+}
+
 export function createExecCancellationControl({
   root = path.join(homedir(), ".openclaw", ".ods-exec-control"),
   executionHost = "sandbox",
@@ -6815,13 +6845,31 @@ export function createToolLoopGuard({
     // Only called at model_call_ended. Aborting from model-start/stream
     // construction can strand the provider prompt and its session write lock.
     // Tool hooks enforce the terminal budget while this boundary is pending.
+    let observed = false;
+    const observe = details => {
+      if (observed || (state.progressAbortObservations ?? 0) >= 3) return;
+      observed = true;
+      state.progressAbortObservations = (state.progressAbortObservations ?? 0) + 1;
+      const record = {phase:'progress-limit', observation:state.progressAbortObservations,
+        executionHost:['sandbox','gateway'].includes(state.preparationExecutionHost) ? state.preparationExecutionHost : 'unknown',
+        currentRunOwnsSession:sessionRuns.get(sessionId) === runId,
+        sessionKeyPresent:typeof state.currentSessionKey === 'string' && state.currentSessionKey.length > 0,
+        resolverMatched:details?.resolverMatched === true,
+        targetOrigin:['session-key','session-id'].includes(details?.targetOrigin) ? details.targetOrigin : 'unobserved',
+        resolvedMatchesTrackedSession:details?.resolvedMatchesTrackedSession === true,
+        acknowledged:details?.acknowledged === true, callbackThrew:details?.callbackThrew === true,
+        exceptionStage:['resolve','abort'].includes(details?.exceptionStage) ? details.exceptionStage : null,
+        reasonUnavailable:details?.acknowledged !== true};
+      try { warn(`Pixel progress-limit abort observation: ${JSON.stringify(record)}`); }
+      catch { /* A diagnostic sink failure must not change abort behavior. */ }
+    };
     try {
-      const aborted = abortRun?.(sessionId, state.currentSessionKey);
+      const aborted = abortRun?.(sessionId, state.currentSessionKey, observe);
       // A rejected abort is not completion. Retry at the next model-end
       // boundary, while ownership still matches this exact run.
       state.progressAbortAttempted = aborted === true;
-      warn(`Pixel progress-limit abort ${aborted ? "requested" : "not acknowledged"}: ${runId}`);
-    } catch (error) { warn(`Pixel progress-limit abort failed: ${String(error)}`); }
+      observe({acknowledged:aborted === true});
+    } catch { observe({callbackThrew:true}); }
   }
 
   function beforeToolCall(event, context, agentId = "pixel") {

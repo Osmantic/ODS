@@ -144,6 +144,7 @@ import {
   WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON,
   WORKSPACE_VISUAL_CONTINUATION_SCOPE_REASON,
   createExecCancellationControl,
+  createRunAbortAdapter,
   createToolLoopGuard,
   createToolLoopGuardRegistry,
   githubReadmeUrl,
@@ -15542,6 +15543,112 @@ test('an unacknowledged progress abort is retried at model end until confirmed',
   guard.observeModelEnd({},context);
   assert.deepEqual(attempts,[['session-retry','agent:pixel:retry'],['session-retry','agent:pixel:retry']]);
   assert.equal(guard.deliveryVerificationForRun('retry-abort').status,'failed');
+});
+
+test('abort adapter preserves synchronous targets, return values and callback counts', () => {
+  for (const resolved of [undefined, 'tracked', 'resolved']) {
+    for (const key of [undefined, 'private-key']) {
+      for (const result of [true, false, undefined]) {
+        const calls=[], observations=[];
+        const abort=createRunAbortAdapter({resolveSessionId:k=>{calls.push(['resolve',k]);return resolved;},
+          abort:id=>{calls.push(['abort',id]);return result;}});
+        assert.equal(abort('tracked',key,value=>observations.push(value)),result);
+        assert.deepEqual(calls,[...(key?[['resolve',key]]:[]),['abort',(key&&resolved)||'tracked']]);
+        assert.equal(observations.length,1);
+        assert.equal(observations[0].resolverMatched,Boolean(key&&resolved));
+        assert.equal(observations[0].resolvedMatchesTrackedSession,Boolean(key&&resolved==='tracked'));
+        assert.equal(observations[0].targetOrigin,key&&resolved?'session-key':'session-id');
+        assert.equal(observations[0].acknowledged,result===true);
+        assert.equal(observations[0].reasonUnavailable,result!==true);
+        assert.doesNotMatch(JSON.stringify(observations),/private-key|"tracked"|"resolved"/);
+      }
+    }
+  }
+});
+
+test('abort adapter observer failures preserve SDK exceptions and never add calls', () => {
+  for (const stage of ['resolve','abort','success']) {
+    const failure=new Error('private failure'), calls=[];
+    const abort=createRunAbortAdapter({resolveSessionId:()=>{calls.push('resolve');if(stage==='resolve')throw failure;return 'target';},
+      abort:()=>{calls.push('abort');if(stage==='abort')throw failure;return true;}});
+    const observe=value=>{calls.push('observe');assert.equal(value.exceptionStage,stage==='success'?undefined:stage);throw new Error('sink failure');};
+    if(stage==='success') assert.equal(abort('tracked','key',observe),true);
+    else assert.throws(()=>abort('tracked','key',observe),error=>error===failure);
+    assert.deepEqual(calls,stage==='resolve'?['resolve','observe']:['resolve','abort','observe']);
+  }
+  const calls=[];
+  assert.equal(createRunAbortAdapter({resolveSessionId:()=>{calls.push('resolve');},abort:()=>{calls.push('abort');return false;}})('tracked','key'),false);
+  assert.deepEqual(calls,['resolve','abort'],'other cancellation paths need no observer');
+});
+
+test('progress abort diagnostics are owned, sanitized, capped and do not change retries', () => {
+  const messages=[], calls=[];
+  const guard=createToolLoopGuard({warn:message=>messages.push(message),abortRun:createRunAbortAdapter({
+    resolveSessionId:key=>{calls.push(['resolve',key]);return 'private-resolved-session';},
+    abort:id=>{calls.push(['abort',id]);return false;}})});
+  const context={agentId:'pixel',runId:'private-run',sessionId:'private-session',sessionKey:'private-key'};
+  guard.observeRun(context,'pixel',{prompt:'PRIVATE PROMPT'},{executionHost:'sandbox'});
+  for(let i=0;i<9;i++) guard.observeModelCall({},context);
+  assert.equal(calls.length,0,'no abort before the safe model-end boundary');
+  for(let i=0;i<5;i++) guard.observeModelEnd({},context);
+  assert.equal(calls.filter(x=>x[0]==='resolve').length,5);
+  assert.equal(calls.filter(x=>x[0]==='abort').length,5);
+  const records=messages.filter(x=>x.startsWith('Pixel progress-limit abort observation: ')).map(x=>JSON.parse(x.split(': ').slice(1).join(': ')));
+  assert.equal(records.length,3);
+  assert.deepEqual(records.map(x=>x.observation),[1,2,3]);
+  for(const record of records) assert.deepEqual(record,{phase:'progress-limit',observation:record.observation,
+    executionHost:'sandbox',currentRunOwnsSession:true,sessionKeyPresent:true,resolverMatched:true,
+    targetOrigin:'session-key',resolvedMatchesTrackedSession:false,acknowledged:false,callbackThrew:false,
+    exceptionStage:null,reasonUnavailable:true});
+  assert.doesNotMatch(JSON.stringify(records),/private-|PRIVATE PROMPT/);
+  guard.observeRun({...context,runId:'new-owner'},'pixel',{prompt:'New turn'});
+  guard.observeModelEnd({},context);
+  assert.equal(calls.length,10,'retired ownership cannot invoke the callback');
+});
+
+test('progress abort diagnostics cannot change acknowledgement or callback exceptions', () => {
+  for(const outcome of ['ack','false','throw']) {
+    let attempts=0, observations=0;
+    const guard=createToolLoopGuard({warn:()=>{observations++;throw new Error('sink unavailable');},abortRun:createRunAbortAdapter({
+      resolveSessionId:()=>undefined,abort:()=>{attempts++;if(outcome==='throw')throw new Error('private SDK failure');return outcome==='ack';}})});
+    const context={agentId:'pixel',runId:'owned-run',sessionId:'owned-session',sessionKey:'owned-key'};
+    guard.observeRun(context,'pixel',{prompt:'Make a site'});
+    for(let i=0;i<9;i++) guard.observeModelCall({},context);
+    for(let i=0;i<5;i++) assert.doesNotThrow(()=>guard.observeModelEnd({},context));
+    assert.equal(attempts,outcome==='ack'?1:5);
+    assert.equal(observations,outcome==='ack'?1:3);
+    assert.equal(guard.deliveryVerificationForRun(context.runId).status,'failed');
+  }
+});
+
+test('progress abort observations allowlist custom callback data and reset per owned run', () => {
+  const messages=[];
+  let attempts=0;
+  const guard=createToolLoopGuard({warn:message=>messages.push(message),abortRun:(_id,_key,observe)=>{
+    attempts++;
+    observe({resolverMatched:'secret',targetOrigin:'private-target',exceptionStage:'private-stack',
+      rawSessionId:'private-session',prompt:'private-prompt',acknowledged:false});
+    observe({acknowledged:true});
+    return false;
+  }});
+  for(const runId of ['one','two']) {
+    const context={agentId:'pixel',runId,sessionId:'tracked-'+runId};
+    guard.observeRun(context,'pixel',{prompt:'Make a site'},{executionHost:'private-mode'});
+    for(let i=0;i<9;i++) guard.observeModelCall({},context);
+    for(let i=0;i<4;i++) guard.observeModelEnd({},context);
+  }
+  const records=messages.map(x=>JSON.parse(x.substring(x.indexOf('{'))));
+  assert.equal(attempts,8);
+  assert.deepEqual(records.map(x=>x.observation),[1,2,3,1,2,3]);
+  for(const record of records) {
+    assert.equal(record.executionHost,'unknown');
+    assert.equal(record.targetOrigin,'unobserved');
+    assert.equal(record.exceptionStage,null);
+    assert.equal(record.resolverMatched,false);
+    assert.equal(record.sessionKeyPresent,false);
+    assert.equal(record.acknowledged,false,'duplicate observer calls do not replace the first observation');
+  }
+  assert.doesNotMatch(JSON.stringify(records),/secret|private-|rawSessionId|prompt/);
 });
 
 test('native rejected calls with session-only persistence exhaust the owning run', () => {

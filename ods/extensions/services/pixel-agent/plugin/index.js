@@ -42,6 +42,7 @@ import {
 } from "./tool-content.mjs";
 import {
   createExecCancellationControl,
+  createRunAbortAdapter,
   createToolLoopGuardRegistry,
   privateBrowserAccessForAgent,
 } from "./tool-loop-guard.mjs";
@@ -284,9 +285,8 @@ export default definePluginEntry({
     // separate passes. Keep one process-local guard so the route can see the
     // opaque user -> active session mapping observed by the runtime hook.
     const toolLoopGuard = toolLoopGuardRegistry.get({
-      abortRun: (sessionId, sessionKey) => abortAgentHarnessRun(
-        (sessionKey && resolveActiveEmbeddedRunSessionId(sessionKey)) || sessionId
-      ),
+      abortRun: createRunAbortAdapter({resolveSessionId:resolveActiveEmbeddedRunSessionId,
+        abort:abortAgentHarnessRun}),
       abortRunAndDrain: (sessionId, sessionKey) =>
         abortAndDrainAgentHarnessRun({
           sessionId: (sessionKey && resolveActiveEmbeddedRunSessionId(sessionKey)) || sessionId,
