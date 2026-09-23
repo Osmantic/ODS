@@ -1791,9 +1791,12 @@ def _find_normalized_model(model_id: str) -> Optional[dict]:
 async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> str | None:
     base_url = _configured_llm_base_url(host, port)
     lemonade_api = api_prefix == "/api/v1"
+    external_compatible = (
+        LLM_BACKEND == "external"
+        and os.environ.get("EXTERNAL_LLM_PROVIDER", "").strip().lower() == "openai-compatible"
+    )
     async with httpx.AsyncClient(timeout=10.0) as client:
-        if (LLM_BACKEND == "external"
-                and os.environ.get("EXTERNAL_LLM_PROVIDER", "").lower() == "openai-compatible"):
+        if external_compatible:
             try:
                 resp = await client.get(f"{base_url}/api/v1/health")
                 resp.raise_for_status()
@@ -1828,7 +1831,7 @@ async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> st
                     return model.get("id")
             if lemonade_api:
                 return None
-            if data and data[0].get("id"):
+            if data and data[0].get("id") and not external_compatible:
                 return data[0]["id"]
         except (httpx.HTTPError, ValueError):
             pass

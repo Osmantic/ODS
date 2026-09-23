@@ -835,6 +835,30 @@ class TestGetLoadedModel:
         assert seen == ["http://host.docker.internal:8000/api/v1/health"]
 
     @pytest.mark.asyncio
+    async def test_generic_external_does_not_guess_first_when_health_unavailable(self, monkeypatch):
+        monkeypatch.setattr("helpers.SERVICES", {
+            "llama-server": {"host": "host.docker.internal", "port": 8000},
+        })
+        monkeypatch.setattr("helpers.LLM_BACKEND", "external")
+        monkeypatch.setattr("helpers._LLM_API_PREFIX", "/v1")
+        monkeypatch.setenv("EXTERNAL_LLM_PROVIDER", "openai-compatible")
+        seen = []
+
+        async def get(url):
+            seen.append(url)
+            response = MagicMock(status_code=404)
+            response.json.return_value = {"data": [{"id": "Gemma-4-E2B-it-GGUF"}]}
+            return response
+
+        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=MagicMock(get=get)))
+
+        assert await get_loaded_model() is None
+        assert seen == [
+            "http://host.docker.internal:8000/api/v1/health",
+            "http://host.docker.internal:8000/v1/models",
+        ]
+
+    @pytest.mark.asyncio
     async def test_returns_none_when_llama_server_not_in_services(self, monkeypatch):
         monkeypatch.setattr("helpers.SERVICES", {})
         result = await get_loaded_model()

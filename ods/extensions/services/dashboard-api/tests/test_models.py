@@ -849,6 +849,55 @@ def test_generic_external_lemonade_fallback_uses_health_not_available_first(monk
     assert seen_urls == ["http://host.docker.internal:8000/api/v1/health"]
 
 
+def test_generic_external_fallback_does_not_guess_first_when_health_unavailable(monkeypatch):
+    import routers.models as models_router
+
+    seen_urls = []
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"id": "Gemma-4-E2B-it-GGUF"}]}
+
+    class _Client:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            seen_urls.append(url)
+            if url.endswith("/api/v1/health") or url.endswith("/props"):
+                raise httpx.ConnectError("unavailable")
+            return _Response()
+
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "external")
+    monkeypatch.setenv("EXTERNAL_LLM_PROVIDER", "openai-compatible")
+    monkeypatch.setenv("LLM_URL", "http://host.docker.internal:8000/v1")
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", _Client)
+
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(
+            models_router._fetch_llama_loaded_model("llama-server", 8080, "/v1")
+        )
+    finally:
+        loop.close()
+
+    assert result is None
+    assert seen_urls == [
+        "http://host.docker.internal:8000/api/v1/health",
+        "http://host.docker.internal:8000/v1/models",
+        "http://host.docker.internal:8000/props",
+    ]
+
+
 def test_fetch_loaded_model_uses_configured_llm_url(monkeypatch):
     """Windows Lemonade exposes the runtime through LLM_URL, not llama-server DNS."""
     import routers.models as models_router

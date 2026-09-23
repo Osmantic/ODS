@@ -573,8 +573,11 @@ async def get_loaded_model() -> Optional[str]:
         # OpenAI-compatible external backend. Its /v1/models lists every
         # available model, with no loaded status; the first entry is not the
         # active model. Prefer its explicit health identity when present.
-        if (LLM_BACKEND == "external"
-                and os.environ.get("EXTERNAL_LLM_PROVIDER", "").lower() == "openai-compatible"):
+        external_compatible = (
+            LLM_BACKEND == "external"
+            and os.environ.get("EXTERNAL_LLM_PROVIDER", "").strip().lower() == "openai-compatible"
+        )
+        if external_compatible:
             try:
                 health = await client.get(f"http://{host}:{port}/api/v1/health")
                 if health.status_code == 200:
@@ -594,7 +597,7 @@ async def get_loaded_model() -> Optional[str]:
             status = m.get("status", {})
             if isinstance(status, dict) and status.get("value") == "loaded":
                 return m.get("id")
-        if models:
+        if models and not external_compatible:
             return models[0].get("id")
     except (httpx.HTTPError, httpx.TimeoutException, ValueError, KeyError) as e:
         logger.debug("get_loaded_model failed: %s", e)
