@@ -271,13 +271,23 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
     assert facade.read_bytes() == patched
 
 
-def test_reviewed_tool_catalog_migrations_round_trip(tmp_path):
-    candidate_path = os.environ.get("OPENCLAW_TOOL_SEARCH_MODULE")
+@pytest.mark.parametrize('environment,manifest_name,module_name', [
+    ('OPENCLAW_TOOL_SEARCH_MODULE', 'openclaw-image-envelope.json', repair_module.IMAGE_MODULE),
+    ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE),
+])
+def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_name, module_name):
+    candidate_path = os.environ.get(environment)
     if not candidate_path:
         pytest.skip("requires the exact reviewed OpenClaw candidate")
-    manifest_path = ROOT / "host/openclaw-image-envelope.json"
+    manifest_path = ROOT / 'host' / manifest_name
     manifest = json.loads(manifest_path.read_text())
     candidate = Path(candidate_path).read_bytes()
+    if hashlib.sha256(candidate).hexdigest() == manifest['sourceSha256']:
+        source = candidate.decode()
+        for old, new in manifest['replacements']:
+            assert source.count(old) == 1
+            source = source.replace(old, new)
+        candidate = source.encode()
     assert hashlib.sha256(candidate).hexdigest() == manifest["patchedSha256"]
     original = candidate.decode()
     for old, new in reversed(manifest["replacements"]):
@@ -290,14 +300,14 @@ def test_reviewed_tool_catalog_migrations_round_trip(tmp_path):
         runtime = tmp_path / expected
         (runtime / "dist").mkdir(parents=True)
         (runtime / "package.json").write_text(json.dumps({"name": "openclaw", "version": repair_module.VERSION}))
-        module = runtime / "dist" / repair_module.IMAGE_MODULE
+        module = runtime / "dist" / module_name
         old_source = original
         for old, new in replacements:
             assert old_source.count(old) == 1
             old_source = old_source.replace(old, new)
         assert hashlib.sha256(old_source.encode()).hexdigest() == expected
         module.write_text(old_source)
-        options = {"module_name": repair_module.IMAGE_MODULE, "manifest_path": manifest_path}
+        options = {"module_name": module_name, "manifest_path": manifest_path}
         repair_module.repair(runtime, runtime / "state", **options)
         assert module.read_bytes() == candidate
         assert repair_module.repair(runtime, runtime / "state", **options)["status"] == "unchanged"

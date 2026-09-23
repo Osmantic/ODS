@@ -136,3 +136,37 @@ upgrading it. Model and settings defaults retain the calculated output/transport
 reserve without a redundant half-window reserve floor. Explicit larger settings
 reserves remain supported. Compaction cannot make an oversized irreducible
 prompt fit every model.
+
+## Concurrent compaction session locks
+
+`openclaw-compaction-budget.json` also repairs OpenClaw 2026.6.33's
+`selection-BEwSQKM-.js` session lock controller. Split-turn compaction starts
+history and turn-prefix summaries concurrently. Both prompt wrappers release
+and reacquire the same session lock. Previously, both could observe an absent
+lock and attempt independent non-reentrant acquisitions: one succeeded while
+the other timed out waiting on its own session.
+
+Concurrent reacquisitions now await one in-flight acquisition, including its
+transcript fence verification. Acquisition and fence failures reach every
+waiter; a rejected fence releases the acquired lock. The next cycle can try
+again. Physical locking, external-owner exclusion, takeover detection and
+configured timeouts remain unchanged. The prior reviewed budget repair can
+migrate through the original hash, with the existing backup/restore contract.
+
+This shared repair is consumed by Linux/Windows-WSL host installation and by
+the macOS native runtime bundle. It contains no inference-backend or GPU
+selection changes. JavaScript concurrency tests run on Linux, macOS and Windows
+CI; that is not a qualification of every GPU, driver or Windows installation.
+
+To test the actual pinned runtime's controller and physical file locks without
+starting an agent or touching an owner's conversations:
+
+```sh
+OPENCLAW_PACKAGE_DIR=/path/to/openclaw node --test \
+  ods/extensions/services/pixel-agent/tests/runtime_compaction_lock.integration.mjs
+```
+
+Use original or shared-repaired package bytes, before macOS-specific bundle
+composition. The test checks exact hashes, reproduces the old failure, and
+verifies concurrent streams, resumed writes, external exclusion, transcript
+takeover rejection and independent sessions using temporary files.
