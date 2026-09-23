@@ -9,8 +9,15 @@ on:
       - 'ods/installers/macos/**'
       - 'ods/tests/test_macos_pixel_native_install.py'
       - 'ods/tests/test_macos_pixel_native_update.py'
+      - 'ods/tests/test_macos_pixel_controller_repair.py'
+      - 'ods/tests/test_macos_pixel_controller_held_proof.py'
+      - 'ods/tests/test_macos_pixel_native_finalize.py'
+      - 'ods/tests/test_macos_pixel_access_install.py'
+      - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
       - 'ods/tests/test_pixel_startup_reproof.py'
       - 'ods/tests/test_macos_memory_budget.py'
+      - 'ods/tests/test_macos_pixel_ops_state.py'
+      - 'ods/tests/test_macos_pixel_ops_state_live.py'
       - 'ods/bin/ods-host-agent.py'
       - '.github/workflows/test-macos-bridge.yml'
   push:
@@ -22,8 +29,15 @@ on:
       - 'ods/installers/macos/**'
       - 'ods/tests/test_macos_pixel_native_install.py'
       - 'ods/tests/test_macos_pixel_native_update.py'
+      - 'ods/tests/test_macos_pixel_controller_repair.py'
+      - 'ods/tests/test_macos_pixel_controller_held_proof.py'
+      - 'ods/tests/test_macos_pixel_native_finalize.py'
+      - 'ods/tests/test_macos_pixel_access_install.py'
+      - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
       - 'ods/tests/test_pixel_startup_reproof.py'
       - 'ods/tests/test_macos_memory_budget.py'
+      - 'ods/tests/test_macos_pixel_ops_state.py'
+      - 'ods/tests/test_macos_pixel_ops_state_live.py'
       - 'ods/bin/ods-host-agent.py'
       - '.github/workflows/test-macos-bridge.yml'
 
@@ -51,5 +65,11 @@ jobs:
           python -m pytest -q
           ods/tests/test_macos_pixel_native_install.py
           ods/tests/test_macos_pixel_native_update.py
+          ods/tests/test_macos_pixel_controller_repair.py
+          ods/tests/test_macos_pixel_controller_held_proof.py
+          ods/tests/test_macos_pixel_native_finalize.py
+          ods/tests/test_macos_pixel_access_install.py
+          ods/tests/test_macos_pixel_runtime_upgrade.py
           ods/tests/test_pixel_startup_reproof.py
           ods/tests/test_macos_memory_budget.py
+          ods/tests/test_macos_pixel_ops_state.py

@@ -418,8 +418,11 @@ def install_new(*, selection, owner, environment, workspace, port, checkpoint,
         raise ValueError('empty-native-service-selection')
     state = Path('/private/var/lib/pixel-ops-broker')
     runtime = Path('/private/var/lib/ods-pixel-manager')
-    if any(os.path.lexists(path) for path in (state, runtime,
-            Path('/private/var/lib/ods-pixel-artifact-promoter'))):
+    state_helper = helper('ops-state')
+    retained_home = os.path.lexists(state)
+    if (any(os.path.lexists(path) for path in (runtime,
+            Path('/private/var/lib/ods-pixel-artifact-promoter')))
+            or (retained_home and not state_helper.reusable_empty_home(state))):
         raise ValueError('new-native-service-state-required')
     ops = helper('ops-service')
     installer = ops.installer_helpers()
@@ -441,9 +444,8 @@ def install_new(*, selection, owner, environment, workspace, port, checkpoint,
     checkpoint({'phase': 'provisioning-identity'})
     identity = helper('ops-account').provision()
     checkpoint({'phase': 'provisioning-state', 'identity': identity})
-    state_helper = helper('ops-state')
     ids = dict(gateway_uid=entry.pw_uid, broker_uid=identity['uid'], broker_gid=identity['gid'])
-    state_helper.provision(state=state, **ids)
+    state_helper.provision(state=state, reuse_empty_home=retained_home, **ids)
     state_helper.provision_manager_runtime(runtime=runtime, **ids)
     checkpoint({'phase': 'publishing-services', 'identity': identity})
     definitions = publish(**selection, identity=identity, owner=owner,

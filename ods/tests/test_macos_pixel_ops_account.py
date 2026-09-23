@@ -166,6 +166,27 @@ def test_retained_identity_only_proof_is_read_only_and_fail_closed(
         for path in identity.iterdir()}
 
 
+@pytest.mark.skipif(sys.platform != 'darwin', reason='Darwin directory-fd semantics')
+@pytest.mark.parametrize('fault', [None, 'content', 'mode', 'symlink'])
+def test_empty_home_proof_requires_exact_empty_identity_home(tmp_path, monkeypatch, fault):
+    home = tmp_path / 'ops-home'
+    home.mkdir(mode=0o750)
+    home.chmod(0o700 if fault == 'mode' else 0o750)
+    home_info = home.stat()
+    if fault == 'content': (home / 'old-state').write_text('keep')
+    if fault == 'symlink':
+        home.rename(tmp_path / 'real-home')
+        home.symlink_to(tmp_path / 'real-home', target_is_directory=True)
+    monkeypatch.setattr(account, 'HOME', str(home))
+    monkeypatch.setattr(account, 'verify_identity_only', lambda: {
+        'name': account.NAME, 'uid': home_info.st_uid, 'gid': home_info.st_gid})
+    if fault:
+        with pytest.raises((ValueError, OSError)):
+            account.verify_empty_home_only()
+    else:
+        assert account.verify_empty_home_only()['uid'] == home_info.st_uid
+
+
 @pytest.mark.skipif(sys.platform != 'darwin' or os.geteuid() != 0 or
     os.environ.get('ODS_TEST_OPS_ACCOUNT_LIVE') != '1', reason='explicit dedicated account provisioning')
 def test_real_account_provision_and_idempotent_replay():

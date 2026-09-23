@@ -37,6 +37,23 @@ def protected_proof(owner, runtime, services, source_ref):
         raise ValueError('invalid-native-selection')
     installer = helper('pixel-macos-access-install')
     sys.path.insert(0, str(HERE.parents[2] / 'bin'))
+    state = Path('/private/var/lib/ods-pixel-access')
+    if os.path.lexists(state / 'runtime-upgrade.json'):
+        raise ValueError('native-upgrade-still-pending')
+    if not os.path.lexists(installer._controller_repair_path(runtime)):
+        return _protected_selection_proof(owner, runtime, services, source_ref, installer, repaired=False)
+    # Only the repaired-archive path adds a lock. Read selection once to choose
+    # the existing recovery controller, then reload all authority under its
+    # flock. Read-only status/inspection does not acquire this mutation lock.
+    from pixel_access_bridge import private_json
+    record = private_json(state / ('runtime-upgrade-' + runtime + '.completed.json'), 0, 32 * 1024 * 1024)
+    bridge = installer._recovery_bridge(current_digest=record['currentDigest'],
+        candidate_digest=runtime, owner_name=owner)
+    with bridge.recovery_locked(completed_digest=runtime):
+        return _protected_selection_proof(owner, runtime, services, source_ref, installer, repaired=True)
+
+
+def _protected_selection_proof(owner, runtime, services, source_ref, installer, *, repaired):
     from pixel_access_bridge import private_json
     from pixel_macos_custody import protected_bytes
     state = Path('/private/var/lib/ods-pixel-access')
@@ -47,10 +64,50 @@ def protected_proof(owner, runtime, services, source_ref):
     record = private_json(completed, 0, 32 * 1024 * 1024)
     if record.get('phase') != 'active' or record.get('candidateDigest') != runtime:
         raise ValueError('native-upgrade-not-active')
+    repair_path = installer._controller_repair_path(runtime)
+    if os.path.lexists(repair_path) != repaired:
+        raise ValueError('native-upgrade-changed-during-verification')
+    repair_before = None
+    repair_snapshots = None
+    effective = None
+    if repaired:
+        # A completed repair is a separate exact-byte exception, never a rewrite
+        # of the original activation archive or evidence of access readiness.
+        repair_before = installer._controller_private_bytes(repair_path, installer._repair.LIMIT)
+        plan, journal, effective = installer._load_upgrade_recovery(
+            current_digest=record['currentDigest'], candidate_digest=runtime,
+            owner_name=owner, completed=True)
+        installer._verify_recovery_bindings(plan, effective)
+        if journal.value != record:
+            raise ValueError('native-upgrade-changed-during-verification')
+        repair_snapshots = installer._controller_repair_snapshots(runtime)
+        installer._repair.require_finalizable(
+            installer._repair._object(repair_before, installer._repair.LIMIT), repair_snapshots)
+        # Repair success proves controller inspection, not runtime access. Do
+        # not publish ready owner receipts until normal recovery and same-mode
+        # access reproof have actually succeeded. This path performs no reproof.
+        _, repaired_services = installer._upgrade_services(plan, effective)
+        def identities():
+            return {name: installer._upgrade_service_identity(service) for name, service in repaired_services.items()}
+        def no_transition():
+            if any(os.path.lexists(state / name) for name in ('transition.json', 'policy-activation.json')):
+                raise ValueError('controller-repair-transition-pending')
+        def access_proof():
+            status = helper('pixel-controller-repair-live').controller_status(installer, repaired_services['access'],
+                owner_gid=plan['owner'].pw_gid)
+            mode = installer._policy.policy_state(plan['access_settings']['gateway_policy'])['activeMode']
+            if not installer._repair.access_ready(status) or status.get('surface') != 'darwin' or status.get('effective_mode') != mode:
+                raise ValueError('controller-repair-access-reproof-required')
+            return status
+        no_transition()
+        initial_identities = identities()
+        initial_status = access_proof()
+        if identities() != initial_identities:
+            raise ValueError('controller-repair-process-changed')
     # The root-owned journal is the authority for the activated file set.
-    for item in record['files']:
-        body = base64.b64decode(item['after'], validate=True)
-        if (hashlib.sha256(body).hexdigest() != item['afterSha256']
+    for item in effective if effective is not None else record['files']:
+        body = item['after'] if effective is not None else base64.b64decode(item['after'], validate=True)
+        if (effective is None and hashlib.sha256(body).hexdigest() != item['afterSha256']
                 or protected_bytes(item['path'], limit=8 * 1024 * 1024) != body):
             raise ValueError('native-activated-files-changed')
     service_record = private_json(state / 'service-installation.json', 0, 2 * 1024 * 1024)
@@ -63,8 +120,23 @@ def protected_proof(owner, runtime, services, source_ref):
             capture_output=True, text=True, timeout=15, check=True)
         if not re.search(r'^\s*state = running\s*$', result.stdout, re.M):
             raise ValueError('native-job-not-running')
-    if os.path.lexists(pending) or private_json(completed, 0, 32 * 1024 * 1024) != record:
+    if (os.path.lexists(pending) or private_json(completed, 0, 32 * 1024 * 1024) != record
+            or os.path.lexists(repair_path) != (repair_before is not None)
+            or repair_before is not None and (
+                installer._controller_private_bytes(repair_path, installer._repair.LIMIT) != repair_before
+                or installer._controller_repair_snapshots(runtime) != repair_snapshots)):
         raise ValueError('native-upgrade-changed-during-verification')
+    if repaired:
+        # Service readiness and launchctl checks above may take tens of seconds.
+        # A previously valid proof is not authority after a process restart or
+        # access transition. Bind a fresh final sample on both sides to the same
+        # process births while the controller mutation lock is still held.
+        no_transition()
+        if identities() != initial_identities:
+            raise ValueError('controller-repair-process-changed')
+        if access_proof() != initial_status or identities() != initial_identities:
+            raise ValueError('controller-repair-proof-changed')
+        no_transition()
     return {'status': 'active', 'runtimeDigest': runtime, 'serviceDigest': services}
 
 

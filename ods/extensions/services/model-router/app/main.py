@@ -84,6 +84,8 @@ TELEMETRY_TIMEOUT_SECONDS = max(
 )
 EVIDENCE_LIMIT = 2048
 EVIDENCE_TTL_SECONDS = 15 * 60
+TOOL_EVIDENCE_MAX_COUNT = 256
+TOOL_EVIDENCE_MAX_BYTES = 256 * 1024
 
 FORWARD_PATHS = {
     "/v1/chat/completions": "POST",
@@ -753,6 +755,36 @@ def _active_route() -> dict[str, Any]:
         "apiKeyEnv": endpoint["apiKeyEnv"],
         "queueMode": str(availability.get("mode") or "serve_active") == "queue",
     }
+
+
+def _offered_tool_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fingerprint the outgoing tools, never retain their names or schema text.
+
+    Called only for signed probes. This measures router input to the backend,
+    not schema acceptance, evaluated plugin code, or successful tool execution.
+    Object-key order is normalized; array order and missing-vs-empty are not.
+    Diagnostic limits must never alter inference or its ordinary validation.
+    """
+    result = {
+        "schemaVersion": 1,
+        "boundary": "router-forwarded-tools-not-execution-proof",
+        "encoding": "json-sort-keys-ascii-v1",
+        "state": "unavailable", "count": None, "sha256": None,
+    }
+    present = "tools" in payload
+    tools = payload.get("tools", [])
+    if type(tools) is not list or len(tools) > TOOL_EVIDENCE_MAX_COUNT:
+        return result
+    try:
+        encoded = json.dumps({"present": present, "tools": tools}, sort_keys=True,
+                             separators=(",", ":"), ensure_ascii=True,
+                             allow_nan=False).encode("ascii")
+        if len(encoded) > TOOL_EVIDENCE_MAX_BYTES:
+            return result
+        return {**result, "state": "observed", "count": len(tools),
+                "sha256": hashlib.sha256(encoded).hexdigest()}
+    except (TypeError, ValueError, RecursionError):
+        return result
 
 
 def _record_evidence(record: dict[str, Any]) -> None:
@@ -1645,12 +1677,14 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     telemetry_started = time.monotonic()
     evidence_base = {
         "probeId": probe_id,
+        "requestId": request_id,
         "requestedModel": requested_alias,
         "routedModel": route["runtimeModelId"],
         "backend": route["backendKind"],
         "endpointId": route["endpointId"],
         "routeSeq": route["routeSeq"],
         "path": path,
+        **({"offeredTools": _offered_tool_evidence(payload)} if probe_id else {}),
     }
 
     try:

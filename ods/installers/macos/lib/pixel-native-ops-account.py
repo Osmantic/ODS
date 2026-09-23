@@ -215,9 +215,29 @@ def verify_identity_only():
             os.close(lock)
 
 
+def verify_empty_home_only():
+    """Prove the sole retained Operations home has no prior workload state."""
+    identity = verify_identity_only()
+    fd = os.open(HOME, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != identity['uid']
+                or info.st_gid != identity['gid']
+                or stat.S_IMODE(info.st_mode) != 0o750 or os.listdir(fd)):
+            raise ValueError('operations-home-not-empty-or-owned')
+    finally:
+        os.close(fd)
+    return identity
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--verify-identity-only', action='store_true')
+    parser.add_argument('--verify-empty-home-only', action='store_true')
     args = parser.parse_args()
-    print(json.dumps(verify_identity_only() if args.verify_identity_only else provision(),
+    if args.verify_identity_only and args.verify_empty_home_only:
+        parser.error('select one verification mode')
+    result = (verify_empty_home_only() if args.verify_empty_home_only else
+              verify_identity_only() if args.verify_identity_only else provision())
+    print(json.dumps(result,
         sort_keys=True))

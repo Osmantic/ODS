@@ -102,14 +102,14 @@ class OwnerLauncherTests(unittest.TestCase):
         with patch.object(bridge.platform, "system", return_value="Darwin"), \
                 patch.object(bridge.os, "geteuid", return_value=0), \
                 patch.object(pwd, "getpwnam", return_value=owner), \
-                patch.object(bridge.os, "getgrouplist", return_value=[20, 80]), \
+                patch.object(bridge.os, "getgrouplist", return_value=list(range(17))), \
                 patch.object(bridge.subprocess, "Popen") as launch:
             adapter._launch_owner_worker({"HOME": "/private/tmp/fixture"})
         args, options = launch.call_args.args[0], launch.call_args.kwargs
         self.assertEqual(args[:3], [sys.executable, "-I", "-u"])
         self.assertEqual(options["user"], 501)
         self.assertEqual(options["group"], 20)
-        self.assertEqual(options["extra_groups"], [20, 80])
+        self.assertEqual(options["extra_groups"], [])
         self.assertNotIn("preexec_fn", options)
         self.assertNotIn("shell", options)
 

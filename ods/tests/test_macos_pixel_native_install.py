@@ -44,17 +44,18 @@ def test_preflight_retained_identity_requires_root_proof(tmp_path, monkeypatch, 
         lambda path: str(path) == '/private/var/lib/ods-pixel-access')
     calls = []
     monkeypatch.setattr(module, 'retained_identity_only',
-        lambda: calls.append('verified') or verified)
+        lambda **kwargs: calls.append(kwargs) or verified)
     if verified:
         assert module.preflight(tmp_path / 'fresh-ods') == tmp_path / 'fresh-ods'
     else:
         with pytest.raises(ValueError, match='existing-native-pixel'):
             module.preflight(tmp_path / 'fresh-ods')
-    assert calls == ['verified']
+    assert calls == [{'empty_home': False}]
     assert not list(tmp_path.iterdir())
 
 
-@pytest.mark.parametrize('residue', module.NATIVE_RESIDUE_PATHS)
+@pytest.mark.parametrize('residue', [path for path in module.NATIVE_RESIDUE_PATHS
+    if path != module.RETAINED_OPS_HOME])
 def test_preflight_refuses_any_other_native_global_state(
         tmp_path, monkeypatch, residue):
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
@@ -66,6 +67,26 @@ def test_preflight_refuses_any_other_native_global_state(
         lambda: pytest.fail('residue must be rejected before account proof'))
     with pytest.raises(ValueError, match='existing-native-pixel'):
         module.preflight(tmp_path / 'fresh-ods')
+
+
+@pytest.mark.parametrize('receipt, verified', [(False, False), (True, False), (True, True)])
+def test_preflight_allows_only_root_verified_empty_retained_home(
+        tmp_path, monkeypatch, receipt, verified):
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(module.platform, 'machine', lambda: 'arm64')
+    monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
+    monkeypatch.setattr(module.os.path, 'lexists', lambda path:
+        str(path) == str(module.RETAINED_OPS_HOME) or
+        (receipt and str(path) == '/private/var/lib/ods-pixel-access'))
+    calls = []
+    monkeypatch.setattr(module, 'retained_identity_only',
+        lambda **kwargs: calls.append(kwargs) or verified)
+    if receipt and verified:
+        assert module.preflight(tmp_path / 'fresh-ods') == tmp_path / 'fresh-ods'
+    else:
+        with pytest.raises(ValueError, match='existing-native-pixel'):
+            module.preflight(tmp_path / 'fresh-ods')
+    assert calls == ([{'empty_home': True}] if receipt else [])
 
 
 def test_retained_identity_proof_is_read_only_and_fails_closed(monkeypatch):
@@ -80,6 +101,8 @@ def test_retained_identity_proof_is_read_only_and_fails_closed(monkeypatch):
         str(module.HERE / 'pixel-native-ops-account.py'), '--verify-identity-only']
     assert kwargs['stdin'] == subprocess.DEVNULL and kwargs['check'] is False
     assert len(calls) == 1
+    assert module.retained_identity_only(empty_home=True) is True
+    assert calls[1][0][-1] == '--verify-empty-home-only'
     monkeypatch.setattr(module.subprocess, 'run',
         lambda *args, **kwargs: SimpleNamespace(returncode=1))
     assert module.retained_identity_only() is False

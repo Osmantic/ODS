@@ -79,6 +79,46 @@ def test_real_distinct_identity_requests_projections_and_private_denial():
         assert not list(root.glob('.pixel-ops-*'))
 
 
+def test_verified_empty_retained_home_can_be_provisioned_in_place(monkeypatch):
+    spec = importlib.util.spec_from_file_location('ops_state_reuse_live',
+        Path(__file__).resolve().parents[1] / 'installers/macos/lib/pixel-native-ops-state.py')
+    ops = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ops)
+    gateway = pwd.getpwuid(int(os.environ['SUDO_UID']))
+    broker = pwd.getpwnam(os.environ.get('ODS_TEST_OPS_BROKER_USER', '_sandbox'))
+    with tempfile.TemporaryDirectory(prefix='ods-ops-reuse-', dir='/private/var/lib') as temporary:
+        root = Path(temporary)
+        root.chmod(0o755)
+        state = root / 'retained-home'
+        state.mkdir(mode=0o750)
+        os.chown(state, broker.pw_uid, broker.pw_gid)
+        ops.acl(state, 'user:' + gateway.pw_name + ' allow search,add_file,add_subdirectory')
+        def gateway_write():
+            return subprocess.run(['/usr/bin/python3', '-I', '-c',
+                'import sys; open(sys.argv[1], "w").write("fixture")', str(state / 'unexpected')],
+                user=gateway.pw_uid, group=gateway.pw_gid, extra_groups=[], cwd='/',
+                env={'PATH': '/usr/bin:/bin'}, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=10)
+        assert gateway_write().returncode == 0
+        (state / 'unexpected').unlink()
+        monkeypatch.setattr(ops, 'RETAINED_HOME', state)
+        assert ops.reusable_empty_home(state, broker_uid=broker.pw_uid, broker_gid=broker.pw_gid)
+        assert ops.provision(state=state, gateway_uid=gateway.pw_uid,
+            broker_uid=broker.pw_uid, broker_gid=broker.pw_gid,
+            reuse_empty_home=True) == state
+        assert {path.name for path in state.iterdir()} == {
+            name.split('/')[0] for name in ops.PRIVATE + ops.PROJECTIONS +
+            ops.STORAGE + ops.SUBMISSIONS}
+        denied = gateway_write()
+        assert denied.returncode != 0 and 'PermissionError' in denied.stderr
+        assert not (state / 'unexpected').exists()
+        assert not ops.reusable_empty_home(state, broker_uid=broker.pw_uid, broker_gid=broker.pw_gid)
+        with pytest.raises(ValueError, match='new-operations-state-required'):
+            ops.provision(state=state, gateway_uid=gateway.pw_uid,
+                broker_uid=broker.pw_uid, broker_gid=broker.pw_gid,
+                reuse_empty_home=True)
+
+
 def test_manager_socket_acl_without_broker_group_membership():
     spec = importlib.util.spec_from_file_location('manager_runtime_live',
         Path(__file__).resolve().parents[1] / 'installers/macos/lib/pixel-native-ops-state.py')

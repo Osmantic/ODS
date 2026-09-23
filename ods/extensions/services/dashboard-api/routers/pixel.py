@@ -946,7 +946,11 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                                     store.append(identity, _error_event("Pixel returned no answer. Try again.")
                                                  + b"data: [DONE]\n\n", terminal=True)
                                 else:
-                                    store.append(identity, line)
+                                    # The upstream blank separator remains in the
+                                    # buffer when this terminal line ends the loop.
+                                    # Persist one complete SSE event for live clients
+                                    # and replay, including an upstream error frame.
+                                    store.append(identity, b"data: [DONE]\n\n")
                                 done_seen = True
                                 break
                             store.append(identity, line)

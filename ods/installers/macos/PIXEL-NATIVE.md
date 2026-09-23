@@ -1392,7 +1392,14 @@ readiness checks. Only then does it activate the gateway/access services.
 Failures before gateway activation retain admission. The private
 `service-installation.json` records selection and last progress without exception
 text; existing journals/spools are refused rather than erased or silently
-adopted. This is initial-install integration, not update/recovery support.
+adopted. The sole exception is an empty retained Operations service-account
+home after an explicit test-host retirement: a root helper must prove that the
+identity receipt is the only protected state, its account and launchd jobs are
+inactive, and the home has the exact owner, mode and no entries. The installer
+then securely provisions that empty inode in place because macOS System Policy
+may refuse to unlink another account's home even to root. Any nonempty home,
+other native residue or unverified identity still fails closed; this is not
+general migration or automatic recovery support.
 Successfully started auxiliary jobs may remain after a later gateway failure;
 the hold and journals remain necessary for explicit recovery.
 

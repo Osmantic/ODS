@@ -195,6 +195,29 @@ def test_truncated_upstream_retains_error_and_does_not_release_unknown_native_wo
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("chunks", [
+    [FINAL],
+    [FINAL[:-7], FINAL[-7:]],
+    [FINAL[:-1]],
+])
+def test_retained_success_replays_one_well_framed_terminal_done(store, monkeypatch, chunks):
+    """The owner-facing retained stream and replay must end in a full SSE frame."""
+    async def run():
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
+            FakeResponse(content_type="text/event-stream", chunks=chunks)))
+        response = await pixel.pixel_chat_stream(ConnectedRequest(), body(), OWNER)
+        await asyncio.gather(*list(pixel._result_tasks.values()))
+        live = await stream_body(response)
+        result = await pixel.pixel_chat_result(
+            pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one"), OWNER)
+        assert result["state"] == "complete"
+        assert live == result["events"].encode()
+        assert live.endswith(b"data: [DONE]\n\n")
+        assert live.count(b"data: [DONE]") == 1
+
+    asyncio.run(run())
+
+
 def test_terminal_upstream_error_is_replayable_but_never_complete(store, monkeypatch):
     async def run():
         terminal_error = b'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n'
@@ -221,7 +244,7 @@ def test_terminal_upstream_error_is_replayable_but_never_complete(store, monkeyp
         )
         assert result == {
             "state": "interrupted",
-            "events": 'data: {"error":"upstream error"}\n\ndata: [DONE]\n',
+            "events": 'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n',
         }
         assert not store.has_pending(IDENTITY[:2])
         assert not cancels

@@ -49,6 +49,9 @@ _bundle_spec.loader.exec_module(_bundle)
 _upgrade_spec = importlib.util.spec_from_file_location('pixel_runtime_upgrade', HERE / 'pixel-runtime-upgrade.py')
 _upgrade = importlib.util.module_from_spec(_upgrade_spec)
 _upgrade_spec.loader.exec_module(_upgrade)
+_repair_spec = importlib.util.spec_from_file_location('pixel_controller_repair', HERE / 'pixel-controller-repair.py')
+_repair = importlib.util.module_from_spec(_repair_spec)
+_repair_spec.loader.exec_module(_repair)
 _services_spec = importlib.util.spec_from_file_location('pixel_native_services', HERE / 'pixel-native-services.py')
 _native_services = importlib.util.module_from_spec(_services_spec)
 _services_spec.loader.exec_module(_native_services)
@@ -1436,8 +1439,11 @@ def _migration_edge_context(plan):
     environment = {key: source[key] for key in ('HOME', 'PATH', 'DOCKER_HOST', 'DOCKER_CONFIG') if key in source}
     if (not environment.get('PATH') or not environment.get('DOCKER_HOST', '').startswith('unix:///')):
         raise InstallError('native-migration-docker-environment-required')
+    # Docker's per-owner socket is owned by this uid. Drop root's supplementary
+    # groups explicitly; copying every macOS directory-service group can exceed
+    # the subprocess setgroups limit and prevent migration before activation.
     return dict(cwd='/', env=environment, user=owner.pw_uid, group=owner.pw_gid,
-                extra_groups=os.getgrouplist(owner.pw_name, owner.pw_gid))
+                extra_groups=[])
 
 
 def _migration_edge_request(plan, container, operation=None, binding=None):
@@ -1527,7 +1533,7 @@ def _resume_migration_hold(plan):
     return record
 
 
-def _finish_migration_hold(plan, record):
+def _finish_migration_hold(plan, record, *, verify_before_release=None):
     path = _edge_hold_journal(plan)
     from pixel_access_bridge import atomic_json, private_json
     if private_json(path, 0, 65536) != record or record.get('phase') not in ('held', 'releasing'):
@@ -1542,6 +1548,8 @@ def _finish_migration_hold(plan, record):
         atomic_json(path, record)
     # A lost release reply must retry release with the original token. Acquire
     # would conflict with the new revision after a successful release.
+    if verify_before_release is not None:
+        verify_before_release()
     released = _migration_edge_request(plan, record['container'], 'release', record['binding'])
     if (released.get('capability') != 'available' or released.get('phase') != 'idle'
             or released.get('streams') != 0 or released.get('admission_blocked') is not False):
@@ -1759,7 +1767,7 @@ def _relocate_upgrade_receipt(plan, previous, candidate, *, restore=False):
         input=json.dumps(dict(source=source, target=target, sourceHash=source_hash, targetHash=target_hash)) + '\n',
         text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, check=False,
         cwd='/', env=env, user=owner.pw_uid, group=owner.pw_gid,
-        extra_groups=os.getgrouplist(owner.pw_name, owner.pw_gid))
+        extra_groups=[])
     if result.returncode != 0 or len(result.stdout) > 1024:
         raise InstallError('runtime-upgrade-owner-relocation-failed')
     response = json.loads(result.stdout)
@@ -2237,7 +2245,7 @@ def _recovery_file_contract():
     return required, optional
 
 
-def _load_upgrade_recovery(*, current_digest, candidate_digest, owner_name, completed=False):
+def _load_upgrade_recovery_base(*, current_digest, candidate_digest, owner_name, completed=False):
     """Read recovery authority under the caller's controller lock; no mutation."""
     from pixel_access_bridge import private_json
     # Validate before using the externally selected digest in a filename.
@@ -2281,6 +2289,55 @@ def _load_upgrade_recovery(*, current_digest, candidate_digest, owner_name, comp
     return plan, journal, records
 
 
+def _controller_repair_path(candidate):
+    if type(candidate) is not str or not re.fullmatch('[a-f0-9]{64}', candidate):
+        raise InstallError('controller-repair-selection-invalid')
+    return _launchd.ACCESS_STATE / ('runtime-controller-repair-' + candidate + '.json')
+
+
+def _controller_private_bytes(path, limit):
+    from pixel_macos_custody import protected_bytes
+    body = protected_bytes(path, limit=limit)
+    info = Path(path).lstat()
+    if stat.S_IMODE(info.st_mode) != 0o600 or info.st_gid != 0:
+        raise InstallError('controller-repair-private-record-required')
+    return body
+
+
+def _controller_repair_snapshots(candidate):
+    names = {'archive': 'runtime-upgrade-' + candidate + '.completed.json',
+             'context': 'runtime-upgrade-context-' + candidate + '.json',
+             'service': 'service-installation.json',
+             'hold': 'runtime-upgrade-edge-' + candidate + '.json'}
+    return {key: _controller_private_bytes(_launchd.ACCESS_STATE / name,
+                65536 if key == 'hold' else _upgrade.JOURNAL_LIMIT) for key, name in names.items()}
+
+
+def _controller_repair_owner(plan):
+    owner = plan['owner']
+    return {'name': owner.pw_name, 'uid': owner.pw_uid, 'gid': owner.pw_gid}
+
+
+def _load_upgrade_recovery(*, current_digest, candidate_digest, owner_name, completed=False):
+    plan, journal, records = _load_upgrade_recovery_base(current_digest=current_digest,
+        candidate_digest=candidate_digest, owner_name=owner_name, completed=completed)
+    path = _controller_repair_path(candidate_digest)
+    if os.path.lexists(path):
+        if not completed:
+            raise InstallError('controller-repair-incomplete')
+        body = _controller_private_bytes(path, _repair.LIMIT)
+        snapshots = _controller_repair_snapshots(candidate_digest)
+        if json.loads(snapshots['archive']) != journal.value:
+            raise InstallError('controller-repair-archive-changed')
+        records = _repair.effective_records(records, _repair._object(body, _repair.LIMIT),
+            current=current_digest, candidate=candidate_digest, owner=_controller_repair_owner(plan),
+            snapshots=snapshots)
+        if (_controller_private_bytes(path, _repair.LIMIT) != body
+                or _controller_repair_snapshots(candidate_digest) != snapshots):
+            raise InstallError('controller-repair-authority-changed')
+    return plan, journal, records
+
+
 def _verify_recovery_bindings(plan, records):
     """Require the context and both journaled service definitions to agree."""
     try:
@@ -2320,7 +2377,7 @@ def _verify_recovery_bindings(plan, records):
         raise InstallError('runtime-upgrade-recovery-binding-mismatch') from None
 
 
-def recover_install(bridge, *, current_digest, candidate_digest, owner_name):
+def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_reproved=None):
     """Restore an interrupted runtime upgrade; CLI remains gated separately."""
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise InstallError('macos-root-install-required')
@@ -2330,7 +2387,7 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name):
         raise InstallError('runtime-upgrade-controller-state-changed')
     if not os.path.lexists(bridge.state / 'runtime-upgrade.json'):
         return _finish_archived_upgrade(bridge, current_digest=current_digest,
-            candidate_digest=candidate_digest, owner_name=owner_name)
+            candidate_digest=candidate_digest, owner_name=owner_name, on_reproved=on_reproved)
     with bridge.recovery_locked():
         selection = dict(current_digest=current_digest, candidate_digest=candidate_digest,
                          owner_name=owner_name)
@@ -2350,8 +2407,8 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name):
     return 'restored'
 
 
-def _finish_archived_upgrade(bridge, *, current_digest, candidate_digest, owner_name):
-    """Finish only admission release, never replay an archived deployment."""
+def _finish_archived_upgrade(bridge, *, current_digest, candidate_digest, owner_name, on_reproved=None):
+    """Finish admission, proving repaired controllers before release; no deployment replay."""
     from pixel_access_bridge import private_json
     from pixel_macos_custody import protected_bytes
     with bridge.recovery_locked(completed_digest=candidate_digest):
@@ -2399,6 +2456,27 @@ def _finish_archived_upgrade(bridge, *, current_digest, candidate_digest, owner_
                        for value in hold['binding'].values())):
             raise InstallError('native-migration-edge-journal-invalid')
         verify()
+        repair_path = _controller_repair_path(candidate_digest)
+        if phase == 'active' and os.path.lexists(repair_path):
+            repair = _repair._object(_controller_private_bytes(repair_path, _repair.LIMIT), _repair.LIMIT)
+            if repair['phase'] == 'repaired':
+                # Keep the existing controller flock throughout. Startup
+                # reconcile acquires a different edge token and cannot prove
+                # under this original runtime-update admission hold.
+                spec = importlib.util.spec_from_file_location('pixel_controller_held_proof_live',
+                    HERE / 'pixel-controller-held-proof-live.py')
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                from types import SimpleNamespace
+                result = module.run_locked(SimpleNamespace(**globals()),
+                    selection=dict(current_digest=current_digest, candidate_digest=candidate_digest,
+                                   owner_name=owner_name),
+                    plan=plan, journal=journal, records=records, services=services)
+                if result['phase'] != 'complete':
+                    raise InstallError('controller-held-proof-incomplete')
+                if on_reproved is not None:
+                    on_reproved()
+                return phase
         if hold['phase'] != 'released':
             _finish_migration_hold(plan, hold)
         return phase
@@ -2465,7 +2543,7 @@ def _reprove_installed_access(plan):
     result = subprocess.run(['/usr/bin/python3', '-I', str(helper), '--startup'],
         cwd='/', env={'HOME': owner.pw_dir, 'PATH': '/usr/bin:/bin'},
         user=owner.pw_uid, group=owner.pw_gid,
-        extra_groups=os.getgrouplist(owner.pw_name, owner.pw_gid),
+        extra_groups=[],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         text=True, timeout=360, check=False)
     if result.returncode != 0 or len(result.stdout) > 1024:
@@ -2723,10 +2801,13 @@ def _recovery_main(argv):
             raise InstallError('macos-root-install-required')
         selection = dict(current_digest=args.current_bundle_digest,
                          candidate_digest=args.bundle_digest, owner_name=args.owner)
-        outcome = recover_install(_recovery_bridge(**selection), **selection)
+        reproved = []
+        outcome = recover_install(_recovery_bridge(**selection), **selection,
+                                  on_reproved=lambda: reproved.append(True))
         # Recovery may restore the previous runtime. Its installed policy, not
         # the candidate plan, determines the mode that must pass the tool proof.
-        _reprove_recovered_access(args.owner)
+        if not reproved:
+            _reprove_recovered_access(args.owner)
     except InstallError as error:
         print('error: ' + error.code, file=sys.stderr)
         return 1
@@ -2868,6 +2949,9 @@ def _migration_main(argv):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == 'repair-controller':
+        sys.path.insert(0, str(HERE.parents[2] / 'bin'))
+        return _controller_repair_main(argv[1:])
     if argv and argv[0] == 'migrate-native':
         sys.path.insert(0, str(HERE.parents[2] / 'bin'))
         return _migration_main(argv[1:])
@@ -2967,6 +3051,35 @@ def main(argv=None):
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0
+
+
+def _controller_repair_main(argv):
+    parser = argparse.ArgumentParser(description='Repair one reviewed controller defect under its retained admission hold.')
+    parser.add_argument('--owner', required=True)
+    parser.add_argument('--current-bundle-digest', required=True)
+    parser.add_argument('--bundle-digest', required=True)
+    parser.add_argument('--repair', required=True, choices=(_repair.REPAIR,))
+    action = parser.add_mutually_exclusive_group()
+    for name in ('apply', 'resume', 'rollback'):
+        action.add_argument('--' + name, action='store_true')
+    args = parser.parse_args(argv)
+    try:
+        spec = importlib.util.spec_from_file_location('pixel_controller_repair_live', HERE / 'pixel-controller-repair-live.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        # This module can also be loaded through importlib by the test suite.
+        from types import SimpleNamespace
+        installer = SimpleNamespace(**globals())
+        result = module.run(installer, selection=dict(current_digest=args.current_bundle_digest,
+            candidate_digest=args.bundle_digest, owner_name=args.owner), apply=args.apply,
+            resume=args.resume, rollback=args.rollback)
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    except Exception as error:
+        # Never print private archive, transport, owner environment or response text.
+        code = error.code if isinstance(error, InstallError) else 'controller-repair-failed'
+        print('error: ' + code + '; do not release admission; retain repair and activation receipts', file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

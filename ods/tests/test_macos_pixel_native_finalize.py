@@ -305,6 +305,7 @@ def test_protected_proof_reads_completed_files_and_checks_live_services(monkeypa
     monkeypatch.setattr(module.pwd, 'getpwnam', lambda owner: SimpleNamespace(pw_uid=501))
     checked = []
     monkeypatch.setattr(module, 'helper', lambda name: SimpleNamespace(
+        _controller_repair_path=lambda digest: Path('/private/var/lib/ods-pixel-access') / ('runtime-controller-repair-' + digest + '.json'),
         _verify_new_services=lambda plan: checked.append(plan)))
     monkeypatch.setattr(module.subprocess, 'run', lambda *args, **kwargs:
         SimpleNamespace(stdout='state = waiting' if fault == 'stopped' else 'state = running\n'))

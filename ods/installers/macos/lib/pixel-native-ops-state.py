@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import pwd
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,7 @@ PRIVATE = ('request-archive', 'plans', 'approvals', 'runtime', 'private',
 PROJECTIONS = ('results', 'events')
 STORAGE = ('artifacts',)
 SUBMISSIONS = ('requests', 'cancel')
+RETAINED_HOME = Path('/private/var/lib/pixel-ops-broker')
 
 
 def identities(gateway_uid, broker_uid, broker_gid):
@@ -46,14 +48,41 @@ def acl(path, entry):
                    stderr=subprocess.PIPE, timeout=10)
 
 
-def provision(*, state, gateway_uid, broker_uid, broker_gid):
+def reusable_empty_home(state, *, broker_uid=None, broker_gid=None):
+    """Read-only proof for the one retained identity-only home on macOS."""
+    state = Path(state)
+    if state != RETAINED_HOME:
+        return False
+    try:
+        fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    try:
+        info = os.fstat(fd)
+        if broker_uid is None or broker_gid is None:
+            broker = pwd.getpwnam('_ods_pixel_ops')
+            broker_uid, broker_gid = broker.pw_uid, broker.pw_gid
+        return (stat.S_ISDIR(info.st_mode) and info.st_uid == broker_uid
+            and info.st_gid == broker_gid and stat.S_IMODE(info.st_mode) == 0o750
+            and not os.listdir(fd))
+    except (OSError, KeyError):
+        return False
+    finally:
+        os.close(fd)
+
+
+def provision(*, state, gateway_uid, broker_uid, broker_gid, reuse_empty_home=False):
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise ValueError('macos-root-required')
     gateway, _ = identities(gateway_uid, broker_uid, broker_gid)
     state = Path(state)
     # The trusted parent also prevents a gateway from replacing the destination.
     with custody.protected_directory(state.parent):
-        if state.name in ('', '.', '..') or os.path.lexists(state):
+        if state.name in ('', '.', '..'):
+            raise ValueError('new-operations-state-required')
+        retained = os.path.lexists(state)
+        if retained and not (reuse_empty_home and reusable_empty_home(state,
+                broker_uid=broker_uid, broker_gid=broker_gid)):
             raise ValueError('new-operations-state-required')
         stage = Path(tempfile.mkdtemp(prefix='.pixel-ops-', dir=state.parent))
         try:
@@ -75,7 +104,38 @@ def provision(*, state, gateway_uid, broker_uid, broker_gid):
             acl(stage, reader + 'read,readattr,readextattr,readsecurity,file_inherit,only_inherit')
             stage.chmod(0o750)
             os.chown(stage, broker_uid, broker_gid)
-            os.rename(stage, state)
+            if retained:
+                # System Policy may prohibit unlinking a service-account home.
+                # Secure the verified empty inode first; a failure here leaves
+                # the installation journal active for explicit recovery.
+                fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    if not reusable_empty_home(state, broker_uid=broker_uid,
+                            broker_gid=broker_gid):
+                        raise ValueError('new-operations-state-required')
+                    os.fchown(fd, 0, 0)
+                    os.fchmod(fd, 0o700)
+                    subprocess.run(['/bin/chmod', '-N', str(state)], check=True,
+                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, timeout=10)
+                    # POSIX mode/ownership do not revoke named Darwin ACL
+                    # grants. Verify their removal on the pinned root-owned
+                    # inode before checking for additions made while writable.
+                    custody._verify_fd(fd, directory=True)
+                    if os.listdir(fd):
+                        raise ValueError('operations-home-changed-during-provision')
+                    for child in stage.iterdir():
+                        os.rename(child, state / child.name)
+                    reader = 'user:' + gateway.pw_name + ' allow '
+                    acl(state, reader + 'search,readattr,readsecurity')
+                    acl(state, reader + 'read,readattr,readextattr,readsecurity,file_inherit,only_inherit')
+                    os.fchmod(fd, 0o750)
+                    os.fchown(fd, broker_uid, broker_gid)
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            else:
+                os.rename(stage, state)
         finally:
             if stage.exists():
                 shutil.rmtree(stage)

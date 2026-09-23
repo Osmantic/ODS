@@ -26,6 +26,15 @@ or the tools sent to inference. Capture those observations separately. Tie model
 errors to the tested request using timestamps/request identifiers or before/after
 log offsets; an old error in an append-only log does not establish a new failure.
 
+When signed probe instrumentation is already authorized/configured, the
+authenticated [route-evidence API](../MODEL-SWITCHBOARD.md) can provide an
+`offeredTools` count/hash of the actual router-forwarded definitions and a
+`requestId` matching the response header. Missing/unavailable evidence is not
+an empty or verified tool surface. Compare against independently encoded expected
+definitions; the hash does not expose definitions or prove their correctness.
+Each probe UUID retains only its latest recorded request, not every model call
+in an agent turn. It proves neither loaded plugin bytes nor backend acceptance.
+
 Use the real authenticated Portal and model route. Keep credentials, raw private
 logs, user prompts containing personal data, and private host paths out of public
 PRs. Sanitized evidence should still identify the exact test, outcome and hashes.

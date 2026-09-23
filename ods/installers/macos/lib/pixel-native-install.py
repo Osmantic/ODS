@@ -35,6 +35,7 @@ NATIVE_RESIDUE_PATHS = tuple(Path(value) for value in (
         'native-gateway', 'access', 'access-relay', 'native-manager',
         'native-promoter', 'native-operations')),
 ))
+RETAINED_OPS_HOME = Path('/private/var/lib/pixel-ops-broker')
 ERROR_GUIDANCE = {
     'native-apple-silicon-owner-required': 'Run as the signed-in owner on Apple Silicon, not with sudo.',
     'existing-native-pixel-requires-migration-or-recovery':
@@ -60,11 +61,12 @@ def command(args, *, env=None, timeout=60):
     return result.stdout.strip()
 
 
-def retained_identity_only():
+def retained_identity_only(*, empty_home=False):
     """Ask the root-owned account helper to prove an identity-only reinstall."""
     try:
         result = subprocess.run(['/usr/bin/sudo', '-n', '/usr/bin/python3',
-            str(HERE / 'pixel-native-ops-account.py'), '--verify-identity-only'],
+            str(HERE / 'pixel-native-ops-account.py'),
+            '--verify-empty-home-only' if empty_home else '--verify-identity-only'],
             stdin=subprocess.DEVNULL, capture_output=True, timeout=60, check=False)
         return result.returncode == 0
     except (OSError, subprocess.SubprocessError):
@@ -77,12 +79,19 @@ def preflight(install_dir):
     install_dir = Path(install_dir)
     if not install_dir.is_absolute():
         raise ValueError('absolute-ods-installation-required')
-    # The initial path cannot safely infer migration or resume from partial state.
+    # The one exception is a verified identity-only service-account home. macOS
+    # System Policy can prohibit unlinking that home even after its contents are
+    # retired; the root helper proves it is empty, owned and has no live jobs.
+    retained_home = os.path.lexists(RETAINED_OPS_HOME)
     for path in (install_dir / 'data/pixel-native', *NATIVE_RESIDUE_PATHS):
+        if path == RETAINED_OPS_HOME:
+            continue
         if os.path.lexists(path):
             raise ValueError('existing-native-pixel-requires-migration-or-recovery')
-    if (os.path.lexists('/private/var/lib/ods-pixel-access')
-            and not retained_identity_only()):
+    retained_identity = os.path.lexists('/private/var/lib/ods-pixel-access')
+    if retained_home and not retained_identity:
+        raise ValueError('existing-native-pixel-requires-migration-or-recovery')
+    if retained_identity and not retained_identity_only(empty_home=retained_home):
         raise ValueError('existing-native-pixel-requires-migration-or-recovery')
     return install_dir
 

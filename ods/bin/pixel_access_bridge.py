@@ -706,8 +706,11 @@ class SystemdAccessBridge:
         if (os.geteuid() != 0 or owner.pw_uid <= 0 or owner.pw_gid < 0
                 or owner.pw_uid != self.owner.pw_uid or owner.pw_gid != self.owner.pw_gid):
             raise AccessError('unsafe-owner-identity')
+        # The native worker only needs the owner's UID and primary GID for its
+        # owner-owned files and Docker socket. Do not carry root's groups into
+        # the child: macOS users can exceed subprocess's setgroups limit.
         return {'user': owner.pw_uid, 'group': owner.pw_gid,
-                'extra_groups': os.getgrouplist(owner.pw_name, owner.pw_gid)}
+                'extra_groups': []}
 
     def _launch_owner_worker(self, env):
         script = Path(__file__).resolve().parent / "access_mode_worker.py"

@@ -24,6 +24,36 @@ installer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer)
 
 
+def test_migration_docker_child_drops_supplementary_groups(monkeypatch):
+    """A Mac owner with >16 directory-service groups can still reach Docker."""
+    owner = SimpleNamespace(pw_name='fixture', pw_uid=501, pw_gid=20)
+    monkeypatch.setattr(installer.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(installer.pwd, 'getpwnam', lambda _: owner)
+    monkeypatch.setattr(installer.os, 'getgrouplist', lambda *_: list(range(17)))
+    plan = {'owner': owner, 'source_environment': {
+        'HOME': '/Users/fixture', 'PATH': '/usr/bin:/bin',
+        'DOCKER_HOST': 'unix:///Users/fixture/.colima/ods/docker.sock',
+        'DOCKER_CONFIG': '/Users/fixture/.docker'}}
+    context = installer._migration_edge_context(plan)
+    assert context['user'] == 501 and context['group'] == 20
+    assert context['extra_groups'] == []
+    assert context['env']['DOCKER_HOST'].startswith('unix:///Users/fixture/')
+
+
+def test_native_access_worker_drops_supplementary_groups(monkeypatch):
+    """Controller inspection must work for Mac owners with many groups."""
+    import pwd
+    import pixel_access_bridge as bridge_module
+    owner = SimpleNamespace(pw_name='fixture', pw_uid=501, pw_gid=20)
+    bridge = object.__new__(bridge_module.LaunchdAccessBridge)
+    bridge.owner = owner
+    monkeypatch.setattr(bridge_module.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(pwd, 'getpwnam', lambda _: owner)
+    monkeypatch.setattr(bridge_module.os, 'getgrouplist', lambda *_: list(range(17)))
+    assert bridge._native_owner_identity() == {
+        'user': 501, 'group': 20, 'extra_groups': []}
+
+
 @pytest.mark.parametrize('version', ['previous', 'candidate', 'unknown'])
 def test_absent_upgrade_requires_matching_definition_and_stop_witness(version):
     services = {}
@@ -728,7 +758,7 @@ def test_owner_receipt_adapter_requires_stopped_jobs_and_drops_identity(monkeypa
         installer._relocate_upgrade_receipt(plan, previous, candidate, restore=restore)
         assert absent.call_count == 6 and hold.call_count == 2
         options = run.call_args.kwargs
-        assert (options['user'], options['group'], options['extra_groups']) == (501, 20, [20])
+        assert (options['user'], options['group'], options['extra_groups']) == (501, 20, [])
         assert options['env'] == {'HOME': '/private/owner', 'PATH': '/usr/bin:/bin'}
         payload = json.loads(options['input'])
         assert payload['source'] == '/private/config/' + ('new' if restore else 'old')
@@ -761,6 +791,7 @@ def test_post_upgrade_reproof_requires_installed_helper_and_matching_mode(monkey
         assert run.call_args.args[0] == ['/usr/bin/python3', '-I',
             str(installer.ACCESS_PROGRAM_ROOT / 'pixel_access_reconcile.py'), '--startup']
         assert run.call_args.kwargs['user'] == 501
+        assert run.call_args.kwargs['extra_groups'] == []
         assert run.call_args.kwargs['stdin'] == installer.subprocess.DEVNULL
 
 
@@ -2442,7 +2473,8 @@ def test_recovery_cli_dispatches_without_install_source_and_redacts_errors(monke
         assert json.loads(output.out)['status'] == 'restored'
         proof.assert_called_once_with('owner')
         recover.assert_called_once_with(bridge, current_digest='a' * 64,
-            candidate_digest='b' * 64, owner_name='owner')
+            candidate_digest='b' * 64, owner_name='owner', on_reproved=recover.call_args.kwargs['on_reproved'])
+        assert callable(recover.call_args.kwargs['on_reproved'])
 
 
 @pytest.mark.parametrize('arguments', [[], ['--owner', 'owner'],
