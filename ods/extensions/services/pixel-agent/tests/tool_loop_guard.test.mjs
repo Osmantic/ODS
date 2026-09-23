@@ -15513,25 +15513,30 @@ test("historical preview cannot hide a later coding stop from the final reply", 
     const {details} = seedNamedPreview(guard);
     const context = {agentId: "pixel", runId: "coding-run", sessionId: "session-1"};
     guard.observeRun(context, "pixel", {prompt: "Build a Python CLI with unittest tests in /workspace/code. Create public/index.html and publish public as a verified Pixel workspace preview."});
+    let callNumber = 0;
     const invoke = (name, params) => {
       const event = deferred
         ? {toolName: "tool_call", params: {id: `openclaw:core:${name}`, args: params}}
         : {toolName: name, params};
-      return guard.beforeToolCall(event, context, "pixel");
+      return guard.beforeToolCall({...event, toolCallId: `coding-${++callNumber}`}, context, "pixel");
     };
     const params = {command: "python3 -m unittest", workdir: "/workspace/code"};
     assert.notEqual(invoke("exec", params)?.block, true);
-    guard.afterToolCall({toolName: "exec", params, result: {
+    const result = {
       isError: true, details: {status: "completed", exitCode: 1},
       content: [{type: "text", text: "NameError: name 'sys' is not defined"}],
-    }}, context, "pixel");
+    };
+    guard.afterToolCall({toolName: deferred ? "tool_call" : "exec", toolCallId: "coding-1",
+      params: deferred ? {id: "openclaw:core:exec", args: params} : params,
+      result: deferred ? wrappedCoreResult("exec", result) : result,
+    }, context, "pixel");
     assert.equal(invoke("exec", params).blockReason, CODING_RETRY_EXHAUSTED_REASON);
-    const result = reply(guard, {event: {runId: "coding-run", payload: {text: ""}}});
-    assert.match(result.payload.text, /stopped the coding loop/);
-    assert.ok(result.payload.text.includes(VERIFICATION_FAILED_DELIVERY_PREFIX));
-    assert.ok(result.payload.text.includes(details.url));
-    assert.match(result.payload.text, /last published preview/);
-    assert.doesNotMatch(result.payload.text, /publish again to verify/);
+    const delivered = reply(guard, {event: {runId: "coding-run", payload: {text: ""}}});
+    assert.match(delivered.payload.text, /stopped the coding loop/);
+    assert.ok(delivered.payload.text.includes(VERIFICATION_FAILED_DELIVERY_PREFIX));
+    assert.ok(delivered.payload.text.includes(details.url));
+    assert.match(delivered.payload.text, /last published preview/);
+    assert.doesNotMatch(delivered.payload.text, /publish again to verify/);
     assert.equal(guard.verificationForRun("coding-run").status, "failed");
   }
 });
