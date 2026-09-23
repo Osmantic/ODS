@@ -38,6 +38,10 @@ DNSMASQ_PID="${RUN_DIR}/dnsmasq.pid"
 ODS_AP_SSID="${ODS_AP_SSID:-ODS-Setup}"
 ODS_AP_PASSWORD="${ODS_AP_PASSWORD:-}"
 ODS_AP_INTERFACE="${ODS_AP_INTERFACE:-wlan0}"
+if [[ -z "${ODS_AP_INTERFACE// }" ]]; then
+    echo "Error: ODS_AP_INTERFACE cannot be empty or whitespace" >&2
+    exit 1
+fi
 ODS_AP_GATEWAY_IP="${ODS_AP_GATEWAY_IP:-192.168.7.1}"
 # ODS_AP_PREFIX is CIDR prefix length used by `ip addr add`.
 # ODS_AP_NETMASK stays accepted (as dotted-decimal) for back-compat;
