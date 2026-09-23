@@ -26,6 +26,16 @@ it('paginates services and replaces the visible page with standard status dots',
   expect(screen.getByRole('button',{name:'Page 2',exact:true})).toHaveAttribute('aria-current','page')
   expect(container.querySelector('feTurbulence')).toBeNull()
 })
+it('does not retain an anonymous row disclosure after its endpoint changes', () => {
+  const props = { health: { text: 'Online' }, metrics: [] }
+  const { rerender } = render(<CompactDashboard {...props} services={[{ name: 'Worker', port: 8001, status: 'healthy' }]} />)
+  const firstRow = screen.getByText('Worker').closest('details')
+  fireEvent.click(firstRow.querySelector('summary'))
+  expect(firstRow).toHaveAttribute('open')
+
+  rerender(<CompactDashboard {...props} services={[{ name: 'Worker', port: 8002, status: 'healthy' }]} />)
+  expect(screen.getByText('Worker').closest('details')).not.toHaveAttribute('open')
+})
 it('uses real percentages, neutral meters and readable status labels', () => {
   render(<CompactDashboard health={{text:'1/2 core services online.'}} services={[{id:'one',name:'First',required:true,status:'healthy'},{id:'two',name:'Second',required:true,status:'down'},{id:'three',name:'Third',status:'not_deployed'}]} metrics={[{icon:Cpu,label:'CPU',value:'25%',percent:25},{icon:Cpu,label:'Temperature',value:'—'}]}/>)
   expect(screen.getByRole('progressbar',{name:'Services online'})).toHaveAttribute('aria-valuenow','50')
