@@ -4510,7 +4510,10 @@ ods_pixel_install_default_agent() {
     # stale related install on the same port. Treat Compose startup failure as
     # authoritative instead of allowing later checks to accept unrelated
     # containers.
-    if ! $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --no-build --pull never \
+    # Phase 06 atomically replaces config files. Reusing a created/stopped
+    # container can retain a deleted file bind on Docker Desktop; always bind
+    # the current files for this exact prerequisite set before verification.
+    if ! $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --force-recreate --no-build --pull never \
         "${pixel_prerequisites[@]}" >>"$LOG_FILE" 2>&1; then
         ai_bad "Could not start Pixel's exact ODS prerequisite services. See $LOG_FILE."
         return 1
