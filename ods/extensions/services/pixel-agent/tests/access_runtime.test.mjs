@@ -203,6 +203,57 @@ test('restricted proc reclaims a same-tick PID only when it is proven to be the 
   }
 });
 
+test('invisible proc reclaims only a stable systemd-attested ingress PID, never an unknown owner', linux, async t => {
+  const {child} = await childProcess(t, `process.send({ready:true}); setInterval(() => {}, 1000);`);
+  const previous = {version: 3, pid: child.pid, invocationId: 'd'.repeat(32),
+    startTicks: identity(child.pid).startTicks};
+  const owner = os.userInfo().username, currentInvocation = 'e'.repeat(32);
+  for (const [ingressPid, ingressInvocation, gatewayPid, unstable, expectedAvailable] of [
+    [child.pid, 'f'.repeat(32), process.pid, false, true],
+    [child.pid + 1, 'f'.repeat(32), process.pid, false, false],
+    [child.pid, previous.invocationId, process.pid, false, false],
+    [child.pid, 'f'.repeat(32), process.pid + 1, false, false],
+    [child.pid, 'f'.repeat(32), process.pid, true, false],
+  ]) {
+    const options = fixture(); seed(options, previous, 'held');
+    withInvocations({[process.pid]: `INVOCATION_ID=${currentInvocation}\0`}, () => {
+      const read = fs.readFileSync, originalSpawn = childProcessApi.spawnSync;
+      let ingressReads = 0;
+      fs.readFileSync = function (name, ...args) {
+        if (name === `/proc/${child.pid}/stat`) throw Object.assign(new Error('hidden'), {code:'ENOENT'});
+        return read.call(this, name, ...args);
+      };
+      childProcessApi.spawnSync = (command, args, opts) => {
+        if (command !== '/usr/bin/systemctl') return originalSpawn(command, args, opts);
+        const unit = args[1];
+        const own = unit === 'openclaw-gateway.service';
+        assert.ok(own || unit === 'pixel-ingress.service');
+        const pid = own ? gatewayPid : unstable && ++ingressReads > 1 ? child.pid + 1 : ingressPid;
+        const lines = own
+          ? [`MainPID=${pid}`, `InvocationID=${currentInvocation}`, `User=${owner}`, 'ActiveState=active']
+          : [`MainPID=${pid}`, `InvocationID=${ingressInvocation}`, `User=${owner}`, 'Group=ods-pixel',
+            'ActiveState=active', 'FragmentPath=/etc/systemd/system/pixel-ingress.service',
+            'ExecMainStartTimestampMonotonic=696936270000',
+            'ExecStart={ path=/usr/bin/env ; argv[]=/usr/bin/env node /usr/local/libexec/ods-pixel-ingress.mjs ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }'];
+        return {status:0,stdout:lines.join('\n')+'\n',stderr:''};
+      };
+      syncBuiltinESMExports();
+      try {
+        const runtime = createAccessRuntime(options);
+        assert.equal(runtime.status().available, expectedAvailable);
+        assert.equal(runtime.admit({}, {runId:'native'}).outcome, 'block');
+        if (!expectedAvailable) {
+          assert.deepEqual(JSON.parse(fs.readFileSync(path.join(options.directory, 'process.json'))), previous);
+        }
+      } finally {
+        fs.readFileSync = read;
+        childProcessApi.spawnSync = originalSpawn;
+        syncBuiltinESMExports();
+      }
+    });
+  }
+});
+
 test('incarnation changing during invocation read fails closed', linux, () => {
   const options = fixture();
   withInvocations({[process.pid]: `INVOCATION_ID=${'d'.repeat(32)}\0`}, () => {
