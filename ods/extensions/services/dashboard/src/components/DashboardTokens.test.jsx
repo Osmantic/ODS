@@ -169,6 +169,8 @@ it('expires a stalled JSON body and restores an explicit refresh without accepti
   expect(signals[0].aborted).toBe(true)
   expect(screen.getByRole('alert')).toHaveTextContent('timed out')
   expect(screen.getByRole('button',{name:'Refresh token usage'})).toBeEnabled()
+  await act(async () => {await vi.advanceTimersByTimeAsync(10000)})
+  expect(fetch.mock.calls.filter(([url]) => url.includes('/report?'))).toHaveLength(1)
   await act(async () => {resolveBody({summary:{total_tokens:9999}})})
   expect(screen.queryByTitle((9999).toLocaleString())).toBeNull()
 })
