@@ -272,3 +272,12 @@ def test_base_reinstall_stops_before_changing_a_native_installation(tmp_path, st
         assert 'Existing native Pixel installation detected' in result.stderr
         if state == 'existing': assert (native / 'owner-data').read_text() == 'keep exactly'
         else: assert native.is_symlink()
+
+
+# Run native retirement contracts in the existing cross-platform lifecycle CI
+# lane; retain the standalone suite for focused operator validation.
+_retirement_spec = importlib.util.spec_from_file_location('native_retirement_contracts',
+    ROOT / 'tests/test_macos_pixel_native_uninstall.py')
+_retirement_tests = importlib.util.module_from_spec(_retirement_spec)
+_retirement_spec.loader.exec_module(_retirement_tests)
+RetirementSelection = _retirement_tests.RetirementSelection
