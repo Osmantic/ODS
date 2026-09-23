@@ -4020,6 +4020,39 @@ _ods_pixel_wait_workspace_preview_probe() {
     return 1
 }
 
+_ods_pixel_prepare_wsl_bridge() {
+    local owner="$1" source="$2/host/pixel-wsl-runtime-bridge.sh"
+    local runtime mode uid gid kind source_uid source_mode source_size
+    # A clean Desktop install must expose the fixed socket directories before
+    # Compose creates Pixel Edge. The services populate those same directories
+    # later; an existing install must keep their ownership and inode intact.
+    grep -Fxq 'PIXEL_RUNTIME_BIND_PROPAGATION=rshared' "${INSTALL_DIR:?}/.env" || return 0
+    grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/host/wsl/ods-portal-runtime/ingress' "$INSTALL_DIR/.env" || return 1
+    grep -Fxq 'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/host/wsl/ods-portal-runtime/preview' "$INSTALL_DIR/.env" || return 1
+    grep -qi microsoft /proc/sys/kernel/osrelease || return 1
+    [[ "$(findmnt -n -o PROPAGATION -T /mnt/wsl)" == shared ]] || return 1
+    uid="$(id -u "$owner")" || return 1
+    gid="$(getent group ods-pixel | cut -d: -f3)" || return 1
+    [[ "$uid" =~ ^[1-9][0-9]*$ && "$gid" =~ ^[1-9][0-9]*$ ]] || return 1
+    [[ -f "$source" && ! -L "$source" ]] || return 1
+    IFS='|' read -r kind source_uid source_mode source_size < <(stat -c '%F|%u|%a|%s' -- "$source")
+    [[ "$kind" == 'regular file' && "$source_uid" == "$uid" && "$source_size" =~ ^[0-9]+$ && "$source_size" -le 2097152 ]] || return 1
+    (( (8#$source_mode & 0022) == 0 )) || return 1
+    for runtime in /run/ods-pixel /run/ods-pixel-preview; do
+        mode=0710
+        [[ "$runtime" != /run/ods-pixel-preview ]] || mode=0750
+        [[ ! -L "$runtime" ]] || return 1
+        if [[ -e "$runtime" ]]; then
+            [[ -d "$runtime" && "$(stat -c '%u:%g:%a' -- "$runtime")" == "$uid:$gid:${mode#0}" ]] || return 1
+        else
+            ods_sudo install -d -o "$owner" -g ods-pixel -m "$mode" -- "$runtime" || return 1
+        fi
+    done
+    ods_sudo install -o root -g root -m 0755 "$source" /usr/local/libexec/ods-pixel-wsl-runtime-bridge || return 1
+    ods_sudo cmp -s -- "$source" /usr/local/libexec/ods-pixel-wsl-runtime-bridge || return 1
+    ods_sudo /usr/local/libexec/ods-pixel-wsl-runtime-bridge ensure
+}
+
 _ods_pixel_install_ingress() {
     local owner="$1" home="$2" plugin_root="$3" extension_catalog="$4"
     local rendered_extension_manager_unit="$5" rendered_artifact_promoter_unit="$6"
@@ -4464,6 +4497,10 @@ ods_pixel_install_default_agent() {
         searxng|parallel-free) ;;
         *) ai_bad "Pixel returned an invalid native search provider."; return 1 ;;
     esac
+    if ! _ods_pixel_prepare_wsl_bridge "$owner" "$plugin_root"; then
+        ai_bad "Could not prepare Pixel's restricted WSL socket bridge before Compose startup."
+        return 1
+    fi
     ai "Starting the ODS model gateway, control API, and search prerequisites for Pixel review..."
     # The scoped extension manager validates its contract against dashboard-api
     # while Pixel is installed below. The access coordinator also requires the
