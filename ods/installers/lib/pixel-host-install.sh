@@ -95,12 +95,33 @@ PY
 }
 
 ods_pixel_run_as_owner() {
-    local owner="$1" home="$2"
+    local owner="$1" home="$2" current_groups account_groups argv_json
     shift 2
-    if ods_sudo_available && command -v sudo >/dev/null 2>&1; then
+    # A redundant sudo -u of the already-current owner can allocate a fresh
+    # pseudo-terminal (sudoers use_pty). Pixel's child installers then lose
+    # the authenticated parent tty and prompt for sudo mid-install/update.
+    if [[ "$(id -un)" == "$owner" ]]; then
+        current_groups=" $(id -nG) "
+        account_groups=" $(id -nG "$owner") "
+        if [[ "$current_groups" != *" docker "* && "$account_groups" == *" docker "* ]]; then
+            # A first install may have just added the owner to docker. Refresh
+            # that group without sudo's new pseudo-terminal. Encode argv as
+            # JSON in the environment so sg's shell never interpolates paths,
+            # options, or credentials supplied by the caller.
+            if ! command -v sg >/dev/null 2>&1 \
+                || ! command -v python3 >/dev/null 2>&1; then
+                printf '%s\n' 'error: docker group refresh requires sg and python3' >&2
+                return 1
+            fi
+            argv_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@")" || return 1
+            HOME="$home" USER="$owner" LOGNAME="$owner" PATH="$PATH" \
+                ODS_PIXEL_OWNER_ARGV_JSON="$argv_json" sg docker -c \
+                'exec python3 -c "import json,os; argv=json.loads(os.environ.pop(\"ODS_PIXEL_OWNER_ARGV_JSON\")); os.execvpe(argv[0],argv,os.environ)"'
+        else
+            env HOME="$home" USER="$owner" LOGNAME="$owner" PATH="$PATH" "$@"
+        fi
+    elif ods_sudo_available && command -v sudo >/dev/null 2>&1; then
         ods_sudo -u "$owner" -- env HOME="$home" USER="$owner" LOGNAME="$owner" PATH="$PATH" "$@"
-    elif [[ "$(id -un)" == "$owner" ]]; then
-        env HOME="$home" USER="$owner" LOGNAME="$owner" PATH="$PATH" "$@"
     else
         printf '%s\n' 'error: cannot enter the Pixel install owner identity' >&2
         return 1
