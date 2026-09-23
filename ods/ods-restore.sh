@@ -721,6 +721,10 @@ main() {
                 exit 1
                 ;;
             *)
+                if [[ -n "$backup_id" ]]; then
+                    log_error "Multiple backup IDs specified: '$backup_id' and '$1'"
+                    exit 1
+                fi
                 backup_id="$1"
                 shift
                 ;;
