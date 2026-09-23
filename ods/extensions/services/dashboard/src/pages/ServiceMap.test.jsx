@@ -172,4 +172,16 @@ describe('buildTopology', () => {
       expectedEdges.map(([source, target, label]) => expect.objectContaining({ source, target, label }))
     ))
   })
+
+  it('disambiguates duplicate service identities deterministically', () => {
+    const topology = buildTopology({ services: [
+      { id: 'worker', name: 'Worker A', status: 'healthy' },
+      { id: 'worker', name: 'Worker B', status: 'down' },
+      { name: 'API (Control)', status: 'healthy' },
+      { name: 'API (Control)', status: 'degraded' },
+    ] })
+
+    expect(topology.nodes.map(node => node.id)).toEqual(['worker', 'worker-2', 'api', 'api-2'])
+    expect(new Set(topology.nodes.map(node => node.id)).size).toBe(4)
+  })
 })
