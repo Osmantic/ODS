@@ -4027,8 +4027,8 @@ _ods_pixel_prepare_wsl_bridge() {
     # Compose creates Pixel Edge. The services populate those same directories
     # later; an existing install must keep their ownership and inode intact.
     grep -Fxq 'PIXEL_RUNTIME_BIND_PROPAGATION=rshared' "${INSTALL_DIR:?}/.env" || return 0
-    grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/host/wsl/ods-portal-runtime/ingress' "$INSTALL_DIR/.env" || return 1
-    grep -Fxq 'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/host/wsl/ods-portal-runtime/preview' "$INSTALL_DIR/.env" || return 1
+    grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/ingress' "$INSTALL_DIR/.env" || return 1
+    grep -Fxq 'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/preview' "$INSTALL_DIR/.env" || return 1
     grep -qi microsoft /proc/sys/kernel/osrelease || return 1
     [[ "$(findmnt -n -o PROPAGATION -T /mnt/wsl)" == shared ]] || return 1
     uid="$(id -u "$owner")" || return 1
@@ -4080,8 +4080,8 @@ _ods_pixel_install_ingress() {
     local wsl_bridge_unit="$plugin_root/host/pixel-wsl-runtime-bridge.service"
     local ods_version="${VERSION:-2.6.0}"
     if grep -Fxq 'PIXEL_RUNTIME_BIND_PROPAGATION=rshared' "${INSTALL_DIR:?}/.env"; then
-        grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/host/wsl/ods-portal-runtime/ingress' "$INSTALL_DIR/.env" || return 1
-        grep -Fxq 'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/host/wsl/ods-portal-runtime/preview' "$INSTALL_DIR/.env" || return 1
+        grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/ingress' "$INSTALL_DIR/.env" || return 1
+        grep -Fxq 'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/preview' "$INSTALL_DIR/.env" || return 1
         grep -qi microsoft /proc/sys/kernel/osrelease || return 1
         wsl_bridge=true
     fi

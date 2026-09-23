@@ -50,8 +50,8 @@ source "$stage/installer.sh"
 export INSTALL_DIR="$stage/install"
 cat > "$INSTALL_DIR/.env" <<'ENV'
 PIXEL_RUNTIME_BIND_PROPAGATION=rshared
-PIXEL_INGRESS_RUNTIME_DIR=/mnt/host/wsl/ods-portal-runtime/ingress
-PIXEL_PREVIEW_RUNTIME_DIR=/mnt/host/wsl/ods-portal-runtime/preview
+PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/ingress
+PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/preview
 ENV
 _ods_pixel_prepare_wsl_bridge "$owner" "$stage/plugin"
 ingress_inode=$(stat -c '%d:%i' /run/ods-pixel)
@@ -65,9 +65,9 @@ _ods_pixel_prepare_wsl_bridge "$owner" "$stage/plugin"
 [[ "$(stat -c '%u:%g:%a:%d:%i' /run/ods-pixel)" == "$fixture_uid:$fixture_gid:710:$ingress_inode" ]]
 [[ "$(stat -c '%u:%g:%a:%d:%i' /run/ods-pixel-preview)" == "$fixture_uid:$fixture_gid:750:$preview_inode" ]]
 echo 'PASS clean bootstrap creates shared mounts; repeat/later ensure preserves ownership and inode'
-sed -i 's@/mnt/host/wsl/ods-portal-runtime/ingress@/unrelated@' "$INSTALL_DIR/.env"
+sed -i 's@/mnt/wsl/ods-portal-runtime/ingress@/unrelated@' "$INSTALL_DIR/.env"
 if _ods_pixel_prepare_wsl_bridge "$owner" "$stage/plugin"; then echo 'FAIL accepted unrelated target'; exit 1; fi
-sed -i 's@/unrelated@/mnt/host/wsl/ods-portal-runtime/ingress@' "$INSTALL_DIR/.env"
+sed -i 's@/unrelated@/mnt/wsl/ods-portal-runtime/ingress@' "$INSTALL_DIR/.env"
 chmod 0777 /run/ods-pixel
 if _ods_pixel_prepare_wsl_bridge "$owner" "$stage/plugin"; then echo 'FAIL accepted unsafe runtime mode'; exit 1; fi
 chmod 0710 /run/ods-pixel
