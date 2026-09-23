@@ -573,6 +573,7 @@ export default function Pixel({ systemStatus = null }) {
   const handleWorkspaceRequest=useCallback(request=>setWorkspaceRequest(current=>current===request?null:current),[])
   const [workspaceExpanded, setWorkspaceExpanded] = useState(false)
   const [workspaceOpen, setWorkspaceOpen] = useState(() => initialChat?.workspaceOpen || false)
+  const workspaceTriggerRef = useRef(null)
   function openPublication(publication, kind, path=null) {
     const current=latestProjectPublication(publication,messages)
     setPreview(current);setWorkspaceOpen(true);setPreviewCollapsed(false)
@@ -1444,7 +1445,7 @@ export default function Pixel({ systemStatus = null }) {
               <PixelProviderScopes chatId={chatIdRef.current} sending={sending} />
             </div></details>
           </div></details>
-          <button type="button" aria-label="Workspace" aria-expanded={workspaceOpen} onClick={() => { setWorkspaceOpen(value => !value); setPreviewCollapsed(false) }} className="inline-flex items-center gap-1.5 bg-transparent px-2.5 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text">
+          <button type="button" aria-label="Workspace" aria-expanded={workspaceOpen} onClick={(event) => { workspaceTriggerRef.current = event.currentTarget; setWorkspaceOpen(value => !value); setPreviewCollapsed(false) }} className="inline-flex items-center gap-1.5 bg-transparent px-2.5 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text">
             <PanelRightOpen size={14}/><span>Workspace</span>
           </button>
           {messages.length > 0 && (
@@ -1709,7 +1710,7 @@ export default function Pixel({ systemStatus = null }) {
               onRefresh={()=>setPreviewRefresh(value=>value+1)}
               collapsed={previewCollapsed} onCollapse={()=>setPreviewCollapsed(value=>!value)}
               expanded={workspaceExpanded} onExpand={()=>setWorkspaceExpanded(value=>!value)}
-              onClose={()=>{setWorkspaceOpen(false);setWorkspaceExpanded(false)}}
+              onClose={()=>{setWorkspaceOpen(false);setWorkspaceExpanded(false); Promise.resolve().then(()=>workspaceTriggerRef.current?.focus())}}
               onPublish={isDisabled?undefined:()=>{setWorkspaceExpanded(false);insertComposerText('Publique o site que voce criou nesta conversa no preview do ODS. Inspecione os arquivos existentes, preserve o projeto e use pixel_ods_workspace_preview para a pasta que contem index.html.')}}/>
 
           </aside>
