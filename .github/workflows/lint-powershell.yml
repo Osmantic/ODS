@@ -137,6 +137,22 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-install-footprint-windows.ps1
 
+      - name: Windows WSL Lifetime Contracts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./tests/contracts/test-wsl-lifecycle.ps1
+          ./tests/contracts/test-wsl-lifecycle-output.ps1
+          ./tests/contracts/test-wsl-lifecycle-scheduler.ps1 -AllowUnavailableInteractiveSession
+
+      - name: Windows WSL Lifetime Contracts (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          ./tests/contracts/test-wsl-lifecycle.ps1
+          ./tests/contracts/test-wsl-lifecycle-output.ps1
+          ./tests/contracts/test-wsl-lifecycle-scheduler.ps1 -AllowUnavailableInteractiveSession
+
       - name: Atomic Environment Write Tests
         if: runner.os == 'Windows'
         shell: bash
