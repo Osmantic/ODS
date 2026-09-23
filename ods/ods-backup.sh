@@ -649,10 +649,12 @@ main() {
                 exit 0
                 ;;
             -o|--output)
+                [[ $# -lt 2 ]] && { echo "Option '$1' requires an argument" >&2; exit 1; }
                 BACKUP_ROOT="$2"
                 shift 2
                 ;;
             -t|--type)
+                [[ $# -lt 2 ]] && { echo "Option '$1' requires an argument" >&2; exit 1; }
                 backup_type="$2"
                 shift 2
                 ;;
