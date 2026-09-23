@@ -64,7 +64,7 @@ check 'Remove-Item -LiteralPath $_expectedFilePath -Recurse -Force' "$PHASE06" "
 
 check 'Test-Path -LiteralPath $envPath -PathType Container' "$ENVGEN" "env generator detects malformed .env directory"
 check 'Remove-Item -LiteralPath $envPath -Recurse -Force' "$ENVGEN" "env generator removes malformed .env directory before writing"
-check 'Write-Utf8NoBom -Path $envPath -Content $envContent' "$ENVGEN" "env generator writes .env after recovery"
+check 'Write-ODSPrivateEnvFile -Path $envPath -Content $envContent' "$ENVGEN" "env generator protects and writes .env after recovery"
 
 check 'Test-Path -LiteralPath $Path -PathType Leaf' "$LLM_ENDPOINT" "shared env parser only reads .env when it is a file"
 check 'Get-Content -LiteralPath $Path -ErrorAction Stop' "$LLM_ENDPOINT" "shared env parser reads .env defensively"

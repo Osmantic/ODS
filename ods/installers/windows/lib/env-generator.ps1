@@ -122,6 +122,54 @@ function Write-Utf8NoBom {
     [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
 }
 
+function Protect-ODSPrivateEnvFile {
+    param([string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'The ODS credential file must be a regular file.'
+    }
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        $acl = [IO.FileSystemAclExtensions]::GetAccessControl($item, [Security.AccessControl.AccessControlSections]::Access)
+    } else {
+        $acl = $item.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
+    }
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
+        $acl.RemoveAccessRuleSpecific($rule)
+    }
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl.SetAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow'))
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        [IO.FileSystemAclExtensions]::SetAccessControl($item, $acl)
+    } else {
+        $item.SetAccessControl($acl)
+    }
+    $verified = Get-Acl -LiteralPath $Path
+    $rules = @($verified.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    if (-not $verified.AreAccessRulesProtected -or $rules.Count -ne 1 -or
+        $rules[0].IdentityReference -ne $sid -or $rules[0].IsInherited -or
+        $rules[0].AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        $rules[0].FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+        throw 'Could not verify current-user-only access to the ODS credential file.'
+    }
+}
+
+function Write-ODSPrivateEnvFile {
+    param([string]$Path, [string]$Content)
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        $parent = Split-Path -Parent $Path
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        if (-not (Test-Path -LiteralPath $Path)) {
+            # Establish and verify the DACL on an empty file before any secret
+            # bytes are written, including installs beneath a shared directory.
+            $empty = [IO.File]::Open($Path, 'CreateNew', 'Write', 'None')
+            $empty.Dispose()
+        }
+        Protect-ODSPrivateEnvFile $Path
+    }
+    Write-Utf8NoBom -Path $Path -Content $Content
+}
+
 function Get-WindowsODSRuntimeConfigRenderer {
     [CmdletBinding()]
     param(
@@ -410,7 +458,7 @@ function Set-WindowsODSLemonadeModelConfiguration {
         }
         $envContent += "$assignment$newline"
     }
-    Write-Utf8NoBom -Path $envPath -Content $envContent
+    Write-ODSPrivateEnvFile -Path $envPath -Content $envContent
 
     if ([string]::IsNullOrWhiteSpace($Port)) {
         $portMatch = [regex]::Match($envContent, '(?m)^AMD_INFERENCE_PORT=([^\r\n]*)')
@@ -1109,7 +1157,7 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
         Remove-Item -LiteralPath $envPath -Recurse -Force
         Write-AIWarn "Removed malformed .env directory from a previous partial install."
     }
-    Write-Utf8NoBom -Path $envPath -Content $envContent
+    Write-ODSPrivateEnvFile -Path $envPath -Content $envContent
 
     if ($effectiveODSMode -eq "local") {
         $litellmDir = Join-Path (Join-Path $InstallDir "config") "litellm"
@@ -1181,22 +1229,6 @@ litellm_settings:
     }
     $routerPayload = [ordered]@{ endpoints = $routerEndpoints }
     Write-Utf8NoBom -Path (Join-Path $modelRouterDir "endpoints.json") -Content (($routerPayload | ConvertTo-Json -Depth 6) + "`n")
-
-    # Restrict .env to current user only (Windows ACL equivalent of chmod 600)
-    try {
-        # Retrieve only the DACL (Access) to avoid requiring SeSecurityPrivilege
-        $acl = [System.IO.File]::GetAccessControl($envPath, [System.Security.AccessControl.AccessControlSections]::Access)
-        $acl.SetAccessRuleProtection($true, $false)  # Disable inheritance
-        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            $currentUser, "FullControl", "Allow"
-        )
-        $acl.SetAccessRule($rule)
-        [System.IO.File]::SetAccessControl($envPath, $acl)
-    } catch {
-        # ACL restriction failed -- not fatal, just warn
-        Write-AIWarn "Could not restrict .env permissions: $_"
-    }
 
     return @{
         SearxngSecret  = $searxngSecret

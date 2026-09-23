@@ -86,6 +86,16 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-hermes-config-acl-repeat.ps1
 
+      - name: Windows Env Credential ACL (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-env-credential-acl.ps1
+
+      - name: Windows Env Credential ACL (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-env-credential-acl.ps1
+
       - name: Windows Model Activation Contract
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1
