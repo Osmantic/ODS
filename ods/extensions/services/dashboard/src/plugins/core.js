@@ -10,7 +10,6 @@ import {
   UserPlus,
   CreditCard,
   Code,
-  Cloud,
 } from 'lucide-react'
 
 const Dashboard = lazy(() => import('../pages/Dashboard'))
