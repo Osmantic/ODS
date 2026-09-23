@@ -641,6 +641,7 @@ async function responseError(resp, label) {
 
 function GeneratedTokenModal({ record, onClose }) {
   const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState(null)
   const [qrDataUrl, setQrDataUrl] = useState(null)
   const [qrError, setQrError] = useState(null)
   const owner = record.token_type === 'owner'
@@ -667,10 +668,11 @@ function GeneratedTokenModal({ record, onClose }) {
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(record.url)
+      setCopyError(null)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch {
-      // Fallback: select the visible input manually.
+      setCopyError('Copy failed. Select the link and copy it manually.')
     }
   }
 
@@ -748,6 +750,7 @@ function GeneratedTokenModal({ record, onClose }) {
               {copied ? 'Copied' : 'Copy'}
             </button>
           </div>
+          {copyError && <p className="mt-2 text-xs text-red-400" role="alert">{copyError}</p>}
         </label>
 
         <div className="flex justify-between items-center gap-4">

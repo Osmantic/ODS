@@ -212,6 +212,30 @@ describe('Invites', () => {
     expect(await screen.findByAltText('QR code for invite link')).toHaveAttribute('src', 'data:image/png;base64,abc123')
   })
 
+  test('explains how to copy an invite when clipboard access is denied', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/list') return response({ tokens: [] })
+      if (url === '/api/auth/magic-link/owner-card/status') return response(ownerCardReady)
+      if (url === '/api/auth/magic-link/generate' && options.method === 'POST') return response({
+        url: 'http://auth.ods.local/magic-link/clipboard-denied', target_username: 'bob', token_type: 'guest',
+      })
+      if (String(url).startsWith('/api/auth/magic-link/qr?url=')) return response({ data_url: 'data:image/png;base64,abc123' })
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } })
+
+    render(<Invites />)
+    await screen.findByText('No guest invites yet')
+    fireEvent.click(screen.getByRole('button', { name: 'New guest invite' }))
+    fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: 'bob' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
+    await screen.findByRole('dialog', { name: 'Invite created' })
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Copy failed. Select the link and copy it manually.')
+  })
+
   test('shows voice fallback when the browser origin is not secure', async () => {
     const descriptor = Object.getOwnPropertyDescriptor(window, 'isSecureContext')
     Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false })
