@@ -45,6 +45,8 @@ def load_json(path: Path) -> Any:
 
 
 def resolve_json_path(data: Any, dotted_path: str) -> Any:
+    if not isinstance(dotted_path, str) or not dotted_path.strip():
+        raise KeyError("dotted_path must be a non-empty string")
     current = data
     for part in dotted_path.split("."):
         if isinstance(current, dict) and part in current:
