@@ -15,7 +15,7 @@
 AI server and homelab setup is rapidly becoming a solved problem.
 It should feel that way for everyone.
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![License: Apache 2.0 + Pixel ODS-only](https://img.shields.io/badge/License-Apache%202.0%20%2B%20Pixel%20ODS--only-blue.svg)](ods/LICENSING.md)
 [![GitHub Stars](https://img.shields.io/github/stars/Osmantic/ODS)](https://github.com/Osmantic/ODS/stargazers)
 [![Release](https://img.shields.io/github/v/release/Osmantic/ODS)](https://github.com/Osmantic/ODS/releases)
 
@@ -252,7 +252,7 @@ See the [macOS Quickstart](ods/docs/MACOS-QUICKSTART.md) for details.
 - **Kokoro** — text-to-speech
 
 ### Agents & Automation
-- **Pixel** — core conversational agent on qualified Ubuntu 24.04/26.04 or Debian 12 systemd hosts after separate written license authorization; appears as `pixel/default` in Open WebUI and as a Dashboard toolbar app
+- **Pixel** — bundled core conversational agent on qualified Ubuntu 24.04/26.04 or Debian 12 systemd hosts, with no private repository access or separate license flag required; appears as `pixel/default` in Open WebUI and as a Dashboard toolbar app
 - **Hermes Agent** — independent general-purpose agent, available alongside Pixel; includes memory, skills, and a magic-link-gated proxy
 - **OpenClaw** — deprecated legacy autonomous agent, still opt-in during the migration window
 - **n8n** — workflow automation with 400+ integrations (Slack, email, databases, APIs)
@@ -440,7 +440,7 @@ Other tools get you part of the way. ODS gets you the whole way.
 | One-command install | Everything, auto-configured | LLM + chat only | LLM only |
 | Hardware auto-detect + model selection | NVIDIA + AMD Strix Halo + Apple Silicon + Intel Arc + CPU/cloud fallback | No | No |
 | AMD APU unified memory support | Platform-specific accelerated backend, selected by installer | Partial (Vulkan) | No |
-| Autonomous AI agents | Pixel at the heart of ODS on qualified/licensed hosts; Hermes available alongside it; OpenClaw legacy opt-in | No | No |
+| Autonomous AI agents | Bundled Pixel at the heart of ODS on qualified Linux hosts; Hermes available alongside it; OpenClaw legacy opt-in | No | No |
 | Workflow automation | n8n (400+ integrations) | No | No |
 | Voice (STT + TTS) | Whisper + Kokoro | No | No |
 | Image generation | ComfyUI | No | No |
@@ -457,6 +457,7 @@ Other tools get you part of the way. ODS gets you the whole way.
 | [Quickstart](ods/QUICKSTART.md) | Step-by-step install guide with troubleshooting |
 | [Docs Index](ods/docs/README.md) | Maintained map for operators, contributors, and reviewers |
 | [Pixel Integration](ods/docs/PIXEL.md) | Eligibility, licensing boundary, architecture, install, security, tools, rollback, and qualification |
+| [Licensing](ods/LICENSING.md) | Apache-2.0 ODS code, Pixel's ODS-only grant, and third-party notices |
 | [Build On ODS](ods/docs/BUILD-ON-ODS-SERVER.md) | Forking, custom editions, extension templates, and downstream validation |
 | [Forkability](ods/docs/FORKABILITY.md) | How to fork, audit, customize, and independently operate ODS |
 | [Maintainer Runbook](ods/docs/MAINTAINER_RUNBOOK.md) | Release, rollback, validation, and operator continuity guidance for maintainers and forks |
@@ -491,7 +492,9 @@ ODS has been recognized by the local AI and developer community, including AMD F
 
 ## License
 
-Apache 2.0 — Use it, modify it, ship it. See [LICENSE](LICENSE).
+ODS code is Apache-2.0 except the bundled Pixel source, which has a separate
+ODS-only use and distribution grant. See [Licensing](ods/LICENSING.md),
+[LICENSE](LICENSE), and [Pixel's license](ods/vendor/pixel/LICENSE.md).
 
 ---
 

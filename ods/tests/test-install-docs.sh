@@ -217,6 +217,14 @@ require_literal "$REPO_ROOT/README.md" 'Choose your system, copy the block' "Fro
 require_literal "$REPO_ROOT/README.md" '**Linux or macOS**' "Front-page Linux/macOS install label"
 require_literal "$REPO_ROOT/README.md" '**Windows PowerShell**' "Front-page Windows install label"
 require_literal "$REPO_ROOT/README.md" 'Docker must be installed and running' "Front-page Docker prerequisite"
+require_literal "$REPO_ROOT/README.md" '[Licensing](ods/LICENSING.md)' "Front-page mixed-license guidance"
+require_literal "$ROOT_DIR/README.md" '[Licensing](LICENSING.md)' "ODS mixed-license guidance"
+if grep -qF 'separate written license authorization' "$REPO_ROOT/README.md"; then
+    fail "Front page still requires separate Pixel license authorization"
+fi
+if grep -qF 'qualified/licensed hosts' "$REPO_ROOT/README.md"; then
+    fail "Front page still calls qualified Pixel hosts licensed"
+fi
 
 for file in "${windows_copy_paste_docs[@]}"; do
     require_literal "$file" "$WINDOWS_SOURCE_ZIP_URL" "Windows no-Git source ZIP install"

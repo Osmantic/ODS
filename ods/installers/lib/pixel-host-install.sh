@@ -1935,18 +1935,31 @@ _ods_pixel_restore_model_reconciliation() {
     _ods_pixel_mark_ready "$owner" "$home" "$old_contract" "$pixel_root"
 }
 
+_ods_pixel_reconciliation_source_url() {
+    local source_ref="$1"
+    if [[ -n "${PIXEL_SOURCE_URL:-}" ]]; then
+        printf '%s\n' "$PIXEL_SOURCE_URL"
+    elif [[ "$source_ref" == '817214d5ec3d8aa583fe50c1dc7561f3c1a16dff' ]]; then
+        printf '%s\n' bundled
+    else
+        # Existing developer/private installs retain their original source.
+        printf '%s\n' 'https://github.com/Osmantic/Pixel.git'
+    fi
+}
+
 ods_pixel_reconcile_promoted_model() {
     local owner="$1" home="$2" promoted_model="$3" final_state="${4:-ready}"
     local promoted_context="${5:-}" promoted_max_tokens="${6:-}" promoted_reasoning="${7:-}"
     local route_fingerprint="${8:-}"
-    local source_ref source_root pixel_root answers candidate backup contract_sha256 openclaw_bin failed=false
+    local source_ref source_root source_url pixel_root answers candidate backup contract_sha256 openclaw_bin failed=false
     local model_transaction="" release_failed=false
     local stable_alias=false staged_alias_candidate=""
     local failure_phase="unknown"
     [[ "$final_state" == ready || "$final_state" == installing ]] || return 1
     source_ref="$(_ods_pixel_managed_source_ref "$owner" "$home")" || return 1
+    source_url="$(_ods_pixel_reconciliation_source_url "$source_ref")" || return 1
     local PIXEL_SOURCE_REF="$source_ref"
-    local PIXEL_SOURCE_URL="${PIXEL_SOURCE_URL:-https://github.com/Osmantic/Pixel.git}"
+    local PIXEL_SOURCE_URL="$source_url"
     source_root="${INSTALL_DIR:?}/data/pixel/source-$source_ref"
     pixel_root="$(_ods_pixel_source_checkout "$owner" "$home" "$source_root")" || return 1
     answers="$INSTALL_DIR/data/pixel/onboarding.json"

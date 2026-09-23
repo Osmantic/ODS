@@ -424,6 +424,12 @@ jobs:
           python3 tests/contracts/test-remote-provider-egress-policy.py
           python3 tests/contracts/test-remote-provider-egress-service.py
 
+      - name: Pixel Public Source and Local Bundle Contract
+        run: |
+          python3 scripts/verify-pixel-bundle.py
+          bash vendor/pixel/scripts/check-no-secrets.sh vendor/pixel
+          bash tests/test-pixel-bundled-source.sh
+
       - name: Pixel Default Agent Contract Tests
         run: |
           bash tests/test-pixel-integration.sh
