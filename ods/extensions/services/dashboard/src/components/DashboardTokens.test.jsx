@@ -173,6 +173,20 @@ it('expires a stalled JSON body and restores an explicit refresh without accepti
   expect(screen.queryByTitle((9999).toLocaleString())).toBeNull()
 })
 
+it('keeps the timeout error visible instead of restarting the failed poll', async () => {
+  vi.useFakeTimers()
+  const signals = []
+  vi.stubGlobal('fetch', vi.fn(async (_url, {signal}) => {
+    signals.push(signal)
+    return {ok:true,json:() => new Promise(() => {})}
+  }))
+  await act(async () => {render(<DashboardTokens/>)})
+  await act(async () => {await vi.advanceTimersByTimeAsync(22000)})
+  expect(signals.filter(signal => signal.aborted)).toHaveLength(3)
+  expect(screen.getByRole('alert')).toHaveTextContent('timed out')
+  expect(screen.getByRole('button',{name:'Refresh token usage'})).toBeEnabled()
+})
+
 it('aborts unfinished sibling telemetry reads when one endpoint fails early', async () => {
   const signals = []
   vi.stubGlobal('fetch', vi.fn(async (url, {signal}) => {

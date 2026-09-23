@@ -81,9 +81,12 @@ export default function DashboardTokens() {
   const [revision, setRevision] = useState(0)
   const [result, setState] = useState({loading:true,days:1})
   const pending = useRef(null)
+  const pollingPaused = useRef(false)
   const state = result.days === days ? result : {loading:true}
   useEffect(() => {
-    const timer = setInterval(() => {if (document.visibilityState !== 'hidden' && !pending.current) setRevision(value => value + 1)}, days === 1 ? 5000 : 30000)
+    const timer = setInterval(() => {
+      if (!pollingPaused.current && document.visibilityState !== 'hidden' && !pending.current) setRevision(value => value + 1)
+    }, days === 1 ? 5000 : 30000)
     return () => clearInterval(timer)
   }, [days])
   useEffect(() => {
@@ -93,6 +96,7 @@ export default function DashboardTokens() {
       controller.abort()
       if (pending.current === controller) {
         pending.current = null
+        pollingPaused.current = true
         setState({days,error:'Token telemetry timed out.'})
       }
     }, 20000)
@@ -110,6 +114,7 @@ export default function DashboardTokens() {
       if (!controller.signal.aborted) setState({report,readiness,timeline,days})
     }).catch(error => {
       if (!controller.signal.aborted) {
+        pollingPaused.current = true
         setState({days,error:error.message})
         // Promise.all rejects as soon as one endpoint fails. Release any
         // sibling body reads even when the tab is hidden and polling pauses.
@@ -133,7 +138,7 @@ export default function DashboardTokens() {
     ? [{key:'input_tokens',label:'Input',color:'#c8c9c9'},{key:'output_tokens',label:'Output',color:'#737779'}]
     : [{key:'total_tokens',label:'Tokens',color:'#c8c9c9'}]
   return <div className="dashboard-tokens">
-    <header className="dashboard-token-toolbar"><div><h2>Token usage</h2><p>Recorded inference activity</p></div><div className="dashboard-token-actions"><div className="dashboard-token-period" role="group" aria-label="Token period">{[1,7,30].map(value => <button key={value} aria-label={`${value} ${value === 1 ? 'day' : 'days'}`} aria-pressed={days === value} onClick={() => setDays(value)}>{value}d</button>)}</div><button className="pixel-metal-control" aria-label="Refresh token usage" onClick={() => setRevision(value => value + 1)} disabled={state.loading}><MetalMetricIcon icon={RefreshCw} size={14}/></button></div></header>
+    <header className="dashboard-token-toolbar"><div><h2>Token usage</h2><p>Recorded inference activity</p></div><div className="dashboard-token-actions"><div className="dashboard-token-period" role="group" aria-label="Token period">{[1,7,30].map(value => <button key={value} aria-label={`${value} ${value === 1 ? 'day' : 'days'}`} aria-pressed={days === value} onClick={() => setDays(value)}>{value}d</button>)}</div><button className="pixel-metal-control" aria-label="Refresh token usage" onClick={() => { pollingPaused.current = false; setRevision(value => value + 1) }} disabled={state.loading}><MetalMetricIcon icon={RefreshCw} size={14}/></button></div></header>
     {state.loading && !state.report ? <p role="status" className="dashboard-empty">Loading token usage…</p> : state.error ? <p role="alert" className="dashboard-empty">{state.error} Use refresh to try again.</p> : <>
       {state.readiness?.available !== true && <p className="dashboard-token-notice">{state.readiness?.message || 'Tracking status unavailable. These are recorded totals, not confirmation that tracking is active.'}</p>}
       <div className="dashboard-token-summary">{[['Total tokens','total_tokens',days === 1 ? 'Today (UTC)' : `Last ${days} days`],['Input','input_tokens','Prompt tokens'],['Output','output_tokens','Generated tokens'],['Requests','requests','Recorded calls']].map(([label,key,hint]) => <div className="dashboard-token-total" key={key}><span>{label}</span><strong title={number(summary[key])}>{number(summary[key])}</strong><small>{hint}</small></div>)}</div>
