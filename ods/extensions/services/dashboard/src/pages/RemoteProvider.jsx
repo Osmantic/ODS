@@ -578,13 +578,13 @@ export default function RemoteProvider({ compact = false }) {
       </nav>}
 
       {error && (
-        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+        <div role="alert" className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
           <AlertCircle size={16} />
           {error}
         </div>
       )}
       {testError && (
-        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+        <div role="alert" className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
           <AlertCircle size={16} />
           {testError}
         </div>
@@ -600,7 +600,7 @@ export default function RemoteProvider({ compact = false }) {
         </div>
       )}
       {lifecycleError && (
-        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+        <div role="alert" className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
           <AlertCircle size={16} />
           {lifecycleError}
         </div>
@@ -629,7 +629,7 @@ export default function RemoteProvider({ compact = false }) {
           <Field label="Pixel route" value={titleize(activation.pixel)} />
           <ProbeReceipt receipt={proofReceipt} />
           {Array.isArray(routeState.errors) && routeState.errors.length > 0 && (
-            <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
+            <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
               {routeState.errors.join('; ')}
             </div>
           )}
@@ -689,7 +689,7 @@ export default function RemoteProvider({ compact = false }) {
           )}
 
           {peerModelsError && (
-            <div className="flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+            <div role="alert" className="flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
               <AlertCircle size={16} />
               {peerModelsError}
             </div>
