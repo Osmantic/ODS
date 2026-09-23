@@ -113,6 +113,16 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
 
+      - name: Windows Uninstall Resource Isolation Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-uninstall-resources.ps1
+
+      - name: Windows Uninstall Resource Isolation Contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-uninstall-resources.ps1
+
       - name: Windows Installer Presentation Contract
         shell: pwsh
         run: ./tests/contracts/test-windows-installer-presentation.ps1
