@@ -3,6 +3,7 @@ import {displayForActivity} from './activity-display.mjs';
 // selected/filtered metadata and excerpts enter this projection. Token counts are
 // optional numeric measurements from the final model response, never estimates.
 const RUN = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const noEarlierThan = (observed, floor) => observed < floor ? floor : observed;
 const ORDER = ['read', 'agent', 'run', 'edit', 'browser', 'preview', 'action', 'unknown'];
 const KINDS = new Map([
   ...['read', 'ls', 'glob', 'grep'].map(name => [name, 'read']),
@@ -88,7 +89,12 @@ export function createTaskActivity({agentId = 'pixel', now = () => new Date().to
     // wrapper emitted an after-hook. Duplicate hook delivery is idempotent.
     if (existing?.outcome === 'blocked' || (existing && outcome === 'running' && existing.outcome !== 'running')) return;
     const display=outcome==='blocked' ? null : displayForActivity(event,context,existing?.display);
-    run.calls.set(callId, {kind:existing?.kind ?? kindFor(event, context), outcome, display, startedAt:existing?.startedAt ?? now(), finishedAt:outcome === 'running' ? null : existing?.finishedAt ?? now(), wrapped:existing?.wrapped ?? toolName === 'tool_call'});
+    // WSL/host clock sync can move wall time backwards between the tool hooks.
+    // Keep the public receipt monotonic or ingress rejects the entire answer.
+    const observedAt=now();
+    const startedAt=existing?.startedAt ?? noEarlierThan(observedAt,run.startedAt);
+    const finishedAt=outcome==='running' ? null : existing?.finishedAt ?? noEarlierThan(observedAt,startedAt);
+    run.calls.set(callId, {kind:existing?.kind ?? kindFor(event, context), outcome, display, startedAt, finishedAt, wrapped:existing?.wrapped ?? toolName === 'tool_call'});
   }
   return {
     begin,
@@ -103,7 +109,7 @@ export function createTaskActivity({agentId = 'pixel', now = () => new Date().to
       if (['cacheRead','cacheWrite'].some(key => usage[key] !== undefined && !valid(usage[key]))) return;
       const used = usage.input + usage.output + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
       // All-zero usage is a common sentinel from providers without telemetry.
-      if (used > 0 && valid(used)) run.context = {used, window, measuredAt:now()};
+      if (used > 0 && valid(used)) run.context = {used, window, measuredAt:noEarlierThan(now(),run.startedAt)};
     },
     activeForUser(user) {
       if (typeof user !== 'string' || !/^ods-[a-f0-9]{64}$/.test(user)) return null;
@@ -117,7 +123,8 @@ export function createTaskActivity({agentId = 'pixel', now = () => new Date().to
       const run = knownRun(event, context);
       if (!run) return;
       if (run.finishedAt) return;
-      run.finishedAt = now();
+      run.finishedAt = [...run.calls.values()].reduce((latest,call)=>
+        noEarlierThan(latest,call.finishedAt ?? call.startedAt),noEarlierThan(now(),run.startedAt));
       run.state = event?.success === true ? 'completed' : event?.success === false || event?.error ? 'failed' : 'finished';
     },
     projection(id) {

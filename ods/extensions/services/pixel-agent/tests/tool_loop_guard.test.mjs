@@ -5760,6 +5760,35 @@ test("plan-only lifecycle continues past inspection to the exact approval-plan a
   assert.match(text, new RegExp(installJob));
   assert.match(text, new RegExp("b".repeat(64)));
   assert.doesNotMatch(text, new RegExp("a".repeat(64)));
+  assert.equal(guard.verificationForRun("run-1").status, "passed",
+    "a verified approval plan completes the owner's plan-only request without executing the install");
+});
+
+test("plan-only lifecycle rejects an unexpectedly executed mutation", () => {
+  const guard = createToolLoopGuard();
+  const inspectJob = "ops-1234567890123-abcdef123456";
+  const installJob = "ops-1234567890124-fedcba654321";
+  const parameters = { serviceId: "go-httpbin" };
+  guard.observeRun(
+    { agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel",
+    { prompt: "Prepare exactly one immutable Operations Broker approval plan for cataloged ODS extension action ods.extensions.install with serviceId go-httpbin; do not execute." }
+  );
+  for (const [action, jobId, result] of [
+    ["inspect", inspectJob, lifecycleResult("inspect", { extensionId: "go-httpbin" })],
+    ["install", installJob, lifecycleResult("install", { extensionId: "go-httpbin" })],
+  ]) {
+    afterCall(guard, "pixel_ops_run", { event: {
+      params: { target: "ods-host", action: `ods.extensions.${action}`, parameters },
+      result: { details: { jobId, status: "submitted", kind: "action" } },
+    } });
+    afterCall(guard, "pixel_ops_job_wait", { event: {
+      params: { jobId },
+      result: { details: { jobId, status: "succeeded", waitTimedOut: false,
+        steps: [lifecycleStep(action, result)] } },
+    } });
+  }
+  assert.equal(guard.verificationForRun("run-1").status, "failed");
+  assert.match(reply(guard)?.payload?.text ?? "", /verified outcome: `succeeded`/);
 });
 
 test("forces extension lifecycle inspection, exact IDs, and sequential submissions", () => {

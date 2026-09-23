@@ -4701,6 +4701,13 @@ export function userMessageExtensionLifecycleIntent(messages, prompt = undefined
   };
 }
 
+function userMessageRequestsLifecyclePlanOnly(messages, prompt = undefined) {
+  const text = currentOwnerIntentText(messages, prompt);
+  return Boolean(text &&
+    /\b(?:prepare|create|draft|generate|submit)\b[^.!?\n]{0,160}\b(?:approval\s+plan|plan\s+for\s+approval|immutable\s+plan)\b/i.test(text) &&
+    /\b(?:do\s+not|don['’]t|never)\s+(?:actually\s+|yet\s+)?(?:execute|run|apply|install)\b|\bwithout\s+(?:executing|running|applying|installing)\b/i.test(text));
+}
+
 export function userMessageOperationsContinuation(messages, prompt = undefined) {
   const text = currentUserText(messages, prompt);
   if (
@@ -6318,6 +6325,7 @@ export function createToolLoopGuard({
         operationsInventory: undefined,
         operationsExpectedQuery: undefined,
         operationsExpectedExtensionLifecycle: undefined,
+        operationsPlanOnly: false,
         operationsContinuation: undefined,
         operationsContinuationOutcome: undefined,
         operationsSubmittedJobs: new Map(),
@@ -8358,6 +8366,8 @@ export function createToolLoopGuard({
         state.operationsExpectedExtensionLifecycle = state.operationsRequired && !operationsContinuation
           ? userMessageExtensionLifecycleIntent(event?.messages, event?.prompt)
           : undefined;
+        state.operationsPlanOnly = Boolean(state.operationsExpectedExtensionLifecycle &&
+          userMessageRequestsLifecyclePlanOnly(event?.messages, event?.prompt));
         state.operationsRequiresOdsAppsProjection =
           state.operationsRequired &&
           !operationsContinuation &&
@@ -9919,8 +9929,15 @@ export function createToolLoopGuard({
               : "- Workspace continuation: the requested workspace artifact was not both written and read back successfully in this response."
           }`
           : evidenceText;
+        // A requested approval plan is complete only when the requested
+        // action's own broker job is awaiting external approval. An inspection
+        // hash is not that plan, and an unexpectedly executed mutation cannot
+        // satisfy an explicit "do not execute" owner request.
+        const lifecyclePlanPrepared = state.operationsPlanOnly &&
+          /^Pixel prepared the exact ods\.extensions\.(?:install|enable|disable|remove) plan for extension /.test(evidenceText);
         return {
           status:
+            state.operationsPlanOnly ? (lifecyclePlanPrepared ? "passed" : "failed") :
             !state.operationsNetworkDiscoveryRequested && (
             evidenceText.startsWith(OPERATIONS_HOST_EVIDENCE_PREFIX) ||
             evidenceText.startsWith(OPERATIONS_HOST_COMMAND_EVIDENCE_PREFIX) ||

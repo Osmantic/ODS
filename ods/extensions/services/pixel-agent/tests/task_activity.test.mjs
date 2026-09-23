@@ -24,6 +24,25 @@ test('records bounded ordered steps and rejects malformed timeline and token met
   assert.equal(parseTaskActivity({...value,context:{used:-1,window:1000,measuredAt:now()}},runId),null);
 });
 
+test('a backward wall-clock step cannot invalidate a completed tool receipt',()=>{
+  const ticks=[
+    '2026-09-23T06:48:42.000Z',
+    '2026-09-23T06:48:42.719Z',
+    '2026-09-23T06:48:42.587Z',
+    '2026-09-23T06:48:42.600Z',
+  ];
+  const recorder=createTaskActivity({now:()=>ticks.shift()});
+  recorder.begin({},ctx);
+  recorder.before({toolName:'pixel_ops_run'},{...ctx,toolCallId:'broker-install'});
+  recorder.after({result:{}},{...ctx,toolCallId:'broker-install'});
+  recorder.finish({success:true},ctx);
+  const projection=recorder.projection(runId);
+  assert.equal(projection.events[0].startedAt,'2026-09-23T06:48:42.719Z');
+  assert.equal(projection.events[0].finishedAt,'2026-09-23T06:48:42.719Z');
+  assert.equal(projection.finishedAt,'2026-09-23T06:48:42.719Z');
+  assert.equal(parseTaskActivity(projection,runId),projection);
+});
+
 test('live observations bind exactly one active run to its opaque user and exclude other sessions', () => {
   const recorder=createTaskActivity({now});
   const user='ods-'+ 'a'.repeat(64);
