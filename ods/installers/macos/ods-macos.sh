@@ -1098,12 +1098,8 @@ cmd_chat() {
 
 cmd_update_pixel() {
     test_install
-    if [[ "${PIXEL_LICENSE_ACCEPTED:-$(read_env_value "$INSTALL_DIR/.env" PIXEL_LICENSE_ACCEPTED)}" != true ]]; then
-        ai_err "Pixel update requires PIXEL_LICENSE_ACCEPTED=true after separate written authorization."
-        return 1
-    fi
     /usr/bin/python3 "${INSTALL_DIR}/installers/macos/lib/pixel-native-update.py" \
-        --install-dir "$INSTALL_DIR" --ods-source "$INSTALL_DIR" --license-authorized "$@"
+        --install-dir "$INSTALL_DIR" --ods-source "$INSTALL_DIR" "$@"
 }
 
 cmd_update() {

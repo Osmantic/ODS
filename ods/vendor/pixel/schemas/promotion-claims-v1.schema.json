@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/promotion-claims-v1.schema.json",
+  "title": "Pixel private promotion evidence claims v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "consecutivePasses", "gates"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "consecutivePasses": {"type": "integer", "minimum": 0, "maximum": 1000},
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["automated-release-matrix", "supported-host-systemd-matrix", "deep-work-event-horizon", "recovery-security-matrix", "outcome-parity", "signed-release-lifecycle", "owner-usability", "frontier-live-qualification", "multi-provider-local-first", "historical-secret-closure", "distribution-license"],
+      "properties": {
+        "automated-release-matrix": {"$ref": "#/$defs/claim"},
+        "supported-host-systemd-matrix": {"$ref": "#/$defs/claim"},
+        "deep-work-event-horizon": {"$ref": "#/$defs/claim"},
+        "recovery-security-matrix": {"$ref": "#/$defs/claim"},
+        "outcome-parity": {"$ref": "#/$defs/claim"},
+        "signed-release-lifecycle": {"$ref": "#/$defs/claim"},
+        "owner-usability": {"$ref": "#/$defs/claim"},
+        "frontier-live-qualification": {"$ref": "#/$defs/claim"},
+        "multi-provider-local-first": {"$ref": "#/$defs/claim"},
+        "historical-secret-closure": {"$ref": "#/$defs/claim"},
+        "distribution-license": {"$ref": "#/$defs/claim"}
+      }
+    }
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidenceSha256"],
+      "properties": {
+        "status": {"enum": ["pass", "blocked"]},
+        "evidenceSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "pass"}}, "required": ["status"]}, "then": {"properties": {"evidenceSha256": {"$ref": "#/$defs/hash"}}}},
+        {"if": {"properties": {"status": {"const": "blocked"}}, "required": ["status"]}, "then": {"properties": {"evidenceSha256": {"type": "null"}}}}
+      ]
+    }
+  }
+}

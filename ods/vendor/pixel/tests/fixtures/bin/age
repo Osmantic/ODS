@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+output='' recipient='' identity='' mode=''
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --encrypt) mode=encrypt; shift ;;
+    --decrypt) mode=decrypt; shift ;;
+    --recipient) recipient=${2:?}; shift 2 ;;
+    --identity) identity=${2:?}; shift 2 ;;
+    --output) output=${2:?}; shift 2 ;;
+    -) shift ;;
+    *) input=$1; shift ;;
+  esac
+done
+if [[ "$mode" == encrypt ]]; then
+  [[ -n "$recipient" && -n "$output" ]] || { echo "fake age: recipient and output required" >&2; exit 2; }
+  printf 'PIXEL-FAKE-AGE\nRECIPIENT:%s\n' "$recipient" > "$output"
+  cat >> "$output"
+elif [[ "$mode" == decrypt ]]; then
+  [[ -n "$identity" && -f "$identity" && -n ${input:-} && -f "$input" ]] || { echo "fake age: identity and input required" >&2; exit 2; }
+  expected=$(sed -n '2s/^RECIPIENT://p' "$input")
+  actual=$(tr -d '\r\n' < "$identity")
+  [[ -n "$expected" && "$actual" == "$expected" ]] || { echo "age: no identity matched" >&2; exit 1; }
+  tail -n +3 "$input"
+else
+  echo "fake age: encrypt or decrypt mode required" >&2
+  exit 2
+fi

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-identity-v1.schema.json",
+  "title": "Pixel release source identity v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "pixel", "source", "manifests", "qualification", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "kind": {"const": "pixel-release-source-identity"},
+    "pixel": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "commit", "tree"],
+      "properties": {
+        "state": {"enum": ["git-clean", "unavailable"]},
+        "commit": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{40}$"}, {"type": "null"}]},
+        "tree": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{40}$"}, {"type": "null"}]}
+      },
+      "allOf": [
+        {"if": {"properties": {"state": {"const": "git-clean"}}, "required": ["state"]}, "then": {"properties": {"commit": {"type": "string"}, "tree": {"type": "string"}}}},
+        {"if": {"properties": {"state": {"const": "unavailable"}}, "required": ["state"]}, "then": {"properties": {"commit": {"const": null}, "tree": {"const": null}}}}
+      ]
+    },
+    "manifests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["releaseSha256", "compatibilitySha256", "qualificationMatrixSha256"],
+      "properties": {
+        "releaseSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "compatibilitySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "qualificationMatrixSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recordStatus", "sourceCommit", "qualifiedAt", "liveAudit", "relationship"],
+      "properties": {
+        "recordStatus": {"oneOf": [{"enum": ["supported", "candidate", "blocked", "retired"]}, {"type": "null"}]},
+        "sourceCommit": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{40}$"}, {"type": "null"}]},
+        "qualifiedAt": {"oneOf": [{"type": "string", "format": "date"}, {"type": "null"}]},
+        "liveAudit": {"oneOf": [{"type": "string", "minLength": 1, "maxLength": 255}, {"type": "null"}]},
+        "relationship": {"enum": ["same-source", "qualified-ancestor", "unverified", "unavailable"]}
+      }
+    },
+    "boundary": {"const": "Content-free source and baseline-qualification identity only. This record does not prove installed-byte integrity, runtime health, provider capability, release promotion, publication, deployment approval, or client acceptance."}
+  }
+}

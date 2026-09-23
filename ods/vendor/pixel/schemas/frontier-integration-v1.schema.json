@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/frontier-integration-v1.schema.json",
+  "title": "Pixel local Frontier integration receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "jobId", "createdAt", "resultHash", "verdict", "quality", "acceptedFindingIndexes", "rejectedFindingIndexes", "verificationCount", "localOutputHash", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "jobId": {"type": "string", "pattern": "^frontier-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "resultHash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "verdict": {"enum": ["adopt", "partial", "reject"]},
+    "quality": {"enum": ["improved", "unchanged", "regressed", "unusable"]},
+    "acceptedFindingIndexes": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "integer", "minimum": 0, "maximum": 31}},
+    "rejectedFindingIndexes": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "integer", "minimum": 0, "maximum": 31}},
+    "verificationCount": {"type": "integer", "minimum": 1, "maximum": 32},
+    "localOutputHash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "boundary": {"const": "Content-free local integration evidence; no local conclusion or private verification text."}
+  }
+}

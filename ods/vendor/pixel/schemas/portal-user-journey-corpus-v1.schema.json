@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-user-journey-corpus-v1.schema.json",
+  "title": "Pixel sanitized portal user journey corpus v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "source", "promotionRules", "journeys", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "id": {"const": "pixel-portal-owner-test-v1"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sha256", "lineCount", "retainedInRepository", "sanitizedRequirementsOnly"],
+      "properties": {
+        "kind": {"const": "private-owner-transcript"},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "lineCount": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "retainedInRepository": {"const": false},
+        "sanitizedRequirementsOnly": {"const": true}
+      }
+    },
+    "promotionRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["syntheticMaySatisfy", "selfGradingMaySatisfy", "requireExactSource", "requireIndependentVerification", "referenceBackend", "comparisonRequired", "requiredComparisonLanes", "safetyMayBeRelaxedForParity", "unexplainedCapabilityDeltaMayPass", "maximumOpenP0", "maximumOpenP1"],
+      "properties": {
+        "syntheticMaySatisfy": {"const": false},
+        "selfGradingMaySatisfy": {"const": false},
+        "requireExactSource": {"const": true},
+        "requireIndependentVerification": {"const": true},
+        "referenceBackend": {"const": "codex"},
+        "comparisonRequired": {"const": true},
+        "requiredComparisonLanes": {"const": ["product-default", "same-model-harness"]},
+        "safetyMayBeRelaxedForParity": {"const": false},
+        "unexplainedCapabilityDeltaMayPass": {"const": false},
+        "maximumOpenP0": {"const": 0},
+        "maximumOpenP1": {"const": 0}
+      }
+    },
+    "journeys": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/journey"}
+    },
+    "boundary": {"type": "string", "minLength": 120, "maxLength": 1000}
+  },
+  "$defs": {
+    "journey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "category", "profile", "dataClass", "effect", "objective", "requiredEvidence", "faults", "assertions"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+        "category": {"enum": ["freshness", "deep-work", "model", "security", "research", "external-action", "fleet", "privacy", "memory", "evidence"]},
+        "profile": {"enum": ["assistant", "scout", "builder", "researcher", "data-lab", "controller"]},
+        "dataClass": {"enum": ["public", "internal", "confidential", "private"]},
+        "effect": {"enum": ["none", "read-only", "local-state-change", "external-write"]},
+        "objective": {"type": "string", "minLength": 24, "maxLength": 400},
+        "requiredEvidence": {
+          "type": "array", "minItems": 2, "maxItems": 16, "uniqueItems": true,
+          "items": {"enum": ["exact-source", "runtime-environment", "typed-call", "command-exit", "artifact-digest", "independent-verifier", "source-provenance", "observation-time", "provider-identifier", "action-journal", "checkpoint-lineage", "privacy-route", "citation-coverage", "cleanup-proof"]}
+        },
+        "faults": {
+          "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true,
+          "items": {"enum": ["stale-memory", "source-unavailable", "prompt-injection", "malformed-output", "process-crash", "service-restart", "timeout-before-submit", "timeout-after-submit", "eventual-consistency", "duplicate-request", "scope-expansion", "secret-canary", "cross-client-probe", "mock-backend", "self-grade", "artifact-substitution"]}
+        },
+        "assertions": {
+          "type": "array", "minItems": 3, "maxItems": 24, "uniqueItems": true,
+          "items": {"enum": ["refresh-before-current-claim", "label-stale-or-unknown", "inline-provenance", "real-backend-required", "real-tool-outcome", "no-scripted-answer-credit", "durable-event-progress", "no-duplicate-work", "independent-completion", "bounded-finding-language", "inline-citations", "primary-source-preference", "citation-entailment", "idempotency-key-before-write", "reconcile-before-retry", "no-false-success", "attendee-resolution", "typed-read-only-inventory", "no-guessed-network-scan", "local-remote-route-visible", "no-private-remote-payload", "memory-origin-visible", "memory-delete-correct", "sensitive-proactivity-opt-in", "artifact-openable", "evidence-exact-source", "failure-recovery-path", "cleanup-proven", "inline-approval-at-consequence", "no-hidden-control-handoff", "exact-handoff-provenance", "handoff-survives-restart", "no-handoff-authority-expansion", "action-policy-mode-visible", "conversation-is-primary", "composer-remains-available", "run-state-visible", "contextual-inspector-optional", "lifecycle-controls-inline", "lifecycle-state-gated", "destructive-action-exact-review", "recovery-guidance-visible"]}
+        }
+      }
+    }
+  }
+}

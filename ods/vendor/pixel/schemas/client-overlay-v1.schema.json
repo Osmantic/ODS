@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/client-overlay-v1.schema.json",
+  "title": "Pixel private client overlay v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "clientId", "core", "capabilityProfile", "frontier", "operatorAccess", "privacy", "extensions", "licensing", "usability"],
+  "properties": {
+    "$schema": {"const": "./schemas/client-overlay-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "clientId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}[a-z0-9]$"},
+    "core": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pixel", "modificationAllowed", "privateStateOutsideCore"],
+      "properties": {
+        "pixel": {"const": "4.3.27"},
+        "modificationAllowed": {"const": false},
+        "privateStateOutsideCore": {"const": true}
+      }
+    },
+    "capabilityProfile": {"enum": ["minimal", "chief-of-staff", "research", "engineering-operator"]},
+    "frontier": {
+      "type": "object", "additionalProperties": false,
+      "required": ["defaultRoute", "advertisedAuthModes", "apiKeyModeAdvertised", "clientDataEgressAllowed"],
+      "properties": {
+        "defaultRoute": {"const": "local-first"},
+        "advertisedAuthModes": {"const": ["chatgpt"]},
+        "apiKeyModeAdvertised": {"const": false},
+        "clientDataEgressAllowed": {"const": false}
+      }
+    },
+    "operatorAccess": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "pixelListener", "remoteAccessEnabled", "remoteAccessPolicy"],
+      "properties": {
+        "mode": {"const": "local-only"},
+        "pixelListener": {"const": "exact-ipv4-loopback"},
+        "remoteAccessEnabled": {"const": false},
+        "remoteAccessPolicy": {
+          "type": "object", "additionalProperties": false,
+          "required": ["requiredIfLaterEnabled", "enforcement", "mfaRequired", "preferredFactor", "fallbackFactor", "credentialsVisibleToPixel"],
+          "properties": {
+            "requiredIfLaterEnabled": {"const": true},
+            "enforcement": {"const": "external-identity-provider"},
+            "mfaRequired": {"const": true},
+            "preferredFactor": {"const": "totp-authenticator-app"},
+            "fallbackFactor": {"const": "email-one-time-code"},
+            "credentialsVisibleToPixel": {"const": false}
+          }
+        }
+      }
+    },
+    "privacy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["clientDataInCore", "credentialsInOverlay", "remoteReceivesSanitizedOnly", "localFinalComposition"],
+      "properties": {
+        "clientDataInCore": {"const": false},
+        "credentialsInOverlay": {"const": false},
+        "remoteReceivesSanitizedOnly": {"const": true},
+        "localFinalComposition": {"const": true}
+      }
+    },
+    "extensions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["localCapabilityPackIds", "operationsActionPackIds", "frontierTaskPackIds"],
+      "properties": {
+        "localCapabilityPackIds": {"$ref": "#/$defs/packIds"},
+        "operationsActionPackIds": {"$ref": "#/$defs/packIds"},
+        "frontierTaskPackIds": {"$ref": "#/$defs/packIds"}
+      }
+    },
+    "licensing": {"$ref": "#/$defs/evidenceGate"},
+    "usability": {"$ref": "#/$defs/evidenceGate"}
+  },
+  "$defs": {
+    "packIds": {
+      "type": "array", "maxItems": 64, "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9.-]{1,126}[a-z0-9]$"}
+    },
+    "evidenceGate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["required", "recorded", "evidenceSha256"],
+      "properties": {
+        "required": {"const": true},
+        "recorded": {"type": "boolean"},
+        "evidenceSha256": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{64}$"}, {"type": "null"}]}
+      },
+      "allOf": [
+        {"if": {"properties": {"recorded": {"const": true}}, "required": ["recorded"]}, "then": {"properties": {"evidenceSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}},
+        {"if": {"properties": {"recorded": {"const": false}}, "required": ["recorded"]}, "then": {"properties": {"evidenceSha256": {"type": "null"}}}}
+      ]
+    }
+  }
+}

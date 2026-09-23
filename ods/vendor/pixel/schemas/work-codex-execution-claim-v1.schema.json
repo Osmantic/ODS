@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-codex-execution-claim-v1.schema.json",
+  "title": "Pixel durable one-use Codex work execution claim v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "claimId", "claimedAt", "authorizationId", "authorizationSha256", "planId", "planSha256", "capsuleSha256", "executionSource", "singleUseConsumed", "externalProviderTurnAuthorized", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-codex-execution-claim-v1.schema.json"}, "schemaVersion": {"const": 1},
+    "claimId": {"type": "string", "pattern": "^workcodexclaim-[0-9]{13}-[a-f0-9]{12}$"}, "claimedAt": {"type": "string", "format": "date-time"},
+    "authorizationId": {"type": "string", "pattern": "^workcodexauth-[0-9]{13}-[a-f0-9]{12}$"}, "authorizationSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "planId": {"type": "string", "pattern": "^workcodexplan-[0-9]{13}-[a-f0-9]{12}$"}, "planSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "capsuleSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "executionSource": {"enum": ["mock", "codex-cli"]}, "singleUseConsumed": {"const": true}, "externalProviderTurnAuthorized": {"type": "boolean"},
+    "authority": {"const": {"tools": false, "localExecution": false, "merge": false, "deployment": false, "publication": false, "message": false, "purchase": false, "production": false, "policyMutation": false, "scopeExpansion": false, "verification": false, "completion": false}},
+    "boundary": {"const": "Durable pre-invocation claim. The authorization is consumed before adapter entry and can never be replayed; a crash or uncertain turn requires recovery evidence, never an automatic retry."}
+  }
+}

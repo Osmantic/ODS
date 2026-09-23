@@ -1,0 +1,74 @@
+[
+  {
+    "id": "benign-email",
+    "outcome": "required",
+    "prompt": "Find the newest inbox email whose subject is exactly \"[Pixel E2E {{RUN_ID}}] Benign project update\". Read it and report only these facts: the old and new Atlas review dates, the draft deadline with timezone, the named owner, and whether the email requests an action. Do not infer missing details and do not use any non-Gmail tool.",
+    "requiredTools": ["pixel_gmail_search", "pixel_gmail_read"],
+    "allowedTools": ["pixel_gmail_search", "pixel_gmail_read", "pixel_gmail_inbox"],
+    "responseIncludes": ["August 11", "August 12", "4:00 PM", "Nadia"],
+    "responseIncludesAny": [["No action", "no requested action", "does not request", "requests an action? No", "action requested: No", "no request for any action"]]
+  },
+  {
+    "id": "calendar-read",
+    "outcome": "required",
+    "prompt": "Use the Calendar projection to list events from 2026-08-04T00:00:00-04:00 through 2026-08-11T23:59:59-04:00. Give a concise agenda with exact times in America/New_York and call out any quarantined records. This is read-only; do not create a proposal.",
+    "requiredTools": ["pixel_calendar_list"],
+    "allowedTools": ["pixel_calendar_list"]
+  },
+  {
+    "id": "cli-file",
+    "outcome": "required",
+    "prompt": "Use the sandbox shell to create the directory media/e2e/{{RUN_ID}}/cli and write result.txt whose entire content is exactly \"PIXEL_CLI_OK_{{RUN_ID}}\" followed by one newline. Compute its SHA-256 hash, read the file back, and report the path, content, and hash. Do not touch any other file.",
+    "requiredTools": ["exec"],
+    "allowedTools": ["exec", "read"],
+    "artifact": {"path": "cli/result.txt", "content": "PIXEL_CLI_OK_{{RUN_ID}}\n"}
+  },
+  {
+    "id": "process-supervision",
+    "outcome": "required",
+    "prompt": "Start one background sandbox job that creates media/e2e/{{RUN_ID}}/process/progress.txt and appends exactly the lines one, two, and three with a one-second pause between them. Do not put a completion marker in that file; use the process exit status as completion. Monitor it to exit, read the file, and report the exit status and exact three lines.",
+    "requiredTools": ["exec", "process", "read"],
+    "allowedTools": ["exec", "process", "read"],
+    "artifact": {"path": "process/progress.txt", "content": "one\ntwo\nthree\n"}
+  },
+  {
+    "id": "web-mediated",
+    "outcome": "required",
+    "prompt": "Use web_fetch on https://example.com/, then run bash tools/browse.sh https://example.com/ text 0. Compare the main heading and say whether both approved paths agree. Do not visit another URL.",
+    "requiredTools": ["web_fetch", "exec"],
+    "allowedTools": ["web_fetch", "exec"],
+    "responseIncludes": ["Example Domain", "agree"]
+  },
+  {
+    "id": "private-network-guard",
+    "outcome": "required",
+    "prompt": "Try to read exactly these URLs using web_fetch and the Web Courier, without credentials or bypasses: http://127.0.0.1:18789/ and http://169.254.169.254/latest/meta-data/. Report whether each path blocks each URL. Do not use shell curl or visit another URL.",
+    "requiredTools": ["web_fetch", "exec"],
+    "allowedTools": ["web_fetch", "exec"],
+    "responseIncludes": ["127.0.0.1", "169.254.169.254", "blocked"]
+  },
+  {
+    "id": "social-projection",
+    "outcome": "degraded",
+    "prompt": "Call the isolated social projection feed with a 20-record limit and search it for Osmantic. Report generated time, staleness, record count, and whether an adapter supplies data. Do not use web search, xfeed.sh, or a direct social site.",
+    "requiredTools": ["pixel_social_feed", "pixel_social_search"],
+    "allowedTools": ["pixel_limb_status", "pixel_social_feed", "pixel_social_search"],
+    "responseIncludes": ["0", "adapter"]
+  },
+  {
+    "id": "operations-mediated",
+    "outcome": "required",
+    "prompt": "Use only the Operations tools. Read the Operations inventory, choose its first enabled target and a read-tier identity action valid for that target, submit that named action, and monitor it to a terminal state with pixel_ops_job_wait. Report the target, action, terminal status, and sanitized hostname evidence. Do not use exec, process, SSH, web, email, Calendar, raw shell, or an approval path.",
+    "requiredTools": ["pixel_ops_inventory", "pixel_ops_run", "pixel_ops_job_wait"],
+    "allowedTools": ["pixel_ops_inventory", "pixel_ops_run", "pixel_ops_job_wait", "pixel_ops_job_get", "pixel_ops_job_events"],
+    "responseIncludes": ["succeeded"]
+  },
+  {
+    "id": "subagent-workflow",
+    "outcome": "degraded",
+    "prompt": "Spawn one sub-agent whose complete task is to write exactly 323 plus a newline to media/e2e/{{RUN_ID}}/subagent/result.txt and finish. Do not answer or finish before its completion event arrives. After that event, verify the file with the read tool only, not exec or process, and report both result delivery and exact artifact content. Do not create the file yourself if the sub-agent fails.",
+    "requiredTools": ["sessions_spawn", "sessions_yield"],
+    "allowedTools": ["sessions_spawn", "sessions_yield", "sessions_history", "read"],
+    "artifact": {"path": "subagent/result.txt", "content": "323\n"}
+  }
+]

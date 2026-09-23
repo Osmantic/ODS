@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-task-admission-v1.schema.json",
+  "title": "Pixel content-free backend-neutral outcome task admission v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "admissionId", "taskId", "createdAt", "journeyId", "comparisonLane", "profile", "dataClass", "effectBoundary", "scenario", "corpusSha256", "journeySha256", "taskSpecificationSha256", "bindings", "capabilities", "dataRoute", "budgets", "status", "privacy", "authority", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-portal-outcome-task-admission"},
+    "admissionId": {"type": "string", "pattern": "^outcometaskadmission-[a-f0-9]{24}$"},
+    "taskId": {"type": "string", "pattern": "^outcometask-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "journeyId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+    "comparisonLane": {"enum": ["product-default", "same-model-harness"]},
+    "profile": {"enum": ["assistant", "scout", "builder", "researcher", "data-lab", "controller"]},
+    "dataClass": {"enum": ["public", "internal", "confidential", "private"]},
+    "effectBoundary": {"enum": ["none", "read-only", "local-state-change", "external-write"]},
+    "scenario": {"$ref": "#/$defs/scenario"},
+    "corpusSha256": {"$ref": "#/$defs/hash"}, "journeySha256": {"$ref": "#/$defs/hash"},
+    "taskSpecificationSha256": {"$ref": "#/$defs/hash"},
+    "bindings": {
+      "type": "object", "additionalProperties": false,
+      "required": ["userRequestSha256", "sourceSnapshotSha256", "environmentSha256", "toolPolicySha256", "verifierSha256", "sharedModelContractSha256", "sharedInferenceContractSha256", "sanitizationEvidenceSha256", "researchFixtureSha256"],
+      "properties": {
+        "userRequestSha256": {"$ref": "#/$defs/hash"}, "sourceSnapshotSha256": {"$ref": "#/$defs/hash"},
+        "environmentSha256": {"$ref": "#/$defs/hash"}, "toolPolicySha256": {"$ref": "#/$defs/hash"},
+        "verifierSha256": {"$ref": "#/$defs/hash"},
+        "sharedModelContractSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "sharedInferenceContractSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "sanitizationEvidenceSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "researchFixtureSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]}
+      }
+    },
+    "capabilities": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"enum": ["reasoning", "filesystem-read", "filesystem-write", "process-execution", "public-web", "browser", "email-read", "calendar-read", "calendar-write", "github-read", "github-write", "fleet-read", "long-running-goals", "local-model", "remote-model", "artifact-production"]}},
+    "dataRoute": {"enum": ["local-only", "brokered-public", "sanitized-remote", "authorized-provider"]},
+    "budgets": {
+      "type": "object", "additionalProperties": false,
+      "required": ["wallTimeSeconds", "operatorInterventions", "modelRequests", "inputTokens", "outputTokens", "artifactBytes", "externalWrites"],
+      "properties": {
+        "wallTimeSeconds": {"type": "integer", "minimum": 1}, "operatorInterventions": {"type": "integer", "minimum": 0},
+        "modelRequests": {"type": "integer", "minimum": 1}, "inputTokens": {"type": "integer", "minimum": 1},
+        "outputTokens": {"type": "integer", "minimum": 1}, "artifactBytes": {"type": "integer", "minimum": 1},
+        "externalWrites": {"type": "integer", "minimum": 0}
+      }
+    },
+    "status": {"const": "admitted-inert"},
+    "privacy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pathsIncluded", "requestContentIncluded", "sourceContentIncluded", "verifierContentIncluded", "credentialsIncluded"],
+      "properties": {
+        "pathsIncluded": {"const": false}, "requestContentIncluded": {"const": false},
+        "sourceContentIncluded": {"const": false}, "verifierContentIncluded": {"const": false},
+        "credentialsIncluded": {"const": false}
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantsExecution", "grantsProviderCall", "grantsCredentialUse", "grantsExternalEffect", "grantsScopeExpansion", "grantsSafetyRelaxation", "grantsCompletion", "grantsPromotion"],
+      "properties": {
+        "grantsExecution": {"const": false}, "grantsProviderCall": {"const": false},
+        "grantsCredentialUse": {"const": false}, "grantsExternalEffect": {"const": false},
+        "grantsScopeExpansion": {"const": false}, "grantsSafetyRelaxation": {"const": false},
+        "grantsCompletion": {"const": false}, "grantsPromotion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Content-free admission of one exact backend-neutral task. Private task content and paths remain in owner custody. Admission proves binding and policy consistency only and grants no execution, provider call, credential use, external effect, scope expansion, safety relaxation, completion, publication, deployment, acceptance, or promotion authority."}
+  },
+  "allOf": [
+    {"if": {"properties": {"comparisonLane": {"const": "same-model-harness"}}, "required": ["comparisonLane"]}, "then": {"properties": {"bindings": {"properties": {"sharedModelContractSha256": {"$ref": "#/$defs/hash"}, "sharedInferenceContractSha256": {"$ref": "#/$defs/hash"}}}}}},
+    {"if": {"properties": {"comparisonLane": {"const": "product-default"}}, "required": ["comparisonLane"]}, "then": {"properties": {"bindings": {"properties": {"sharedModelContractSha256": {"type": "null"}, "sharedInferenceContractSha256": {"type": "null"}}}}}},
+    {"if": {"properties": {"profile": {"const": "researcher"}}, "required": ["profile"]}, "then": {"properties": {"bindings": {"properties": {"researchFixtureSha256": {"$ref": "#/$defs/hash"}}}}}, "else": {"properties": {"bindings": {"properties": {"researchFixtureSha256": {"type": "null"}}}}}}
+  ],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "scenario": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "fault", "seedSha256"],
+      "properties": {
+        "kind": {"enum": ["baseline", "fault-injection"]},
+        "fault": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"}]},
+        "seedSha256": {"$ref": "#/$defs/hash"}
+      }
+    }
+  }
+}

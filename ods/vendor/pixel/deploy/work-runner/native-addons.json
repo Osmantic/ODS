@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "executor": {
+    "id": "omp",
+    "version": "17.2.12",
+    "artifactSha256": "6c75331bf09d5a9e9433bd592b3ee993d751a15d5b7450c1a334cc0684996f30"
+  },
+  "extraction": "pinned-executor-offline-read-probe",
+  "addons": [
+    {
+      "platform": "linux-x64-modern",
+      "imagePath": "/opt/pi_natives.linux-x64-modern.node",
+      "bytes": 152979232,
+      "sha256": "a168d084b6d212eea8582c17f13931b123325da4da3b6daa767f34ee82b7ec27"
+    },
+    {
+      "platform": "linux-x64-baseline",
+      "imagePath": "/opt/pi_natives.linux-x64-baseline.node",
+      "bytes": 153034792,
+      "sha256": "ae64262a74785035dfb0d03e09d0374648e2bdb2dec79f5efd1db14247dfbd91"
+    }
+  ]
+}

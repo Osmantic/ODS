@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-provider-router-request-v1.schema.json",
+  "title": "Pixel content-free work-provider router request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "requestId", "createdAt", "mode", "taskClass", "dataClassification", "sensitiveCategories", "contextNeed", "toolsNeed", "visionNeed", "inputTokenEstimate", "outputTokenEstimate", "costCeilingMicros", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-provider-router-request-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "requestId": {"type": "string", "pattern": "^workproviderrequest-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "mode": {"enum": ["local-only", "explicit-provider", "policy-router"]},
+    "explicitProviderId": {"enum": ["anthropic", "fireworks", "groq", "local", "moonshot-kimi", "openai", "openrouter", "together"]},
+    "taskClass": {"enum": ["structural-review", "patch-proposal", "failure-triage"]},
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "sensitiveCategories": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"enum": ["credentials", "private-keys", "auth-material", "session-tokens", "regulated-records", "proprietary-code", "personally-identifiable", "unapproved-owner-data", "raw-source-bodies", "security-findings"]}},
+    "contextNeed": {"enum": ["none", "workspace", "codebase"]},
+    "toolsNeed": {"enum": ["none", "standard", "compute"]},
+    "visionNeed": {"type": "boolean"},
+    "inputTokenEstimate": {"type": "integer", "minimum": 1, "maximum": 100000000},
+    "outputTokenEstimate": {"type": "integer", "minimum": 1, "maximum": 10000000},
+    "costCeilingMicros": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+    "boundary": {"const": "Content-free local-first router request. It declares only task class, data classification, sensitive categories, context/tool/vision need, input/output token estimates, and a cost ceiling. It carries no prompt, response, reasoning, tool arguments, credential, path, or owner content."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"mode": {"const": "explicit-provider"}}, "required": ["mode"]},
+      "then": {"required": ["explicitProviderId"]}
+    },
+    {
+      "if": {"properties": {"mode": {"const": "local-only"}}, "required": ["mode"]},
+      "then": {"not": {"required": ["explicitProviderId"]}}
+    },
+    {
+      "if": {"properties": {"mode": {"const": "policy-router"}}, "required": ["mode"]},
+      "then": {"not": {"required": ["explicitProviderId"]}}
+    }
+  ]
+}

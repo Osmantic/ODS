@@ -708,8 +708,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         [[ -z "$PIXEL_INGRESS_GID_VALUE" || "$PIXEL_INGRESS_GID_VALUE" =~ ^[1-9][0-9]*$ ]] || \
             error "Existing PIXEL_INGRESS_GID is invalid"
 
-        PIXEL_SOURCE_URL_VALUE="$(_env_get_explicit_first PIXEL_SOURCE_URL "https://github.com/Osmantic/Pixel.git")"
-        PIXEL_SOURCE_REF_VALUE="$(_env_get_explicit_first PIXEL_SOURCE_REF "b33730436baf5d98bf58f7d57c090318fe19f433")"
+        PIXEL_SOURCE_URL_VALUE="$(_env_get_explicit_first PIXEL_SOURCE_URL "bundled")"
+        PIXEL_SOURCE_REF_VALUE="$(_env_get_explicit_first PIXEL_SOURCE_REF "$ODS_PIXEL_BUNDLED_REF")"
+        # Migrate the former public-beta private-repository default without
+        # requiring that repository or its credentials on an ODS upgrade.
+        if [[ "$PIXEL_SOURCE_URL_VALUE" == "https://github.com/Osmantic/Pixel.git" \
+            && "$PIXEL_SOURCE_REF_VALUE" == "b33730436baf5d98bf58f7d57c090318fe19f433" ]]; then
+            PIXEL_SOURCE_URL_VALUE=bundled
+            PIXEL_SOURCE_REF_VALUE="$ODS_PIXEL_BUNDLED_REF"
+        fi
         PIXEL_GATEWAY_PORT_VALUE="$(_env_get_explicit_first PIXEL_GATEWAY_PORT "18789")"
         PIXEL_PREVIEW_PORT_VALUE="$(_env_get_explicit_first PIXEL_PREVIEW_PORT "9437")"
         [[ "$PIXEL_GATEWAY_PORT_VALUE" =~ ^[1-9][0-9]{0,4}$ \
@@ -754,7 +761,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         _phase06_pixel_source_root="$INSTALL_DIR/data/pixel/source-$PIXEL_SOURCE_REF_VALUE"
         if ! _ods_pixel_source_checkout \
             "$_phase06_pixel_owner" "$_phase06_pixel_home" "$_phase06_pixel_source_root" >/dev/null; then
-            error "Pixel source is unavailable. Configure authorized Git access or use a documented clean local checkout before retrying."
+            error "Pixel source is unavailable. Verify the bundled source and its digest, or use a documented clean local developer checkout before retrying."
         fi
         unset _phase06_pixel_owner _phase06_pixel_home _phase06_pixel_source_root
     fi
@@ -1318,7 +1325,7 @@ ODS_SESSION_SECRET=$(dotenv_value "${ODS_SESSION_SECRET}")
 HERMES_DASHBOARD_SESSION_TOKEN=$(dotenv_value "${HERMES_DASHBOARD_SESSION_TOKEN}")
 $(if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then cat << PIXEL_ENV
 
-#=== Pixel core agent (separately licensed component) ===
+#=== Pixel core agent (bundled ODS component) ===
 PIXEL_AGENT_MODE=pixel
 PIXEL_SOURCE_URL=$(dotenv_quote "$PIXEL_SOURCE_URL_VALUE")
 PIXEL_SOURCE_REF=$(dotenv_value "${PIXEL_SOURCE_REF_VALUE}")

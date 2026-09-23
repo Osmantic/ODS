@@ -1,0 +1,22 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-provider-router-policy-v1.schema.json",
+  "schemaVersion": 1,
+  "routerPolicyId": "workproviderrouterpolicy-0000000000000-aaaaaaaaaaaa",
+  "createdAt": "2026-08-21T00:00:00Z",
+  "mode": "policy-router",
+  "allowedModes": ["local-only", "policy-router"],
+  "preference": ["local", "moonshot-kimi"],
+  "enabledRemoteProviders": [
+    {"providerId": "moonshot-kimi", "privatePolicySha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+  ],
+  "qualification": {
+    "required": true,
+    "maxAgeSeconds": 86400,
+    "semanticTaskClasses": ["structural-review", "patch-proposal", "failure-triage"]
+  },
+  "authority": {
+    "execution": false, "credential": false, "network": false, "merge": false, "deploy": false,
+    "publish": false, "externalMessages": false, "productionCredentials": false, "securityTesting": false, "policyMutation": false
+  },
+  "boundary": "Owner-private content-free local-first work-provider router policy. It pins the ordered provider preference and the exact enabled remote private-policy SHA-256 set; remote providers stay disabled by default. It grants no execution, credential, network, merge, deploy, publish, external-message, security-testing, or policy-mutation authority."
+}

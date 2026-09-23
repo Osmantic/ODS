@@ -1,0 +1,56 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-goal-controller-environment-v1.schema.json",
+  "schemaVersion": 1,
+  "stateRoot": "/var/lib/pixel-work/state",
+  "policyPath": "/etc/pixel-work/policy.json",
+  "objectStore": "/var/lib/pixel-work/objects",
+  "workspaceRoot": "/var/lib/pixel-work/workspaces",
+  "executorPath": "/opt/pixel-work/bin/omp",
+  "modelBackendLaunchPath": "/etc/pixel-work/model-backend-launch.json",
+  "archiveLimits": {
+    "maxEntries": 10000,
+    "maxFileBytes": 1073741824
+  },
+  "runtime": {
+    "dockerPath": "/usr/bin/docker",
+    "backendNetworkName": "pixel-model-backend",
+    "backendContainerName": "pixel-local-model",
+    "networkSubnet": "172.30.0.0/24",
+    "workerIp": "172.30.0.10",
+    "proxyIp": "172.30.0.11",
+    "uid": 10001,
+    "gid": 10001
+  },
+  "capabilityRuntime": {
+    "controllerPolicyPath": "/etc/pixel-work/capability-policy.json",
+    "allowedSignersPath": "/etc/pixel-work/capability-allowed-signers",
+    "sshKeygenPath": "/usr/bin/ssh-keygen",
+    "dockerConfigPath": "/var/lib/pixel-work/empty-docker-config",
+    "maxHealthAgeMs": 3600000,
+    "bindings": [
+      {
+        "jobId": "work-1786366800000-abcdef123456",
+        "pack": {
+          "id": "example-tools",
+          "version": "1.0.0",
+          "packSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "treeSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "tools": ["analyze"],
+        "maxSessions": 4,
+        "grantLifetimeMs": 30000,
+        "limits": {
+          "maxInputBytes": 4096,
+          "maxOutputBytes": 8192,
+          "maxRuntimeMs": 5000,
+          "maxCalls": 1,
+          "maxMemoryMiB": 128,
+          "maxCpuCores": 1,
+          "maxPids": 32,
+          "maxWorkspaceBytes": 0
+        }
+      }
+    ]
+  },
+  "boundary": "Owner-reviewed local controller environment only. It names exact private storage, policy, pinned executor, and isolated runtime wiring but grants no execution, lease, scheduling, service activation, scope expansion, external effect, or completion authority."
+}

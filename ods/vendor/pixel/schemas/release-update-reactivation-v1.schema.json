@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-reactivation-v1.schema.json",
+  "title": "Pixel release reactivation claim receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "status", "candidateId", "product", "version", "restoreVersion", "channel", "publisherIdentity", "sourceCommit", "sourceTree", "host", "envelopeSha256", "stageReceiptSha256", "rehearsalReceiptSha256", "extractedTreeSha256", "originalActivationHash", "activationClaimSha256", "activationResultSha256", "rollbackClaimSha256", "rollbackResultSha256", "activationDeploymentRecordSha256", "retainedDeploymentInputsSha256", "retainedInstallManifestSha256", "previouslyActivatedController", "candidateCodeWillExecute", "privateConfigurationWillBeRead", "activeDeploymentWillChange", "networkMayBeUsed", "rollback", "reactivationHash", "claimedAt", "claim", "candidateCodeCopied", "candidateCodeExecuted", "activeDeploymentChanged", "networkUsed", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-release-reactivation"},
+    "status": {"const": "claimed"},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "product": {"const": "Pixel"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "restoreVersion": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "channel": {"const": "stable"},
+    "publisherIdentity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$"},
+    "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sourceTree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "host": {"$ref": "#/$defs/host"},
+    "envelopeSha256": {"$ref": "#/$defs/hash"},
+    "stageReceiptSha256": {"$ref": "#/$defs/hash"},
+    "rehearsalReceiptSha256": {"$ref": "#/$defs/hash"},
+    "extractedTreeSha256": {"$ref": "#/$defs/hash"},
+    "originalActivationHash": {"$ref": "#/$defs/hash"},
+    "activationClaimSha256": {"$ref": "#/$defs/hash"},
+    "activationResultSha256": {"$ref": "#/$defs/hash"},
+    "rollbackClaimSha256": {"$ref": "#/$defs/hash"},
+    "rollbackResultSha256": {"$ref": "#/$defs/hash"},
+    "activationDeploymentRecordSha256": {"$ref": "#/$defs/hash"},
+    "retainedDeploymentInputsSha256": {"$ref": "#/$defs/hash"},
+    "retainedInstallManifestSha256": {"$ref": "#/$defs/hash"},
+    "previouslyActivatedController": {"const": true},
+    "candidateCodeWillExecute": {"const": true},
+    "privateConfigurationWillBeRead": {"const": true},
+    "activeDeploymentWillChange": {"const": true},
+    "networkMayBeUsed": {"const": true},
+    "rollback": {"const": "single-use-reactivation-bound"},
+    "reactivationHash": {"$ref": "#/$defs/hash"},
+    "claimedAt": {"type": "string", "format": "date-time"},
+    "claim": {"const": "single-use-atomic-no-replace"},
+    "candidateCodeCopied": {"const": true},
+    "candidateCodeExecuted": {"const": false},
+    "activeDeploymentChanged": {"const": false},
+    "networkUsed": {"const": false},
+    "boundary": {"const": "Single-use exact reactivation claimed only after a verified activation and successful rollback; candidate programs have not yet re-executed and the active deployment has not changed."}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "host": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "versionId", "label", "supported"],
+      "properties": {
+        "id": {"enum": ["ubuntu", "debian"]},
+        "versionId": {"enum": ["24.04", "12"]},
+        "label": {"enum": ["Ubuntu 24.04 LTS", "Debian 12"]},
+        "supported": {"const": true}
+      },
+      "allOf": [
+        {"if": {"properties": {"id": {"const": "ubuntu"}}}, "then": {"properties": {"versionId": {"const": "24.04"}, "label": {"const": "Ubuntu 24.04 LTS"}}}},
+        {"if": {"properties": {"id": {"const": "debian"}}}, "then": {"properties": {"versionId": {"const": "12"}, "label": {"const": "Debian 12"}}}}
+      ]
+    }
+  }
+}

@@ -1196,12 +1196,8 @@ if ! $ENABLE_PIXEL && [[ -e "${INSTALL_DIR}/data/pixel-native" || -L "${INSTALL_
 fi
 
 if $ENABLE_PIXEL; then
-    if [[ "${PIXEL_LICENSE_ACCEPTED:-}" != true ]]; then
-        ai_err "Native Pixel requires PIXEL_LICENSE_ACCEPTED=true after separate written authorization."
-        exit 1
-    fi
     /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" --install-dir "$INSTALL_DIR" \
-        --license-authorized --preflight-only || exit 1
+        --preflight-only || exit 1
     ENABLE_HERMES=false
     ENABLE_OPENCLAW=false
     OPENCLAW_EXPLICIT=true
@@ -2950,7 +2946,7 @@ for service in (data.get("services") or {}).values():
 
     if $ENABLE_PIXEL; then
         ai "Preparing native Pixel and its Docker services..."
-        _pixel_install_args=(--install-dir "$INSTALL_DIR" --ods-source "$INSTALL_DIR" --license-authorized)
+        _pixel_install_args=(--install-dir "$INSTALL_DIR" --ods-source "$INSTALL_DIR")
         [[ -z "${PIXEL_SOURCE_REF:-}" ]] || _pixel_install_args+=(--ref "$PIXEL_SOURCE_REF")
         for ((_pixel_i=0; _pixel_i<${#COMPOSE_FLAGS[@]}; _pixel_i+=2)); do
             [[ "${COMPOSE_FLAGS[_pixel_i]}" == -f ]] || { ai_err "Unexpected Compose selection"; exit 1; }

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-provider-qualification-trial-evidence-v1.schema.json",
+  "title": "Pixel content-free neutral qualification-trial evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "attestationId", "recordedAt", "lane", "providerId", "model", "corpusVersion", "corpusSha256", "trials", "status", "distinctCaseCount", "requiredRepetitions", "passedRepetitions", "failedRepetitions", "uncertainRepetitions", "evidenceSha256", "ledgerRunId", "ledgerSha256", "perCase", "providerContentIncluded", "credentialIncluded", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-provider-qualification-trial-evidence-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "attestationId": {"type": "string", "pattern": "^workproviderqualification-[0-9]{13}-[a-f0-9]{12}$"},
+    "recordedAt": {"type": "string", "format": "date-time"},
+    "lane": {"enum": ["local-only", "moonshot-kimi", "openai", "anthropic", "openrouter"]},
+    "providerId": {"type": "string", "minLength": 1, "maxLength": 64},
+    "model": {"type": "string", "minLength": 1, "maxLength": 256},
+    "corpusVersion": {"type": "string", "minLength": 1, "maxLength": 32},
+    "corpusSha256": {"$ref": "#/$defs/sha256"},
+    "trials": {"type": "integer", "minimum": 3, "maximum": 5},
+    "status": {"enum": ["qualified", "not-qualified", "uncertain"]},
+    "distinctCaseCount": {"type": "integer", "minimum": 1, "maximum": 64},
+    "requiredRepetitions": {"type": "integer", "minimum": 1, "maximum": 320},
+    "passedRepetitions": {"type": "integer", "minimum": 0, "maximum": 320},
+    "failedRepetitions": {"type": "integer", "minimum": 0, "maximum": 320},
+    "uncertainRepetitions": {"type": "integer", "minimum": 0, "maximum": 320},
+    "evidenceSha256": {"$ref": "#/$defs/sha256"},
+    "ledgerRunId": {"type": "string", "pattern": "^workproviderrun-[0-9]{13}-[a-f0-9]{12}$"},
+    "ledgerSha256": {"type": ["string", "null"]},
+    "perCase": {
+      "type": "array", "minItems": 1, "maxItems": 320,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["caseId", "task", "trialIndex", "status", "gradePass", "caseSha256", "reasoningContentSha256", "requests"],
+        "properties": {
+          "caseId": {"type": "string", "minLength": 1, "maxLength": 128},
+          "task": {"enum": ["structural-review", "patch-proposal", "tool-choice-continuation", "long-context-sentinel", "failure-triage", "output-capacity"]},
+          "trialIndex": {"type": "integer", "minimum": 1, "maximum": 5},
+          "status": {"enum": ["passed", "failed", "uncertain"]},
+          "gradePass": {"type": "boolean"},
+          "caseSha256": {"$ref": "#/$defs/sha256"},
+          "reasoningContentSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"const": null}]},
+          "requests": {
+            "type": "array", "minItems": 1, "maxItems": 2,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["requestIndex", "state", "inputSha256", "inputTokens", "outputTokens", "responseModel", "failureCode"],
+              "properties": {
+                "requestIndex": {"enum": [1, 2]},
+                "state": {"enum": ["succeeded", "failed-known", "uncertain"]},
+                "inputSha256": {"$ref": "#/$defs/sha256"},
+                "inputTokens": {"type": ["integer", "null"], "minimum": 0},
+                "outputTokens": {"type": ["integer", "null"], "minimum": 0},
+                "responseModel": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+                "failureCode": {"enum": [null, "provider-http", "proxy-connection", "proxy-refused", "request-validation", "response-adapter", "response-framing", "response-identifier", "response-json", "response-metadata", "response-model", "response-size", "response-usage", "response-utf8", "tls", "transport-timeout", "transport-unknown"]}
+              },
+              "allOf": [
+                {"if": {"properties": {"state": {"const": "succeeded"}}}, "then": {"properties": {"failureCode": {"const": null}}}},
+                {"if": {"properties": {"state": {"enum": ["failed-known", "uncertain"]}}}, "then": {"properties": {"failureCode": {"type": "string"}}}}
+              ]
+            }
+          }
+        }
+      }
+    },
+    "providerContentIncluded": {"const": false},
+    "credentialIncluded": {"const": false},
+    "boundary": {"type": "string", "minLength": 1}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

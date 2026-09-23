@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "jobRoot": "/var/lib/pixel-runner/jobs",
+  "maxArtifactBytes": 16777216,
+  "services": {
+    "pixel-fixture": {"unit": "pixel-ops-fixture.service"}
+  },
+  "repositories": {
+    "client-app": {
+      "path": "/var/lib/pixel-runner/jobs/client-app",
+      "allowedRefs": ["main", "candidate-*"],
+      "recipes": {
+        "lint": {
+          "argv": ["/usr/bin/python3", "-c", "from pathlib import Path; assert Path('README.md').is_file()"],
+          "timeoutSeconds": 60
+        },
+        "test": {
+          "argv": ["/usr/bin/python3", "-c", "import hashlib; print(hashlib.sha256(open('README.md','rb').read()).hexdigest())"],
+          "timeoutSeconds": 60
+        },
+        "package": {
+          "argv": ["/usr/bin/python3", "-c", "from pathlib import Path; Path('build').mkdir(exist_ok=True); Path('build/result.txt').write_text('fixture-build\\n')"],
+          "timeoutSeconds": 60
+        }
+      }
+    }
+  },
+  "collectSources": {
+    "fixture-log": "/var/log/pixel-ops-fixture.log"
+  }
+}

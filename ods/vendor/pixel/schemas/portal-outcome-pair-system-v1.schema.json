@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-pair-system-v1.schema.json",
+  "title": "Pixel private paired outcome execution configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "candidateSourceArchiveSha256", "pixelSystemConfigPath", "codexRunnerImage", "codexBoundaryImage", "codexSurfaceQualificationPath", "modelArtifactPath", "modelArtifactManifestPath", "launchArgumentsPath", "capabilityRetentionEvidencePath", "preflightPath", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-pair-system-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "candidateSourceArchiveSha256": {"$ref": "#/$defs/hash"},
+    "pixelSystemConfigPath": {"$ref": "#/$defs/path"},
+    "codexRunnerImage": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "codexBoundaryImage": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "codexSurfaceQualificationPath": {"$ref": "#/$defs/path"},
+    "modelArtifactPath": {"$ref": "#/$defs/path"},
+    "modelArtifactManifestPath": {"$ref": "#/$defs/path"},
+    "launchArgumentsPath": {"$ref": "#/$defs/path"},
+    "capabilityRetentionEvidencePath": {"$ref": "#/$defs/path"},
+    "preflightPath": {"$ref": "#/$defs/path"},
+    "boundary": {"const": "Owner-private exact Pixel/Codex pair execution configuration only. It grants no provider, credential, external-effect, merge, deployment, publication, completion, acceptance, or promotion authority."}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "path": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\\u0000\\r\\n]+$"}
+  }
+}

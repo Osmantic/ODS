@@ -105,7 +105,7 @@ qualification or a claim of support for every Mac.
 
 The general macOS installer now offers an initial native Pixel path through
 `install-macos.sh --pixel` (see "Initial main-installer entry point" below).
-It requires explicit Pixel authorization and private source access. It does not migrate, update, or
+It uses the public ODS Pixel grant and does not migrate, update, or
 resume an existing native Pixel installation. Installed-fleet qualification
 remains a separate gate; the preparation checks below do not prove it.
 `lib/pixel-native-bootstrap.py` now stages an owner-run OpenClaw runtime from
@@ -119,9 +119,8 @@ Pixel's source, Operations and Frontier broker plugins are copied from the
 selected source, have dependencies installed with their committed npm lockfiles,
 and must pass the same isolated load proof. The real six-plugin bootstrap passed
 on the development Mac without invoking a broker or changing live services.
-Staging an already acquired source tree does not accept a license on the
-owner's behalf. Source acquisition still requires explicit authorization.
-Staging refuses root and does not activate services or replace an existing destination. Node/npm must
+It requires no separate license acceptance from its caller, refuses root, and
+does not activate services or replace an existing destination. Node/npm must
 already be provisioned by the parent installer. It does not yet configure the
 agent. `lib/pixel-native-config.py` now stages an initial configuration through
 the selected Pixel commit's actual `configure.mjs` and `render-config.mjs`,
@@ -1325,10 +1324,9 @@ a browser interaction through the production Portal.
 
 ### Owner source acquisition and preview executable
 
-The preparation CLI can omit `--source` only after explicit license
-authorization: it acquires the canonical private Pixel source, checks out the
-caller-selected exact commit and validates its release manifest before runtime
-acquisition. Existing destinations are refused. A failed clone or
+The preparation CLI can now omit `--source`: it acquires ODS's bundled Pixel source, checks out
+the caller-selected exact commit and validates its release manifest before
+runtime acquisition. Existing destinations are refused. A failed clone or
 verification leaves no published source checkout and records the preparation
 phase without command stderr or credentials. The bootstrap helper also accepts
 an authorized local repository, matching the shared Linux source workflow.
@@ -1541,10 +1539,7 @@ by these preparation tests.
 ### Initial main-installer entry point (2026-09-20, qualification pending)
 
 `install-macos.sh` now connects the resolved base stack to native Pixel
-preparation and protected activation by default; `--no-pixel` opts out. This
-default currently stops without `PIXEL_LICENSE_ACCEPTED=true`, and source
-acquisition requires access to the private Pixel repository. Public installation
-without organization credentials remains a release blocker. It refuses
+preparation and protected activation by default; `--no-pixel` opts out. It refuses
 Intel, root execution and existing/partial protected native state before the main
 installation phases. It is not yet the migration/update entry point.
 

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-v1.schema.json",
+  "title": "Pixel signed release update envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "product", "version", "channel", "minimumUpgradablePixel", "sourceCommit", "sourceTree", "qualificationSourceCommit", "supportedHosts", "releaseManifestSha256", "compatibilitySha256", "artifacts", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-release-update"},
+    "product": {"const": "Pixel"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "channel": {"const": "stable"},
+    "minimumUpgradablePixel": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sourceTree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "qualificationSourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$", "description": "Exact functional-source commit qualified before the evidence-only packaged release commit."},
+    "supportedHosts": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 80}},
+    "releaseManifestSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "compatibilitySha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["archive", "sbom", "provenance"],
+      "properties": {
+        "archive": {"$ref": "#/$defs/archive"},
+        "sbom": {"$ref": "#/$defs/sbom"},
+        "provenance": {"$ref": "#/$defs/provenance"}
+      }
+    },
+    "boundary": {"const": "Signed release metadata for verification and preparation only; activation requires a separate exact confirmation."}
+  },
+  "$defs": {
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sha256", "bytes"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}\\.tar\\.gz$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 536870912}
+      }
+    },
+    "sbom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sha256", "bytes"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}\\.cdx\\.json$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 33554432}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sha256", "bytes"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}\\.intoto\\.jsonl$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 2097152}
+      }
+    }
+  }
+}

@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-operational-grant-v2.schema.json",
+  "title": "Pixel Deep Work operational capability grant v2 (one exact operational binding)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "grantId", "jobId", "issuedAt", "expiresAt", "singleUse", "checkpointSha256", "pack", "tool", "operation", "dataClassification", "classification", "limits", "budgets", "approvalMode", "egress", "credentialRefs", "idempotencyKey", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-operational-grant-v2.schema.json"},
+    "schemaVersion": {"const": 2},
+    "grantId": {"type": "string", "pattern": "^workcapgrant-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "issuedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "singleUse": {"const": true},
+    "checkpointSha256": {"$ref": "#/$defs/sha256"},
+    "pack": {"$ref": "#/$defs/pack"},
+    "tool": {"$ref": "#/$defs/tool"},
+    "operation": {"$ref": "#/$defs/operation"},
+    "contentSha256": {"$ref": "#/$defs/sha256"},
+    "retrievalInput": {"$ref": "#/$defs/retrievalInput"},
+    "approvalSha256": {"$ref": "#/$defs/sha256"},
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "classification": {"$ref": "#/$defs/classification"},
+    "limits": {"$ref": "#/$defs/limits"},
+    "budgets": {"$ref": "#/$defs/budgets"},
+    "approvalMode": {"enum": ["none", "owner-signed"]},
+    "egress": {"enum": ["none", "public", "private-allowlist"]},
+    "credentialRefs": {"type": "array", "maxItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"}},
+    "idempotencyKey": {"type": "string"},
+    "authority": {"const": {"grantsToolCall": true, "grantsCredentials": false, "grantsNetwork": false, "grantsExternalEffects": false, "grantsScopeExpansion": false, "grantsCompletion": false}},
+    "boundary": {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "properties": { "lane": { "const": "filesystem" } },
+            "required": ["lane"]
+          }
+        },
+        "required": ["operation"]
+      },
+      "then": {
+        "required": ["contentSha256"],
+        "properties": {
+          "retrievalInput": {"not": {}},
+          "approvalSha256": {"not": {}},
+          "approvalMode": {"const": "none"},
+          "egress": {"const": "none"},
+          "credentialRefs": {"maxItems": 0},
+          "boundary": {"const": "Operational single-use v2 grant for one exact job-workspace file effect. It grants one create-only bounded file inside the exact job workspace and no credential, network, external effect, scope expansion, replay, or completion."}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "properties": { "lane": { "const": "public-retrieval" } },
+            "required": ["lane"]
+          }
+        },
+        "required": ["operation"]
+      },
+      "then": {
+        "required": ["retrievalInput"],
+        "properties": {
+          "contentSha256": {"not": {}},
+          "approvalSha256": {"not": {}},
+          "approvalMode": {"const": "none"},
+          "egress": {"const": "public"},
+          "credentialRefs": {"maxItems": 0},
+          "boundary": {"const": "Operational single-use v2 grant for one exact public-retrieval operation through the Web Courier queue. It grants one bounded public search/retrieval and no credential, direct network, external effect, scope expansion, replay, or completion."}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "properties": { "lane": { "const": "ssh-hostname" } },
+            "required": ["lane"]
+          }
+        },
+        "required": ["operation"]
+      },
+      "then": {
+        "required": ["approvalSha256"],
+        "properties": {
+          "contentSha256": {"not": {}},
+          "retrievalInput": {"not": {}},
+          "approvalMode": {"const": "owner-signed"},
+          "egress": {"const": "private-allowlist"},
+          "credentialRefs": {"minItems": 1, "maxItems": 1},
+          "boundary": {"const": "Operational single-use v2 grant binding one SSH forced-command hostname request to a fresh owner approval. The grant alone provides no signature verification, credential access, network access, generic shell, command or destination selection, replay, external effect, scope expansion, or completion authority."}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "pack": {"type": "object", "additionalProperties": false, "required": ["id", "version", "packSha256", "treeSha256", "schemaVersion", "signerIdentity"], "properties": {"id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}, "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"}, "packSha256": {"$ref": "#/$defs/sha256"}, "treeSha256": {"$ref": "#/$defs/sha256"}, "schemaVersion": {"const": 2}, "signerIdentity": {"type": "string", "minLength": 1}}},
+    "tool": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "effectClass", "targetClass"],
+          "properties": {
+            "name": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"},
+            "effectClass": {"const": "workspace"},
+            "targetClass": {"const": "local-filesystem"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "effectClass", "targetClass"],
+          "properties": {
+            "name": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"},
+            "effectClass": {"const": "brokered-network"},
+            "targetClass": {"const": "public-api"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "effectClass", "targetClass"],
+          "properties": {
+            "name": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"},
+            "effectClass": {"const": "read-only"},
+            "targetClass": {"const": "ssh"}
+          }
+        }
+      ]
+    },
+    "operation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "lane", "action", "scope", "relativePath"],
+          "properties": {
+            "id": {"type": "string", "pattern": "^workcapv2-[0-9]{13}-[a-f0-9]{16}$"},
+            "lane": {"const": "filesystem"},
+            "action": {"const": "write"},
+            "scope": {"const": "job-workspace"},
+            "relativePath": {"type": "string", "minLength": 1, "maxLength": 1024}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "lane"],
+          "properties": {
+            "id": {"type": "string", "pattern": "^workcapv2-[0-9]{13}-[a-f0-9]{16}$"},
+            "lane": {"const": "public-retrieval"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "lane", "requestId", "destinationAlias", "commandId"],
+          "properties": {
+            "id": {"type": "string", "pattern": "^workcapv2-[0-9]{13}-[a-f0-9]{16}$"},
+            "lane": {"const": "ssh-hostname"},
+            "requestId": {"type": "string", "pattern": "^workcaprequest-[0-9]{13}-[a-f0-9]{12}$"},
+            "destinationAlias": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+            "commandId": {"const": "hostname"}
+          }
+        }
+      ]
+    },
+    "retrievalInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["querySha256", "sourceTypes", "domains", "maxResults", "maxSourcesToFetch", "maxSourceBytes"],
+      "properties": {
+        "querySha256": {"$ref": "#/$defs/sha256"},
+        "sourceTypes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {"type": "string", "enum": ["web", "news", "academic", "forum"]},
+          "uniqueItems": true
+        },
+        "domains": {"type": "array", "minItems": 0, "maxItems": 32, "items": {"type": "string"}, "uniqueItems": true},
+        "maxResults": {"type": "integer", "minimum": 1, "maximum": 20},
+        "maxSourcesToFetch": {"type": "integer", "minimum": 1, "maximum": 5},
+        "maxSourceBytes": {"type": "integer", "minimum": 1024, "maximum": 262144}
+      }
+    },
+    "classification": {"type": "object", "additionalProperties": false, "required": ["input", "output"], "properties": {"input": {"enum": ["public", "internal", "confidential", "restricted"]}, "output": {"enum": ["public", "internal", "confidential", "restricted"]}}},
+    "limits": {"type": "object", "additionalProperties": false, "required": ["maxInputBytes", "maxOutputBytes", "maxRuntimeMs", "maxCalls", "maxMemoryMiB", "maxCpuCores", "maxPids", "maxWorkspaceBytes"], "properties": {"maxInputBytes": {"type": "integer", "minimum": 1, "maximum": 1048576}, "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216}, "maxRuntimeMs": {"type": "integer", "minimum": 100, "maximum": 3600000}, "maxCalls": {"const": 1}, "maxMemoryMiB": {"type": "integer", "minimum": 64, "maximum": 8192}, "maxCpuCores": {"type": "number", "minimum": 0.1, "maximum": 8}, "maxPids": {"type": "integer", "minimum": 16, "maximum": 512}, "maxWorkspaceBytes": {"type": "integer", "minimum": 0, "maximum": 34359738368}}},
+    "budgets": {"type": "object", "additionalProperties": false, "required": ["perRun", "cumulative"], "properties": {"perRun": {"type": "object", "additionalProperties": false, "required": ["maxCalls", "maxBytes", "maxDurationMs"], "properties": {"maxCalls": {"const": 1}, "maxBytes": {"type": "integer", "minimum": 1, "maximum": 67108864}, "maxDurationMs": {"type": "integer", "minimum": 1, "maximum": 3600000}}}, "cumulative": {"type": "object", "additionalProperties": false, "required": ["maxCalls", "maxBytes", "maxDurationMs"], "properties": {"maxCalls": {"type": "integer", "minimum": 1, "maximum": 4096}, "maxBytes": {"type": "integer", "minimum": 1, "maximum": 1073741824}, "maxDurationMs": {"type": "integer", "minimum": 1, "maximum": 36000000}}}}}
+  }
+}

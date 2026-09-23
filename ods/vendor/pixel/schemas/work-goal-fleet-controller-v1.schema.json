@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-fleet-controller-v1.schema.json",
+  "title": "Pixel Deep Work private fleet controller configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "enabled", "stateRoot", "fleetPath", "hostEvidencePath", "hostEvidenceSha256", "goals", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-fleet-controller-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "enabled": {"const": true},
+    "stateRoot": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "fleetPath": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "hostEvidencePath": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "hostEvidenceSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "goals": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["goalId", "controllerConfigPath"],
+        "properties": {
+          "goalId": {"type": "string", "pattern": "^workgoal-[0-9]{13}-[a-f0-9]{12}$"},
+          "controllerConfigPath": {"type": "string", "minLength": 1, "maxLength": 4096}
+        }
+      }
+    },
+    "boundary": {"const": "Owner-private fleet wiring only. It binds one immutable fleet to exact per-goal controller configurations and grants no execution, lease, replay, scope expansion, external effect, or completion authority."}
+  }
+}

@@ -1,0 +1,363 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-policy-v1.schema.json",
+  "title": "Pixel Deep Work private policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "policyId", "enabled", "executor", "runner", "localModel", "verifier", "profiles", "maxRequestAgeSeconds", "maxLeaseSeconds", "retention", "security"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-policy-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "policyId": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,127}$"},
+    "enabled": {"type": "boolean"},
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sourceCommit", "license", "url", "sha256", "rpcProtocolVersion"],
+      "properties": {
+        "id": {"const": "omp"},
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+        "sourceCommit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "license": {"const": "MIT"},
+        "url": {"type": "string", "pattern": "^https://github\\.com/can1357/oh-my-pi/releases/download/v[0-9]+\\.[0-9]+\\.[0-9]+/omp-linux-x64$"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "rpcProtocolVersion": {"const": 2}
+      }
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prepared", "imageRef", "imageDigest", "allowedIsolation"],
+      "properties": {
+        "prepared": {"type": "boolean"},
+        "imageRef": {"type": "string", "pattern": "^(?:sha256:[a-f0-9]{64}|[a-z0-9][a-z0-9._/:+-]{1,255}@sha256:[a-f0-9]{64})$"},
+        "imageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "allowedIsolation": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"enum": ["hardened-container", "ephemeral-vm"]}
+        }
+      }
+    },
+    "localModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prepared", "provider", "id", "imageRef", "imageDigest", "modelArtifactSha256", "backendVersion", "acceleratorClass", "promptContractSha256", "toolSchemaSha256", "contextWindow", "maxRequestContextTokens", "supportsVision", "maxRequestOutputTokens", "inference", "qualification"],
+      "properties": {
+        "prepared": {"type": "boolean"},
+        "provider": {"enum": ["llama.cpp", "vllm"]},
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:+/-]{0,127}$"},
+        "imageRef": {"type": "string", "pattern": "^(?:sha256:[a-f0-9]{64}|[a-z0-9][a-z0-9._/:+-]{1,255}@sha256:[a-f0-9]{64})$"},
+        "imageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "modelArtifactSha256": {"$ref": "#/$defs/sha256"},
+        "backendVersion": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}$"},
+        "acceleratorClass": {"enum": ["cpu", "nvidia-cuda", "amd-rocm", "intel-xpu", "apple-metal", "other-local"]},
+        "promptContractSha256": {"$ref": "#/$defs/sha256"},
+        "toolSchemaSha256": {"$ref": "#/$defs/sha256"},
+        "contextWindow": {"type": "integer", "minimum": 1024, "maximum": 2000000},
+        "maxRequestContextTokens": {"type": "integer", "minimum": 1024, "maximum": 2000000},
+        "supportsVision": {"type": "boolean"},
+        "maxRequestOutputTokens": {"type": "integer", "minimum": 1, "maximum": 500000000},
+        "inference": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["enforcement", "wireApi", "temperaturePermille", "topPPermille", "topK", "minPPermille", "repeatPenaltyPermille", "seed", "reasoningEffort", "reasoningVisibility"],
+              "properties": {
+                "enforcement": {"const": "exact-request-boundary-v1"},
+                "wireApi": {"const": "openai-chat-completions"},
+                "temperaturePermille": {"type": "integer", "minimum": 0, "maximum": 2000},
+                "topPPermille": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "topK": {"type": "integer", "minimum": 0, "maximum": 1000000},
+                "minPPermille": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "repeatPenaltyPermille": {"type": "integer", "minimum": 0, "maximum": 10000},
+                "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+                "reasoningEffort": {"enum": ["backend-default", "low", "medium", "high", "max"]},
+                "reasoningVisibility": {"const": "hidden"}
+              }
+            }
+          ]
+        },
+        "qualification": {
+          "type": "object", "additionalProperties": false,
+          "required": ["receiptPath", "receiptSha256", "casesSha256", "evaluatorSha256"],
+          "properties": {
+            "receiptPath": {"type": "string", "minLength": 2, "maxLength": 2048, "pattern": "^[^\\r\\n\\u0000]+$"},
+            "receiptSha256": {"$ref": "#/$defs/sha256"},
+            "casesSha256": {"$ref": "#/$defs/sha256"},
+            "evaluatorSha256": {"$ref": "#/$defs/sha256"}
+          }
+        }
+      }
+    },
+    "verifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "allowedExecutables", "maxChecks", "maxRuntimeSeconds", "maxOutputBytes"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "allowedExecutables": {
+          "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^/[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*$"}
+        },
+        "maxChecks": {"type": "integer", "minimum": 1, "maximum": 16},
+        "maxRuntimeSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216}
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scout", "builder", "dataLab", "researcher", "publicProject"],
+      "properties": {
+        "scout": {"$ref": "#/$defs/scoutProfile"},
+        "builder": {"$ref": "#/$defs/builderProfile"},
+        "dataLab": {"$ref": "#/$defs/dataLabProfile"},
+        "researcher": {"$ref": "#/$defs/researcherProfile"},
+        "publicProject": {"$ref": "#/$defs/disabledProfile"}
+      }
+    },
+    "maxRequestAgeSeconds": {"type": "integer", "minimum": 60, "maximum": 86400},
+    "maxLeaseSeconds": {"type": "integer", "minimum": 60, "maximum": 604800},
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestDays", "planDays", "resultDays", "checkpointDays"],
+      "properties": {
+        "requestDays": {"type": "integer", "minimum": 1, "maximum": 365},
+        "planDays": {"type": "integer", "minimum": 1, "maximum": 365},
+        "resultDays": {"type": "integer", "minimum": 1, "maximum": 3650},
+        "checkpointDays": {"type": "integer", "minimum": 1, "maximum": 365}
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["freshHome", "inheritEnvironment", "inheritFileDescriptors", "projectEnvDiscovery", "userConfigDiscovery", "extensions", "skills", "mcp", "browser", "computer", "collaboration", "directNetwork", "hostFilesystem", "dockerSocket", "sshAgent", "ambientCredentials", "automaticMerge", "automaticDeployment"],
+      "properties": {
+        "freshHome": {"const": true},
+        "inheritEnvironment": {"const": false},
+        "inheritFileDescriptors": {"const": false},
+        "projectEnvDiscovery": {"const": false},
+        "userConfigDiscovery": {"const": false},
+        "extensions": {"const": false},
+        "skills": {"const": false},
+        "mcp": {"const": false},
+        "browser": {"const": false},
+        "computer": {"const": false},
+        "collaboration": {"const": false},
+        "directNetwork": {"const": false},
+        "hostFilesystem": {"const": false},
+        "dockerSocket": {"const": false},
+        "sshAgent": {"const": false},
+        "ambientCredentials": {"const": false},
+        "automaticMerge": {"const": false},
+        "automaticDeployment": {"const": false}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"localModel": {"properties": {"provider": {"const": "vllm"}}}}, "required": ["localModel"]},
+      "then": {"properties": {"localModel": {"properties": {"inference": {"type": "object"}}}}},
+      "else": {"properties": {"localModel": {"properties": {"inference": {"type": "null"}}}}}
+    },
+    {
+      "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+      "then": {
+        "properties": {
+          "runner": {
+            "properties": {
+              "prepared": {"const": true},
+              "imageDigest": {"not": {"const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}}
+            }
+          },
+          "localModel": {
+            "properties": {
+              "prepared": {"const": true},
+              "imageDigest": {"not": {"const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}},
+              "modelArtifactSha256": {"not": {"const": "0000000000000000000000000000000000000000000000000000000000000000"}},
+              "promptContractSha256": {"not": {"const": "0000000000000000000000000000000000000000000000000000000000000000"}},
+              "toolSchemaSha256": {"not": {"const": "0000000000000000000000000000000000000000000000000000000000000000"}},
+              "qualification": {
+                "properties": {
+                  "receiptSha256": {"not": {"const": "0000000000000000000000000000000000000000000000000000000000000000"}},
+                  "casesSha256": {"not": {"const": "0000000000000000000000000000000000000000000000000000000000000000"}},
+                  "evaluatorSha256": {"not": {"const": "0000000000000000000000000000000000000000000000000000000000000000"}}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"profiles": {"properties": {"builder": {"properties": {"enabled": {"const": true}}}}}}, "required": ["profiles"]},
+      "then": {"properties": {"verifier": {"properties": {"enabled": {"const": true}}}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "disabledProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {"enabled": {"const": false}}
+    },
+    "scoutProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "isolation", "tools", "services", "workspaceMount", "outputKinds", "minimumMemoryMiB", "maxBudgets"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "isolation": {"enum": ["hardened-container", "ephemeral-vm"]},
+        "tools": {"const": ["read", "search"]},
+        "services": {"const": ["local-model"]},
+        "workspaceMount": {"const": "read-only"},
+        "outputKinds": {"const": ["finding-report"]},
+        "minimumMemoryMiB": {"const": 1536},
+        "maxBudgets": {"$ref": "#/$defs/budgets"}
+      }
+    },
+    "builderProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "isolation", "tools", "services", "workspaceMount", "outputKinds", "minimumMemoryMiB", "maxBudgets"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "isolation": {"const": "hardened-container"},
+        "tools": {"const": ["read", "search", "write", "edit", "bash", "eval", "lsp", "debug", "task", "hub"]},
+        "services": {"const": ["local-model"]},
+        "workspaceMount": {"const": "disposable-read-write"},
+        "outputKinds": {"const": ["patch", "test-evidence"]},
+        "minimumMemoryMiB": {"const": 2048},
+        "maxBudgets": {"$ref": "#/$defs/budgets"}
+      }
+    },
+    "dataLabProfile": {
+      "oneOf": [
+        {"$ref": "#/$defs/disabledProfile"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["enabled", "isolation", "tools", "services", "workspaceMount", "outputKinds", "minimumMemoryMiB", "maxBudgets", "runtime", "maxData"],
+          "properties": {
+            "enabled": {"const": true},
+            "isolation": {"const": "hardened-container"},
+            "tools": {"const": ["read", "search", "write", "edit", "bash"]},
+            "services": {"const": ["local-model"]},
+            "workspaceMount": {"const": "disposable-read-write"},
+            "outputKinds": {"const": ["finding-report", "dataset", "document", "visualization"]},
+            "minimumMemoryMiB": {"const": 1536},
+            "maxBudgets": {"$ref": "#/$defs/budgets"},
+            "runtime": {"$ref": "#/$defs/dataRuntime"},
+            "maxData": {
+              "type": "object", "additionalProperties": false,
+              "required": ["maxDatasets", "maxDatasetBytes", "maxArtifactFiles", "maxArtifactBytes", "allowedInputFormats", "allowedArtifactFormats"],
+              "properties": {
+                "maxDatasets": {"type": "integer", "minimum": 1, "maximum": 64},
+                "maxDatasetBytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776},
+                "maxArtifactFiles": {"type": "integer", "minimum": 1, "maximum": 256},
+                "maxArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 1073741824},
+                "allowedInputFormats": {"type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": {"enum": ["csv", "json", "jsonl", "parquet", "sqlite"]}},
+                "allowedArtifactFormats": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"enum": ["csv", "json", "jsonl", "markdown", "parquet", "png", "sqlite", "svg"]}}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "dataRuntime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contract", "engines"],
+      "properties": {
+        "contract": {"const": "pixel-local-data-runtime-v1"},
+        "engines": {
+          "type": "object", "additionalProperties": false,
+          "required": ["duckdb", "polars", "python", "sqlite"],
+          "properties": {
+            "duckdb": {"$ref": "#/$defs/dataEngine"},
+            "polars": {"$ref": "#/$defs/dataEngine"},
+            "python": {"$ref": "#/$defs/dataEngine"},
+            "sqlite": {"$ref": "#/$defs/dataEngine"}
+          }
+        }
+      }
+    },
+    "dataEngine": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "entrypoint"],
+      "properties": {
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})(?:\\.post[0-9]+)?$"},
+        "entrypoint": {"type": "string", "pattern": "^/[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*$"}
+      }
+    },
+    "researcherProfile": {
+      "oneOf": [
+        {"$ref": "#/$defs/disabledProfile"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["enabled", "isolation", "tools", "services", "workspaceMount", "outputKinds", "minimumMemoryMiB", "maxBudgets", "backend", "maxResearch"],
+          "properties": {
+            "enabled": {"const": true},
+            "isolation": {"const": "hardened-container"},
+            "tools": {"const": ["read", "search", "write", "edit", "bash"]},
+            "services": {"const": ["local-model", "research-broker"]},
+            "workspaceMount": {"const": "disposable-read-write"},
+            "outputKinds": {"const": ["finding-report", "document"]},
+            "minimumMemoryMiB": {"const": 1536},
+            "maxBudgets": {"$ref": "#/$defs/budgets"},
+            "backend": {
+              "type": "object", "additionalProperties": false,
+              "required": ["adapter", "prepared", "endpointContract", "queryLogging", "contentRetention", "webCourierRequired"],
+              "properties": {
+                "adapter": {"enum": ["reference", "vane", "perplexica"]},
+                "prepared": {"const": true},
+                "endpointContract": {"const": "pixel-public-research-broker-v1"},
+                "queryLogging": {"const": "hash-only"},
+                "contentRetention": {"const": "job-only"},
+                "webCourierRequired": {"const": true}
+              }
+            },
+            "maxResearch": {"$ref": "#/$defs/researchLimits"}
+          }
+        }
+      ]
+    },
+    "researchLimits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxQueries", "maxResultsPerQuery", "maxSources", "maxSourceBytes", "maxTotalSourceBytes", "allowedSourceTypes"],
+      "properties": {
+        "maxQueries": {"type": "integer", "minimum": 1, "maximum": 200},
+        "maxResultsPerQuery": {"type": "integer", "minimum": 1, "maximum": 20},
+        "maxSources": {"type": "integer", "minimum": 1, "maximum": 500},
+        "maxSourceBytes": {"type": "integer", "minimum": 1024, "maximum": 20971520},
+        "maxTotalSourceBytes": {"type": "integer", "minimum": 1024, "maximum": 1073741824},
+        "allowedSourceTypes": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"enum": ["web", "news", "academic", "forum"]}}
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxRuntimeSeconds", "maxIterations", "maxToolCalls", "maxConcurrentSubagents", "maxModelRequests", "maxInputTokens", "maxOutputTokens", "maxCpuCores", "maxMemoryMiB", "maxDiskBytes", "maxArtifactBytes", "maxNetworkBytes", "maxFailures", "noProgressLimit"],
+      "properties": {
+        "maxRuntimeSeconds": {"type": "integer", "minimum": 1, "maximum": 604800},
+        "maxIterations": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "maxToolCalls": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "maxConcurrentSubagents": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maxModelRequests": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "maxInputTokens": {"type": "integer", "minimum": 1, "maximum": 2000000000},
+        "maxOutputTokens": {"type": "integer", "minimum": 1, "maximum": 500000000},
+        "maxCpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maxMemoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+        "maxDiskBytes": {"type": "integer", "minimum": 1048576, "maximum": 1099511627776},
+        "maxArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 34359738368},
+        "maxNetworkBytes": {"type": "integer", "minimum": 1, "maximum": 10737418240},
+        "maxFailures": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "noProgressLimit": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    }
+  }
+}

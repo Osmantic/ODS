@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-reactivation-result-v1.schema.json",
+  "title": "Pixel release reactivation result receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "status", "candidateId", "product", "version", "previousVersion", "activeVersion", "reactivationHash", "reactivationClaimSha256", "executionPhase", "completedAt", "candidateCodeExecuted", "privateConfigurationRead", "activeDeploymentChanged", "networkMayHaveBeenUsed", "rollbackAvailable", "rollbackMarkerSha256", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-release-reactivation-result"},
+    "status": {"enum": ["reactivated", "failed"]},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "product": {"const": "Pixel"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "previousVersion": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "activeVersion": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "reactivationHash": {"$ref": "#/$defs/hash"},
+    "reactivationClaimSha256": {"$ref": "#/$defs/hash"},
+    "executionPhase": {"enum": ["configure", "bootstrap", "plan", "apply", "verify", "record"]},
+    "completedAt": {"type": "string", "format": "date-time"},
+    "candidateCodeExecuted": {"const": true},
+    "privateConfigurationRead": {"const": true},
+    "activeDeploymentChanged": {"type": "boolean"},
+    "networkMayHaveBeenUsed": {"const": true},
+    "rollbackAvailable": {"type": "boolean"},
+    "rollbackMarkerSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "boundary": {"const": "Terminal-confirmed reactivation execution finished; this content-free receipt records the observed active version and new rollback availability."}
+  },
+  "allOf": [{
+    "if": {"properties": {"status": {"const": "reactivated"}}},
+    "then": {"properties": {"executionPhase": {"const": "record"}, "activeDeploymentChanged": {"const": true}, "rollbackAvailable": {"const": true}, "rollbackMarkerSha256": {"$ref": "#/$defs/hash"}}}
+  }],
+  "$defs": {"hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

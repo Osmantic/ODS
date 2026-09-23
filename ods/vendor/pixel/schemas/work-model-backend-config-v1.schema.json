@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-backend-config-v1.schema.json",
+  "title": "Pixel private contained model backend configuration v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "environmentPath", "modelSource", "runtimeCacheSeed", "backendNetwork", "containerUser", "publishLoopbackPort", "resources", "readiness", "accelerator", "providerOptions", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-backend-config-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "environmentPath": {"$ref": "#/$defs/path"},
+    "modelSource": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "path"],
+      "properties": {"kind": {"enum": ["file", "directory"]}, "path": {"$ref": "#/$defs/path"}}
+    },
+    "runtimeCacheSeed": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["path", "artifactSha256", "imageDigest", "cacheFingerprint", "subtrees"],
+          "properties": {
+            "path": {"$ref": "#/$defs/path"},
+            "artifactSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "imageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+            "cacheFingerprint": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$"},
+            "subtrees": {"type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": {"enum": ["vllm", "triton", "jit", "sparkinfer", "tilelang"]}}
+          }
+        }
+      ]
+    },
+    "backendNetwork": {
+      "type": "object", "additionalProperties": false,
+      "required": ["subnet"],
+      "properties": {"subnet": {"type": "string", "pattern": "^[0-9]{1,3}(?:\\.[0-9]{1,3}){3}/(?:2[4-9]|30)$"}}
+    },
+    "containerUser": {
+      "type": "object", "additionalProperties": false,
+      "required": ["uid", "gid"],
+      "properties": {"uid": {"type": "integer", "minimum": 1, "maximum": 2147483647}, "gid": {"type": "integer", "minimum": 0, "maximum": 2147483647}}
+    },
+    "publishLoopbackPort": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1024, "maximum": 65535}]},
+    "restartPolicy": {"enum": ["no", "unless-stopped"]},
+    "resources": {
+      "type": "object", "additionalProperties": false,
+      "required": ["memoryMiB", "cpuCores", "pids", "nofile", "tmpfsMiB", "cacheMiB", "sharedMemoryMiB"],
+      "properties": {
+        "memoryMiB": {"type": "integer", "minimum": 512, "maximum": 1048576},
+        "cpuCores": {"type": "number", "minimum": 0.25, "maximum": 1024},
+        "pids": {"type": "integer", "minimum": 64, "maximum": 8192},
+        "nofile": {"type": "integer", "minimum": 128, "maximum": 1048576},
+        "tmpfsMiB": {"type": "integer", "minimum": 64, "maximum": 16384},
+        "cacheMiB": {"type": "integer", "minimum": 64, "maximum": 262144},
+        "sharedMemoryMiB": {"type": "integer", "minimum": 64, "maximum": 1048576}
+      }
+    },
+    "readiness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["startupTimeoutSeconds", "probeIntervalMilliseconds"],
+      "properties": {
+        "startupTimeoutSeconds": {"type": "integer", "minimum": 10, "maximum": 3600},
+        "probeIntervalMilliseconds": {"type": "integer", "minimum": 100, "maximum": 5000}
+      }
+    },
+    "accelerator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["class", "count", "deviceIds"],
+      "properties": {
+        "class": {"enum": ["cpu", "nvidia-cuda"]},
+        "count": {"type": "integer", "minimum": 0, "maximum": 16},
+        "deviceIds": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "pattern": "^(?:[0-9]{1,3}|GPU-[A-Za-z0-9-]{1,80})$"}}
+      }
+    },
+    "providerOptions": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["provider", "threads", "parallel", "gpuLayers", "flashAttention"],
+          "properties": {
+            "provider": {"const": "llama.cpp"}, "threads": {"type": "integer", "minimum": 1, "maximum": 1024},
+            "parallel": {"type": "integer", "minimum": 1, "maximum": 64}, "gpuLayers": {"type": "integer", "minimum": 0, "maximum": 999},
+            "flashAttention": {"type": "boolean"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["provider", "imageEntrypoint", "tensorParallelSize", "maxSequences", "gpuMemoryUtilizationPermille", "dtype", "enforceEager", "reasoningParser", "toolCallParser"],
+          "properties": {
+            "provider": {"const": "vllm"}, "tensorParallelSize": {"type": "integer", "minimum": 1, "maximum": 16},
+            "imageEntrypoint": {"$ref": "#/$defs/path"},
+            "runtimeProfile": {"enum": ["glm53-flash-fast-v1", "glm53-flash-long-v1", "glm53-flash-parallel-v1"]},
+            "maxSequences": {"type": "integer", "minimum": 1, "maximum": 64},
+            "gpuMemoryUtilizationPermille": {"type": "integer", "minimum": 100, "maximum": 990},
+            "dtype": {"enum": ["auto", "half", "float16", "bfloat16", "float32"]}, "enforceEager": {"type": "boolean"},
+            "reasoningParser": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"}]},
+            "toolCallParser": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"}]}
+          }
+        }
+      ]
+    },
+    "boundary": {"const": "Owner-private contained model backend configuration only. It selects exact local bytes and bounded runtime resources but grants no hashing result, policy mutation, model qualification, execution, container or network creation, image pull, device access, credential, external-effect, or completion authority."}
+  },
+  "$defs": {"path": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\\u0000\\r\\n]+$"}}
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/github-action-result-v1.schema.json",
+  "title": "Pixel private GitHub action result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "actionId", "status", "operation", "repository", "providerObjectId", "providerUrl", "proposalSha256", "observationSha256", "reconciliation", "settledAt", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "actionId": {"type": "string", "pattern": "^github-[0-9]{13}-[a-f0-9]{8,32}$"},
+    "status": {"const": "applied"},
+    "operation": {"enum": ["create-issue", "create-pull-request", "comment"]},
+    "repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"},
+    "providerObjectId": {"type": "integer", "minimum": 1},
+    "providerUrl": {"type": "string", "pattern": "^https://github\\.com/[^\\s]{1,2028}$"},
+    "proposalSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "observationSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "reconciliation": {"enum": ["synchronous-provider-response", "provider-list-after-indeterminate-write"]},
+    "settledAt": {"type": "string", "format": "date-time"},
+    "boundary": {"const": "Private provider-bound result for one exact GitHub action. It proves the observed object and journal settlement, not merge, deployment, semantic correctness, publication approval, or broader repository authority."}
+  }
+}

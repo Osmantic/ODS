@@ -368,7 +368,8 @@ def prepare(*, source=None, ref, answers=None, node, runtime=None, sandbox_image
             record['phase'] = 'source-acquisition'
             checkpoint()
             source = config.bootstrap.acquire_source(ref=ref, destination=destination / 'source',
-                license_authorized=license_authorized)
+                license_authorized=license_authorized,
+                source_url=str(Path(ods_source) / 'vendor/pixel.bundle'))
         if answers is None:
             record['phase'] = 'credentials'
             checkpoint()

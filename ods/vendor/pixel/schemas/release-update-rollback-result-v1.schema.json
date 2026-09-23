@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-rollback-result-v1.schema.json",
+  "title": "Pixel update-bound rollback result receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "status", "candidateId", "product", "version", "restoredVersion", "activeVersion", "activationHash", "rollbackHash", "rollbackClaimSha256", "executionPhase", "completedAt", "trustedControllerExecuted", "activeDeploymentRestored", "rollbackMarkerConsumed", "recoveryRequired", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-release-update-rollback-result"},
+    "status": {"enum": ["rolled-back", "failed"]},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "product": {"const": "Pixel"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "restoredVersion": {"type": ["string", "null"], "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "activeVersion": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "activationHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rollbackHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rollbackClaimSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "executionPhase": {"enum": ["rollback", "record"]},
+    "completedAt": {"type": "string", "format": "date-time"},
+    "trustedControllerExecuted": {"const": true},
+    "activeDeploymentRestored": {"type": "boolean"},
+    "rollbackMarkerConsumed": {"type": "boolean"},
+    "recoveryRequired": {"type": "boolean"},
+    "boundary": {"const": "Trusted controller rollback finished; this content-free receipt records whether the preceding Pixel version is active and recovery is required."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "rolled-back"}}},
+      "then": {
+        "properties": {
+          "restoredVersion": {"type": "string"},
+          "executionPhase": {"const": "record"},
+          "activeDeploymentRestored": {"const": true},
+          "rollbackMarkerConsumed": {"const": true},
+          "recoveryRequired": {"const": false}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"activeDeploymentRestored": {"const": false}}},
+      "then": {"properties": {"restoredVersion": {"const": null}}}
+    }
+  ]
+}

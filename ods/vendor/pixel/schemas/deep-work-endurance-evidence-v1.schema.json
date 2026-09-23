@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/deep-work-endurance-evidence-v1.schema.json",
+  "title": "Pixel Deep Work event-horizon real-process endurance evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "status", "sourceCommit", "sourceTree", "startedAt", "finishedAt", "campaign", "result", "privacy", "boundary"],
+  "properties": {
+    "$schema": {"const": "./schemas/deep-work-endurance-evidence-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-deep-work-real-process-endurance"},
+    "status": {"const": "pass"},
+    "sourceCommit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "sourceTree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "startedAt": {"type": "string", "format": "date-time"},
+    "finishedAt": {"type": "string", "format": "date-time"},
+    "campaign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["milestones", "requestedRestartDelayMs", "graph", "processesLaunched", "freshProcessRecoveries", "forcedAbruptExits", "gracefulCycles", "crashStates", "minimumObservedRestartDelayMs", "wallClockElapsedMs"],
+      "properties": {
+        "milestones": {"type": "integer", "minimum": 4, "maximum": 64},
+        "requestedRestartDelayMs": {"type": "integer", "minimum": 10, "maximum": 1000},
+        "graph": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "rootMilestones", "dependencyEdges", "branchPoints", "convergenceMilestones", "maximumDepth", "maxDependenciesPerMilestone"],
+          "properties": {
+            "kind": {"const": "repeated-diamond"},
+            "rootMilestones": {"const": 1},
+            "dependencyEdges": {"type": "integer", "minimum": 4, "maximum": 84},
+            "branchPoints": {"type": "integer", "minimum": 1, "maximum": 21},
+            "convergenceMilestones": {"type": "integer", "minimum": 1, "maximum": 21},
+            "maximumDepth": {"type": "integer", "minimum": 2, "maximum": 42},
+            "maxDependenciesPerMilestone": {"const": 2}
+          }
+        },
+        "processesLaunched": {"type": "integer", "minimum": 25, "maximum": 401},
+        "freshProcessRecoveries": {"type": "integer", "minimum": 16, "maximum": 256},
+        "forcedAbruptExits": {"type": "integer", "minimum": 16, "maximum": 256},
+        "gracefulCycles": {"type": "integer", "minimum": 9, "maximum": 145},
+        "crashStates": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["running", "verifying", "verified", "completed"],
+          "properties": {
+            "running": {"type": "integer", "minimum": 4, "maximum": 64},
+            "verifying": {"type": "integer", "minimum": 4, "maximum": 64},
+            "verified": {"type": "integer", "minimum": 4, "maximum": 64},
+            "completed": {"type": "integer", "minimum": 4, "maximum": 64}
+          }
+        },
+        "minimumObservedRestartDelayMs": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "wallClockElapsedMs": {"type": "integer", "minimum": 1, "maximum": 3600000}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["goalState", "milestonesCompleted", "jobsStarted", "modelRequests", "parentCheckpointRecords", "childCheckpointRecords", "duplicateMilestoneCredit", "duplicateUsageCredit", "replayedChildExecution", "goalCheckpointSha256"],
+      "properties": {
+        "goalState": {"const": "completed"},
+        "milestonesCompleted": {"type": "integer", "minimum": 4, "maximum": 64},
+        "jobsStarted": {"type": "integer", "minimum": 4, "maximum": 64},
+        "modelRequests": {"type": "integer", "minimum": 4, "maximum": 64},
+        "parentCheckpointRecords": {"type": "integer", "minimum": 10, "maximum": 130},
+        "childCheckpointRecords": {"type": "integer", "minimum": 20, "maximum": 320},
+        "duplicateMilestoneCredit": {"const": false},
+        "duplicateUsageCredit": {"const": false},
+        "replayedChildExecution": {"const": false},
+        "goalCheckpointSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "privacy": {
+      "const": {"providerCalls": 0, "credentialInputs": 0, "networkRequests": 0, "externalEffects": 0, "productionDeploymentsTouched": 0}
+    },
+    "boundary": {"const": "Credential-free disposable event-horizon qualification evidence only. Dependency depth, durable transitions, real process termination, and restart recovery grant no work, lease, credential, provider, network, external-effect, deployment, or release authority."}
+  }
+}

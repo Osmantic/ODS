@@ -1,0 +1,44 @@
+# Pixel maintenance recovery guardian: persistent event-driven watcher template.
+# The instance is the systemd-escaped absolute private maintenance configuration
+# path; %I is the unescaped path and is what the guardian receives. The unit is a
+# persistent Type=exec watcher that stays alive before any maintenance journal
+# exists, reacts to journal/config changes, and survives its own crash via
+# Restart=always. There is intentionally no short TimeoutStartSec here: the
+# guardian's recovery is bounded by the maintenance configuration (restore
+# timeout), never by a startup watchdog. Under Type=exec there is no sd_notify
+# readiness contract; the guardian is considered usable only when a securely
+# published durable ready lease is conjoined with the exact live systemd
+# unit/process identity checked by the maintenance stop path.
+#
+# Install via maintenance-recovery-guardian-supervise.sh so that the concrete
+# ReadWritePaths (custody/journal directory and owner-private backend coordination
+# root) are generated exactly; this template documents the specifier contract.
+[Unit]
+Description=Pixel maintenance recovery guardian for %I
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/env node /opt/pixel/deploy/work-controller/maintenance-recovery-guardian.mjs watch --config %I
+Restart=always
+RestartSec=30
+Environment=HOME=/nonexistent
+Environment=PATH=/usr/bin:/bin
+Environment=LANG=C.UTF-8
+Environment=DOCKER_CONFIG=/nonexistent
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+# The supervise install renders exact ReadWritePaths for only the bound
+# custody/journal directory and owner-private backend coordination root.
+ProtectKernelTunables=true
+ProtectControlGroups=true
+PrivateTmp=true
+LockPersonality=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target

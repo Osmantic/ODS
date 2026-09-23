@@ -17,6 +17,8 @@ lint: ## Syntax check all shell scripts + Python compile check
 	@echo "All lint checks passed."
 
 test: ## Run unit and contract tests
+	@python3 scripts/verify-pixel-bundle.py
+	@bash tests/test-pixel-bundled-source.sh
 	@echo "=== Install documentation contract ==="
 	@bash tests/test-install-docs.sh
 	@bash tests/test-hosted-bootstrap-verifier.sh

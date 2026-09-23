@@ -1,0 +1,21 @@
+{
+  "name": "openclaw-pixel-source-broker",
+  "version": "4.3.27",
+  "private": true,
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.5.17",
+      "minGatewayVersion": "2026.5.17"
+    }
+  },
+  "scripts": {
+    "check": "node --check index.js && node --check chat-audit.js && node --check email-query.js && node --check web-courier.js && node --check web-tool.js && node --check authorize.mjs && node --check oauth-security.mjs && node email-query.test.mjs && node --test oauth-security.test.mjs"
+  },
+  "dependencies": {
+    "typebox": "1.3.13"
+  }
+}

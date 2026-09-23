@@ -1,0 +1,323 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-provider-run-ledger-v1.schema.json",
+  "title": "Pixel owner-private provider run ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "runId",
+    "createdAt",
+    "updatedAt",
+    "taskId",
+    "providerId",
+    "binding",
+    "model",
+    "profileSha256",
+    "policySha256",
+    "status",
+    "requests",
+    "totals",
+    "providerContentStored",
+    "credentialStored",
+    "boundary"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://osmantic.com/pixel/schemas/work-provider-run-ledger-v1.schema.json"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^workproviderrun-[0-9]{13}-[a-f0-9]{12}$"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "taskId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$"
+    },
+    "providerId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "profileSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "policySha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "semantic",
+            "connectivity-smoke",
+            "qualification-trial"
+          ]
+        },
+        "decisionId": {
+          "type": "string",
+          "pattern": "^workproviderdecision-[0-9]{13}-[a-f0-9]{12}$"
+        },
+        "decisionSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "requestSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "policySha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "providerProfileSha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "const": null
+            }
+          ]
+        },
+        "privatePolicySha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "const": null
+            }
+          ]
+        },
+        "qualificationSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "corpusVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "corpusSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "lane": {
+          "enum": [
+            "local-only",
+            "moonshot-kimi",
+            "openai",
+            "anthropic",
+            "openrouter"
+          ]
+        }
+      }
+    },
+    "status": {
+      "enum": [
+        "open",
+        "paused",
+        "completed",
+        "uncertain",
+        "budget-exhausted"
+      ]
+    },
+    "requests": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "idempotencyKey",
+          "inputSha256",
+          "claimedAt",
+          "settledAt",
+          "state",
+          "attempts",
+          "estimatedInputTokens",
+          "maxOutputTokens",
+          "maxEstimatedCostMicros",
+          "inputTokens",
+          "outputTokens",
+          "reportedCostMicros",
+          "providerRequestId",
+          "responseDisclosed",
+          "providerContentStored",
+          "responseModel"
+        ],
+        "properties": {
+          "idempotencyKey": {
+            "$ref": "#/$defs/sha256"
+          },
+          "inputSha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "claimedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "settledAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "state": {
+            "enum": [
+              "claimed",
+              "succeeded",
+              "failed-known",
+              "uncertain",
+              "budget-exceeded"
+            ]
+          },
+          "attempts": {
+            "const": 1
+          },
+          "estimatedInputTokens": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000000
+          },
+          "maxOutputTokens": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000000
+          },
+          "maxEstimatedCostMicros": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000
+          },
+          "inputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "outputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "reportedCostMicros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "providerRequestId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[^\\r\\n\\u0000]+$"
+          },
+          "responseDisclosed": {
+            "type": "boolean"
+          },
+          "providerContentStored": {
+            "const": false
+          },
+          "responseModel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requests",
+        "inputTokens",
+        "outputTokens",
+        "reportedCostMicros",
+        "uncertain"
+      ],
+      "properties": {
+        "requests": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "inputTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000000
+        },
+        "outputTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000000
+        },
+        "reportedCostMicros": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000000000
+        },
+        "uncertain": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        }
+      }
+    },
+    "providerContentStored": {
+      "const": false
+    },
+    "credentialStored": {
+      "const": false
+    },
+    "boundary": {
+      "const": "Owner-private content-free provider usage and idempotency ledger. It records exact input hashes, claims, terminal state, provider identifiers, usage, and cost without prompt, response, reasoning, tool arguments, credential, external-effect, deployment, publication, completion, or security-testing authority; uncertain outcomes must be reconciled and are never automatically retried. A semantic run binds one exact deterministically replayed router decision; a connectivity-smoke run is bounded by an explicit non-semantic purpose and cannot qualify semantics; a qualification-trial run binds one exact versioned neutral corpus and lane, exercises only exact corpus cases, and can qualify semantics only when every required case passes."
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  }
+}

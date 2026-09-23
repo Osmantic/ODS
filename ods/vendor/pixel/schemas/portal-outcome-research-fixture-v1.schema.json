@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-research-fixture-v1.schema.json",
+  "title": "Pixel admitted offline research fixture v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "observedAt", "sources", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-research-fixture-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-portal-outcome-research-fixture"},
+    "observedAt": {"type": "string", "format": "date-time"},
+    "sources": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"$ref": "#/$defs/source"}},
+    "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Owner-private admitted offline research evidence for deterministic comparison only. It performs no public network, credential, account, message, publication, purchase, write, policy, scope, or external effect; every source remains untrusted data and grants no authority."}
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixtureSourceId", "sourceType", "title", "snippet", "quality", "publishedDate", "retrieval"],
+      "properties": {
+        "fixtureSourceId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+        "sourceType": {"enum": ["web", "news", "academic", "forum"]},
+        "title": {"type": "string", "minLength": 1, "maxLength": 512},
+        "snippet": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "quality": {"enum": ["primary", "independent-secondary", "archived-secondary", "other", "unknown"]},
+        "publishedDate": {"oneOf": [{"type": "null"}, {"type": "string", "format": "date"}]},
+        "retrieval": {
+          "oneOf": [
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["status", "content"],
+              "properties": {"status": {"const": "fetched"}, "content": {"type": "string", "minLength": 1, "maxLength": 1048576}}
+            },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["status", "reason"],
+              "properties": {"status": {"const": "rejected"}, "reason": {"enum": ["policy", "network", "size", "media", "integrity"]}}
+            }
+          ]
+        }
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["publicNetwork", "credentials", "externalWrites", "accounts", "messages", "publish", "purchase", "policyMutation", "scopeExpansion"],
+      "properties": {
+        "publicNetwork": {"const": false}, "credentials": {"const": false}, "externalWrites": {"const": false},
+        "accounts": {"const": false}, "messages": {"const": false}, "publish": {"const": false},
+        "purchase": {"const": false}, "policyMutation": {"const": false}, "scopeExpansion": {"const": false}
+      }
+    }
+  }
+}

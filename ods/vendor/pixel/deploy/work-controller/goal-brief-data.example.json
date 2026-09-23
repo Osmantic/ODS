@@ -1,0 +1,21 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-goal-brief-v1.schema.json",
+  "schemaVersion": 1,
+  "objective": "Analyze the selected private revenue data reproducibly and return evidence-backed findings.",
+  "dataClassification": "confidential",
+  "milestones": [
+    {
+      "milestoneId": "analyze",
+      "kind": "analyze-data",
+      "objective": "Find the material revenue patterns and produce a reusable derived dataset.",
+      "doneWhen": [
+        "Return an evidence-backed finding report",
+        "Return an independently replayed derived dataset"
+      ],
+      "dependsOn": [],
+      "inputIds": ["revenue"],
+      "effort": "standard"
+    }
+  ],
+  "boundary": "Owner-authored plain-language goal structure and selected local input references only. Drafting derives bounded job proposals from private policy but grants no execution, lease, retry, scheduling, credential, scope expansion, external effect, or completion authority."
+}

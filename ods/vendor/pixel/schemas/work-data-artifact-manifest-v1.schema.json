@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-data-artifact-manifest-v1.schema.json",
+  "title": "Pixel Data Lab derived artifact manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "manifestId", "jobId", "claimId", "planSha256", "workspaceSha256", "createdAt", "recipe", "datasets", "artifacts", "totals", "dataClassification", "rawInputsReadOnly", "externalEffects", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-data-artifact-manifest-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "manifestId": {"type": "string", "pattern": "^data-manifest-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "claimId": {"type": "string", "pattern": "^workclaim-[0-9]{13}-[a-f0-9]{12}$"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "workspaceSha256": {"$ref": "#/$defs/sha256"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "recipe": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "bytes", "sha256", "runtimeContract"],
+      "properties": {
+        "path": {"const": "recipe.py"}, "bytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "sha256": {"$ref": "#/$defs/sha256"}, "runtimeContract": {"const": "pixel-data-recipe-v1"}
+      }
+    },
+    "datasets": {
+      "type": "array", "minItems": 1, "maxItems": 64,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["datasetId", "format", "contentSha256", "bytes"],
+        "properties": {
+          "datasetId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+          "format": {"enum": ["csv", "json", "jsonl", "parquet", "sqlite"]},
+          "contentSha256": {"$ref": "#/$defs/sha256"}, "bytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776}
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array", "minItems": 1, "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["artifactId", "path", "kind", "format", "mediaType", "bytes", "sha256"],
+        "properties": {
+          "artifactId": {"type": "string", "pattern": "^artifact-[1-9][0-9]{0,2}$"},
+          "path": {"type": "string", "pattern": "^artifacts/[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+          "kind": {"enum": ["dataset", "document", "visualization"]},
+          "format": {"enum": ["csv", "json", "jsonl", "markdown", "parquet", "png", "sqlite", "svg"]},
+          "mediaType": {"enum": ["application/json", "application/vnd.apache.parquet", "application/vnd.sqlite3", "application/x-ndjson", "image/png", "image/svg+xml", "text/csv", "text/markdown"]},
+          "bytes": {"type": "integer", "minimum": 1, "maximum": 1073741824},
+          "sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "totals": {
+      "type": "object", "additionalProperties": false, "required": ["files", "bytes"],
+      "properties": {"files": {"type": "integer", "minimum": 1, "maximum": 256}, "bytes": {"type": "integer", "minimum": 1, "maximum": 1073741824}}
+    },
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "rawInputsReadOnly": {"const": true},
+    "externalEffects": {"const": false},
+    "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Content-addressed local Data Lab artifacts only. Raw inputs stayed read-only; the manifest grants no truth, publication, external-action, policy, or completion authority until exact replay verification passes."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rawInputMutation", "hostAccess", "network", "credentials", "externalEffects", "publish", "policyMutation", "scopeExpansion"],
+      "properties": {
+        "rawInputMutation": {"const": false}, "hostAccess": {"const": false}, "network": {"const": false},
+        "credentials": {"const": false}, "externalEffects": {"const": false}, "publish": {"const": false},
+        "policyMutation": {"const": false}, "scopeExpansion": {"const": false}
+      }
+    }
+  }
+}

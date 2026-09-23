@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ ${1:-} == -n ]] && shift
+if [[ ${1:-} == -u ]]; then shift 2; fi
+exec "$@"

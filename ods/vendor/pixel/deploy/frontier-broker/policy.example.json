@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 2,
+  "deployment": "example",
+  "provider": {
+    "kind": "codex",
+    "authMode": "api-key",
+    "model": "gpt-5.6-terra",
+    "codexBinary": "/usr/local/bin/codex",
+    "timeoutSeconds": 180,
+    "maxInputBytes": 131072,
+    "maxOutputBytes": 262144,
+    "cost": {
+      "mode": "unavailable"
+    }
+  },
+  "taskClasses": {
+    "plan_review": {
+      "enabled": true,
+      "allowedClassifications": ["public", "internal-derived", "confidential"],
+      "maxInputTokens": 12000,
+      "maxOutputTokens": 2048,
+      "rehydrate": true
+    },
+    "failure_triage": {
+      "enabled": true,
+      "allowedClassifications": ["public", "internal-derived", "confidential"],
+      "maxInputTokens": 16000,
+      "maxOutputTokens": 3072,
+      "rehydrate": true
+    }
+  },
+  "dataPolicy": {
+    "allowedClassifications": ["public", "internal-derived", "confidential"],
+    "approvalRequired": ["confidential"],
+    "neverEgress": ["credentials", "private-keys", "session-tokens", "authentication-material", "raw-source-bodies", "regulated-records"],
+    "maxStringLength": 16384,
+    "maxArrayItems": 64
+  },
+  "authority": {
+    "defaultLevel": "propose",
+    "planTtlMinutes": 30,
+    "grants": []
+  },
+  "routing": {
+    "maxLocalAttempts": 3,
+    "minimumFailureAttempts": 2,
+    "forceApprovalReasons": ["safety-review", "security-review"],
+    "cache": {
+      "enabled": true,
+      "ttlSeconds": 86400,
+      "maxEntries": 256,
+      "allowedClassifications": ["public", "internal-derived"]
+    },
+    "qualityCircuit": {
+      "windowSeconds": 86400,
+      "maxRegressions": 2
+    }
+  },
+  "budgets": {
+    "windowSeconds": 86400,
+    "maxJobs": 20,
+    "maxInputTokens": 200000,
+    "maxOutputTokens": 40000,
+    "maxFailures": 5,
+    "maxEstimatedCostMicros": null
+  },
+  "retention": {
+    "privateRequestMinutes": 60,
+    "planMinutes": 1440,
+    "resultDays": 30,
+    "integrationDays": 30
+  }
+}

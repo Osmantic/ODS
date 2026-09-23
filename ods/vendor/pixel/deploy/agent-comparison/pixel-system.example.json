@@ -1,0 +1,10 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/portal-outcome-pixel-system-v1.schema.json",
+  "schemaVersion": 1,
+  "runtimeRoot": "/var/lib/pixel-outcome/runs",
+  "policyTemplatePath": "/etc/pixel-outcome/work-policy.json",
+  "environmentTemplatePath": "/etc/pixel-outcome/environment.json",
+  "modelBackendTemplatePath": "/etc/pixel-outcome/model-backend.json",
+  "assistantTemplatePath": "/etc/pixel-outcome/assistant-template.json",
+  "boundary": "Owner-private templates and a disposable runtime root for exact Pixel outcome runs only. Configuration grants no model start, task execution, provider, credential, external-effect, merge, deployment, publication, completion, acceptance, or promotion authority."
+}

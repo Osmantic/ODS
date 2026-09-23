@@ -1,0 +1,34 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-goal-controller-environment-v1.schema.json",
+  "schemaVersion": 1,
+  "stateRoot": "/var/lib/pixel-work/state",
+  "policyPath": "/etc/pixel-work/policy.json",
+  "objectStore": "/var/lib/pixel-work/objects",
+  "workspaceRoot": "/var/lib/pixel-work/workspaces",
+  "executorPath": "/opt/pixel-work/bin/omp",
+  "modelBackendLaunchPath": "/etc/pixel-work/model-backend-launch.json",
+  "archiveLimits": {
+    "maxEntries": 10000,
+    "maxFileBytes": 1073741824
+  },
+  "runtime": {
+    "dockerPath": "/usr/bin/docker",
+    "backendNetworkName": "pixel-model-backend",
+    "backendContainerName": "pixel-local-model",
+    "networkSubnet": "172.30.0.0/24",
+    "workerIp": "172.30.0.10",
+    "proxyIp": "172.30.0.11",
+    "uid": 10001,
+    "gid": 10001
+  },
+  "knowledgeRuntime": {
+    "vaultRoot": "/var/lib/pixel-knowledge/vault",
+    "vaultId": "knowledgevault-abcdef123456",
+    "credentialSourcePath": "/etc/pixel-work-credentials/pixel-knowledge-vault-key",
+    "credentialName": "pixel-knowledge-vault-key",
+    "ownerId": "owner-one",
+    "clientId": "client-one",
+    "maxContextBytes": 16384
+  },
+  "boundary": "Owner-reviewed local controller environment only. It names exact private storage, policy, pinned executor, and isolated runtime wiring but grants no execution, lease, scheduling, service activation, scope expansion, external effect, or completion authority."
+}

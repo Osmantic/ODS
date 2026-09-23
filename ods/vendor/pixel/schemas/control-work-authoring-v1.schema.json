@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-work-authoring-v1.schema.json",
+  "title": "Pixel local Deep Work authoring projection v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "state", "revision", "profiles", "inputs", "limits", "privacy", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "state": {"enum": ["disabled", "ready", "unavailable"]},
+    "revision": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{64}$"}, {"type": "null"}]},
+    "profiles": {"type": "array", "maxItems": 4, "items": {"type": "object", "additionalProperties": false, "required": ["kind", "enabled"], "properties": {"kind": {"enum": ["inspect", "build", "research", "analyze-data"]}, "enabled": {"type": "boolean"}}}},
+    "inputs": {"type": "array", "maxItems": 256, "items": {"type": "object", "additionalProperties": false, "required": ["handle", "label", "kind", "classification", "bytes", "datasetCount", "datasetFormats"], "properties": {
+      "handle": {"type": "string", "pattern": "^workinput-[a-f0-9]{24}$"},
+      "label": {"type": "string", "pattern": "^Local (repository|dataset|document|context) [1-9][0-9]{0,2}$"},
+      "kind": {"enum": ["repository-snapshot", "dataset", "document", "context"]},
+      "classification": {"enum": ["public", "internal", "confidential", "restricted"]},
+      "bytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776},
+      "datasetCount": {"type": "integer", "minimum": 0, "maximum": 64},
+      "datasetFormats": {"type": "array", "maxItems": 5, "uniqueItems": true, "items": {"enum": ["csv", "json", "jsonl", "parquet", "sqlite"]}}
+    }}},
+    "limits": {"type": "object", "additionalProperties": false, "required": ["maxMilestones", "maxCriteriaPerMilestone", "draftsUsed", "maxDrafts"], "properties": {
+      "maxMilestones": {"const": 16}, "maxCriteriaPerMilestone": {"const": 8},
+      "draftsUsed": {"type": "integer", "minimum": 0, "maximum": 100}, "maxDrafts": {"type": "integer", "minimum": 1, "maximum": 100}
+    }},
+    "privacy": {"type": "object", "additionalProperties": false, "required": ["pathsExposed", "hashesExposed", "credentialsExposed", "genericCommandSurface", "browserCanAdmitInputs", "browserCanExecute", "browserCanSchedule", "browserCanExpandBoundary"], "properties": {
+      "pathsExposed": {"const": false}, "hashesExposed": {"const": false}, "credentialsExposed": {"const": false}, "genericCommandSurface": {"const": false},
+      "browserCanAdmitInputs": {"const": false}, "browserCanExecute": {"const": false}, "browserCanSchedule": {"const": false}, "browserCanExpandBoundary": {"const": false}
+    }},
+    "boundary": {"const": "Process-lifetime private local authoring view. It exposes generic admitted-input summaries and can create only an inert, separately reviewable draft; it cannot admit files, reveal paths or hashes, compile, stage, schedule, execute, approve egress, expand authority, or declare completion."}
+  },
+  "allOf": [
+    {"if": {"properties": {"state": {"const": "ready"}}, "required": ["state"]}, "then": {"properties": {"revision": {"type": "string"}}}, "else": {"properties": {"revision": {"const": null}, "profiles": {"maxItems": 0}, "inputs": {"maxItems": 0}}}}
+  ]
+}

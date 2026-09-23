@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-operator-status-v1.schema.json",
+  "title": "Pixel content-free local-model operator status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "generatedAt", "state", "policy", "qualification", "nextAction", "controls", "privacy", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-operator-status-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-model-status"},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "state": {"enum": ["not-prepared", "ready-disabled", "ready", "renew-soon", "degraded", "expired", "unavailable"]},
+    "policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["deepWorkEnabled", "localModelPrepared"],
+      "properties": {"deepWorkEnabled": {"type": "boolean"}, "localModelPrepared": {"type": "boolean"}}
+    },
+    "qualification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["present", "current", "eligibleProfiles", "requiredProfiles", "expiresAt", "maxContextTokens", "maxOutputTokens", "exactUsage"],
+      "properties": {
+        "present": {"type": "boolean"}, "current": {"type": "boolean"},
+        "eligibleProfiles": {"type": "array", "maxItems": 5, "uniqueItems": true, "items": {"enum": ["assistant", "scout", "builder", "data-lab", "researcher"]}},
+        "requiredProfiles": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"enum": ["scout", "builder", "data-lab", "researcher"]}},
+        "expiresAt": {"oneOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
+        "maxContextTokens": {"oneOf": [{"type": "integer", "minimum": 1, "maximum": 2000000}, {"type": "null"}]},
+        "maxOutputTokens": {"oneOf": [{"type": "integer", "minimum": 1, "maximum": 500000000}, {"type": "null"}]},
+        "exactUsage": {"oneOf": [{"type": "boolean"}, {"type": "null"}]}
+      }
+    },
+    "nextAction": {"enum": ["run-qualification", "review-and-bind", "enable-policy-when-ready", "ready", "renew-qualification", "inspect-private-evidence"]},
+    "controls": {"const": {"browserCanQualify": false, "browserCanBindPolicy": false, "browserCanEnableDeepWork": false}},
+    "privacy": {"const": {"modelIdentifier": false, "backendIdentifier": false, "acceleratorIdentifier": false, "paths": false, "hashes": false, "credentials": false, "prompts": false, "responses": false}},
+    "authority": {"const": {"grantsExecution": false, "activatesService": false, "grantsNetwork": false, "grantsCredentials": false, "grantsExternalEffects": false, "grantsCompletion": false}},
+    "boundary": {"const": "Content-free local-model readiness only. Status reveals no model, backend, accelerator, path, hash, credential, prompt, or response and grants no qualification, policy mutation, enablement, execution, network, external-effect, or completion authority."}
+  }
+}

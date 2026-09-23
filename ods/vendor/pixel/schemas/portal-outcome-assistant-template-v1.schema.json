@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-assistant-template-v1.schema.json",
+  "title": "Pixel private portal Assistant runtime template v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "openclawBinaryPath", "sandboxImage", "embeddingModel", "embeddingCachePath", "searxngBaseUrl", "proxyListenPort", "chatEnvironment", "actionJournalRoots", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-assistant-template-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "openclawBinaryPath": {"$ref": "#/$defs/path"},
+    "sandboxImage": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000\\r\\n]+$"},
+    "embeddingModel": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000\\r\\n]+$"},
+    "embeddingCachePath": {"$ref": "#/$defs/path"},
+    "searxngBaseUrl": {"type": "string", "minLength": 8, "maxLength": 2048, "pattern": "^https?://[^\\u0000\\r\\n]+$"},
+    "proxyListenPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+    "chatEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "PIXEL_SOURCE_PROJECTION_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_ACTION_PROPOSAL_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_ACTION_RESULT_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_OPS_STATE_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_OPS_REQUEST_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_OPS_RESULT_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_OPS_EVENT_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_OPS_CANCEL_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_OPS_INVENTORY_PATH": {"$ref": "#/$defs/path"},
+        "PIXEL_FRONTIER_STATE_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_FRONTIER_REQUEST_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_FRONTIER_RESULT_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_FRONTIER_EVENT_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_FRONTIER_CANCEL_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_FRONTIER_FEEDBACK_DIR": {"$ref": "#/$defs/path"},
+        "PIXEL_CALENDAR_DIRECT_ENABLED": {"enum": ["0", "1"]},
+        "PIXEL_LIMB_EMAIL_ENABLED": {"enum": ["0", "1"]},
+        "PIXEL_LIMB_CALENDAR_ENABLED": {"enum": ["0", "1"]},
+        "PIXEL_LIMB_SOCIAL_ENABLED": {"enum": ["0", "1"]},
+        "PIXEL_LIMB_OPERATIONS_ENABLED": {"enum": ["0", "1"]},
+        "PIXEL_LIMB_FRONTIER_ENABLED": {"enum": ["0", "1"]},
+        "PIXEL_SOURCE_STALE_AFTER_MS": {"type": "string", "pattern": "^[1-9][0-9]{0,9}$"},
+        "SEARXNG_BASE_URL": {"type": "string", "minLength": 8, "maxLength": 2048, "pattern": "^https?://[^\\u0000\\r\\n]+$"}
+      }
+    },
+    "actionJournalRoots": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"$ref": "#/$defs/path"}},
+    "boundary": {"const": "Owner-private credential-free preparation inputs for one disposable Pixel portal Assistant comparison runtime. The template grants no model start, task execution, provider credential, external effect, policy change, acceptance, publication, deployment, or promotion authority."}
+  },
+  "$defs": {
+    "path": {"type": "string", "minLength": 2, "maxLength": 4096, "pattern": "^[^\\u0000\\r\\n]+$"}
+  }
+}

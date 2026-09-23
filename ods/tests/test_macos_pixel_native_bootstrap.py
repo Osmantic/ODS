@@ -2,6 +2,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,12 +16,25 @@ bootstrap = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bootstrap)
 
 
-def test_source_acquisition_requires_license_authorization(tmp_path, monkeypatch):
+@pytest.mark.parametrize('tampered', [False, True])
+def test_public_ods_bundle_acquires_without_private_repository(tmp_path, monkeypatch, tampered):
     monkeypatch.setattr(bootstrap.sys, 'platform', 'darwin')
     monkeypatch.setattr(bootstrap.os, 'geteuid', lambda: 501)
-    with pytest.raises(bootstrap.BootstrapError, match='pixel-license-authorization-required'):
-        bootstrap.acquire_source(ref='a' * 40, destination=tmp_path / 'source',
-            license_authorized=False)
+    bundle = tmp_path / 'pixel.bundle'
+    shutil.copy2(Path(__file__).resolve().parents[1] / 'vendor/pixel.bundle', bundle)
+    if tampered:
+        with bundle.open('ab') as handle:
+            handle.write(b'changed')
+    destination = tmp_path / 'source'
+    if tampered:
+        with pytest.raises(bootstrap.BootstrapError, match='bundled-pixel-source-digest-mismatch'):
+            bootstrap.acquire_source(ref=bootstrap.ODS_BUNDLED_REF,
+                destination=destination, license_authorized=True, source_url=str(bundle))
+        assert not destination.exists()
+    else:
+        assert bootstrap.acquire_source(ref=bootstrap.ODS_BUNDLED_REF,
+            destination=destination, license_authorized=True, source_url=str(bundle)) == destination
+        assert bootstrap.selected_release(destination, bootstrap.ODS_BUNDLED_REF)['pixel'] == '4.3.27'
 
 
 @pytest.mark.parametrize('fault', [None, 'unreferenced', 'ref', 'existing', 'missing-commit', 'release'])
@@ -56,7 +70,7 @@ def test_source_acquisition_uses_exact_commit_without_changing_input(tmp_path, r
     def run():
         return bootstrap.acquire_source(ref=('main' if fault == 'ref' else
             '0' * 40 if fault == 'missing-commit' else ref), destination=destination,
-            license_authorized=True, source_url=str(source))
+            license_authorized=False, source_url=str(source))
     if fault not in (None, 'unreferenced'):
         with pytest.raises((bootstrap.BootstrapError, KeyError)):
             run()

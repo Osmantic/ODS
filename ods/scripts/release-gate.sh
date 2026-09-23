@@ -19,6 +19,8 @@ for f in "${sh_files[@]}"; do
 done
 
 echo "[gate] compatibility + claims"
+"$PYTHON_CMD" scripts/verify-pixel-bundle.py
+bash tests/test-pixel-bundled-source.sh
 bash scripts/check-compatibility.sh
 "$PYTHON_CMD" scripts/check-version-consistency.py
 bash scripts/check-release-claims.sh

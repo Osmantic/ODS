@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-policy-review-v1.schema.json",
+  "title": "Pixel local-model private-policy review v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "status", "eligibleProfiles", "requiredProfiles", "expiresAt", "measuredEnvelope", "proposedPolicySha256", "confirmation", "changes", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-policy-review-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-model-policy-review"},
+    "status": {"const": "confirmation-required"},
+    "eligibleProfiles": {"type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": {"enum": ["assistant", "scout", "builder", "data-lab", "researcher"]}},
+    "requiredProfiles": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"enum": ["scout", "builder", "data-lab", "researcher"]}},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "measuredEnvelope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxContextTokens", "maxOutputTokens", "exactUsage"],
+      "properties": {
+        "maxContextTokens": {"type": "integer", "minimum": 1, "maximum": 2000000},
+        "maxOutputTokens": {"type": "integer", "minimum": 1, "maximum": 500000000},
+        "exactUsage": {"const": true}
+      }
+    },
+    "proposedPolicySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "confirmation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["option", "sha256"],
+      "properties": {
+        "option": {"const": "--confirm-proposed-policy-sha256"},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "changes": {
+      "const": {
+        "setsLocalModelPrepared": true,
+        "bindsExactQualification": true,
+        "enablesDeepWork": false,
+        "enablesProfiles": false,
+        "changesBudgets": false,
+        "changesAuthority": false
+      }
+    },
+    "authority": {
+      "const": {
+        "grantsExecution": false,
+        "activatesService": false,
+        "grantsNetwork": false,
+        "grantsCredentials": false,
+        "grantsExternalEffects": false,
+        "grantsCompletion": false
+      }
+    },
+    "boundary": {"const": "Trusted-terminal review of one exact local-model qualification binding. Confirmation may write a new private policy candidate but cannot overwrite policy, enable Deep Work or profiles, start a model, activate a service, or grant execution, network, credential, external-effect, or completion authority."}
+  }
+}

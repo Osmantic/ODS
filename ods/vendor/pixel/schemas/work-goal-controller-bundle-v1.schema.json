@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-controller-bundle-v1.schema.json",
+  "title": "Pixel prepared goal controller bundle manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "goalId", "goalSha256", "jobsSha256", "sourceBundleManifestSha256", "environmentSha256", "configSha256", "policySha256", "executorSha256", "dockerSha256", "profiles", "custody", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-controller-bundle-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-goal-controller-prepare"},
+    "goalId": {"type": "string", "pattern": "^workgoal-[0-9]{13}-[a-f0-9]{12}$"},
+    "goalSha256": {"$ref": "#/$defs/sha256"},
+    "jobsSha256": {"$ref": "#/$defs/sha256"},
+    "sourceBundleManifestSha256": {"$ref": "#/$defs/sha256"},
+    "environmentSha256": {"$ref": "#/$defs/sha256"},
+    "configSha256": {"$ref": "#/$defs/sha256"},
+    "policySha256": {"$ref": "#/$defs/sha256"},
+    "executorSha256": {"$ref": "#/$defs/sha256"},
+    "dockerSha256": {"$ref": "#/$defs/sha256"},
+    "modelBackendLaunchSha256": {"$ref": "#/$defs/sha256"},
+    "capabilityPolicySha256": {"$ref": "#/$defs/sha256"},
+    "capabilityBindingsSha256": {"$ref": "#/$defs/sha256"},
+    "profiles": {
+      "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true,
+      "items": {"enum": ["builder", "data-lab", "researcher", "scout"]}
+    },
+    "custody": {"const": "not-initialized"},
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grantsExecution", "grantsLease", "grantsScheduling", "grantsServiceActivation", "grantsScopeExpansion", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "grantsExecution": {"const": false},
+        "grantsLease": {"const": false},
+        "grantsScheduling": {"const": false},
+        "grantsServiceActivation": {"const": false},
+        "grantsScopeExpansion": {"const": false},
+        "grantsExternalEffects": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Private atomic controller bundle only. Preparation proves exact goal, policy, executor, storage, and runtime wiring but creates no ledger or lease, starts no worker or service, and grants no execution, scheduling, activation, scope expansion, external effect, or completion authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

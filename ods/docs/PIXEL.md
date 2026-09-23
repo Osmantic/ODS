@@ -1,7 +1,7 @@
 # Pixel in ODS
 
 Pixel is the heart of ODS's conversational experience and a core feature under
-active development. On the host and license path described here, it is the
+active development. On the qualified host path described here, it is the
 default `pixel/default` model in Open WebUI and has a dedicated **Pixel** app
 in the ODS Dashboard. The full goal is to create projects, use host tools,
 manage ODS, and carry out sustained work through conversation.
@@ -22,7 +22,7 @@ callable through the active ODS Switchboard route is callable through Pixel.
 ODS still applies its ordinary hardware-fit and inference-readiness checks when
 it chooses a fresh install's default model; any agent-quality measurements are
 advisory capability evidence, not an access gate. Hermes remains independently
-available when the Pixel runtime, host, license, or authenticated gateway is unavailable,
+available when the Pixel runtime, host, or authenticated gateway is unavailable,
 not a substitute selected merely because a callable model scored poorly on an
 agent probe.
 
@@ -38,28 +38,22 @@ model has equal intelligence or tool-use skill.
 
 ## Legal and release boundary
 
-Pixel's repository currently uses a proprietary, all-rights-reserved license.
-ODS does not grant a right to install or use Pixel. Set
-`PIXEL_LICENSE_ACCEPTED=true` only after a separately negotiated written
-agreement authorizes the relevant installation. A public ODS release cannot
-legally deliver Pixel to every installer until the Pixel copyright holder
-publishes a compatible license or grants the required distribution and use
-rights.
+Pixel source is included in ODS at [`vendor/pixel`](../vendor/pixel) under the
+[Pixel License for ODS](../vendor/pixel/LICENSE.md). It grants broad use,
+modification and distribution rights as part of ODS, including commercial ODS
+use, without a separate agreement or acknowledgement flag. It does **not**
+license Pixel as a standalone product or under ODS's Apache-2.0 license. See
+the [repository licensing overview](../LICENSING.md).
 
 This technical integration therefore fails closed:
 
-| Request | Qualified host | Written authorization acknowledged | Result |
-|---------|----------------|------------------------------------|--------|
-| `ENABLE_PIXEL=auto` (default) | Yes | Yes | Pixel is enabled as the core agent and Open WebUI's default model |
-| `ENABLE_PIXEL=auto` | No | Any | Pixel is skipped; existing ODS tools remain available |
-| `ENABLE_PIXEL=auto` | Yes | No | Pixel is skipped; existing ODS tools remain available |
-| `--pixel` | Yes | Yes | Pixel is required and installed |
-| `--pixel` | No | Any | Installer stops before changing the agent route |
-| `--pixel` | Yes | No | Installer stops before changing the agent route |
-| `--no-pixel` | Any | Any | Pixel route is disabled; Hermes remains available |
-
-The environment value must be exactly `true`. There is no click-through or
-implicit acceptance.
+| Request | Qualified host | Result |
+|---------|----------------|--------|
+| `ENABLE_PIXEL=auto` (default) | Yes | Pixel is enabled as the core agent and Open WebUI's default model |
+| `ENABLE_PIXEL=auto` | No | Pixel is skipped; existing ODS tools remain available |
+| `--pixel` | Yes | Pixel is required and installed |
+| `--pixel` | No | Installer stops before changing the agent route |
+| `--no-pixel` | Any | Pixel route is disabled; Hermes remains available |
 
 ## Host eligibility
 
@@ -276,36 +270,37 @@ public-web tools and shell cannot be used as substitutes.
 
 ## Install
 
-From an authorized Ubuntu 24.04/26.04 or Debian 12 host:
+From a qualified Ubuntu 24.04/26.04 or Debian 12 host:
 
 ```bash
 git clone https://github.com/Osmantic/ODS.git
 cd ODS/ods
-PIXEL_LICENSE_ACCEPTED=true ./install.sh --pixel
+./install.sh --pixel
 ```
 
 Omit `--pixel` to use automatic selection. Explicit `--pixel` is recommended
 for qualification because it turns an unexpected fallback into a visible
 installer failure.
 
-The installer pins Pixel to an immutable full commit. To qualify an
+The installer uses the local, one-commit Pixel bundle shipped in ODS and
+checks its immutable digest before activation; it does not clone a private
+repository. To qualify an
 owner-controlled local Pixel checkout, place it under a secure directory you
 own and set all three source values:
 
 ```bash
-PIXEL_LICENSE_ACCEPTED=true \
 PIXEL_SOURCE_DIR=/home/me/src \
 PIXEL_SOURCE_URL=/home/me/src/Pixel \
 PIXEL_SOURCE_REF=<40-character-commit> \
 ./install.sh --pixel
 ```
 
-The canonical remote URL is the only remote source accepted. A local source
+The canonical remote URL is an explicit development override, not needed for
+normal installs. A local source
 must be a clean Git checkout below `PIXEL_SOURCE_DIR`; the owner directories
 must not be group- or world-writable. Remote Git credential prompts are
-disabled and source operations are bounded, so an inaccessible private source
-fails instead of hanging the installer. Authorized users without configured
-non-interactive Git access should use the local-checkout form above.
+disabled and source operations are bounded. Normal ODS users need no Pixel Git
+credentials.
 
 ## User experience
 
@@ -578,8 +573,7 @@ untouched.
 | Variable | Default / owner | Meaning |
 |----------|-----------------|---------|
 | `ENABLE_PIXEL` | `auto` | `auto`, exact `true`, or exact `false` selection |
-| `PIXEL_LICENSE_ACCEPTED` | unset/false; operator | Exact acknowledgement after written authorization |
-| `PIXEL_SOURCE_URL` | canonical Pixel GitHub URL | Canonical remote or validated local checkout |
+| `PIXEL_SOURCE_URL` | `bundled` | Local ODS source bundle; explicit developer overrides only |
 | `PIXEL_SOURCE_REF` | ODS-pinned full SHA | Immutable Pixel source revision |
 | `PIXEL_SOURCE_DIR` | empty | Secure owner-controlled root for a local checkout |
 | `PIXEL_OPENWEBUI_KEY` | generated; installer | Narrow Open WebUI/Dashboard-to-edge key; secret |
@@ -642,11 +636,11 @@ release link and runtime attestation, and moves the fully verified release tree
 into Pixel's private
 `retired-ods-releases/` archive. An ambient, legacy, incompletely bound, or
 drifted Pixel/OpenClaw deployment is left untouched. Re-enable only after the
-qualification predicate and written authorization are still valid; ODS then
+qualification predicate is still valid; ODS then
 recreates the live deployment from the configured immutable Pixel source:
 
 ```bash
-PIXEL_LICENSE_ACCEPTED=true ./install.sh --pixel
+./install.sh --pixel
 ```
 
 A full `ods-uninstall.sh` removes the Pixel host deployment only when the

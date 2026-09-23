@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-run-bundle-v1.schema.json",
+  "title": "Pixel durable goal child run bundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "bundleId", "goalId", "milestoneId", "jobId", "sequence", "createdAt", "previousBundleSha256", "goalSha256", "jobSha256", "purpose", "plan", "lease", "workspaceSnapshotSha256", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-run-bundle-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "bundleId": {"type": "string", "pattern": "^workgoalrun-[0-9]{13}-[a-f0-9]{12}$"},
+    "goalId": {"type": "string", "pattern": "^workgoal-[0-9]{13}-[a-f0-9]{12}$"},
+    "milestoneId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "sequence": {"type": "integer", "minimum": 0, "maximum": 1000},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "previousBundleSha256": {"$ref": "#/$defs/nullableSha256"},
+    "goalSha256": {"$ref": "#/$defs/sha256"},
+    "jobSha256": {"$ref": "#/$defs/sha256"},
+    "purpose": {"enum": ["initial", "pre-admission-refresh", "admission", "continuation"]},
+    "plan": {"type": "object"},
+    "lease": {"type": "object"},
+    "workspaceSnapshotSha256": {"$ref": "#/$defs/sha256"},
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["containsExactLease", "grantsBeyondEmbeddedLease", "grantsReplay", "grantsScopeExpansion", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "containsExactLease": {"const": true},
+        "grantsBeyondEmbeddedLease": {"const": false},
+        "grantsReplay": {"const": false},
+        "grantsScopeExpansion": {"const": false},
+        "grantsExternalEffects": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Private capability-custody record containing one exact expiring child lease. It adds no authority beyond that lease and grants no replay, scope expansion, external effect, or completion authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nullableSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}
+  }
+}

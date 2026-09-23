@@ -1,0 +1,722 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Pixel</title>
+  <meta name="description" content="Private local Pixel agent workspace with inline task state, approvals, evidence, and settings.">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <div class="agent-workspace" id="agent-workspace">
+    <aside class="workspace-rail" aria-label="Pixel tasks and navigation">
+      <div class="workspace-brand"><span class="brand-mark" aria-hidden="true">P</span><strong>Pixel</strong></div>
+      <button class="workspace-new" id="new-conversation" type="button"><span aria-hidden="true">＋</span> New task</button>
+      <nav class="workspace-nav" id="workspace-nav" aria-label="Workspace">
+        <button class="workspace-nav-item active" type="button" data-workspace-view="chat"><span aria-hidden="true">◇</span> Agent</button>
+        <button class="workspace-nav-item" id="open-approvals" type="button"><span aria-hidden="true">✓</span> Approvals <span class="rail-count" id="rail-approval-count">0</span></button>
+        <button class="workspace-nav-item" id="open-settings" type="button"><span aria-hidden="true">⚙</span> Settings</button>
+      </nav>
+      <div class="workspace-recents">
+        <p>Recent</p>
+        <div id="chat-conversation-list"><span class="rail-empty">No conversations yet</span></div>
+      </div>
+      <div class="workspace-rail-footer">
+        <span class="privacy-dot" aria-hidden="true"></span>
+        <span><strong>Local workspace</strong><small>Private text stays in owner custody</small></span>
+      </div>
+    </aside>
+
+    <main id="main" class="conversation-workspace">
+      <header class="conversation-header">
+        <div>
+          <p class="workspace-kicker">Private agent workspace</p>
+          <h1 id="workspace-title">How can Pixel help?</h1>
+        </div>
+        <div class="conversation-header-actions">
+          <span class="run-chip neutral" id="workspace-run-state"><span aria-hidden="true"></span> Ready</span>
+          <button class="icon-button" id="toggle-inspector" type="button" aria-controls="workspace-inspector" aria-expanded="true" aria-label="Toggle task inspector">☷</button>
+        </div>
+      </header>
+
+      <section class="conversation-thread" id="chat-thread" aria-label="Conversation" aria-live="polite">
+        <div class="workspace-welcome" id="chat-empty-state">
+          <span class="welcome-mark" aria-hidden="true">P</span>
+          <h2>Start with the outcome you want.</h2>
+          <p>Pixel will use its configured local agent, keep durable task state visible, and ask inline before a consequential boundary. Settings and technical evidence stay available without becoming a second workflow.</p>
+          <div class="starter-grid">
+            <button type="button" data-starter="Review what needs my attention and distinguish current evidence from remembered context."><strong>Check in</strong><span>What needs attention right now?</span></button>
+            <button type="button" data-starter="Build a durable plan for this goal, then show the milestones and exact completion criteria before work begins."><strong>Plan deep work</strong><span>Turn a large outcome into durable milestones.</span></button>
+            <button type="button" data-starter="Research this question using current sources, inline citations, and explicit evidence-versus-inference labels."><strong>Research</strong><span>Use current sources and visible provenance.</span></button>
+          </div>
+        </div>
+      </section>
+
+      <section class="chat-inline-workbench" id="chat-inline-workbench" aria-labelledby="chat-inline-workbench-title" hidden>
+        <header class="chat-inline-workbench-header">
+          <div>
+            <p class="workspace-kicker">Conversation workbench</p>
+            <h2 id="chat-inline-workbench-title">Plan durable work</h2>
+            <p>Shape the exact milestones here. Drafting remains inert until its fixed permission path completes.</p>
+          </div>
+          <button class="icon-button" id="close-chat-inline-workbench" type="button" aria-label="Close Deep Work planner">Close</button>
+        </header>
+        <div id="chat-inline-workbench-content"></div>
+      </section>
+
+      <div class="composer-region">
+        <form class="chat-composer" id="chat-form">
+          <label class="visually-hidden" for="chat-message">Message Pixel</label>
+          <textarea id="chat-message" name="message" rows="3" maxlength="32768" placeholder="Ask Pixel to do anything…" aria-label="Message Pixel" required></textarea>
+          <div class="composer-footer">
+            <div class="composer-route" aria-label="Current route">
+              <span class="route-chip"><span aria-hidden="true">◆</span> Pixel agent</span>
+              <span id="workspace-privacy-route">Local-first</span>
+              <button class="permission-shortcut" id="open-permission-settings" type="button">Permissions · checking</button>
+            </div>
+            <button class="send-button" id="send-message" type="submit" aria-label="Send message">↑</button>
+          </div>
+        </form>
+        <p class="composer-status" id="chat-message-status" role="status" aria-live="polite">Private chat is verifying the configured local agent.</p>
+      </div>
+    </main>
+
+    <aside class="workspace-inspector" id="workspace-inspector" aria-label="Task inspector">
+      <div class="inspector-heading">
+        <div><p class="workspace-kicker">Inspector</p><h2 id="workspace-inspector-title">Task context</h2></div>
+        <button class="icon-button inspector-close" id="close-inspector" type="button" aria-label="Close task inspector">×</button>
+      </div>
+      <section class="inspector-card" id="workspace-run-summary">
+        <div class="inspector-card-heading"><h3>Current run</h3><span class="service-state neutral" id="inspector-run-state">Ready</span></div>
+        <dl class="inspector-facts">
+          <div><dt>Agent route</dt><dd id="inspector-agent-route">Configured Pixel agent</dd></div>
+          <div><dt>Deep Work</dt><dd id="inspector-deep-work">Checking</dd></div>
+          <div><dt>Artifacts</dt><dd id="inspector-artifacts">0 retained</dd></div>
+          <div><dt>Continuity</dt><dd>Durable local custody</dd></div>
+        </dl>
+      </section>
+      <section class="inspector-card approval-inbox" id="workspace-approvals">
+        <div class="inspector-card-heading"><h3>Approvals</h3><span class="approval-count" id="workspace-approval-count">0</span></div>
+        <p id="workspace-approval-summary">No projected approval count is available yet.</p>
+        <div class="inline-boundary-note"><strong>Never hidden.</strong> When Pixel reaches a consequential boundary, the exact proposed effect remains pending in the conversation where you asked for it.</div>
+      </section>
+      <section class="inspector-card" id="workspace-permission-summary">
+        <div class="inspector-card-heading"><h3>Permission defaults</h3><span class="service-state neutral">Bounded</span></div>
+        <ul class="permission-summary">
+          <li><span>Always ask</span><strong id="permission-ask-count">—</strong></li>
+          <li><span>Auto within policy</span><strong id="permission-auto-count">—</strong></li>
+          <li><span>Never allow</span><strong id="permission-never-count">—</strong></li>
+        </ul>
+        <p>Automatic work remains confined to fixed actions and the private deployment policy. Resume and cancellation always require a fresh approval.</p>
+        <button class="button quiet compact-button" id="edit-permissions" type="button">Adjust permissions</button>
+      </section>
+      <section class="inspector-card inspector-permission-editor" id="workspace-permission-editor" aria-labelledby="workspace-permission-title" hidden>
+        <div class="inspector-card-heading">
+          <h3 id="workspace-permission-title">Permission defaults</h3>
+          <button class="icon-button" id="close-workspace-permissions" type="button" aria-label="Close permission settings">Close</button>
+        </div>
+        <p>Choose which fixed local actions may run automatically inside their existing private policy. Consequential lifecycle actions still require a fresh approval.</p>
+        <form id="workspace-permission-form">
+          <div class="workspace-permission-list" id="workspace-permission-list"></div>
+          <button class="button primary compact-button" id="save-workspace-permissions" type="submit">Save protected defaults</button>
+          <p id="workspace-permission-message" role="status" aria-live="polite"></p>
+        </form>
+        <div class="inline-boundary-note"><strong>Hard boundary.</strong> This cannot enable an action locked off by private deployment policy. Saving denies every stale pending proposal.</div>
+      </section>
+      <section class="inspector-card inspector-evidence-view" id="workspace-evidence-inspector" aria-labelledby="workspace-evidence-title" hidden>
+        <div class="inspector-card-heading">
+          <h3 id="workspace-evidence-title">Exact retained evidence</h3>
+          <button class="icon-button" id="close-workspace-evidence" type="button" aria-label="Close exact evidence inspector">Close</button>
+        </div>
+        <p id="workspace-evidence-message" role="status" aria-live="polite">No exact private review is loaded.</p>
+        <div class="workspace-evidence-content" id="workspace-evidence-content"></div>
+        <div class="inline-boundary-note"><strong>Read-only.</strong> This is the same locally authenticated review projection used by the advanced control center. It cannot accept, complete, publish, deploy, or widen the work.</div>
+      </section>
+      <button class="inspector-control-button" id="open-control-center" type="button"><span><strong>Open full control center</strong><small>Setup, evidence, budgets, recovery, and advanced policy</small></span><b aria-hidden="true">›</b></button>
+    </aside>
+  </div>
+
+  <div class="control-center" id="control-center" hidden>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Pixel Local Control home">
+      <span class="brand-mark" aria-hidden="true">P</span>
+      <span><strong>Pixel</strong><small>Local control</small></span>
+    </a>
+    <div class="topbar-actions"><button class="button quiet" id="close-control-center" type="button">Back to Pixel</button><div class="privacy-badge"><span aria-hidden="true"></span> This page stays on your device</div></div>
+  </header>
+
+  <div class="control-page-main" id="control-main" tabindex="-1">
+    <section class="hero" aria-labelledby="hero-title">
+      <div>
+        <p class="eyebrow">Your private agent, clearly under your control</p>
+        <h2 id="hero-title">Set up Pixel without losing sight of the boundary.</h2>
+        <p class="hero-copy">Choose what Pixel can help with, review what will change, and check its health. Credentials, cloud approvals, deployment activation, and recovery keys never enter this page.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#setup">Review setup</a>
+          <button class="button quiet" id="refresh-status" type="button">Refresh status</button>
+        </div>
+      </div>
+      <aside class="readiness-card" aria-labelledby="readiness-title">
+        <div class="card-heading">
+          <div>
+            <p class="kicker">Readiness</p>
+            <h2 id="readiness-title">Deployment path</h2>
+          </div>
+          <span class="status-chip neutral" id="overall-state">Checking</span>
+        </div>
+        <ol class="steps" id="readiness-steps">
+          <li><span>1</span><div><strong>Settings</strong><small>Save your local choices</small></div></li>
+          <li><span>2</span><div><strong>Configuration</strong><small>Prepare bounded services</small></div></li>
+          <li><span>3</span><div><strong>Review plan</strong><small>Inspect an exact hash</small></div></li>
+          <li><span>4</span><div><strong>Activation</strong><small>Completed outside the browser</small></div></li>
+        </ol>
+      </aside>
+    </section>
+
+    <section class="summary-grid" aria-label="Pixel status summary">
+      <article class="summary-card">
+        <p class="kicker">Version</p>
+        <strong id="version-value">—</strong>
+        <span id="install-value">Checking local installation</span>
+      </article>
+      <article class="summary-card">
+        <p class="kicker">Review plan</p>
+        <strong id="plan-value">—</strong>
+        <span id="plan-hash">No plan loaded</span>
+      </article>
+      <article class="summary-card">
+        <p class="kicker">Needs attention</p>
+        <strong id="attention-value">—</strong>
+        <span>Pending approvals, incidents, and readiness checks</span>
+      </article>
+      <article class="summary-card accent-card">
+        <p class="kicker">Cloud calls avoided</p>
+        <strong id="savings-value">—</strong>
+        <span>Kept local by adaptive routing</span>
+      </article>
+    </section>
+
+    <section class="panel permission-panel" id="permission-settings" aria-labelledby="permission-settings-title">
+      <div class="panel-heading">
+        <div>
+          <p class="kicker">Agent permissions</p>
+          <h2 id="permission-settings-title">Choose what Pixel may do without interrupting you.</h2>
+          <p>Each mode is enforced by the local policy backend. “Auto within policy” never creates a generic command surface or widens configured authority.</p>
+        </div>
+        <span class="status-chip neutral" id="permission-settings-state">Checking</span>
+      </div>
+      <form id="permission-settings-form">
+        <div class="permission-settings-list" id="permission-settings-list"></div>
+        <div class="form-actions">
+          <button class="button primary" id="save-permissions" type="submit">Save protected defaults</button>
+          <span id="permission-settings-message" role="status" aria-live="polite"></span>
+        </div>
+      </form>
+      <div class="notice"><strong>Hard boundary.</strong> A private deployment-policy lock cannot be enabled here. Changing these defaults invalidates every outstanding action proposal.</div>
+    </section>
+
+    <section class="panel attestation-panel" aria-labelledby="attestation-title">
+      <div class="panel-heading compact">
+        <div>
+          <p class="kicker">Deployment proof</p>
+          <h2 id="attestation-title">What is actually running?</h2>
+        </div>
+        <span class="status-chip neutral" id="attestation-state">Checking</span>
+      </div>
+      <p id="attestation-summary" role="status" aria-live="polite">Checking the content-free local verification receipt.</p>
+      <dl class="attestation-facts">
+        <div><dt>Observed</dt><dd id="attestation-observed">—</dd></div>
+        <div><dt>Source commit</dt><dd id="attestation-source">—</dd></div>
+        <div><dt>Source tree</dt><dd id="attestation-tree">—</dd></div>
+        <div><dt>Baseline qualification</dt><dd id="attestation-qualification">—</dd></div>
+        <div><dt>Runtime</dt><dd id="attestation-runtime">—</dd></div>
+        <div><dt>Model identity</dt><dd id="attestation-model">—</dd></div>
+        <div><dt>Configuration</dt><dd id="attestation-config">—</dd></div>
+        <div><dt>Connectors</dt><dd id="attestation-connectors">—</dd></div>
+      </dl>
+      <div class="notice warning"><strong>Proof boundary.</strong> This verifies exact source, installed files, configuration, profiles, connectors, and gateway checks. It does not claim that the selected model passed Pixel’s real-work capability qualification.</div>
+    </section>
+
+    <div class="content-grid">
+      <section class="panel setup-panel" id="setup" aria-labelledby="setup-title">
+        <div class="panel-heading">
+          <div>
+            <p class="kicker">Onboarding</p>
+            <h2 id="setup-title">How should Pixel work for you?</h2>
+            <p>These choices are saved privately on this computer. Advanced signed packs and credential files are preserved but never displayed here.</p>
+          </div>
+          <span class="status-chip neutral" id="save-state">Not saved</span>
+        </div>
+
+        <form id="onboarding-form">
+          <fieldset>
+            <legend>Starting point</legend>
+            <div class="field-grid two">
+              <label>Deployment
+                <select name="deploymentProfile">
+                  <option value="prepared">Use my existing local services</option>
+                  <option value="reference">Let Pixel supply reference services</option>
+                </select>
+              </label>
+              <label>Capability profile
+                <select name="capabilityProfile">
+                  <option value="minimal">Minimal</option>
+                  <option value="chief-of-staff">Chief of staff</option>
+                  <option value="research">Research</option>
+                  <option value="engineering-operator">Engineering operator</option>
+                </select>
+              </label>
+              <label>Your name
+                <input name="ownerName" autocomplete="name" maxlength="120" required>
+              </label>
+              <label>Organization
+                <input name="organization" autocomplete="organization" maxlength="120" required>
+              </label>
+              <label>Pixel's name
+                <input name="agentName" maxlength="120" required>
+              </label>
+              <label>Timezone
+                <input name="timeZone" autocomplete="off" maxlength="120" placeholder="America/New_York" required>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Local model</legend>
+            <div class="notice"><strong>No credential field by design.</strong> Pixel's local model credential is managed outside the browser and is never returned by this service.</div>
+            <div class="field-grid two">
+              <label>Model service address
+                <input name="modelBaseUrl" inputmode="url" maxlength="2048" required>
+              </label>
+              <label>Model ID
+                <input name="modelId" maxlength="256" required>
+              </label>
+              <label>Display name
+                <input name="modelName" maxlength="120" required>
+              </label>
+              <label>Provider ID
+                <input name="modelProvider" maxlength="64" required>
+              </label>
+              <label>Context window
+                <input name="modelContextWindow" type="number" min="4096" max="10000000" step="1" required>
+              </label>
+              <label>Maximum answer tokens
+                <input name="modelMaxTokens" type="number" min="256" max="1000000" step="1" required>
+              </label>
+            </div>
+            <label class="switch-row"><input name="modelReasoning" type="checkbox"><span><strong>Reasoning model</strong><small>Enable only when your local model supports reasoning controls.</small></span></label>
+            <details>
+              <summary>Advanced private-host declaration</summary>
+              <label>Additional exact private model hosts
+                <input name="modelPrivateHosts" maxlength="2000" placeholder="model.lan, 10.0.0.12">
+                <small>Comma-separated. Needed only when Frontier is enabled and the local model is not on loopback, RFC1918, or .local.</small>
+              </label>
+            </details>
+          </fieldset>
+
+          <fieldset>
+            <legend>Private services</legend>
+            <div class="field-grid two">
+              <label>Private search address
+                <input name="searxngBaseUrl" inputmode="url" maxlength="2048" required>
+              </label>
+              <label>Embedding model
+                <input name="embeddingModel" maxlength="256" required>
+              </label>
+              <label>Google account
+                <input name="googleAccount" type="email" autocomplete="email" maxlength="320" required>
+              </label>
+              <label>Calendar ID
+                <input name="calendarId" maxlength="320" required>
+              </label>
+              <label>Local gateway port
+                <input name="gatewayPort" type="number" min="1024" max="65535" step="1" required>
+              </label>
+              <label>Deployment name
+                <input name="deploymentName" maxlength="128" required>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Capabilities</legend>
+            <p class="legend-copy">Every capability starts from a named boundary. Enabling one does not give the browser its credentials or approval authority.</p>
+            <div class="limb-grid" id="limb-controls">
+              <label class="limb-option"><input type="checkbox" name="limb-email"><span><strong>Email</strong><small>Sanitized projection only</small></span></label>
+              <label class="limb-option"><input type="checkbox" name="limb-calendar"><span><strong>Calendar</strong><small>Projection with bounded changes</small></span></label>
+              <label class="limb-option"><input type="checkbox" name="limb-social"><span><strong>Social</strong><small>Sanitized adapter projection</small></span></label>
+              <label class="limb-option"><input type="checkbox" name="limb-web"><span><strong>Web</strong><small>Policy-enforced courier</small></span></label>
+              <label class="limb-option"><input type="checkbox" name="limb-operations"><span><strong>Operations</strong><small>Isolated execution broker</small></span></label>
+              <label class="limb-option"><input type="checkbox" name="limb-frontier"><span><strong>Frontier</strong><small>Local-first expert review</small></span></label>
+            </div>
+            <div id="frontier-setup-row">
+              <div class="field-grid two">
+                <label>Frontier access
+                  <select name="frontierAuthMode">
+                    <option value="chatgpt">ChatGPT plan (recommended)</option>
+                    <option value="api-key">OpenAI API (separately billed)</option>
+                  </select>
+                </label>
+                <label>Local safety budget
+                  <select name="frontierBudgetProfile">
+                    <option value="starter">Starter — 5 reviews/day</option>
+                    <option value="balanced">Balanced — 20 reviews/day</option>
+                    <option value="expanded">Expanded — 50 reviews/day</option>
+                    <option value="custom" disabled>Custom private policy — terminal managed</option>
+                  </select>
+                </label>
+              </div>
+              <div class="notice" id="frontier-auth-guidance"><strong>No credential field by design.</strong> ChatGPT sign-in is completed outside this page and uses eligible plan access. Pixel's own request and token limits still apply.</div>
+            </div>
+            <label class="switch-row" id="calendar-direct-row"><input name="calendarDirectEnabled" type="checkbox"><span><strong>Allow bounded private Calendar changes</strong><small>Only private creates without attendees and exact time-only reschedules; consequential changes still require approval.</small></span></label>
+          </fieldset>
+
+          <div class="form-actions">
+            <button class="button primary" type="submit">Save local settings</button>
+            <span id="form-message" role="status" aria-live="polite"></span>
+          </div>
+        </form>
+      </section>
+
+      <aside class="side-stack">
+        <section class="panel" aria-labelledby="actions-title">
+          <div class="panel-heading compact">
+            <div><p class="kicker">Reviewable actions</p><h2 id="actions-title">Prepare and check</h2></div>
+          </div>
+          <p>Each action shows its exact effect and receives a short-lived hash before it can run.</p>
+          <div class="action-list">
+            <button class="action-button" type="button" data-action="configure"><span><strong>Prepare configuration</strong><small>Generate local files; do not activate</small></span><b aria-hidden="true">→</b></button>
+            <button class="action-button" type="button" data-action="plan"><span><strong>Build review plan</strong><small>Validate and create an exact hash</small></span><b aria-hidden="true">→</b></button>
+            <button class="action-button" type="button" data-action="verify"><span><strong>Check health</strong><small>Read-only policy and service checks</small></span><b aria-hidden="true">→</b></button>
+          </div>
+          <div class="notice warning"><strong>Activation stays outside this page.</strong> Applying a plan, approving cloud egress or machine work, restoring backups, and handling recovery keys keep their separate operator boundary.</div>
+        </section>
+
+        <section class="panel deep-work-panel" aria-labelledby="deep-work-title">
+          <div class="panel-heading compact">
+            <div><p class="kicker">Long-running local work</p><h2 id="deep-work-title">Deep Work</h2></div>
+            <span class="status-chip neutral" id="deep-work-state">Checking</span>
+          </div>
+          <p id="deep-work-summary" role="status" aria-live="polite">Checking the content-free local work view.</p>
+          <div id="deep-work-authoring-home">
+          <section class="work-authoring" id="deep-work-authoring-panel" aria-labelledby="deep-work-authoring-title">
+            <div class="work-session-heading"><h3 id="deep-work-authoring-title">Draft a long-term goal</h3><span class="service-state neutral" id="deep-work-authoring-state">Not loaded</span></div>
+            <p id="deep-work-authoring-guidance">Open the exact private URL printed by <code>./pixel ui</code> to load locally admitted inputs and enabled work types.</p>
+            <form id="deep-work-draft-form">
+              <fieldset id="deep-work-draft-fields" disabled>
+                <div class="field-grid two">
+                  <label>Overall goal
+                    <textarea name="goalObjective" rows="3" maxlength="4000" required placeholder="Describe the outcome Pixel should work toward over time."></textarea>
+                  </label>
+                  <label>Highest data sensitivity
+                    <select name="goalClassification" required>
+                      <option value="internal" selected>Internal</option>
+                      <option value="public">Public</option>
+                      <option value="confidential">Confidential</option>
+                      <option value="restricted">Restricted</option>
+                    </select>
+                    <small>Public web research must be its own public goal with no local inputs.</small>
+                  </label>
+                </div>
+                <div class="notice" id="deep-work-handoff-note" hidden>
+                  <strong>Linked to the selected chat task.</strong> The approved draft will retain an immutable provenance receipt; it still cannot start work.
+                  <button class="button quiet compact-button" id="clear-deep-work-handoff" type="button">Clear chat link</button>
+                </div>
+                <div id="deep-work-milestone-list" class="milestone-list"></div>
+                <div class="form-actions">
+                  <button class="button quiet" id="add-deep-work-milestone" type="button">Add milestone</button>
+                  <button class="button primary" id="create-deep-work-draft" type="submit">Review inert draft creation</button>
+                </div>
+              </fieldset>
+            </form>
+            <p id="deep-work-draft-message" role="status" aria-live="polite"></p>
+            <div class="notice warning"><strong>Draft only.</strong> Goals can branch and converge through an acyclic dependency graph; Pixel still runs one bounded eligible milestone at a time and advances only after independent evidence. This form cannot choose host paths, admit files, compile or stage jobs, start or resume work, approve network access, or broaden policy. Exact draft creation follows its enforced permission mode: inline approval, bounded automatic execution, or denial.</div>
+          </section>
+          </div>
+          <section class="work-draft-review" aria-labelledby="deep-work-drafts-title">
+            <div class="work-session-heading"><h3 id="deep-work-drafts-title">Review created goals</h3><span class="service-state neutral" id="deep-work-drafts-state">Not loaded</span></div>
+            <p id="deep-work-drafts-message" role="status" aria-live="polite">Open the exact private URL printed by <code>./pixel ui</code> to inspect retained goal drafts.</p>
+            <div class="work-draft-list" id="deep-work-drafts"><p class="work-empty">No retained goal drafts are loaded.</p></div>
+            <div class="notice"><strong>Evidence before narration.</strong> Every card below is reconstructed from exact owner-private custody on this host. It shows what Pixel would attempt, how success is checked, and the maximum authority and resources involved. Separately enabled exact confirmations may prepare an inactive launch package, stage dormant ready custody, and render an inactive event-driven supervisor; they expose no host paths or input identities, cannot install or activate a service, and cannot start work, schedule execution, call a model, or contact a provider.</div>
+          </section>
+          <section class="work-goal-card" aria-labelledby="deep-work-goal-heading">
+            <div class="work-session-heading"><h3 id="deep-work-goal-heading">Long-term goal</h3><span class="service-state neutral" id="deep-work-goal-state">Not connected</span></div>
+            <progress id="deep-work-goal-progress" max="1" value="0" aria-label="Verified goal milestones" aria-valuetext="No goal progress is available"></progress>
+            <dl class="work-session-facts">
+              <div><dt>Milestones</dt><dd id="deep-work-goal-milestones">Not available</dd></div>
+              <div><dt>Durable checkpoints</dt><dd id="deep-work-goal-checkpoints">Not available</dd></div>
+              <div><dt>Next supervisory step</dt><dd id="deep-work-goal-next">Not available</dd></div>
+              <div><dt>Progress model</dt><dd id="deep-work-goal-model">Durable events, not a clock</dd></div>
+              <div><dt>Watchdog role</dt><dd id="deep-work-goal-watchdog">Liveness and interrupted-work recovery only</dd></div>
+              <div><dt>Aggregate runtime</dt><dd id="deep-work-goal-runtime">Not available</dd></div>
+              <div><dt>Model requests</dt><dd id="deep-work-goal-requests">Not available</dd></div>
+              <div><dt>Local token processing</dt><dd id="deep-work-goal-tokens">Not available</dd></div>
+              <div><dt>Recorded failures</dt><dd id="deep-work-goal-failures">Not available</dd></div>
+            </dl>
+            <details class="work-budget-details">
+              <summary>Remaining goal capacity</summary>
+              <p class="work-artifact-kinds">Calculated from settled milestones plus the latest observed usage of the active session.</p>
+              <dl class="work-session-facts">
+                <div><dt>Milestone starts</dt><dd id="deep-work-budget-jobs">Not available</dd></div>
+                <div><dt>Runtime</dt><dd id="deep-work-budget-runtime">Not available</dd></div>
+                <div><dt>Model requests</dt><dd id="deep-work-budget-requests">Not available</dd></div>
+                <div><dt>Input tokens</dt><dd id="deep-work-budget-input">Not available</dd></div>
+                <div><dt>Output tokens</dt><dd id="deep-work-budget-output">Not available</dd></div>
+                <div><dt>Network transfer</dt><dd id="deep-work-budget-network">Not available</dd></div>
+                <div><dt>Artifact storage</dt><dd id="deep-work-budget-artifacts">Not available</dd></div>
+                <div><dt>Failures</dt><dd id="deep-work-budget-failures">Not available</dd></div>
+              </dl>
+            </details>
+            <p class="work-artifact-kinds" id="deep-work-goal-continuity">Event-driven restart safety and independent verification are not connected.</p>
+            <div class="action-list deep-work-actions">
+              <button class="action-button danger" type="button" data-action="deep-work-pause" data-policy="deepWorkPause" disabled><span><strong>Pause future milestones</strong><small>The current bounded step may finish; only future scheduling is paused</small></span><b aria-hidden="true">→</b></button>
+              <button class="action-button" type="button" data-action="deep-work-resume" data-policy="deepWorkResume" disabled><span><strong>Resume the reviewed goal</strong><small>Starts no work immediately; the next event-driven cycle reuses only exact paused custody</small></span><b aria-hidden="true">→</b></button>
+              <button class="action-button danger" type="button" data-action="deep-work-cancel" data-policy="deepWorkCancel" disabled><span><strong>Cancel when safely settled</strong><small>Available only when no live worker is hidden and cleanup or pre-launch revocation is provable</small></span><b aria-hidden="true">→</b></button>
+            </div>
+          </section>
+          <dl class="attention-list">
+            <div><dt>Active sessions</dt><dd id="deep-work-active">0</dd></div>
+            <div><dt>Needs attention</dt><dd id="deep-work-attention">0</dd></div>
+            <div><dt>Produced artifacts</dt><dd id="deep-work-artifacts">0</dd></div>
+            <div><dt>Service concerns</dt><dd id="deep-work-service-concerns">0</dd></div>
+          </dl>
+          <h3 class="section-label">Service health</h3>
+          <ul class="service-list" id="deep-work-services"><li>The Deep Work controller is not connected.</li></ul>
+          <section class="knowledge-card" aria-labelledby="knowledge-title">
+            <div class="work-session-heading"><h3 id="knowledge-title">Private knowledge</h3><span class="service-state neutral" id="knowledge-state">Not connected</span></div>
+            <p id="knowledge-summary" role="status" aria-live="polite">The encrypted local knowledge vault is not connected.</p>
+            <dl class="work-session-facts">
+              <div><dt>Storage</dt><dd id="knowledge-storage">Encrypted locally; no provider fallback</dd></div>
+              <div><dt>Key custody</dt><dd id="knowledge-key">External runtime credential; never sent to a model</dd></div>
+              <div><dt>Add a source</dt><dd id="knowledge-consent">Review exact private bytes before one confirmed admission</dd></div>
+              <div><dt>Delete a source</dt><dd id="knowledge-deletion">Review one exact source; retain a content-free tombstone</dd></div>
+              <div><dt>Historical backup</dt><dd id="knowledge-backup">Reconcile later deletions before restored knowledge can activate</dd></div>
+            </dl>
+            <details>
+              <summary>Safe source lifecycle</summary>
+              <ol class="knowledge-steps">
+                <li>Keep the title and source in owner-private local files.</li>
+                <li>Run <code>./pixel work-knowledge-guide add</code> from the trusted terminal with the exact local vault, source, owner, classification, and retention options.</li>
+                <li>Inspect the plain-language review, then type its short exact <code>APPLY</code> phrase. Any source or vault drift cancels the confirmation.</li>
+                <li>Use <code>setup</code>, <code>find</code>, <code>remove</code>, <code>rotate</code>, or <code>reconcile</code> for the other guided operations. Rotation and historical reconciliation additionally require the controller to be offline.</li>
+              </ol>
+            </details>
+            <div class="notice warning" id="knowledge-boundary"><strong>Local and explicit.</strong> This page never receives source text, titles, file paths, vault keys, or deletion authority. It cannot retrieve, ingest, delete, rotate, or restore knowledge. The plain-language trusted-terminal guide keeps those sensitive operations outside the browser while preserving exact review and confirmation.</div>
+          </section>
+          <h3 class="section-label">Sessions</h3>
+          <div class="work-session-list" id="deep-work-sessions"><p class="work-empty">No Deep Work sessions are projected.</p></div>
+          <section class="work-semantic-review" aria-labelledby="deep-work-review-title">
+            <div class="work-session-heading"><h3 id="deep-work-review-title">Candidate and verifier review</h3><span class="service-state neutral" id="deep-work-review-state">Not loaded</span></div>
+            <p>When a Scout, Researcher, or Data Lab milestone is waiting for judgment, load its exact retained report, acceptance criteria, evidence excerpts, and independent verifier limits here.</p>
+            <button class="button quiet review-load" id="load-deep-work-review" type="button" disabled>Load private candidate review</button>
+            <p id="deep-work-review-message" role="status" aria-live="polite">Disabled in the private control policy.</p>
+            <div class="review-list" id="deep-work-review-content"></div>
+            <div class="notice warning"><strong>Private, read-only review.</strong> This token-gated loopback view can show owner-authorized work content and relative evidence references. It never shows host-absolute paths or credentials, sends nothing off this machine, and cannot accept, complete, publish, deploy, or widen the work. Acceptance remains an exact trusted-terminal action.</div>
+          </section>
+          <div class="notice" id="deep-work-boundary"><strong>Content-free with checkpoint-bound lifecycle controls.</strong> The status view has no job authority. Separately enabled pause, resume, and safe-cancel actions each require an exact fresh review and confirmation. They cannot stop or hide a live worker, expand access, reveal private evidence, or open artifacts.</div>
+        </section>
+
+        <section class="panel" aria-labelledby="maintenance-title">
+          <div class="panel-heading compact">
+            <div><p class="kicker">Safety and maintenance</p><h2 id="maintenance-title">Operator-enabled actions</h2></div>
+          </div>
+          <p>These actions are absent until enabled in the owner-only control policy. Sensitive configuration is never shown here.</p>
+          <div class="action-list">
+            <button class="action-button" type="button" data-action="update-check" data-policy="updateCheck" disabled><span><strong>Check for updates</strong><small>Public registry metadata only; no download or activation</small></span><b aria-hidden="true">→</b></button>
+            <button class="action-button" type="button" data-action="backup-create" data-policy="backupCreate" disabled><span><strong>Create encrypted backup</strong><small>Configured destination and age recipient stay private</small></span><b aria-hidden="true">→</b></button>
+          </div>
+          <label>Emergency pause reason
+            <input id="pause-reason" name="pauseReason" maxlength="200" placeholder="Owner-requested containment">
+            <small>The exact reason is bound into the preview. Do not enter a credential or private content.</small>
+          </label>
+          <div class="action-list">
+            <button class="action-button danger" type="button" data-action="operations-pause" data-policy="operationsPause" disabled><span><strong>Pause Operations</strong><small>Stops new machine execution; resume remains in the terminal</small></span><b aria-hidden="true">→</b></button>
+            <button class="action-button danger" type="button" data-action="frontier-pause" data-policy="frontierPause" disabled><span><strong>Pause Frontier</strong><small>Stops new provider egress; resume remains in the terminal</small></span><b aria-hidden="true">→</b></button>
+          </div>
+          <div class="notice"><strong>Fail-closed by default.</strong> Update checks, backups, and emergency pause are disabled until an operator installs a private policy. Resume, restore, approval, credential, and activation authority never enter the browser.</div>
+        </section>
+
+        <section class="panel" aria-labelledby="limbs-title">
+          <div class="panel-heading compact"><div><p class="kicker">Active boundaries</p><h2 id="limbs-title">Capability map</h2></div></div>
+          <ul class="boundary-list" id="limb-status"><li>Loading capability boundaries…</li></ul>
+        </section>
+
+        <section class="panel" aria-labelledby="budget-title">
+          <div class="panel-heading compact">
+            <div><p class="kicker">Local-first routing</p><h2 id="budget-title">Frontier budget</h2></div>
+          </div>
+          <p id="frontier-readiness">Frontier status is not available</p>
+          <p id="frontier-window">No active budget window</p>
+          <dl class="attention-list">
+            <div><dt>Provider route</dt><dd id="frontier-provider">Not available</dd></div>
+            <div><dt>Provider setup</dt><dd id="frontier-setup">Not available</dd></div>
+            <div><dt>Billing boundary</dt><dd id="frontier-billing">Not available</dd></div>
+            <div><dt>Budget evidence</dt><dd id="frontier-budget-source">Not available</dd></div>
+            <div><dt>Jobs</dt><dd id="frontier-job-budget">Not available</dd></div>
+            <div><dt>Input tokens</dt><dd id="frontier-input-budget">Not available</dd></div>
+            <div><dt>Output tokens</dt><dd id="frontier-output-budget">Not available</dd></div>
+            <div><dt>Failures</dt><dd id="frontier-failure-budget">Not available</dd></div>
+            <div><dt>Cost</dt><dd id="frontier-cost-budget">Not priced locally</dd></div>
+          </dl>
+          <div class="notice"><strong>Totals only.</strong> Prompts, job IDs, account details, and credentials never enter this status projection. Pixel budgets are an additional local stop; they do not replace ChatGPT workspace limits or API Platform billing controls. Approvals still require inspecting the exact private plan outside the browser.</div>
+        </section>
+
+        <section class="panel" aria-labelledby="budget-editor-title">
+          <div class="panel-heading compact">
+            <div><p class="kicker">Private custom policy</p><h2 id="budget-editor-title">Propose Frontier limits</h2></div>
+            <span class="status-chip neutral" id="budget-editor-state">Unavailable</span>
+          </div>
+          <p id="budget-editor-guidance">Enable Frontier with a private custom policy before drafting limits here.</p>
+          <form id="frontier-budget-form">
+            <fieldset id="frontier-budget-fields" disabled>
+              <div class="field-grid two">
+                <label>Budget window (minutes)
+                  <input name="windowMinutes" type="number" min="1" max="44640" step="1" value="1440" required>
+                </label>
+                <label>Maximum reviews
+                  <input name="maxJobs" type="number" min="1" max="1000" step="1" value="20" required>
+                </label>
+                <label>Maximum input tokens
+                  <input name="maxInputTokens" type="number" min="128" max="10000000" step="1" value="200000" required>
+                </label>
+                <label>Maximum output tokens
+                  <input name="maxOutputTokens" type="number" min="64" max="2000000" step="1" value="40000" required>
+                </label>
+                <label>Maximum failed reviews
+                  <input name="maxFailures" type="number" min="1" max="100" step="1" value="5" required>
+                </label>
+                <label id="frontier-cost-limit-row">Maximum estimated API cost (USD)
+                  <input name="maxEstimatedCostUsd" inputmode="decimal" maxlength="18" pattern="(?:0|[1-9][0-9]{0,3})(?:\.[0-9]{1,6})?" placeholder="10.00">
+                  <small>Required only for an API policy with verified private pricing.</small>
+                </label>
+              </div>
+              <button class="button quiet" id="create-budget-proposal" type="submit">Create exact private proposal</button>
+            </fieldset>
+          </form>
+          <div class="budget-proposal" id="frontier-budget-proposal" hidden>
+            <p id="budget-proposal-summary" role="status" aria-live="polite"></p>
+            <dl class="attention-list" id="budget-proposal-changes"></dl>
+            <p><strong>Continue in a trusted terminal before this proposal expires:</strong></p>
+            <pre><code id="budget-proposal-command"></code></pre>
+          </div>
+          <p id="budget-editor-message" role="status" aria-live="polite"></p>
+          <div class="notice warning"><strong>Draft only.</strong> The browser writes a short-lived, hash-bound proposal but cannot apply it. The exact terminal command edits only the owner-only source policy; configuration, plan review, activation, authentication, approval, and any provider call remain separate.</div>
+        </section>
+
+        <section class="panel" aria-labelledby="frontier-review-title">
+          <div class="panel-heading compact">
+            <div><p class="kicker">Exact local inspection</p><h2 id="frontier-review-title">Frontier reviews</h2></div>
+          </div>
+          <p>Load pending sanitized capsules only when you are ready to inspect them on this screen.</p>
+          <button class="button quiet review-load" id="load-frontier-reviews" type="button" disabled>Load pending reviews</button>
+          <p id="frontier-review-message" role="status" aria-live="polite">Disabled in the private control policy.</p>
+          <div class="review-list" id="frontier-review-list"></div>
+          <div class="notice warning"><strong>Review only.</strong> This page cannot approve or transmit a capsule. Close screen sharing and consider untrusted browser extensions before enabling this private view.</div>
+        </section>
+
+        <section class="panel" aria-labelledby="attention-title">
+          <div class="panel-heading compact"><div><p class="kicker">Local queue</p><h2 id="attention-title">Needs attention</h2></div></div>
+          <dl class="attention-list">
+            <div><dt>Source changes</dt><dd id="pending-source">—</dd></div>
+            <div><dt>Operations approvals</dt><dd id="pending-ops">—</dd></div>
+            <div><dt>Frontier approvals</dt><dd id="pending-frontier">—</dd></div>
+          </dl>
+        </section>
+
+        <section class="panel" aria-labelledby="doctor-title">
+          <div class="panel-heading compact">
+            <div><p class="kicker">Local fit check</p><h2 id="doctor-title">Pixel Doctor</h2></div>
+            <span class="status-chip neutral" id="doctor-state">Checking</span>
+          </div>
+          <p id="doctor-summary" role="status" aria-live="polite">Checking rounded local readiness.</p>
+          <dl class="attention-list">
+            <div><dt>Host contract</dt><dd id="doctor-host">&mdash;</dd></div>
+            <div><dt>Processor tier</dt><dd id="doctor-cpu">&mdash;</dd></div>
+            <div><dt>Memory tier</dt><dd id="doctor-memory">&mdash;</dd></div>
+            <div><dt>Free storage tier</dt><dd id="doctor-storage">&mdash;</dd></div>
+            <div><dt>Accelerator</dt><dd id="doctor-accelerator">&mdash;</dd></div>
+            <div><dt>Model starting point</dt><dd id="doctor-model">&mdash;</dd></div>
+            <div><dt>Context starting point</dt><dd id="doctor-context">&mdash;</dd></div>
+            <div><dt>Accelerator approach</dt><dd id="doctor-accelerator-guidance">&mdash;</dd></div>
+            <div><dt>Generated model</dt><dd id="doctor-configured-model">&mdash;</dd></div>
+            <div><dt>Configured context tier</dt><dd id="doctor-configured-context">&mdash;</dd></div>
+            <div><dt>Reasoning mode</dt><dd id="doctor-reasoning">&mdash;</dd></div>
+            <div><dt>Exact fit</dt><dd id="doctor-fit">&mdash;</dd></div>
+          </dl>
+          <ul class="boundary-list" id="doctor-checks"><li>Readiness checks have not loaded.</li></ul>
+          <div class="notice"><strong>Advisory and local only.</strong> Values are rounded to reduce fingerprinting. No hostname, serial, device name, model identifier, URL, path, process output, credential, network probe, or provider call enters this view. Exact model fit still depends on model size, quantization, context, and accelerator memory.</div>
+        </section>
+
+        <section class="panel" aria-labelledby="update-status-title">
+          <div class="panel-heading compact">
+            <div><p class="kicker">Release workspace</p><h2 id="update-status-title">Updates and migration</h2></div>
+            <span class="status-chip neutral" id="update-status-state">Checking</span>
+          </div>
+          <p id="update-status-summary" role="status" aria-live="polite">Checking private release-workspace shape.</p>
+          <dl class="attention-list">
+            <div><dt>Current release</dt><dd id="update-current-version">—</dd></div>
+            <div><dt>Candidate releases</dt><dd id="update-candidate-versions">—</dd></div>
+            <div><dt>Prepared workspaces</dt><dd id="update-prepared-count">—</dd></div>
+            <div><dt>Rehearsed workspaces</dt><dd id="update-rehearsed-count">—</dd></div>
+            <div><dt>Activation workspaces</dt><dd id="update-activation-count">—</dd></div>
+            <div><dt>Migration check</dt><dd id="update-migration-state">—</dd></div>
+            <div><dt>Next safe step</dt><dd id="update-next-action">—</dd></div>
+          </dl>
+          <div class="notice"><strong>Orientation, not authority.</strong> This view checks only private filesystem shape. It never claims a signature or migration has passed and never shows paths, hashes, signers, sources, or receipt content. Verification, activation, rollback, recovery, and cleanup stay in the trusted terminal.</div>
+        </section>
+
+        <section class="panel" aria-labelledby="recovery-guide-title">
+          <div class="panel-heading compact">
+            <div><p class="kicker">Disaster recovery</p><h2 id="recovery-guide-title">Backup, recovery, and resume</h2></div>
+            <span class="status-chip neutral" id="recovery-guide-state">Checking</span>
+          </div>
+          <p id="recovery-guide-summary" role="status" aria-live="polite">Checking content-free recovery receipts.</p>
+          <dl class="attention-list">
+            <div><dt>Backup policy</dt><dd id="recovery-backup-policy">—</dd></div>
+            <div><dt>Latest backup creation</dt><dd id="recovery-backup-last">—</dd></div>
+            <div><dt>Next backup step</dt><dd id="recovery-backup-next">—</dd></div>
+            <div><dt>Incident recovery</dt><dd id="recovery-incident-state">—</dd></div>
+            <div><dt>Operations resume</dt><dd id="recovery-operations-resume">—</dd></div>
+            <div><dt>Frontier resume</dt><dd id="recovery-frontier-resume">—</dd></div>
+          </dl>
+          <details>
+            <summary>Trusted terminal recovery sequence</summary>
+            <ol>
+              <li>Validate the exact backup: <code>./pixel restore /ABSOLUTE/BACKUP.tar.gz.age --identity /OFFLINE/AGE-IDENTITY --validate-only</code></li>
+              <li>Rehearse into a new empty root: <code>./pixel restore /ABSOLUTE/BACKUP.tar.gz.age --identity /OFFLINE/AGE-IDENTITY --rehearse /NEW/EMPTY/ROOT</code></li>
+              <li>Review the isolated result and automatic safety-backup destination before an exact <code>--replace --confirm</code> restore.</li>
+              <li>For containment, follow <code>INCIDENT-RESPONSE.md</code>, inspect broker authority state, and resume only with <code>./pixel ops-resume "reviewed reason" --confirm</code> or <code>./pixel frontier-resume "reviewed reason" --confirm</code>.</li>
+            </ol>
+          </details>
+          <div class="notice warning"><strong>Terminal-only safety boundary.</strong> This page never reads a backup, decryption identity, private incident evidence, or current broker pause state. It cannot rehearse, restore, recover, or resume anything. A recorded successful pause is only a reason to inspect terminal state—not proof that authority is still paused.</div>
+        </section>
+
+        <section class="panel" aria-labelledby="diagnostics-title">
+          <div class="panel-heading compact">
+            <div><p class="kicker">Private-safe orientation</p><h2 id="diagnostics-title">Diagnostics</h2></div>
+            <span class="status-chip neutral" id="diagnostic-state">Checking</span>
+          </div>
+          <p id="diagnostic-summary" role="status" aria-live="polite">Checking local incident receipts.</p>
+          <ul class="diagnostic-list" id="diagnostic-incidents"><li>No incidents recorded.</li></ul>
+          <div class="notice"><strong>Content-free guidance.</strong> This view never shows private logs, action identities, local paths, prompts, accounts, credentials, or evidence hashes. Inspect private evidence only from the trusted host.</div>
+        </section>
+
+        <section class="panel" aria-labelledby="activity-title">
+          <div class="panel-heading compact"><div><p class="kicker">Attribution</p><h2 id="activity-title">Recent local actions</h2></div></div>
+          <ul class="activity-list" id="recent-actions"><li>No control actions recorded yet.</li></ul>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <footer>
+    <p><strong>Pixel Local Control</strong> · Loopback only · No generic command surface · No browser-held credentials</p>
+  </footer>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

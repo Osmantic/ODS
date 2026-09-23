@@ -1,0 +1,1005 @@
+{
+  "schemaVersion": 1,
+  "generatedFrom": "pixel",
+  "commands": [
+    {
+      "command": "bootstrap",
+      "description": "Verify or install host dependencies (use --apply to install)",
+      "source": "scripts/bootstrap.sh",
+      "family": "install",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "configure",
+      "description": "Generate .env, gateway environment, and client workspace",
+      "source": "scripts/configure.mjs",
+      "family": "install",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "services",
+      "description": "Manage reference SearXNG/model services",
+      "source": "scripts/reference-services.sh",
+      "family": "install",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "plan",
+      "description": "Render, validate, and summarize the proposed deployment",
+      "source": "scripts/plan.sh",
+      "family": "install",
+      "effect": "inspection or verification; may emit bounded evidence",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "apply",
+      "description": "Apply the reviewed plan (requires --confirm)",
+      "source": "scripts/apply.sh",
+      "family": "install",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "verify",
+      "description": "Run post-deployment health and policy checks",
+      "source": "scripts/verify.sh",
+      "family": "install",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "doctor",
+      "description": "Show rounded local hardware and model-readiness guidance",
+      "source": "scripts/pixel-doctor.py",
+      "family": "install",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "authorize",
+      "description": "Authorize the configured Google Workspace account",
+      "source": "scripts/authorize-google.sh",
+      "family": "install",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "source-broker",
+      "description": "Install/refresh the isolated Source Broker (requires --confirm)",
+      "source": "scripts/install-source-broker.sh",
+      "family": "sources",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "source-show",
+      "description": "Snapshot and inspect one Calendar proposal outside Pixel",
+      "source": "scripts/show-source-action.sh",
+      "family": "sources",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "source-approve",
+      "description": "Apply one hash-bound Calendar proposal outside Pixel (requires --confirm)",
+      "source": "scripts/approve-source-action.sh",
+      "family": "sources",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "source-reconcile",
+      "description": "Reconcile an indeterminate Calendar create or update without retrying it",
+      "source": "scripts/reconcile-source-action.sh",
+      "family": "sources",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "github-action",
+      "description": "Apply or reconcile one exact allowlisted GitHub proposal",
+      "source": "deploy/github-broker/broker.py",
+      "family": "sources",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "action-journal",
+      "description": "Inspect or cancel one still-unsent external action journal",
+      "source": "deploy/action_journal/cli.py",
+      "family": "sources",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ops-broker",
+      "description": "Install the isolated Operations Broker (requires --confirm)",
+      "source": "scripts/install-ops-broker.sh",
+      "family": "operations",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "frontier-broker",
+      "description": "Install the isolated Frontier Broker (requires --confirm)",
+      "source": "scripts/install-frontier-broker.sh",
+      "family": "frontier",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "frontier-show",
+      "description": "Inspect one immutable sanitized Frontier payload and status",
+      "source": "scripts/show-frontier-job.sh",
+      "family": "frontier",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "frontier-approve",
+      "description": "Approve one exact Frontier payload hash (requires --confirm)",
+      "source": "scripts/approve-frontier-job.sh",
+      "family": "frontier",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "frontier-usage",
+      "description": "Show content-free rolling Frontier usage and routing totals",
+      "source": "scripts/show-frontier-usage.sh",
+      "family": "frontier",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "frontier-live-qualify",
+      "description": "Prepare and explicitly run one fixed synthetic provider check",
+      "source": "scripts/frontier-live-qualify.sh",
+      "family": "frontier",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "frontier-budget",
+      "description": "Draft or apply one exact private custom Frontier budget change",
+      "source": "scripts/frontier_budget.py",
+      "family": "frontier",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "promotion-status",
+      "description": "Build a content-free, fail-closed release-readiness index",
+      "source": "scripts/promotion_readiness.py",
+      "family": "release",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 pass; 3 valid non-pass/blocked; 2 contract or operational error"
+    },
+    {
+      "command": "outcome-task-admit",
+      "description": "Admit one exact private backend-neutral evaluation task",
+      "source": "scripts/portal_outcome_task.py",
+      "family": "release",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 admitted; 2 contract or operational error"
+    },
+    {
+      "command": "outcome-compare",
+      "description": "Compare exact private Pixel/Codex real-task outcome runs",
+      "source": "scripts/portal_outcome_evaluation.py",
+      "family": "release",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 pass; 3 valid non-pass/blocked; 2 contract or operational error"
+    },
+    {
+      "command": "outcome-campaign",
+      "description": "Require every baseline and declared fault outcome pair",
+      "source": "scripts/portal_outcome_campaign.py",
+      "family": "release",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 pass; 3 valid non-pass/blocked; 2 contract or operational error"
+    },
+    {
+      "command": "qualify-hosts",
+      "description": "Run the disposable Ubuntu/Debian real-systemd qualification matrix",
+      "source": "scripts/run-supported-host-systemd-matrix.sh",
+      "family": "release",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ui",
+      "description": "Start the loopback-only local onboarding and status page",
+      "source": "control/server.py",
+      "family": "install",
+      "effect": "inspection or verification; may emit bounded evidence",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "limb-kit",
+      "description": "Generate, sign, verify, and manage constrained customization packs",
+      "source": "scripts/limb-kit.py",
+      "family": "customization",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "client-kit",
+      "description": "Generate or validate a private golden-core/client-overlay contract",
+      "source": "scripts/client-kit.mjs",
+      "family": "customization",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-compile",
+      "description": "Compile one bounded Deep Work job into an exact plan and single-use lease",
+      "source": "deploy/work-broker/broker.mjs",
+      "family": "work",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-model-qualify",
+      "description": "Run the fixed synthetic benchmark against one exact loopback local model",
+      "source": "deploy/work-controller/model-qualification-runner.mjs",
+      "family": "work",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-model-policy",
+      "description": "Review, bind, or inspect one exact local-model qualification in a private policy",
+      "source": "deploy/work-controller/model-policy-cli.mjs",
+      "family": "work",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-model-backend",
+      "description": "Review/render an inert backend launch or inspect the actual private runtime",
+      "source": "deploy/work-controller/model-backend-cli.mjs",
+      "family": "work",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-input-pack",
+      "description": "Snapshot explicitly selected local directories into one inert private input bundle",
+      "source": "deploy/work-controller/input-pack-cli.mjs",
+      "family": "work",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-goal-draft",
+      "description": "Turn one guided private brief into reviewable bounded child-job proposals",
+      "source": "deploy/work-controller/goal-draft-cli.mjs",
+      "family": "work",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-goal-assemble",
+      "description": "Bind one reviewed draft to inert goal and controller bundles",
+      "source": "deploy/work-controller/goal-assemble-cli.mjs",
+      "family": "work",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-goal-launch",
+      "description": "Prepare, inspect, or stage one complete reviewed long-horizon goal",
+      "source": "deploy/work-controller/goal-launch-prepare-cli.mjs",
+      "family": "work",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-goal-prepare",
+      "description": "Derive an inert immutable long-horizon goal from exact child jobs",
+      "source": "deploy/work-controller/goal-prepare-cli.mjs",
+      "family": "work",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-goal-controller-prepare",
+      "description": "Validate and assemble one inert supervised goal controller",
+      "source": "deploy/work-controller/goal-controller-prepare-cli.mjs",
+      "family": "work",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-goal-stage",
+      "description": "Confirm and stage dormant child custody without starting any work",
+      "source": "deploy/work-controller/goal-stage-cli.mjs",
+      "family": "work",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-goal",
+      "description": "Control the disabled durable Deep Work goal ledger and scheduling state",
+      "source": "deploy/work-controller/goal-cli.mjs",
+      "family": "work",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-context",
+      "description": "Create, find, inspect, or fork private checkpoint-bound work sessions",
+      "source": "deploy/work-controller/context-session-cli.mjs",
+      "family": "work",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-context-guide",
+      "description": "Plain-language reviewed creation, forking, and removal of private work sessions",
+      "source": "deploy/work-controller/context-session-guide.mjs",
+      "family": "work",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-cycle",
+      "description": "Run one supervised, restartable local Deep Work reconciliation cycle",
+      "source": "deploy/work-controller/goal-cycle-cli.mjs",
+      "family": "work",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-continuous",
+      "description": "Run bounded continuous Deep Work while durable progress is occurring",
+      "source": "deploy/work-controller/goal-continuous-cli.mjs",
+      "family": "work",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-capability-pack",
+      "description": "Inspect, install, image-admit, health-probe, revoke, recover, or audit disabled Deep Work tool packs",
+      "source": "deploy/work-controller/capability-pack-cli.mjs",
+      "family": "work",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-knowledge",
+      "description": "Review and exactly apply disabled local knowledge-vault lifecycle operations",
+      "source": "deploy/work-controller/knowledge-vault-cli.mjs",
+      "family": "work",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-knowledge-guide",
+      "description": "Plain-language reviewed local knowledge setup, add, find, remove, rotation, and recovery",
+      "source": "deploy/work-controller/knowledge-vault-guide.mjs",
+      "family": "work",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-knowledge-restore",
+      "description": "Deep-audit and safely prepare one offline historical vault for restore",
+      "source": "deploy/work-controller/knowledge-vault-restore-cli.mjs",
+      "family": "work",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-accept",
+      "description": "Review or exactly accept one safe Scout/Researcher/Data Lab candidate",
+      "source": "deploy/work-controller/goal-accept-cli.mjs",
+      "family": "work",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-cancel",
+      "description": "Review and exactly cancel an inactive goal or one with terminal cleanup evidence",
+      "source": "deploy/work-controller/goal-cancel-cli.mjs",
+      "family": "work",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-pause",
+      "description": "Durably pause future supervised goal steps from one private controller config",
+      "source": "deploy/work-controller/goal-pause-cli.mjs",
+      "family": "work",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-resume",
+      "description": "Review and exactly resume one durably paused supervised goal",
+      "source": "deploy/work-controller/goal-resume-cli.mjs",
+      "family": "work",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-service",
+      "description": "Render, inspect, explicitly install, activate, or remove one goal service",
+      "source": "deploy/work-controller/goal-service-cli.mjs",
+      "family": "work",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-fleet",
+      "description": "Inspect, initialize, or run one durable fair turn across a Deep Work goal fleet",
+      "source": "deploy/work-controller/goal-fleet-cycle-cli.mjs",
+      "family": "work",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-fleet-cleanup",
+      "description": "Reconcile and release one crash-held fleet turn after exact cleanup",
+      "source": "deploy/work-controller/goal-fleet-cleanup-cli.mjs",
+      "family": "work",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-fleet-host-evidence",
+      "description": "Generate expiring live capacity evidence for one fleet",
+      "source": "deploy/work-controller/goal-fleet-host-evidence-cli.mjs",
+      "family": "work",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "work-fleet-service",
+      "description": "Render, inspect, install, activate, or remove one fleet-wide service",
+      "source": "deploy/work-controller/goal-fleet-service-cli.mjs",
+      "family": "work",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "frontier-authority",
+      "description": "Inspect, grant, revoke, and audit bounded Frontier authority",
+      "source": "scripts/frontier-authority.sh",
+      "family": "frontier",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ops-keygen",
+      "description": "Generate the isolated Operations SSH identity (requires --confirm)",
+      "source": "scripts/generate-ops-key.sh",
+      "family": "operations",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ops-target",
+      "description": "Enroll one verified dedicated runner target (requires --confirm)",
+      "source": "scripts/provision-ops-target.sh",
+      "family": "operations",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ops-target-refresh",
+      "description": "Refresh helpers on one enrolled runner without changing trust",
+      "source": "scripts/refresh-ops-target.sh",
+      "family": "operations",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ops-target-actions",
+      "description": "Install private action-pack configuration on one runner (requires --confirm)",
+      "source": "scripts/configure-ops-target-actions.sh",
+      "family": "operations",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ops-show",
+      "description": "Show one immutable Operations plan and current status",
+      "source": "scripts/show-ops-job.sh",
+      "family": "operations",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ops-approve",
+      "description": "Approve one exact Operations plan hash (requires --confirm)",
+      "source": "scripts/approve-ops-job.sh",
+      "family": "operations",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ops-authority",
+      "description": "Inspect, grant, revoke, and audit bounded authority",
+      "source": "scripts/ops-authority.sh",
+      "family": "operations",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ops-policy-migrate",
+      "description": "Convert one private v1 Operations policy to reviewable v2 output",
+      "source": "scripts/migrate-ops-policy.mjs",
+      "family": "operations",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-manifest-migrate",
+      "description": "Convert an unversioned release manifest to schema v1",
+      "source": "scripts/migrate-release-manifest.mjs",
+      "family": "release",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "upstream",
+      "description": "Check registries or prepare a verified OpenClaw candidate",
+      "source": "scripts/upstream.mjs",
+      "family": "release",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ops-policy-tighten",
+      "description": "Remove reviewed v1 compatibility grants from a v2 policy",
+      "source": "scripts/tighten-ops-policy.mjs",
+      "family": "operations",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ops-action-pack",
+      "description": "Configure one reusable action pack and private target mapping",
+      "source": "scripts/configure-ops-action-pack.mjs",
+      "family": "operations",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "extension-hash",
+      "description": "Compute a custom gateway extension's approved tree digest",
+      "source": "scripts/hash-gateway-extension.mjs",
+      "family": "customization",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ops-pause",
+      "description": "Emergency-pause Operations execution (requires --confirm)",
+      "source": "scripts/ops-authority.sh",
+      "family": "operations",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "ops-resume",
+      "description": "Resume Operations execution (requires --confirm)",
+      "source": "scripts/ops-authority.sh",
+      "family": "operations",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "frontier-pause",
+      "description": "Emergency-pause Frontier egress (requires --confirm)",
+      "source": "scripts/frontier-authority.sh",
+      "family": "frontier",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "frontier-resume",
+      "description": "Resume Frontier egress (requires --confirm)",
+      "source": "scripts/frontier-authority.sh",
+      "family": "frontier",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "limbs",
+      "description": "Show enabled/disabled modular capability limbs",
+      "source": "scripts/limbs.sh",
+      "family": "install",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "rollback",
+      "description": "Restore the preceding Pixel release/configuration",
+      "source": "scripts/rollback.sh",
+      "family": "install",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "backup",
+      "description": "Create an age-encrypted private-state backup and checksum",
+      "source": "scripts/backup-private-state.sh",
+      "family": "install",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "restore",
+      "description": "Validate, rehearse, or restore an age-encrypted private-state backup",
+      "source": "scripts/restore-private-state.sh",
+      "family": "install",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "rotate",
+      "description": "Rotate a credential transactionally (gateway is currently supported)",
+      "source": "scripts/rotate-gateway-token.sh",
+      "family": "install",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "package",
+      "description": "Build a versioned, checksummed handoff archive",
+      "source": "scripts/package-release.sh",
+      "family": "install",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-sign",
+      "description": "Sign one validated release-update envelope (requires --confirm)",
+      "source": "scripts/release-update.py",
+      "family": "release",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-qualification-sign",
+      "description": "Sign one Candidate envelope for qualification only",
+      "source": "scripts/release-update.py",
+      "family": "release",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-qualification-inspect",
+      "description": "Verify a Candidate qualification signature without update authority",
+      "source": "scripts/release-update.py",
+      "family": "release",
+      "effect": "inspection or verification; may emit bounded evidence",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-qualification-prepare",
+      "description": "Copy one exact Candidate bundle into a disposable qualification root only (requires --confirm)",
+      "source": "scripts/release-update.py",
+      "family": "release",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-qualification-rehearse",
+      "description": "Extract and parse one qualification-staged candidate without executing it (requires --confirm)",
+      "source": "scripts/release-update.py",
+      "family": "release",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-qualification-activation-preview",
+      "description": "Derive an exact qualification activation hash without executing candidate code",
+      "source": "scripts/release-update.py",
+      "family": "release",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-qualification-activation-claim",
+      "description": "Atomically claim one qualification-root-only activation without executing candidate code (requires --confirm)",
+      "source": "scripts/release-update.py",
+      "family": "release",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-qualification-host-run",
+      "description": "Atomically acquire one private host-run for an already-claimed qualification activation without executing candidate code (requires --confirm)",
+      "source": "scripts/release-update.py",
+      "family": "release",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-qualification-execution-claim",
+      "description": "Write the durable qualification execution claim before any candidate process may start (requires --confirm)",
+      "source": "scripts/release-update.py",
+      "family": "release",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-qualification-execution-result",
+      "description": "Record the immutable content-free result of one claimed qualification execution (requires --confirm)",
+      "source": "scripts/release-update.py",
+      "family": "release",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-qualification-execution-interruption-preview",
+      "description": "Inertly derive the exact terminal interruption hash for one post-start indeterminate qualification execution",
+      "source": "scripts/release-update.py",
+      "family": "release",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-qualification-execution-interruption-record",
+      "description": "Write the two private immutable terminal interruption artifacts for one post-start indeterminate qualification execution (requires --confirm plus the exact preview hash)",
+      "source": "scripts/release-update.py",
+      "family": "release",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "release-qualification-host-execute",
+      "description": "Run one bounded candidate probe under disposable-host custody and emit a content-free observation (requires --confirm)",
+      "source": "scripts/qualification-host-execution.py",
+      "family": "release",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "update-inspect",
+      "description": "Verify one signed release bundle without executing candidate code",
+      "source": "scripts/release-update.py",
+      "family": "release",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "update-prepare",
+      "description": "Copy one eligible verified bundle into private staging (requires --confirm)",
+      "source": "scripts/prepare-release-update.sh",
+      "family": "release",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "update-rehearse",
+      "description": "Safely extract and parse one staged candidate (requires --confirm)",
+      "source": "scripts/rehearse-release-update.sh",
+      "family": "release",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "update-activate",
+      "description": "Preview or transactionally activate one exact rehearsed candidate",
+      "source": "scripts/activate-release-update.sh",
+      "family": "release",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "update-reactivate",
+      "description": "Preview or re-activate one exact successfully rolled-back candidate",
+      "source": "scripts/reactivate-release-update.sh",
+      "family": "release",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "update-reactivation-rollback",
+      "description": "Preview or roll back one exact reactivated candidate",
+      "source": "scripts/rollback-reactivated-release-update.sh",
+      "family": "release",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "update-reactivation-recover",
+      "description": "Diagnose or finalize one interrupted reactivation receipt",
+      "source": "scripts/recover-reactivated-release-update.sh",
+      "family": "release",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "update-rollback",
+      "description": "Preview or restore one exact activated update (requires --confirm)",
+      "source": "scripts/rollback-release-update.sh",
+      "family": "release",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "update-recover",
+      "description": "Diagnose or finalize one interrupted update receipt (requires --confirm)",
+      "source": "scripts/recover-release-update.sh",
+      "family": "release",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "update-cleanup",
+      "description": "Reclaim one completed rolled-back update after preserving audit history",
+      "source": "scripts/cleanup-release-update.sh",
+      "family": "release",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "update-archive",
+      "description": "Preserve one terminal failed rollback outside bounded staging (requires --confirm)",
+      "source": "scripts/archive-release-update.sh",
+      "family": "release",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "update-reactivation-archive",
+      "description": "Preserve one terminal no-live-mutation reactivation failure outside bounded staging (requires --confirm)",
+      "source": "scripts/archive-reactivation-failure.sh",
+      "family": "release",
+      "effect": "state-changing or authority-affecting",
+      "confirmation": "required for the named mutation",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "migrate-legacy-clean",
+      "description": "Review, rehearse, and finalize a terminal-only clean 3.2.2 to 4.2 migration",
+      "source": "scripts/migrate-legacy-clean.py",
+      "family": "release",
+      "effect": "mode-dependent; includes non-mutating and state-writing modes",
+      "confirmation": "mode/subcommand-dependent; inspect help",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "test",
+      "description": "Run repository and clean-room workflow tests",
+      "source": "tests/run.sh",
+      "family": "install",
+      "effect": "writes generated, private, evidence, or bounded task state",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "pressure",
+      "description": "Repeatedly fuzz and exercise Operations safety/capability paths",
+      "source": "security-evals/operations-pressure/run-loop.sh",
+      "family": "install",
+      "effect": "may write state; inspect command help and owning guide",
+      "confirmation": "not declared by root help; this is not permission to mutate",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    },
+    {
+      "command": "help",
+      "description": "Show this help",
+      "source": "pixel#usage",
+      "family": "install",
+      "effect": "read-only or inert inspection",
+      "confirmation": "none for the named inspection/preview",
+      "exitSemantics": "0 completed; nonzero is command-specific refusal/error—read stderr or JSON before acting"
+    }
+  ]
+}

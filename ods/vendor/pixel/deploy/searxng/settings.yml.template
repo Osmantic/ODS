@@ -1,0 +1,42 @@
+use_default_settings: true
+
+general:
+  debug: false
+  enable_metrics: false
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "__PIXEL_SEARXNG_SECRET__"
+  method: "POST"
+
+search:
+  safe_search: 2
+  formats:
+    - html
+    - json
+
+ui:
+  static_use_hash: true
+  query_in_title: false
+
+preferences:
+  lock:
+    - method
+    - safesearch
+
+# Broaden fallback coverage without enabling privacy-hostile defaults. Operators should
+# still review upstream engine behavior before changing this list.
+engines:
+  - name: yep
+    disabled: false
+    timeout: 8.0
+  - name: wiby
+    disabled: false
+    timeout: 8.0
+  - name: presearch
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: google
+    disabled: true

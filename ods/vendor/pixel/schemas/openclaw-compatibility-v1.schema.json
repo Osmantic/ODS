@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/schemas/pixel/openclaw-compatibility-v1.schema.json",
+  "title": "Pixel and OpenClaw compatibility matrix v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "combinations"],
+  "properties": {
+    "$schema": { "const": "./schemas/openclaw-compatibility-v1.schema.json" },
+    "schemaVersion": { "const": 1 },
+    "combinations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pixel", "openclaw", "plugins", "status", "qualifiedAt", "evidence"],
+        "properties": {
+          "pixel": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+          "openclaw": { "type": "string", "pattern": "^[0-9]{4}\\.[0-9]+\\.[0-9]+(-[0-9]+)?$" },
+          "plugins": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string" } },
+          "status": { "enum": ["supported", "candidate", "blocked", "retired"] },
+          "qualifiedAt": { "type": "string", "format": "date" },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sourceCommit", "liveAudit"],
+            "properties": {
+              "sourceCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "The exact functional-source commit that passed qualification before the evidence-only release commit." },
+              "liveAudit": { "type": "string", "minLength": 1 },
+              "attestationSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

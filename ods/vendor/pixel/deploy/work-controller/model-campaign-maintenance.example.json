@@ -1,0 +1,38 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-model-campaign-maintenance-v1.schema.json",
+  "schemaVersion": 1,
+  "pythonPath": "/usr/bin/python3.11",
+  "dockerPath": "/usr/bin/docker",
+  "sourceRoot": "/opt/pixel-candidate",
+  "sourceCommit": "1111111111111111111111111111111111111111",
+  "candidateSourceArchiveSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "materializationRoot": "/var/lib/pixel-outcome/private/materializations/builder-matched",
+  "pairConfigurationPath": "/var/lib/pixel-outcome/private/configs/pair-system.json",
+  "outputRoot": "/var/lib/pixel-outcome/private/campaigns/builder-matched-cold",
+  "campaign": {
+    "maxPairs": 4,
+    "partition": "tuning",
+    "freezeTuning": false,
+    "runtimeCondition": "cold-first-request",
+    "timeoutSeconds": 86400
+  },
+  "custody": {
+    "kind": "advisory-flock",
+    "lockPath": "/run/user/1000/pixel-model-guardian.lock",
+    "acquireTimeoutSeconds": 30
+  },
+  "production": {
+    "containerName": "deepseek-v4-flash-0731",
+    "containerId": "3333333333333333333333333333333333333333333333333333333333333333",
+    "imageDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "expectedStartedAt": "2026-08-13T12:00:00.123456789Z",
+    "expectedRestartCount": 0,
+    "stopTimeoutSeconds": 120,
+    "restoreTimeoutSeconds": 3600,
+    "probeIntervalMilliseconds": 1000,
+    "readinessOrigin": "http://127.0.0.1:8000",
+    "readinessModelId": "DeepSeek-V4-Flash-0731",
+    "maxResponseBytes": 1048576
+  },
+  "boundary": "Owner-private exact maintenance binding for one production container and one bounded resumable local DSV4 comparison campaign batch. Configuration grants no stop, start, task, model, tool, credential, external network, external effect, deployment, completion, publication, acceptance, or promotion authority."
+}

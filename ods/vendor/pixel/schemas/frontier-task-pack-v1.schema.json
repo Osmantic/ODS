@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/frontier-task-pack-v1.schema.json",
+  "title": "Pixel restrictive Frontier task pack v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "kind", "id", "version", "name", "description", "mode", "taskClass", "localTools", "policy"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/frontier-task-pack-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "kind": {"const": "frontier-task-pack"},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+    "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 100},
+    "description": {"type": "string", "minLength": 1, "maxLength": 500},
+    "mode": {"const": "restrict"},
+    "taskClass": {"enum": ["plan_review", "failure_triage"]},
+    "localTools": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "pattern": "^pixel_[a-z0-9_]{2,63}$"}},
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "allowedClassifications", "maxInputTokens", "maxOutputTokens", "rehydrate"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "allowedClassifications": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": {"enum": ["public", "internal-derived", "confidential"]}},
+        "maxInputTokens": {"type": "integer", "minimum": 128, "maximum": 262144},
+        "maxOutputTokens": {"type": "integer", "minimum": 64, "maximum": 8192},
+        "rehydrate": {"type": "boolean"}
+      }
+    }
+  }
+}

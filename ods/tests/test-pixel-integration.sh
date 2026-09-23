@@ -320,36 +320,11 @@ else
     fail "Duplicate VERSION_ID key should be rejected"
 fi
 
-# ---- ods_pixel_license_accepted tests ----------------------------------------
-
-section "ods_pixel_license_accepted"
-
-export PIXEL_LICENSE_ACCEPTED="true"
-if ods_pixel_license_accepted; then
-    pass 'PIXEL_LICENSE_ACCEPTED="true" is accepted'
-else
-    fail 'PIXEL_LICENSE_ACCEPTED="true" should be accepted'
-fi
-
-for invalid_license in True yes 1 ""; do
-    PIXEL_LICENSE_ACCEPTED="$invalid_license"
-    if ! ods_pixel_license_accepted; then
-        pass "PIXEL_LICENSE_ACCEPTED='$invalid_license' is rejected"
-    else
-        fail "PIXEL_LICENSE_ACCEPTED='$invalid_license' should be rejected"
-    fi
-done
-unset invalid_license PIXEL_LICENSE_ACCEPTED
-if ! ods_pixel_license_accepted; then
-    pass 'Unset PIXEL_LICENSE_ACCEPTED is rejected'
-else
-    fail 'Unset PIXEL_LICENSE_ACCEPTED should be rejected'
-fi
-
 # ---- ods_pixel_resolve_enablement tests --------------------------------------
 
 section "ods_pixel_resolve_enablement"
 
+# false -> hermes
 result="$(ods_pixel_resolve_enablement false)"
 if [[ "$result" == "hermes" ]]; then
     pass "enablement false -> hermes"
@@ -357,50 +332,54 @@ else
     fail "enablement false -> expected 'hermes', got '$result'"
 fi
 
+# Qualified hosts select Pixel without a separate acknowledgement flag.
 QUALIFIED_FIXTURE="$TMPDIR_TEST/ubuntu2404"
-if ! result="$(ods_pixel_resolve_enablement true "$QUALIFIED_FIXTURE/os-release" "$QUALIFIED_FIXTURE/proc1" "$QUALIFIED_FIXTURE/procver" 2>/dev/null)"; then
-    pass "enablement true without license fails"
+if result="$(ods_pixel_resolve_enablement true "$QUALIFIED_FIXTURE/os-release" "$QUALIFIED_FIXTURE/proc1" "$QUALIFIED_FIXTURE/procver" 2>/dev/null)" && [[ "$result" == pixel ]]; then
+    pass "enablement true on qualified host selects Pixel"
 else
-    fail "enablement true without license should fail"
+    fail "enablement true on qualified host should select Pixel"
 fi
 
+# Auto also selects Pixel on a qualified host.
 result="$(ods_pixel_resolve_enablement auto "$QUALIFIED_FIXTURE/os-release" "$QUALIFIED_FIXTURE/proc1" "$QUALIFIED_FIXTURE/procver")"
-if [[ "$result" == "hermes" ]]; then
-    pass "enablement auto without license -> hermes"
+if [[ "$result" == "pixel" ]]; then
+    pass "enablement auto on qualified host -> pixel"
 else
-    fail "enablement auto without license -> expected 'hermes', got '$result'"
+    fail "enablement auto on qualified host -> expected 'pixel', got '$result'"
 fi
 
-PIXEL_LICENSE_ACCEPTED="true"
+# An unqualified host still fails explicit Pixel mode.
 F_FIXTURE="$TMPDIR_TEST/fedora-en"
 mkdir -p "$F_FIXTURE"
 create_os_release "$F_FIXTURE/os-release" 'ID=fedora' 'VERSION_ID="39"'
 create_proc1_comm "$F_FIXTURE/proc1" "systemd"
 create_proc_version "$F_FIXTURE/procver" "Linux version 6.8.0"
 if ! ods_pixel_resolve_enablement true "$F_FIXTURE/os-release" "$F_FIXTURE/proc1" "$F_FIXTURE/procver" 2>/dev/null; then
-    pass "enablement true with license but unqualified host fails"
+    pass "enablement true on unqualified host fails"
 else
-    fail "enablement true with license but unqualified host should fail"
+    fail "enablement true on unqualified host should fail"
 fi
 
+# Auto falls back on an unqualified host.
 result="$(ods_pixel_resolve_enablement auto "$F_FIXTURE/os-release" "$F_FIXTURE/proc1" "$F_FIXTURE/procver")"
 if [[ "$result" == "hermes" ]]; then
-    pass "enablement auto with license but unqualified host -> hermes"
+    pass "enablement auto on unqualified host -> hermes"
 else
-    fail "enablement auto with license but unqualified host -> expected 'hermes', got '$result'"
+    fail "enablement auto on unqualified host -> expected 'hermes', got '$result'"
 fi
 
+# Explicit true/auto succeed when host qualification passes.
 result="$(ods_pixel_resolve_enablement true "$QUALIFIED_FIXTURE/os-release" "$QUALIFIED_FIXTURE/proc1" "$QUALIFIED_FIXTURE/procver")"
 if [[ "$result" == "pixel" ]]; then
-    pass "enablement true with qualified host and license -> pixel"
+    pass "enablement true with qualified host -> pixel"
 else
-    fail "enablement true with qualified host and license should select pixel"
+    fail "enablement true with qualified host should select pixel"
 fi
 result="$(ods_pixel_resolve_enablement auto "$QUALIFIED_FIXTURE/os-release" "$QUALIFIED_FIXTURE/proc1" "$QUALIFIED_FIXTURE/procver")"
 if [[ "$result" == "pixel" ]]; then
-    pass "enablement auto with qualified host and license -> pixel"
+    pass "enablement auto with qualified host -> pixel"
 else
-    fail "enablement auto with qualified host and license should select pixel"
+    fail "enablement auto with qualified host should select pixel"
 fi
 
 # Invalid value
@@ -446,6 +425,23 @@ fi
 # ---- ods_pixel_validate_source tests -----------------------------------------
 
 section "ods_pixel_validate_source"
+
+# Public installations use the local bundle without GitHub credentials.
+INSTALL_DIR="$SCRIPT_DIR/.."
+PIXEL_SOURCE_URL=bundled
+PIXEL_SOURCE_REF="$ODS_PIXEL_BUNDLED_REF"
+if ods_pixel_validate_source; then
+    pass "ODS-bundled Pixel source and exact ref accepted"
+else
+    fail "ODS-bundled Pixel source should be accepted"
+fi
+PIXEL_SOURCE_REF="b33730436baf5d98bf58f7d57c090318fe19f433"
+if ! ods_pixel_validate_source 2>/dev/null; then
+    pass "Bundled Pixel source refuses the former private-repo ref"
+else
+    fail "Bundled Pixel source should refuse the former private-repo ref"
+fi
+unset INSTALL_DIR PIXEL_SOURCE_URL PIXEL_SOURCE_REF
 
 # Valid GitHub URL + valid ref
 PIXEL_SOURCE_URL="https://github.com/Osmantic/Pixel.git"
@@ -708,7 +704,6 @@ import json, sys
 properties = json.load(open(sys.argv[1], encoding="utf-8"))["properties"]
 expected = {
     "ENABLE_PIXEL", "PIXEL_AGENT_MODE",
-    "PIXEL_LICENSE_ACCEPTED",
     "PIXEL_SOURCE_URL", "PIXEL_SOURCE_REF", "PIXEL_SOURCE_DIR",
     "PIXEL_OPENWEBUI_KEY", "PIXEL_INGRESS_RUNTIME_DIR",
     "PIXEL_PREVIEW_RUNTIME_DIR", "PIXEL_INGRESS_GID",
@@ -719,8 +714,7 @@ assert properties["PIXEL_OPENWEBUI_KEY"]["minLength"] == 64
 assert properties["PIXEL_OPENWEBUI_KEY"]["maxLength"] == 64
 assert properties["PIXEL_PREVIEW_RUNTIME_DIR"]["enum"] == ["/run/ods-pixel-preview"]
 assert properties["PIXEL_INGRESS_GID"]["minimum"] == 1
-assert properties["PIXEL_LICENSE_ACCEPTED"]["type"] == "boolean"
-assert properties["PIXEL_LICENSE_ACCEPTED"]["default"] is False
+assert "PIXEL_LICENSE_ACCEPTED" not in properties
 PY
 then
     pass "Pixel generated environment keys are defined by the strict schema"

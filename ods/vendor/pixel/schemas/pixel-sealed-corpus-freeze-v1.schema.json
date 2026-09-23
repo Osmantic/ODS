@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/pixel-sealed-corpus-freeze-v1.schema.json",
+  "title": "Pixel content-free immutable pre-reveal tuning freeze v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "campaignId", "materializationSha256", "pairConfigSha256", "preflightSha256", "candidateSourceArchiveSha256", "architecture", "modelContractSha256", "inferenceContractSha256", "verifierImageDigest", "profile", "evaluationRegime", "runtimeCondition", "candidate", "candidateSha256", "sealedCommitmentSha256", "tuningTaskCount", "tuningCorpusSha256", "tuningSourceTaskSetSha256", "tuningMaterializedTaskSetSha256", "tuningEvidenceSetSha256", "tuningTasks", "heldOutTaskSetSha256", "heldOutTaskCount", "heldOutTotalBytes", "revealManifestSha256", "heldOutTaskBytesOpened", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/pixel-sealed-corpus-freeze-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-sealed-corpus-tuning-freeze"},
+    "campaignId": {"type": "string", "minLength": 1},
+    "materializationSha256": {"$ref": "#/$defs/hash"},
+    "pairConfigSha256": {"$ref": "#/$defs/hash"},
+    "preflightSha256": {"$ref": "#/$defs/hash"},
+    "candidateSourceArchiveSha256": {"$ref": "#/$defs/hash"},
+    "architecture": {"enum": ["amd64", "arm64"]},
+    "modelContractSha256": {"$ref": "#/$defs/hash"},
+    "inferenceContractSha256": {"$ref": "#/$defs/hash"},
+    "verifierImageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "profile": {"enum": ["assistant", "builder", "controller", "researcher"]},
+    "evaluationRegime": {"enum": ["matched-budget", "maximum-quality"]},
+    "runtimeCondition": {"enum": ["cold-first-request", "warm-neutral-probe"]},
+    "candidate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidateId", "candidateSourceArchiveSha256", "materializationSha256", "modelContractSha256", "inferenceContractSha256", "pairConfigSha256", "preflightSha256", "verifierImageDigest", "architecture", "profile", "evaluationRegime", "runtimeCondition"],
+      "properties": {
+        "candidateId": {"type": "string", "minLength": 9},
+        "candidateSourceArchiveSha256": {"$ref": "#/$defs/hash"},
+        "materializationSha256": {"$ref": "#/$defs/hash"},
+        "modelContractSha256": {"$ref": "#/$defs/hash"},
+        "inferenceContractSha256": {"$ref": "#/$defs/hash"},
+        "pairConfigSha256": {"$ref": "#/$defs/hash"},
+        "preflightSha256": {"$ref": "#/$defs/hash"},
+        "verifierImageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "architecture": {"enum": ["amd64", "arm64"]},
+        "profile": {"enum": ["assistant", "builder", "controller", "researcher"]},
+        "evaluationRegime": {"enum": ["matched-budget", "maximum-quality"]},
+        "runtimeCondition": {"enum": ["cold-first-request", "warm-neutral-probe"]}
+      }
+    },
+    "candidateSha256": {"$ref": "#/$defs/hash"},
+    "sealedCommitmentSha256": {"$ref": "#/$defs/hash"},
+    "tuningTaskCount": {"type": "integer", "minimum": 1, "maximum": 500},
+    "tuningCorpusSha256": {"$ref": "#/$defs/hash"},
+    "tuningSourceTaskSetSha256": {"$ref": "#/$defs/hash"},
+    "tuningMaterializedTaskSetSha256": {"$ref": "#/$defs/hash"},
+    "tuningEvidenceSetSha256": {"$ref": "#/$defs/hash"},
+    "tuningTasks": {
+      "type": "array", "minItems": 1, "maxItems": 500,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["batteryTaskId", "taskSha256", "attempt", "comparisonSha256", "status", "classification"],
+        "properties": {
+          "batteryTaskId": {"type": "string", "pattern": "^(?:battery|stress|trial|heldout)-[a-z0-9][a-z0-9-]{2,62}$"},
+          "taskSha256": {"$ref": "#/$defs/hash"},
+          "attempt": {"type": "integer", "minimum": 1, "maximum": 999},
+          "comparisonSha256": {"$ref": "#/$defs/hash"},
+          "status": {"const": "pass"},
+          "classification": {"enum": ["parity", "pixel-regression", "capability-blocking", "reference-failure", "unexplained-delta", "safety-failure"]}
+        }
+      }
+    },
+    "heldOutTaskSetSha256": {"$ref": "#/$defs/hash"},
+    "heldOutTaskCount": {"type": "integer", "minimum": 1, "maximum": 500},
+    "heldOutTotalBytes": {"type": "integer", "minimum": 1, "maximum": 1073741824},
+    "revealManifestSha256": {"$ref": "#/$defs/hash"},
+    "heldOutTaskBytesOpened": {"const": false},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["execution", "retuning", "heldOutDisclosure", "heldOutMaterialization", "completion", "promotion"],
+      "properties": {
+        "execution": {"const": false}, "retuning": {"const": false}, "heldOutDisclosure": {"const": false},
+        "heldOutMaterialization": {"const": true},
+        "completion": {"const": false}, "promotion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Content-free immutable pre-reveal tuning freeze only. It binds the exact content-free commitment, the exact campaign/candidate/source/model/inference/pair/preflight identity, and every completed tuning result before any held-out task byte is disclosed. It authorizes at most one local owner-private held-out materialization for this exact campaign/candidate and grants no execution, retuning, model, provider, credential, network, external effect, held-out disclosure, acceptance, publication, deployment, or promotion authority."}
+  },
+  "$defs": {"hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

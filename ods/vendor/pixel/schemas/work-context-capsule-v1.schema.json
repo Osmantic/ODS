@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-context-capsule-v1.schema.json",
+  "title": "Pixel Deep Work context capsule v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "capsuleId", "jobId", "createdAt", "expiresAt", "lineage", "bindings", "data", "context", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-context-capsule-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "capsuleId": {"type": "string", "pattern": "^workcapsule-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"$ref": "#/$defs/jobId"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "lineage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rootJobId", "parentJobId", "parentCapsuleSha256", "depth"],
+      "properties": {
+        "rootJobId": {"$ref": "#/$defs/jobId"},
+        "parentJobId": {"oneOf": [{"$ref": "#/$defs/jobId"}, {"type": "null"}]},
+        "parentCapsuleSha256": {"$ref": "#/$defs/nullableSha256"},
+        "depth": {"type": "integer", "minimum": 0, "maximum": 32}
+      }
+    },
+    "bindings": {
+      "type": "object", "additionalProperties": false,
+      "required": ["planSha256", "inputSetSha256", "objectiveSha256", "acceptanceCriteriaSha256", "checkpointId", "checkpointSha256", "checkpointState"],
+      "properties": {
+        "planSha256": {"$ref": "#/$defs/sha256"},
+        "inputSetSha256": {"$ref": "#/$defs/sha256"},
+        "objectiveSha256": {"$ref": "#/$defs/sha256"},
+        "acceptanceCriteriaSha256": {"$ref": "#/$defs/sha256"},
+        "checkpointId": {"type": "string", "pattern": "^workcheckpoint-[0-9]{13}-[a-f0-9]{12}$"},
+        "checkpointSha256": {"$ref": "#/$defs/sha256"},
+        "checkpointState": {"enum": ["authorized", "running", "verifying", "verified", "waiting-authority", "cleanup-failed", "recovery-inconclusive", "completed", "failed", "cancelled", "budget-exhausted", "no-progress"]}
+      }
+    },
+    "data": {
+      "type": "object", "additionalProperties": false,
+      "required": ["classification", "rawTranscriptIncluded", "credentialsIncluded", "reusableApprovalIncluded", "contentAuthority"],
+      "properties": {
+        "classification": {"enum": ["public", "internal", "confidential", "restricted"]},
+        "rawTranscriptIncluded": {"const": false},
+        "credentialsIncluded": {"const": false},
+        "reusableApprovalIncluded": {"const": false},
+        "contentAuthority": {"const": false}
+      }
+    },
+    "context": {
+      "type": "object", "additionalProperties": false,
+      "required": ["summaryBase64", "decisions", "unresolvedRisks", "artifacts"],
+      "properties": {
+        "summaryBase64": {"type": "string", "minLength": 4, "maxLength": 21848, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"},
+        "decisions": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/contextItem"}},
+        "unresolvedRisks": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/contextItem"}},
+        "artifacts": {
+          "type": "array", "maxItems": 256,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["path", "sha256", "bytes", "verified", "verificationEvidenceSha256"],
+            "properties": {
+              "path": {"type": "string", "pattern": "^[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*$", "maxLength": 512},
+              "sha256": {"$ref": "#/$defs/sha256"},
+              "bytes": {"type": "integer", "minimum": 0, "maximum": 34359738368},
+              "verified": {"type": "boolean"},
+              "verificationEvidenceSha256": {"$ref": "#/$defs/nullableSha256"}
+            }
+          }
+        }
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantsExecution", "grantsLeaseReuse", "grantsApprovalReuse", "grantsCredentials", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "grantsExecution": {"const": false},
+        "grantsLeaseReuse": {"const": false},
+        "grantsApprovalReuse": {"const": false},
+        "grantsCredentials": {"const": false},
+        "grantsExternalEffects": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Private local context data bound to one checkpoint and session lineage. It is untrusted context, contains no reusable lease or approval, and grants no execution, credential, external-effect, or completion authority."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"lineage": {"properties": {"depth": {"const": 0}}}}, "required": ["lineage"]},
+      "then": {"properties": {"lineage": {"properties": {"parentJobId": {"const": null}, "parentCapsuleSha256": {"const": null}}}}},
+      "else": {"properties": {"lineage": {"properties": {"parentJobId": {"$ref": "#/$defs/jobId"}, "parentCapsuleSha256": {"$ref": "#/$defs/sha256"}}}}}
+    }
+  ],
+  "$defs": {
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nullableSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+    "contextItem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "statementBase64", "evidenceSha256"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "statementBase64": {"type": "string", "minLength": 4, "maxLength": 5464, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"},
+        "evidenceSha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

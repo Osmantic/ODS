@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "enabled": false,
+  "allowedRepositories": ["OWNER/REPOSITORY"],
+  "allowedOperations": ["create-issue", "create-pull-request", "comment"],
+  "maxBodyBytes": 32768,
+  "maxReconcilePages": 5,
+  "apiVersion": "2026-03-10",
+  "boundary": "Owner-private allowlist only. Policy grants no credentials, proposal approval, retries, merges, pushes, branch mutation, or repositories not named here."
+}

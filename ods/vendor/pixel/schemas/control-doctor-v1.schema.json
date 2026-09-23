@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-doctor-v1.schema.json",
+  "title": "Pixel content-free local doctor v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAt", "summary", "host", "recommendation", "model", "checks", "privacy", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "summary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "attentionChecks", "unavailableChecks", "supportedHost"],
+      "properties": {
+        "state": {"enum": ["ready", "attention", "unavailable"]},
+        "attentionChecks": {"type": "integer", "minimum": 0, "maximum": 6},
+        "unavailableChecks": {"type": "integer", "minimum": 0, "maximum": 6},
+        "supportedHost": {"oneOf": [{"type": "boolean"}, {"type": "null"}]}
+      },
+      "allOf": [
+        {"if": {"properties": {"state": {"const": "ready"}}, "required": ["state"]}, "then": {"properties": {"attentionChecks": {"const": 0}, "unavailableChecks": {"const": 0}}}},
+        {"if": {"properties": {"state": {"const": "attention"}}, "required": ["state"]}, "then": {"properties": {"attentionChecks": {"type": "integer", "minimum": 1}, "unavailableChecks": {"const": 0}}}},
+        {"if": {"properties": {"state": {"const": "unavailable"}}, "required": ["state"]}, "then": {"properties": {"unavailableChecks": {"type": "integer", "minimum": 1}}}}
+      ]
+    },
+    "host": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contract", "family", "cpuCapacity", "memoryCapacityGiB", "storageFreeCapacityGiB", "accelerator", "containerRuntime"],
+      "properties": {
+        "contract": {"enum": ["supported", "unsupported", "unavailable"]},
+        "family": {"enum": ["ubuntu", "debian", "linux", "windows", "macos", "other"]},
+        "cpuCapacity": {"enum": ["unavailable", "1-3", "4-7", "8-15", "16-plus"]},
+        "memoryCapacityGiB": {"enum": ["unavailable", "under-8", "8-15", "16-31", "32-63", "64-plus"]},
+        "storageFreeCapacityGiB": {"enum": ["unavailable", "under-10", "10-24", "25-49", "50-99", "100-plus"]},
+        "accelerator": {"enum": ["unavailable", "not-detected", "nvidia", "amd", "intel", "multiple"]},
+        "containerRuntime": {"enum": ["unavailable", "not-detected", "socket-detected"]}
+      }
+    },
+    "recommendation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["localModelClass", "contextGuidance", "acceleratorGuidance", "fitIsGuaranteed"],
+      "properties": {
+        "localModelClass": {"enum": ["unavailable", "remote-or-compact", "compact-local", "balanced-local", "larger-local", "large-memory-local"]},
+        "contextGuidance": {"enum": ["measure-first", "start-small", "moderate", "expanded-after-measurement"]},
+        "acceleratorGuidance": {"enum": ["cpu-or-remote-first", "verify-memory-before-use"]},
+        "fitIsGuaranteed": {"const": false}
+      }
+    },
+    "model": {
+      "type": "object", "additionalProperties": false,
+      "required": ["configured", "discoveryState", "contextCapacity", "reasoningConfigured", "fitAssessment"],
+      "properties": {
+        "configured": {"type": "boolean"},
+        "discoveryState": {"enum": ["configured", "not-configured", "unavailable"]},
+        "contextCapacity": {"enum": ["not-configured", "unavailable", "4k-16k", "16k-64k", "64k-256k", "256k-plus"]},
+        "reasoningConfigured": {"oneOf": [{"type": "boolean"}, {"type": "null"}]},
+        "fitAssessment": {"enum": ["not-configured", "manual-validation-required", "unavailable"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"discoveryState": {"const": "not-configured"}}, "required": ["discoveryState"]}, "then": {"properties": {"configured": {"const": false}, "contextCapacity": {"const": "not-configured"}, "reasoningConfigured": {"const": null}, "fitAssessment": {"const": "not-configured"}}}},
+        {"if": {"properties": {"discoveryState": {"const": "configured"}}, "required": ["discoveryState"]}, "then": {"properties": {"configured": {"const": true}, "contextCapacity": {"enum": ["4k-16k", "16k-64k", "64k-256k", "256k-plus"]}, "reasoningConfigured": {"type": "boolean"}, "fitAssessment": {"const": "manual-validation-required"}}}},
+        {"if": {"properties": {"discoveryState": {"const": "unavailable"}}, "required": ["discoveryState"]}, "then": {"properties": {"configured": {"const": false}, "contextCapacity": {"const": "unavailable"}, "reasoningConfigured": {"const": null}, "fitAssessment": {"const": "unavailable"}}}}
+      ]
+    },
+    "checks": {
+      "type": "array", "minItems": 6, "maxItems": 6,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "state", "guidanceCode"],
+        "properties": {
+          "id": {"enum": ["supported-host", "python-runtime", "memory-headroom", "storage-headroom", "reference-container-runtime", "generated-model-configuration"]},
+          "state": {"enum": ["pass", "review", "unavailable", "not-required"]},
+          "guidanceCode": {"enum": ["host-supported", "use-supported-host", "confirm-host-release", "python-ready", "install-python-311", "confirm-python-runtime", "memory-ready", "reduce-local-model-load", "confirm-memory", "storage-ready", "free-local-storage", "confirm-storage", "prepared-profile-selected", "container-detected", "start-container-runtime", "confirm-container-runtime", "model-configuration-ready", "model-not-configured", "confirm-generated-model"]}
+        },
+        "allOf": [
+          {"if": {"properties": {"id": {"const": "supported-host"}}, "required": ["id"]}, "then": {"properties": {"guidanceCode": {"enum": ["host-supported", "use-supported-host", "confirm-host-release"]}}}},
+          {"if": {"properties": {"id": {"const": "python-runtime"}}, "required": ["id"]}, "then": {"properties": {"guidanceCode": {"enum": ["python-ready", "install-python-311", "confirm-python-runtime"]}}}},
+          {"if": {"properties": {"id": {"const": "memory-headroom"}}, "required": ["id"]}, "then": {"properties": {"guidanceCode": {"enum": ["memory-ready", "reduce-local-model-load", "confirm-memory"]}}}},
+          {"if": {"properties": {"id": {"const": "storage-headroom"}}, "required": ["id"]}, "then": {"properties": {"guidanceCode": {"enum": ["storage-ready", "free-local-storage", "confirm-storage"]}}}},
+          {"if": {"properties": {"id": {"const": "reference-container-runtime"}}, "required": ["id"]}, "then": {"properties": {"guidanceCode": {"enum": ["prepared-profile-selected", "container-detected", "start-container-runtime", "confirm-container-runtime"]}}}},
+          {"if": {"properties": {"id": {"const": "generated-model-configuration"}}, "required": ["id"]}, "then": {"properties": {"guidanceCode": {"enum": ["model-configuration-ready", "model-not-configured", "confirm-generated-model"]}}}},
+          {"if": {"properties": {"state": {"const": "pass"}}, "required": ["state"]}, "then": {"properties": {"guidanceCode": {"enum": ["host-supported", "python-ready", "memory-ready", "storage-ready", "container-detected", "model-configuration-ready"]}}}},
+          {"if": {"properties": {"state": {"const": "review"}}, "required": ["state"]}, "then": {"properties": {"guidanceCode": {"enum": ["use-supported-host", "install-python-311", "reduce-local-model-load", "free-local-storage", "start-container-runtime"]}}}},
+          {"if": {"properties": {"state": {"const": "unavailable"}}, "required": ["state"]}, "then": {"properties": {"guidanceCode": {"enum": ["confirm-host-release", "confirm-python-runtime", "confirm-memory", "confirm-storage", "confirm-container-runtime", "confirm-generated-model"]}}}},
+          {"if": {"properties": {"state": {"const": "not-required"}}, "required": ["state"]}, "then": {"properties": {"guidanceCode": {"enum": ["prepared-profile-selected", "model-not-configured"]}}}}
+        ]
+      },
+      "allOf": [
+        {"contains": {"properties": {"id": {"const": "supported-host"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "python-runtime"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "memory-headroom"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "storage-headroom"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "reference-container-runtime"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "generated-model-configuration"}}, "required": ["id"]}}
+      ]
+    },
+    "privacy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["exactHardwareProjected", "hostIdentityProjected", "deviceIdentityProjected", "modelIdentityProjected", "localPathsProjected", "processOutputProjected", "networkProbesPerformed", "providerCallsPerformed"],
+      "properties": {
+        "exactHardwareProjected": {"const": false},
+        "hostIdentityProjected": {"const": false},
+        "deviceIdentityProjected": {"const": false},
+        "modelIdentityProjected": {"const": false},
+        "localPathsProjected": {"const": false},
+        "processOutputProjected": {"const": false},
+        "networkProbesPerformed": {"const": false},
+        "providerCallsPerformed": {"const": false}
+      }
+    },
+    "boundary": {"const": "Rounded local readiness only; no hostname, serial number, device name, model identifier, path, process output, credential, prompt, network probe, or provider call is projected."}
+  },
+  "allOf": [
+    {"if": {"properties": {"host": {"properties": {"contract": {"const": "supported"}}, "required": ["contract"]}}, "required": ["host"]}, "then": {"properties": {"summary": {"properties": {"supportedHost": {"const": true}}}}}},
+    {"if": {"properties": {"host": {"properties": {"contract": {"const": "unsupported"}}, "required": ["contract"]}}, "required": ["host"]}, "then": {"properties": {"summary": {"properties": {"supportedHost": {"const": false}}}}}},
+    {"if": {"properties": {"host": {"properties": {"contract": {"const": "unavailable"}}, "required": ["contract"]}}, "required": ["host"]}, "then": {"properties": {"summary": {"properties": {"supportedHost": {"const": null}}}}}},
+    {"if": {"properties": {"host": {"properties": {"memoryCapacityGiB": {"const": "unavailable"}}, "required": ["memoryCapacityGiB"]}}, "required": ["host"]}, "then": {"properties": {"recommendation": {"properties": {"localModelClass": {"const": "unavailable"}, "contextGuidance": {"const": "measure-first"}}}}}}
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/portal-outcome-assistant-template-v1.schema.json",
+  "schemaVersion": 1,
+  "openclawBinaryPath": "/usr/local/bin/openclaw",
+  "sandboxImage": "openclaw-sandbox:bookworm-slim",
+  "embeddingModel": "embeddinggemma-300m-qat-Q8_0.gguf",
+  "embeddingCachePath": "/var/lib/pixel-outcome/embedding-cache",
+  "searxngBaseUrl": "http://127.0.0.1:8890",
+  "proxyListenPort": 18081,
+  "chatEnvironment": {
+    "PIXEL_LIMB_EMAIL_ENABLED": "0",
+    "PIXEL_LIMB_CALENDAR_ENABLED": "0",
+    "PIXEL_LIMB_SOCIAL_ENABLED": "0",
+    "PIXEL_LIMB_OPERATIONS_ENABLED": "0",
+    "PIXEL_LIMB_FRONTIER_ENABLED": "0"
+  },
+  "actionJournalRoots": [],
+  "boundary": "Owner-private credential-free preparation inputs for one disposable Pixel portal Assistant comparison runtime. The template grants no model start, task execution, provider credential, external effect, policy change, acceptance, publication, deployment, or promotion authority."
+}

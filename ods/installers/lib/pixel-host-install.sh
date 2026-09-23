@@ -2595,7 +2595,18 @@ _ods_pixel_source_checkout() {
         ods_pixel_run_as_owner "$owner" "$home" mkdir -p -- "$parent"
         stage="$(ods_pixel_run_as_owner "$owner" "$home" mktemp -d "$parent/.pixel-source.XXXXXX")" || return 1
         checkout="$stage/checkout"
-        if [[ "$source" == https://github.com/Osmantic/Pixel.git ]]; then
+        if [[ "$source" == bundled ]]; then
+            if ! ods_pixel_bundled_source; then
+                ods_pixel_run_as_owner "$owner" "$home" rm -rf -- "$stage"
+                return 1
+            fi
+            if ! ods_pixel_run_as_owner_with_umask "$owner" "$home" 0022 timeout "${source_timeout}s" \
+                env GIT_TERMINAL_PROMPT=0 git -c credential.interactive=never \
+                clone --no-local --no-checkout -- "${INSTALL_DIR:?}/vendor/pixel.bundle" "$checkout" >/dev/null; then
+                ods_pixel_run_as_owner "$owner" "$home" rm -rf -- "$stage"
+                return 1
+            fi
+        elif [[ "$source" == https://github.com/Osmantic/Pixel.git ]]; then
             if ! ods_pixel_run_as_owner_with_umask "$owner" "$home" 0022 timeout "${source_timeout}s" \
                 env GIT_TERMINAL_PROMPT=0 git -c credential.interactive=never \
                 clone --filter=blob:none --no-checkout -- "$source" "$checkout" >/dev/null; then

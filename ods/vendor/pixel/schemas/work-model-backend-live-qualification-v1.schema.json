@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-backend-live-qualification-v1.schema.json",
+  "title": "Pixel real contained model backend lifecycle qualification v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "generatedAt", "source", "model", "image", "accelerator", "runtime", "results", "privacy", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-backend-live-qualification-v1.schema.json"},
+    "schemaVersion": {"const": 1}, "operation": {"const": "pixel-work-model-backend-live-qualification"},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "source": {
+      "type": "object", "additionalProperties": false, "required": ["commit", "tree", "clean"],
+      "properties": {"commit": {"$ref": "#/$defs/sha1"}, "tree": {"$ref": "#/$defs/sha1"}, "clean": {"const": true}}
+    },
+    "model": {
+      "type": "object", "additionalProperties": false, "required": ["origin", "repository", "revision", "file", "bytes", "sha256"],
+      "properties": {
+        "origin": {"const": "public-fixed-synthetic-model"}, "repository": {"const": "ggml-org/tiny-llamas"},
+        "revision": {"$ref": "#/$defs/sha1"}, "file": {"const": "stories15M-q4_0.gguf"},
+        "bytes": {"const": 19077344}, "sha256": {"const": "6151b1929d7f5aa3385d9ddef3393e55587c0a55de661562322bc51dfda93a04"}
+      }
+    },
+    "image": {"type": "object", "additionalProperties": false, "required": ["digest"], "properties": {"digest": {"const": "sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"}}},
+    "accelerator": {"const": {"class": "nvidia-cuda", "count": 1}},
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["controllerPlatform", "controllerArch", "nodeVersion", "dockerClientVersion", "dockerServerVersion", "dockerServerOs", "dockerServerArch"],
+      "properties": {
+        "controllerPlatform": {"enum": ["linux", "win32", "darwin"]}, "controllerArch": {"type": "string", "pattern": "^[a-z0-9_]{2,32}$"},
+        "nodeVersion": {"type": "string", "pattern": "^v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"},
+        "dockerClientVersion": {"$ref": "#/$defs/version"}, "dockerServerVersion": {"$ref": "#/$defs/version"},
+        "dockerServerOs": {"const": "linux"}, "dockerServerArch": {"type": "string", "pattern": "^[a-z0-9_]{2,32}$"}
+      }
+    },
+    "results": {
+      "type": "object", "additionalProperties": false,
+      "required": ["startState", "readinessPassed", "inferenceStatus", "inferenceResponseBytes", "generatedContentObserved", "haltState", "haltRetainedForensics", "restartState", "restartReadinessPassed", "stopState", "cleanupComplete"],
+      "properties": {
+        "startState": {"const": "ready-started"}, "readinessPassed": {"const": true}, "inferenceStatus": {"const": 200},
+        "inferenceResponseBytes": {"type": "integer", "minimum": 1, "maximum": 65536}, "generatedContentObserved": {"const": true},
+        "haltState": {"const": "halted"}, "haltRetainedForensics": {"const": true},
+        "restartState": {"const": "ready-started"}, "restartReadinessPassed": {"const": true},
+        "stopState": {"const": "removed"}, "cleanupComplete": {"const": true}
+      }
+    },
+    "privacy": {"const": {"promptsFromUser": false, "responsesExposed": false, "credentialsUsed": false, "providerUsed": false, "onlyPublicAndSourceHashes": true}},
+    "boundary": {"const": "Disposable exact local Docker/GPU lifecycle, emergency halt, restart, and fixed synthetic inference qualification only. It does not establish model quality, client acceptance, production readiness, or authority for future model execution."}
+  },
+  "$defs": {
+    "sha1": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:[-+][A-Za-z0-9.-]+)?$"}
+  }
+}

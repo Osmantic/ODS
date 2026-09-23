@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/supported-host-systemd-evidence-v1.schema.json",
+  "title": "Pixel supported-host systemd qualification evidence v1",
+  "oneOf": [
+    {"$ref": "#/$defs/lane"},
+    {"$ref": "#/$defs/matrix"}
+  ],
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["install-apply-verify", "service-isolation", "sandbox-isolation", "deep-work-real-crash-endurance", "deep-work-supervised-service", "capability-pack-live-runtime", "backup-recovery", "knowledge-vault-backup-recovery", "release-identity-refusal", "disposable-gateway-removal", "degraded-recovery", "owner-ui-reachability"],
+      "properties": {
+        "install-apply-verify": {"const": "pass"},
+        "service-isolation": {"const": "pass"},
+        "sandbox-isolation": {"const": "pass"},
+        "deep-work-real-crash-endurance": {"const": "pass"},
+        "deep-work-supervised-service": {"const": "pass"},
+        "capability-pack-live-runtime": {"const": "pass"},
+        "backup-recovery": {"const": "pass"},
+        "knowledge-vault-backup-recovery": {"const": "pass"},
+        "release-identity-refusal": {"const": "pass"},
+        "disposable-gateway-removal": {"const": "pass"},
+        "degraded-recovery": {"const": "pass"},
+        "owner-ui-reachability": {"const": "pass"}
+      }
+    },
+    "lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$schema", "schemaVersion", "operation", "status", "lane", "sourceCommit", "sourceTree", "releaseManifestSha256", "evidenceBindingSha256", "environment", "checks", "synthetic", "commands"],
+      "properties": {
+        "$schema": {"const": "./schemas/supported-host-systemd-evidence-v1.schema.json"},
+        "schemaVersion": {"const": 1},
+        "operation": {"const": "pixel-supported-host-systemd-lane"},
+        "status": {"const": "pass"},
+        "lane": {"enum": ["ubuntu-24.04-systemd", "debian-12-systemd"]},
+        "sourceCommit": {"$ref": "#/$defs/commit"},
+        "sourceTree": {"$ref": "#/$defs/commit"},
+        "releaseManifestSha256": {"$ref": "#/$defs/hash"},
+        "evidenceBindingSha256": {"$ref": "#/$defs/hash"},
+        "environment": {
+          "type": "object", "additionalProperties": false,
+          "required": ["os", "serviceManager"],
+          "properties": {
+            "os": {
+              "oneOf": [
+                {"const": {"id": "ubuntu", "version": "24.04"}},
+                {"const": {"id": "debian", "version": "12"}}
+              ]
+            },
+            "serviceManager": {"const": "systemd"}
+          }
+        },
+        "checks": {"$ref": "#/$defs/checks"},
+        "synthetic": {
+          "type": "object", "additionalProperties": false,
+          "required": ["providerCalls", "credentialInputs", "loopbackModelRequests", "workspaceToolTurn", "containerIsolation"],
+          "properties": {
+            "providerCalls": {"const": 0},
+            "credentialInputs": {"const": 0},
+            "loopbackModelRequests": {"type": "integer", "minimum": 2},
+            "workspaceToolTurn": {"const": "pass"},
+            "containerIsolation": {"const": "pass"}
+          }
+        },
+        "commands": {
+          "type": "array", "minItems": 20, "maxItems": 100,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["label", "exitCode", "elapsedSeconds", "log", "evidenceBindingSha256"],
+            "properties": {
+              "label": {"type": "string", "pattern": "^[a-z0-9-]{3,80}$"},
+              "exitCode": {"type": "integer", "minimum": 0, "maximum": 255},
+              "elapsedSeconds": {"type": "number", "minimum": 0, "maximum": 7200},
+              "log": {"oneOf": [{"type": "string", "pattern": "^[0-9]{3}-[a-z0-9-]+\\.log$"}, {"type": "null"}]},
+              "evidenceBindingSha256": {"$ref": "#/$defs/hash"}
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"lane": {"const": "ubuntu-24.04-systemd"}}, "required": ["lane"]},
+          "then": {"properties": {"environment": {"properties": {"os": {"const": {"id": "ubuntu", "version": "24.04"}}}}}}
+        },
+        {
+          "if": {"properties": {"lane": {"const": "debian-12-systemd"}}, "required": ["lane"]},
+          "then": {"properties": {"environment": {"properties": {"os": {"const": {"id": "debian", "version": "12"}}}}}}
+        }
+      ]
+    },
+    "matrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$schema", "schemaVersion", "operation", "status", "sourceCommit", "sourceTree", "releaseManifestSha256", "lanes", "privacy"],
+      "properties": {
+        "$schema": {"const": "./schemas/supported-host-systemd-evidence-v1.schema.json"},
+        "schemaVersion": {"const": 1},
+        "operation": {"const": "pixel-supported-host-systemd-matrix"},
+        "status": {"const": "pass"},
+        "sourceCommit": {"$ref": "#/$defs/commit"},
+        "sourceTree": {"$ref": "#/$defs/commit"},
+        "releaseManifestSha256": {"$ref": "#/$defs/hash"},
+        "lanes": {
+          "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "status", "os", "checks", "evidenceSha256"],
+            "properties": {
+              "id": {"enum": ["ubuntu-24.04-systemd", "debian-12-systemd"]},
+              "status": {"const": "pass"},
+              "os": {
+                "oneOf": [
+                  {"const": {"id": "ubuntu", "version": "24.04"}},
+                  {"const": {"id": "debian", "version": "12"}}
+                ]
+              },
+              "checks": {"$ref": "#/$defs/checks"},
+              "evidenceSha256": {"$ref": "#/$defs/hash"}
+            },
+            "allOf": [
+              {
+                "if": {"properties": {"id": {"const": "ubuntu-24.04-systemd"}}, "required": ["id"]},
+                "then": {"properties": {"os": {"const": {"id": "ubuntu", "version": "24.04"}}}}
+              },
+              {
+                "if": {"properties": {"id": {"const": "debian-12-systemd"}}, "required": ["id"]},
+                "then": {"properties": {"os": {"const": {"id": "debian", "version": "12"}}}}
+              }
+            ]
+          },
+          "allOf": [
+            {"contains": {"properties": {"id": {"const": "ubuntu-24.04-systemd"}}, "required": ["id"]}},
+            {"contains": {"properties": {"id": {"const": "debian-12-systemd"}}, "required": ["id"]}}
+          ]
+        },
+        "privacy": {
+          "const": {"providerCalls": 0, "credentialInputs": 0, "productionDeploymentsTouched": 0}
+        }
+      }
+    }
+  }
+}

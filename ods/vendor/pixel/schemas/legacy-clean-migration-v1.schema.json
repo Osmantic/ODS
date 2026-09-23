@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/legacy-clean-migration-v1.schema.json",
+  "title": "Terminal-only clean migration evidence v1",
+  "type": "object",
+  "oneOf": [
+    {"$ref": "#/$defs/plan"},
+    {"$ref": "#/$defs/rehearsal"},
+    {"$ref": "#/$defs/completion"},
+    {"$ref": "#/$defs/restoreReceipt"}
+  ],
+  "$defs": {
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pathsIncluded", "hostIdentityIncluded", "credentialsIncluded",
+        "signerIdentityIncluded", "modelProviderIdentityIncluded", "userContentIncluded"
+      ],
+      "properties": {
+        "pathsIncluded": {"const": false},
+        "hostIdentityIncluded": {"const": false},
+        "credentialsIncluded": {"const": false},
+        "signerIdentityIncluded": {"const": false},
+        "modelProviderIdentityIncluded": {"const": false},
+        "userContentIncluded": {"const": false}
+      }
+    },
+    "releasePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pixel", "qualificationMode", "minimumUpgradablePixel"],
+      "properties": {
+        "pixel": {"const": "4.3.27"},
+        "qualificationMode": {"const": "forward"},
+        "minimumUpgradablePixel": {"const": "4.0.0"}
+      }
+    },
+    "backupAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["members", "roots", "uncompressedBytes"],
+      "properties": {
+        "members": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "roots": {"type": "integer", "minimum": 1, "maximum": 100},
+        "uncompressedBytes": {"type": "integer", "minimum": 0, "maximum": 21474836480}
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "operation", "sourcePixel", "installedPixel", "targetPixel",
+        "backupSha256", "backupAudit", "releasePolicy", "sourceCommit", "sourceTree",
+        "backupRootsSha256", "planSha256", "generatedAt", "privacy", "boundary"
+      ],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "operation": {"const": "pixel-legacy-clean-migration-plan"},
+        "sourcePixel": {"const": "3.2.2"},
+        "installedPixel": {"const": "3.2.2"},
+        "targetPixel": {"const": "4.3.27"},
+        "backupSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "backupAudit": {"$ref": "#/$defs/backupAudit"},
+        "releasePolicy": {"$ref": "#/$defs/releasePolicy"},
+        "sourceCommit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "sourceTree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "backupRootsSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "planSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "generatedAt": {"type": "string", "format": "date-time"},
+        "privacy": {"$ref": "#/$defs/privacy"},
+        "boundary": {"const": "Content-free clean-migration plan only. No bootstrap, restore, apply, replace, or rollback is performed by this command."}
+      }
+    },
+    "rehearsal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "operation", "sourcePixel", "targetPixel", "planSha256",
+        "backupSha256", "sourceCommit", "sourceTree", "rehearsalRootCreated",
+        "liveStateChanged", "backupRootsSha256", "rehearsalSha256", "generatedAt", "privacy", "boundary"
+      ],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "operation": {"const": "pixel-legacy-clean-migration-rehearsal"},
+        "sourcePixel": {"const": "3.2.2"},
+        "targetPixel": {"const": "4.3.27"},
+        "planSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "backupSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "sourceCommit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "sourceTree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "backupRootsSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "rehearsalRootCreated": {"const": true},
+        "liveStateChanged": {"const": false},
+        "rehearsalSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "generatedAt": {"type": "string", "format": "date-time"},
+        "privacy": {"$ref": "#/$defs/privacy"},
+        "boundary": {"const": "Content-free clean-migration rehearsal receipt. Restore was rehearsed into an explicit new non-live root; no live state was changed."}
+      }
+    },
+    "completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "operation", "sourcePixel", "targetPixel", "activeRelease",
+        "planSha256", "rehearsalSha256", "backupSha256", "restoreReceiptSha256",
+        "runtimeAttestationSha256", "sourceCommit", "sourceTree", "verified",
+        "completionSha256", "generatedAt", "privacy", "boundary"
+      ],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "operation": {"const": "pixel-legacy-clean-migration-completion"},
+        "sourcePixel": {"const": "3.2.2"},
+        "targetPixel": {"const": "4.3.27"},
+        "activeRelease": {"const": "4.3.27"},
+        "planSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "rehearsalSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "backupSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "restoreReceiptSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "runtimeAttestationSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "sourceCommit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "sourceTree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "verified": {"const": true},
+        "completionSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "generatedAt": {"type": "string", "format": "date-time"},
+        "privacy": {"$ref": "#/$defs/privacy"},
+        "boundary": {"const": "Content-free clean-migration completion receipt. It binds the authenticated backup, restore receipt, runtime attestation, and Git source identity to the exact migration plan and rehearsal. No in-place 3.2.2 update or update-rollback exists; the authenticated backup is the single rollback boundary."}
+      }
+    },
+    "restoreReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "kind", "status", "mode", "verified", "automaticRollbackArmed",
+        "knowledgeDeletionReconciled", "historicalKeyWrappingRemoved", "backupSha256",
+        "sourcePixel", "targetPixel", "receiptSha256", "generatedAt", "privacy", "boundary"
+      ],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "kind": {"const": "pixel-restore-receipt"},
+        "status": {"const": "pass"},
+        "mode": {"const": "restore"},
+        "verified": {"const": true},
+        "automaticRollbackArmed": {"const": true},
+        "knowledgeDeletionReconciled": {"type": "boolean"},
+        "historicalKeyWrappingRemoved": {"type": "boolean"},
+        "backupSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "sourcePixel": {"const": "3.2.2"},
+        "targetPixel": {"const": "4.3.27"},
+        "receiptSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "generatedAt": {"type": "string", "format": "date-time"},
+        "privacy": {"$ref": "#/$defs/privacy"},
+        "boundary": {"const": "Content-free confirmed restore receipt. The backup was authentically validated, transactionally swapped, verified live, and automatic rollback was armed. No paths, identities, credentials, host, provider, or model identity, and no user content are included."}
+      }
+    }
+  }
+}

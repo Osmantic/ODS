@@ -1,0 +1,21 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-input-selection-v1.schema.json",
+  "schemaVersion": 1,
+  "selectionId": "inputselection-1786366800000-abcdef123456",
+  "createdAt": "2026-08-10T13:00:00Z",
+  "entries": [
+    {
+      "id": "project",
+      "kind": "repository-snapshot",
+      "classification": "internal",
+      "sourceDirectory": "/srv/pixel/private/project",
+      "limits": {
+        "maxEntries": 20000,
+        "maxFileBytes": 268435456,
+        "maxTotalBytes": 10737418240,
+        "maxArchiveBytes": 11274289152
+      }
+    }
+  ],
+  "boundary": "Explicit owner-selected local directories only. Packing may read exactly those directory trees into inert content-addressed snapshots but grants no execution, lease, network, credential, external-effect, scope-expansion, or completion authority."
+}

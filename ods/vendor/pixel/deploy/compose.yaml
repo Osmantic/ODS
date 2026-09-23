@@ -1,0 +1,53 @@
+name: pixel-reference
+services:
+  searxng:
+    image: ${PIXEL_SEARXNG_IMAGE:-docker.io/searxng/searxng:latest@sha256:79c2be18a18367484474bae9b18a8cd9085114ab3dcd49cac091cad8c548a0a9}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8890:8080"
+    volumes:
+      - ${PIXEL_RUNTIME_DIR:?}/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /var/cache/searxng:size=128m,uid=977,gid=977
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    logging:
+      driver: "none"
+
+  local-model:
+    profiles: [local-model]
+    image: ${PIXEL_LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server@sha256:8b7f05d7d14d040463ef9191b24da93724574abd6bfea9bf12899100f62e98db}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PIXEL_REFERENCE_MODEL_PORT:-8000}:8080"
+    volumes:
+      - ${PIXEL_REFERENCE_MODEL_FILE:-/srv/pixel/models/model.gguf}:/models/model.gguf:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    pids_limit: 256
+    command:
+      - --model
+      - /models/model.gguf
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --alias
+      - ${PIXEL_MODEL_ID:-assistant-model}
+      - --ctx-size
+      - ${PIXEL_MODEL_CONTEXT_WINDOW:-131072}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    networks:
+      model-backend:
+        aliases: [pixel-local-model]
+
+networks:
+  model-backend:
+    internal: true
+    attachable: false

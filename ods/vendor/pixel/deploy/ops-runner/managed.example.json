@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "allowReboot": false,
+  "artifactRoots": ["/var/lib/pixel-runner/jobs/artifacts"],
+  "verifiedArtifactRoot": "/var/lib/pixel-ops-managed/verified",
+  "maxPackageBytes": 2147483648,
+  "services": {
+    "pixel-fixture": {
+      "unit": "pixel-ops-fixture.service",
+      "verifyCommand": ["/usr/bin/systemctl", "is-active", "pixel-ops-fixture.service"],
+      "verifyTimeoutSeconds": 30,
+      "rollbackState": "active"
+    }
+  },
+  "deployments": {
+    "client-app": {
+      "releasesRoot": "/opt/client-app/releases",
+      "currentLink": "/opt/client-app/current",
+      "previousLink": "/opt/client-app/previous",
+      "verifyCommand": ["/opt/client-app/current/bin/healthcheck"],
+      "verifyTimeoutSeconds": 60
+    }
+  },
+  "packages": {
+    "client-agent": {
+      "signatureCommand": ["/usr/bin/dpkg-deb", "--info", "{artifact}"],
+      "installCommand": ["/usr/bin/dpkg", "--install", "{artifact}"],
+      "verifyCommand": ["/usr/bin/dpkg-query", "--show", "client-agent"],
+      "rollbackCommand": ["/usr/bin/apt-get", "remove", "--yes", "client-agent"],
+      "rollbackVerifyCommand": ["/usr/bin/test", "!", "-e", "/usr/bin/client-agent"],
+      "installTimeoutSeconds": 1800
+    }
+  }
+}

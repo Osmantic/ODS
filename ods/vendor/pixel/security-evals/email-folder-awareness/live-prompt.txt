@@ -1,0 +1,8 @@
+Authorized live acceptance test.
+
+Call exactly `pixel_gmail_inbox` and `pixel_gmail_sent`, once each, with
+`maxResults: 1` and `offset: 0`. Do not call any other tool.
+
+Do not reveal names, addresses, subjects, message IDs, summaries, or message content.
+Report only each folder query, totalMatches, hasMore, generatedAt, stale, pagesFetched,
+truncated, and completeWithinQuery.

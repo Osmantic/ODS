@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "pixel": "4.3.27",
+  "node": ">=22",
+  "nodeRuntime": {
+    "version": "22.23.1",
+    "url": "https://nodejs.org/dist/v22.23.1/node-v22.23.1-linux-x64.tar.xz",
+    "sha256": "9749e988f437343b7fa832c69ded82a312e41a03116d766797ac14f6f9eee578"
+  },
+  "openclaw": "2026.6.33",
+  "openclawInstaller": {
+    "url": "https://raw.githubusercontent.com/openclaw/openclaw/807506381a0362a748e01e28839f15a38a4a911e/scripts/install.sh",
+    "sha256": "0034898bce1ff687b25812e9807d89d34080d5569bbdacfae8816d115ccb9b89",
+    "mirrors": [
+      "https://cdn.jsdelivr.net/gh/openclaw/openclaw@807506381a0362a748e01e28839f15a38a4a911e/scripts/install.sh"
+    ]
+  },
+  "openclawPackage": {
+    "url": "https://registry.npmjs.org/openclaw/-/openclaw-2026.6.33.tgz",
+    "sha256": "96880d5a9fe3ef6b3d2ec0ac016e48f99fff7b1af4e22b7c814db6357c163952",
+    "integrity": "sha512-53MCYfnMEzQmrh/mFNpqfUcQunZASPZ2qYOmqn6wq3K4gZPzV0QOMwjxOCU2C+VmQ5FqzVU8exy7j7pyL3EBzQ=="
+  },
+  "openclawPlugins": {
+    "@openclaw/discord": "2026.6.33",
+    "@openclaw/searxng-plugin": "2026.6.33",
+    "@openclaw/llama-cpp-provider": "2026.6.33"
+  },
+  "openclawPluginPackages": {
+    "discord": {
+      "url": "https://registry.npmjs.org/@openclaw/discord/-/discord-2026.6.33.tgz",
+      "sha256": "b213214f083c3e06ebd727894de6f5efc5c0a3642f7e315ae7f725e70aaaab2a",
+      "integrity": "sha512-pHMS5ngTafJ8hbBGv0TJk3E1+tFXP4slCjzIPBmLBjyeb3V/7QZM05ROVz0UlBvCw57iyxp/HNwpVIMJlCidqQ=="
+    },
+    "searxng": {
+      "url": "https://registry.npmjs.org/@openclaw/searxng-plugin/-/searxng-plugin-2026.6.33.tgz",
+      "sha256": "c8ce60c9a43d4a9ef4286940536a3d4c73d49673a8b18ce5cc0362c9fb76a837",
+      "integrity": "sha512-oJNUXYz3zb20lefbW9ZQ+oxru9EMizOyasBaMh1InRHLCq2pij0uo8rPJpjYXeHw1oLaB4ooSJCM4BWlFg5itA=="
+    },
+    "llamaCpp": {
+      "url": "https://registry.npmjs.org/@openclaw/llama-cpp-provider/-/llama-cpp-provider-2026.6.33.tgz",
+      "sha256": "c5be0fb61a0d454686bd829ee7f30a69919c2fb874a77f0411e458047606d5e5",
+      "integrity": "sha512-jr9PjjXoVPpFUU1x63qdKJTVGC2amcr842Jdku9ZY2LWn6aXCQlw2fZkU/JLn6FyD95iGg5u6nZp+bn/45SjBQ=="
+    }
+  },
+  "sandboxImage": "openclaw-sandbox:bookworm-slim",
+  "baseImage": "debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818",
+  "referenceImages": {
+    "searxng": "docker.io/searxng/searxng:latest@sha256:79c2be18a18367484474bae9b18a8cd9085114ab3dcd49cac091cad8c548a0a9",
+    "llamaCpp": "ghcr.io/ggml-org/llama.cpp:server@sha256:8b7f05d7d14d040463ef9191b24da93724574abd6bfea9bf12899100f62e98db"
+  }
+}

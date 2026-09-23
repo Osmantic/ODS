@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-qualification-execution-result-marker-v1.schema.json",
+  "title": "Pixel qualification execution result marker v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "operation", "candidateId", "activationHash", "executionClaimSha256", "executionResultSha256", "recordedAt", "candidateCodeExecuted", "executionObserved", "terminalPromotionEvidence", "publicationAuthority", "productionActivationAuthority", "compatibilityMutationAuthority", "productionStateChanged", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "status": {"const": "terminal"},
+    "operation": {"const": "pixel-release-qualification-execution-result-marker"},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "activationHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "executionClaimSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "executionResultSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "recordedAt": {"type": "string", "format": "date-time"},
+    "candidateCodeExecuted": {"const": true},
+    "executionObserved": {"const": true},
+    "terminalPromotionEvidence": {"const": false},
+    "publicationAuthority": {"const": false},
+    "productionActivationAuthority": {"const": false},
+    "compatibilityMutationAuthority": {"const": false},
+    "productionStateChanged": {"const": false},
+    "boundary": {"const": "Qualification-root-only private terminal execution-result marker; it binds the immutable execution result to the candidate and activation for deletion/recovery durability and grants no production, publication, compatibility, or promotion authority."}
+  }
+}

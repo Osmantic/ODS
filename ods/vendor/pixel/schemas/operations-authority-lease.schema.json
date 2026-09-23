@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/operations-authority-lease.schema.json",
+  "title": "Pixel temporary Operations authority lease",
+  "allOf": [
+    {"$ref": "operations-policy-v2.schema.json#/$defs/grant"},
+    {
+      "type": "object",
+      "required": ["maxExecutions", "windowSeconds", "maxConcurrent", "maxRuntimeSeconds", "maxFailures"],
+      "properties": {
+        "expiresAt": false,
+        "issuedAt": false,
+        "revokedAt": false,
+        "source": false
+      }
+    }
+  ]
+}

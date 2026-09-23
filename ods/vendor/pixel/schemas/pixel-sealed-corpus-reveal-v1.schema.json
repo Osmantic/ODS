@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/pixel-sealed-corpus-reveal-v1.schema.json",
+  "title": "Pixel owner-private held-out corpus reveal manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "batterySchema", "setIdentity", "heldOutTaskCount", "heldOutTotalBytes", "heldOutTaskSetSha256", "tasks", "boundary", "authority"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/pixel-sealed-corpus-reveal-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-sealed-corpus-reveal"},
+    "batterySchema": {"const": "https://osmantic.com/pixel/schemas/agent-comparison-task-battery-v1.schema.json"},
+    "setIdentity": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
+    "heldOutTaskCount": {"type": "integer", "minimum": 1, "maximum": 500},
+    "heldOutTotalBytes": {"type": "integer", "minimum": 1, "maximum": 1073741824},
+    "heldOutTaskSetSha256": {"$ref": "#/$defs/hash"},
+    "tasks": {
+      "type": "array", "minItems": 1, "maxItems": 500,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["file", "sha256", "bytes"],
+        "properties": {
+          "file": {"type": "string", "pattern": "^[0-9]{4}$"},
+          "sha256": {"$ref": "#/$defs/hash"},
+          "bytes": {"type": "integer", "minimum": 1, "maximum": 100663296}
+        }
+      }
+    },
+    "boundary": {"const": "Owner-private sealed held-out corpus reveal manifest only. It maps opaque ordinal task files to exact digests and sizes and grants no execution, model, provider, credential, network, external effect, held-out disclosure, acceptance, publication, deployment, or promotion authority."},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reveal", "tuning", "retuning", "disclosure", "execution", "promotion"],
+      "properties": {
+        "reveal": {"const": false}, "tuning": {"const": false}, "retuning": {"const": false},
+        "disclosure": {"const": false}, "execution": {"const": false}, "promotion": {"const": false}
+      }
+    }
+  },
+  "$defs": {"hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

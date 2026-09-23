@@ -1,0 +1,105 @@
+{
+  "$schema": "./schemas/qualification-matrix-v1.schema.json",
+  "schemaVersion": 1,
+  "supportedHosts": ["Ubuntu 24.04 LTS", "Debian 12"],
+  "hostLanes": [
+    {
+      "id": "ubuntu-24.04-automated",
+      "host": "Ubuntu 24.04 LTS",
+      "environment": "github-hosted",
+      "requiredForPromotion": true,
+      "providerCallsAllowed": false,
+      "credentialInputsAllowed": false,
+      "checks": ["static-unit-security", "clean-room-lifecycle", "plugin-integrity", "release-package"]
+    },
+    {
+      "id": "debian-12-automated",
+      "host": "Debian 12",
+      "environment": "manifest-pinned-container",
+      "requiredForPromotion": true,
+      "providerCallsAllowed": false,
+      "credentialInputsAllowed": false,
+      "checks": ["static-unit-security", "clean-room-lifecycle", "plugin-integrity", "release-package", "reproducible-package"]
+    },
+    {
+      "id": "ubuntu-24.04-systemd",
+      "host": "Ubuntu 24.04 LTS",
+      "environment": "deployment-owned-systemd",
+      "requiredForPromotion": true,
+      "providerCallsAllowed": false,
+      "credentialInputsAllowed": false,
+      "checks": ["install-apply-verify", "service-isolation", "sandbox-isolation", "deep-work-real-crash-endurance", "deep-work-supervised-service", "capability-pack-live-runtime", "backup-recovery", "knowledge-vault-backup-recovery", "release-identity-refusal", "disposable-gateway-removal", "degraded-recovery", "owner-ui-reachability"]
+    },
+    {
+      "id": "debian-12-systemd",
+      "host": "Debian 12",
+      "environment": "deployment-owned-systemd",
+      "requiredForPromotion": true,
+      "providerCallsAllowed": false,
+      "credentialInputsAllowed": false,
+      "checks": ["install-apply-verify", "service-isolation", "sandbox-isolation", "deep-work-real-crash-endurance", "deep-work-supervised-service", "capability-pack-live-runtime", "backup-recovery", "knowledge-vault-backup-recovery", "release-identity-refusal", "disposable-gateway-removal", "degraded-recovery", "owner-ui-reachability"]
+    }
+  ],
+  "modelCapacity": [
+    {
+      "memoryCapacityGiB": "under-8",
+      "localModelClass": "remote-or-compact",
+      "contextGuidance": "start-small",
+      "fitIsGuaranteed": false,
+      "requiredValidation": ["synthetic-task-contract", "latency-and-memory-measurement", "owner-quality-review"]
+    },
+    {
+      "memoryCapacityGiB": "8-15",
+      "localModelClass": "compact-local",
+      "contextGuidance": "start-small",
+      "fitIsGuaranteed": false,
+      "requiredValidation": ["synthetic-task-contract", "latency-and-memory-measurement", "owner-quality-review"]
+    },
+    {
+      "memoryCapacityGiB": "16-31",
+      "localModelClass": "balanced-local",
+      "contextGuidance": "moderate",
+      "fitIsGuaranteed": false,
+      "requiredValidation": ["synthetic-task-contract", "latency-and-memory-measurement", "owner-quality-review"]
+    },
+    {
+      "memoryCapacityGiB": "32-63",
+      "localModelClass": "larger-local",
+      "contextGuidance": "expanded-after-measurement",
+      "fitIsGuaranteed": false,
+      "requiredValidation": ["synthetic-task-contract", "latency-and-memory-measurement", "owner-quality-review"]
+    },
+    {
+      "memoryCapacityGiB": "64-plus",
+      "localModelClass": "large-memory-local",
+      "contextGuidance": "expanded-after-measurement",
+      "fitIsGuaranteed": false,
+      "requiredValidation": ["synthetic-task-contract", "latency-and-memory-measurement", "owner-quality-review"]
+    }
+  ],
+  "capabilityProfiles": [
+    {"id": "minimal", "limbs": {"email": false, "calendar": false, "social": false, "web": false, "operations": false, "frontier": false}},
+    {"id": "chief-of-staff", "limbs": {"email": true, "calendar": true, "social": false, "web": true, "operations": false, "frontier": false}},
+    {"id": "research", "limbs": {"email": false, "calendar": false, "social": false, "web": true, "operations": false, "frontier": false}},
+    {"id": "engineering-operator", "limbs": {"email": true, "calendar": true, "social": false, "web": true, "operations": true, "frontier": false}}
+  ],
+  "promotion": {
+    "requiredConsecutivePasses": 2,
+    "requiredGates": [
+      "automated-release-matrix",
+      "supported-host-systemd-matrix",
+      "deep-work-event-horizon",
+      "recovery-security-matrix",
+      "model-capability-contract",
+      "outcome-parity",
+      "signed-release-lifecycle",
+      "owner-usability",
+      "frontier-live-qualification",
+      "multi-provider-local-first",
+      "historical-secret-closure",
+      "distribution-license"
+    ],
+    "automatedProviderCallsAllowed": false,
+    "publicationRequiresAllGates": true
+  }
+}

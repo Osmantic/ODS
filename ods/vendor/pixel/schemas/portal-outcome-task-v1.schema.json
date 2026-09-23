@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-task-v1.schema.json",
+  "title": "Pixel private backend-neutral outcome task v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "taskId", "createdAt", "journeyId", "comparisonLane", "profile", "dataClass", "effectBoundary", "scenario", "bindings", "capabilities", "dataRoute", "budgets", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-task-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-portal-outcome-task"},
+    "taskId": {"type": "string", "pattern": "^outcometask-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "journeyId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+    "comparisonLane": {"enum": ["product-default", "same-model-harness"]},
+    "profile": {"enum": ["assistant", "scout", "builder", "researcher", "data-lab", "controller"]},
+    "dataClass": {"enum": ["public", "internal", "confidential", "private"]},
+    "effectBoundary": {"enum": ["none", "read-only", "local-state-change", "external-write"]},
+    "scenario": {"$ref": "#/$defs/scenario"},
+    "bindings": {
+      "type": "object", "additionalProperties": false,
+      "required": ["userRequest", "sourceSnapshot", "environment", "toolPolicy", "verifier", "sharedModelContract", "sharedInferenceContract", "sanitizationEvidence", "researchFixture"],
+      "properties": {
+        "userRequest": {"$ref": "#/$defs/reference"},
+        "sourceSnapshot": {"$ref": "#/$defs/reference"},
+        "environment": {"$ref": "#/$defs/reference"},
+        "toolPolicy": {"$ref": "#/$defs/reference"},
+        "verifier": {"$ref": "#/$defs/reference"},
+        "sharedModelContract": {"oneOf": [{"$ref": "#/$defs/jsonReference"}, {"type": "null"}]},
+        "sharedInferenceContract": {"oneOf": [{"$ref": "#/$defs/jsonReference"}, {"type": "null"}]},
+        "sanitizationEvidence": {"oneOf": [{"$ref": "#/$defs/reference"}, {"type": "null"}]},
+        "researchFixture": {"oneOf": [{"$ref": "#/$defs/jsonReference"}, {"type": "null"}]}
+      }
+    },
+    "capabilities": {
+      "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true,
+      "items": {"enum": ["reasoning", "filesystem-read", "filesystem-write", "process-execution", "public-web", "browser", "email-read", "calendar-read", "calendar-write", "github-read", "github-write", "fleet-read", "long-running-goals", "local-model", "remote-model", "artifact-production"]}
+    },
+    "dataRoute": {"enum": ["local-only", "brokered-public", "sanitized-remote", "authorized-provider"]},
+    "budgets": {
+      "type": "object", "additionalProperties": false,
+      "required": ["wallTimeSeconds", "operatorInterventions", "modelRequests", "inputTokens", "outputTokens", "artifactBytes", "externalWrites"],
+      "properties": {
+        "wallTimeSeconds": {"type": "integer", "minimum": 1, "maximum": 2592000},
+        "operatorInterventions": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "modelRequests": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "inputTokens": {"type": "integer", "minimum": 1, "maximum": 1000000000000},
+        "outputTokens": {"type": "integer", "minimum": 1, "maximum": 1000000000000},
+        "artifactBytes": {"type": "integer", "minimum": 1, "maximum": 1073741824},
+        "externalWrites": {"type": "integer", "minimum": 0, "maximum": 10000}
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantsExecution", "grantsProviderCall", "grantsCredentialUse", "grantsExternalEffect", "grantsScopeExpansion", "grantsSafetyRelaxation", "grantsCompletion"],
+      "properties": {
+        "grantsExecution": {"const": false}, "grantsProviderCall": {"const": false},
+        "grantsCredentialUse": {"const": false}, "grantsExternalEffect": {"const": false},
+        "grantsScopeExpansion": {"const": false}, "grantsSafetyRelaxation": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Private backend-neutral task binding only. It defines identical admitted work for paired evaluation but grants neither backend execution, model, network, credential, external-effect, scope-expansion, safety-relaxation, completion, publication, deployment, acceptance, or promotion authority."}
+  },
+  "allOf": [
+    {"if": {"properties": {"comparisonLane": {"const": "same-model-harness"}}, "required": ["comparisonLane"]}, "then": {"properties": {"bindings": {"properties": {"sharedModelContract": {"$ref": "#/$defs/jsonReference"}, "sharedInferenceContract": {"$ref": "#/$defs/jsonReference"}}}}}},
+    {"if": {"properties": {"comparisonLane": {"const": "product-default"}}, "required": ["comparisonLane"]}, "then": {"properties": {"bindings": {"properties": {"sharedModelContract": {"type": "null"}, "sharedInferenceContract": {"type": "null"}}}}}},
+    {"if": {"properties": {"dataRoute": {"const": "sanitized-remote"}}, "required": ["dataRoute"]}, "then": {"properties": {"bindings": {"properties": {"sanitizationEvidence": {"$ref": "#/$defs/reference"}}}}}},
+    {"if": {"properties": {"dataRoute": {"enum": ["local-only", "brokered-public", "authorized-provider"]}}, "required": ["dataRoute"]}, "then": {"properties": {"bindings": {"properties": {"sanitizationEvidence": {"type": "null"}}}}}}
+    ,{"if": {"properties": {"profile": {"const": "researcher"}}, "required": ["profile"]}, "then": {"properties": {"bindings": {"properties": {"researchFixture": {"$ref": "#/$defs/jsonReference"}}}}}, "else": {"properties": {"bindings": {"properties": {"researchFixture": {"type": "null"}}}}}}
+  ],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "path": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+    "reference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relativePath", "sha256", "bytes", "mediaType"],
+      "properties": {
+        "relativePath": {"$ref": "#/$defs/path"}, "sha256": {"$ref": "#/$defs/hash"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1073741824},
+        "mediaType": {"enum": ["text/plain", "application/json", "application/x-tar", "application/octet-stream"]}
+      }
+    },
+    "jsonReference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relativePath", "sha256", "bytes", "mediaType"],
+      "properties": {
+        "relativePath": {"$ref": "#/$defs/path"}, "sha256": {"$ref": "#/$defs/hash"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 2097152},
+        "mediaType": {"const": "application/json"}
+      }
+    },
+    "scenario": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "fault", "seedSha256"],
+      "properties": {
+        "kind": {"enum": ["baseline", "fault-injection"]},
+        "fault": {"oneOf": [{"type": "null"}, {"enum": ["stale-memory", "source-unavailable", "prompt-injection", "malformed-output", "process-crash", "service-restart", "timeout-before-submit", "timeout-after-submit", "eventual-consistency", "duplicate-request", "scope-expansion", "secret-canary", "cross-client-probe", "mock-backend", "self-grade", "artifact-substitution"]}]},
+        "seedSha256": {"$ref": "#/$defs/hash"}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "baseline"}}, "required": ["kind"]}, "then": {"properties": {"fault": {"type": "null"}}}},
+        {"if": {"properties": {"kind": {"const": "fault-injection"}}, "required": ["kind"]}, "then": {"properties": {"fault": {"type": "string"}}}}
+      ]
+    }
+  }
+}

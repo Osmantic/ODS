@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-qualification-execution-start-v1.schema.json",
+  "title": "Pixel qualification execution start marker v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "candidateId", "executionClaimSha256", "executionSpecSha256", "containerName", "attemptId", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-release-qualification-execution-start"},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "executionClaimSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "executionSpecSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "containerName": {"type": "string", "pattern": "^pixel-qual-exec-[0-9a-f]{20}$"},
+    "attemptId": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "boundary": {"const": "Qualification-root-only exclusive exactly-once execution-attempt start marker; written with O_EXCL and fsynced before any Docker create/start, it binds the validated claim, spec, and acquisition to the exact container name and grants no production, publication, compatibility, or promotion authority."}
+  }
+}

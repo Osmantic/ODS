@@ -1,0 +1,28 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-input-selection-v1.schema.json",
+  "schemaVersion": 1,
+  "selectionId": "inputselection-1786366800000-abcdef123456",
+  "createdAt": "2026-08-10T13:00:00Z",
+  "entries": [
+    {
+      "id": "revenue",
+      "kind": "dataset",
+      "classification": "confidential",
+      "sourceDirectory": "/srv/pixel/private/revenue-data",
+      "limits": {
+        "maxEntries": 1000,
+        "maxFileBytes": 1073741824,
+        "maxTotalBytes": 4294967296,
+        "maxArchiveBytes": 4563402752
+      },
+      "datasets": [
+        {
+          "datasetId": "sales",
+          "relativePath": "sales.csv",
+          "format": "csv"
+        }
+      ]
+    }
+  ],
+  "boundary": "Explicit owner-selected local directories only. Packing may read exactly those directory trees into inert content-addressed snapshots but grants no execution, lease, network, credential, external-effect, scope-expansion, or completion authority."
+}

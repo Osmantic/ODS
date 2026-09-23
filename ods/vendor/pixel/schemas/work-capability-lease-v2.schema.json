@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-lease-v2.schema.json",
+  "title": "Pixel Deep Work broad-tools capability lease v2 (admission-only foundation)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "leaseId", "jobId", "issuedAt", "expiresAt", "singleUse", "iteration", "continuation", "planSha256", "inputSetSha256", "policySha256", "executor", "model", "isolation", "grantedCapabilities", "budgets", "authority", "outputGate", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-lease-v2.schema.json"},
+    "schemaVersion": {"const": 2},
+    "leaseId": {"type": "string", "pattern": "^worklease-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "issuedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "singleUse": {"const": true},
+    "iteration": {"type": "integer", "minimum": 1, "maximum": 1000},
+    "continuation": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["previousCheckpointSha256", "previousConsumptionSha256", "cumulativeUsageSha256"],
+          "properties": {
+            "previousCheckpointSha256": {"$ref": "#/$defs/sha256"},
+            "previousConsumptionSha256": {"$ref": "#/$defs/sha256"},
+            "cumulativeUsageSha256": {"$ref": "#/$defs/sha256"}
+          }
+        }
+      ]
+    },
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "inputSetSha256": {"$ref": "#/$defs/sha256"},
+    "policySha256": {"$ref": "#/$defs/sha256"},
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sourceCommit", "license", "artifactSha256", "rpcProtocolVersion"],
+      "properties": {
+        "id": {"const": "omp"},
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+        "sourceCommit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "license": {"const": "MIT"},
+        "artifactSha256": {"$ref": "#/$defs/sha256"},
+        "rpcProtocolVersion": {"enum": [1, 2]}
+      }
+    },
+    "model": {"$ref": "#/$defs/model"},
+    "research": {"const": null},
+    "researchBackend": {"const": null},
+    "data": {"const": null},
+    "dataRuntime": {"const": null},
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "runnerImageDigest", "freshHome", "inheritEnvironment", "inheritFileDescriptors", "inputMount", "workspaceMount", "artifactMount", "destroyAfterRun"],
+      "properties": {
+        "mode": {"enum": ["hardened-container", "ephemeral-vm"]},
+        "runnerImageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "freshHome": {"const": true},
+        "inheritEnvironment": {"const": false},
+        "inheritFileDescriptors": {"const": false},
+        "inputMount": {"const": "read-only"},
+        "workspaceMount": {"enum": ["read-only", "disposable-read-write"]},
+        "artifactMount": {"const": "write-only-staging"},
+        "destroyAfterRun": {"const": true}
+      }
+    },
+    "grantedCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tools", "network"],
+      "properties": {
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"type": "object", "additionalProperties": false, "required": ["name", "effectClass", "bindingSummary"], "properties": {"name": {"$ref": "#/$defs/tool"}, "effectClass": {"enum": ["read-only", "workspace", "brokered-network", "external"]}, "bindingSummary": {"$ref": "#/$defs/bindingSummary"}}}
+        },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "services", "destinations"],
+          "properties": {
+            "mode": {"enum": ["none", "brokered", "public", "private-allowlist"]},
+            "services": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"enum": ["local-model", "package-courier", "research-broker", "frontier-work-provider"]}},
+            "destinations": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$"}}
+          },
+          "allOf": [
+            {"if": {"properties": {"mode": {"const": "none"}}, "required": ["mode"]}, "then": {"properties": {"services": {"const": []}, "destinations": {"const": []}}}},
+            {"if": {"properties": {"mode": {"const": "brokered"}}, "required": ["mode"]}, "then": {"properties": {"destinations": {"const": []}}}},
+            {"if": {"properties": {"mode": {"const": "public"}}, "required": ["mode"]}, "then": {"properties": {"services": {"const": []}}}},
+            {"if": {"properties": {"mode": {"const": "private-allowlist"}}, "required": ["mode"]}, "then": {"properties": {"services": {"const": []}, "destinations": {"minItems": 1}}}}
+          ]
+        }
+      }
+    },
+    "budgets": {"$ref": "#/$defs/budgets"},
+    "authority": {
+      "const": {"hostAccess": false, "ambientCredentials": false, "arbitraryNetwork": false, "externalEffects": false, "merge": false, "deploy": false, "publish": false, "purchase": false, "policyMutation": false, "acceptanceCriteriaMutation": false, "leaseExpansion": false}
+    },
+    "outputGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowedKinds", "independentVerificationRequired", "automaticMerge", "automaticDeployment"],
+      "properties": {
+        "allowedKinds": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"enum": ["finding-report", "patch", "test-evidence", "dataset", "document", "visualization"]}},
+        "independentVerificationRequired": {"const": true},
+        "automaticMerge": {"const": false},
+        "automaticDeployment": {"const": false}
+      }
+    },
+    "boundary": {"const": "Admission-only v2 lease for one signed broad-tools capability declaration. It grants no call, host, credential, network, external-effect, merge, deploy, publish, purchase, policy, or completion authority; v2 runtime is not enabled."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "tool": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"},
+    "bindingSummary": {"type": "object", "additionalProperties": false, "required": ["targetClass", "inputClassification", "outputClassification"], "properties": {
+      "targetClass": {"enum": ["public-api", "private-lan", "local-filesystem", "local-process", "ssh", "browser", "mailbox", "download", "file", "api", "shell"]},
+      "inputClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+      "outputClassification": {"enum": ["public", "internal", "confidential", "restricted"]}
+    }},
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["route", "provider", "id", "backendImageDigest", "contextWindow", "supportsVision", "endpointContract"],
+      "properties": {
+        "route": {"const": "local-only"},
+        "provider": {"enum": ["llama.cpp", "vllm"]},
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:+/-]{0,127}$"},
+        "backendImageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "contextWindow": {"type": "integer", "minimum": 1024, "maximum": 2000000},
+        "supportsVision": {"type": "boolean"},
+        "endpointContract": {"const": "llama.cpp-discovery-and-openai-stream-v1"}
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxRuntimeSeconds", "maxIterations", "maxToolCalls", "maxConcurrentSubagents", "maxModelRequests", "maxInputTokens", "maxOutputTokens", "maxCpuCores", "maxMemoryMiB", "maxDiskBytes", "maxArtifactBytes", "maxNetworkBytes", "maxFailures", "noProgressLimit"],
+      "properties": {
+        "maxRuntimeSeconds": {"type": "integer", "minimum": 1, "maximum": 604800},
+        "maxIterations": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "maxToolCalls": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "maxConcurrentSubagents": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maxModelRequests": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "maxInputTokens": {"type": "integer", "minimum": 1, "maximum": 2000000000},
+        "maxOutputTokens": {"type": "integer", "minimum": 1, "maximum": 500000000},
+        "maxCpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maxMemoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+        "maxDiskBytes": {"type": "integer", "minimum": 1048576, "maximum": 1099511627776},
+        "maxArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 34359738368},
+        "maxNetworkBytes": {"type": "integer", "minimum": 0, "maximum": 10737418240},
+        "maxFailures": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "noProgressLimit": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    }
+  }
+}

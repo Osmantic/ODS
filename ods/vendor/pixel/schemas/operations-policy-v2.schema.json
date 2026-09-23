@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/operations-policy-v2.schema.json",
+  "title": "Pixel Operations Policy v2",
+  "type": "object",
+  "required": ["schemaVersion", "targets", "actions", "authority"],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "migratedFromSchemaVersion": {"const": 1},
+    "compatibilityGrantsRemovedAt": {"type": "string", "format": "date-time"},
+    "deployment": {"type": "string", "minLength": 1, "maxLength": 128},
+    "maxWorkers": {"type": "integer", "minimum": 1, "maximum": 32},
+    "workflowWorkers": {"type": "integer", "minimum": 1, "maximum": 16},
+    "maxWorkflowSteps": {"type": "integer", "minimum": 1, "maximum": 128},
+    "defaultTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+    "maxTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+    "maxOutputBytes": {"type": "integer", "minimum": 1024, "maximum": 16777216},
+    "planTtlMinutes": {"type": "integer", "minimum": 1, "maximum": 1440},
+    "identityCacheSeconds": {"type": "integer", "minimum": 0, "maximum": 300},
+    "sshBinary": {"type": "string", "pattern": "^/", "maxLength": 4096},
+    "download": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stagingRoot": {"type": "string", "pattern": "^/", "maxLength": 4096},
+        "maxBytes": {"type": "integer", "minimum": 1, "maximum": 2147483648},
+        "maxRedirects": {"type": "integer", "minimum": 0, "maximum": 10},
+        "allowedDomains": {
+          "type": "array", "maxItems": 100, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$", "maxLength": 253}
+        }
+      }
+    },
+    "targets": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_-]{1,63}$"},
+      "additionalProperties": {"$ref": "#/$defs/target"}
+    },
+    "actions": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_.-]{1,127}$"},
+      "additionalProperties": {"$ref": "#/$defs/action"}
+    },
+    "authority": {
+      "type": "object",
+      "required": ["defaultLevel", "grants"],
+      "properties": {
+        "defaultLevel": {"enum": ["disabled", "observe", "propose"]},
+        "grants": {"type": "array", "items": {"$ref": "#/$defs/grant"}, "maxItems": 1000},
+        "migrationNotice": {"type": "string", "maxLength": 500}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "target": {
+      "type": "object",
+      "required": ["backend", "expectedHostname", "allowedRoots", "environment"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "backend": {"enum": ["local", "ssh"]},
+        "sshHost": {"type": "string", "minLength": 1, "maxLength": 255},
+        "expectedHostname": {"type": "string", "minLength": 1, "maxLength": 255},
+        "environment": {"enum": ["development", "test", "staging", "production", "lab", "unclassified"]},
+        "defaultCwd": {"type": "string", "pattern": "^/"},
+        "allowedRoots": {"type": "array", "items": {"type": "string", "pattern": "^/"}, "minItems": 1},
+        "writableRoots": {"type": "array", "items": {"type": "string", "pattern": "^/"}},
+        "shell": {"enum": ["/bin/bash", "/bin/sh"]},
+        "dedicatedRunner": {"type": "boolean"},
+        "ephemeralRunner": {"type": "boolean"},
+        "allowRaw": {"type": "boolean"},
+        "labels": {"type": "array", "items": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$"}},
+        "capabilities": {"type": "array", "items": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,127}$"}}
+      },
+      "additionalProperties": false
+    },
+    "parameter": {
+      "type": "object",
+      "properties": {
+        "pattern": {"type": "string", "maxLength": 1000},
+        "maxLength": {"type": "integer", "minimum": 1, "maximum": 4096}
+      },
+      "additionalProperties": false
+    },
+    "action": {
+      "type": "object",
+      "required": ["description", "tier", "effect", "defaultAuthority", "idempotent", "reversible", "targets", "argv"],
+      "properties": {
+        "description": {"type": "string", "maxLength": 500},
+        "tier": {"enum": ["read", "staging", "managed", "change", "break-glass"]},
+        "effect": {"enum": ["observe", "stage", "manage", "change"]},
+        "defaultAuthority": {"enum": ["disabled", "observe", "propose"]},
+        "idempotent": {"type": "boolean"},
+        "reversible": {"type": "boolean"},
+        "rollbackAction": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,127}$"},
+        "verificationAction": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,127}$"},
+        "targets": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "parameters": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-z][A-Za-z0-9_]{0,63}$"},
+          "additionalProperties": {"$ref": "#/$defs/parameter"}
+        },
+        "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "cwd": {"type": "string", "pattern": "^/"},
+        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+        "exclusiveTarget": {"type": "boolean"},
+        "isolation": {"enum": ["none", "dedicated-runner", "ephemeral"]}
+      },
+      "additionalProperties": false
+    },
+    "grant": {
+      "type": "object",
+      "required": ["id", "level", "actions", "targets", "tiers", "environments"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,127}$"},
+        "level": {"const": "bounded-auto"},
+        "actions": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "targets": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "tiers": {"type": "array", "items": {"enum": ["read", "staging", "managed", "change"]}, "minItems": 1},
+        "environments": {"type": "array", "items": {"enum": ["development", "test", "staging", "production", "lab", "unclassified"]}, "minItems": 1},
+        "targetLabels": {"type": "array", "items": {"type": "string"}},
+        "parameterConstraints": {"type": "object"},
+        "maxExecutions": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "windowSeconds": {"type": "integer", "minimum": 60, "maximum": 31536000},
+        "maxConcurrent": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maxRuntimeSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+        "maxFailures": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "maxOutputBytes": {"type": "integer", "minimum": 1024, "maximum": 16777216},
+        "maxArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 2147483648},
+        "allowProduction": {"type": "boolean"},
+        "compatibilityV1": {"type": "boolean"},
+        "notBefore": {"type": "string", "format": "date-time"},
+        "expiresAt": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "units": {
+    "gateway": {
+      "name": "openclaw-gateway.service",
+      "destination": "/etc/systemd/system/openclaw-gateway.service",
+      "template": "/etc/pixel-release-operator/templates/openclaw-gateway.service",
+      "templateSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "priorTemplate": "/etc/pixel-release-operator/templates/openclaw-gateway.service.prior",
+      "priorTemplateSha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "courier": {
+      "name": "pixel-web-courier.service",
+      "destination": "/etc/systemd/system/pixel-web-courier.service",
+      "template": "/etc/pixel-release-operator/templates/pixel-web-courier.service",
+      "templateSha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  },
+  "readers": {
+    "ops": {
+      "user": "agent",
+      "probes": [
+        {"path": "/var/lib/pixel-ops-broker/private", "access": "read", "expect": false},
+        {"path": "/var/lib/pixel-ops-broker/.ssh", "access": "read", "expect": false},
+        {"path": "/etc/pixel-ops-broker/policy.json", "access": "read", "expect": false},
+        {"path": "/var/lib/pixel-ops-broker/plans", "access": "read", "expect": false},
+        {"path": "/var/lib/pixel-ops-broker/approvals", "access": "read", "expect": false}
+      ]
+    },
+    "frontier": {
+      "user": "agent",
+      "probes": [
+        {"path": "/var/lib/pixel-frontier-broker/requests", "access": "write", "expect": true},
+        {"path": "/var/lib/pixel-frontier-broker/results", "access": "read", "expect": true},
+        {"path": "/var/lib/pixel-frontier-broker/private/provider-key", "access": "read", "expect": false},
+        {"path": "/etc/pixel-frontier-broker/policy.json", "access": "read", "expect": false},
+        {"path": "/var/lib/pixel-frontier-broker/private", "access": "write", "expect": false}
+      ]
+    }
+  },
+  "receiptRoot": "/var/lib/pixel-release-operator/receipts"
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-backend-launch-v1.schema.json",
+  "title": "Pixel private inert contained model backend launch bundle v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "bindings", "artifactManifest", "runtimeCacheArtifactManifest", "network", "container", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-backend-launch-v1.schema.json"},
+    "schemaVersion": {"const": 1}, "operation": {"const": "pixel-work-model-backend-launch"},
+    "bindings": {
+      "type": "object", "additionalProperties": false,
+      "required": ["policySha256", "environmentSha256", "configurationSha256", "artifactSha256"],
+      "properties": {"policySha256": {"$ref": "#/$defs/sha256"}, "environmentSha256": {"$ref": "#/$defs/sha256"}, "configurationSha256": {"$ref": "#/$defs/sha256"}, "artifactSha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "artifactManifest": {"type": "object"},
+    "runtimeCacheArtifactManifest": {"oneOf": [{"type": "null"}, {"type": "object"}]},
+    "network": {"$ref": "#/$defs/command"},
+    "container": {"$ref": "#/$defs/command"},
+    "authority": {"const": {"grantsExecution": false, "createsNetwork": false, "startsContainer": false, "pullsImage": false, "grantsDevices": false, "grantsCredentials": false, "grantsExternalEffects": false, "grantsCompletion": false}},
+    "boundary": {"const": "Owner-private inert exact Docker argument vectors for a contained local-model backend. Possession or rendering grants no execution, network or container creation, image pull, device, credential, model qualification, policy mutation, external-effect, or completion authority; a separate exact-confirmed lifecycle must revalidate every binding and artifact before mutation."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "command": {
+      "type": "object", "additionalProperties": false, "required": ["command", "args", "env"],
+      "properties": {
+        "command": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "args": {"type": "array", "minItems": 1, "maxItems": 384, "items": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\\u0000\\r\\n]+$"}},
+        "env": {"const": {"HOME": "/nonexistent", "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "DOCKER_CONFIG": "/nonexistent"}}
+      }
+    }
+  }
+}

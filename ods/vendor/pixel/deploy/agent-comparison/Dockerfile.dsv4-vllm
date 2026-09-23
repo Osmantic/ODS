@@ -1,0 +1,64 @@
+# syntax=docker/dockerfile:1
+# check=skip=SecretsUsedInArgOrEnv
+# Private qualification image only. The model remains an owner-custody bind mount.
+FROM voipmonitor/vllm@sha256:48518e91cf87dd0c0483c76ff86e81dfc0f46de7e364b46f7a82c481ce08188f
+
+ARG WORKSPACE_PATCH_SHA256=50b5a02e83a419e6da309efb2f78580b72e5b04c57babf6d34854ef3d3fb6dbe
+ARG DSV4_SERVE_SHA256=4713a566ba154c3cff3e6eb1fbeb58c969306b8b6d6829059c5f0c35349e73d1
+RUN --mount=type=bind,source=workspace.py,target=/tmp/pixel-workspace.py,ro \
+    --mount=type=bind,source=dsv4-serve.sh,target=/tmp/dsv4-serve.sh,ro \
+    install -m 0644 /tmp/pixel-workspace.py \
+      /opt/venv/lib/python3.12/site-packages/vllm/v1/worker/workspace.py \
+    && install -m 0555 /tmp/dsv4-serve.sh /usr/local/bin/pixel-dsv4-serve \
+    && touch -d '@0' \
+      /opt/venv/lib/python3.12/site-packages/vllm/v1/worker/workspace.py \
+      /opt/venv/lib/python3.12/site-packages/vllm/v1/worker \
+      /usr/local/bin/pixel-dsv4-serve \
+      /usr/local/bin \
+    && printf '%s  %s\n' "${WORKSPACE_PATCH_SHA256}" \
+      /opt/venv/lib/python3.12/site-packages/vllm/v1/worker/workspace.py \
+      | sha256sum -c - \
+    && printf '%s  %s\n' "${DSV4_SERVE_SHA256}" \
+      /usr/local/bin/pixel-dsv4-serve \
+      | sha256sum -c -
+
+# These are the resolved, quality-relevant launcher settings used by the
+# DSV4 Flash 0731 product runtime. Keeping them in the image makes the image
+# digest bind the environment instead of relying on ambient docker settings.
+ENV B12X_MHC_MAX_TOKENS=16384 \
+    B12X_MOE_FORCE_A16=0 \
+    B12X_MOE_FORCE_A8=1 \
+    CUTE_DSL_ARCH=sm_120a \
+    INSTANTTENSOR_BACKEND=BUFFERED \
+    LLM_WORKER_MULTIPROC_METHOD=spawn \
+    NCCL_SOCKET_IFNAME=eth0 \
+    OMP_NUM_THREADS=16 \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    SAFETENSORS_FAST_GPU=1 \
+    VLLM_ALLOW_CUSTOM_ALLREDUCE_PCIE=0 \
+    VLLM_ALLREDUCE_USE_SYMM_MEM=0 \
+    VLLM_DSPARK_CAPACITY_ACTIVATION_BATCH_SIZE=0 \
+    VLLM_DSPARK_CAPACITY_LOG_INTERVAL=0 \
+    VLLM_DSPARK_DYNAMIC_DRAFT_DEPTH=0 \
+    VLLM_DSPARK_DYNAMIC_DRAFT_DEPTH_WINDOW=8 \
+    VLLM_DSPARK_FP8_DRAFT_HEAD=0 \
+    VLLM_DSPARK_STS_LOG_INTERVAL=0 \
+    VLLM_DSPARK_TP_CHECK=0 \
+    VLLM_ENABLE_PCIE_ALLREDUCE=0 \
+    VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD=1024 \
+    VLLM_PREFIX_CACHE_RETENTION_INTERVAL=4096 \
+    VLLM_USE_AOT_COMPILE=1 \
+    VLLM_USE_B12X_FP8_GEMM=1 \
+    VLLM_USE_B12X_MHC=1 \
+    VLLM_USE_B12X_MOE=1 \
+    VLLM_USE_B12X_PCIE_DMA=0 \
+    VLLM_USE_B12X_SPARSE_INDEXER=1 \
+    VLLM_USE_B12X_WO_PROJECTION=1 \
+    VLLM_USE_BREAKABLE_CUDAGRAPH=0 \
+    VLLM_USE_FLASHINFER_SAMPLER=1 \
+    VLLM_USE_MEGA_AOT_ARTIFACT=1 \
+    VLLM_USE_V2_MODEL_RUNNER=1 \
+    VLLM_WORKSPACE_LANE0_MIN_MIB=1152
+
+ENTRYPOINT ["/usr/local/bin/pixel-dsv4-serve"]
+CMD []

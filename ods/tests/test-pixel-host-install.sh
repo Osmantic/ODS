@@ -2587,8 +2587,8 @@ rebind = phase.index("_phase06_step \"rebind-pixel-source\"")
 restore = phase.index("_ods_pixel_restore_transition_source", rebind)
 retire = phase.index("ods_pixel_uninstall_managed", restore)
 assert rebind < restore < retire < preflight
-assert "Pixel source is unavailable. Configure authorized Git access" in phase
-assert "PIXEL_SOURCE_REF_VALUE=\"$(_env_get_explicit_first PIXEL_SOURCE_REF \"b33730436baf5d98bf58f7d57c090318fe19f433\")\"" in phase
+assert "Pixel source is unavailable. Verify the bundled source" in phase
+assert "PIXEL_SOURCE_REF_VALUE=\"$(_env_get_explicit_first PIXEL_SOURCE_REF \"$ODS_PIXEL_BUNDLED_REF\")\"" in phase
 assert "PIXEL_GATEWAY_PORT_VALUE=\"$(_env_get_explicit_first PIXEL_GATEWAY_PORT \"18789\")\"" in phase
 assert "PIXEL_PREVIEW_PORT_VALUE=\"$(_env_get_explicit_first PIXEL_PREVIEW_PORT \"9437\")\"" in phase
 assert "export PIXEL_GATEWAY_PORT=\"$PIXEL_GATEWAY_PORT_VALUE\"" in phase

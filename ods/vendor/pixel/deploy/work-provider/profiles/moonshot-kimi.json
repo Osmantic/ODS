@@ -1,0 +1,31 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-provider-profile-v1.schema.json",
+  "schemaVersion": 1,
+  "id": "moonshot-kimi",
+  "displayName": "Moonshot Kimi",
+  "protocol": "openai-chat-completions",
+  "remote": true,
+  "enabledByDefault": false,
+  "baseUrl": "https://api.moonshot.ai/v1",
+  "allowedHosts": [
+    "api.moonshot.ai:443"
+  ],
+  "auth": {
+    "mode": "bearer-api-key",
+    "header": "Authorization"
+  },
+  "defaultModel": "kimi-k3",
+  "reasoning": {
+    "mode": "kimi-reasoning-content",
+    "preserveProviderState": true,
+    "replayCompleteAssistantMessage": true
+  },
+  "budgets": {
+    "maxRequestsPerRun": 80,
+    "maxInputTokensPerRun": 2000000,
+    "maxOutputTokensPerRun": 400000,
+    "maxOutputTokensPerRequest": 65536
+  },
+  "boundary": "Public provider capability metadata only. Remote use remains disabled until an owner-private policy explicitly enables the exact provider, credential custody, egress hosts, and budgets. This profile grants no provider call, credential, network, tool, external-effect, deployment, publication, or security-testing authority.",
+  "modelSelection": "fixed"
+}

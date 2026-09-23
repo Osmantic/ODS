@@ -1,0 +1,15 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-model-backend-config-v1.schema.json",
+  "schemaVersion": 1,
+  "environmentPath": "/etc/pixel-work/environment.json",
+  "modelSource": {"kind": "file", "path": "/srv/pixel/models/model.gguf"},
+  "runtimeCacheSeed": null,
+  "backendNetwork": {"subnet": "172.31.255.0/29"},
+  "containerUser": {"uid": 10001, "gid": 10001},
+  "publishLoopbackPort": null,
+  "resources": {"memoryMiB": 32768, "cpuCores": 8, "pids": 512, "nofile": 4096, "tmpfsMiB": 256, "cacheMiB": 64, "sharedMemoryMiB": 256},
+  "readiness": {"startupTimeoutSeconds": 300, "probeIntervalMilliseconds": 1000},
+  "accelerator": {"class": "cpu", "count": 0, "deviceIds": []},
+  "providerOptions": {"provider": "llama.cpp", "threads": 8, "parallel": 1, "gpuLayers": 0, "flashAttention": false},
+  "boundary": "Owner-private contained model backend configuration only. It selects exact local bytes and bounded runtime resources but grants no hashing result, policy mutation, model qualification, execution, container or network creation, image pull, device access, credential, external-effect, or completion authority."
+}

@@ -18,6 +18,16 @@ from copy import deepcopy
 pytestmark = pytest.mark.skipif(os.name != 'posix',reason='owner-private POSIX adapter')
 
 
+def test_bundled_pixel_pin_tracks_parent_installer():
+    root = Path(__file__).resolve().parents[2]
+    phase = (root/'installers/phases/06-directories.sh').read_text()
+    integration = (root/'installers/lib/pixel-integration.sh').read_text()
+    bundled_ref = '817214d5ec3d8aa583fe50c1dc7561f3c1a16dff'
+    assert f"ODS_PIXEL_BUNDLED_REF='{bundled_ref}'" in integration
+    assert 'PIXEL_SOURCE_REF "$ODS_PIXEL_BUNDLED_REF"' in phase
+    assert f'PIXEL_SOURCE_REF={bundled_ref}' in (root/'.env.example').read_text()
+
+
 @pytest.fixture(params=(
     '70f44c90ac40b8409ebc965becc5b085a053e270',
     '9409d1ae894394a4848bf5b41a6323e64c577f06',

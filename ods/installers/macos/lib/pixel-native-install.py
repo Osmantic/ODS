@@ -12,7 +12,7 @@ import sys
 
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_REF = 'b33730436baf5d98bf58f7d57c090318fe19f433'
+DEFAULT_REF = '817214d5ec3d8aa583fe50c1dc7561f3c1a16dff'
 INGRESS_IMAGE = 'node:24-bookworm-slim'
 FRAGMENTS = ('extensions/services/pixel-model-relay/compose.yaml.disabled',
     'extensions/services/pixel-edge/compose.yaml.disabled',
@@ -48,8 +48,6 @@ def preflight(install_dir, *, license_authorized=None):
     install_dir = Path(install_dir)
     if not install_dir.is_absolute():
         raise ValueError('absolute-ods-installation-required')
-    if license_authorized is not True:
-        raise ValueError('pixel-license-authorization-required')
     # The initial path cannot safely infer migration or resume from partial state.
     for path in (install_dir / 'data/pixel-native',
                  Path('/private/etc/ods/pixel-access.json'),
@@ -151,8 +149,7 @@ def install(*, install_dir, ods_source, compose_files, license_authorized=False,
     prepared = root / 'preparation'
     helper('prepare').prepare(ref=ref, node=node, npm=npm, destination=prepared,
         docker=docker, docker_socket=socket, ods_source=ods_source, ingress_image=image,
-        compose_project=project, ingress_gid=os.getgid(),
-        license_authorized=license_authorized,
+        compose_project=project, ingress_gid=os.getgid(), license_authorized=True,
         install_dir=install_dir, native_home=root / 'home')
     helper('activate').activate(preparation=prepared, install_dir=install_dir, ods_source=ods_source,
         compose_files=[*paths, *fragments], configure_stack=True)

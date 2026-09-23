@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-fleet-host-evidence-v1.schema.json",
+  "title": "Pixel Deep Work fleet host-capacity evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "evidenceId", "fleetId", "fleetSha256", "observedAt", "expiresAt", "hostFingerprintSha256", "measurement", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-fleet-host-evidence-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "evidenceId": {"type": "string", "pattern": "^workhostevidence-[0-9]{13}-[a-f0-9]{12}$"},
+    "fleetId": {"type": "string", "pattern": "^workfleet-[0-9]{13}-[a-f0-9]{12}$"},
+    "fleetSha256": {"$ref": "#/$defs/sha256"},
+    "observedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "hostFingerprintSha256": {"$ref": "#/$defs/sha256"},
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "physical", "systemReserve", "sharedServices", "admitted"],
+      "properties": {
+        "source": {"const": "reviewed-linux-capacity-and-service-limits"},
+        "physical": {"$ref": "#/$defs/capacity"},
+        "systemReserve": {"$ref": "#/$defs/reserve"},
+        "sharedServices": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["serviceId", "unitName", "limitEvidenceSha256", "maxCpuCores", "maxMemoryMiB", "maxDiskBytes"],
+            "properties": {
+              "serviceId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$"},
+              "unitName": {"type": "string", "pattern": "^[a-zA-Z0-9_.@-]{1,200}\\.service$"},
+              "limitEvidenceSha256": {"$ref": "#/$defs/sha256"},
+              "maxCpuCores": {"type": "integer", "minimum": 0, "maximum": 128},
+              "maxMemoryMiB": {"type": "integer", "minimum": 0, "maximum": 1048576},
+              "maxDiskBytes": {"type": "integer", "minimum": 0, "maximum": 1099511627776}
+            }
+          }
+        },
+        "admitted": {"$ref": "#/$defs/capacity"}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grantsExecution", "grantsLease", "grantsReplay", "grantsScopeExpansion", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "grantsExecution": {"const": false}, "grantsLease": {"const": false}, "grantsReplay": {"const": false},
+        "grantsScopeExpansion": {"const": false}, "grantsExternalEffects": {"const": false}, "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Short-lived owner-reviewed host-capacity evidence. It reserves operating-system and shared-service ceilings before fleet admission and grants no execution, lease, replay, scope expansion, external effect, or completion authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "capacity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cpuCores", "memoryMiB", "disposableDiskBytes"],
+      "properties": {
+        "cpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+        "memoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+        "disposableDiskBytes": {"type": "integer", "minimum": 1048576, "maximum": 140737488355328}
+      }
+    },
+    "reserve": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cpuCores", "memoryMiB", "diskBytes"],
+      "properties": {
+        "cpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+        "memoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+        "diskBytes": {"type": "integer", "minimum": 1048576, "maximum": 140737488355328}
+      }
+    }
+  }
+}

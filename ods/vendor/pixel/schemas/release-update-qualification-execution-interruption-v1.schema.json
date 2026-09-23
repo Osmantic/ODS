@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-qualification-execution-interruption-v1.schema.json",
+  "title": "Pixel qualification execution interruption v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "status",
+    "operation",
+    "candidateId",
+    "activationHash",
+    "qualifierIdentity",
+    "sourceCommit",
+    "sourceTree",
+    "host",
+    "executionClaimSha256",
+    "executionSpecSha256",
+    "executionStartSha256",
+    "containerName",
+    "attemptId",
+    "candidateExecutionState",
+    "reason",
+    "recordedAt",
+    "terminalPromotionEvidence",
+    "publicationAuthority",
+    "productionActivationAuthority",
+    "compatibilityMutationAuthority",
+    "productionStateChanged",
+    "boundary"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "status": {"const": "interrupted"},
+    "operation": {"const": "pixel-release-qualification-execution-interruption"},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "activationHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "qualifierIdentity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$"},
+    "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sourceTree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "host": {"$ref": "#/$defs/host"},
+    "executionClaimSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "executionSpecSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "executionStartSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "containerName": {"type": "string", "pattern": "^pixel-qual-exec-[0-9a-f]{20}$"},
+    "attemptId": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "candidateExecutionState": {"const": "indeterminate"},
+    "reason": {"const": "post-start-infrastructure-failure"},
+    "recordedAt": {"type": "string", "format": "date-time"},
+    "terminalPromotionEvidence": {"const": false},
+    "publicationAuthority": {"const": false},
+    "productionActivationAuthority": {"const": false},
+    "compatibilityMutationAuthority": {"const": false},
+    "productionStateChanged": {"const": false},
+    "boundary": {"const": "Content-free immutable terminal interruption artifact for one post-start indeterminate qualification execution; it does not assert whether candidate code executed, records no observation or result, is not terminal promotion evidence, and grants no production, publication, compatibility, or promotion authority."}
+  },
+  "$defs": {
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "versionId", "label", "supported"],
+      "properties": {
+        "id": {"enum": ["ubuntu", "debian"]},
+        "versionId": {"enum": ["24.04", "12"]},
+        "label": {"enum": ["Ubuntu 24.04 LTS", "Debian 12"]},
+        "supported": {"const": true}
+      },
+      "allOf": [
+        {"if": {"properties": {"id": {"const": "ubuntu"}}}, "then": {"properties": {"versionId": {"const": "24.04"}, "label": {"const": "Ubuntu 24.04 LTS"}}}},
+        {"if": {"properties": {"id": {"const": "debian"}}}, "then": {"properties": {"versionId": {"const": "12"}, "label": {"const": "Debian 12"}}}}
+      ]
+    }
+  }
+}

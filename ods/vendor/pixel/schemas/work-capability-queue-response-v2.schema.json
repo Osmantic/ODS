@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-queue-response-v2.schema.json",
+  "title": "Pixel Deep Work durable operational queue response v2 (lane-bound)",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "requestId", "jobId", "createdAt", "authorizationSha256", "checkpointSha256", "status", "operationId", "lane", "receiptSha256", "outputSha256", "outputBytes", "structuredContent", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-queue-response-v2.schema.json"},
+    "schemaVersion": {"const": 2},
+    "requestId": {"type": "string", "pattern": "^workcaprequest-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "authorizationSha256": {"$ref": "#/$defs/sha256"},
+    "checkpointSha256": {"$ref": "#/$defs/sha256"},
+    "status": {"enum": ["succeeded", "failed-contained", "uncertain-no-replay"]},
+    "operationId": {"type": ["string", "null"], "pattern": "^workcapv2-[0-9]{13}-[a-f0-9]{16}$"},
+    "lane": {"enum": ["filesystem", "ssh-hostname", "public-retrieval"]},
+    "receiptSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+    "outputSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+    "outputBytes": {"type": ["integer", "null"], "minimum": 0},
+    "structuredContent": {"type": ["object", "null"]},
+    "authority": {"const": {"grantsReplay": false, "grantsFutureExecution": false, "grantsCredentials": false, "grantsNetwork": false, "grantsExternalEffects": false, "grantsScopeExpansion": false, "grantsCompletion": false}},
+    "boundary": {"const": "Private job-scoped v2 queue response for one durably reconciled controller-admitted operation. Structured content is untrusted data and grants no replay, future execution, credential, network, external-effect, scope-expansion, or completion authority."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "succeeded"}, "lane": {"const": "filesystem"}}, "required": ["status", "lane"]},
+      "then": {"properties": {"structuredContent": {"$ref": "#/$defs/filesystemStructuredContent"}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "succeeded"}, "lane": {"const": "ssh-hostname"}}, "required": ["status", "lane"]},
+      "then": {"properties": {"structuredContent": {"$ref": "#/$defs/sshHostnameStructuredContent"}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "succeeded"}, "lane": {"const": "public-retrieval"}}, "required": ["status", "lane"]},
+      "then": {"properties": {"structuredContent": {"$ref": "#/$defs/publicRetrievalStructuredContent"}}}
+    },
+    {
+      "if": {"properties": {"status": {"enum": ["failed-contained", "uncertain-no-replay"]}}, "required": ["status"]},
+      "then": {"properties": {"receiptSha256": {"type": "null"}, "outputSha256": {"type": "null"}, "outputBytes": {"type": "null"}, "structuredContent": {"type": "null"}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "filesystemStructuredContent": {"type": "object", "additionalProperties": false, "required": ["operationId", "lane", "status", "path", "outputSha256", "outputBytes", "receiptSha256"], "properties": {"operationId": {"type": "string", "pattern": "^workcapv2-[0-9]{13}-[a-f0-9]{16}$"}, "lane": {"const": "filesystem"}, "status": {"const": "succeeded"}, "path": {"type": "string", "minLength": 1}, "outputSha256": {"$ref": "#/$defs/sha256"}, "outputBytes": {"type": "integer", "minimum": 0}, "receiptSha256": {"$ref": "#/$defs/sha256"}}},
+    "sshHostnameStructuredContent": {"type": "object", "additionalProperties": false, "required": ["operationId", "lane", "status", "destinationAlias", "commandId", "hostname", "outputSha256", "outputBytes", "receiptSha256", "approvalSha256", "signatureSha256", "approvalConsumptionSha256"], "properties": {"operationId": {"type": "string", "pattern": "^workcapv2-[0-9]{13}-[a-f0-9]{16}$"}, "lane": {"const": "ssh-hostname"}, "status": {"const": "succeeded"}, "destinationAlias": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}, "commandId": {"const": "hostname"}, "hostname": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$"}, "outputSha256": {"$ref": "#/$defs/sha256"}, "outputBytes": {"type": "integer", "minimum": 1, "maximum": 4096}, "receiptSha256": {"$ref": "#/$defs/sha256"}, "approvalSha256": {"$ref": "#/$defs/sha256"}, "signatureSha256": {"$ref": "#/$defs/sha256"}, "approvalConsumptionSha256": {"$ref": "#/$defs/sha256"}}},
+    "publicRetrievalStructuredContent": {"type": "object", "additionalProperties": false, "required": ["operationId", "lane", "status", "outputSha256", "outputBytes", "receiptSha256", "evidenceWrapper"], "properties": {"operationId": {"type": "string", "pattern": "^workcapv2-[0-9]{13}-[a-f0-9]{16}$"}, "lane": {"const": "public-retrieval"}, "status": {"const": "succeeded"}, "outputSha256": {"$ref": "#/$defs/sha256"}, "outputBytes": {"type": "integer", "minimum": 1}, "receiptSha256": {"$ref": "#/$defs/sha256"}, "evidenceWrapper": {"type": "object", "additionalProperties": false, "required": ["trust", "authority", "text"], "properties": {"trust": {"const": "untrusted"}, "authority": {"const": "none"}, "text": {"type": "string", "minLength": 1}}}}}
+  }
+}

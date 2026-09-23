@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-backend-lifecycle-review-v1.schema.json",
+  "title": "Pixel contained model backend lifecycle review v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "intent", "status", "launchBundleSha256", "lifecycleSha256", "confirmation", "effects", "privacy", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-backend-lifecycle-review-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-model-backend-lifecycle-review"},
+    "intent": {"enum": ["start", "stop"]},
+    "status": {"const": "confirmation-required"},
+    "launchBundleSha256": {"$ref": "#/$defs/sha256"},
+    "lifecycleSha256": {"$ref": "#/$defs/sha256"},
+    "confirmation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["option", "sha256"],
+      "properties": {"option": {"const": "--confirm-lifecycle-sha256"}, "sha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "effects": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mayCreateNetwork", "mayCreateContainer", "mayStartContainer", "mayStopContainer", "mayRemoveContainer", "mayRemoveNetwork", "pullsImage", "changesPolicy", "grantsExternalEffects"],
+      "properties": {
+        "mayCreateNetwork": {"type": "boolean"}, "mayCreateContainer": {"type": "boolean"}, "mayStartContainer": {"type": "boolean"},
+        "mayStopContainer": {"type": "boolean"}, "mayRemoveContainer": {"type": "boolean"}, "mayRemoveNetwork": {"type": "boolean"},
+        "pullsImage": {"const": false}, "changesPolicy": {"const": false}, "grantsExternalEffects": {"const": false}
+      }
+    },
+    "privacy": {"const": {"modelIdentifier": false, "backendIdentifier": false, "acceleratorIdentifier": false, "deviceIdentifiers": false, "paths": false, "hashesExceptConfirmation": false, "credentials": false, "prompts": false, "responses": false}},
+    "authority": {"const": {"grantsExecution": false, "createsNetwork": false, "startsContainer": false, "stopsContainer": false, "removesContainer": false, "removesNetwork": false, "pullsImage": false, "grantsDevices": false, "grantsCredentials": false, "grantsExternalEffects": false, "grantsCompletion": false}},
+    "boundary": {"const": "Content-free exact-confirmation review for one contained local-model lifecycle intent. The review itself changes nothing; execution must remeasure the model, revalidate the pinned image and exact private inputs, refuse foreign resources or peers, and never pull an image or grant credentials, external effects, or completion authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

@@ -15,7 +15,7 @@ module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 
 
-@pytest.mark.parametrize('fault', [None, 'license', 'root', 'intel', 'linux', 'existing', 'partial', 'relative'])
+@pytest.mark.parametrize('fault', [None, 'root', 'intel', 'linux', 'existing', 'partial', 'relative'])
 def test_preflight_never_mutates_existing_installations(tmp_path, monkeypatch, fault):
     monkeypatch.setattr(module.sys, 'platform', 'linux' if fault == 'linux' else 'darwin')
     monkeypatch.setattr(module.platform, 'machine', lambda: 'x86_64' if fault == 'intel' else 'arm64')
@@ -27,7 +27,7 @@ def test_preflight_never_mutates_existing_installations(tmp_path, monkeypatch, f
                 (fault == 'partial' and str(path).endswith('pixel-native')))
     monkeypatch.setattr(module.os.path, 'lexists', exists)
     args = dict(install_dir='relative' if fault == 'relative' else tmp_path / 'ods',
-        license_authorized=fault != 'license')
+        license_authorized=False)
     if fault:
         with pytest.raises(ValueError): module.preflight(**args)
     else:
@@ -114,9 +114,8 @@ def test_main_shell_routes_pixel_only_after_base_launch_and_before_flag_persiste
     assert launch < script.index('echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"')
     shared = (ROOT / 'installers/phases/06-directories.sh').read_text()
     source_contract = (ROOT / 'installers/lib/pixel-integration.sh').read_text()
-    assert module.DEFAULT_REF in shared
-    assert 'https://github.com/Osmantic/Pixel.git' in source_contract
-    assert 'PIXEL_LICENSE_ACCEPTED' in script
+    assert 'ODS_PIXEL_BUNDLED_REF' in shared
+    assert module.DEFAULT_REF in source_contract
 
 
 @pytest.mark.parametrize('pixel', ['true', 'false'])

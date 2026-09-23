@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/pixel-sealed-corpus-reveal-receipt-v1.schema.json",
+  "title": "Pixel owner-private immutable held-out reveal/materialization receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "commitmentSha256", "freezeSha256", "campaignId", "candidateSha256", "revealManifestSha256", "heldOutMaterializationSha256", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/pixel-sealed-corpus-reveal-receipt-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-sealed-corpus-reveal-receipt"},
+    "commitmentSha256": {"$ref": "#/$defs/hash"},
+    "freezeSha256": {"$ref": "#/$defs/hash"},
+    "campaignId": {"type": "string", "minLength": 1},
+    "candidateSha256": {"$ref": "#/$defs/hash"},
+    "revealManifestSha256": {"$ref": "#/$defs/hash"},
+    "heldOutMaterializationSha256": {"$ref": "#/$defs/hash"},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["execution", "retuning", "heldOutDisclosure", "heldOutMaterialization", "completion", "promotion"],
+      "properties": {
+        "execution": {"const": false}, "retuning": {"const": false}, "heldOutDisclosure": {"const": false},
+        "heldOutMaterialization": {"const": false},
+        "completion": {"const": false}, "promotion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Owner-private immutable held-out reveal/materialization receipt only. It binds the exact commitment, freeze, campaign/candidate identity, reveal manifest, and separately materialized held-out root. It records the owner-private consumption/settlement of the single authorized held-out materialization and grants no execution, model, provider, credential, network, external effect, held-out disclosure, acceptance, publication, deployment, promotion, or further materialization authority."}
+  },
+  "$defs": {"hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

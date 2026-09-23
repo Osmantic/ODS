@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-image-admission-v1.schema.json",
+  "title": "Pixel Deep Work capability image admission v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "pack", "installationReceiptSha256", "image", "inspectedAt", "enabled", "health", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-image-admission-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-capability-image-admission"},
+    "pack": {"$ref": "#/$defs/pack"},
+    "installationReceiptSha256": {"$ref": "#/$defs/sha256"},
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "digest", "id", "inspectSha256", "treeSha256", "executableSha256", "executableBytes", "metadataValidated", "executableValidated", "pulledByPixel", "executed"],
+      "properties": {
+        "reference": {
+          "type": "string",
+          "oneOf": [
+            {"pattern": "^[a-z0-9][a-z0-9._/:+-]{1,255}@sha256:[a-f0-9]{64}$"},
+            {"pattern": "^sha256:[a-f0-9]{64}$"}
+          ]
+        },
+        "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "inspectSha256": {"$ref": "#/$defs/sha256"},
+        "treeSha256": {"$ref": "#/$defs/sha256"},
+        "executableSha256": {"$ref": "#/$defs/sha256"},
+        "executableBytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "metadataValidated": {"const": true},
+        "executableValidated": {"const": true},
+        "pulledByPixel": {"const": false},
+        "executed": {"const": false}
+      }
+    },
+    "inspectedAt": {"type": "string", "format": "date-time"},
+    "enabled": {"const": false},
+    "health": {"const": {"status": "not-probed", "evidenceSha256": null}},
+    "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Host-verified admission of one already-local exact image and executable. Admission pulls and executes no image, registers no tool, and grants no health probe, tool use, data access, network, external effect, or completion authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "pack": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "packSha256", "treeSha256", "signerIdentity"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+        "packSha256": {"$ref": "#/$defs/sha256"},
+        "treeSha256": {"$ref": "#/$defs/sha256"},
+        "signerIdentity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$"}
+      }
+    },
+    "authority": {
+      "const": {
+        "grantsHealthProbe": false,
+        "grantsToolUse": false,
+        "grantsDataAccess": false,
+        "grantsImagePull": false,
+        "grantsExecution": false,
+        "grantsNetwork": false,
+        "grantsExternalEffects": false,
+        "grantsCompletion": false
+      }
+    }
+  }
+}

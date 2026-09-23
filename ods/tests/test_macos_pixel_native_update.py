@@ -25,14 +25,13 @@ def docker_endpoint():
             yield endpoint
 
 
-def test_cli_preserves_update_options_with_license_authorization():
+def test_cli_preserves_update_options_without_license_flag():
     script = (Path(__file__).resolve().parents[1] / 'installers/macos/ods-macos.sh').read_text()
     function = script[script.index('cmd_update_pixel() {'):script.index('\ncmd_update() {')]
     function = function.replace('/usr/bin/python3', 'python_fixture')
     shell = '''set -eu
 test_install() { :; }
 ai_err() { echo "$*" >&2; }
-read_env_value() { printf '%s\n' true; }
 python_fixture() { printf '%s\\n' "$@"; }
 ''' + function + '\ncmd_update_pixel --prepare-only\n'
     result = subprocess.run(['/bin/bash', '-c', shell], capture_output=True, text=True,
@@ -41,7 +40,7 @@ python_fixture() { printf '%s\\n' "$@"; }
     assert result.stdout.splitlines() == [
         '/owner/ODS with spaces/installers/macos/lib/pixel-native-update.py',
         '--install-dir', '/owner/ODS with spaces', '--ods-source', '/owner/ODS with spaces',
-        '--license-authorized', '--prepare-only']
+        '--prepare-only']
     assert 'update-pixel) cmd_update_pixel "$@" ;;' in script
 
 
@@ -121,8 +120,8 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
         assert dict(os.environ) == before
 
 
-def test_update_rejects_missing_license_authorization(monkeypatch):
+def test_update_reaches_installation_validation_without_license_flag(monkeypatch):
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
-    with pytest.raises(ValueError, match='pixel-license-authorization-required'):
+    with pytest.raises(FileNotFoundError):
         module.update(install_dir='/missing', ods_source='/missing')

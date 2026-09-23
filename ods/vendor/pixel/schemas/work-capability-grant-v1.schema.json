@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-grant-v1.schema.json",
+  "title": "Pixel Deep Work isolated capability grant v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "grantId", "jobId", "issuedAt", "expiresAt", "singleUse", "checkpointSha256", "pack", "tools", "dataClassification", "limits", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-grant-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "grantId": {"type": "string", "pattern": "^workcapgrant-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "issuedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "singleUse": {"const": true},
+    "checkpointSha256": {"$ref": "#/$defs/sha256"},
+    "pack": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "packSha256", "treeSha256"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+        "packSha256": {"$ref": "#/$defs/sha256"},
+        "treeSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "tools": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"}},
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxInputBytes", "maxOutputBytes", "maxRuntimeMs", "maxCalls", "maxMemoryMiB", "maxCpuCores", "maxPids", "maxWorkspaceBytes"],
+      "properties": {
+        "maxInputBytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "maxRuntimeMs": {"type": "integer", "minimum": 100, "maximum": 3600000},
+        "maxCalls": {"const": 1},
+        "maxMemoryMiB": {"type": "integer", "minimum": 64, "maximum": 8192},
+        "maxCpuCores": {"type": "number", "minimum": 0.1, "maximum": 8},
+        "maxPids": {"type": "integer", "minimum": 16, "maximum": 512},
+        "maxWorkspaceBytes": {"type": "integer", "minimum": 0, "maximum": 34359738368}
+      }
+    },
+    "authority": {
+      "const": {"hostAccess": false, "credentials": false, "network": false, "externalEffects": false, "scopeExpansion": false, "completion": false}
+    },
+    "boundary": {"const": "Exact expiring single-use grant for one isolated capability-pack session. It grants only the named local tool calls inside the disposable boundary and no host, credential, network, external-effect, scope-expansion, or completion authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}
