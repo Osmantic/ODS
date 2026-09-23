@@ -31,6 +31,7 @@ from helpers import get_loaded_model, get_llama_context_size
 from pixel_chat_identity import messages_with_identity
 from pixel_chat_context import HistorySnapshot, public_context
 from pixel_runtime_identity import project_runtime_identity, unknown_runtime_identity
+from pixel_readiness import project_readiness
 
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ _STREAM_KEEPALIVE = b": pixel working\n\n"
 _CLIENT_CANCEL_TIMEOUT_SECONDS = 7.0
 _MAX_KEY_LENGTH = 4096
 _MAX_STATUS_BYTES = 64 * 1024
+_READINESS_PROBE_SECONDS = 4.0
 _MAX_SSE_LINE_BYTES = 1024 * 1024
 _MAX_MESSAGE_CHARS = 16 * 1024
 _MAX_TOTAL_MESSAGE_BYTES = 256 * 1024
@@ -534,6 +536,34 @@ async def _bounded_response_bytes(response: httpx.Response, limit: int) -> bytes
     return b"".join(chunks)
 
 
+async def _current_access_readiness():
+    try:
+        # Bound the entire transport, including connect/retry time, rather
+        # than only its socket-read timeout. Diagnostics cannot gate chat.
+        async with async_timeout(_READINESS_PROBE_SECONDS):
+            value = await request_agent_json("GET", "/v1/pixel/access-mode", timeout=_READINESS_PROBE_SECONDS)
+            return _access_projection(value), None
+    except asyncio.TimeoutError:
+        return None, "access-probe-timeout"
+    except AgentClientError:
+        return None, "access-probe-unavailable"
+    except (HTTPException, ValueError, TypeError, RecursionError):
+        return None, "access-probe-invalid"
+
+
+async def _current_runtime_identity(edge_url, key):
+    try:
+        async with async_timeout(_READINESS_PROBE_SECONDS):
+            async with httpx.AsyncClient(timeout=httpx.Timeout(_READINESS_PROBE_SECONDS), trust_env=False, follow_redirects=False) as client:
+                async with client.stream("GET", f"{edge_url}/v1/runtime-identity",
+                                         headers=_edge_headers(key, accept="application/json")) as response:
+                    if response.status_code == 200 and response.headers.get("content-type", "").lower().startswith("application/json"):
+                        return project_runtime_identity(json.loads(await _bounded_response_bytes(response, 8192)))
+    except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError):
+        pass
+    return unknown_runtime_identity()
+
+
 @router.get("/status", dependencies=[Depends(verify_api_key)])
 async def pixel_status(http_response: Response = None) -> dict[str, object]:
     """Return a fixed, nonsecret Pixel availability projection."""
@@ -593,20 +623,20 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         # Availability is not installed-release verification. A missing, old,
         # or malformed diagnostic route must not disable otherwise working chat.
         identity = unknown_runtime_identity()
+        access, access_issue = None, "access-probe-unavailable"
         if available:
-            try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(4.0), trust_env=False, follow_redirects=False) as client:
-                    async with client.stream("GET", f"{edge_url}/v1/runtime-identity",
-                                             headers=_edge_headers(key, accept="application/json")) as response:
-                        if response.status_code == 200 and response.headers.get("content-type", "").lower().startswith("application/json"):
-                            identity = project_runtime_identity(json.loads(await _bounded_response_bytes(response, 8192)))
-            except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError):
-                pass
+            identity, (access, access_issue) = await asyncio.gather(
+                _current_runtime_identity(edge_url, key), _current_access_readiness())
         result["runtimeIdentity"] = identity
         result["runtimeMatchesRelease"] = identity["runtimeMatchesRelease"]
+        result["readiness"] = project_readiness(available, access, identity, access_issue)
         if available:
             result["detail"] = "Owner agent available; " + ("runtime files changed since initialization" if identity["state"] == "mismatch"
                                                          else "release identity is not fully verified")
+            if result["readiness"]["accessState"] == "failed":
+                result["detail"] = "Owner agent available; host access verification failed; effective access and release readiness are unverified"
+            elif result["readiness"]["accessState"] == "transitioning":
+                result["detail"] = "Owner agent available; access transition is unfinished; release readiness is unverified"
         return result
     except (httpx.HTTPError, asyncio.TimeoutError) as exc:
         # Exception text and request objects can contain upstream credentials.

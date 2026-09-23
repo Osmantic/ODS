@@ -25,6 +25,8 @@ import PortalContextRing from '../components/PortalContextRing'
 import {compactCommand,CONTEXT_REQUEST_ID,historySnapshot,usePortalContext} from '../lib/portalContext'
 import PortalModelSelector from '../components/PortalModelSelector'
 import PortalRuntimeIdentity from '../components/PortalRuntimeIdentity'
+import PortalReadiness from '../components/PortalReadiness'
+import { pixelReadinessView } from '../lib/pixelReadiness'
 import PortalAgentActivity from '../components/PortalAgentActivity'
 import PortalExtensionSetup from '../components/PortalExtensionSetup'
 import PortalExtensionProgress from '../components/PortalExtensionProgress'
@@ -560,6 +562,7 @@ export default function Pixel({ systemStatus = null }) {
   const [contextRuntime, setContextRuntime] = useState(null)
   const [modelSupport, setModelSupport] = useState(null)
   const [runtimeIdentity, setRuntimeIdentity] = useState(null)
+  const [runtimeReadiness, setRuntimeReadiness] = useState(null)
   const [modelSwitching,setModelSwitching]=useState(false)
   const [modelStatusRefresh,setModelStatusRefresh]=useState(0)
   const [preview, setPreview] = useState(() => initialChat?.preview || null)
@@ -748,6 +751,7 @@ export default function Pixel({ systemStatus = null }) {
         const data = await response.json()
         if (stopped) return
         setRuntimeIdentity(data?.runtimeIdentity ?? null)
+        setRuntimeReadiness(data?.readiness ?? null)
         const runtime = data?.runtime
         const runtimeKeys = runtime && typeof runtime === 'object' && !Array.isArray(runtime)
           ? Object.keys(runtime).sort().join('\n')
@@ -815,6 +819,7 @@ export default function Pixel({ systemStatus = null }) {
         if (!stopped && error?.name !== 'AbortError') {
           setAgentRuntime(null)
           setRuntimeIdentity(null)
+          setRuntimeReadiness(null)
           setStatus('unavailable')
           setStatusDetail('Could not reach Pixel backend')
         }
@@ -1375,6 +1380,7 @@ export default function Pixel({ systemStatus = null }) {
     sendMessage,
   })
   const workingElapsed = formatElapsed(workingElapsedSeconds)
+  const readinessView = pixelReadinessView(runtimeReadiness, status === 'available')
   const statusLabel = contextControl.busy ? (contextControl.phase==='unknown'?'Checking context':'Compacting') : stopping
     ? 'Stopping'
     : teams.busy
@@ -1388,7 +1394,7 @@ export default function Pixel({ systemStatus = null }) {
     : interrupted && restoredActivity === 'unknown'
       ? 'Activity unknown'
     : status === 'available'
-      ? 'Available'
+      ? (readinessView.attention ? 'Needs attention' : 'Available')
       : status === 'switching'
         ? 'Switching model...'
       : status === 'loading'
@@ -1459,23 +1465,20 @@ export default function Pixel({ systemStatus = null }) {
             className={`inline-flex items-center gap-1.5 text-[11px] font-medium ${
             sending
               ? 'text-theme-accent-light'
-              : status === 'available'
-              ? 'text-emerald-400'
               : 'text-amber-300'
           }`}
           >
             {sending || status === 'loading' || status === 'switching' ? (
               <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
-              <span className={`h-1.5 w-1.5 rounded-full ${
-                status === 'available' ? 'bg-emerald-400' : 'bg-amber-300'
-              }`} />
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
             )}
             {statusLabel}
             {sending && <span className="font-mono text-[10px] opacity-80">{workingElapsed}</span>}
           </span>
         </div>
       </header>
+      {status === 'available' && <PortalReadiness readiness={runtimeReadiness} />}
       {status === 'available' && modelSupport && (
         <p role="status" aria-label="Model capability" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-amber-300 sm:px-6">
           {modelSupport.detail}

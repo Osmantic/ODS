@@ -7,7 +7,7 @@ import json
 import os
 import pathlib
 import sys
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -32,6 +32,11 @@ from pixel_runtime_state import pixel_stream_active  # noqa: E402
 
 
 EDGE_KEY = "e" * 64
+UNVERIFIED_READINESS = {
+    "schemaVersion": 1, "state": "unverified", "routeAvailable": True,
+    "accessState": "unverified", "effectiveMode": "unknown", "releaseState": "unverified",
+    "reasonCode": "access-probe-invalid", "observedAt": ANY,
+}
 
 
 class FakeResponse:
@@ -336,7 +341,8 @@ async def test_status_returns_only_fixed_projection():
     with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(response)):
         result = await pixel.pixel_status()
     assert result == {"available": True, "model": "pixel/default", "detail": "Owner agent available; release identity is not fully verified",
-                      "runtimeIdentity": pixel.unknown_runtime_identity(), "runtimeMatchesRelease": None}
+                      "runtimeIdentity": pixel.unknown_runtime_identity(), "runtimeMatchesRelease": None,
+                      "readiness": UNVERIFIED_READINESS}
     assert secret not in json.dumps(result)
 
 
@@ -446,6 +452,7 @@ async def test_status_projects_only_validated_active_remote_runtime(monkeypatch)
         "model": "pixel/default",
         "detail": "Owner agent available; release identity is not fully verified",
         "runtimeIdentity": pixel.unknown_runtime_identity(), "runtimeMatchesRelease": None,
+        "readiness": UNVERIFIED_READINESS,
         "runtime": {
             "source": "remote-provider",
             "model": "remote-owner-model",
@@ -704,6 +711,7 @@ async def test_status_keeps_adaptive_model_available_with_fixed_advisory(monkeyp
         "model": "pixel/default",
         "detail": "Owner agent available; release identity is not fully verified",
         "runtimeIdentity": pixel.unknown_runtime_identity(), "runtimeMatchesRelease": None,
+        "readiness": UNVERIFIED_READINESS,
         "modelSupport": {
             "tier": "adaptive",
             "detail": pixel._MODEL_CAPABILITY_DETAIL,
