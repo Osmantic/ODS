@@ -211,6 +211,7 @@ jobs:
         run: |
           python3 scripts/audit-extensions.py --project-dir .
           bash tests/test-extension-audit.sh
+          python3 -m pytest -q tests/test_extension_audit_library.py
 
       - name: Extension Runtime Check Tests
         run: bash tests/test-extension-runtime-check.sh
@@ -249,7 +250,7 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
 
       - name: Pixel Native Integration Contracts
-        run: python3 -m pytest -q tests/test_pixel_macos_apps.py tests/test_pixel_native_compose_live.py tests/test_pixel_onboarding.py tests/test_pixel_open_app_handler.py tests/test_pixel_runtime_budget.py
+        run: python3 -m pytest -q tests/test_pixel_macos_apps.py tests/test_pixel_native_compose_live.py tests/test_pixel_onboarding.py tests/test_pixel_open_app_handler.py tests/test_pixel_runtime_budget.py tests/test_macos_snapshot_definition.py
 
       - name: Service Registry Tests
         run: |
