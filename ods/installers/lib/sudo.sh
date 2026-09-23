@@ -26,6 +26,13 @@ ods_sudo_available() {
 
 ods_sudo() {
     if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+        # Options belong to sudo, not the command. In particular, -u must still
+        # change identity when the installer already runs as root. Keep sudo's
+        # own option parsing and fail without prompting if it cannot proceed.
+        if [[ ${1:-} == -* ]]; then
+            sudo -n "$@"
+            return $?
+        fi
         "$@"
         return $?
     fi

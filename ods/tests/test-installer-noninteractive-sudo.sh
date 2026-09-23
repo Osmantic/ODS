@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression coverage for the Docker permission fallback in phase 05.
+# Regression coverage for the sudo helper and Docker permission fallback.
 set -u
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -69,12 +69,19 @@ if _docker_try_with_optional_sudo info; then
 else
     pass "no-sudo Docker fallback returns promptly with failure"
 fi
-[[ "${DOCKER_CMD:-docker}" == "docker" ]] \
-    && pass "no-sudo run keeps the unprivileged Docker command" \
-    || fail "no-sudo run promoted Docker to sudo"
-[[ ! -e "$SUDO_MARKER" ]] \
-    && pass "no-sudo run never invokes raw sudo" \
-    || fail "no-sudo run invoked raw sudo"
+if [[ $EUID -eq 0 ]]; then
+    # Root is always privileged regardless of the non-root availability flag.
+    [[ "${DOCKER_CMD:-}" == "sudo docker" && -e "$SUDO_MARKER" ]] \
+        && pass "root availability is independent of the non-root sudo flag" \
+        || fail "root unexpectedly used the unavailable-sudo branch"
+else
+    [[ "${DOCKER_CMD:-docker}" == "docker" ]] \
+        && pass "no-sudo run keeps the unprivileged Docker command" \
+        || fail "no-sudo run promoted Docker to sudo"
+    [[ ! -e "$SUDO_MARKER" ]] \
+        && pass "no-sudo run never invokes raw sudo" \
+        || fail "no-sudo run invoked raw sudo"
+fi
 
 rm -f "$SUDO_MARKER"
 ODS_SUDO_AVAILABLE=true
@@ -87,6 +94,72 @@ _docker_try_with_optional_sudo info || true
 [[ "${DOCKER_CMD:-}" == "sudo docker" ]] \
     && pass "available sudo promotes the Docker command" \
     || fail "available sudo did not promote the Docker command"
+
+# From here on, sudo only records arguments and returns a selected status. No
+# command passed through it is executed, even when this fixture runs as root.
+sudo() {
+    printf '%s\n' "$@" > "$tmp_dir/sudo.args"
+    return "${SUDO_TEST_STATUS:-0}"
+}
+probe_command() {
+    printf '%s\n' "$@" > "$tmp_dir/direct.args"
+    return "${DIRECT_TEST_STATUS:-0}"
+}
+assert_sudo_args() {
+    printf '%s\n' "$@" > "$tmp_dir/expected.args"
+    cmp -s "$tmp_dir/expected.args" "$tmp_dir/sudo.args"
+}
+ODS_SUDO_AVAILABLE=true
+INTERACTIVE=false
+rm -f "$tmp_dir/sudo.args" "$tmp_dir/direct.args"
+ods_sudo probe_command 'a value with spaces' '--literal-option'
+if [[ $EUID -eq 0 ]]; then
+    [[ -f "$tmp_dir/direct.args" && ! -e "$tmp_dir/sudo.args" ]] \
+        && pass "root runs ordinary commands directly" \
+        || fail "root unnecessarily invokes sudo for an ordinary command"
+    printf '%s\n' 'a value with spaces' '--literal-option' > "$tmp_dir/expected.args"
+    cmp -s "$tmp_dir/expected.args" "$tmp_dir/direct.args" \
+        && pass "root direct execution preserves argument boundaries" \
+        || fail "root direct execution changed arguments"
+    DIRECT_TEST_STATUS=37
+    ods_sudo probe_command inert
+    [[ $? -eq 37 ]] && pass "root preserves the command failure" \
+        || fail "root swallowed the command failure"
+    unset DIRECT_TEST_STATUS
+else
+    assert_sudo_args -n probe_command 'a value with spaces' '--literal-option' \
+        && pass "non-root commands use noninteractive sudo with exact arguments" \
+        || fail "non-root sudo arguments changed"
+fi
+
+ods_sudo -u 'fixture-owner' -- env 'HOME=/home/fixture owner' probe_command inert
+assert_sudo_args -n -u 'fixture-owner' -- env 'HOME=/home/fixture owner' probe_command inert \
+    && pass "identity options reach sudo intact, including under root" \
+    || fail "identity options were executed as a command or lost"
+ods_sudo -E bash '/tmp/inert fixture.sh'
+assert_sudo_args -n -E bash '/tmp/inert fixture.sh' \
+    && pass "environment options reach sudo intact" \
+    || fail "environment options were executed as a command or lost"
+ods_sudo -- probe_command inert
+assert_sudo_args -n -- probe_command inert \
+    && pass "sudo option terminator is preserved" \
+    || fail "sudo option terminator was executed as a command or lost"
+SUDO_TEST_STATUS=41
+ods_sudo -u fixture-owner -- probe_command inert
+[[ $? -eq 41 ]] && pass "identity-switch failure propagates" \
+    || fail "identity-switch failure was swallowed"
+SUDO_TEST_STATUS=127
+ods_sudo -u fixture-owner -- probe_command inert
+[[ $? -eq 127 ]] && pass "unavailable sudo fails without a direct-execution fallback" \
+    || fail "unavailable sudo did not fail closed"
+unset SUDO_TEST_STATUS
+if [[ $EUID -ne 0 ]]; then
+    INTERACTIVE=true
+    ods_sudo -u fixture-owner -- probe_command inert
+    assert_sudo_args -u fixture-owner -- probe_command inert \
+        && pass "non-root interactive sudo keeps its existing prompt behavior" \
+        || fail "non-root interactive behavior changed"
+fi
 
 printf 'Results: %d passed, %d failed\n' "$pass_count" "$fail_count"
 [[ "$fail_count" -eq 0 ]]
