@@ -54,7 +54,6 @@ bash scripts/simulate-installers.sh
 echo "[gate] update rollback"
 bash tests/test-update-rollback-contract.sh
 bash tests/test-update-quoted-compose.sh
-"$PYTHON_CMD" tests/test_source_update_preflight.py
-"$PYTHON_CMD" tests/test_native_backup_guard.py
+"$PYTHON_CMD" -m pytest -q tests/test_source_update_preflight.py tests/test_native_backup_guard.py
 
 echo "[PASS] release gate"

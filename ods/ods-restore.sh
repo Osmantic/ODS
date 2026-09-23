@@ -108,6 +108,8 @@ OPTIONS:
 
 Native Pixel installations permit inspection/dry-run only. Applying config or data
 requires a supported native restore path; ordinary ODS restore refuses it.
+Older user-data-only archives can lack both native-state metadata and configuration.
+This utility cannot detect their past native Pixel omissions or certify completeness.
 
 BACKUP_ID:
     The backup identifier to restore from (e.g., 20260212-071500)

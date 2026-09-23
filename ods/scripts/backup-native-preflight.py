@@ -32,8 +32,10 @@ def main():
             document = json.loads(args.manifest.read_text(encoding="utf-8"))
             if not isinstance(document, dict):
                 raise ValueError("backup-manifest-object-required")
-            # Older archives lack the new exclusion receipt, so inspect their
-            # own selected config as well. Never infer completeness from absence.
+            # An absent exclusion receipt is not sufficient when an older
+            # archive still contains native-selected config. Legacy user-data-
+            # only archives can lack both signals; their past omission cannot
+            # be detected here and this check does not certify completeness.
             identity = "excluded-archive" if "native_pixel" in document else native_state(args.manifest.parent)
         else:
             if args.install_dir is None:

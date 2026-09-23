@@ -46,7 +46,11 @@ deployments should use a pinned release or audited commit.
   until a coordinated capture and recovery contract is implemented. A
   configuration-only archive is not a Pixel backup. Preserve the existing
   installation and recovery receipts; do not delete the source directory or
-  manually copy protected state into a replacement deployment.
+  manually copy protected state into a replacement deployment. Ambiguous owner
+  contexts, including root-owned Linux appliances, are refused too; this does
+  not establish that those installations contain Pixel. Old user-data-only
+  archives may lack any native selection or exclusion record, so their original
+  native coverage cannot be established retroactively.
 - Native Windows credential files must have verified current-user-only access
   before secret bytes are written. Failure to apply or verify those permissions
   stops installation instead of returning success with a warning.
