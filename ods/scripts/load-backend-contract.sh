@@ -9,6 +9,7 @@ ENV_MODE="false"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --backend)
+            [[ $# -ge 2 ]] || { echo "Missing value for argument: --backend" >&2; exit 1; }
             BACKEND_ID="${2:-}"
             shift 2
             ;;
