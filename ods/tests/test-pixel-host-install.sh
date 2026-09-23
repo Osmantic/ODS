@@ -851,11 +851,11 @@ else
     fail "missing prior Pixel validation source was not reconstructed safely"
 fi
 
-# A normal upgrade has no shell-level Pixel ref. Verify its pre-copy transition
-# can retire the old marker from the present checkout without a private remote
-# or the old commit in the new ODS bundle.
+# A normal upgrade has no shell-level Pixel ref. Its persisted bundled ref is
+# the old release, so the new verified bundle must advance it before the
+# pre-copy transition retires the old marker from the present checkout.
 printf 'PIXEL_SOURCE_URL=bundled\nPIXEL_SOURCE_REF=%s\n' \
-    "$ODS_PIXEL_BUNDLED_REF" > "$transition_install/.env"
+    "$previous_source_ref" > "$transition_install/.env"
 phase06_pre_copy="$(sed -n '/^    _env_existing=""/,/^    unset _phase06_pixel_marker _phase06_pixel_source_transition/p' \
     "$ROOT/installers/phases/06-directories.sh")"
 _phase06_pre_copy_fixture() { eval "$phase06_pre_copy"; }
@@ -877,9 +877,24 @@ if (
         && "$_phase06_requested_pixel_ref" == "$ODS_PIXEL_BUNDLED_REF" \
         && -f "$transition_install/retired" ]]
 ); then
-    pass "old managed Pixel transitions to bundle before source copy without remote access"
+    pass "persisted old bundled Pixel ref advances and transitions before source copy"
 else
-    fail "old managed Pixel did not transition before source copy"
+    fail "persisted old bundled Pixel ref did not advance and transition"
+fi
+if (
+    PIXEL_SOURCE_REF="$previous_source_ref"
+    HOME="$TEST_ROOT/no-marker-home"
+    INSTALL_DIR="$transition_install"
+    SCRIPT_DIR="$ROOT"
+    ENABLE_PIXEL_RUNTIME=true
+    ai() { :; }
+    error() { :; return 1; }
+    source "$ROOT/lib/safe-env.sh"
+    _phase06_pre_copy_fixture
+); then
+    fail "an explicit old bundled Pixel pin was silently advanced"
+else
+    pass "an explicit old bundled Pixel pin fails closed"
 fi
 printf 'PIXEL_SOURCE_URL=https://github.com/Osmantic/Pixel.git\nPIXEL_SOURCE_REF=%s\n' \
     b33730436baf5d98bf58f7d57c090318fe19f433 > "$transition_install/.env"

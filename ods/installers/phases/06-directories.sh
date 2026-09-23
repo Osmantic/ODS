@@ -173,6 +173,14 @@ else
         _phase06_requested_pixel_url="$(_env_get_explicit_first PIXEL_SOURCE_URL bundled)"
         _phase06_requested_pixel_ref="$(_env_get_explicit_first PIXEL_SOURCE_REF "$ODS_PIXEL_BUNDLED_REF")"
         _phase06_requested_pixel_dir="$(_env_get_explicit_first PIXEL_SOURCE_DIR "")"
+        # A persisted bundled ref identifies the release that was installed,
+        # not a pin against future ODS updates. Use this release's verified
+        # bundle unless the caller explicitly requested an exact source ref.
+        # The source-transition checks below still validate/retire the prior
+        # managed checkout before installed code is replaced.
+        if [[ "$_phase06_requested_pixel_url" == bundled && -z "${PIXEL_SOURCE_REF:-}" ]]; then
+            _phase06_requested_pixel_ref="$ODS_PIXEL_BUNDLED_REF"
+        fi
         # This is an upgrade sentinel only; no private repository is fetched.
         if [[ "$_phase06_requested_pixel_url" == 'https://github.com/Osmantic/Pixel.git' \
             && "$_phase06_requested_pixel_ref" == 'b33730436baf5d98bf58f7d57c090318fe19f433' ]]; then
