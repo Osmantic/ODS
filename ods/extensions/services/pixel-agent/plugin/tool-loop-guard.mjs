@@ -459,7 +459,7 @@ export function createRunAbortAdapter({resolveSessionId, abort}) {
       if (typeof observe !== 'function') return;
       try {
         observe({sessionKeyPresent:Boolean(sessionKey), resolverMatched:Boolean(resolved),
-          targetOrigin:resolved ? 'session-key' : 'session-id',
+          targetOrigin:stage === 'resolve' ? 'unobserved' : resolved ? 'session-key' : 'session-id',
           resolvedMatchesTrackedSession:Boolean(resolved) && resolved === sessionId,
           acknowledged:value === true, callbackThrew:threw,
           exceptionStage:threw ? stage : undefined,
