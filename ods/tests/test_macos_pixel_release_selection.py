@@ -193,9 +193,14 @@ def test_standard_bootstrap_hands_clean_checkout_to_installed_entrypoint(source)
     for directory in (home, temporary, bins): directory.mkdir()
     put(bins, 'docker', b'#!/bin/sh\nexit 0\n')
     (bins / 'docker').chmod(0o755)
+    # Darwin intentionally resets TMPDIR during bootstrap. Keep this fixture's
+    # real clone inside its test tree without depending on that OS policy.
+    put(bins, 'mktemp', b'#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = -d ] || exit 64\nexec /usr/bin/mktemp -d "$ODS_TEST_TEMP_ROOT/checkout.XXXXXX"\n')
+    (bins / 'mktemp').chmod(0o755)
     env = dict(os.environ, HOME=str(home), TMPDIR=str(temporary),
         PATH=str(bins) + os.pathsep + os.environ['PATH'], ODS_REPO_URL=str(source.repository),
-        ODS_INSTALL_DIR=str(home / 'ods'), ODS_REF=ref, ODS_ALLOW_LEGACY_PARALLEL='1')
+        ODS_INSTALL_DIR=str(home / 'ods'), ODS_REF=ref, ODS_ALLOW_LEGACY_PARALLEL='1',
+        ODS_TEST_TEMP_ROOT=str(temporary))
     bootstrap = Path(__file__).resolve().parents[1] / 'get-ods.sh'
     result = subprocess.run(['bash', str(bootstrap), '--non-interactive'], env=env,
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
