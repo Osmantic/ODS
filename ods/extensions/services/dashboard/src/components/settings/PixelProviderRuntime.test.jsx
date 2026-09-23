@@ -74,6 +74,18 @@ it('requires explicit confirmation, focuses cancel, and restores focus on Escape
   expect(apply()).toHaveFocus()
   expect(posts(mock)).toHaveLength(0)
 })
+
+it('restores focus to runtime refresh after inspection settles', async () => {
+  const mock = vi.fn(async () => response(runtimeDoc('unavailable')))
+  vi.stubGlobal('fetch', mock)
+  render(<PixelProviderRuntime {...props()} />)
+  await waitFor(() => expect(refresh()).toBeEnabled())
+  const trigger = refresh()
+  trigger.focus()
+  fireEvent.click(trigger)
+  await waitFor(() => expect(gets(mock)).toHaveLength(2))
+  await waitFor(() => expect(trigger).toHaveFocus())
+})
 it('requires fresh cloud acknowledgement on each confirmation', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => response(runtimeDoc())))
   render(<PixelProviderRuntime {...props()} allowCloud />)
