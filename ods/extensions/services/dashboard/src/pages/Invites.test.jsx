@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Invites from './Invites' // eslint-disable-line no-unused-vars
 
@@ -21,6 +21,37 @@ const ownerCardPublicReady = {
 describe('Invites', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  test('keeps the newest list when a manual refresh overtakes an older refresh', async () => {
+    let resolveInitial
+    let resolveOld
+    let resolveNew
+    const initial = new Promise(resolve => { resolveInitial = resolve })
+    const oldRefresh = new Promise(resolve => { resolveOld = resolve })
+    const newRefresh = new Promise(resolve => { resolveNew = resolve })
+    let listCalls = 0
+    const fetchMock = vi.fn(async url => {
+      if (String(url).includes('/old12345')) return response({ revoked: true })
+      if (url === '/api/auth/magic-link/list') {
+        listCalls += 1
+        return listCalls === 1 ? initial : listCalls === 2 ? oldRefresh : newRefresh
+      }
+      if (url === '/api/auth/magic-link/owner-card/status') return response(ownerCardReady)
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<Invites />)
+    const oldToken = { token_hash_prefix: 'old12345', target_username: 'old-user', token_type: 'guest', url_mode: 'lan', expires_at: future, reusable: true }
+    await act(async () => { resolveInitial(response({ tokens: [oldToken] })) })
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh setup owner links' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke invite for old-user' }))
+    await waitFor(() => expect(listCalls).toBe(3))
+    await act(async () => { resolveNew(response({ tokens: [{ token_hash_prefix: 'new12345', target_username: 'new-user', token_type: 'guest', url_mode: 'lan' }] })) })
+    expect(await screen.findByText('new-user')).toBeVisible()
+    await act(async () => { resolveOld(response({ tokens: [{ token_hash_prefix: 'old12345', target_username: 'old-user', token_type: 'guest', url_mode: 'lan' }] })) })
+    expect(screen.getByText('new-user')).toBeVisible()
+    expect(screen.queryByText('old-user')).toBeNull()
   })
 
   test('renders Owner access and revokes active owner cards', async () => {
