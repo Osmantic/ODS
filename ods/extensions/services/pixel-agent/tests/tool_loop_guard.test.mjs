@@ -5686,6 +5686,82 @@ test("rejects a synchronous host-command success without external approval evide
   assert.match(reply(guard)?.payload?.text, /did not obtain a matching terminal broker result/);
 });
 
+test("plan-only lifecycle continues past inspection to the exact approval-plan action", () => {
+  const guard = createToolLoopGuard();
+  const inspectJob = "ops-1234567890123-abcdef123456";
+  const prompt = "Prepare exactly one immutable Operations Broker approval plan for cataloged ODS extension action ods.extensions.install with serviceId go-httpbin; do not execute.";
+  guard.observeRun(
+    { agentId: "pixel", runId: "run-1", sessionId: "session-1" },
+    "pixel",
+    { prompt }
+  );
+  afterCall(guard, "pixel_ops_inventory", {
+    event: { result: { details: operationsInventoryDetails() } },
+  });
+  afterCall(guard, "pixel_ops_run", {
+    event: {
+      params: { target: "ods-host", action: "ods.extensions.inspect", parameters: { serviceId: "go-httpbin" } },
+      result: { details: { jobId: inspectJob, status: "submitted", kind: "action" } },
+    },
+  });
+  afterCall(guard, "pixel_ops_job_wait", {
+    event: {
+      params: { jobId: inspectJob },
+      result: { details: {
+        jobId: inspectJob, status: "succeeded", waitTimedOut: false,
+        planHash: "a".repeat(64), approvalRequired: false,
+        steps: [lifecycleStep("inspect", lifecycleResult("inspect", { extensionId: "go-httpbin" }))],
+      } },
+    },
+  });
+  assert.equal(reply(guard)?.payload?.text, OPERATIONS_UNVERIFIED_DELIVERY_PREFIX);
+  const persisted = guard.toolResultPersist(
+    { message: { role: "toolResult", toolName: "pixel_ops_job_wait",
+      content: [{ type: "text", text: "Inspection succeeded." }] } },
+    { agentId: "pixel", runId: "run-1", toolCallId: "inspect-wait" }, "pixel"
+  );
+  assert.match(persisted?.message?.content?.at(-1)?.text ?? "", /inspection.*not.*approval/i);
+  assert.match(persisted?.message?.content?.at(-1)?.text ?? "", /ods\.extensions\.install/);
+  const continuation = guard.beforeAgentFinalize(
+    { runId: "run-1", lastAssistantMessage: "The inspection plan hash is the install approval plan." },
+    { agentId: "pixel", runId: "run-1" },
+    "pixel"
+  );
+  assert.equal(continuation?.action, "revise");
+  assert.match(continuation?.retry?.instruction ?? "", /id pixel_ops_run/);
+  assert.match(continuation?.retry?.instruction ?? "", /ods\.extensions\.install/);
+  assert.match(continuation?.retry?.instruction ?? "", /go-httpbin/);
+  assert.match(continuation?.retry?.instruction ?? "", /inspection.*not.*approval|inspection.*not.*install/i);
+  const installJob = "ops-1234567890124-fedcba654321";
+  afterCall(guard, "pixel_ops_run", {
+    event: {
+      params: { target: "ods-host", action: "ods.extensions.install", parameters: { serviceId: "go-httpbin" } },
+      result: { details: { jobId: installJob, status: "submitted", kind: "action" } },
+    },
+  });
+  assert.match(guard.beforeAgentFinalize(
+    { runId: "run-1", lastAssistantMessage: "The plan is ready." },
+    { agentId: "pixel", runId: "run-1" }, "pixel"
+  )?.retry?.instruction ?? "", new RegExp(installJob));
+  afterCall(guard, "pixel_ops_job_wait", {
+    event: {
+      params: { jobId: installJob },
+      result: { details: {
+        jobId: installJob, status: "awaiting-approval", waitTimedOut: false,
+        approvalRequired: true, planHash: "b".repeat(64),
+      } },
+    },
+  });
+  assert.equal(guard.beforeAgentFinalize(
+    { runId: "run-1", lastAssistantMessage: "External approval is pending." },
+    { agentId: "pixel", runId: "run-1" }, "pixel"
+  )?.retry, undefined, "a submitted install plan must not be replayed");
+  const text = reply(guard)?.payload?.text;
+  assert.match(text, new RegExp(installJob));
+  assert.match(text, new RegExp("b".repeat(64)));
+  assert.doesNotMatch(text, new RegExp("a".repeat(64)));
+});
+
 test("forces extension lifecycle inspection, exact IDs, and sequential submissions", () => {
   const guard = createToolLoopGuard();
   const inspectJob = "ops-1234567890123-abcdef123456";
@@ -5834,6 +5910,10 @@ test("renders missing extension configuration as a verified no-effect result", (
     })?.blockReason,
     OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON
   );
+  assert.equal(guard.beforeAgentFinalize(
+    { runId: "run-1", lastAssistantMessage: "Configuration is missing." },
+    { agentId: "pixel", runId: "run-1" }, "pixel"
+  )?.retry, undefined, "missing configuration must not prompt a mutation");
   const text = reply(guard)?.payload?.text;
   assert.match(text, new RegExp(`^${OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX}`));
   assert.match(text, /Missing required configuration keys: `CREWAI_API_KEY`/);

@@ -509,6 +509,10 @@ test("live plan-only extension wording frontloads the exact broker first tool", 
   assert.match(ODS_EXTENSION_LIFECYCLE_CONTRACT,
     /Broker tools handle authentication themselves; do not use exec, curl, or read local Operations tokens/);
   assert.match(ODS_EXTENSION_LIFECYCLE_CONTRACT,
+    /inspection receipt may have a planHash with approvalRequired=false; it is not the requested action's approval plan/);
+  assert.match(ODS_EXTENSION_LIFECYCLE_CONTRACT,
+    /requested action's own job is awaiting-approval with approvalRequired=true/);
+  assert.match(ODS_EXTENSION_LIFECYCLE_CONTRACT,
     /Do not call apps, status, exec, web, memory/);
 });
 

@@ -9258,11 +9258,51 @@ export function createToolLoopGuard({
       parameters: {serviceId: lifecycle.serviceId}});
   }
 
+  function extensionLifecycleContinuation(state) {
+    const lifecycle = state?.operationsExpectedExtensionLifecycle;
+    if (!state?.operationsRequired || !lifecycle || lifecycle.action === "install-next") return undefined;
+    const next = (stage, id, args, explanation = "") => ({
+      stage: `lifecycle-${stage}`,
+      instruction: `${explanation}Do not reply yet. Call tool_call now with id ${id} and args ${JSON.stringify(args)}. ` +
+        "Use only the returned Operations Broker receipt; never approve a job yourself or replay a submitted mutation.",
+    });
+    const pending = [...state.operationsSubmittedJobs.keys()].filter(
+      (id) => !state.operationsTerminalJobs.has(id));
+    if (pending.length === 1) return next(`wait-${pending[0]}`, "pixel_ops_job_wait", {jobId: pending[0]});
+    if (pending.length > 1) return undefined;
+    const submissions = [...state.operationsSubmittedJobs.values()];
+    if (submissions.length === 0 && !state.operationsInventory) {
+      return state.operationsInventoryAttempted ? undefined
+        : next("inventory", "pixel_ops_inventory", {});
+    }
+    const inspected = submissions.some((submission) =>
+      submission.actions?.some((action) => action.action === "ods.extensions.inspect"));
+    if (!inspected) {
+      return next("inspect", "pixel_ops_run", {target: "ods-host", action: "ods.extensions.inspect",
+        parameters: {serviceId: lifecycle.serviceId}});
+    }
+    const inspection = parsedLifecycleOutcome(state.operationsTerminalJobs, "ods.extensions.inspect");
+    if (!inspection || inspection.result.extensionId !== lifecycle.serviceId) return undefined;
+    const action = lifecycle.action === "install" &&
+      ["disabled", "stopped"].includes(inspection.result.currentStatus)
+      ? "ods.extensions.enable" : `ods.extensions.${lifecycle.action}`;
+    if (inspectionAlreadySatisfiesLifecycleAction(inspection, action) ||
+        !inspectionPermitsLifecycleAction(inspection, action) ||
+        submissions.some((submission) => submission.actions?.some((item) =>
+          item.action !== "ods.extensions.inspect"))) return undefined;
+    return next(`action-${action}`, "pixel_ops_run", {target: "ods-host", action,
+      parameters: {serviceId: lifecycle.serviceId}},
+      "The inspection job's planHash is only an inspection receipt, not an approval plan for the requested action. ");
+  }
+
   function trustedOperationsContinuation(state, runId) {
     if (!state?.operationsRequired) return undefined;
     if (extensionDiscoveryActive(state)) return undefined;
     if (state.operationsExpectedExtensionLifecycle?.action === "install-next") {
       return catalogInstallationContinuation(state);
+    }
+    if (state.operationsExpectedExtensionLifecycle) {
+      return extensionLifecycleContinuation(state);
     }
     if (state.operationsInventoryOnly) {
       if (state.operationsInventory || state.operationsInventoryAttempted) return undefined;
