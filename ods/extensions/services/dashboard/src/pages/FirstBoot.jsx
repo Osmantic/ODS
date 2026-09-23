@@ -602,8 +602,9 @@ function Row({ label, value, hint }) {
 // Done - show generated owner card
 // ---------------------------------------------------------------------------
 
-function DoneScreen({ invite, onDone }) {
+export function DoneScreen({ invite, onDone }) {
   const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState(false)
   const [qrDataUrl, setQrDataUrl] = useState(null)
   const [qrError, setQrError] = useState(null)
 
@@ -629,12 +630,13 @@ function DoneScreen({ invite, onDone }) {
   }, [invite.url])
 
   const copy = async () => {
+    setCopyError(false)
     try {
       await navigator.clipboard.writeText(invite.url)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch {
-      // Fallback: a visible input would let the user select manually.
+      setCopyError(true)
     }
   }
 
@@ -694,6 +696,7 @@ function DoneScreen({ invite, onDone }) {
           {copied ? <Check size={16} className="text-green-400" /> : <Copy size={16} />}
         </button>
       </div>
+      {copyError && <p role="alert" className="mb-6 text-xs text-red-300">Clipboard access failed. Select the link above and copy it manually.</p>}
 
       <div className="flex gap-3">
         {typeof navigator !== 'undefined' && navigator.share && (
