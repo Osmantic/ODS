@@ -15568,14 +15568,16 @@ test('abort adapter preserves synchronous targets, return values and callback co
 
 test('abort adapter observer failures preserve SDK exceptions and never add calls', () => {
   for (const stage of ['resolve','abort','success']) {
-    const failure=new Error('private failure'), calls=[];
+    const failure=new Error('private failure'), calls=[], observations=[];
     const abort=createRunAbortAdapter({resolveSessionId:()=>{calls.push('resolve');if(stage==='resolve')throw failure;return 'target';},
       abort:()=>{calls.push('abort');if(stage==='abort')throw failure;return true;}});
-    const observe=value=>{calls.push('observe');assert.equal(value.exceptionStage,stage==='success'?undefined:stage);
-      assert.equal(value.targetOrigin,stage==='resolve'?'unobserved':'session-key');throw new Error('sink failure');};
+    const observe=value=>{calls.push('observe');observations.push(value);throw new Error('sink failure');};
     if(stage==='success') assert.equal(abort('tracked','key',observe),true);
     else assert.throws(()=>abort('tracked','key',observe),error=>error===failure);
     assert.deepEqual(calls,stage==='resolve'?['resolve','observe']:['resolve','abort','observe']);
+    assert.equal(observations.length,1);
+    assert.equal(observations[0].exceptionStage,stage==='success'?undefined:stage);
+    assert.equal(observations[0].targetOrigin,stage==='resolve'?'unobserved':'session-key');
   }
   const calls=[];
   assert.equal(createRunAbortAdapter({resolveSessionId:()=>{calls.push('resolve');},abort:()=>{calls.push('abort');return false;}})('tracked','key'),false);
