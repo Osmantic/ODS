@@ -607,3 +607,19 @@ error surfaces. Gate: `dashboard portal response error untrusted text`.
 - Evidence: `ods/extensions/services/dashboard/src/components/CompactDashboard.jsx:31-43`; live console testing on `http://127.0.0.1:3001/extensions` recorded the error.
 - Duplicate gate: live issue/PR searches for `CompactDashboard ResizeObserver` returned no matching defect; existing compact-row PRs address row identity, not observer lifecycle.
 - Regression coverage: invoke a queued resize callback after unmount and assert that it does not throw.
+
+### 83. Extension Details close loses trigger focus
+
+- Severity: P2 accessibility
+- Journey: open an extension’s Details dialog from the library and close it.
+- Expected: focus returns to the Details button that opened the dialog.
+- Actual: closing the dialog leaves focus on the document body, forcing keyboard
+  users to restart navigation from the page root.
+- Evidence: `ods/extensions/services/dashboard/src/pages/Extensions.jsx:512-526,912-955`;
+  live test on the healthy local ODS stack showed focus on the AXWebArea after
+  closing `XTTS (Coqui TTS)` details.
+- Duplicate gate: live issue/PR searches for `extension details focus return dashboard`
+  returned no matching defect; existing extension focus findings cover the
+  confirmation dialog and details focus containment, not trigger restoration.
+- Regression coverage: open Details, close it, and assert
+  `document.activeElement` is the original Details trigger.
