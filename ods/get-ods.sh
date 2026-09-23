@@ -608,4 +608,7 @@ echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 cd "$INSTALL_DIR"
+# Native artifact provenance compares installed bytes with this clean checkout's
+# immutable Git objects. The runtime copy deliberately contains no .git directory.
+export ODS_BOOTSTRAP_SOURCE_DIR="$TEMP_DIR/repo/ods"
 exec ./install.sh "$@"

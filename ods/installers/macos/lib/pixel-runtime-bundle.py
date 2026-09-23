@@ -173,10 +173,18 @@ def _selected_release_source(root, plugin_indices, *, wrapper, repairs, expected
 
     A checkout, installed archive, or external plugin may legitimately lack
     provable provenance. That limits identity reporting, not installation.
+    The standard bootstrap supplies its clean source checkout separately from
+    the installed copy. It supplies no trusted commit label: Git object IDs and
+    subsequent comparisons with the actual copied bytes establish the binding.
     """
     selected = {'reason': 'source-unavailable', 'commit': None, 'objects': {},
                 'plugins': list(plugin_indices), 'repairInputs': {}}
     try:
+        bootstrap_source = os.environ.get('ODS_BOOTSTRAP_SOURCE_DIR')
+        if bootstrap_source is not None:
+            if not bootstrap_source or not Path(bootstrap_source).is_absolute():
+                return selected
+            root = bootstrap_source
         root = Path(root).resolve(strict=True)
         repository = Path(_git(root, 'rev-parse', '--show-toplevel', limit=4096).decode().strip()).resolve(strict=True)
         prefix = root.relative_to(repository).as_posix()

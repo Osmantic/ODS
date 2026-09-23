@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -43,6 +44,7 @@ def put(root, path, body):
 
 @pytest.fixture
 def source(tmp_path, monkeypatch):
+    monkeypatch.delenv('ODS_BOOTSTRAP_SOURCE_DIR', raising=False)
     repository = tmp_path / 'repo'
     repository.mkdir()
     ods = repository / 'ods'
@@ -141,6 +143,68 @@ def test_mutated_service_copy_cannot_claim_selected_commit(source):
     value = bundle.service_source_provenance(selected, source.files)
     assert value['odsSource']['reason'] == 'source-bytes-mismatch'
     assert value['odsSource']['commit'] is None
+
+
+def test_bootstrap_archive_binds_actual_copies_to_git_objects(source, monkeypatch):
+    installed = source.tmp / 'installed'
+    shutil.copytree(source.ods, installed)
+    original = source.ods
+    source.ods = installed
+    monkeypatch.setenv('ODS_BOOTSTRAP_SOURCE_DIR', str(original))
+    monkeypatch.setenv('ODS_REF', 'f' * 40)  # A label cannot substitute for Git identity.
+    manifest = services(source)
+    _, entries, value = staged(source, manifest)
+    assert value['odsSource'] == {'state': 'verified-source-bindings', 'commit': source.ref, 'reason': None}
+    assert bundle._validate_release_selection(value, entries) is value
+    assert str(original) not in json.dumps(value)
+    put(installed, 'extensions/services/pixel-agent/plugin/index.mjs', b'changed installed artifact\n')
+    _, _, changed = staged(source, manifest)
+    assert changed['odsSource']['reason'] == 'source-bytes-mismatch'
+    assert changed['sourceBindings'] == {}
+    source.files['manager/extension_manager.py'] = b'changed installed service\n'
+    assert services(source)['sourceProvenance']['odsSource']['reason'] == 'source-bytes-mismatch'
+
+
+@pytest.mark.parametrize('fault', ['missing', 'non-git', 'dirty', 'relative', 'empty'])
+def test_bootstrap_source_hint_cannot_fabricate_provenance(source, monkeypatch, fault):
+    if fault == 'dirty':
+        put(source.ods, 'untracked.txt', b'not a clean checkout')
+        hint = str(source.ods)
+    elif fault == 'non-git':
+        root = source.tmp / 'archive'; shutil.copytree(source.ods, root); hint = str(root)
+    else:
+        hint = {'missing': str(source.tmp / 'missing'), 'relative': 'relative', 'empty': ''}[fault]
+    monkeypatch.setenv('ODS_BOOTSTRAP_SOURCE_DIR', hint)
+    monkeypatch.setenv('ODS_REF', source.ref)
+    value = services(source)['sourceProvenance']
+    assert value['odsSource']['state'] == 'unknown'
+    assert value['odsSource']['commit'] is None
+    assert value['sourceBindings'] == {}
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX bootstrap handoff')
+def test_standard_bootstrap_hands_clean_checkout_to_installed_entrypoint(source):
+    put(source.ods, 'install.sh', b'#!/bin/bash\nset -eu\nprintf "%s\\n" "$ODS_BOOTSTRAP_SOURCE_DIR" > source-path.txt\n')
+    (source.ods / 'install.sh').chmod(0o755)
+    git(source.repository, 'add', '.')
+    git(source.repository, 'commit', '-m', 'bootstrap entrypoint fixture')
+    ref = git(source.repository, 'rev-parse', 'HEAD')
+    home, temporary, bins = (source.tmp / n for n in ('home', 'temporary', 'bin'))
+    for directory in (home, temporary, bins): directory.mkdir()
+    put(bins, 'docker', b'#!/bin/sh\nexit 0\n')
+    (bins / 'docker').chmod(0o755)
+    env = dict(os.environ, HOME=str(home), TMPDIR=str(temporary),
+        PATH=str(bins) + os.pathsep + os.environ['PATH'], ODS_REPO_URL=str(source.repository),
+        ODS_INSTALL_DIR=str(home / 'ods'), ODS_REF=ref, ODS_ALLOW_LEGACY_PARALLEL='1')
+    bootstrap = Path(__file__).resolve().parents[1] / 'get-ods.sh'
+    result = subprocess.run(['bash', str(bootstrap), '--non-interactive'], env=env,
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    handed = Path((home / 'ods/source-path.txt').read_text().strip())
+    assert handed.is_relative_to(temporary) and handed.name == 'ods'
+    assert git(handed, 'rev-parse', 'HEAD') == ref
+    assert git(handed, 'status', '--porcelain') == ''
+    assert not (home / 'ods/.git').exists()
 
 
 @pytest.mark.parametrize('change_plugin', [False, True])
