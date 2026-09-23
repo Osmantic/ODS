@@ -1056,16 +1056,21 @@ describe('useModels', () => {
     expect(getCount).toBe(2)
 
     await act(async () => {
-      secondRequest.resolve(modelsResponse([{ id: 'new-snapshot', status: 'loaded' }]))
-      await refreshPromise
-    })
-    expect(result.current.models[0].id).toBe('new-snapshot')
-
-    await act(async () => {
       firstRequest.resolve(modelsResponse([{ id: 'stale-snapshot', status: 'available' }]))
       await firstRequest.promise
       await Promise.resolve()
     })
+    expect(result.current.loading).toBe(true)
+    expect(result.current.error).toBeNull()
+
+    await act(async () => {
+      secondRequest.resolve(modelsResponse([{ id: 'new-snapshot', status: 'loaded' }]))
+      await refreshPromise
+    })
+    expect(result.current.models[0].id).toBe('new-snapshot')
+    expect(result.current.loading).toBe(false)
+    expect(result.current.error).toBeNull()
+
     expect(result.current.models[0].id).toBe('new-snapshot')
   })
 
