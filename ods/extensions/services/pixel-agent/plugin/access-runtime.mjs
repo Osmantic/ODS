@@ -103,6 +103,24 @@ function linuxProcessIdentity(pid, format = 'auto') {
   return {version: 3, pid, invocationId, startTicks};
 }
 
+function provenManagedIngressReuse(pid, startTicks) {
+  // WSL can reuse the old gateway PID in the same kernel tick after a distro
+  // restart. Pixel ingress has a different, root-owned systemd service, but
+  // ProtectHome can make its /proc/environ unreadable to the gateway owner.
+  // Accept only this exact other managed role, then pin the same incarnation
+  // across both reads. All unknown processes continue to fence admission.
+  const groupPath = `/proc/${pid}/cgroup`, commandPath = `/proc/${pid}/cmdline`;
+  const expectedGroup = '0::/system.slice/pixel-ingress.service\n';
+  const expectedCommand = Buffer.from('node\0/usr/local/libexec/ods-pixel-ingress.mjs\0');
+  try {
+    const group = fs.readFileSync(groupPath, 'utf8');
+    const command = fs.readFileSync(commandPath);
+    return group === expectedGroup && Buffer.isBuffer(command) && command.equals(expectedCommand) &&
+      processStartTicks(pid) === startTicks &&
+      fs.readFileSync(groupPath, 'utf8') === group && fs.readFileSync(commandPath).equals(command);
+  } catch { return false; }
+}
+
 function previousProcessAlive(previous) {
   if (!previous || Array.isArray(previous) || !Number.isSafeInteger(previous.pid) || previous.pid < 1) {
     throw new Error('invalid process lock');
@@ -123,7 +141,13 @@ function previousProcessAlive(previous) {
   // that the recorded owner is gone; do not require that stranger's identity.
   // Matching start times still require the full boot/invocation check below.
   if (processStartTicks(previous.pid) !== previous.startTicks) return false;
-  const current = linuxProcessIdentity(previous.pid, boot ? 'boot' : 'invocation');
+  let current;
+  try { current = linuxProcessIdentity(previous.pid, boot ? 'boot' : 'invocation'); }
+  catch (error) {
+    if (!boot && ['EACCES', 'EPERM'].includes(error.code) &&
+        provenManagedIngressReuse(previous.pid, previous.startTicks)) return false;
+    throw error;
+  }
   return current !== null && current.startTicks === previous.startTicks &&
     (boot ? current.bootId === previous.bootId : current.invocationId === previous.invocationId);
 }

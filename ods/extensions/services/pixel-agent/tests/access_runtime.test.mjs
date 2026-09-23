@@ -169,6 +169,40 @@ test('reused PID recovers with unreadable foreign environment but preserves a ma
   }
 });
 
+test('restricted proc reclaims a same-tick PID only when it is proven to be the managed ingress service', linux, async t => {
+  const {child} = await childProcess(t, `process.send({ready:true}); setInterval(() => {}, 1000);`);
+  const previous = {version: 3, pid: child.pid, invocationId: 'd'.repeat(32),
+    startTicks: identity(child.pid).startTicks};
+  const cgroup = `/proc/${child.pid}/cgroup`, cmdline = `/proc/${child.pid}/cmdline`;
+  const read = fs.readFileSync;
+  for (const [group, command, expectedAvailable, changedGroup] of [
+    ['0::/system.slice/pixel-ingress.service\n', 'node\0/usr/local/libexec/ods-pixel-ingress.mjs\0', true, false],
+    ['0::/system.slice/openclaw-gateway.service\n', 'node\0/usr/local/libexec/ods-pixel-ingress.mjs\0', false, false],
+    ['0::/system.slice/pixel-ingress.service\n', 'openclaw\0gateway\0', false, false],
+    ['0::/system.slice/pixel-ingress.service\n', 'node\0/usr/local/libexec/ods-pixel-ingress.mjs\0', false, true],
+  ]) {
+    const options = fixture(); seed(options, previous, 'held');
+    let groupReads = 0;
+    fs.readFileSync = function (name, ...args) {
+      if (name === cgroup) return changedGroup && ++groupReads > 1
+        ? '0::/system.slice/openclaw-gateway.service\n' : group;
+      if (name === cmdline) return Buffer.from(command);
+      return read.call(this, name, ...args);
+    };
+    try {
+      withInvocations({[process.pid]: `INVOCATION_ID=${'e'.repeat(32)}\0`}, () => {
+        const runtime = createAccessRuntime(options);
+        assert.equal(runtime.status().available, expectedAvailable);
+        assert.equal(runtime.status().phase, expectedAvailable ? 'held' : 'unavailable');
+        assert.equal(runtime.admit({}, {runId:'native'}).outcome, 'block');
+        if (!expectedAvailable) {
+          assert.deepEqual(JSON.parse(fs.readFileSync(path.join(options.directory, 'process.json'))), previous);
+        }
+      });
+    } finally { fs.readFileSync = read; }
+  }
+});
+
 test('incarnation changing during invocation read fails closed', linux, () => {
   const options = fixture();
   withInvocations({[process.pid]: `INVOCATION_ID=${'d'.repeat(32)}\0`}, () => {
