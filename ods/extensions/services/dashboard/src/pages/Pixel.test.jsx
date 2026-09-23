@@ -296,6 +296,7 @@ describe('Pixel', () => {
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
     fireEvent.click(screen.getByTitle('Close preview'))
     expect(screen.queryByText('No files to show yet')).toBeNull()
+    await waitFor(() => expect(screen.getByRole('button',{name:'Workspace',exact:true})).toHaveFocus())
     fireEvent.click(screen.getByRole('button',{name:'Workspace',exact:true}))
     fireEvent.click(screen.getByRole('tab',{name:'Preview',exact:true}))
     expect(screen.getByText('No files to show yet')).toBeVisible()
