@@ -41,13 +41,14 @@ export function csvForRows(rows, telemetrySource) {
 export default function UsageView({compact=false,report,readiness,loading,error,range,onPrevious,onNext,onRefresh,actionState,onAction}) {
   const [view,setView]=useState('activity')
   const headingRef=useRef(null)
-  useEffect(()=>{if(!compact) headingRef.current?.focus()},[compact])
+  const regionRef=useRef(null)
+  useEffect(()=>{(headingRef.current || regionRef.current)?.focus()},[])
   const summary=report.summary || {}
   const available=report.source?.status==='ok' && !error && !loading
   const requestsUnavailable=!requestCountAvailable(summary,report.source)
   const stats=[['Total tokens',summary.total_tokens,'Input, output and cache'],['Requests',requestsUnavailable ? null : summary.requests,requestsUnavailable ? 'Counter unavailable' : 'Recorded calls'],['Input',summary.input_tokens,'Prompt tokens'],['Output',summary.output_tokens,'Generated tokens']]
   const tabs=[['activity','Activity',Activity],['models','Models',Cpu],['services','Services',Layers],['costs','Costs',Wallet]]
-  return <section className="usage-refined" aria-label="Usage analytics" aria-busy={loading}>
+  return <section ref={regionRef} tabIndex={-1} className="usage-refined" aria-label="Usage analytics" aria-busy={loading}>
     <header className="usage-intro">
       {!compact && <h1 ref={headingRef} tabIndex={-1}>Usage</h1>}
       <p>Inference, at a glance.</p>
