@@ -246,7 +246,9 @@ jobs:
         run: python3 tests/test-pixel-model-selector.py
 
       - name: Pixel Provider and Access Contracts
-        run: python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
+        run: |
+          python3 tests/test_pixel_gateway_temperature_bounds.py
+          python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
 
       - name: Pixel Native Integration Contracts
         run: python3 -m pytest -q tests/test_pixel_macos_apps.py tests/test_pixel_native_compose_live.py tests/test_pixel_onboarding.py tests/test_pixel_open_app_handler.py tests/test_pixel_runtime_budget.py
