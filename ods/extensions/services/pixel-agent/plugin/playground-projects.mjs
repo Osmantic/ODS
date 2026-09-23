@@ -136,6 +136,16 @@ function selectTool(tool, params) {
   return {tool:id.split(':').at(-1),args:params.args,wrap:args=>({...params,args})};
 }
 
+// Only simple inspection commands may use an inferred parent cwd or inspect
+// a failed routing state. Do not accept shell expressions, executable search
+// options (such as rg --pre), or arbitrary programs that can mutate files.
+function simpleInspection(selected) {
+  if (selected.tool !== 'exec' || typeof selected.args.command !== 'string') return false;
+  const command = selected.args.command.trim();
+  return /^[A-Za-z0-9_./:\\+ =-]+$/.test(command)
+    && /^(?:pwd|ls|dir|Get-ChildItem|Get-Location)(?:\s|$)/i.test(command);
+}
+
 // State is per run. Persistent records contain only hashed session identities
 // and safe relative paths, never prompts, credentials, or creative bytes.
 export function routePlaygroundTool({state,tool,params,root,session,intent,existingPaths=[],preserveExisting=false,continueProject=false}) {
@@ -218,6 +228,7 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
       if (command.includes(`${directory}/`) || command.includes('/workspace/')) mapped = null;
       else if (command.includes(`${source}/`)) {
         if (directory !== `Playground/${source}`) return {block:true,blockReason:`This project is in ${directory}. Set exec workdir to ${directory} and use filenames relative to that directory; the old ${source}/ prefix names a different project.`};
+        if (!simpleInspection(selected)) return {block:true,blockReason:`This project is in ${directory}. Set exec workdir to /workspace/${directory} and use filenames relative to that directory. An automatic parent directory would make this command ambiguous and could move or modify the project folder itself.`};
         mapped = 'Playground';
       } else mapped = directory;
     }
@@ -233,6 +244,12 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
     return {params:selected.wrap({...args,[key]:mapped})};
   } catch {
     state.failed = true;
-    return {block:true,blockReason:'The project folder could not be safely prepared or restored. Preserve existing files. Check the workspace directory and project metadata before retrying; do not bypass this by writing elsewhere.'};
+    if (simpleInspection(selected)) {
+      try {
+        safeRoot(root);
+        return {params:selected.wrap({...selected.args,workdir:'/workspace'})};
+      } catch { /* An unavailable workspace cannot support safe inspection. */ }
+    }
+    return {block:true,blockReason:'The project folder could not be safely prepared or restored. Preserve existing files. Inspect the workspace with pwd or ls and check the project metadata before retrying; do not bypass this by writing elsewhere.'};
   }
 }

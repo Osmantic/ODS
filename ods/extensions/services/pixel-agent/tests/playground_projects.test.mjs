@@ -31,7 +31,7 @@ test('creates a real descriptive project, routes files of every type and stores 
   assert.equal(call('read',{path:'/workspace/weather-tool/main.py'}).params.path,'Playground/weather-tool/main.py');
   assert.equal(call('exec',{command:'python main.py',workdir:'weather-tool'}).params.workdir,'/workspace/Playground/weather-tool');
   assert.equal(call('exec',{command:'python main.py'}).params.workdir,'/workspace/Playground/weather-tool');
-  assert.equal(call('exec',{command:'python weather-tool/main.py'}).params.workdir,'/workspace/Playground');
+  assert.equal(call('exec',{command:'python weather-tool/main.py'}).block,true);
   const record=fs.readdirSync(path.join(root,'.ods-projects'));
   assert.equal(record.length,1);
   assert.match(record[0],/^[a-f0-9]{64}\.json$/);
@@ -88,6 +88,70 @@ test('category words inside file operands do not turn ordinary writes into new p
   }
   assert.equal(fs.existsSync(path.join(root,'Playground')),false);
   assert.equal(requestsNewPlaygroundProject('Create a game in snake-game/index.html.'),true);
+});
+
+test('complete hook chain refuses inferred parent mutation and preserves explicit project file operations',t=>{
+  for (const tool of ['exec','tool_call']) {
+    for (const native of [false,true]) {
+      const {root}=fixture(t);
+      const context={agentId:'pixel',runId:`parent-${tool}-${native}`,sessionId:'parent-session'};
+      const guard=createToolLoopGuard({execControl:{resolveWorkdir:native?nativeExecWorkdir:()=>undefined,prepare:(_run,command)=>command}});
+      guard.observeRun(context,'pixel',{prompt:'Create a new website.'},{workspaceRoot:root});
+      const write=guard.beforeToolCall({toolName:'write',params:{path:'fleet-website/index.html',content:'<html>keep</html>'}},context);
+      fs.writeFileSync(path.join(root,write.params.path),write.params.content);
+      guard.afterToolCall({toolName:'write',params:write.params,result:{content:[{type:'text',text:'File written'}]}},context);
+      const exec=args=>guard.beforeToolCall({toolName:tool,params:tool==='exec'?args:{id:'openclaw:core:exec',args}},context);
+      const unwrap=decision=>tool==='exec'?decision.params:decision.params.args;
+      for(const command of ['mv fleet-website/ index.html','python fleet-website/check.py','npm test --prefix fleet-website/']) {
+        const blocked=exec({command});
+        assert.equal(blocked.block,true,command);
+        assert.match(blocked.blockReason,/Set exec workdir.*relative/);
+      }
+      assert.equal(fs.readFileSync(path.join(root,'Playground/fleet-website/index.html'),'utf8'),'<html>keep</html>');
+      assert.equal(fs.existsSync(path.join(root,'Playground/index.html')),false);
+      const inspect=exec({command:'ls fleet-website/'});
+      assert.notEqual(inspect?.block,true,inspect?.blockReason);
+      assert.equal(unwrap(inspect).workdir,native?path.join(root,'Playground'):'/workspace/Playground');
+      const command='mv index.html home.html';
+      const explicit=exec({command,workdir:'/workspace/Playground/fleet-website'});
+      assert.notEqual(explicit?.block,true,explicit?.blockReason);
+      const actual=unwrap(explicit);
+      assert.equal(actual.command,command);
+      const cwd=native?actual.workdir:path.join(root,actual.workdir.slice('/workspace/'.length));
+      execFileSync(process.execPath,['-e','require("node:fs").renameSync("index.html","home.html")'],{cwd});
+      assert.equal(fs.readFileSync(path.join(root,'Playground/fleet-website/home.html'),'utf8'),'<html>keep</html>');
+      // Explicit unrelated cwd remains a core permission decision.
+      const outside=exec({command:'ls',workdir:root});
+      assert.notEqual(outside?.block,true,outside?.blockReason);
+    }
+  }
+});
+
+test('failed binding permits simple workspace inspection but never resumes mutation or executes inspection expressions',t=>{
+  for(const deferred of [false,true]) {
+    const {root}=fixture(t);
+    const context={agentId:'pixel',runId:`recovery-${deferred}`,sessionId:'recovery-session'};
+    const guard=createToolLoopGuard({execControl:{resolveWorkdir:nativeExecWorkdir,prepare:(_run,command)=>command}});
+    guard.observeRun(context,'pixel',{prompt:'Create a new website.'},{workspaceRoot:root});
+    const write=guard.beforeToolCall({toolName:'write',params:{path:'fleet-website/index.html',content:'<html>keep</html>'}},context);
+    fs.writeFileSync(path.join(root,write.params.path),write.params.content);
+    guard.afterToolCall({toolName:'write',params:write.params,result:{content:[{type:'text',text:'File written'}]}},context);
+    // Reproduce the prior on-disk failure without allowing the unsafe exec.
+    fs.renameSync(path.join(root,'Playground/fleet-website'),path.join(root,'Playground/index.html'));
+    const exec=command=>guard.beforeToolCall({toolName:deferred?'tool_call':'exec',params:deferred?{id:'exec',args:{command}}:{command}},context);
+    assert.equal(exec('mv Playground/index.html Playground/fleet-website').block,true);
+    for(const command of ['pwd','ls -la','ls Playground/']) {
+      const decision=exec(command);
+      assert.notEqual(decision?.block,true,decision?.blockReason);
+      const actual=deferred?decision.params.args:decision.params;
+      assert.equal(actual.workdir,root);
+      assert.equal(actual.command,command);
+    }
+    for(const command of ['ls; touch bad','ls $(touch bad)','ls `touch bad`','ls > bad','rg --pre=touch x','git status','python --version']) assert.equal(exec(command).block,true,command);
+    assert.equal(guard.beforeToolCall({toolName:'write',params:{path:'index.html',content:'overwrite'}},context).block,true);
+    assert.equal(fs.readFileSync(path.join(root,'Playground/index.html/index.html'),'utf8'),'<html>keep</html>');
+    assert.equal(fs.existsSync(path.join(root,'Playground/fleet-website')),false);
+  }
 });
 
 test('fresh reservations avoid files, existing names and links without moving legacy content',t=>{
