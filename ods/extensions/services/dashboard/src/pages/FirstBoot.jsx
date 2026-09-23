@@ -679,7 +679,9 @@ function DoneScreen({ invite, onDone }) {
       )}
 
       <div className="flex gap-2 mb-6">
+        <label htmlFor="owner-card-link" className="sr-only">Owner card link</label>
         <input
+          id="owner-card-link"
           readOnly
           value={invite.url}
           onFocus={e => e.target.select()}
