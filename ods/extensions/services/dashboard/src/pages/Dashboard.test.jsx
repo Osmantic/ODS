@@ -85,7 +85,7 @@ function installFetchMock() {
 async function renderDashboard(status = baseStatus) {
   render(<Dashboard status={status} loading={false} />)
   await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
-  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/services/resources'))
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/services/resources', expect.any(Object)))
 }
 
 describe('Dashboard system overview', () => {
