@@ -658,6 +658,9 @@ function RoutingTableCard({ services, counts, routeFilter, onRouteFilterChange, 
             <span className={`h-2 w-2 rounded-full ${routeFilter === 'all' ? 'bg-theme-accent' : routeFilterDotClass[routeFilter]}`} />
             {routeFilter === 'all' ? 'All Routes' : `${titleCase(routeFilter)} Routes`}
           </p>
+          <p className="sr-only" role="status" aria-live="polite">
+            Showing {filteredRoutes.length} {routeFilter === 'all' ? 'routes' : `${titleCase(routeFilter).toLowerCase()} routes`}.
+          </p>
           <div className="settings-route-list">
             {visibleRoutes.length > 0 ? visibleRoutes.map(service => (
               <RouteRow key={`${service.id || service.name}-${service.port || 'internal'}`} service={service} />

@@ -241,6 +241,7 @@ describe('Settings', () => {
     fireEvent.click(within(filters).getByRole('button', { name: 'inactive', exact: true }))
     expect(screen.getByText('No routes match this filter.')).toBeInTheDocument()
     expect(within(filters).getByRole('button', { name: 'inactive', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('Showing 0 inactive routes.')).toHaveAttribute('role', 'status')
   })
 
   test('preserves unsaved environment changes during a global refresh', async () => {
