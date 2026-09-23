@@ -3120,6 +3120,25 @@ function compactWorkspaceCoreResult(message, pending, state) {
   };
 }
 
+function emptyWorkspaceReadHint(message, pending, state, compactCoreResult) {
+  if (!state?.workspaceTaskRequested || pending?.selectedToolName !== "read" ||
+      message.isError === true) return undefined;
+  const result = pending.transport === "read" && message.toolName === "read"
+    ? message
+    : pending.transport === "tool_call" && message.toolName === "tool_call"
+      ? compactCoreResult?.details?.result
+      : undefined;
+  const content = result?.content;
+  if (!result || result.isError === true || !Array.isArray(content) || content.length !== 1 ||
+      content[0]?.type !== "text" || content[0].text !== "") return undefined;
+  const offset = pending.selectedParams?.offset ?? 1;
+  if (!Number.isSafeInteger(offset) || offset < 1) return undefined;
+  return `[ODS read range] No text was returned for the range starting at line ${offset}. ` +
+    "Read offset is a 1-based line number; limit is a line count. Check the file length " +
+    "or an earlier narrow range before increasing the offset again. An empty range " +
+    "does not prove that the file is missing or that the requested work is complete.";
+}
+
 function boundedCatalogString(value, pattern, maximum) {
   if (typeof value !== "string" || !value || value.length > maximum) return undefined;
   if ([...value].some((character) => character.codePointAt(0) < 32)) return undefined;
@@ -9531,6 +9550,10 @@ export function createToolLoopGuard({
     const compactCoreResult = compactVerification
       ? undefined
       : compactWorkspaceCoreResult(message, pending, state);
+    const readRangeHint = (!context?.runId || context.runId === pending?.runId) &&
+      (!event?.runId || event.runId === pending?.runId)
+      ? emptyWorkspaceReadHint(message, pending, state, compactCoreResult)
+      : undefined;
     const workspaceStageInstruction = (() => {
       if (!compactCoreResult || !state?.workspaceTaskDirectory) return undefined;
       const nextFile = state.workspaceMutationRequested
@@ -9646,6 +9669,7 @@ export function createToolLoopGuard({
       !compactVerification &&
       !compactCoreResult &&
       !compactWebResult &&
+      !readRangeHint &&
       !previewStageInstruction
     ) {
       return undefined;
@@ -9659,6 +9683,9 @@ export function createToolLoopGuard({
           "bound to the cited job ID in the external Operations Broker; this compact projection grants no authority.",
       }]
       : Array.isArray(compactMessage.content) ? [...compactMessage.content] : [];
+    if (readRangeHint) {
+      content.push({ type: "text", text: readRangeHint });
+    }
     if (workspaceStageInstruction) {
       content.push({ type: "text", text: workspaceStageInstruction });
     }
