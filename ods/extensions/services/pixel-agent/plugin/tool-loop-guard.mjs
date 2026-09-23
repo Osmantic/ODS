@@ -364,6 +364,11 @@ const OPERATIONS_TOOLS = new Set([
   "pixel_ops_job_events",
   "pixel_ops_job_cancel",
 ]);
+const EXTENSION_LIFECYCLE_BROKER_TOOLS = new Set([
+  "pixel_ops_inventory", "pixel_ops_run", "pixel_ops_workflow_submit",
+  "pixel_ops_job_get", "pixel_ops_job_wait", "pixel_ops_job_events",
+  "pixel_ops_job_cancel",
+]);
 const OPERATIONS_SUBMISSION_TOOLS = new Set([
   "pixel_ops_run",
   "pixel_ops_workflow_submit",
@@ -6514,7 +6519,8 @@ export function createToolLoopGuard({
     // A command result is not an ODS installation receipt; managed installation
     // stays in the request coordinator regardless of the model's wording.
     const asksOwner = toolName === 'pixel_ods_ask_user' || (toolName === 'tool_call' && ['pixel_ods_ask_user','openclaw:pixel-ods:pixel_ods_ask_user'].includes(event?.params?.id));
-    if (asksOwner || ['pixel_ods_goal','pixel_ods_activity','pixel_ods_skill'].includes(delegatedName)) return state?.clientCancelled ? {block:true,blockReason:CLIENT_CANCELLED_REASON} : undefined;
+    if ((asksOwner || ['pixel_ods_goal','pixel_ods_activity','pixel_ods_skill'].includes(delegatedName)) &&
+        !state?.operationsExpectedExtensionLifecycle) return state?.clientCancelled ? {block:true,blockReason:CLIENT_CANCELLED_REASON} : undefined;
     if (state && !state.clientCancelled && !state.recursiveDeleteDenied && !state.unrequestedOperationsTerminal
       && !state.privateNetworkPrompt && !state.operationsRequired && !state.exactDownloadRequested && !state.codingExhausted) {
       state.playgroundRouting ??= {};
@@ -7400,7 +7406,9 @@ export function createToolLoopGuard({
     if (
       state?.operationsRequired &&
       toolName === "tool_call" &&
-      OPERATIONS_TOOLS.has(effectiveToolName)
+      OPERATIONS_TOOLS.has(effectiveToolName) &&
+      (!state.operationsExpectedExtensionLifecycle ||
+        EXTENSION_LIFECYCLE_BROKER_TOOLS.has(effectiveToolName))
     ) {
       return undefined;
     }
@@ -7570,7 +7578,9 @@ export function createToolLoopGuard({
     if (
       state?.operationsRequired &&
       !extensionDiscoveryActive(state) &&
-      !OPERATIONS_TOOLS.has(toolName) &&
+      (!OPERATIONS_TOOLS.has(toolName) ||
+        (state.operationsExpectedExtensionLifecycle &&
+          !EXTENSION_LIFECYCLE_BROKER_TOOLS.has(effectiveToolName))) &&
       effectiveToolName !== "tool_search" &&
       effectiveToolName !== "tool_describe" &&
       !operationsMayContinueWithIndependentTools

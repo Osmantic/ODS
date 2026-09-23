@@ -5385,6 +5385,28 @@ test("plan-only managed-extension requests cannot wander into workspace or web t
   assert.deepEqual(aborts, ["session-1"]);
 });
 
+test("plan-only lifecycle blocks skill and extension-adapter detours before broker inventory", () => {
+  const prompt = "Prepare exactly one immutable Operations Broker approval plan for cataloged ODS extension action ods.extensions.install with serviceId go-httpbin; do not execute.";
+  for (const [toolName, params] of [
+    ["pixel_ods_skill", { topic: "extensions" }],
+    ["pixel_ods_extensions", { action: "search", query: "go-httpbin" }],
+    ["tool_call", { id: "pixel_ods_skill", args: { topic: "extensions" } }],
+    ["tool_call", { id: "pixel_ods_extensions", args: { action: "search", query: "go-httpbin" } }],
+  ]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun(
+      { agentId: "pixel", runId: "run-1", sessionId: "session-1" },
+      "pixel", { prompt }
+    );
+    guard.observeModelCall(
+      { runId: "run-1", callId: "call-1" },
+      { agentId: "pixel", runId: "run-1", sessionId: "session-1" }
+    );
+    assert.equal(call(guard, toolName, { event: { params } })?.blockReason,
+      OPERATIONS_REQUIRES_BROKER_REASON, toolName);
+  }
+});
+
 test("binds Operations continuation only to one exact current-message job and plan hash", () => {
   const jobId = "ops-1234567890123-abcdef123456";
   const planHash = "a".repeat(64);
