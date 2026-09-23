@@ -72,8 +72,8 @@ class RollbackAtomicity(unittest.TestCase):
         docker.write_text('''#!/bin/sh
 printf "%s\\n" "$*" >> "$DOCKER_LOG"
 case "$*" in
-  *'ps --services'*) echo fixture ;;
-  *'ps --format json'*) echo '{"State":"running"}' ;;
+  *'config --services'*) echo fixture ;;
+  *'ps --all --format json'*) echo '{"State":"running","Health":"healthy"}' ;;
 esac
 exit 0
 ''')

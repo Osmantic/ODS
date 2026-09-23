@@ -2238,14 +2238,18 @@ cmd_update() {
         exit 1
     fi
 
-    # Persist the new installed version in .env so future runs know what's installed
+    # Restart host agent so new endpoints / code changes take effect
+    log "Restarting host agent..."
+    if ! cmd_agent restart; then
+        log_error "Services were updated, but host-agent activation failed. Update completion is not verified."
+        log_error "Inspect 'ods agent logs', then retry 'ods agent restart' before retrying the update."
+        return 1
+    fi
+
+    # Record completion only after the updated containers and agent are ready.
     if [[ -n "${_COMPAT_TARGET_VER:-}" ]]; then
         _env_set "ODS_VERSION" "$_COMPAT_TARGET_VER"
     fi
-
-    # Restart host agent so new endpoints / code changes take effect
-    log "Restarting host agent..."
-    cmd_agent restart || warn "Host agent restart failed (non-fatal)"
 
     success "Update complete"
 
@@ -5003,11 +5007,13 @@ cmd_agent() {
     local agent_script="$INSTALL_DIR/bin/ods-host-agent.py"
 
     _agent_process_owned() {
-        local candidate_pid="${1:-}" command_line=""
+        local candidate_pid="${1:-}" command_line="" process_binary=""
         [[ "$candidate_pid" =~ ^[0-9]+$ ]] || return 1
         kill -0 "$candidate_pid" 2>/dev/null || return 1
         command_line=$(ps -p "$candidate_pid" -o command= 2>/dev/null || true)
-        [[ -n "$command_line" && "$command_line" == *"$agent_script"* ]]
+        process_binary="${command_line%% *}"
+        [[ "$process_binary" =~ (^|/)[Pp]ython(3(\.[0-9]+)?)?$ ]] || return 1
+        [[ "$command_line" == *" $agent_script" || "$command_line" == *" $agent_script "* ]]
     }
 
     _agent_health_ready() {
@@ -5037,24 +5043,112 @@ cmd_agent() {
         esac
     fi
 
+    _agent_service_owned() {
+        local working_dir="" start_command="" loaded=""
+        if [[ "$daemon_type" == systemd ]]; then
+            working_dir=$(systemctl show --property=WorkingDirectory --value ods-host-agent.service) || return 1
+            start_command=$(systemctl show --property=ExecStart --value ods-host-agent.service) || return 1
+        elif [[ "$daemon_type" == launchd ]]; then
+            loaded=$(launchctl print "gui/$(id -u)/com.ods.host-agent" 2>/dev/null || true)
+        else
+            return 0
+        fi
+        python3 - "$INSTALL_DIR" "$daemon_type" "$working_dir" "$start_command" \
+            "$HOME/Library/LaunchAgents/com.ods.host-agent.plist" "$loaded" <<'PY'
+import os
+from pathlib import Path
+import plistlib
+import re
+import shlex
+import sys
+
+root, kind, working, command, plist_path, loaded = sys.argv[1:]
+script = os.path.join(root, "bin", "ods-host-agent.py")
+
+def same_path(first, second):
+    return bool(first) and Path(first).resolve() == Path(second).resolve()
+
+def is_python(binary):
+    return re.fullmatch(r"[Pp]ython(?:3(?:\.\d+)?)?", Path(binary).name) is not None
+
+def valid_args(args):
+    if len(args) < 2 or not is_python(args[0]) or not same_path(args[1], script):
+        return False
+    for index, argument in enumerate(args[2:], start=2):
+        if argument == "--install-dir":
+            if index + 1 >= len(args) or not same_path(args[index + 1], root):
+                return False
+        elif argument.startswith("--install-dir="):
+            if not same_path(argument.split("=", 1)[1], root):
+                return False
+    return True
+
+try:
+    if kind == "systemd":
+        # systemctl show reports effective settings, including drop-ins. Reject
+        # multiple commands/wrappers instead of guessing which process they run.
+        paths = re.findall(r"(?:\{|;)\s*path=([^;]+);", command)
+        arguments = re.findall(r"argv\[\]=([^;]+);", command)
+        valid = same_path(working, root) and len(paths) == len(arguments) == 1
+        if valid:
+            binary, argv = paths[0].strip(), arguments[0].strip()
+            prefix = binary + " " + script
+            valid = is_python(binary) and (argv == prefix or argv.startswith(prefix + " "))
+            if valid:
+                valid = valid_args([binary, script, *shlex.split(argv[len(prefix):])])
+    else:
+        with open(plist_path, "rb") as handle:
+            config = plistlib.load(handle)
+        valid = (config.get("Label") == "com.ods.host-agent"
+                 and same_path(config.get("WorkingDirectory", ""), root)
+                 and valid_args(config.get("ProgramArguments", [])))
+        if valid and loaded:
+            # The plist on disk may have changed since bootstrap; inspect the
+            # loaded arguments too before stopping another installation's job.
+            block = re.search(r"\barguments\s*=\s*\{([^}]+)\}", loaded)
+            valid = bool(block) and valid_args([
+                line.strip() for line in block.group(1).splitlines() if line.strip()
+            ])
+    sys.exit(0 if valid else 1)
+except (OSError, ValueError, TypeError, plistlib.InvalidFileException):
+    sys.exit(1)
+PY
+    }
+
+    case "$action" in
+        start|stop|restart)
+            if ! _agent_service_owned; then
+                log_error "Host-agent service does not match this installation; refusing to change it"
+                return 1
+            fi
+            ;;
+    esac
+
     case "$action" in
         status)
             if _agent_health_ready; then
                 success "ODS host agent: running (port ${port}, ${daemon_type})"
             else
                 warn "ODS host agent: not responding (port ${port})"
+                return 1
             fi
             ;;
         start)
             case "$daemon_type" in
                 launchd)
-                    launchctl bootstrap "gui/$(id -u)" \
-                        "$HOME/Library/LaunchAgents/com.ods.host-agent.plist" 2>/dev/null && \
-                        success "Agent started (LaunchAgent)" || warn "Agent start failed"
+                    if ! launchctl bootstrap "gui/$(id -u)" \
+                        "$HOME/Library/LaunchAgents/com.ods.host-agent.plist" 2>/dev/null; then
+                        warn "Agent start failed"
+                        return 1
+                    fi
+                    success "Agent started (LaunchAgent)"
                     ;;
                 systemd)
-                    sudo systemctl start ods-host-agent.service 2>/dev/null && \
-                        success "Agent started (systemd)" || warn "Agent start failed"
+                    if ! sudo systemctl start ods-host-agent.service 2>/dev/null; then
+                        warn "Agent start failed"
+                        return 1
+                    fi
+                    success "Agent started (systemd)"
                     ;;
                 *)
                     # Fallback: nohup + PID file
@@ -5072,10 +5166,8 @@ cmd_agent() {
                         fi
                         rm -f "$pid_file"
                     fi
-                    # Use log_error (not error): callers such as cmd_update run
-                    # this under `cmd_agent restart || warn "...non-fatal"`, and
-                    # error() exits the whole CLI — which would abort an already
-                    # successful update instead of returning to the guard.
+                    # Return failures to the caller; do not exit its shell.
+                    # Update callers need to report partial activation accurately.
                     if ! command -v python3 &>/dev/null; then
                         log_error "python3 not found in PATH"
                         return 1
@@ -5107,36 +5199,70 @@ cmd_agent() {
         stop)
             case "$daemon_type" in
                 launchd)
-                    launchctl bootout "gui/$(id -u)/com.ods.host-agent" 2>/dev/null && \
-                        success "Agent stopped" || warn "Agent not running"
+                    if launchctl print "gui/$(id -u)/com.ods.host-agent" >/dev/null 2>&1; then
+                        if ! launchctl bootout "gui/$(id -u)/com.ods.host-agent" 2>/dev/null; then
+                            warn "Agent stop failed"
+                            return 1
+                        fi
+                        success "Agent stopped"
+                    else
+                        warn "Agent not running"
+                    fi
                     ;;
                 systemd)
-                    sudo systemctl stop ods-host-agent.service 2>/dev/null && \
-                        success "Agent stopped" || warn "Agent not running"
+                    if ! sudo systemctl stop ods-host-agent.service 2>/dev/null; then
+                        warn "Agent stop failed"
+                        return 1
+                    fi
+                    success "Agent stopped"
                     ;;
                 *)
                     if [[ -f "$pid_file" ]]; then
                         local agent_pid
                         agent_pid=$(tr -d '[:space:]' < "$pid_file")
                         if _agent_process_owned "$agent_pid"; then
-                            kill "$agent_pid" 2>/dev/null && \
-                                success "Agent stopped" || warn "Agent process not found"
+                            if ! kill "$agent_pid" 2>/dev/null; then
+                                warn "Agent stop failed"
+                                return 1
+                            fi
+                            success "Agent stopped"
                         elif [[ -n "$agent_pid" ]]; then
-                            warn "Refusing to stop process $agent_pid because it is not owned by ODS"
+                            if kill -0 "$agent_pid" 2>/dev/null || _agent_health_ready; then
+                                warn "Refusing to stop process $agent_pid because it is not owned by ODS"
+                                return 1
+                            fi
+                            warn "Removing stale host-agent PID file; no agent is responding"
                         else
                             warn "Agent PID file is empty"
                         fi
                         rm -f "$pid_file"
                     else
                         warn "Agent not running (no PID file)"
+                        if _agent_health_ready; then
+                            warn "A host agent is responding without an owned PID file; cannot verify its restart"
+                            return 1
+                        fi
                     fi
                     ;;
             esac
             ;;
         restart)
             cmd_agent stop || return 1
-            sleep 1
-            cmd_agent start
+            local stop_attempt start_attempt
+            for stop_attempt in {1..20}; do
+                if ! _agent_health_ready; then
+                    cmd_agent start || return 1
+                    for start_attempt in {1..20}; do
+                        if _agent_health_ready; then return 0; fi
+                        sleep 0.5
+                    done
+                    log_error "Restarted agent did not become healthy on port ${port}"
+                    return 1
+                fi
+                sleep 0.5
+            done
+            log_error "Previous agent is still responding after stop; restart was not verified"
+            return 1
             ;;
         logs)
             if [[ -f "$log_file" ]]; then

@@ -31,10 +31,10 @@ mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/docker" <<'SH'
 #!/usr/bin/env bash
 args=" $* "
-if [[ "$args" == *" ps "* && "$args" == *" --services "* ]]; then
+if [[ "$args" == *" config --services "* ]]; then
     echo dashboard-api
-elif [[ "$args" == *" ps "* && "$args" == *" --format "* ]]; then
-    echo '{"State":"running"}'
+elif [[ "$args" == *" ps --all --format json "* ]]; then
+    echo '{"State":"running","Health":"healthy"}'
 fi
 exit 0
 SH

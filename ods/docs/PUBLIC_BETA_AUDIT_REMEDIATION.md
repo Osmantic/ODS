@@ -49,6 +49,12 @@ below is the release checklist; a passing structural gate does not close it.
   The macOS results are fixtures run on Linux, not native-machine qualification.
 - Fixture installers deliberately do not install Docker, model runtimes or ODS
   onto the developer's machine. Their checks prove only their stated contracts.
+- [Source-update activation](SOURCE_UPDATE_ACTIVATION.md) now rebuilds local
+  images and verifies host-agent/service readiness before recording completion.
+  Twenty-nine source-update and 17 lifecycle fixtures passed under WSL, along
+  with the existing CLI and rollback regressions. Configuration recovery is not
+  a rollback of Git source, images or migration effects; native qualification
+  remains open.
 - Raw logs remain outside the published evidence set because they can contain
   local paths. Publish only reviewed summaries and redacted candidate receipts.
 - A candidate must be committed and frozen before CI, signatures, scans and

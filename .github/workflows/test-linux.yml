@@ -492,6 +492,12 @@ jobs:
       - name: Update Rollback Contract
         run: bash tests/test-update-rollback-contract.sh
 
+      - name: Source Update Activation and Agent Lifecycle
+        run: |
+          bash tests/test-update-compose-restart-contract.sh
+          bash tests/test-agent-restart-nonfatal.sh
+          bash tests/test-agent-lifecycle-failures.sh
+
       - name: Update Backup Retention By Creation Time
         run: bash tests/test-update-backup-retention-labels.sh
 

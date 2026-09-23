@@ -243,16 +243,14 @@ fi
 
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
-    if [[ "${args[$i]}" == "ps" ]]; then
-        next="${args[$((i + 1))]:-}"
-        if [[ "$next" == "--services" ]]; then
-            printf '%s\n' placeholder
-            exit 0
-        fi
-        if [[ "$next" == "--format" ]]; then
-            printf '%s\n' '{"State":"running"}'
-            exit 0
-        fi
+    if [[ "${args[$i]}" == "config" && "${args[$((i + 1))]:-}" == "--services" ]]; then
+        printf '%s\n' placeholder placeholder-cpu
+        exit 0
+    fi
+    if [[ "${args[$i]}" == "ps" && "${args[$((i + 1))]:-}" == "--all" \
+        && "${args[$((i + 2))]:-}" == "--format" && "${args[$((i + 3))]:-}" == "json" ]]; then
+        printf '%s\n' '{"State":"running","Health":"healthy"}'
+        exit 0
     fi
 done
 

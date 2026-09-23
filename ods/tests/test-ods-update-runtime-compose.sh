@@ -73,16 +73,15 @@ fi
 
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
-    if [[ "${args[$i]}" == "ps" ]]; then
-        next="${args[$((i + 1))]:-}"
-        if [[ "$next" == "--services" ]]; then
-            printf '%s\n' dashboard-api litellm
-            exit 0
-        fi
-        if [[ "$next" == "--format" ]]; then
-            printf '%s\n' '{"State":"running"}'
-            exit 0
-        fi
+    if [[ "${args[$i]}" == "config" && "${args[$((i + 1))]:-}" == "--services" ]]; then
+        printf '%s\n' dashboard-api litellm
+        [[ " $* " != *" docker-compose.cpu.yml "* ]] || printf '%s\n' llama-server
+        exit 0
+    fi
+    if [[ "${args[$i]}" == "ps" && "${args[$((i + 1))]:-}" == "--all" \
+        && "${args[$((i + 2))]:-}" == "--format" && "${args[$((i + 3))]:-}" == "json" ]]; then
+        printf '%s\n' '{"State":"running","Health":"healthy"}'
+        exit 0
     fi
 done
 
@@ -104,8 +103,10 @@ PATH="$BIN_DIR:$PATH" bash "$INSTALL_DIR/ods-update.sh" health > "$TMP_DIR/healt
 
 grep -q "Service dashboard-api: running" "$TMP_DIR/health.out" \
     || { cat "$TMP_DIR/health.out"; fail "health did not inspect dashboard-api"; }
-grep -q -- "-f docker-compose.base.yml -f docker-compose.cpu.yml ps --services" "$DOCKER_LOG" \
-    || { cat "$DOCKER_LOG"; fail "health did not pass saved compose flags to docker compose ps"; }
+grep -q -- "-f docker-compose.base.yml -f docker-compose.cpu.yml config --services" "$DOCKER_LOG" \
+    || { cat "$DOCKER_LOG"; fail "health did not pass saved compose flags to service enumeration"; }
+grep -q -- "-f docker-compose.base.yml -f docker-compose.cpu.yml ps --all --format json dashboard-api" "$DOCKER_LOG" \
+    || { cat "$DOCKER_LOG"; fail "health did not inspect all containers using saved compose flags"; }
 if grep -q "No services defined in docker-compose" "$TMP_DIR/health.out"; then
     cat "$TMP_DIR/health.out"
     fail "health emitted stale bare-compose warning"
