@@ -36,6 +36,9 @@ class ErrorBoundary extends React.Component {
   render() {
     if (this.state.hasError) {
       const staleAsset = isStaleAssetError(this.state.error)
+      const technicalDetails = this.state.error
+        ? String(this.state.error).slice(0, 4000) + (String(this.state.error).length > 4000 ? '…' : '')
+        : ''
       return (
         <div style={{ display: 'grid', placeItems: 'center', padding: '2rem', color: '#dedfe3', background: '#111212', minHeight: '100vh', fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif' }}>
           <div style={{ width: 'min(32rem, 100%)', padding: '2rem', background: '#1d1e1f', border: '1px solid #2e2e32', borderRadius: '12px' }}>
@@ -54,7 +57,7 @@ class ErrorBoundary extends React.Component {
             {!staleAsset && this.state.error && (
               <details style={{ marginTop: '1.25rem', color: '#989da6', fontSize: '0.8rem' }}>
                 <summary style={{ cursor: 'pointer' }}>Technical details</summary>
-                <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: '"JetBrains Mono", monospace' }}>{this.state.error.toString()}</pre>
+                <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: '"JetBrains Mono", monospace' }}>{technicalDetails}</pre>
               </details>
             )}
           </div>
