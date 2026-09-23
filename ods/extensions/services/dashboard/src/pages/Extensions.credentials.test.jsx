@@ -48,3 +48,21 @@ it('does not add credential instructions to an extension with only port settings
   expect(screen.queryByText(/from your ODS installation directory/i)).toBeNull()
   expect(screen.queryByText(/^grep -E /)).toBeNull()
 })
+
+it('reports when copying a credential command is rejected', async () => {
+  const extension = catalog.extensions.find(item => item.id === 'miniflux')
+  vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } })
+  vi.stubGlobal('fetch', vi.fn(async url => ({
+    ok: true,
+    json: async () => String(url).includes('/api/templates')
+      ? { templates: [] }
+      : { extensions: [{ ...extension, source: 'user', status: 'enabled' }], agent_available: true },
+  })))
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button', { name: `Details for ${extension.name}` }))
+
+  const command = screen.getByText(/^grep -E /)
+  fireEvent.click(within(command.parentElement).getByTitle('Copy to clipboard'))
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(/copy failed.*manually/i)
+})
