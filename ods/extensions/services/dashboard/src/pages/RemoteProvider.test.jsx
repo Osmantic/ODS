@@ -354,6 +354,24 @@ test('renders remote provider status and proof receipt', async () => {
   expect(screen.getByRole('button', { name: /test route/i })).toBeEnabled()
 })
 
+test('keeps the newest status response when refreshes resolve out of order', async () => {
+  let resolveOld
+  const oldResponse = new Promise(resolve => { resolveOld = resolve })
+  globalThis.fetch
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockImplementationOnce(() => oldResponse)
+    .mockResolvedValueOnce(response(driftedStatusPayload))
+
+  render(createElement(RemoteProvider))
+  await screen.findByRole('heading', { name: 'Remote GPU' })
+  const refresh = screen.getByRole('button', { name: 'Refresh' })
+  fireEvent.click(refresh)
+  fireEvent.click(refresh)
+  await waitFor(() => expect(screen.getByText(/consumer drift/i)).toBeInTheDocument())
+  await act(async () => { resolveOld(response(statusPayload)) })
+  expect(screen.getByText(/consumer drift/i)).toBeInTheDocument()
+})
+
 test('compact views keep the connection draft and never apply changes on navigation', async () => {
   globalThis.fetch.mockResolvedValue(response(statusPayload))
   render(createElement(RemoteProvider, { compact: true }))

@@ -337,11 +337,14 @@ export default function RemoteProvider({ compact = false }) {
   const [peerModelsLoading, setPeerModelsLoading] = useState(false)
   const [peerModelsError, setPeerModelsError] = useState(null)
   const [peerAction, setPeerAction] = useState(null)
+  const statusGeneration = useRef(0)
 
   const loadStatus = useCallback(async ({ quiet = false } = {}) => {
+    const generation = ++statusGeneration.current
     if (!quiet) setLoading(true)
     try {
       const payload = await fetchJson('/api/remote-provider/status')
+      if (generation !== statusGeneration.current) return null
       setStatusData(payload)
       const provider = payload?.routeState?.provider
       if (!formEdit.current.dirty && provider) {
@@ -357,10 +360,10 @@ export default function RemoteProvider({ compact = false }) {
       setError(null)
       return payload
     } catch (err) {
-      setError(err?.message || 'Failed to load remote GPU status')
+      if (generation === statusGeneration.current) setError(err?.message || 'Failed to load remote GPU status')
       return null
     } finally {
-      if (!quiet) setLoading(false)
+      if (!quiet && generation === statusGeneration.current) setLoading(false)
     }
   }, [])
 
@@ -536,7 +539,7 @@ export default function RemoteProvider({ compact = false }) {
     return `Route proof not recorded: ${titleize(testResult.routeProof.reason)}`
   }, [proofRecorded, testResult])
 
-  if (loading) return <LoadingState />
+  if (loading && !statusData) return <LoadingState />
 
   return (
     <div className={`${compact ? 'remote-settings-content' : ''} p-3 sm:p-6 lg:p-8`}>
