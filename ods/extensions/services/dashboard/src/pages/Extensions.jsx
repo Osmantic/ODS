@@ -113,6 +113,7 @@ export default function Extensions({ compact = false }) {
   const [templates, setTemplates] = useState([])
   const [pollingLost, setPollingLost] = useState(false)
   const installProgressRef = useRef(null)
+  const detailTriggerRef = useRef(null)
   const activePollers = useRef({})
   // Per-service recovery tracker: counts consecutive fetch failures and
   // fires onThresholdReached/onRecovered to drive the polling-lost banner.
@@ -509,7 +510,10 @@ export default function Extensions({ compact = false }) {
               ext={ext}
               gpuBackend={catalog?.gpu_backend}
               agentAvailable={catalog?.agent_available}
-              onDetails={() => setExpanded(ext.id)}
+              onDetails={(event) => {
+                detailTriggerRef.current = event.currentTarget
+                setExpanded(ext.id)
+              }}
               onConsole={() => setConsoleExt(ext)}
               onAction={requestAction}
               mutating={mutating}
@@ -523,7 +527,14 @@ export default function Extensions({ compact = false }) {
 
       {/* Detail modal */}
       {expanded && (
-        <DetailModal ext={extensions.find(e => e.id === expanded)} gpuBackend={catalog?.gpu_backend} onClose={() => setExpanded(null)} />
+        <DetailModal
+          ext={extensions.find(e => e.id === expanded)}
+          gpuBackend={catalog?.gpu_backend}
+          onClose={() => {
+            setExpanded(null)
+            Promise.resolve().then(() => detailTriggerRef.current?.focus())
+          }}
+        />
       )}
 
       {/* Console modal */}
