@@ -25,6 +25,7 @@ it('renders inline, filters sections, and preserves form state across navigation
   fireEvent.change(screen.getByLabelText('Search settings'), {target:{value:'portal'}})
   expect(screen.queryByRole('button', {name:'Storage',exact:true})).toBeNull()
   expect(screen.getByRole('button', {name:'Portal access'})).toBeVisible()
+  expect(screen.getByText('4 settings found.')).toHaveAttribute('aria-live', 'polite')
 })
 
 it('leaves closing and collapsing to the workspace panel header', () => {
