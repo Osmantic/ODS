@@ -178,6 +178,7 @@ source "${LIB_DIR}/ui.sh"
 macos_apply_presentation_mode
 source "${LIB_DIR}/bridge-manager.sh"
 source "${LIB_DIR}/native-model.sh"
+source "${LIB_DIR}/native-llama-artifact.sh"
 source "${LIB_DIR}/tier-map.sh"
 source "${LIB_DIR}/detection.sh"
 source "${LIB_DIR}/preflight-fs.sh"
@@ -2225,15 +2226,18 @@ else
         LLAMA_SERVER_DIR="$(dirname "$LLAMA_SERVER_BIN")"
         MAX_CONTEXT="$MACOS_NATIVE_CONTEXT"
 
-        # Download llama.cpp Metal build
-        LLAMA_ZIP="/tmp/${LLAMA_CPP_MACOS_ASSET}"
+        # New archives must match the reviewed manifest before extraction.
+        # Existing owner-installed binaries retain the previous reuse policy.
         if [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
-            if [[ ! -f "$LLAMA_ZIP" ]]; then
-                download_with_progress "$LLAMA_CPP_MACOS_URL" "$LLAMA_ZIP" \
-                    "Downloading llama-server (Metal)" || {
-
-                    # Fallback: try Homebrew
-                    ai_warn "Pre-built binary download failed. Trying Homebrew..."
+            if ods_install_verified_macos_llama "$SOURCE_ROOT" "$LLAMA_CPP_RELEASE_TAG" "$LLAMA_SERVER_BIN"; then
+                ai_ok "Verified llama-server (Metal) extracted"
+            else
+                _llama_download_status=$?
+                if [[ "$_llama_download_status" == 10 ]]; then
+                    # Only transport/HTTP failures preserve the existing OS
+                    # package-manager fallback. Integrity/configuration errors
+                    # below must never silently switch suppliers or versions.
+                    ai_warn "Pre-built binary transport failed. Trying Homebrew (separate package-manager trust)..."
                     if command -v brew >/dev/null 2>&1; then
                         brew install llama.cpp 2>&1 | tail -5
                         BREW_LLAMA=$(command -v llama-server 2>/dev/null || true)
@@ -2253,46 +2257,11 @@ else
                         ai "Then: brew install llama.cpp"
                         exit 1
                     fi
-                }
-            fi
-
-            if [[ -f "$LLAMA_ZIP" ]] && [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
-                # Extract
-                ai "Extracting llama-server..."
-                mkdir -p "$LLAMA_SERVER_DIR"
-                TEMP_EXTRACT="/tmp/llama-extract-$$"
-                mkdir -p "$TEMP_EXTRACT"
-                # Format-aware extraction (handles .tar.gz and .zip)
-                if [[ "$LLAMA_ZIP" == *.tar.gz ]] || [[ "$LLAMA_ZIP" == *.tgz ]]; then
-                    tar xzf "$LLAMA_ZIP" -C "$TEMP_EXTRACT"
                 else
-                    unzip -o -q "$LLAMA_ZIP" -d "$TEMP_EXTRACT"
-                fi
-
-                # Find llama-server binary (may be in a subdirectory)
-                FOUND_BIN=$(find "$TEMP_EXTRACT" -name "llama-server" -type f -print -quit)
-                if [[ -n "$FOUND_BIN" ]]; then
-                    cp "$FOUND_BIN" "$LLAMA_SERVER_BIN"
-                    chmod +x "$LLAMA_SERVER_BIN"
-
-                    # Also copy any companion dylibs and Metal libraries
-                    FOUND_DIR=$(dirname "$FOUND_BIN")
-                    find "$FOUND_DIR" -name "*.dylib" -exec cp {} "$LLAMA_SERVER_DIR/" \; 2>/dev/null || true
-                    find "$FOUND_DIR" -name "*.metal" -exec cp {} "$LLAMA_SERVER_DIR/" \; 2>/dev/null || true
-
-                    ai_ok "Extracted llama-server"
-                else
-                    ai_err "llama-server binary not found in archive."
-                    ai "Try: brew install llama.cpp"
-                    rm -rf "$TEMP_EXTRACT"
+                    ai_err "Native llama-server archive was not accepted; no Homebrew fallback after integrity or configuration failure."
                     exit 1
                 fi
-                rm -rf "$TEMP_EXTRACT"
             fi
-
-            # Remove quarantine attribute (macOS Gatekeeper)
-            xattr -rd com.apple.quarantine "$LLAMA_SERVER_BIN" 2>/dev/null || true
-            xattr -rd com.apple.quarantine "$LLAMA_SERVER_DIR"/*.dylib 2>/dev/null || true
         else
             ai_ok "llama-server already present"
         fi

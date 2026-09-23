@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-09-23",
+  "repository": "https://github.com/ggml-org/llama.cpp",
+  "artifacts": [
+    {
+      "platform": "windows-vulkan-x64",
+      "tag": "b8248",
+      "asset": "llama-b8248-bin-win-vulkan-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8248/llama-b8248-bin-win-vulkan-x64.zip",
+      "sha256": "6548bcef5dd18453dd7b720217d0b9d46ee83d9d7ec2b116f1b68482cc3ce6ca",
+      "size_bytes": 51986606,
+      "release_id": 294645527,
+      "asset_id": 370031732,
+      "metadata_url": "https://api.github.com/repos/ggml-org/llama.cpp/releases/assets/370031732",
+      "updated_at": "2026-03-09T11:04:25Z",
+      "release_immutable": false
+    },
+    {
+      "platform": "windows-vulkan-x64",
+      "tag": "b9014",
+      "asset": "llama-b9014-bin-win-vulkan-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9014/llama-b9014-bin-win-vulkan-x64.zip",
+      "sha256": "6cd4bc7a44256e674458b0c5ea2ae3461dca29ee87876c8d410ecc78652a3b0f",
+      "size_bytes": 33541404,
+      "release_id": 317003873,
+      "asset_id": 411572760,
+      "metadata_url": "https://api.github.com/repos/ggml-org/llama.cpp/releases/assets/411572760",
+      "updated_at": "2026-05-04T05:27:01Z",
+      "release_immutable": false
+    },
+    {
+      "platform": "macos-arm64",
+      "tag": "b8210",
+      "asset": "llama-b8210-bin-macos-arm64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8210/llama-b8210-bin-macos-arm64.tar.gz",
+      "sha256": "8cc228499f05adb69b92462f8060448bec75a7ba406f03c1fca8e628b4ff5c91",
+      "size_bytes": 30726023,
+      "release_id": 293681256,
+      "asset_id": 367774262,
+      "metadata_url": "https://api.github.com/repos/ggml-org/llama.cpp/releases/assets/367774262",
+      "updated_at": "2026-03-05T21:00:12Z",
+      "release_immutable": false
+    },
+    {
+      "platform": "macos-arm64",
+      "tag": "b9014",
+      "asset": "llama-b9014-bin-macos-arm64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9014/llama-b9014-bin-macos-arm64.tar.gz",
+      "sha256": "565aecda0838daa433f363ae9a1c9ed6c94831de3fd093cb08179a5a3fd4f22d",
+      "size_bytes": 8593054,
+      "release_id": 317003873,
+      "asset_id": 411571704,
+      "metadata_url": "https://api.github.com/repos/ggml-org/llama.cpp/releases/assets/411571704",
+      "updated_at": "2026-05-04T05:26:11Z",
+      "release_immutable": false
+    }
+  ]
+}

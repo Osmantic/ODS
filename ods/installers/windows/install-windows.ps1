@@ -80,6 +80,7 @@ if (-not [string]::IsNullOrWhiteSpace($InstallDir)) {
 $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "constants.ps1")
 . (Join-Path $LibDir "ui.ps1")
+. (Join-Path $LibDir "native-llama-artifact.ps1")
 . (Join-Path $LibDir "model-download-review.ps1")
 . (Join-Path $LibDir "compose-diagnostics.ps1")
 . (Join-Path $LibDir "backend-contract.ps1")
@@ -751,45 +752,18 @@ if ($dryRun) {
 
             if (-not $useLemonade) {
                 # ── Fallback: llama-server.exe (Vulkan) ──
-                $llamaZip = Join-Path $env:TEMP $script:LLAMA_CPP_VULKAN_ASSET
-                if (-not (Test-Path $script:LLAMA_SERVER_EXE)) {
-                    if (-not (Test-Path $llamaZip)) {
-                        $dlOk = Invoke-DownloadWithRetry -Url $script:LLAMA_CPP_VULKAN_URL `
-                            -Destination $llamaZip -Label "Downloading llama-server (Vulkan)"
-                        if (-not $dlOk) {
-                            Write-AIError "Failed to download llama-server after retries."
-                            exit 1
-                        }
-                    }
-
-                    Write-AI "Validating llama-server archive..."
-                    $zipValid = Test-ZipIntegrity -Path $llamaZip
-                    if (-not $zipValid.Valid) {
-                        Write-AIWarn "Archive is corrupt: $($zipValid.ErrorMessage)"
-                        Remove-Item $llamaZip -Force -ErrorAction SilentlyContinue
-                        Write-AIError "Corrupted download. Re-run the installer."
+                if (-not (Test-Path -LiteralPath $script:LLAMA_SERVER_EXE)) {
+                    try {
+                        Install-ODSVerifiedNativeLlama -SourceRoot $SourceRoot `
+                            -Tag $script:LLAMA_CPP_RELEASE_TAG -InstallDir $installDir
+                    } catch {
+                        Write-AIError "Native llama-server was not accepted: $_"
                         exit 1
                     }
-
-                    Write-AI "Extracting llama-server..."
-                    New-Item -ItemType Directory -Path $script:LLAMA_SERVER_DIR -Force | Out-Null
-                    if (-not (Invoke-ExtractionWithRetry -ZipPath $llamaZip -DestinationPath $script:LLAMA_SERVER_DIR)) {
-                        Write-AIError "Failed to extract llama-server after retries."
-                        exit 1
-                    }
-
-                    $exeFound = Get-ChildItem -Path $script:LLAMA_SERVER_DIR -Recurse -Filter "llama-server.exe" |
-                        Select-Object -First 1
-                    if ($exeFound -and $exeFound.DirectoryName -ne $script:LLAMA_SERVER_DIR) {
-                        Get-ChildItem -Path $exeFound.DirectoryName -Force |
-                            Move-Item -Destination $script:LLAMA_SERVER_DIR -Force
-                    }
-                    if (-not (Test-Path $script:LLAMA_SERVER_EXE)) {
-                        Write-AIError "llama-server.exe not found after extraction."
-                        exit 1
-                    }
-                    Write-AISuccess "llama-server (Vulkan) extracted"
+                    Write-AISuccess "Verified llama-server (Vulkan) extracted"
                 } else {
+                    # Preserve owner-installed binaries; this is not a new
+                    # download and the archive manifest does not attest to it.
                     Write-AISuccess "llama-server.exe already present"
                 }
 
