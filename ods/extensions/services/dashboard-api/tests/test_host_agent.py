@@ -25,6 +25,29 @@ sys.modules["ods_host_agent"] = _mod
 _spec.loader.exec_module(_mod)
 
 
+def _fixture_hub_url(path):
+    return f"https://huggingface.co/test-publisher/test-model/resolve/{'a' * 40}/{path}"
+
+
+def _with_fixture_hub_terms(model):
+    """Attach source observations, without claiming a license review occurred."""
+    model.setdefault("id", model["gguf_file"])
+    model["source"] = "huggingface"
+    model["source_repo"] = "test-publisher/test-model"
+    model["source_revision"] = "a" * 40
+    model["terms"] = _mod._model_terms.hub_source_observation(model)
+    return model
+
+
+def _acknowledged_download_body(model):
+    projection = _mod._model_terms.project_terms(model)
+    assert projection["recordValid"], projection["errors"]
+    assert projection["releaseReady"] is False
+    body = {key: model[key] for key in ("gguf_file", "gguf_url", "gguf_parts") if key in model}
+    body["termsAcknowledgement"] = {"acknowledged": True, "termsDigest": projection["termsDigest"]}
+    return json.dumps(body).encode("utf-8")
+
+
 def test_core_recreation_excludes_unrelated_secrets_but_keeps_overlays_and_dependencies(tmp_path, monkeypatch):
     monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
     monkeypatch.setattr(_mod, 'EXTENSIONS_DIR', tmp_path / 'extensions')
@@ -5109,11 +5132,11 @@ class TestModelLifecycleSerialization:
         install_dir = tmp_path / "install"
         (install_dir / "config").mkdir(parents=True)
         (install_dir / "data" / "models").mkdir(parents=True)
-        model = {
+        model = _with_fixture_hub_terms({
             "gguf_file": "target.gguf",
-            "gguf_url": "https://example.test/target.gguf",
+            "gguf_url": _fixture_hub_url("target.gguf"),
             "gguf_sha256": hashlib.sha256(b"model").hexdigest(),
-        }
+        })
         (install_dir / "config" / "model-library.json").write_text(
             json.dumps({"models": [model]}),
             encoding="utf-8",
@@ -5122,10 +5145,7 @@ class TestModelLifecycleSerialization:
         acquired, _active = _mod._begin_model_lifecycle("model_activation", "other")
         assert acquired
         try:
-            handler = _FakeHandler(json.dumps({
-                "gguf_file": model["gguf_file"],
-                "gguf_url": model["gguf_url"],
-            }).encode("utf-8"))
+            handler = _FakeHandler(_acknowledged_download_body(model))
             _mod.AgentHandler._handle_model_download(handler)
         finally:
             _mod._end_model_lifecycle("model_activation")
@@ -7456,11 +7476,15 @@ class TestModelDownloadFileIntegrity:
         if models is None:
             models = [{
                 "gguf_file": "test-model.gguf",
-                "gguf_url": "https://example.com/test-model.gguf",
+                "gguf_url": _fixture_hub_url("test-model.gguf"),
                 "gguf_sha256": hashlib.sha256(expected_payload).hexdigest(),
             }]
+        self._library_models = [
+            _with_fixture_hub_terms(model) if model.get("gguf_url") or model.get("gguf_parts") else model
+            for model in models
+        ]
         (install_dir / "config" / "model-library.json").write_text(
-            json.dumps({"models": models}),
+            json.dumps({"models": self._library_models}),
             encoding="utf-8",
         )
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
@@ -7482,11 +7506,9 @@ class TestModelDownloadFileIntegrity:
         )
         return install_dir
 
-    def _body(self):
-        return json.dumps({
-            "gguf_file": "test-model.gguf",
-            "gguf_url": "https://example.com/test-model.gguf",
-        }).encode("utf-8")
+    def _body(self, gguf_file="test-model.gguf"):
+        model = next(record for record in self._library_models if record["gguf_file"] == gguf_file)
+        return _acknowledged_download_body(model)
 
     def _patch_curl_download(self, monkeypatch, payload: bytes):
         outputs = []
@@ -7544,6 +7566,12 @@ class TestModelDownloadFileIntegrity:
             monkeypatch,
             library_models=[model],
         )
+        # An unsafe source cannot pass the terms gate. Assert that rejection,
+        # then isolate the worker's additional URL policy in this test alone.
+        # test_model_terms_api covers the real handler's review/ACK refusals.
+        review_error = _mod._model_terms.download_review_error(model, None)
+        assert review_error["status"] == 412
+        monkeypatch.setattr(_mod._model_terms, "download_review_error", lambda *_args: None)
         monkeypatch.setattr(
             _mod.subprocess,
             "run",
@@ -7835,7 +7863,7 @@ class TestModelDownloadFileIntegrity:
         payload = b"downloaded through hf hub"
         model = {
             "gguf_file": "hf-model.gguf",
-            "gguf_url": "https://huggingface.co/org/model-GGUF/resolve/main/subdir/hf-model.gguf",
+            "gguf_url": _fixture_hub_url("subdir/hf-model.gguf"),
             "gguf_sha256": hashlib.sha256(payload).hexdigest(),
         }
         install_dir = self._setup_env(
@@ -7869,10 +7897,7 @@ class TestModelDownloadFileIntegrity:
 
         monkeypatch.setattr(_mod.subprocess, "Popen", FallbackProc)
 
-        handler = _FakeHandler(json.dumps({
-            "gguf_file": model["gguf_file"],
-            "gguf_url": model["gguf_url"],
-        }).encode("utf-8"))
+        handler = _FakeHandler(self._body(model["gguf_file"]))
         _mod.AgentHandler._handle_model_download(handler)
 
         assert handler.response_code == 200
@@ -7889,7 +7914,7 @@ class TestModelDownloadFileIntegrity:
         payload = b"downloaded through hf hub"
         model = {
             "gguf_file": "hf-model.gguf",
-            "gguf_url": "https://huggingface.co/org/model-GGUF/resolve/main/subdir/hf-model.gguf",
+            "gguf_url": _fixture_hub_url("subdir/hf-model.gguf"),
             "gguf_sha256": hashlib.sha256(payload).hexdigest(),
         }
         install_dir = self._setup_env(
@@ -7958,7 +7983,7 @@ class TestModelDownloadFileIntegrity:
     def test_huggingface_fallback_timeout_is_bounded(self, tmp_path, monkeypatch):
         model = {
             "gguf_file": "hf-model.gguf",
-            "gguf_url": "https://huggingface.co/org/model-GGUF/resolve/main/subdir/hf-model.gguf",
+            "gguf_url": _fixture_hub_url("subdir/hf-model.gguf"),
             "gguf_sha256": hashlib.sha256(b"payload").hexdigest(),
         }
         install_dir = self._setup_env(tmp_path, monkeypatch, library_models=[model])
@@ -8002,12 +8027,12 @@ class TestModelDownloadFileIntegrity:
         parts = [
             {
                 "file": "split-model-00001-of-00002.gguf",
-                "url": "https://example.com/split-model-00001-of-00002.gguf",
+                "url": _fixture_hub_url("split-model-00001-of-00002.gguf"),
                 "sha256": hashlib.sha256(b"existing first part").hexdigest(),
             },
             {
                 "file": "split-model-00002-of-00002.gguf",
-                "url": "https://example.com/split-model-00002-of-00002.gguf",
+                "url": _fixture_hub_url("split-model-00002-of-00002.gguf"),
                 "sha256": hashlib.sha256(b"downloaded second part").hexdigest(),
             },
         ]
@@ -8025,10 +8050,7 @@ class TestModelDownloadFileIntegrity:
         models_dir = install_dir / "data" / "models"
         (models_dir / "split-model-00001-of-00002.gguf").write_bytes(b"existing first part")
 
-        handler = _FakeHandler(json.dumps({
-            "gguf_file": "split-model-00001-of-00002.gguf",
-            "gguf_parts": parts,
-        }).encode("utf-8"))
+        handler = _FakeHandler(self._body("split-model-00001-of-00002.gguf"))
         _mod.AgentHandler._handle_model_download(handler)
 
         assert handler.response_code == 200
@@ -8101,12 +8123,12 @@ class TestModelDownloadFileIntegrity:
         parts = [
             {
                 "file": "split-00001-of-00002.gguf",
-                "url": "https://example.com/split-00001-of-00002.gguf",
+                "url": _fixture_hub_url("split-00001-of-00002.gguf"),
                 "sha256": hashlib.sha256(first_payload).hexdigest(),
             },
             {
                 "file": "split-00002-of-00002.gguf",
-                "url": "https://example.com/split-00002-of-00002.gguf",
+                "url": _fixture_hub_url("split-00002-of-00002.gguf"),
                 "sha256": hashlib.sha256(second_payload).hexdigest(),
             },
         ]
@@ -8231,12 +8253,12 @@ class TestModelDownloadFileIntegrity:
         parts = [
             {
                 "file": "split-00001-of-00002.gguf",
-                "url": "https://example.com/split-00001-of-00002.gguf",
+                "url": _fixture_hub_url("split-00001-of-00002.gguf"),
                 "sha256": hashlib.sha256(first_payload).hexdigest(),
             },
             {
                 "file": "split-00002-of-00002.gguf",
-                "url": "https://example.com/split-00002-of-00002.gguf",
+                "url": _fixture_hub_url("split-00002-of-00002.gguf"),
                 "sha256": hashlib.sha256(second_payload).hexdigest(),
             },
         ]
@@ -8253,10 +8275,7 @@ class TestModelDownloadFileIntegrity:
         (models_dir / parts[0]["file"]).write_bytes(first_payload)
         (models_dir / parts[1]["file"]).write_bytes(b"corrupt but non-empty")
 
-        handler = _FakeHandler(json.dumps({
-            "gguf_file": parts[0]["file"],
-            "gguf_parts": parts,
-        }).encode("utf-8"))
+        handler = _FakeHandler(self._body(parts[0]["file"]))
         _mod.AgentHandler._handle_model_download(handler)
 
         assert handler.response_code == 200
@@ -8276,7 +8295,7 @@ class TestModelDownloadFileIntegrity:
         parts = [
             {
                 "file": f"split-0000{index + 1}-of-00003.gguf",
-                "url": f"https://example.com/split-{index + 1}.gguf",
+                "url": _fixture_hub_url(f"split-{index + 1}.gguf"),
                 "sha256": hashlib.sha256(payload).hexdigest(),
             }
             for index, payload in enumerate(payloads)
@@ -8320,10 +8339,7 @@ class TestModelDownloadFileIntegrity:
                 self.returncode = -9
 
         monkeypatch.setattr(_mod.subprocess, "Popen", CancellingProc)
-        handler = _FakeHandler(json.dumps({
-            "gguf_file": parts[0]["file"],
-            "gguf_parts": parts,
-        }).encode("utf-8"))
+        handler = _FakeHandler(self._body(parts[0]["file"]))
 
         _mod.AgentHandler._handle_model_download(handler)
 

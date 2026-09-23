@@ -20,6 +20,7 @@ import { Link } from 'react-router-dom'
 import { useModels } from '../hooks/useModels'
 import { useDownloadProgress } from '../hooks/useDownloadProgress'
 import ModelTermsDetails from '../components/model-library/ModelTermsDetails'
+import ModelTermsDialog from '../components/model-library/ModelTermsDialog'
 import HuggingFaceModelBrowser from '../components/model-library/HuggingFaceModelBrowser'
 import ExternalLemonadeAdoption from '../components/ExternalLemonadeAdoption'
 import MetalMetricIcon from '../components/MetalMetricIcon'
@@ -88,6 +89,7 @@ export default function Models({ compact = false }) {
   } = useModels()
 
   const [downloadStarting, setDownloadStarting] = useState(null)
+  const [downloadReviewModel, setDownloadReviewModel] = useState(null)
   const [downloadAwaitingStatus, setDownloadAwaitingStatus] = useState(false)
   const [downloadStartFailure, setDownloadStartFailure] = useState(null)
   const [page, setPage] = useState(1)
@@ -196,13 +198,20 @@ export default function Models({ compact = false }) {
     setPage(1)
   }, [categoryFilter, compatibilityFilter, contextFloor, libraryScope, query, scopedModels.length, speedFilter])
 
-  const handleDownload = async (modelId) => {
+  const handleDownload = modelId => {
+    setDownloadReviewModel(models.find(model => model.id === modelId) || { id: modelId })
+  }
+
+  const handleConfirmDownload = async acknowledgement => {
+    if (!downloadReviewModel) return
+    const modelId = downloadReviewModel.id
+    setDownloadReviewModel(null)
     setDownloadStartFailure(null)
     downloadProgress.clearTerminal?.()
     setDownloadAwaitingStatus(false)
     setDownloadStarting(modelId)
     try {
-      await downloadModel(modelId)
+      await downloadModel(modelId, acknowledgement)
       setDownloadAwaitingStatus(true)
       await downloadProgress.refresh()
     } catch (downloadError) {
@@ -464,6 +473,12 @@ export default function Models({ compact = false }) {
       </div>
       )}
 
+      {downloadReviewModel && <ModelTermsDialog
+        modelId={downloadReviewModel.id}
+        modelName={downloadReviewModel.name}
+        onCancel={() => setDownloadReviewModel(null)}
+        onConfirm={handleConfirmDownload}
+      />}
       {deleteConfirmModel && (
         <DeleteModelDialog
           model={deleteConfirmModel}

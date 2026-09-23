@@ -69,12 +69,13 @@ printf '999999\n' > "$install_dir/data/.llama-server.pid"
 count_file="$tmp/curl-count"
 : > "$count_file"
 expected_sha="$(printf 'good' | sha256sum | awk '{print $1}')"
+python3 "$ROOT_DIR/tests/fixtures/write-model-review-fixture.py" "$install_dir" "$expected_sha"
 
 set +e
 PATH="$fakebin:$PATH" ODS_FAKE_CURL_COUNT="$count_file" ODS_BOOTSTRAP_DOWNLOAD_ATTEMPTS=2 ODS_BOOTSTRAP_DOWNLOAD_MAX_SECONDS=0 bash "$TARGET" \
     "$install_dir" \
     "Full.gguf" \
-    "https://example.invalid/Full.gguf" \
+    "https://huggingface.co/fixture/Model/resolve/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Full.gguf" \
     "$expected_sha" \
     "full-model" \
     "32768" \

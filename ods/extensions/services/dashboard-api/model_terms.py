@@ -23,11 +23,21 @@ def source_document_url(value, repository, revision, path, operation):
             or any(part in {"", ".", ".."} for part in path.split("/"))):
         return False
     url = urlsplit(value)
-    parts = url.path.removeprefix("/").split("/")
+    parts = (url.path[1:] if url.path.startswith("/") else url.path).split("/")
     return (url.netloc == "huggingface.co" and not url.query and not url.fragment
             and len(parts) >= 5 and parts[2] == operation
             and "/".join(parts[:2]) == repository and parts[3] == revision
             and unquote("/".join(parts[4:])) == path)
+
+
+def valid_conditions(conditions):
+    """A completed review must expose readable conditions, not hidden placeholders."""
+    return bool(isinstance(conditions, list) and conditions and all(
+        isinstance(condition, dict) and all(
+            isinstance(condition.get(field), str) and condition[field].strip()
+            for field in ("trigger", "requirement", "basis", "license_group")
+        ) for condition in conditions
+    ))
 
 
 def validate_terms(model):
@@ -110,6 +120,10 @@ def validate_terms(model):
         if (not terms.get("license_documents") or not terms.get("notice_documents")
                 or any(not isinstance(s, dict) or not s.get("license_id") for s in sources)):
             errors.append("A completed review requires license declarations and retained terms/notices")
+        if not valid_conditions(terms.get("conditions")):
+            errors.append("A completed review requires explicit readable license conditions")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(terms.get("license_review_evidence_sha256", ""))):
+            errors.append("A completed review requires its license evidence fingerprint")
     return errors
 
 
@@ -129,3 +143,56 @@ def project_terms(model):
                                  and terms["commercial_use"] != "not_assessed"
                                  and terms["upstream_acceptance"] != "not_assessed"
                                  and not terms["issues"])}
+
+
+def download_review_error(model, acknowledgement):
+    """Require an explicit review of this exact artifact, not implied consent.
+
+    Acknowledging recorded information never changes its review status or
+    grants rights. Upstream access restrictions remain enforced by the publisher.
+    """
+    projection = project_terms(model)
+    base = {"modelId": model.get("id"), "termsDigest": projection["termsDigest"]}
+    if not projection["recordValid"]:
+        return {**base, "status": 412, "code": "model_terms_incomplete",
+                "error": "Source and license information is incomplete. Refresh this model's source record before downloading."}
+    if not isinstance(acknowledgement, dict) or acknowledgement.get("acknowledged") is not True:
+        return {**base, "status": 428, "code": "model_terms_review_required",
+                "error": "Review this model's sources and terms before starting its download."}
+    if acknowledgement.get("termsDigest") != projection["termsDigest"]:
+        return {**base, "status": 409, "code": "model_terms_changed",
+                "error": "The model or its terms changed. Review the current information before downloading."}
+    if (projection["terms"]["upstream_acceptance"] in {"required", "required_by_observed_gating"}
+            and acknowledgement.get("upstreamAccepted") is not True):
+        return {**base, "status": 428, "code": "model_upstream_acceptance_required",
+                "error": "Complete the publisher's required acceptance and confirm it before downloading."}
+    return None
+
+
+def hub_source_observation(model, *, license_id=None, license_url=None, gated=False, declared_bases=None):
+    """Record public Hub declarations without treating a card tag as clearance.
+
+    Arbitrary imports are not automatically assigned curated/legal review. Their
+    source card and unverified base declarations remain visible to the owner.
+    """
+    repository, revision = model["source_repo"], model["source_revision"]
+    source = {"role": "artifact_publisher", "repository": repository,
+              "revision": revision, "url": f"https://huggingface.co/{repository}/tree/{revision}",
+              "declaration_url": f"https://huggingface.co/api/models/{repository}/revision/{revision}",
+              "license_id": license_id if isinstance(license_id, str) else None}
+    if https_url(license_url):
+        source["license_url"] = license_url
+    observations = {"source": source, "gated": bool(gated), "declared_bases": declared_bases or []}
+    evidence_hash = hashlib.sha256(json.dumps(observations, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    artifacts = model.get("gguf_parts") or [{"url": model["gguf_url"]}]
+    return {"schema_version": 1, "evidence_sha256": evidence_hash,
+            "sources": [source], "review_status": "not_assessed",
+            "commercial_use": "not_assessed",
+            "upstream_acceptance": "required_by_observed_gating" if gated else "not_assessed",
+            "license_documents": [], "notice_documents": [],
+            "declared_base_repositories": declared_bases or [],
+            "artifacts": [{"url": item["url"],
+                           "path": unquote("/".join(urlsplit(item["url"]).path.split("/")[5:])),
+                           "observed_present": True} for item in artifacts],
+            "issues": ["COMMUNITY_MODEL_TERMS_NOT_REVIEWED"],
+            "note": "Community import: the publisher's declarations are shown, but ODS has not reviewed the full license chain, commercial-use conditions or required notices. Read the publisher's terms; this acknowledgement does not accept them on your behalf or establish permission."}

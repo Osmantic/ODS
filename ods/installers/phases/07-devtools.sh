@@ -357,13 +357,17 @@ _ods_start_session_host_agent() {
         fi
     fi
 
-    if ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent start >> "$LOG_FILE" 2>&1; then
+    # Reload the files phase 06 just installed even if an older session agent
+    # is healthy. The later network-bind restart is skipped for explicit binds.
+    # CLI restart also handles a first install and keeps its owned-PID checks
+    # and bounded health wait in one place.
+    if ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent restart >> "$LOG_FILE" 2>&1; then
         ai_ok "ODS host agent started for this session (background mode)"
         ai "  Run 'ods agent start' after reboot or login to start it again."
         return 0
     fi
 
-    ai_warn "Could not start the session host agent. Run: ods agent start"
+    ai_warn "Could not restart the session host agent. Run: ods agent restart"
     return 1
 }
 

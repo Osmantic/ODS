@@ -34,14 +34,19 @@ def import_shards(client, monkeypatch, tmp_path, *, prefix="quant/model-Q4_K_M",
     assert details.status_code == 200, details.text
     artifacts = details.json()["artifacts"]
     assert len(artifacts) == 1 and artifacts[0]["split"]
+    preview = artifacts[0]["termsPreview"]
+    assert preview["recordValid"], preview["errors"]
+    acknowledgement = {"acknowledged": True, "termsDigest": preview["termsDigest"]}
     response = client.post("/api/models/huggingface/import", headers=client.auth_headers,
-                           json={"repoId": repo, "artifactId": artifacts[0]["id"]})
+                           json={"repoId": repo, "artifactId": artifacts[0]["id"],
+                                 "termsAcknowledgement": acknowledgement})
     assert response.status_code == 200, response.text
     records = json.loads((tmp_path / "model-imports.json").read_text())["models"]
     record = next(item for item in records if item["id"] == response.json()["modelId"])
     assert calls == [("/v1/model/download", {
         "gguf_file": record["gguf_file"], "gguf_url": record["gguf_url"],
         "gguf_sha256": record["gguf_sha256"], "gguf_parts": record["gguf_parts"],
+        "termsAcknowledgement": acknowledgement,
     })]
     for index, (name, part) in enumerate(zip(names, record["gguf_parts"])):
         assert part["source_file"] == name

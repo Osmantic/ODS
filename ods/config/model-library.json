@@ -74,7 +74,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -116,15 +116,21 @@
         ],
         "license_documents": [
           {
-            "repo": "unsloth/Qwen3.5-2B-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-2B/raw/15852e8c16360a2fea060d615a32b45270f8a8fc/LICENSE",
-            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
-          },
-          {
             "repo": "Qwen/Qwen3.5-2B",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen3.5-2B/blob/15852e8c16360a2fea060d615a32b45270f8a8fc/LICENSE",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+          },
+          {
+            "repo": "Qwen/Qwen3.5-2B-Base",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-2B-Base/blob/b1485b2fa6dfa1287294f269f5fb618e03d52d7c/LICENSE",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
+          },
+          {
+            "repo": "unsloth/Qwen3.5-2B-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-2B/raw/15852e8c16360a2fea060d615a32b45270f8a8fc/LICENSE",
             "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
           }
         ],
@@ -137,33 +143,84 @@
           },
           {
             "repository": "Qwen/Qwen3.5-2B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-2B/blob/15852e8c16360a2fea060d615a32b45270f8a8fc/LICENSE",
-            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
-          },
-          {
-            "repository": "Qwen/Qwen3.5-2B",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3.5-2B/blob/15852e8c16360a2fea060d615a32b45270f8a8fc/README.md",
             "sha256": "c0e83a849c776e6fa843d011f023132d942a0f0140d903205bf1c363adad2275"
           },
           {
             "repository": "Qwen/Qwen3.5-2B-Base",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-2B-Base/blob/b1485b2fa6dfa1287294f269f5fb618e03d52d7c/LICENSE",
-            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
-          },
-          {
-            "repository": "Qwen/Qwen3.5-2B-Base",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3.5-2B-Base/blob/b1485b2fa6dfa1287294f269f5fb618e03d52d7c/README.md",
             "sha256": "50ca45b87d976d9850de95ad00e76fba77e105c2cdef1093b8e3bb261d9a1787"
+          },
+          {
+            "repository": "Qwen/Qwen3.5-2B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-2B/blob/15852e8c16360a2fea060d615a32b45270f8a8fc/LICENSE",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+          },
+          {
+            "repository": "Qwen/Qwen3.5-2B-Base",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-2B-Base/blob/b1485b2fa6dfa1287294f269f5fb618e03d52d7c/LICENSE",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a.txt",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+            "source_url": "https://huggingface.co/Qwen/Qwen3.5-2B/blob/15852e8c16360a2fea060d615a32b45270f8a8fc/LICENSE",
+            "source_sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32.txt",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+            "source_url": "https://huggingface.co/Qwen/Qwen3.5-2B-Base/blob/b1485b2fa6dfa1287294f269f5fb618e03d52d7c/LICENSE",
+            "source_sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -409,7 +466,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -441,15 +498,15 @@
         ],
         "license_documents": [
           {
-            "repo": "unsloth/Phi-4-mini-instruct-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/microsoft/Phi-4-mini-instruct/raw/cfbefacb99257ffa30c83adab238a50856ac3083/LICENSE",
-            "sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d"
-          },
-          {
             "repo": "microsoft/Phi-4-mini-instruct",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/microsoft/Phi-4-mini-instruct/blob/cfbefacb99257ffa30c83adab238a50856ac3083/LICENSE",
+            "sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d"
+          },
+          {
+            "repo": "unsloth/Phi-4-mini-instruct-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/microsoft/Phi-4-mini-instruct/raw/cfbefacb99257ffa30c83adab238a50856ac3083/LICENSE",
             "sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d"
           }
         ],
@@ -462,6 +519,12 @@
           },
           {
             "repository": "microsoft/Phi-4-mini-instruct",
+            "path": "README.md",
+            "url": "https://huggingface.co/microsoft/Phi-4-mini-instruct/blob/cfbefacb99257ffa30c83adab238a50856ac3083/README.md",
+            "sha256": "c4f34916182a3ee87d95d00c92847cfa687ab21dc338a577275f0c34cf0e1dfd"
+          },
+          {
+            "repository": "microsoft/Phi-4-mini-instruct",
             "path": "LICENSE",
             "url": "https://huggingface.co/microsoft/Phi-4-mini-instruct/blob/cfbefacb99257ffa30c83adab238a50856ac3083/LICENSE",
             "sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d"
@@ -471,18 +534,45 @@
             "path": "NOTICE.md",
             "url": "https://huggingface.co/microsoft/Phi-4-mini-instruct/blob/cfbefacb99257ffa30c83adab238a50856ac3083/NOTICE.md",
             "sha256": "a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4"
-          },
-          {
-            "repository": "microsoft/Phi-4-mini-instruct",
-            "path": "README.md",
-            "url": "https://huggingface.co/microsoft/Phi-4-mini-instruct/blob/cfbefacb99257ffa30c83adab238a50856ac3083/README.md",
-            "sha256": "c4f34916182a3ee87d95d00c92847cfa687ab21dc338a577275f0c34cf0e1dfd"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. Retain the publisher NOTICE.md. Its flash-attention BSD conditions are component-specific; their presence is not evidence that a GGUF embeds that software. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "copies or substantial portions",
+            "requirement": "Retain the copyright and permission notice, including the license disclaimer.",
+            "basis": "MIT notice condition",
+            "license_group": "mit"
+          },
+          {
+            "trigger": "redistribution of the flash-attention component described by the publisher NOTICE",
+            "requirement": "Retain its copyright, conditions and disclaimer in source or accompanying binary materials; do not imply endorsement.",
+            "basis": "publisher NOTICE.md; applies to that component, not inferred to relicense model weights",
+            "license_group": "bsd-3-clause-component"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/mit-fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d.txt",
+            "sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d",
+            "source_url": "https://huggingface.co/microsoft/Phi-4-mini-instruct/blob/cfbefacb99257ffa30c83adab238a50856ac3083/LICENSE",
+            "source_sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/bsd-3-clause-component-a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4.txt",
+            "sha256": "a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4",
+            "source_url": "https://huggingface.co/microsoft/Phi-4-mini-instruct/blob/cfbefacb99257ffa30c83adab238a50856ac3083/NOTICE.md",
+            "source_sha256": "a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -538,7 +628,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -570,15 +660,15 @@
         ],
         "license_documents": [
           {
-            "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/microsoft/Phi-3.5-mini-instruct/raw/2fe192450127e6a83f7441aef6e3ca586c338b77/LICENSE",
-            "sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d"
-          },
-          {
             "repo": "microsoft/Phi-3.5-mini-instruct",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/microsoft/Phi-3.5-mini-instruct/blob/2fe192450127e6a83f7441aef6e3ca586c338b77/LICENSE",
+            "sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d"
+          },
+          {
+            "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/microsoft/Phi-3.5-mini-instruct/raw/2fe192450127e6a83f7441aef6e3ca586c338b77/LICENSE",
             "sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d"
           }
         ],
@@ -591,6 +681,12 @@
           },
           {
             "repository": "microsoft/Phi-3.5-mini-instruct",
+            "path": "README.md",
+            "url": "https://huggingface.co/microsoft/Phi-3.5-mini-instruct/blob/2fe192450127e6a83f7441aef6e3ca586c338b77/README.md",
+            "sha256": "cab9d7e23368cf9e8ba469e6c9facf2535f4d32eb9381a604d6d6757f9915b94"
+          },
+          {
+            "repository": "microsoft/Phi-3.5-mini-instruct",
             "path": "LICENSE",
             "url": "https://huggingface.co/microsoft/Phi-3.5-mini-instruct/blob/2fe192450127e6a83f7441aef6e3ca586c338b77/LICENSE",
             "sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d"
@@ -600,18 +696,45 @@
             "path": "NOTICE.md",
             "url": "https://huggingface.co/microsoft/Phi-3.5-mini-instruct/blob/2fe192450127e6a83f7441aef6e3ca586c338b77/NOTICE.md",
             "sha256": "a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4"
-          },
-          {
-            "repository": "microsoft/Phi-3.5-mini-instruct",
-            "path": "README.md",
-            "url": "https://huggingface.co/microsoft/Phi-3.5-mini-instruct/blob/2fe192450127e6a83f7441aef6e3ca586c338b77/README.md",
-            "sha256": "cab9d7e23368cf9e8ba469e6c9facf2535f4d32eb9381a604d6d6757f9915b94"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. Retain the publisher NOTICE.md. Its flash-attention BSD conditions are component-specific; their presence is not evidence that a GGUF embeds that software. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "copies or substantial portions",
+            "requirement": "Retain the copyright and permission notice, including the license disclaimer.",
+            "basis": "MIT notice condition",
+            "license_group": "mit"
+          },
+          {
+            "trigger": "redistribution of the flash-attention component described by the publisher NOTICE",
+            "requirement": "Retain its copyright, conditions and disclaimer in source or accompanying binary materials; do not imply endorsement.",
+            "basis": "publisher NOTICE.md; applies to that component, not inferred to relicense model weights",
+            "license_group": "bsd-3-clause-component"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/mit-fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d.txt",
+            "sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d",
+            "source_url": "https://huggingface.co/microsoft/Phi-3.5-mini-instruct/blob/2fe192450127e6a83f7441aef6e3ca586c338b77/LICENSE",
+            "source_sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/bsd-3-clause-component-a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4.txt",
+            "sha256": "a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4",
+            "source_url": "https://huggingface.co/microsoft/Phi-3.5-mini-instruct/blob/2fe192450127e6a83f7441aef6e3ca586c338b77/NOTICE.md",
+            "source_sha256": "a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -653,7 +776,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -700,6 +823,12 @@
           },
           {
             "repository": "microsoft/Phi-4-mini-reasoning",
+            "path": "README.md",
+            "url": "https://huggingface.co/microsoft/Phi-4-mini-reasoning/blob/0e3b1e2d02ee478a3743abe3f629e9c0cb722e0a/README.md",
+            "sha256": "9bc87c9d622d4c93572a93397742df200fb769c1ab1b50ce7e950c5218dad776"
+          },
+          {
+            "repository": "microsoft/Phi-4-mini-reasoning",
             "path": "LICENSE",
             "url": "https://huggingface.co/microsoft/Phi-4-mini-reasoning/blob/0e3b1e2d02ee478a3743abe3f629e9c0cb722e0a/LICENSE",
             "sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d"
@@ -709,18 +838,45 @@
             "path": "NOTICE.md",
             "url": "https://huggingface.co/microsoft/Phi-4-mini-reasoning/blob/0e3b1e2d02ee478a3743abe3f629e9c0cb722e0a/NOTICE.md",
             "sha256": "a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4"
-          },
-          {
-            "repository": "microsoft/Phi-4-mini-reasoning",
-            "path": "README.md",
-            "url": "https://huggingface.co/microsoft/Phi-4-mini-reasoning/blob/0e3b1e2d02ee478a3743abe3f629e9c0cb722e0a/README.md",
-            "sha256": "9bc87c9d622d4c93572a93397742df200fb769c1ab1b50ce7e950c5218dad776"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": "The base card license_link uses a different repository spelling and returned HTTP 401 anonymously. The actual reviewed base LICENSE file was accessible; retain that pinned document instead of assuming the link is valid."
+        "note": "The base card license_link uses a different repository spelling and returned HTTP 401 anonymously. The actual reviewed base LICENSE file was accessible; retain that pinned document instead of assuming the link is valid. No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. Retain the publisher NOTICE.md. Its flash-attention BSD conditions are component-specific; their presence is not evidence that a GGUF embeds that software. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "copies or substantial portions",
+            "requirement": "Retain the copyright and permission notice, including the license disclaimer.",
+            "basis": "MIT notice condition",
+            "license_group": "mit"
+          },
+          {
+            "trigger": "redistribution of the flash-attention component described by the publisher NOTICE",
+            "requirement": "Retain its copyright, conditions and disclaimer in source or accompanying binary materials; do not imply endorsement.",
+            "basis": "publisher NOTICE.md; applies to that component, not inferred to relicense model weights",
+            "license_group": "bsd-3-clause-component"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/mit-fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d.txt",
+            "sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d",
+            "source_url": "https://huggingface.co/microsoft/Phi-4-mini-reasoning/blob/0e3b1e2d02ee478a3743abe3f629e9c0cb722e0a/LICENSE",
+            "source_sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/bsd-3-clause-component-a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4.txt",
+            "sha256": "a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4",
+            "source_url": "https://huggingface.co/microsoft/Phi-4-mini-reasoning/blob/0e3b1e2d02ee478a3743abe3f629e9c0cb722e0a/NOTICE.md",
+            "source_sha256": "a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -761,7 +917,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -813,26 +969,20 @@
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/blob/989aa7980e4cf806f80c7fef2b1adb7bc71aa306/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repo": "Qwen/Qwen2.5-1.5B",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B/blob/8faed761d45a263340a0528343f099c05c9a4323/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
         "notice_documents": [
           {
             "repository": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
-          },
-          {
-            "repository": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/README.md",
             "sha256": "57c72d4010fb11a98fc8e62dc8ef112b23a7a7525b71e571ca978d35cb3b2eec"
-          },
-          {
-            "repository": "Qwen/Qwen2.5-1.5B-Instruct",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/blob/989aa7980e4cf806f80c7fef2b1adb7bc71aa306/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen2.5-1.5B-Instruct",
@@ -842,21 +992,76 @@
           },
           {
             "repository": "Qwen/Qwen2.5-1.5B",
+            "path": "README.md",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B/blob/8faed761d45a263340a0528343f099c05c9a4323/README.md",
+            "sha256": "84cc3bdbfd781149913126b70981cf1e341176fe4bc9d878601a83f18b035ddf"
+          },
+          {
+            "repository": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
             "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B/blob/8faed761d45a263340a0528343f099c05c9a4323/LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repository": "Qwen/Qwen2.5-1.5B-Instruct",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/blob/989aa7980e4cf806f80c7fef2b1adb7bc71aa306/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen2.5-1.5B",
-            "path": "README.md",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B/blob/8faed761d45a263340a0528343f099c05c9a4323/README.md",
-            "sha256": "84cc3bdbfd781149913126b70981cf1e341176fe4bc9d878601a83f18b035ddf"
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B/blob/8faed761d45a263340a0528343f099c05c9a4323/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e.txt",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+            "source_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -897,7 +1102,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -949,26 +1154,20 @@
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/blob/7ae557604adf67be50417f59c2c2f167def9a775/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repo": "Qwen/Qwen2.5-0.5B",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B/blob/060db6499f32faf8b98477b0a26969ef7d8b9987/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
         "notice_documents": [
           {
             "repository": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/blob/9217f5db79a29953eb74d5343926648285ec7e67/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
-          },
-          {
-            "repository": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/blob/9217f5db79a29953eb74d5343926648285ec7e67/README.md",
             "sha256": "fa1fede7f775a20f111cc098c00900092020572ce78976970a5b0ad9ca211999"
-          },
-          {
-            "repository": "Qwen/Qwen2.5-0.5B-Instruct",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/blob/7ae557604adf67be50417f59c2c2f167def9a775/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen2.5-0.5B-Instruct",
@@ -978,21 +1177,76 @@
           },
           {
             "repository": "Qwen/Qwen2.5-0.5B",
+            "path": "README.md",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B/blob/060db6499f32faf8b98477b0a26969ef7d8b9987/README.md",
+            "sha256": "3c93cbc9f60417337fcbf093da872007586b9d886b0f0187f21aec35b869616a"
+          },
+          {
+            "repository": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
             "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B/blob/060db6499f32faf8b98477b0a26969ef7d8b9987/LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/blob/9217f5db79a29953eb74d5343926648285ec7e67/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/blob/7ae557604adf67be50417f59c2c2f167def9a775/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen2.5-0.5B",
-            "path": "README.md",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B/blob/060db6499f32faf8b98477b0a26969ef7d8b9987/README.md",
-            "sha256": "3c93cbc9f60417337fcbf093da872007586b9d886b0f0187f21aec35b869616a"
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B/blob/060db6499f32faf8b98477b0a26969ef7d8b9987/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e.txt",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/blob/9217f5db79a29953eb74d5343926648285ec7e67/LICENSE",
+            "source_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -2730,7 +2984,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -2762,15 +3016,15 @@
         ],
         "license_documents": [
           {
-            "repo": "QuantFactory/Phi-3-mini-128k-instruct-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/microsoft/Phi-3-mini-128k-instruct/raw/f3c06aed622e14ca0abf5115094e4fc9a9948f36/LICENSE",
-            "sha256": "c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51"
-          },
-          {
             "repo": "microsoft/Phi-3-mini-128k-instruct",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/microsoft/Phi-3-mini-128k-instruct/blob/f3c06aed622e14ca0abf5115094e4fc9a9948f36/LICENSE",
+            "sha256": "c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51"
+          },
+          {
+            "repo": "QuantFactory/Phi-3-mini-128k-instruct-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/microsoft/Phi-3-mini-128k-instruct/raw/f3c06aed622e14ca0abf5115094e4fc9a9948f36/LICENSE",
             "sha256": "c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51"
           }
         ],
@@ -2783,6 +3037,12 @@
           },
           {
             "repository": "microsoft/Phi-3-mini-128k-instruct",
+            "path": "README.md",
+            "url": "https://huggingface.co/microsoft/Phi-3-mini-128k-instruct/blob/f3c06aed622e14ca0abf5115094e4fc9a9948f36/README.md",
+            "sha256": "e8ca83c574daf04766f44af8d60699b995fee48128b84f582c240eee28a5ffd1"
+          },
+          {
+            "repository": "microsoft/Phi-3-mini-128k-instruct",
             "path": "LICENSE",
             "url": "https://huggingface.co/microsoft/Phi-3-mini-128k-instruct/blob/f3c06aed622e14ca0abf5115094e4fc9a9948f36/LICENSE",
             "sha256": "c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51"
@@ -2792,20 +3052,45 @@
             "path": "NOTICE.md",
             "url": "https://huggingface.co/microsoft/Phi-3-mini-128k-instruct/blob/f3c06aed622e14ca0abf5115094e4fc9a9948f36/NOTICE.md",
             "sha256": "a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4"
-          },
-          {
-            "repository": "microsoft/Phi-3-mini-128k-instruct",
-            "path": "README.md",
-            "url": "https://huggingface.co/microsoft/Phi-3-mini-128k-instruct/blob/f3c06aed622e14ca0abf5115094e4fc9a9948f36/README.md",
-            "sha256": "e8ca83c574daf04766f44af8d60699b995fee48128b84f582c240eee28a5ffd1"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
-        "issues": [
-          "BASE_MODEL_FROM_CARD_PROSE"
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
+        "issues": [],
+        "note": "No base_model field. Source attribution is from the card heading and Microsoft license link, not a structured derivation record; the body also contains an alternate license URL. No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. Base relationship is resolved by the pinned quantizer README and license_link, corroborated by the exact Microsoft publisher LICENSE and model card. Retain the publisher NOTICE.md. Its flash-attention BSD conditions are component-specific; their presence is not evidence that a GGUF embeds that software. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "copies or substantial portions",
+            "requirement": "Retain the copyright and permission notice, including the license disclaimer.",
+            "basis": "MIT notice condition",
+            "license_group": "mit"
+          },
+          {
+            "trigger": "redistribution of the flash-attention component described by the publisher NOTICE",
+            "requirement": "Retain its copyright, conditions and disclaimer in source or accompanying binary materials; do not imply endorsement.",
+            "basis": "publisher NOTICE.md; applies to that component, not inferred to relicense model weights",
+            "license_group": "bsd-3-clause-component"
+          }
         ],
-        "note": "No base_model field. Source attribution is from the card heading and Microsoft license link, not a structured derivation record; the body also contains an alternate license URL."
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/mit-c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51.txt",
+            "sha256": "c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51",
+            "source_url": "https://huggingface.co/microsoft/Phi-3-mini-128k-instruct/blob/f3c06aed622e14ca0abf5115094e4fc9a9948f36/LICENSE",
+            "source_sha256": "c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/bsd-3-clause-component-a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4.txt",
+            "sha256": "a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4",
+            "source_url": "https://huggingface.co/microsoft/Phi-3-mini-128k-instruct/blob/f3c06aed622e14ca0abf5115094e4fc9a9948f36/NOTICE.md",
+            "source_sha256": "a3386cc7125ec75ed34d4f0a340c47782982095e251d322e01d8ecab22d87ba4",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -3376,7 +3661,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -3428,26 +3713,20 @@
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/blob/aa8e72537993ba99e69dfaafa59ed015b17504d1/LICENSE",
             "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9"
+          },
+          {
+            "repo": "Qwen/Qwen2.5-3B",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-3B/blob/3aab1f1954e9cc14eb9509a215f9e5ca08227a9b/LICENSE",
+            "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9"
           }
         ],
         "notice_documents": [
           {
             "repository": "Qwen/Qwen2.5-3B-Instruct-GGUF",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/blob/7dabda4d13d513e3e842b20f0d435c732f172cbe/LICENSE",
-            "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9"
-          },
-          {
-            "repository": "Qwen/Qwen2.5-3B-Instruct-GGUF",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/blob/7dabda4d13d513e3e842b20f0d435c732f172cbe/README.md",
             "sha256": "934bca6ff3ca27481c49b52a2d3138f6f58b8a64f016fd461bc11fad8963eee5"
-          },
-          {
-            "repository": "Qwen/Qwen2.5-3B-Instruct",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/blob/aa8e72537993ba99e69dfaafa59ed015b17504d1/LICENSE",
-            "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9"
           },
           {
             "repository": "Qwen/Qwen2.5-3B-Instruct",
@@ -3457,23 +3736,76 @@
           },
           {
             "repository": "Qwen/Qwen2.5-3B",
+            "path": "README.md",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-3B/blob/3aab1f1954e9cc14eb9509a215f9e5ca08227a9b/README.md",
+            "sha256": "75c779862cc82558878509bd0d6ba493612568b02868bc474e74fcbeee6f7810"
+          },
+          {
+            "repository": "Qwen/Qwen2.5-3B-Instruct-GGUF",
             "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-3B/blob/3aab1f1954e9cc14eb9509a215f9e5ca08227a9b/LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/blob/7dabda4d13d513e3e842b20f0d435c732f172cbe/LICENSE",
+            "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9"
+          },
+          {
+            "repository": "Qwen/Qwen2.5-3B-Instruct",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/blob/aa8e72537993ba99e69dfaafa59ed015b17504d1/LICENSE",
             "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9"
           },
           {
             "repository": "Qwen/Qwen2.5-3B",
-            "path": "README.md",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-3B/blob/3aab1f1954e9cc14eb9509a215f9e5ca08227a9b/README.md",
-            "sha256": "75c779862cc82558878509bd0d6ba493612568b02868bc474e74fcbeee6f7810"
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-3B/blob/3aab1f1954e9cc14eb9509a215f9e5ca08227a9b/LICENSE",
+            "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
-        "issues": [
-          "CUSTOM_TERMS"
+        "commercial_use": "restricted",
+        "upstream_acceptance": "required",
+        "issues": [],
+        "note": "Qwen Research License is explicitly declared by the GGUF publisher and its base; do not substitute the Apache tag used by other Qwen sizes. Publisher, instruct model and base all carry the same exact research agreement. Reviewed means the restriction is classified, not that ODS has permission for a commercial deployment. The model requires a restricted-use gate or omission from a commercial/default catalog. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "all use under this agreement",
+            "requirement": "Only research or evaluation use is granted; obtain a separate publisher license for commercial use.",
+            "basis": "sections 1(i), 2(a), 2(b)",
+            "license_group": "qwen-research"
+          },
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide the agreement and the exact Qwen attribution specified in section 3(c) in a Notice file.",
+            "basis": "sections 3(a), 3(c)",
+            "license_group": "qwen-research"
+          },
+          {
+            "trigger": "changed files",
+            "requirement": "Prominently identify modifications.",
+            "basis": "section 3(b)",
+            "license_group": "qwen-research"
+          },
+          {
+            "trigger": "using materials or their outputs to train or improve a model that is made available",
+            "requirement": "Prominently display Built with Qwen or Improved using Qwen in product documentation.",
+            "basis": "section 4(b)",
+            "license_group": "qwen-research"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "Acceptance occurs by use/distribution; comply with applicable export laws and the agreement, including termination, indemnity and dispute terms.",
+            "basis": "preamble and sections 4(a), 5(c), 6(d), 7, 8",
+            "license_group": "qwen-research"
+          }
         ],
-        "note": "Qwen Research License is explicitly declared by the GGUF publisher and its base; do not substitute the Apache tag used by other Qwen sizes."
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/qwen-research-ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9.txt",
+            "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9",
+            "source_url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/blob/7dabda4d13d513e3e842b20f0d435c732f172cbe/LICENSE",
+            "source_sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -3514,7 +3846,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -3566,26 +3898,20 @@
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen3-4B/blob/1cfa9a7208912126459214e8b04321603b3df60c/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repo": "Qwen/Qwen3-4B-Base",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen3-4B-Base/blob/906bfd4b4dc7f14ee4320094d8b41684abff8539/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
         "notice_documents": [
           {
             "repository": "Qwen/Qwen3-4B-GGUF",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3-4B-GGUF/blob/bc640142c66e1fdd12af0bd68f40445458f3869b/LICENSE",
-            "sha256": "5de36594c10839788a8c589443a8ef9d8b8d17c65a1b5807206ae037fc36c6bd"
-          },
-          {
-            "repository": "Qwen/Qwen3-4B-GGUF",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3-4B-GGUF/blob/bc640142c66e1fdd12af0bd68f40445458f3869b/README.md",
             "sha256": "f7b7cbdbeab2a25b55e92cf160c035287374253b13af7ea2d5178847f6f8537e"
-          },
-          {
-            "repository": "Qwen/Qwen3-4B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3-4B/blob/1cfa9a7208912126459214e8b04321603b3df60c/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen3-4B",
@@ -3595,21 +3921,84 @@
           },
           {
             "repository": "Qwen/Qwen3-4B-Base",
+            "path": "README.md",
+            "url": "https://huggingface.co/Qwen/Qwen3-4B-Base/blob/906bfd4b4dc7f14ee4320094d8b41684abff8539/README.md",
+            "sha256": "9fd20ab531a1dc75ae18fcde658dd69d04173fdb93311091c38a7098e3d4b4a1"
+          },
+          {
+            "repository": "Qwen/Qwen3-4B-GGUF",
             "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3-4B-Base/blob/906bfd4b4dc7f14ee4320094d8b41684abff8539/LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3-4B-GGUF/blob/bc640142c66e1fdd12af0bd68f40445458f3869b/LICENSE",
+            "sha256": "5de36594c10839788a8c589443a8ef9d8b8d17c65a1b5807206ae037fc36c6bd"
+          },
+          {
+            "repository": "Qwen/Qwen3-4B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3-4B/blob/1cfa9a7208912126459214e8b04321603b3df60c/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen3-4B-Base",
-            "path": "README.md",
-            "url": "https://huggingface.co/Qwen/Qwen3-4B-Base/blob/906bfd4b4dc7f14ee4320094d8b41684abff8539/README.md",
-            "sha256": "9fd20ab531a1dc75ae18fcde658dd69d04173fdb93311091c38a7098e3d4b4a1"
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3-4B-Base/blob/906bfd4b4dc7f14ee4320094d8b41684abff8539/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-5de36594c10839788a8c589443a8ef9d8b8d17c65a1b5807206ae037fc36c6bd.txt",
+            "sha256": "5de36594c10839788a8c589443a8ef9d8b8d17c65a1b5807206ae037fc36c6bd",
+            "source_url": "https://huggingface.co/Qwen/Qwen3-4B-GGUF/blob/bc640142c66e1fdd12af0bd68f40445458f3869b/LICENSE",
+            "source_sha256": "5de36594c10839788a8c589443a8ef9d8b8d17c65a1b5807206ae037fc36c6bd",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e.txt",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "source_url": "https://huggingface.co/Qwen/Qwen3-4B/blob/1cfa9a7208912126459214e8b04321603b3df60c/LICENSE",
+            "source_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -3730,7 +4119,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -3762,15 +4151,15 @@
         ],
         "license_documents": [
           {
-            "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/raw/cdbee75f17c01a7cc42f958dc650907174af0554/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
-          },
-          {
             "repo": "Qwen/Qwen3-4B-Instruct-2507",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/blob/cdbee75f17c01a7cc42f958dc650907174af0554/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/raw/cdbee75f17c01a7cc42f958dc650907174af0554/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
@@ -3783,21 +4172,64 @@
           },
           {
             "repository": "Qwen/Qwen3-4B-Instruct-2507",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/blob/cdbee75f17c01a7cc42f958dc650907174af0554/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
-          },
-          {
-            "repository": "Qwen/Qwen3-4B-Instruct-2507",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/blob/cdbee75f17c01a7cc42f958dc650907174af0554/README.md",
             "sha256": "8e3dd0c3b5b11897cc71092ccfe517bb7a9783479baa3665aad73c8d1a2041cd"
+          },
+          {
+            "repository": "Qwen/Qwen3-4B-Instruct-2507",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/blob/cdbee75f17c01a7cc42f958dc650907174af0554/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e.txt",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "source_url": "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/blob/cdbee75f17c01a7cc42f958dc650907174af0554/LICENSE",
+            "source_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -3840,7 +4272,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -3882,15 +4314,21 @@
         ],
         "license_documents": [
           {
-            "repo": "unsloth/Qwen3-4B-128K-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/Qwen/Qwen3-4B/raw/1cfa9a7208912126459214e8b04321603b3df60c/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
-          },
-          {
             "repo": "Qwen/Qwen3-4B",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen3-4B/blob/1cfa9a7208912126459214e8b04321603b3df60c/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repo": "Qwen/Qwen3-4B-Base",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen3-4B-Base/blob/906bfd4b4dc7f14ee4320094d8b41684abff8539/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repo": "unsloth/Qwen3-4B-128K-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/Qwen/Qwen3-4B/raw/1cfa9a7208912126459214e8b04321603b3df60c/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
@@ -3903,33 +4341,76 @@
           },
           {
             "repository": "Qwen/Qwen3-4B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3-4B/blob/1cfa9a7208912126459214e8b04321603b3df60c/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
-          },
-          {
-            "repository": "Qwen/Qwen3-4B",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3-4B/blob/1cfa9a7208912126459214e8b04321603b3df60c/README.md",
             "sha256": "71add1cd091c309b1cb1a6b943f2476eb2b004124b3bd1d32dcd0b24cc1abc47"
           },
           {
             "repository": "Qwen/Qwen3-4B-Base",
+            "path": "README.md",
+            "url": "https://huggingface.co/Qwen/Qwen3-4B-Base/blob/906bfd4b4dc7f14ee4320094d8b41684abff8539/README.md",
+            "sha256": "9fd20ab531a1dc75ae18fcde658dd69d04173fdb93311091c38a7098e3d4b4a1"
+          },
+          {
+            "repository": "Qwen/Qwen3-4B",
             "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3-4B-Base/blob/906bfd4b4dc7f14ee4320094d8b41684abff8539/LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3-4B/blob/1cfa9a7208912126459214e8b04321603b3df60c/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen3-4B-Base",
-            "path": "README.md",
-            "url": "https://huggingface.co/Qwen/Qwen3-4B-Base/blob/906bfd4b4dc7f14ee4320094d8b41684abff8539/README.md",
-            "sha256": "9fd20ab531a1dc75ae18fcde658dd69d04173fdb93311091c38a7098e3d4b4a1"
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3-4B-Base/blob/906bfd4b4dc7f14ee4320094d8b41684abff8539/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e.txt",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "source_url": "https://huggingface.co/Qwen/Qwen3-4B/blob/1cfa9a7208912126459214e8b04321603b3df60c/LICENSE",
+            "source_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -3970,7 +4451,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -4016,6 +4497,12 @@
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen3-1.7B/blob/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repo": "Qwen/Qwen3-1.7B-Base",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen3-1.7B-Base/blob/ea980cb0a6c2ae4b936e82123acc929f1cec04c1/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
         "notice_documents": [
@@ -4027,33 +4514,76 @@
           },
           {
             "repository": "Qwen/Qwen3-1.7B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3-1.7B/blob/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
-          },
-          {
-            "repository": "Qwen/Qwen3-1.7B",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3-1.7B/blob/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e/README.md",
             "sha256": "257e52c419dac2258852643f18af6c974f21f8c6c1b6f371b6cca6201cf29091"
           },
           {
             "repository": "Qwen/Qwen3-1.7B-Base",
+            "path": "README.md",
+            "url": "https://huggingface.co/Qwen/Qwen3-1.7B-Base/blob/ea980cb0a6c2ae4b936e82123acc929f1cec04c1/README.md",
+            "sha256": "579b9d7052fa567f439114f01feceed2b06f47d830d06c8ac829f389fd2e39a4"
+          },
+          {
+            "repository": "Qwen/Qwen3-1.7B",
             "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3-1.7B-Base/blob/ea980cb0a6c2ae4b936e82123acc929f1cec04c1/LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3-1.7B/blob/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen3-1.7B-Base",
-            "path": "README.md",
-            "url": "https://huggingface.co/Qwen/Qwen3-1.7B-Base/blob/ea980cb0a6c2ae4b936e82123acc929f1cec04c1/README.md",
-            "sha256": "579b9d7052fa567f439114f01feceed2b06f47d830d06c8ac829f389fd2e39a4"
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3-1.7B-Base/blob/ea980cb0a6c2ae4b936e82123acc929f1cec04c1/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e.txt",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "source_url": "https://huggingface.co/Qwen/Qwen3-1.7B/blob/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e/LICENSE",
+            "source_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -4142,7 +4672,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -4198,6 +4728,18 @@
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/blob/2e1fd397ee46e1388853d2af2c993145b0f1098a/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repo": "Qwen/Qwen2.5-Coder-1.5B",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B/blob/df3ce67c0e24480f20468b6ef2894622d69eb73b/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repo": "Qwen/Qwen2.5-1.5B",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B/blob/8faed761d45a263340a0528343f099c05c9a4323/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
         "notice_documents": [
@@ -4209,21 +4751,9 @@
           },
           {
             "repository": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/blob/2e1fd397ee46e1388853d2af2c993145b0f1098a/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
-          },
-          {
-            "repository": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/blob/2e1fd397ee46e1388853d2af2c993145b0f1098a/README.md",
             "sha256": "a8504fd3e1247c90e4fe640d84df963237134bf29db02b0de7d502eed6c93c33"
-          },
-          {
-            "repository": "Qwen/Qwen2.5-Coder-1.5B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B/blob/df3ce67c0e24480f20468b6ef2894622d69eb73b/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen2.5-Coder-1.5B",
@@ -4233,21 +4763,76 @@
           },
           {
             "repository": "Qwen/Qwen2.5-1.5B",
+            "path": "README.md",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B/blob/8faed761d45a263340a0528343f099c05c9a4323/README.md",
+            "sha256": "84cc3bdbfd781149913126b70981cf1e341176fe4bc9d878601a83f18b035ddf"
+          },
+          {
+            "repository": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
             "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B/blob/8faed761d45a263340a0528343f099c05c9a4323/LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/blob/2e1fd397ee46e1388853d2af2c993145b0f1098a/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repository": "Qwen/Qwen2.5-Coder-1.5B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B/blob/df3ce67c0e24480f20468b6ef2894622d69eb73b/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen2.5-1.5B",
-            "path": "README.md",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B/blob/8faed761d45a263340a0528343f099c05c9a4323/README.md",
-            "sha256": "84cc3bdbfd781149913126b70981cf1e341176fe4bc9d878601a83f18b035ddf"
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B/blob/8faed761d45a263340a0528343f099c05c9a4323/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e.txt",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "source_url": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/blob/2e1fd397ee46e1388853d2af2c993145b0f1098a/LICENSE",
+            "source_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -4494,7 +5079,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -4551,26 +5136,20 @@
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct/blob/a09a35458c702b33eeacc393d103063234e8bc28/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repo": "Qwen/Qwen2.5-7B",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-7B/blob/d149729398750b98c0af14eb82c78cfe92750796/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
         "notice_documents": [
           {
             "repository": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/blob/bb5d59e06d9551d752d08b292a50eb208b07ab1f/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
-          },
-          {
-            "repository": "Qwen/Qwen2.5-7B-Instruct-GGUF",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/blob/bb5d59e06d9551d752d08b292a50eb208b07ab1f/README.md",
             "sha256": "b813de546b5f0a1d8c49307d428582fd649be627d9b33a60ecf807a3381af05e"
-          },
-          {
-            "repository": "Qwen/Qwen2.5-7B-Instruct",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct/blob/a09a35458c702b33eeacc393d103063234e8bc28/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen2.5-7B-Instruct",
@@ -4580,21 +5159,76 @@
           },
           {
             "repository": "Qwen/Qwen2.5-7B",
+            "path": "README.md",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-7B/blob/d149729398750b98c0af14eb82c78cfe92750796/README.md",
+            "sha256": "8a23291de92bddc940674a5b7088b8443bde94a1df7f1911703d2cd6554c7328"
+          },
+          {
+            "repository": "Qwen/Qwen2.5-7B-Instruct-GGUF",
             "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-7B/blob/d149729398750b98c0af14eb82c78cfe92750796/LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/blob/bb5d59e06d9551d752d08b292a50eb208b07ab1f/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repository": "Qwen/Qwen2.5-7B-Instruct",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct/blob/a09a35458c702b33eeacc393d103063234e8bc28/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen2.5-7B",
-            "path": "README.md",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-7B/blob/d149729398750b98c0af14eb82c78cfe92750796/README.md",
-            "sha256": "8a23291de92bddc940674a5b7088b8443bde94a1df7f1911703d2cd6554c7328"
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-7B/blob/d149729398750b98c0af14eb82c78cfe92750796/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e.txt",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "source_url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/blob/bb5d59e06d9551d752d08b292a50eb208b07ab1f/LICENSE",
+            "source_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -5050,7 +5684,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -5092,15 +5726,21 @@
         ],
         "license_documents": [
           {
-            "repo": "unsloth/Qwen3.5-4B-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-4B/raw/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/LICENSE",
-            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
-          },
-          {
             "repo": "Qwen/Qwen3.5-4B",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/LICENSE",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+          },
+          {
+            "repo": "Qwen/Qwen3.5-4B-Base",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-4B-Base/blob/1001bb4d826a52d1f399e183466143f4da7b741b/LICENSE",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
+          },
+          {
+            "repo": "unsloth/Qwen3.5-4B-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-4B/raw/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/LICENSE",
             "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
           }
         ],
@@ -5113,33 +5753,84 @@
           },
           {
             "repository": "Qwen/Qwen3.5-4B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/LICENSE",
-            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
-          },
-          {
-            "repository": "Qwen/Qwen3.5-4B",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/README.md",
             "sha256": "1406be1b6b8fd8a6545870da516912804756593628a1d0fb0a7965211e82a7bb"
           },
           {
             "repository": "Qwen/Qwen3.5-4B-Base",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-4B-Base/blob/1001bb4d826a52d1f399e183466143f4da7b741b/LICENSE",
-            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
-          },
-          {
-            "repository": "Qwen/Qwen3.5-4B-Base",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3.5-4B-Base/blob/1001bb4d826a52d1f399e183466143f4da7b741b/README.md",
             "sha256": "76ead24ea3de5a52610c755ffa0b6e7cb51e3c413f124a3776bc6f16b694474e"
+          },
+          {
+            "repository": "Qwen/Qwen3.5-4B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/LICENSE",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+          },
+          {
+            "repository": "Qwen/Qwen3.5-4B-Base",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-4B-Base/blob/1001bb4d826a52d1f399e183466143f4da7b741b/LICENSE",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a.txt",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+            "source_url": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/LICENSE",
+            "source_sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32.txt",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+            "source_url": "https://huggingface.co/Qwen/Qwen3.5-4B-Base/blob/1001bb4d826a52d1f399e183466143f4da7b741b/LICENSE",
+            "source_sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -5168,7 +5859,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -5225,12 +5916,6 @@
         "notice_documents": [
           {
             "repository": "unsloth/gemma-4-E2B-it-GGUF",
-            "path": "MTP/README.md",
-            "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/blob/0314792d7f1f7e229411f620751375812bb9faf2/MTP/README.md",
-            "sha256": "fac17bff671822338aedc999cff9fd36b470b60654fe8dce53fe30634b3a4278"
-          },
-          {
-            "repository": "unsloth/gemma-4-E2B-it-GGUF",
             "path": "README.md",
             "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/blob/0314792d7f1f7e229411f620751375812bb9faf2/README.md",
             "sha256": "173b08337366fc43e08da282611a99cd569302b5459035037532a6e961e1fe63"
@@ -5248,10 +5933,63 @@
             "sha256": "4c4e89a23e46a5703148b4de82eafb5b650abc8f50ff616c090fb659602eb4a6"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. Gemma 4 classification comes from these exact pinned cards and the linked Google Apache document; it must not be reused for Gemma 3. External document URL is mutable, so preserve its reviewed hash/content. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-google-source-pre-529c95d878fc53d1f4d9272fafbccf5b10d3113aacee090a58b3ef0d0348729a.html",
+            "sha256": "529c95d878fc53d1f4d9272fafbccf5b10d3113aacee090a58b3ef0d0348729a",
+            "source_url": "https://ai.google.dev/gemma/apache_2",
+            "source_sha256": "7341ceb428a3586d6d7cd83ba8626a49fb650a31f60260bf4f9d857c2707279a",
+            "content_type": "text/html",
+            "extraction": "html_pre_fragment",
+            "source_block_count": 1
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-google-a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt",
+            "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+            "source_url": "https://ai.google.dev/gemma/apache_2",
+            "source_sha256": "7341ceb428a3586d6d7cd83ba8626a49fb650a31f60260bf4f9d857c2707279a",
+            "content_type": "text/plain",
+            "extraction": "html_pre_text",
+            "source_fragment_sha256": "529c95d878fc53d1f4d9272fafbccf5b10d3113aacee090a58b3ef0d0348729a"
+          }
+        ]
       }
     },
     {
@@ -5279,7 +6017,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -5335,6 +6073,18 @@
             "kind": "repository_license_document",
             "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B/blob/916b56a44061fd5cd7d6a8fb632557ed4f724f60/LICENSE",
             "sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7"
+          },
+          {
+            "repo": "Qwen/Qwen2.5-Math-7B",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-Math-7B/blob/b101308fe89651ea5ce025f25317fea6fc07e96e/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repo": "Qwen/Qwen2.5-7B",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-7B/blob/d149729398750b98c0af14eb82c78cfe92750796/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
         "notice_documents": [
@@ -5346,21 +6096,9 @@
           },
           {
             "repository": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B/blob/916b56a44061fd5cd7d6a8fb632557ed4f724f60/LICENSE",
-            "sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7"
-          },
-          {
-            "repository": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
             "path": "README.md",
             "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B/blob/916b56a44061fd5cd7d6a8fb632557ed4f724f60/README.md",
             "sha256": "d26d26ddb518fee60c6c6bf7a708bd751b1619d93a4944f188143693d956c77f"
-          },
-          {
-            "repository": "Qwen/Qwen2.5-Math-7B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-Math-7B/blob/b101308fe89651ea5ce025f25317fea6fc07e96e/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen2.5-Math-7B",
@@ -5370,21 +6108,90 @@
           },
           {
             "repository": "Qwen/Qwen2.5-7B",
+            "path": "README.md",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-7B/blob/d149729398750b98c0af14eb82c78cfe92750796/README.md",
+            "sha256": "8a23291de92bddc940674a5b7088b8443bde94a1df7f1911703d2cd6554c7328"
+          },
+          {
+            "repository": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
             "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-7B/blob/d149729398750b98c0af14eb82c78cfe92750796/LICENSE",
+            "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B/blob/916b56a44061fd5cd7d6a8fb632557ed4f724f60/LICENSE",
+            "sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7"
+          },
+          {
+            "repository": "Qwen/Qwen2.5-Math-7B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-Math-7B/blob/b101308fe89651ea5ce025f25317fea6fc07e96e/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen2.5-7B",
-            "path": "README.md",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-7B/blob/d149729398750b98c0af14eb82c78cfe92750796/README.md",
-            "sha256": "8a23291de92bddc940674a5b7088b8443bde94a1df7f1911703d2cd6554c7328"
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-7B/blob/d149729398750b98c0af14eb82c78cfe92750796/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": "Quantizer declares Apache; the DeepSeek card explicitly declares MIT for code and weights and names Qwen2.5-Math-7B ancestry. Preserve all layers."
+        "note": "Quantizer declares Apache; the DeepSeek card explicitly declares MIT for code and weights and names Qwen2.5-Math-7B ancestry. Preserve all layers. No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. Layered MIT (DeepSeek) and Apache-2.0 (Qwen ancestry and quantizer declaration), not a single-license replacement. Exact DeepSeek model table identifies the applicable Qwen base; Llama examples in its README do not belong to this entry. Quantizer README contains old LICENSE-MODEL/Model_Agreement badge links, but its explicit license section identifies MIT model weights plus retained Apache Qwen ancestry. Retain that section and both primary license texts; the badge is not treated as an additional retrieved agreement. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "copies or substantial portions",
+            "requirement": "Retain the copyright and permission notice, including the license disclaimer.",
+            "basis": "MIT notice condition",
+            "license_group": "mit"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/mit-1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7.txt",
+            "sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7",
+            "source_url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B/blob/916b56a44061fd5cd7d6a8fb632557ed4f724f60/LICENSE",
+            "source_sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e.txt",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "source_url": "https://huggingface.co/Qwen/Qwen2.5-Math-7B/blob/b101308fe89651ea5ce025f25317fea6fc07e96e/LICENSE",
+            "source_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -5413,7 +6220,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -5470,12 +6277,6 @@
         "notice_documents": [
           {
             "repository": "unsloth/gemma-4-E4B-it-GGUF",
-            "path": "MTP/README.md",
-            "url": "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/blob/bfc15c382204943c3a8fff0c750b94ae2364d7a3/MTP/README.md",
-            "sha256": "6a1da265f7e7db53db679701cfb791d87c1e0963c9a9881415bd121176cd8607"
-          },
-          {
-            "repository": "unsloth/gemma-4-E4B-it-GGUF",
             "path": "README.md",
             "url": "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/blob/bfc15c382204943c3a8fff0c750b94ae2364d7a3/README.md",
             "sha256": "d741f0752fcf433cc3960ae20c609dbb159c25ce269da3b004246e8fd34245a3"
@@ -5493,10 +6294,63 @@
             "sha256": "23ba22e9aadcf727659e511de593c6d365d87fc0f3a66dd297769aef591f5d38"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. Gemma 4 classification comes from these exact pinned cards and the linked Google Apache document; it must not be reused for Gemma 3. External document URL is mutable, so preserve its reviewed hash/content. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-google-source-pre-529c95d878fc53d1f4d9272fafbccf5b10d3113aacee090a58b3ef0d0348729a.html",
+            "sha256": "529c95d878fc53d1f4d9272fafbccf5b10d3113aacee090a58b3ef0d0348729a",
+            "source_url": "https://ai.google.dev/gemma/apache_2",
+            "source_sha256": "7341ceb428a3586d6d7cd83ba8626a49fb650a31f60260bf4f9d857c2707279a",
+            "content_type": "text/html",
+            "extraction": "html_pre_fragment",
+            "source_block_count": 1
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-google-a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt",
+            "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+            "source_url": "https://ai.google.dev/gemma/apache_2",
+            "source_sha256": "7341ceb428a3586d6d7cd83ba8626a49fb650a31f60260bf4f9d857c2707279a",
+            "content_type": "text/plain",
+            "extraction": "html_pre_text",
+            "source_fragment_sha256": "529c95d878fc53d1f4d9272fafbccf5b10d3113aacee090a58b3ef0d0348729a"
+          }
+        ]
       }
     },
     {
@@ -5599,7 +6453,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -5641,15 +6495,21 @@
         ],
         "license_documents": [
           {
-            "repo": "unsloth/Qwen3.5-9B-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-9B/raw/c202236235762e1c871ad0ccb60c8ee5ba337b9a/LICENSE",
-            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
-          },
-          {
             "repo": "Qwen/Qwen3.5-9B",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/c202236235762e1c871ad0ccb60c8ee5ba337b9a/LICENSE",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+          },
+          {
+            "repo": "Qwen/Qwen3.5-9B-Base",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-9B-Base/blob/68c46c4b3498877f3ef123c856ecfde50c39f404/LICENSE",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
+          },
+          {
+            "repo": "unsloth/Qwen3.5-9B-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-9B/raw/c202236235762e1c871ad0ccb60c8ee5ba337b9a/LICENSE",
             "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
           }
         ],
@@ -5662,33 +6522,84 @@
           },
           {
             "repository": "Qwen/Qwen3.5-9B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/c202236235762e1c871ad0ccb60c8ee5ba337b9a/LICENSE",
-            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
-          },
-          {
-            "repository": "Qwen/Qwen3.5-9B",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/c202236235762e1c871ad0ccb60c8ee5ba337b9a/README.md",
             "sha256": "c5f5a8c2dddab69cfbf05279235aa5fddb137939a06539c4c7637aa900fef6d0"
           },
           {
             "repository": "Qwen/Qwen3.5-9B-Base",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-9B-Base/blob/68c46c4b3498877f3ef123c856ecfde50c39f404/LICENSE",
-            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
-          },
-          {
-            "repository": "Qwen/Qwen3.5-9B-Base",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3.5-9B-Base/blob/68c46c4b3498877f3ef123c856ecfde50c39f404/README.md",
             "sha256": "e5fb9a49c5b5eea08839180eef484c97743be241189ccb4a1f4d830514c1f0cb"
+          },
+          {
+            "repository": "Qwen/Qwen3.5-9B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/c202236235762e1c871ad0ccb60c8ee5ba337b9a/LICENSE",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+          },
+          {
+            "repository": "Qwen/Qwen3.5-9B-Base",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-9B-Base/blob/68c46c4b3498877f3ef123c856ecfde50c39f404/LICENSE",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a.txt",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+            "source_url": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/c202236235762e1c871ad0ccb60c8ee5ba337b9a/LICENSE",
+            "source_sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32.txt",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+            "source_url": "https://huggingface.co/Qwen/Qwen3.5-9B-Base/blob/68c46c4b3498877f3ef123c856ecfde50c39f404/LICENSE",
+            "source_sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -5716,7 +6627,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -5748,15 +6659,15 @@
         ],
         "license_documents": [
           {
-            "repo": "bartowski/phi-4-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/microsoft/phi-4/raw/2db69c1c3e91a05d2c64a3185acfbaf36f744e25/LICENSE",
-            "sha256": "c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51"
-          },
-          {
             "repo": "microsoft/phi-4",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/microsoft/phi-4/blob/2db69c1c3e91a05d2c64a3185acfbaf36f744e25/LICENSE",
+            "sha256": "c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51"
+          },
+          {
+            "repo": "bartowski/phi-4-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/microsoft/phi-4/raw/2db69c1c3e91a05d2c64a3185acfbaf36f744e25/LICENSE",
             "sha256": "c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51"
           }
         ],
@@ -5769,21 +6680,40 @@
           },
           {
             "repository": "microsoft/phi-4",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/microsoft/phi-4/blob/2db69c1c3e91a05d2c64a3185acfbaf36f744e25/LICENSE",
-            "sha256": "c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51"
-          },
-          {
-            "repository": "microsoft/phi-4",
             "path": "README.md",
             "url": "https://huggingface.co/microsoft/phi-4/blob/2db69c1c3e91a05d2c64a3185acfbaf36f744e25/README.md",
             "sha256": "4cc56faa6a5bcbde6227789b2ef9aedfde481ca660c8a4b686703aae19b00011"
+          },
+          {
+            "repository": "microsoft/phi-4",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/microsoft/phi-4/blob/2db69c1c3e91a05d2c64a3185acfbaf36f744e25/LICENSE",
+            "sha256": "c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "copies or substantial portions",
+            "requirement": "Retain the copyright and permission notice, including the license disclaimer.",
+            "basis": "MIT notice condition",
+            "license_group": "mit"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/mit-c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51.txt",
+            "sha256": "c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51",
+            "source_url": "https://huggingface.co/microsoft/phi-4/blob/2db69c1c3e91a05d2c64a3185acfbaf36f744e25/LICENSE",
+            "source_sha256": "c49419617a6070bcb197cfe272f7007fdec3e790dbb529cb995473bd69c0bd51",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -5811,7 +6741,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -5857,6 +6787,12 @@
             "kind": "repository_license_document",
             "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-14B/blob/1df8507178afcc1bef68cd8c393f61a886323761/LICENSE",
             "sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7"
+          },
+          {
+            "repo": "Qwen/Qwen2.5-14B",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-14B/blob/97e1e76335b7017d8f67c08a19d103c0504298c9/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
         "notice_documents": [
@@ -5868,33 +6804,90 @@
           },
           {
             "repository": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-14B/blob/1df8507178afcc1bef68cd8c393f61a886323761/LICENSE",
-            "sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7"
-          },
-          {
-            "repository": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
             "path": "README.md",
             "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-14B/blob/1df8507178afcc1bef68cd8c393f61a886323761/README.md",
             "sha256": "d26d26ddb518fee60c6c6bf7a708bd751b1619d93a4944f188143693d956c77f"
           },
           {
             "repository": "Qwen/Qwen2.5-14B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-14B/blob/97e1e76335b7017d8f67c08a19d103c0504298c9/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
-          },
-          {
-            "repository": "Qwen/Qwen2.5-14B",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen2.5-14B/blob/97e1e76335b7017d8f67c08a19d103c0504298c9/README.md",
             "sha256": "e408f4734c24731ef86d48993c7747147cc578b1fbe50dec4bfdbae7e83147ec"
+          },
+          {
+            "repository": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-14B/blob/1df8507178afcc1bef68cd8c393f61a886323761/LICENSE",
+            "sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7"
+          },
+          {
+            "repository": "Qwen/Qwen2.5-14B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-14B/blob/97e1e76335b7017d8f67c08a19d103c0504298c9/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": "Quantizer declares Apache; the DeepSeek card explicitly declares MIT for code and weights and names Qwen2.5-14B ancestry. Preserve all layers."
+        "note": "Quantizer declares Apache; the DeepSeek card explicitly declares MIT for code and weights and names Qwen2.5-14B ancestry. Preserve all layers. No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. Layered MIT (DeepSeek) and Apache-2.0 (Qwen ancestry and quantizer declaration), not a single-license replacement. Exact DeepSeek model table identifies the applicable Qwen base; Llama examples in its README do not belong to this entry. Quantizer README contains old LICENSE-MODEL/Model_Agreement badge links, but its explicit license section identifies MIT model weights plus retained Apache Qwen ancestry. Retain that section and both primary license texts; the badge is not treated as an additional retrieved agreement. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "copies or substantial portions",
+            "requirement": "Retain the copyright and permission notice, including the license disclaimer.",
+            "basis": "MIT notice condition",
+            "license_group": "mit"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/mit-1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7.txt",
+            "sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7",
+            "source_url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-14B/blob/1df8507178afcc1bef68cd8c393f61a886323761/LICENSE",
+            "source_sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e.txt",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "source_url": "https://huggingface.co/Qwen/Qwen2.5-14B/blob/97e1e76335b7017d8f67c08a19d103c0504298c9/LICENSE",
+            "source_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -5930,7 +6923,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -5977,21 +6970,64 @@
           },
           {
             "repository": "Qwen/Qwen3.8-27B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/LICENSE",
-            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
-          },
-          {
-            "repository": "Qwen/Qwen3.8-27B",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/README.md",
             "sha256": "57e4bdb258ee1a7d2635c5174ebd4e56abe392505cdb5f8bbb356b0dc4293641"
+          },
+          {
+            "repository": "Qwen/Qwen3.8-27B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/LICENSE",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a.txt",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+            "source_url": "https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/LICENSE",
+            "source_sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -6019,7 +7055,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -6051,15 +7087,15 @@
         ],
         "license_documents": [
           {
-            "repo": "unsloth/Qwen3.5-27B-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-27B/raw/fc05daec18b0a78c049392ed2e771dde82bdf654/LICENSE",
-            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
-          },
-          {
             "repo": "Qwen/Qwen3.5-27B",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen3.5-27B/blob/fc05daec18b0a78c049392ed2e771dde82bdf654/LICENSE",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
+          },
+          {
+            "repo": "unsloth/Qwen3.5-27B-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-27B/raw/fc05daec18b0a78c049392ed2e771dde82bdf654/LICENSE",
             "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
           }
         ],
@@ -6072,21 +7108,64 @@
           },
           {
             "repository": "Qwen/Qwen3.5-27B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-27B/blob/fc05daec18b0a78c049392ed2e771dde82bdf654/LICENSE",
-            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
-          },
-          {
-            "repository": "Qwen/Qwen3.5-27B",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3.5-27B/blob/fc05daec18b0a78c049392ed2e771dde82bdf654/README.md",
             "sha256": "8c6303cd5e89dc378d11fb4b70a0ff9c3cccb55a031133c69d9cbde9481f1a8c"
+          },
+          {
+            "repository": "Qwen/Qwen3.5-27B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-27B/blob/fc05daec18b0a78c049392ed2e771dde82bdf654/LICENSE",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32.txt",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+            "source_url": "https://huggingface.co/Qwen/Qwen3.5-27B/blob/fc05daec18b0a78c049392ed2e771dde82bdf654/LICENSE",
+            "source_sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -6114,7 +7193,7 @@
         "schema_version": 1,
         "evidence_sha256": "797c519fc468bf13d53c0fdf63a341c383038e3dfecf5016ac81ae4caa391d8c",
         "observed_at": "2026-09-23T08:29:52.304968+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -6182,10 +7261,63 @@
             "sha256": "2d87a2d936e3e03077589114bd1702cf480647fb145a41fe973eba49f934d0ce"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": "Replaced an unavailable artifact with this publisher's Q4_K_M file. Revision, LFS SHA-256 and size were checked against public pinned metadata and the LFS pointer; HEAD returned 200 with matching length. Full weights and inference were not tested during this audit."
+        "note": "Replaced an unavailable artifact with this publisher's Q4_K_M file. Revision, LFS SHA-256 and size were checked against public pinned metadata and the LFS pointer; HEAD returned 200 with matching length. Full weights and inference were not tested during this audit. No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. Gemma 4 classification comes from these exact pinned cards and the linked Google Apache document; it must not be reused for Gemma 3. External document URL is mutable, so preserve its reviewed hash/content. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-google-source-pre-529c95d878fc53d1f4d9272fafbccf5b10d3113aacee090a58b3ef0d0348729a.html",
+            "sha256": "529c95d878fc53d1f4d9272fafbccf5b10d3113aacee090a58b3ef0d0348729a",
+            "source_url": "https://ai.google.dev/gemma/apache_2",
+            "source_sha256": "7341ceb428a3586d6d7cd83ba8626a49fb650a31f60260bf4f9d857c2707279a",
+            "content_type": "text/html",
+            "extraction": "html_pre_fragment",
+            "source_block_count": 1
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-google-a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt",
+            "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+            "source_url": "https://ai.google.dev/gemma/apache_2",
+            "source_sha256": "7341ceb428a3586d6d7cd83ba8626a49fb650a31f60260bf4f9d857c2707279a",
+            "content_type": "text/plain",
+            "extraction": "html_pre_text",
+            "source_fragment_sha256": "529c95d878fc53d1f4d9272fafbccf5b10d3113aacee090a58b3ef0d0348729a"
+          }
+        ]
       },
       "size_bytes": 17035039872
     },
@@ -6214,7 +7346,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -6256,15 +7388,21 @@
         ],
         "license_documents": [
           {
-            "repo": "unsloth/Qwen3-30B-A3B-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B/raw/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
-          },
-          {
             "repo": "Qwen/Qwen3-30B-A3B",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B/blob/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repo": "Qwen/Qwen3-30B-A3B-Base",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Base/blob/1b75feb79f60b8dc6c5bc769a898c206a1c6a4f9/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+          },
+          {
+            "repo": "unsloth/Qwen3-30B-A3B-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B/raw/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
@@ -6277,33 +7415,76 @@
           },
           {
             "repository": "Qwen/Qwen3-30B-A3B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B/blob/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
-          },
-          {
-            "repository": "Qwen/Qwen3-30B-A3B",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B/blob/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/README.md",
             "sha256": "1897b7cdf7b5f45ae847b87f9b416d4635fe73228e0daac669a4e1f3e5948858"
           },
           {
             "repository": "Qwen/Qwen3-30B-A3B-Base",
+            "path": "README.md",
+            "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Base/blob/1b75feb79f60b8dc6c5bc769a898c206a1c6a4f9/README.md",
+            "sha256": "f1b62f378b4da12da42478f7d987239259842cdc22432e830f3143e07e7abd59"
+          },
+          {
+            "repository": "Qwen/Qwen3-30B-A3B",
             "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Base/blob/1b75feb79f60b8dc6c5bc769a898c206a1c6a4f9/LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B/blob/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/LICENSE",
             "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           },
           {
             "repository": "Qwen/Qwen3-30B-A3B-Base",
-            "path": "README.md",
-            "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Base/blob/1b75feb79f60b8dc6c5bc769a898c206a1c6a4f9/README.md",
-            "sha256": "f1b62f378b4da12da42478f7d987239259842cdc22432e830f3143e07e7abd59"
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Base/blob/1b75feb79f60b8dc6c5bc769a898c206a1c6a4f9/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e.txt",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "source_url": "https://huggingface.co/Qwen/Qwen3-30B-A3B/blob/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/LICENSE",
+            "source_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -6331,7 +7512,7 @@
         "schema_version": 1,
         "evidence_sha256": "797c519fc468bf13d53c0fdf63a341c383038e3dfecf5016ac81ae4caa391d8c",
         "observed_at": "2026-09-23T08:29:52.304968+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -6399,10 +7580,63 @@
             "sha256": "9871799033826e5aca148dfd2c8167c5386fedb669aa486846dadbd11d42a872"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": "Replaced an unavailable artifact with this publisher's Q4_K_M file. Revision, LFS SHA-256 and size were checked against public pinned metadata and the LFS pointer; HEAD returned 200 with matching length. Full weights and inference were not tested during this audit."
+        "note": "Replaced an unavailable artifact with this publisher's Q4_K_M file. Revision, LFS SHA-256 and size were checked against public pinned metadata and the LFS pointer; HEAD returned 200 with matching length. Full weights and inference were not tested during this audit. No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. Gemma 4 classification comes from these exact pinned cards and the linked Google Apache document; it must not be reused for Gemma 3. External document URL is mutable, so preserve its reviewed hash/content. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-google-source-pre-529c95d878fc53d1f4d9272fafbccf5b10d3113aacee090a58b3ef0d0348729a.html",
+            "sha256": "529c95d878fc53d1f4d9272fafbccf5b10d3113aacee090a58b3ef0d0348729a",
+            "source_url": "https://ai.google.dev/gemma/apache_2",
+            "source_sha256": "7341ceb428a3586d6d7cd83ba8626a49fb650a31f60260bf4f9d857c2707279a",
+            "content_type": "text/html",
+            "extraction": "html_pre_fragment",
+            "source_block_count": 1
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-google-a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt",
+            "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+            "source_url": "https://ai.google.dev/gemma/apache_2",
+            "source_sha256": "7341ceb428a3586d6d7cd83ba8626a49fb650a31f60260bf4f9d857c2707279a",
+            "content_type": "text/plain",
+            "extraction": "html_pre_text",
+            "source_fragment_sha256": "529c95d878fc53d1f4d9272fafbccf5b10d3113aacee090a58b3ef0d0348729a"
+          }
+        ]
       },
       "size_bytes": 18323733440
     },
@@ -6431,7 +7665,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -6477,6 +7711,12 @@
             "kind": "repository_license_document",
             "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B/blob/711ad2ea6aa40cfca18895e8aca02ab92df1a746/LICENSE",
             "sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7"
+          },
+          {
+            "repo": "Qwen/Qwen2.5-32B",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-32B/blob/1818d35814b8319459f4bd55ed1ac8709630f003/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
         "notice_documents": [
@@ -6488,33 +7728,90 @@
           },
           {
             "repository": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B/blob/711ad2ea6aa40cfca18895e8aca02ab92df1a746/LICENSE",
-            "sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7"
-          },
-          {
-            "repository": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
             "path": "README.md",
             "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B/blob/711ad2ea6aa40cfca18895e8aca02ab92df1a746/README.md",
             "sha256": "d26d26ddb518fee60c6c6bf7a708bd751b1619d93a4944f188143693d956c77f"
           },
           {
             "repository": "Qwen/Qwen2.5-32B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen2.5-32B/blob/1818d35814b8319459f4bd55ed1ac8709630f003/LICENSE",
-            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
-          },
-          {
-            "repository": "Qwen/Qwen2.5-32B",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen2.5-32B/blob/1818d35814b8319459f4bd55ed1ac8709630f003/README.md",
             "sha256": "7add4c3c1e26563a4b863ca88d4e1aac87925f4b4ede4bd33d0204dbfc8ca3f9"
+          },
+          {
+            "repository": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B/blob/711ad2ea6aa40cfca18895e8aca02ab92df1a746/LICENSE",
+            "sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7"
+          },
+          {
+            "repository": "Qwen/Qwen2.5-32B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen2.5-32B/blob/1818d35814b8319459f4bd55ed1ac8709630f003/LICENSE",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": "Quantizer declares Apache; the DeepSeek card explicitly declares MIT for code and weights and names Qwen2.5-32B ancestry. Preserve all layers."
+        "note": "Quantizer declares Apache; the DeepSeek card explicitly declares MIT for code and weights and names Qwen2.5-32B ancestry. Preserve all layers. No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. Layered MIT (DeepSeek) and Apache-2.0 (Qwen ancestry and quantizer declaration), not a single-license replacement. Exact DeepSeek model table identifies the applicable Qwen base; Llama examples in its README do not belong to this entry. Quantizer README contains old LICENSE-MODEL/Model_Agreement badge links, but its explicit license section identifies MIT model weights plus retained Apache Qwen ancestry. Retain that section and both primary license texts; the badge is not treated as an additional retrieved agreement. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "copies or substantial portions",
+            "requirement": "Retain the copyright and permission notice, including the license disclaimer.",
+            "basis": "MIT notice condition",
+            "license_group": "mit"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/mit-1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7.txt",
+            "sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7",
+            "source_url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B/blob/711ad2ea6aa40cfca18895e8aca02ab92df1a746/LICENSE",
+            "source_sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e.txt",
+            "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "source_url": "https://huggingface.co/Qwen/Qwen2.5-32B/blob/1818d35814b8319459f4bd55ed1ac8709630f003/LICENSE",
+            "source_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -6542,7 +7839,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -6584,15 +7881,21 @@
         ],
         "license_documents": [
           {
-            "repo": "unsloth/Qwen3.5-35B-A3B-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B/raw/59d61f3ce65a6d9863b86d2e96597125219dc754/LICENSE",
-            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
-          },
-          {
             "repo": "Qwen/Qwen3.5-35B-A3B",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B/blob/59d61f3ce65a6d9863b86d2e96597125219dc754/LICENSE",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+          },
+          {
+            "repo": "Qwen/Qwen3.5-35B-A3B-Base",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base/blob/0f0813072d2358973511097385626f21fcb6d422/LICENSE",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
+          },
+          {
+            "repo": "unsloth/Qwen3.5-35B-A3B-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B/raw/59d61f3ce65a6d9863b86d2e96597125219dc754/LICENSE",
             "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
           }
         ],
@@ -6605,33 +7908,84 @@
           },
           {
             "repository": "Qwen/Qwen3.5-35B-A3B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B/blob/59d61f3ce65a6d9863b86d2e96597125219dc754/LICENSE",
-            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
-          },
-          {
-            "repository": "Qwen/Qwen3.5-35B-A3B",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B/blob/59d61f3ce65a6d9863b86d2e96597125219dc754/README.md",
             "sha256": "71c3bbc2eadadd5980bbdbb15df958c27d42ede24821015602a021109aacf492"
           },
           {
             "repository": "Qwen/Qwen3.5-35B-A3B-Base",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base/blob/0f0813072d2358973511097385626f21fcb6d422/LICENSE",
-            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
-          },
-          {
-            "repository": "Qwen/Qwen3.5-35B-A3B-Base",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base/blob/0f0813072d2358973511097385626f21fcb6d422/README.md",
             "sha256": "60d1e23113fb47e636b3e205fb18e722eddbda152da4301ba7fd9b4395184a4c"
+          },
+          {
+            "repository": "Qwen/Qwen3.5-35B-A3B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B/blob/59d61f3ce65a6d9863b86d2e96597125219dc754/LICENSE",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+          },
+          {
+            "repository": "Qwen/Qwen3.5-35B-A3B-Base",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base/blob/0f0813072d2358973511097385626f21fcb6d422/LICENSE",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a.txt",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+            "source_url": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B/blob/59d61f3ce65a6d9863b86d2e96597125219dc754/LICENSE",
+            "source_sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32.txt",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+            "source_url": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base/blob/0f0813072d2358973511097385626f21fcb6d422/LICENSE",
+            "source_sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -6659,7 +8013,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -6691,15 +8045,15 @@
         ],
         "license_documents": [
           {
-            "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/raw/995ad96eacd98c81ed38be0c5b274b04031597b0/LICENSE",
-            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
-          },
-          {
             "repo": "Qwen/Qwen3.6-35B-A3B",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/995ad96eacd98c81ed38be0c5b274b04031597b0/LICENSE",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
+          },
+          {
+            "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/raw/995ad96eacd98c81ed38be0c5b274b04031597b0/LICENSE",
             "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
           }
         ],
@@ -6712,21 +8066,64 @@
           },
           {
             "repository": "Qwen/Qwen3.6-35B-A3B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/995ad96eacd98c81ed38be0c5b274b04031597b0/LICENSE",
-            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
-          },
-          {
-            "repository": "Qwen/Qwen3.6-35B-A3B",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/995ad96eacd98c81ed38be0c5b274b04031597b0/README.md",
             "sha256": "c4ddaa065649ff6352648f64747a16eda31726f3e34add94ce04abb461c77b75"
+          },
+          {
+            "repository": "Qwen/Qwen3.6-35B-A3B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/995ad96eacd98c81ed38be0c5b274b04031597b0/LICENSE",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32.txt",
+            "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+            "source_url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/995ad96eacd98c81ed38be0c5b274b04031597b0/LICENSE",
+            "source_sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -7197,7 +8594,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -7239,15 +8636,15 @@
         ],
         "license_documents": [
           {
-            "repo": "unsloth/Qwen3.5-122B-A10B-GGUF",
-            "kind": "declared_license_link",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-122B-A10B/raw/dc4d348443bc740c68e2d77492492c11606384d5/LICENSE",
-            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
-          },
-          {
             "repo": "Qwen/Qwen3.5-122B-A10B",
             "kind": "repository_license_document",
             "url": "https://huggingface.co/Qwen/Qwen3.5-122B-A10B/blob/dc4d348443bc740c68e2d77492492c11606384d5/LICENSE",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+          },
+          {
+            "repo": "unsloth/Qwen3.5-122B-A10B-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-122B-A10B/raw/dc4d348443bc740c68e2d77492492c11606384d5/LICENSE",
             "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
           }
         ],
@@ -7260,21 +8657,64 @@
           },
           {
             "repository": "Qwen/Qwen3.5-122B-A10B",
-            "path": "LICENSE",
-            "url": "https://huggingface.co/Qwen/Qwen3.5-122B-A10B/blob/dc4d348443bc740c68e2d77492492c11606384d5/LICENSE",
-            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
-          },
-          {
-            "repository": "Qwen/Qwen3.5-122B-A10B",
             "path": "README.md",
             "url": "https://huggingface.co/Qwen/Qwen3.5-122B-A10B/blob/dc4d348443bc740c68e2d77492492c11606384d5/README.md",
             "sha256": "1775bb720398d6107cce3da0c3129abfd24ec639fd9853d5134df1e5c6118a4d"
+          },
+          {
+            "repository": "Qwen/Qwen3.5-122B-A10B",
+            "path": "LICENSE",
+            "url": "https://huggingface.co/Qwen/Qwen3.5-122B-A10B/blob/dc4d348443bc740c68e2d77492492c11606384d5/LICENSE",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
         "issues": [],
-        "note": null
+        "note": "No separate publisher account/click-through acceptance requirement observed in this exact public chain. License conditions still apply; this does not record an end-user acceptance event. This records a factual review of the cited documents and their conditions; it is not legal clearance, beta approval or evidence of a separate commercial license.",
+        "license_review_evidence_sha256": "b722ab8fb5adde2da576b06d6b98cd177f07b3b35a642845b2e354749be77f68",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a.txt",
+            "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+            "source_url": "https://huggingface.co/Qwen/Qwen3.5-122B-A10B/blob/dc4d348443bc740c68e2d77492492c11606384d5/LICENSE",
+            "source_sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     }
   ]

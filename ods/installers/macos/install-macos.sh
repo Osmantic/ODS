@@ -192,6 +192,7 @@ if [[ -f "${SOURCE_ROOT}/lib/python-cmd.sh" ]]; then
 fi
 source "${SOURCE_ROOT}/installers/lib/readiness-summary.sh"
 source "${SOURCE_ROOT}/installers/lib/secure-log.sh"
+source "${SOURCE_ROOT}/installers/lib/model-download-review.sh"
 ods_prepare_install_log_var ODS_LOG_FILE /tmp/ods-install-macos.log || exit 1
 
 # ── File-local helpers ──
@@ -2070,6 +2071,9 @@ else
         FULL_LLM_MODEL="$LLM_MODEL"
         FULL_MAX_CONTEXT="$MAX_CONTEXT"
 
+        ods_review_model_download "$SOURCE_ROOT" "$FULL_GGUF_FILE" "$FULL_GGUF_URL" \
+            "$FULL_GGUF_SHA256" "$INSTALL_DIR/data/model-download-review.json" || exit 1
+
         GGUF_FILE="$BOOTSTRAP_GGUF_FILE"
         GGUF_URL="$BOOTSTRAP_GGUF_URL"
         GGUF_SHA256="${BOOTSTRAP_GGUF_SHA256:-}"
@@ -2094,6 +2098,7 @@ else
         fi
 
         if [[ ! -f "$MODEL_PATH" ]]; then
+            ods_review_model_download "$SOURCE_ROOT" "$GGUF_FILE" "$GGUF_URL" "$GGUF_SHA256" || exit 1
             # Download with retry logic (built into download_with_progress)
             if ! download_with_progress "$GGUF_URL" "$MODEL_PATH" "Downloading ${GGUF_FILE}"; then
                 ai_err "Model download failed after retries. Re-run the installer to try again."

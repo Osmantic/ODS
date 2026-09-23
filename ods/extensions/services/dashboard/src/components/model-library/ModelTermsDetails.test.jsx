@@ -45,6 +45,23 @@ test('untrusted source URLs remain text and missing artifacts remain visible', a
   expect(screen.queryAllByRole('link')).toHaveLength(0)
 })
 
+test('read-only details retain commercial restrictions and notice conditions after review', async () => {
+  const reviewed = JSON.parse(JSON.stringify(response))
+  reviewed.releaseReady = true
+  reviewed.terms.commercial_use = 'restricted'
+  reviewed.terms.conditions = [{ trigger: 'Redistribution', requirement: 'Preserve the publisher notice.' }]
+  reviewed.terms.notice_documents = [{ repository: 'Publisher/Model', path: 'NOTICE', url: 'https://publisher.example/notice' }]
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(reviewed)))
+  render(<ModelTermsDetails modelId="model" />)
+  fireEvent.click(screen.getByRole('button', {name: 'Sources and terms'}))
+  await screen.findByText('Terms reviewed')
+  expect(screen.getByText(/Commercial use: Restricted/)).toBeVisible()
+  expect(screen.getByText(/Preserve the publisher notice/)).toBeVisible()
+  expect(screen.getByRole('link', {name: 'Publisher/Model: NOTICE'})).toHaveAttribute('href', 'https://publisher.example/notice')
+  expect(screen.queryByRole('checkbox')).toBeNull()
+  expect(fetch).toHaveBeenCalledTimes(1)
+})
+
 test('mismatched model response fails visibly and can be retried', async () => {
   const fetcher = vi.fn().mockResolvedValueOnce(reply({...response, modelId: 'different'})).mockResolvedValueOnce(reply())
   vi.stubGlobal('fetch', fetcher)

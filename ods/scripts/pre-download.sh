@@ -155,33 +155,9 @@ recommend_tier() {
 #=============================================================================
 
 download_model() {
-    local model="$1"
-    local label="$2"
-    
-    log "Downloading $label: $model"
-    
-    "${ODS_PYTHON_CMD:-python3}" << EOF
-from huggingface_hub import snapshot_download
-import sys
-
-try:
-    path = snapshot_download(
-        repo_id="$model",
-        local_files_only=False
-    )
-    print(f"Downloaded to: {path}")
-except Exception as e:
-    print(f"Error: {e}", file=sys.stderr)
-    sys.exit(1)
-EOF
-    
-    if [[ $? -eq 0 ]]; then
-        success "Downloaded $label"
-        return 0
-    else
-        error "Failed to download $label"
-        return 1
-    fi
+    error "Legacy snapshot downloads are blocked: no exact file, revision, SHA-256 and reviewed terms record exists for this selection."
+    error "Use the current ODS installer or dashboard Model Library to review and download an exact catalog GGUF."
+    return 1
 }
 
 verify_model() {
@@ -262,60 +238,13 @@ verify_cache() {
 }
 
 download_tier() {
-    local tier="$1"
-    local include_voice="${2:-false}"
-    
-    if [[ -z "${TIER_MODELS[$tier]:-}" ]]; then
-        error "Unknown tier: $tier"
-        echo "Available tiers: nano, edge, pro, cluster"
-        exit 1
-    fi
-    
-    local model="${TIER_MODELS[$tier]}"
-    local size="${MODEL_SIZES_GB[$tier]}"
-    
-    echo -e "\n${BOLD}Downloading ${tier} tier models${NC}"
-    echo -e "LLM: $model (~${size}GB)"
-    echo ""
-    
-    # Estimate time
-    local est_minutes
-    est_minutes=$((size * 2))  # ~0.5GB/min on average connection
-    warn "Estimated download time: ${est_minutes}-$((est_minutes * 2)) minutes (depends on connection)"
-    echo ""
-    
-    # `--tier X` is a documented non-interactive invocation but still reaches
-    # this confirmation. Under `set -euo pipefail` a closed stdin (CI, a pipe,
-    # nohup) makes read return non-zero and abort the whole script before the
-    # download; tolerate EOF and proceed, since the tier was chosen explicitly
-    # and the prompt defaults to yes ([Y/n]).
-    read -p "Continue? [Y/n] " -n 1 -r || REPLY=""
-    echo
-    if [[ $REPLY =~ ^[Nn]$ ]]; then
-        echo "Cancelled."
-        exit 0
-    fi
-    
-    # Download LLM
-    download_model "$model" "LLM ($tier tier)" || exit 1
-    
-    # Download voice components if requested
-    if [[ "$include_voice" == "true" ]]; then
-        echo ""
-        download_model "$STT_MODEL" "STT (Whisper)" || warn "STT download failed (optional)"
-        download_model "$TTS_MODEL" "TTS (Kokoro)" || warn "TTS download failed (optional)"
-    fi
-    
-    echo ""
-    success "Pre-download complete!"
-    echo ""
-    echo "You can now run install.sh — it will use the cached models."
-    echo "  ./install.sh"
+    # These historical Qwen2.5/AWQ/voice snapshots are not catalog GGUF
+    # identities. Neither a tier choice, EOF nor a global yes flag is consent.
+    download_model
 }
 
 interactive_menu() {
     print_banner
-    check_dependencies
     
     local recommended vram ram
     recommended=$(recommend_tier)
@@ -356,7 +285,7 @@ ODS Model Pre-Download
 Usage: $0 [options]
 
 Options:
-  --tier TIER      Download models for specific tier (nano/edge/pro/cluster)
+  --tier TIER      Legacy snapshot download (blocked; use the installer/model library)
   --with-voice     Also download STT and TTS models
   --list           List available models and sizes
   --verify         Check which models are already cached
@@ -412,7 +341,6 @@ main() {
             ;;
         download)
             print_banner
-            check_dependencies
             download_tier "$tier" "$include_voice"
             ;;
         list)

@@ -2,6 +2,7 @@ import { createElement } from 'react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Models from './Models'
+import { modelTermsFixture } from '../test/modelTermsFixture'
 
 const useModelsMock = vi.fn()
 const useDownloadProgressMock = vi.fn()
@@ -34,11 +35,20 @@ function baseDownloadState(overrides = {}) {
 beforeEach(() => {
   document.documentElement.dataset.theme = 'light'
   useDownloadProgressMock.mockReturnValue(baseDownloadState())
+  vi.stubGlobal('fetch', vi.fn(async url => ({ ok: true, json: async () => modelTermsFixture(decodeURIComponent(url.split('/')[3])) })))
 })
 
 afterEach(() => {
   delete document.documentElement.dataset.theme
+  vi.unstubAllGlobals()
 })
+
+async function confirmModelDownload() {
+  await act(async () => {})
+  const dialog = within(screen.getByRole('dialog', { name: 'Review model terms' }))
+  fireEvent.click(dialog.getByRole('checkbox', { name: /I have reviewed/ }))
+  await act(async () => { fireEvent.click(dialog.getByRole('button', { name: 'Confirm download' })) })
+}
 
 function baseState(overrides = {}) {
   return {
@@ -844,7 +854,42 @@ test('allows models with failed direct-chat qualification to run adaptively', ()
   expect(deleteButton).toBeEnabled()
 })
 
-test('keeps Download available in cloud mode', () => {
+test('cancelling model terms leaves download and progress untouched', async () => {
+  const downloadModel = vi.fn()
+  const progress = baseDownloadState()
+  useModelsMock.mockReturnValue(baseState({ downloadModel, models: [model()] }))
+  useDownloadProgressMock.mockReturnValue(progress)
+  renderModels()
+  fireEvent.click(screen.getByRole('button', { name: /^download$/i }))
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  expect(downloadModel).not.toHaveBeenCalled()
+  expect(progress.clearTerminal).not.toHaveBeenCalled()
+  expect(progress.refresh).not.toHaveBeenCalled()
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
+test('changed terms require a fresh review before retrying a curated download', async () => {
+  const downloadModel = vi.fn().mockRejectedValueOnce(new Error('Model terms changed. Review again.')).mockResolvedValue(undefined)
+  useModelsMock.mockReturnValue(baseState({ downloadModel, models: [model()] }))
+  const first = modelTermsFixture('qwen3.5-9b-q4')
+  const updated = { ...first, termsDigest: 'b'.repeat(64) }
+  fetch.mockResolvedValueOnce({ ok: true, json: async () => first })
+    .mockResolvedValueOnce({ ok: true, json: async () => updated })
+  renderModels()
+  fireEvent.click(screen.getByRole('button', { name: /^download$/i }))
+  await confirmModelDownload()
+  expect(screen.getByText('Model terms changed. Review again.')).toBeVisible()
+  expect(downloadModel).toHaveBeenCalledTimes(1)
+  fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+  await act(async () => {})
+  expect(screen.getByRole('checkbox')).not.toBeChecked()
+  expect(downloadModel).toHaveBeenCalledTimes(1)
+  await confirmModelDownload()
+  expect(downloadModel).toHaveBeenLastCalledWith('qwen3.5-9b-q4', { termsDigest: updated.termsDigest, acknowledged: true })
+})
+
+test('keeps Download available in cloud mode after explicit terms review', async () => {
   const downloadModel = vi.fn()
   useModelsMock.mockReturnValue(baseState({
     odsMode: 'cloud',
@@ -859,8 +904,9 @@ test('keeps Download available in cloud mode', () => {
   const downloadButton = screen.getByRole('button', { name: /^download$/i })
   expect(downloadButton).toBeEnabled()
   fireEvent.click(downloadButton)
-
-  expect(downloadModel).toHaveBeenCalledWith('qwen3.5-9b-q4')
+  expect(downloadModel).not.toHaveBeenCalled()
+  await confirmModelDownload()
+  expect(downloadModel).toHaveBeenCalledWith('qwen3.5-9b-q4', { termsDigest: 'a'.repeat(64), acknowledged: true })
   expect(screen.getByText('Runtime: Cloud')).toBeInTheDocument()
   expect(screen.getByText(/Model downloads and deletion remain available/i)).toBeInTheDocument()
 })
@@ -886,9 +932,10 @@ test('shows terminal download failures with a retry action', async () => {
   expect(screen.getByText('Download Failed')).toBeInTheDocument()
   expect(screen.getByText('The download checksum did not match.')).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: /retry/i }))
-
+  expect(downloadModel).not.toHaveBeenCalled()
+  await confirmModelDownload()
   expect(clearTerminal).toHaveBeenCalled()
-  expect(downloadModel).toHaveBeenCalledWith('qwen3.5-9b-q4')
+  expect(downloadModel).toHaveBeenCalledWith('qwen3.5-9b-q4', { termsDigest: 'a'.repeat(64), acknowledged: true })
   await act(async () => {})
 })
 
@@ -937,8 +984,9 @@ test.each([
 
   renderModels()
   fireEvent.click(screen.getByRole('button', { name: /retry/i }))
-
-  expect(downloadModel).toHaveBeenCalledWith('qwen3.5-9b-q4')
+  expect(downloadModel).not.toHaveBeenCalled()
+  await confirmModelDownload()
+  expect(downloadModel).toHaveBeenCalledWith('qwen3.5-9b-q4', { termsDigest: 'a'.repeat(64), acknowledged: true })
   await act(async () => {})
 })
 
@@ -1002,6 +1050,7 @@ test('recovers from Download Starting when status remains idle', async () => {
   try {
     renderModels()
     fireEvent.click(screen.getByRole('button', { name: /^download$/i }))
+    await confirmModelDownload()
     await act(async () => {})
     expect(screen.getByRole('button', { name: /starting/i })).toBeDisabled()
 
@@ -1027,7 +1076,7 @@ test('does not expose Retry while the download start request is unresolved', asy
   try {
     renderModels()
     fireEvent.click(screen.getByRole('button', { name: /^download$/i }))
-
+    await confirmModelDownload()
     await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
     expect(screen.getByRole('button', { name: /starting/i })).toBeDisabled()
     expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument()
@@ -1042,7 +1091,7 @@ test('does not expose Retry while the download start request is unresolved', asy
   }
 })
 
-test('does not let unrelated mutation errors clear an in-flight download start', () => {
+test('does not let unrelated mutation errors clear an in-flight download start', async () => {
   const startRequest = deferred()
   let hookState = baseState({
     downloadModel: vi.fn(() => startRequest.promise),
@@ -1052,6 +1101,7 @@ test('does not let unrelated mutation errors clear an in-flight download start',
 
   const view = renderModels()
   fireEvent.click(screen.getByRole('button', { name: /^download$/i }))
+  await confirmModelDownload()
   expect(screen.getByRole('button', { name: /starting/i })).toBeDisabled()
 
   hookState = { ...hookState, error: 'Delete is blocked by the active runtime.' }

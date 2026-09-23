@@ -11,11 +11,14 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "extensions/services/dashboard-api"))
-from model_terms import project_terms, validate_terms  # noqa: E402
+from model_terms import download_review_error, hub_source_observation, project_terms, validate_terms  # noqa: E402
 
 spec = importlib.util.spec_from_file_location("backfill_model_terms", ROOT / "scripts/backfill-model-terms.py")
 migration = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(migration)
+gate_spec = importlib.util.spec_from_file_location("check_model_terms", ROOT / "scripts/check-model-terms.py")
+gate = importlib.util.module_from_spec(gate_spec)
+gate_spec.loader.exec_module(gate)
 
 
 def fixture():
@@ -41,6 +44,47 @@ def fixture():
 
 
 class ModelTermsTests(unittest.TestCase):
+    def test_download_requires_explicit_review_of_the_current_artifact_and_terms(self):
+        catalog, evidence = fixture()
+        model = migration.migrate(catalog, json.dumps(evidence).encode())["models"][0]
+        digest = project_terms(model)["termsDigest"]
+        for acknowledgement in (None, {}, {"acknowledged": "true", "termsDigest": digest},
+                                {"acknowledged": False, "termsDigest": digest}):
+            self.assertEqual(download_review_error(model, acknowledgement)["status"], 428)
+        acknowledgement = {"acknowledged": True, "termsDigest": digest}
+        self.assertIsNone(download_review_error(model, acknowledgement))
+        self.assertFalse(project_terms(model)["releaseReady"])
+        self.assertEqual(model["terms"]["review_status"], "not_assessed")
+        model["gguf_sha256"] = "e" * 64
+        self.assertEqual(download_review_error(model, acknowledgement)["code"], "model_terms_changed")
+        model["terms"]["note"] = "Changed conditions"
+        self.assertEqual(download_review_error(model, acknowledgement)["status"], 409)
+
+    def test_publisher_acceptance_is_separate_and_cannot_be_implicitly_claimed(self):
+        catalog, evidence = fixture()
+        model = migration.migrate(catalog, json.dumps(evidence).encode())["models"][0]
+        model["terms"]["upstream_acceptance"] = "required_by_observed_gating"
+        acknowledgement = {"acknowledged": True, "termsDigest": project_terms(model)["termsDigest"]}
+        self.assertEqual(download_review_error(model, acknowledgement)["code"], "model_upstream_acceptance_required")
+        acknowledgement["upstreamAccepted"] = "true"
+        self.assertEqual(download_review_error(model, acknowledgement)["status"], 428)
+        acknowledgement["upstreamAccepted"] = True
+        self.assertIsNone(download_review_error(model, acknowledgement))
+        self.assertEqual(download_review_error({"id": "missing"}, acknowledgement)["status"], 412)
+
+    def test_hub_declarations_are_bound_but_never_automatically_reviewed(self):
+        model = {"id": "hub", "source_repo": "Publisher/Model", "source_revision": "a" * 40,
+                 "gguf_file": "local.gguf", "gguf_sha256": "b" * 64,
+                 "gguf_url": f"https://huggingface.co/Publisher/Model/resolve/{'a' * 40}/quant/model%20file.gguf"}
+        model["terms"] = hub_source_observation(model, license_id="mit", gated=True,
+                                               license_url="javascript:alert(1)", declared_bases=["Author/Base"])
+        self.assertEqual(validate_terms(model), [])
+        self.assertEqual(model["terms"]["artifacts"][0]["path"], "quant/model file.gguf")
+        self.assertNotIn("license_url", model["terms"]["sources"][0])
+        self.assertEqual(model["terms"]["declared_base_repositories"], ["Author/Base"])
+        self.assertFalse(project_terms(model)["releaseReady"])
+        self.assertEqual(model["terms"]["upstream_acceptance"], "required_by_observed_gating")
+
     def test_migration_pins_observed_source_and_preserves_download_integrity(self):
         catalog, evidence = fixture()
         model = migration.migrate(catalog, json.dumps(evidence).encode())["models"][0]
@@ -99,11 +143,145 @@ class ModelTermsTests(unittest.TestCase):
     def test_real_catalog_has_complete_observations_without_implicit_approval(self):
         catalog = json.loads((ROOT / "config/model-library.json").read_text(encoding="utf-8"))
         self.assertEqual(len(catalog["models"]), 57)
+        fingerprint, entries = gate.load_license_review(ROOT / "docs/MODEL_LICENSE_REVIEWS.json", ROOT.parent)
+        self.assertEqual(len(entries), 30)
         for model in catalog["models"]:
             with self.subTest(model=model["id"]):
                 self.assertEqual(validate_terms(model), [])
+                reviewed = model["id"] in entries
+                self.assertEqual(project_terms(model)["releaseReady"], reviewed)
+                self.assertEqual(model["terms"]["review_status"], "reviewed" if reviewed else "not_assessed")
+                self.assertEqual(gate.license_review_errors(model, {fingerprint: entries}), [])
+        self.assertEqual(sum(m["terms"]["commercial_use"] == "restricted" for m in catalog["models"]), 1)
+
+    def test_review_cannot_be_reused_after_model_source_condition_or_artifact_changes(self):
+        catalog = json.loads((ROOT / "config/model-library.json").read_text(encoding="utf-8"))
+        fingerprint, entries = gate.load_license_review(ROOT / "docs/MODEL_LICENSE_REVIEWS.json", ROOT.parent)
+        model = next(m for m in catalog["models"] if m["id"] in entries)
+        snapshots = {fingerprint: entries}
+        self.assertEqual(gate.license_review_errors(model, snapshots), [])
+        for key, value in [("commercial_use", "restricted"), ("review_status", "not_assessed"),
+                           ("upstream_acceptance", "required"), ("issues", ["CONFLICT"]),
+                           ("note", "Modified"), ("conditions", []), ("license_documents", []),
+                           ("notice_documents", []), ("local_notices", []), ("sources", []),
+                           ("evidence_sha256", "c" * 64), ("license_review_evidence_sha256", "d" * 64)]:
+            with self.subTest(key=key):
+                changed = copy.deepcopy(model)
+                changed["terms"][key] = value
+                self.assertTrue(gate.license_review_errors(changed, snapshots))
+        changed = copy.deepcopy(model)
+        del changed["terms"]["license_review_evidence_sha256"]
+        self.assertTrue(gate.license_review_errors(changed, snapshots))
+        for key in ("gguf_file", "gguf_url", "gguf_sha256", "source_repo", "source_revision", "id"):
+            with self.subTest(key=key):
+                changed = copy.deepcopy(model)
+                changed[key] = "changed"
+                self.assertTrue(gate.license_review_errors(changed, snapshots))
+
+    def test_retained_notices_bind_real_bytes_source_and_unambiguous_extraction(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            notices = repository / "ods/config/model-notices"
+            notices.mkdir(parents=True)
+            original = b"<html><pre>License &amp; conditions\n</pre></html>"
+            extracted = b"License & conditions\n"
+            raw_hash, text_hash = (hashlib.sha256(data).hexdigest() for data in (original, extracted))
+            (notices / "source.html").write_bytes(original)
+            (notices / "notice.txt").write_bytes(extracted)
+            base = {"path": "ods/config/model-notices/source.html", "sha256": raw_hash,
+                    "source_url": "https://publisher.example/license", "source_sha256": raw_hash,
+                    "extraction": "identity"}
+            text = {**base, "path": "ods/config/model-notices/notice.txt", "sha256": text_hash,
+                    "extraction": "html_pre_text"}
+            review = {"retrieved_terms_documents": [{"url": base["source_url"], "sha256": raw_hash}],
+                      "notice_documents": [], "local_notices": [base, text]}
+            self.assertEqual(gate.retained_notice_errors(review, repository), [])
+            for changes in [{"sha256": "a" * 64}, {"source_url": "https://unrelated.example/terms"},
+                            {"source_sha256": "b" * 64}, {"path": "ods/config/model-notices/../escape.txt"},
+                            {"path": str(notices / "source.html")}, {"path": "ods/config/model-notices/missing"},
+                            {"extraction": "invented"}, {"source_sha256": []}]:
+                with self.subTest(changes=changes):
+                    changed = copy.deepcopy(review)
+                    changed["local_notices"][0].update(changes)
+                    self.assertTrue(gate.retained_notice_errors(changed, repository))
+            changed = copy.deepcopy(review)
+            changed["local_notices"] = [text]
+            self.assertTrue(gate.retained_notice_errors(changed, repository))
+            changed = copy.deepcopy(review)
+            changed["retrieved_terms_documents"].append({"url": "https://example.com/ancestor-license",
+                                                       "sha256": "f" * 64})
+            self.assertTrue(gate.retained_notice_errors(changed, repository))
+            changed = copy.deepcopy(review)
+            changed["notice_documents"].append({"url": "https://example.com/NOTICE", "sha256": "f" * 64})
+            self.assertTrue(gate.retained_notice_errors(changed, repository))
+            fragment = b"<pre>License &amp; conditions\n</pre>"
+            fragment_hash = hashlib.sha256(fragment).hexdigest()
+            (notices / "source.html").write_bytes(fragment)
+            snippet = copy.deepcopy(review)
+            snippet["local_notices"][0].update(sha256=fragment_hash, extraction="html_pre_fragment", source_block_count=1)
+            snippet["local_notices"][1]["source_fragment_sha256"] = fragment_hash
+            self.assertEqual(gate.retained_notice_errors(snippet, repository), [])
+            for count in (0, 2, True):
+                changed = copy.deepcopy(snippet)
+                changed["local_notices"][0]["source_block_count"] = count
+                self.assertTrue(gate.retained_notice_errors(changed, repository))
+            changed = copy.deepcopy(snippet)
+            changed["local_notices"][1]["source_fragment_sha256"] = "e" * 64
+            self.assertTrue(gate.retained_notice_errors(changed, repository))
+            (notices / "notice.txt").write_bytes(b"Changed notice")
+            self.assertTrue(gate.retained_notice_errors(snippet, repository))
+
+    def test_review_inputs_and_local_license_coverage_cannot_be_omitted(self):
+        baseline = json.loads((ROOT / "docs/MODEL_LICENSE_REVIEWS.json").read_bytes())
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "review.json"
+            variants = []
+            changed = copy.deepcopy(baseline)
+            changed["input_evidence"] = changed["input_evidence"][1:]
+            variants.append(changed)
+            changed = copy.deepcopy(baseline)
+            changed["entries"][0]["review"]["local_notices"].pop()
+            variants.append(changed)
+            changed = copy.deepcopy(baseline)
+            changed["input_evidence"][0]["sha256"] = "c" * 64
+            variants.append(changed)
+            changed = copy.deepcopy(baseline)
+            changed["input_evidence"][0]["path"] = "../private.txt"
+            variants.append(changed)
+            changed = copy.deepcopy(baseline)
+            changed["entries"].append(changed["entries"][0])
+            variants.append(changed)
+            for conditions in (None, "conditions", [], [{"trigger": "redistribution", "requirement": None}]):
+                changed = copy.deepcopy(baseline)
+                changed["entries"][0]["review"]["conditions"] = conditions
+                variants.append(changed)
+            for index, changed in enumerate(variants):
+                with self.subTest(index=index):
+                    path.write_text(json.dumps(changed), encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        gate.load_license_review(path, ROOT.parent)
+
+    def test_malformed_completed_review_is_not_presented_or_downloadable(self):
+        catalog = json.loads((ROOT / "config/model-library.json").read_bytes())
+        original = next(m for m in catalog["models"] if m["terms"]["review_status"] == "reviewed")
+        for conditions in (None, "conditions", [], [{"trigger": "redistribution", "requirement": None}]):
+            with self.subTest(conditions=conditions):
+                model = copy.deepcopy(original)
+                model["terms"]["conditions"] = conditions
+                self.assertFalse(project_terms(model)["recordValid"])
                 self.assertFalse(project_terms(model)["releaseReady"])
-                self.assertEqual(model["terms"]["review_status"], "not_assessed")
+                self.assertEqual(download_review_error(model, {})["status"], 412)
+
+    def test_full_catalog_review_gate_reports_pending_models_and_rejects_release(self):
+        for flags, code in [([], 0), (["--release-ready"], 1)]:
+            result = subprocess.run([sys.executable, str(ROOT / "scripts/check-model-terms.py"), *flags],
+                                    capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+            body = json.loads(result.stdout)
+            self.assertEqual(body["models"], 57)
+            self.assertEqual(body["invalidRecords"], [])
+            self.assertEqual(body["evidenceErrors"], [])
+            self.assertEqual(len(body["pendingReview"]), 27)
 
     def test_malformed_observations_return_errors_instead_of_crashing(self):
         catalog, evidence = fixture()

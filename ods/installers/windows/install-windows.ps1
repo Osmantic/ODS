@@ -80,6 +80,7 @@ if (-not [string]::IsNullOrWhiteSpace($InstallDir)) {
 $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "constants.ps1")
 . (Join-Path $LibDir "ui.ps1")
+. (Join-Path $LibDir "model-download-review.ps1")
 . (Join-Path $LibDir "compose-diagnostics.ps1")
 . (Join-Path $LibDir "backend-contract.ps1")
 . (Join-Path $LibDir "tier-map.ps1")
@@ -329,6 +330,9 @@ if ($dryRun) {
             $bootstrapActive = $true
             $fullTierConfig = @{}
             foreach ($k in $tierConfig.Keys) { $fullTierConfig[$k] = $tierConfig[$k] }
+            Confirm-ODSModelDownloadReview -Root $SourceRoot -File $fullTierConfig.GgufFile `
+                -Url $fullTierConfig.GgufUrl -Sha256 $fullTierConfig.GgufSha256 `
+                -ReceiptPath (Join-Path $installDir "data\model-download-review.json") -Unattended:$NonInteractive
             $tierConfig.GgufFile   = $script:BOOTSTRAP_GGUF_FILE
             $tierConfig.GgufUrl    = $script:BOOTSTRAP_GGUF_URL
             $tierConfig.GgufSha256 = $script:BOOTSTRAP_GGUF_SHA256
@@ -372,6 +376,8 @@ if ($dryRun) {
             }
 
             if ($needsDownload) {
+                Confirm-ODSModelDownloadReview -Root $SourceRoot -File $tierConfig.GgufFile `
+                    -Url $tierConfig.GgufUrl -Sha256 $tierConfig.GgufSha256 -Unattended:$NonInteractive
                 $dlOk = Invoke-DownloadWithRetry -Url $tierConfig.GgufUrl `
                     -Destination $modelPath -Label "Downloading $($tierConfig.GgufFile)" -MaxRetries 4
                 if (-not $dlOk) {

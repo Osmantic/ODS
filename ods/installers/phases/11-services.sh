@@ -20,6 +20,7 @@
 if ! declare -F ods_prepare_install_log_var >/dev/null 2>&1; then
     source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/secure-log.sh"
 fi
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/model-download-review.sh"
 
 # Keep standalone phase harnesses usable; production defines this in ui.sh.
 if ! declare -F ui_status_line >/dev/null 2>&1; then
@@ -737,6 +738,11 @@ else
         FULL_LLM_MODEL="$LLM_MODEL"
         FULL_MAX_CONTEXT="$MAX_CONTEXT"
 
+        # The detached full-model transfer needs its own explicit review now;
+        # a bootstrap-model acknowledgement cannot authorize a different file.
+        ods_review_model_download "$SCRIPT_DIR" "$FULL_GGUF_FILE" "$FULL_GGUF_URL" \
+            "$FULL_GGUF_SHA256" "$INSTALL_DIR/data/model-download-review.json" || exit 1
+
         # Swap to bootstrap model for the foreground download
         GGUF_FILE="$BOOTSTRAP_GGUF_FILE"
         GGUF_URL="$BOOTSTRAP_GGUF_URL"
@@ -783,6 +789,7 @@ else
 
         # Download if not present or was removed due to corruption
         if [[ ! -f "$GGUF_DIR/$GGUF_FILE" ]]; then
+            ods_review_model_download "$SCRIPT_DIR" "$GGUF_FILE" "$GGUF_URL" "$GGUF_SHA256" || exit 1
             ods_progress 77 "services" "Downloading AI model"
             ai "Downloading GGUF model: $GGUF_FILE"
 

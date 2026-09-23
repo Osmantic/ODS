@@ -66,13 +66,22 @@ type-check venv. The 15 lock-policy/substitution tests, two action/image pin
 tests, actionlint and Ruff also passed. Python 3.13 wheels for macOS arm64 and
 x86_64 were fetched and checked against the Edge lock; this did not execute them.
 
-The broad dashboard run finished with 4,173 passed, 3 skipped and 12 failed:
-five curated-recipe assertions and seven real PowerShell parser cases. The
-Aider test expects a healthcheck absent from its compose file, also absent at
-baseline commit `d046fa29`; the seven parser failures also reproduce in the
-pre-existing Linux Python 3.12 environment without these new locks. This is not
-a clean dashboard acceptance result. Native macOS, hosted CI and a live Postgres
-service were not run here. Existing tolerated mypy errors are not cleared by this work.
+The initial broad dashboard run finished with 4,173 passed, 3 skipped and 12
+failed. Test-only corrections now distinguish deployable services, one-shot
+CLIs and rejected reference recipes, and transport fixture variables when WSL
+launches Windows PowerShell. Recipe tests passed 187 cases with one empty legacy
+parameter set skipped; 97 related install/provenance/CLI checks also passed.
+The 17 PowerShell fixture/parser cases passed on native Windows and WSL. Negative
+tests still reject broken CLI contracts, published-port collisions and invalid
+parser input. No recipe or production parser was changed to satisfy these tests.
+
+After updating download fixtures to acknowledge the exact current terms, a
+fresh integrated run against stable files passed **4,206 API tests**, with three
+explicit skips. The host-agent, model terms and router file hashes matched at
+the beginning and end of the run. The dashboard separately passed 1,625 tests
+in 200 files, lint and build. No product guard was disabled to obtain this
+integrated result. Native macOS, hosted CI and a live Postgres service were not
+run here. Existing tolerated mypy errors are not cleared by this work.
 The gate checks direct workflow commands, not arbitrary shell programs, Action
 internals, Dockerfile installs or nested workflow templates. Those surfaces and
 other supply-chain inputs remain separate; PB-011/PB-018 are not fully closed.

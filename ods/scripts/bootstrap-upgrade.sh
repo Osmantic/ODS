@@ -2448,13 +2448,8 @@ log "Target: $MODELS_DIR/$FULL_GGUF_FILE"
 mkdir -p "$MODELS_DIR"
 acquire_upgrade_lock
 
-# Get total file size for progress calculation
-TOTAL_BYTES=$(get_remote_size "$FULL_GGUF_URL")
-[[ -z "$TOTAL_BYTES" ]] && TOTAL_BYTES=0
-log "Expected file size: $TOTAL_BYTES bytes"
-
-# Write initial status
-write_status "starting" "" 0 "$TOTAL_BYTES" 0 "calculating..."
+# Do not contact the artifact source until the detached receipt is checked.
+TOTAL_BYTES=0
 
 _part_path="$MODELS_DIR/$FULL_GGUF_FILE.part"
 _final_path="$MODELS_DIR/$FULL_GGUF_FILE"
@@ -2511,12 +2506,25 @@ if [[ -f "$_final_path" ]]; then
     log "Full model already exists on disk; verifying before reuse"
     if verify_model_integrity "$_final_path"; then
         _dl_success=true
+        TOTAL_BYTES="$(file_size "$_final_path")"
         write_status "verifying" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""
     else
         log "Existing full model failed integrity; deleting and retrying from a clean file."
         rm -f "$_final_path"
         release_model_lifecycle_lock
     fi
+fi
+
+if [[ "$_dl_success" != "true" ]]; then
+    _review_library="$INSTALL_DIR/installers/lib/model-download-review.sh"
+    [[ -f "$_review_library" ]] || fail "Model download review helper is missing; rerun the current installer."
+    source "$_review_library"
+    ods_check_model_download_receipt "$INSTALL_DIR" "$FULL_GGUF_FILE" "$FULL_GGUF_URL" "$FULL_GGUF_SHA256" \
+        || fail "Model terms review is missing or stale. Rerun the installer and explicitly review this download."
+    TOTAL_BYTES=$(get_remote_size "$FULL_GGUF_URL")
+    [[ -z "$TOTAL_BYTES" ]] && TOTAL_BYTES=0
+    log "Expected file size: $TOTAL_BYTES bytes"
+    write_status "starting" "" 0 "$TOTAL_BYTES" 0 "calculating..."
 fi
 
 if [[ -f "$_part_path" && "$TOTAL_BYTES" -gt 0 ]]; then
@@ -2568,6 +2576,8 @@ if [[ "$_dl_success" != "true" ]]; then
             fi
 
             if [[ ! -f "$_final_path" ]]; then
+                ods_check_model_download_receipt "$INSTALL_DIR" "$FULL_GGUF_FILE" "$FULL_GGUF_URL" "$FULL_GGUF_SHA256" \
+                    || fail "Model terms changed or the receipt is unavailable; no further model transfer is authorized."
                 # Let this script own retry/resume. curl's internal retry path can
                 # restart the transfer from byte zero after a long connection reset,
                 # truncating an otherwise good multi-GB .part file.
