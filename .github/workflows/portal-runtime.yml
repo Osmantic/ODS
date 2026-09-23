@@ -14,6 +14,28 @@ permissions:
   contents: read
 
 jobs:
+  compaction-lock:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '24'
+      - run: node --test ods/extensions/services/pixel-agent/tests/compaction_lock.test.mjs
+      - run: node --test ods/extensions/services/pixel-agent/tests/read_range.test.mjs
+      - name: Install pinned read-tool runtime for integration
+        shell: bash
+        run: npm install --prefix "$RUNNER_TEMP/read-runtime" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org openclaw@2026.6.33
+      - name: Verify real file reads and range failures
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_read_range.integration.mjs
   runtime:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

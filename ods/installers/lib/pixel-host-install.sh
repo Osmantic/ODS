@@ -4438,6 +4438,7 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-compaction-export.json" \
         && -f "$plugin_root/host/openclaw-compaction-idle.json" \
         && -f "$plugin_root/host/openclaw-compaction-resume.json" \
+        && -f "$plugin_root/host/openclaw-read-range.json" \
         && -f "$plugin_root/host/openclaw-image-envelope.json" \
         && -f "$plugin_root/host/pixel-ops-broker-ods.conf" \
         && -f "$plugin_root/host/cancellable-exec.sh" \
@@ -4790,6 +4791,16 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/compaction-resume" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's compaction continuation repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Preserve the real line count when a read starts beyond EOF. A silent
+    # empty success makes the model keep requesting higher invalid offsets.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --read-range \
+        --state-dir "$home/.openclaw/ods-runtime-patches/read-range" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's file read range repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     # Honor the configured compaction budget on slow local providers.

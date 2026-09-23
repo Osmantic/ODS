@@ -33,6 +33,7 @@ SHARED_REPAIRS = (
     ('openclaw-compaction-export.json', 'embedded-agent-subscribe.handlers.compaction.runtime.js'),
     ('openclaw-compaction-idle.json', 'sessions-KE_Xmzwf.js'),
     ('openclaw-compaction-resume.json', 'sessions-CZbwb3_c.js'),
+    ('openclaw-read-range.json', 'openclaw-tools-iHHy99PD.js'),
     ('openclaw-compaction-budget.json', 'selection-BEwSQKM-.js'),
 )
 
