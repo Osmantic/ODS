@@ -21,7 +21,27 @@ export function createGoalProgress({agentId='pixel',maximumRuns=64}={}) {
   return {
     begin(event,context) {
       const id=idFor(event,context);
-      if(!id || runs.has(id))return;
+      if(!id)return;
+      const existing=runs.get(id);
+      if(existing) {
+        const fresh=event && typeof event==='object' && !existing.promptBuildEvents.has(event);
+        if(event && typeof event==='object')existing.promptBuildEvents.add(event);
+        if((context?.sessionId && existing.sessionId && context.sessionId!==existing.sessionId)
+          || (context?.sessionKey && existing.sessionKey && context.sessionKey!==existing.sessionKey))existing.sessionConflict=true;
+        // agent_end closes an embedded attempt, which the SDK may retry after
+        // compaction. Restore the last public plan only for its owned retry.
+        if(fresh && typeof event.prompt==='string' && event.prompt.trim()
+          && existing.finished && existing.resumeGoal && !existing.sessionConflict
+          && typeof existing.sessionId==='string' && existing.sessionId
+          && existing.sessionId===context?.sessionId
+          && typeof existing.sessionKey==='string' && existing.sessionKey
+          && existing.sessionKey===context?.sessionKey) {
+          existing.goal=existing.resumeGoal;
+          existing.resumeGoal=null;
+          existing.finished=false;
+        }
+        return;
+      }
       // Only the current owner input can enable this mode, never tool text or
       // an old /goal request in conversation history.
       let prompt=typeof event?.prompt==='string' ? event.prompt.replace(/\r\n/g,'\n') : '';
@@ -33,7 +53,10 @@ export function createGoalProgress({agentId='pixel',maximumRuns=64}={}) {
         if(!old)return;
         runs.delete(old[0]);
       }
-      runs.set(id,{goal:{status:'active',summary:'Preparing the plan',steps:[]},finished:false});
+      const promptBuildEvents=new WeakSet();
+      if(event && typeof event==='object')promptBuildEvents.add(event);
+      runs.set(id,{goal:{status:'active',summary:'Preparing the plan',steps:[]},finished:false,
+        sessionId:context?.sessionId,sessionKey:context?.sessionKey,promptBuildEvents});
     },
     active(id) { return runs.has(id); },
     projection(id) { const value=runs.get(id)?.goal; return value ? structuredClone(value) : null; },
@@ -74,9 +97,12 @@ export function createGoalProgress({agentId='pixel',maximumRuns=64}={}) {
     },
     finish(event,context) {
       const run=runs.get(idFor(event,context));
-      if(!run)return;
+      if(!run || run.finished)return;
       run.finished=true;
-      if(event?.success===false || event?.error)run.goal={...run.goal,status:'blocked',summary:'This run ended before the goal was completed. Review the result before continuing.'};
+      if(event?.success===false || event?.error) {
+        run.resumeGoal=structuredClone(run.goal);
+        run.goal={...run.goal,status:'blocked',summary:'This run ended before the goal was completed. Review the result before continuing.'};
+      }
     },
   };
 }
