@@ -20,6 +20,23 @@ it('fits the map initially, offers actual size, and opens details by keyboard', 
   expect(screen.queryByRole('button', { name: 'Close service details' })).toBeNull()
 })
 
+it('reconciles selected details when a refresh replaces the service node', async () => {
+  const replacement = { ...statusPayload, services: statusPayload.services.map(service => service.id === 'ape'
+    ? { ...service, status: 'degraded', port: 7999 }
+    : service).filter(service => service.id !== 'comfyui') }
+  const fetch = vi.fn()
+    .mockResolvedValueOnce({ ok: true, json: async () => statusPayload })
+    .mockResolvedValueOnce({ ok: true, json: async () => replacement })
+  vi.stubGlobal('fetch', fetch)
+  render(<ServiceMap />)
+  fireEvent.keyDown(await screen.findByRole('button', { name: 'APE (Agent Policy Engine): healthy' }), { key: 'Enter' })
+  expect(screen.getByRole('button', { name: 'Close service details' })).toBeInTheDocument()
+  fireEvent(document, new Event('visibilitychange'))
+  await screen.findByRole('button', { name: 'APE (Agent Policy Engine): degraded' })
+  expect(screen.getByText('7999')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Close service details' })).toBeInTheDocument()
+})
+
 it('starts with readable service rows in a panel and keeps the full map accessible', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok:true,json:async () => statusPayload}))
   render(<ServiceMap compact />)
