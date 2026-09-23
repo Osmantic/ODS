@@ -58,13 +58,34 @@ export function createTaskActivity({agentId = 'pixel', now = () => new Date().to
   function begin(event, context) {
     const id = identify(event, context);
     if (!RUN.test(id ?? '')) return;
-    if (runs.has(id)) {knownRun(event,context);return;}
+    if (runs.has(id)) {
+      const run = knownRun(event, context);
+      const freshPromptBuild = event && typeof event === 'object' && !run.promptBuildEvents.has(event);
+      if (event && typeof event === 'object') run.promptBuildEvents.add(event);
+      // OpenClaw emits agent_end for each embedded attempt, including a
+      // context-overflow precheck that it subsequently compacts and retries.
+      // Only a fresh owned before_prompt_build may reopen a failed attempt.
+      // Preserve all prior tool failures and the original request start time.
+      if (freshPromptBuild && typeof event.prompt === 'string' && event.prompt.trim()
+          && run.state === 'failed' && run.finishedAt && !run.sessionConflict
+          && typeof run.sessionId === 'string' && run.sessionId
+          && context?.sessionId === run.sessionId
+          && typeof run.sessionKey === 'string' && run.sessionKey
+          && context?.sessionKey === run.sessionKey) {
+        run.state = 'running';
+        run.finishedAt = null;
+      }
+      return;
+    }
     while (runs.size >= maximumRuns) {
       const settled = [...runs].find(([, run]) => run.state !== 'running');
       if (!settled) return;
       runs.delete(settled[0]);
     }
-    runs.set(id, {runId:id, sessionKey:context?.sessionKey, startedAt:now(), finishedAt:null, state:'running', calls:new Map(), truncated:false, context:null});
+    const promptBuildEvents = new WeakSet();
+    if (event && typeof event === 'object') promptBuildEvents.add(event);
+    runs.set(id, {runId:id, sessionId:context?.sessionId, sessionKey:context?.sessionKey, promptBuildEvents,
+      startedAt:now(), finishedAt:null, state:'running', calls:new Map(), truncated:false, context:null});
   }
   function record(event, context, outcome) {
     const run = knownRun(event, context);

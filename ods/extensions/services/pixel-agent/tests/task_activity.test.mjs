@@ -6,6 +6,92 @@ const runId = 'chatcmpl_11111111-2222-4333-8444-555555555555';
 const ctx = {agentId:'pixel',runId};
 const now = () => '2026-09-08T20:00:00.000Z';
 
+test('a fresh owned prompt attempt recovers an overflow failure without erasing tool history', () => {
+  let instant = '2026-09-23T18:39:00.000Z';
+  const context = {...ctx, sessionId:'owned-session', sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+  const recorder = createTaskActivity({now:()=>instant});
+  recorder.begin({prompt:'Edit the existing project'},context);
+  instant = '2026-09-23T18:39:01.000Z';
+  recorder.finish({success:false,error:'Context overflow: prompt too large for the model (precheck).'},context);
+  assert.equal(recorder.projection(runId).state,'failed');
+  instant = '2026-09-23T18:40:00.000Z';
+  recorder.begin({prompt:'Edit the existing project'},context);
+  assert.equal(recorder.projection(runId).state,'running');
+  assert.equal(recorder.projection(runId).finishedAt,null);
+  assert.equal(recorder.activeForUser('ods-'+'a'.repeat(64)).runId,runId);
+  for (let i=0;i<2;i++) recorder.before({toolName:'pixel_ods_workspace_preview'},{...context,toolCallId:'blocked-'+i},true);
+  instant = '2026-09-23T18:42:34.000Z';
+  recorder.before({toolName:'pixel_ods_workspace_preview'},{...context,toolCallId:'published'});
+  recorder.after({result:{details:{status:'succeeded'}}},{...context,toolCallId:'published'});
+  instant = '2026-09-23T18:42:44.000Z';
+  recorder.finish({success:true},context);
+  const value=recorder.projection(runId);
+  assert.equal(value.state,'completed');
+  assert.equal(value.startedAt,'2026-09-23T18:39:00.000Z');
+  assert.equal(value.finishedAt,instant);
+  assert.equal(value.failures,2);
+  assert.equal(value.blocked,2);
+  assert.equal(value.calls,3);
+  assert.equal(value.events.at(-1).state,'completed');
+  assert.equal(parseTaskActivity(value,runId),value);
+  assert.equal(recorder.activeForUser('ods-'+'a'.repeat(64)),null);
+});
+
+test('recovered attempts retain previous failed calls and can themselves fail', () => {
+  const context={...ctx,sessionId:'owned-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+  const recorder=createTaskActivity({now});
+  recorder.begin({prompt:'Do the work'},context);
+  recorder.before({toolName:'exec'},{...context,toolCallId:'first'});
+  recorder.after({result:{details:{exitCode:1}}},{...context,toolCallId:'first'});
+  recorder.finish({success:false},context);
+  recorder.begin({prompt:'Do the work'},context);
+  recorder.finish({success:false},context);
+  assert.equal(recorder.projection(runId).state,'failed');
+  assert.equal(recorder.projection(runId).failures,1);
+  assert.equal(recorder.projection(runId).calls,1);
+});
+
+test('duplicate, unowned, incomplete and late hooks cannot reopen a closed attempt', () => {
+  for (const variant of ['completed','same-event','missing-prompt','blank-prompt','wrong-session','missing-session','missing-original-session','wrong-key','missing-key','conflicted-key','other-agent','late-tool','late-finish']) {
+    const context={...ctx,sessionId:'owned-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+    const recorder=createTaskActivity({now});
+    const original={prompt:'Do the work'};
+    const initialContext={...context};
+    if(variant==='missing-original-session')delete initialContext.sessionId;
+    recorder.begin(original,initialContext);
+    recorder.finish({success:variant==='completed'},context);
+    const closed=recorder.projection(runId);
+    const retryContext={...context};
+    if(variant==='wrong-session')retryContext.sessionId='other-session';
+    if(variant==='missing-session')delete retryContext.sessionId;
+    if(variant==='wrong-key')retryContext.sessionKey='agent:pixel:openai-user:ods-'+'b'.repeat(64);
+    if(variant==='missing-key')delete retryContext.sessionKey;
+    if(variant==='other-agent')retryContext.agentId='other';
+    if(variant==='conflicted-key')recorder.begin({prompt:'Do the work'}, {...context,sessionKey:'agent:pixel:openai-user:ods-'+'b'.repeat(64)});
+    const event=variant==='same-event'?original:variant==='missing-prompt'?{}:{prompt:variant==='blank-prompt'?'  ':'Do the work'};
+    if(variant==='late-tool')recorder.after({result:{}},{...context,toolCallId:'late',toolName:'read'});
+    else if(variant==='late-finish')recorder.finish({success:true},context);
+    else recorder.begin(event,retryContext);
+    const observed=recorder.projection(runId);
+    assert.equal(observed.state,closed.state,variant);
+    assert.equal(observed.finishedAt,closed.finishedAt,variant);
+    assert.equal(recorder.activeForUser('ods-'+'a'.repeat(64)),null,variant);
+  }
+});
+
+test('a running retry has one start and duplicate final hooks stay idempotent', () => {
+  let instant='2026-09-23T10:00:00.000Z';
+  const context={...ctx,sessionId:'owned-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+  const recorder=createTaskActivity({now:()=>instant});
+  recorder.begin({prompt:'Do the work'},context);recorder.finish({success:false},context);
+  const retry={prompt:'Do the work'};recorder.begin(retry,context);
+  recorder.begin(retry,context);
+  instant='2026-09-23T10:01:00.000Z';recorder.finish({success:true},context);
+  instant='2026-09-23T10:02:00.000Z';recorder.finish({success:false},context);
+  assert.equal(recorder.projection(runId).state,'completed');
+  assert.equal(recorder.projection(runId).finishedAt,'2026-09-23T10:01:00.000Z');
+});
+
 test('context uses the latest assistant call, includes cached tokens and never cumulative cost',()=>{
   const r=createTaskActivity({now});r.begin({},ctx);
   r.modelOutput({contextTokenBudget:1000,usage:{input:9000,output:9000}},ctx);
