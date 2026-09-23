@@ -93,6 +93,15 @@ afterEach(() => {
 })
 
 describe('Extensions page — unhealthy + install derivations', () => {
+  it('restores focus to Refresh extensions after a manual catalog refresh', async () => {
+    installFetchMock({ extensions: [], summary: baseSummary({ total: 0 }), agent_available: true })
+    render(<Extensions compact />)
+    const refresh = await screen.findByRole('button', { name: 'Refresh extensions' })
+    refresh.focus()
+    fireEvent.click(refresh)
+    await waitFor(() => expect(refresh).toHaveFocus())
+  })
+
   it('shows starter collections as a matching paginated library with an explicit preview', async () => {
     vi.stubGlobal('fetch', vi.fn(async url => String(url).includes('/api/templates')
       ? makeJsonResponse({templates:Array.from({length:8}, (_,index) => ({id:`collection-${index}`,name:`Collection ${index}`,description:'A useful collection',services:['a','b']}))})

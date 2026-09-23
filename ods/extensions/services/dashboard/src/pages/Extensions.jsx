@@ -95,6 +95,7 @@ const STATUS_DESCRIPTIONS = {
 }
 
 export default function Extensions({ compact = false }) {
+  const refreshButtonRef = useRef(null)
   const [catalog, setCatalog] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -224,7 +225,7 @@ export default function Extensions({ compact = false }) {
     return () => document.removeEventListener('keydown', handler)
   }, [confirm])
 
-  const fetchCatalog = async () => {
+  const fetchCatalog = async (restoreFocus = false) => {
     try {
       if (!catalog) setLoading(true)
       setRefreshing(true)
@@ -238,6 +239,9 @@ export default function Extensions({ compact = false }) {
     } finally {
       setLoading(false)
       setRefreshing(false)
+      if (restoreFocus) {
+        Promise.resolve().then(() => refreshButtonRef.current?.focus())
+      }
     }
   }
 
@@ -403,7 +407,8 @@ export default function Extensions({ compact = false }) {
             </div>
           )}
           <button
-            onClick={fetchCatalog}
+            ref={refreshButtonRef}
+            onClick={() => fetchCatalog(true)}
             aria-label="Refresh extensions"
             disabled={refreshing}
             className="text-theme-text-muted/65 hover:text-theme-text transition-colors disabled:opacity-50 flex items-center gap-1.5 uppercase tracking-[0.16em]"
