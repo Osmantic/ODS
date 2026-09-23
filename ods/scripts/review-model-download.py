@@ -84,7 +84,13 @@ def display(projection, artifact, stream):
     line("Terms digest: " + projection["termsDigest"])
     line("Terms reviewed" if projection["releaseReady"] else "License review pending")
     line("Commercial use: " + terms["commercial_use"])
-    line("Upstream acceptance: " + terms["upstream_acceptance"])
+    acceptance = {
+        "required": "Read and accept the applicable terms under the recorded conditions.",
+        "required_by_observed_gating": "Complete the acceptance or access step required by the publisher.",
+        "not_required": "No separate acceptance step required by the reviewed terms.",
+        "not_assessed": "Not yet assessed.",
+    }
+    line("Acceptance requirement: " + acceptance[terms["upstream_acceptance"]])
     line("Acknowledgement records review only. It does not grant rights, complete legal review, or accept terms with the publisher.")
     for source in terms["sources"]:
         line("Source ({role}): {repository} @ {revision}".format(**source))
@@ -120,10 +126,13 @@ def interactive_acknowledgement(projection, input_stream, output_stream):
         raise ValueError("Model download cancelled; no terms acknowledgement was provided.")
     acknowledgement = {"termsDigest": digest, "acknowledged": True}
     if projection["terms"]["upstream_acceptance"] in {"required", "required_by_observed_gating"}:
-        print("Have you completed the required acceptance with the upstream publisher for {}? [y/N] ".format(projection["modelId"]),
+        question = ("Have you completed the acceptance or access step required by the publisher for {}? [y/N] "
+                    if projection["terms"]["upstream_acceptance"] == "required_by_observed_gating"
+                    else "Have you read and do you accept the applicable terms under the recorded conditions for {}? [y/N] ")
+        print(question.format(projection["modelId"]),
               file=output_stream, end="", flush=True)
         if input_stream.readline().strip().casefold() not in {"y", "yes"}:
-            raise ValueError("Model download cancelled; upstream acceptance was not explicitly confirmed.")
+            raise ValueError("Model download cancelled; the recorded acceptance requirement was not explicitly confirmed.")
         acknowledgement["upstreamAccepted"] = True
     return acknowledgement
 

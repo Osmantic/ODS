@@ -25,7 +25,7 @@ test('loads on demand and displays upstream conditions without accepting or down
   fireEvent.click(screen.getByRole('button', {name: 'Sources and terms'}))
   await screen.findByText('License review pending')
   expect(screen.getByText(/Commercial use: Not yet assessed/)).toBeInTheDocument()
-  expect(screen.getByText(/complete it with the upstream publisher/)).toBeInTheDocument()
+  expect(screen.getByText(/Complete the acceptance or access step required by the publisher/)).toBeInTheDocument()
   expect(screen.getByText('Publisher and base declarations differ.')).toBeInTheDocument()
   expect(fetcher).toHaveBeenCalledTimes(1)
   expect(fetcher.mock.calls[0][0]).toBe('/api/models/model/terms')

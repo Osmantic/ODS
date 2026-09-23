@@ -29,7 +29,7 @@ test('HF preview needs both acknowledgements and never requests terms for an uni
   expect(posts()).toHaveLength(0)
   fireEvent.click(dialog.getByRole('checkbox', { name: /I have reviewed/ }))
   expect(dialog.getByRole('button', { name: 'Confirm import' })).toBeDisabled()
-  fireEvent.click(dialog.getByRole('checkbox', { name: /completed the required acceptance/ }))
+  fireEvent.click(dialog.getByRole('checkbox', { name: /completed the acceptance or access step required by the publisher/ }))
   await act(async () => { fireEvent.click(dialog.getByRole('button', { name: 'Confirm import' })) })
   expect(posts()).toHaveLength(1)
   expect(JSON.parse(posts()[0][1].body)).toEqual({ repoId: repo.id, artifactId: 'model-Q4.gguf',

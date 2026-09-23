@@ -31,7 +31,10 @@ test('fetches terms without downloading and sends only the explicitly acknowledg
   expect(fetcher).toHaveBeenCalledTimes(1)
 })
 
-test.each(['required', 'required_by_observed_gating'])('requires separate explicit upstream acceptance for %s', async upstream_acceptance => {
+test.each([
+  ['required', /I have read and accept the applicable terms/, /Read and accept the applicable terms under the recorded conditions/, /completed the acceptance or access step/],
+  ['required_by_observed_gating', /completed the acceptance or access step required by the publisher/, /Complete the acceptance or access step required by the publisher/, /I have read and accept the applicable terms/],
+])('requires the distinct explicit confirmation for %s', async (upstream_acceptance, checkboxName, explanation, otherKind) => {
   const preview = modelTermsFixture()
   preview.terms.upstream_acceptance = upstream_acceptance
   vi.stubGlobal('fetch', vi.fn())
@@ -39,10 +42,17 @@ test.each(['required', 'required_by_observed_gating'])('requires separate explic
   render(<ModelTermsDialog modelId="model" preview={preview} onCancel={vi.fn()} onConfirm={onConfirm} />)
   await screen.findByText('License review pending')
   expect(fetch).not.toHaveBeenCalled()
-  const upstream = screen.getByRole('checkbox', { name: /completed the required acceptance/ })
+  const upstream = screen.getByRole('checkbox', { name: checkboxName })
+  expect(screen.getByText(explanation)).toBeVisible()
+  expect(screen.queryByRole('checkbox', { name: otherKind })).toBeNull()
   expect(upstream).not.toBeChecked()
   acknowledge()
   expect(confirm()).toBeDisabled()
+  fireEvent.click(upstream)
+  expect(confirm()).toBeEnabled()
+  fireEvent.click(upstream)
+  expect(confirm()).toBeDisabled()
+  expect(onConfirm).not.toHaveBeenCalled()
   fireEvent.click(upstream)
   fireEvent.click(confirm())
   expect(onConfirm).toHaveBeenCalledWith({ termsDigest: preview.termsDigest, acknowledged: true, upstreamAccepted: true })
@@ -110,7 +120,7 @@ test('new preview terms clear both checkboxes and bind confirmation to the new d
   const view = render(<ModelTermsDialog modelId="model" preview={old} onCancel={vi.fn()} onConfirm={onConfirm} />)
   await screen.findByText('License review pending')
   acknowledge()
-  fireEvent.click(screen.getByRole('checkbox', { name: /completed the required acceptance/ }))
+  fireEvent.click(screen.getByRole('checkbox', { name: /I have read and accept the applicable terms/ }))
   expect(confirm()).toBeEnabled()
   const updated = { ...old, termsDigest: 'c'.repeat(64) }
   view.rerender(<ModelTermsDialog modelId="model" preview={updated} onCancel={vi.fn()} onConfirm={onConfirm} />)
@@ -118,7 +128,7 @@ test('new preview terms clear both checkboxes and bind confirmation to the new d
   screen.getAllByRole('checkbox').forEach(input => expect(input).not.toBeChecked())
   expect(confirm()).toBeDisabled()
   acknowledge()
-  fireEvent.click(screen.getByRole('checkbox', { name: /completed the required acceptance/ }))
+  fireEvent.click(screen.getByRole('checkbox', { name: /I have read and accept the applicable terms/ }))
   fireEvent.click(confirm())
   expect(onConfirm).toHaveBeenCalledWith({ termsDigest: updated.termsDigest, acknowledged: true, upstreamAccepted: true })
 })

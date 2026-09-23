@@ -165,7 +165,9 @@ def download_review_error(model, acknowledgement):
     if (projection["terms"]["upstream_acceptance"] in {"required", "required_by_observed_gating"}
             and acknowledgement.get("upstreamAccepted") is not True):
         return {**base, "status": 428, "code": "model_upstream_acceptance_required",
-                "error": "Complete the publisher's required acceptance and confirm it before downloading."}
+                "error": ("Complete and confirm the acceptance or access step required by the publisher before downloading."
+                          if projection["terms"]["upstream_acceptance"] == "required_by_observed_gating"
+                          else "Confirm that you have read and accept the applicable terms under the recorded conditions before downloading.")}
     return None
 
 

@@ -94,6 +94,29 @@ class InstallerModelReviewTests(unittest.TestCase):
         ack = review.interactive_acknowledgement(projection, Terminal("y\n"), io.StringIO())
         self.assertNotIn("upstreamAccepted", ack)
 
+    def test_acceptance_kinds_have_distinct_prompts_and_both_default_to_no(self):
+        for kind, question, absent in (
+            ("required", "read and do you accept the applicable terms under the recorded conditions", "step required by the publisher"),
+            ("required_by_observed_gating", "acceptance or access step required by the publisher", "read and do you accept"),
+        ):
+            with self.subTest(kind=kind):
+                model = copy.deepcopy(self.model)
+                model["terms"]["upstream_acceptance"] = kind
+                projection = project_terms(model)
+                for answer in ("", "\n", "no\n", "yes please\n"):
+                    with self.subTest(answer=answer), self.assertRaisesRegex(ValueError, "not explicitly confirmed"):
+                        review.interactive_acknowledgement(projection, Terminal("yes\n" + answer), io.StringIO())
+                stream = io.StringIO()
+                ack = review.interactive_acknowledgement(projection, Terminal("yes\nyes\n"), stream)
+                self.assertIn(question, stream.getvalue())
+                self.assertNotIn(absent, stream.getvalue())
+                self.assertEqual(ack, {"termsDigest": projection["termsDigest"], "acknowledged": True, "upstreamAccepted": True})
+                stream = io.StringIO()
+                review.display(projection, review.artifact_identity(model), stream)
+                self.assertIn("Acceptance requirement:", stream.getvalue())
+                self.assertIn("recorded conditions" if kind == "required" else "step required by the publisher", stream.getvalue())
+                self.assertNotIn("step required by the publisher" if kind == "required" else "Read and accept", stream.getvalue())
+
     def test_eof_piped_yes_and_global_yes_flags_do_not_authorize(self):
         env = {**os.environ, "AUTO_YES": "true", "ASSUME_YES": "true", "NON_INTERACTIVE": "true"}
         for text in ("", "yes\n", "yes\nyes\n"):

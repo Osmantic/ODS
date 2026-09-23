@@ -19,7 +19,7 @@ export default function ModelTermsContent({ result }) {
     <p>Publisher declarations are recorded below. They do not establish permission for every use.</p>
     <p>Acknowledging this record does not complete its license review or accept terms on the publisher's website.</p>
     <p>Commercial use: {terms.commercial_use === 'permitted_with_conditions' ? 'Permitted subject to the recorded conditions' : terms.commercial_use === 'restricted' ? 'Restricted; read the publisher terms' : 'Not yet assessed'}.</p>
-    <p>Upstream acceptance: {['required', 'required_by_observed_gating'].includes(terms.upstream_acceptance) ? 'Required; complete it with the upstream publisher' : terms.upstream_acceptance === 'not_required' ? 'Not required by the reviewed terms' : 'Not yet assessed'}.</p>
+    <p>Acceptance requirement: {terms.upstream_acceptance === 'required_by_observed_gating' ? "Complete the acceptance or access step required by the publisher" : terms.upstream_acceptance === 'required' ? 'Read and accept the applicable terms under the recorded conditions' : terms.upstream_acceptance === 'not_required' ? 'No separate acceptance step required by the reviewed terms' : 'Not yet assessed'}.</p>
     {rows(terms.conditions).length > 0 && <div><p className="font-semibold">Recorded conditions</p><ul className="space-y-2">{rows(terms.conditions).map((condition, index) => <li key={index}>{text(condition.trigger) && <span className="font-medium">{condition.trigger}: </span>}{text(condition.requirement)}</li>)}</ul></div>}
     <ul className="space-y-2">
       {rows(terms.sources).map((source, index) => <li key={`${source.repository}:${source.revision}:${index}`}>

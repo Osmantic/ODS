@@ -107,7 +107,7 @@ function TermsReview({ modelId, modelName, preview, onCancel, onConfirm, confirm
       {result?.recordValid && <>
         <ModelTermsContent result={result} />
         <label className="mt-5 flex items-start gap-2"><input type="checkbox" className="mt-1" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} /><span>I have reviewed these sources, restrictions, and unresolved issues.</span></label>
-        {upstreamRequired && <label className="mt-3 flex items-start gap-2"><input type="checkbox" className="mt-1" checked={upstreamAccepted} onChange={event => setUpstreamAccepted(event.target.checked)} /><span>I have completed the required acceptance with the upstream publisher.</span></label>}
+        {upstreamRequired && <label className="mt-3 flex items-start gap-2"><input type="checkbox" className="mt-1" checked={upstreamAccepted} onChange={event => setUpstreamAccepted(event.target.checked)} /><span>{result.terms.upstream_acceptance === 'required_by_observed_gating' ? 'I have completed the acceptance or access step required by the publisher.' : 'I have read and accept the applicable terms under the recorded conditions.'}</span></label>}
       </>}
       <div className="mt-5 flex justify-end gap-3">
         <button type="button" onClick={onCancel} className="rounded-md border border-theme-border px-4 py-2 text-theme-text">Cancel</button>

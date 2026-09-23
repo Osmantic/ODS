@@ -54,6 +54,16 @@ identity return 409, and incomplete metadata returns 412. A separate
 Canceling or closing the dialog initiates no download. This is an acknowledgement
 of displayed information, not a license grant or acceptance on another website.
 
+The recorded acceptance kinds have distinct meanings. `required` asks the
+operator to confirm that they have read and accept the applicable terms under
+the recorded conditions; it does not invent a mandatory publisher account,
+website visit or click-through. `required_by_observed_gating` asks the operator
+to confirm completion of the acceptance or access step required by the publisher.
+Both require a separate, initially unchecked confirmation and the same strict
+`upstreamAccepted: true` value. ODS does not perform an external acceptance step
+or verify the operator's publisher account. A terms change invalidates the old
+digest-bound confirmation.
+
 Hugging Face imports present the selected artifact's pinned publisher metadata
 and declared base names before saving/importing it. Such community observations
 remain unassessed: a Hub license tag does not complete review of the full chain.
@@ -134,6 +144,15 @@ restart. Seven isolated lifecycle cases pass; a countercheck using the old
 start-only behavior fails for an already healthy older agent. No live service
 was restarted during these checks.
 
+The acceptance-wording follow-up passed 26 source/evidence tests on both
+Windows and WSL, 14 installer tests on Windows (two POSIX-only skips), 15 on
+WSL (one Windows-only skip), and eight focused API tests on WSL. The three
+affected frontend files passed all 27 tests on each platform; Linux used an
+isolated copy installed from the current lock because the workspace dependencies
+contain Windows-native binaries. Focused Ruff and ESLint checks passed. These
+tests preserve default-deny confirmation, the strict boolean and changed-digest
+rejection; they do not verify an external account or constitute legal acceptance.
+
 Still outstanding:
 
 - Reconcile conflicting or absent publisher/base terms and record the applicable
@@ -146,11 +165,12 @@ Still outstanding:
 - Carry the required license/notice content with any applicable distribution;
   a source URL and fingerprint are evidence, not a substitute for every notice.
 - Qualify the final committed candidate through CI and clean installations.
-- Qualify update activation separately: the existing source-checkout
-  `ods-update.sh` path uses Git pull and Compose up without rebuilding the API
-  or restarting the host agent. That path alone has not been shown to activate
-  these new guards; installer reinstall and an explicit rebuild/restart are
-  different paths and must not be conflated in release evidence.
+- Qualify update activation on native installations. The source-checkout updater
+  now builds local images, restarts containers and activates the host agent
+  before recording completion; see [update activation evidence](SOURCE_UPDATE_ACTIVATION.md).
+  The 29 source-update cases use real temporary file copies/version writes with
+  simulated Git, Docker, HTTP and service management. They do not establish
+  native Windows/macOS activation or complete image/data rollback.
 
 No model was downloaded, no publisher terms were accepted and no running user
 installation was changed as part of these metadata/UI checks.

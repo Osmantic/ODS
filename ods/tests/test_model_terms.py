@@ -85,6 +85,26 @@ class ModelTermsTests(unittest.TestCase):
         self.assertFalse(project_terms(model)["releaseReady"])
         self.assertEqual(model["terms"]["upstream_acceptance"], "required_by_observed_gating")
 
+    def test_acceptance_errors_preserve_distinct_meanings_and_strict_confirmation(self):
+        catalog, evidence = fixture()
+        original = migration.migrate(catalog, json.dumps(evidence).encode())["models"][0]
+        for kind, message, absent in (
+            ("required", "read and accept the applicable terms under the recorded conditions", "required by the publisher"),
+            ("required_by_observed_gating", "acceptance or access step required by the publisher", "read and accept"),
+        ):
+            with self.subTest(kind=kind):
+                model = copy.deepcopy(original)
+                model["terms"]["upstream_acceptance"] = kind
+                ack = {"acknowledged": True, "termsDigest": project_terms(model)["termsDigest"]}
+                for value in (None, False, "true", 1):
+                    error = download_review_error(model, {**ack, "upstreamAccepted": value})
+                    self.assertEqual(error["status"], 428)
+                    self.assertEqual(error["code"], "model_upstream_acceptance_required")
+                    self.assertIn(message, error["error"])
+                    self.assertNotIn(absent, error["error"])
+                self.assertIsNone(download_review_error(model, {**ack, "upstreamAccepted": True}))
+                self.assertEqual(download_review_error(model, {**ack, "termsDigest": "0" * 64, "upstreamAccepted": True})["status"], 409)
+
     def test_migration_pins_observed_source_and_preserves_download_integrity(self):
         catalog, evidence = fixture()
         model = migration.migrate(catalog, json.dumps(evidence).encode())["models"][0]
