@@ -1,0 +1,3 @@
+-r ../../ods/extensions/services/pixel-inference/requirements.txt
+-r ../../ods/extensions/services/model-router/requirements.txt
+pytest>=8,<9

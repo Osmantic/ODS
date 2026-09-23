@@ -1,0 +1,5 @@
+# Shared by Edge Linux/macOS tests and the portal-runtime job.
+-r ../../ods/extensions/services/pixel-edge/requirements.txt
+pytest>=8,<9
+httpx
+PyYAML

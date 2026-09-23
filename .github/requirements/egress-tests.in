@@ -1,0 +1,2 @@
+-r ../../ods/extensions/services/remote-provider-egress/requirements.txt
+pytest

@@ -526,8 +526,10 @@ if [[ -f "$INSTALL_DIR/bin/ods-mdns.py" ]] && [[ "$(uname -s)" == "Linux" ]]; th
         # don't need sudo and don't fight PEP 668 (Debian/Ubuntu mark the
         # system site-packages as externally-managed). The mDNS announcer
         # runs as $USER, not root, so --user is the right install scope.
-        if command -v pip3 >/dev/null 2>&1; then
-            pip3 install --user --quiet --no-warn-script-location zeroconf 2>&1 | tee -a "$LOG_FILE"
+        if python3 -m pip --version >/dev/null 2>&1; then
+            python3 -m pip install --user --quiet --no-warn-script-location \
+                --require-hashes --only-binary=:all: \
+                -r "$SCRIPT_DIR/installers/python-deps/zeroconf.txt" 2>&1 | tee -a "$LOG_FILE"
         else
             return 99
         fi

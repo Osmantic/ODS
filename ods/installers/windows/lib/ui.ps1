@@ -373,8 +373,11 @@ function Invoke-ODSHuggingFaceDownloadFallback {
 
     $checkArgs = @($python.PrefixArgs) + @("-c", "import huggingface_hub, hf_xet")
     if ((Invoke-ODSNativeQuiet -FilePath $python.FilePath -Arguments $checkArgs) -ne 0) {
-        $installArgs = @($python.PrefixArgs) + @("-m", "pip", "install", "--user", "-q", "huggingface_hub[hf_xet]>=0.27")
-        Invoke-ODSNativeQuiet -FilePath $python.FilePath -Arguments $installArgs | Out-Null
+        $dependencyRoot = Split-Path -Parent (Split-Path -Parent $helper)
+        $dependencyLock = Join-Path $dependencyRoot "installers\python-deps\host-agent.txt"
+        if (-not (Test-Path -LiteralPath $dependencyLock -PathType Leaf)) { return $false }
+        $installArgs = @($python.PrefixArgs) + @("-m", "pip", "install", "--user", "-q", "--require-hashes", "--only-binary=:all:", "-r", $dependencyLock)
+        if ((Invoke-ODSNativeQuiet -FilePath $python.FilePath -Arguments $installArgs) -ne 0) { return $false }
     }
 
     Write-AI "Retrying with Hugging Face client..."

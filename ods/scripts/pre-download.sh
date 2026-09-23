@@ -87,15 +87,6 @@ check_dependencies() {
         missing+=("python (or python3)")
     fi
 
-    local pipcmd=""
-    if command -v pip3 &>/dev/null; then
-        pipcmd="pip3"
-    elif command -v pip &>/dev/null; then
-        pipcmd="pip"
-    else
-        missing+=("pip")
-    fi
-
     if [[ ${#missing[@]} -gt 0 ]]; then
         error "Missing dependencies: ${missing[*]}"
         echo "Please install them first."
@@ -104,8 +95,18 @@ check_dependencies() {
 
     # Ensure huggingface_hub is installed
     if ! "$pycmd" -c "import huggingface_hub" 2>/dev/null; then
+        if ! "$pycmd" -m pip --version >/dev/null 2>&1; then
+            error "pip is required for the selected Python: $pycmd"
+            return 1
+        fi
+        local dependency_lock
+        dependency_lock="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/installers/python-deps/host-agent.txt"
+        [[ -f "$dependency_lock" ]] || {
+            error "Reviewed Python dependency lock is missing: $dependency_lock"
+            return 1
+        }
         log "Installing huggingface_hub..."
-        "$pipcmd" install -q huggingface_hub
+        "$pycmd" -m pip install -q --require-hashes --only-binary=:all: -r "$dependency_lock" || return 1
     fi
 
     export ODS_PYTHON_CMD="$pycmd"
@@ -166,7 +167,6 @@ import sys
 try:
     path = snapshot_download(
         repo_id="$model",
-        resume_download=True,
         local_files_only=False
     )
     print(f"Downloaded to: {path}")

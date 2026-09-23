@@ -239,6 +239,99 @@ class ModelTermsTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                     self.assertTrue(json.loads(result.stdout)[error_key])
 
+    def test_supplemental_artifact_evidence_is_required_and_binds_the_replacement(self):
+        catalog, evidence = fixture()
+        evidence_bytes = json.dumps(evidence).encode()
+        original = migration.migrate(catalog, evidence_bytes)["models"][0]
+        replacement = copy.deepcopy(original)
+        replacement.update(id="replacement", size_bytes=1024, quantization="Q4_K_M")
+        supplement = {"schema_version": 1, "entries": [{
+            "id": "replacement", "review": {"retrieved_terms_documents": []},
+            "verified_download": {key: replacement[key] for key in (
+                "source_repo", "source_revision", "gguf_file", "gguf_url", "gguf_sha256",
+                "size_bytes", "quantization")},
+        }]}
+        supplement_bytes = json.dumps(supplement).encode()
+        replacement["terms"]["evidence_sha256"] = hashlib.sha256(supplement_bytes).hexdigest()
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            path = directory / "catalog.json"
+            original_path = directory / "original.json"
+            supplement_path = directory / "supplement.json"
+            ambiguous_path = directory / "ambiguous.json"
+            original_path.write_bytes(evidence_bytes)
+            supplement_path.write_bytes(supplement_bytes)
+            ambiguous_path.write_bytes(supplement_bytes + b"\n")
+            for snapshots, changes, expected_error in [
+                ([original_path, supplement_path], {}, None),
+                ([original_path], {}, "evidenceErrors"),
+                ([original_path, supplement_path, supplement_path], {}, "evidenceError"),
+                ([original_path, supplement_path, ambiguous_path], {}, "evidenceError"),
+                ([original_path, supplement_path], {"gguf_sha256": "e" * 64}, "evidenceErrors"),
+                ([original_path, supplement_path], {"quantization": "Q8_0"}, "evidenceErrors"),
+                ([original_path, supplement_path], {"size_bytes": 2048}, "evidenceErrors"),
+            ]:
+                with self.subTest(snapshots=snapshots, changes=changes):
+                    candidate = copy.deepcopy(replacement)
+                    candidate.update(changes)
+                    path.write_text(json.dumps({"models": [original, candidate]}), encoding="utf-8")
+                    args = [sys.executable, str(ROOT / "scripts/check-model-terms.py"), "--catalog", str(path)]
+                    for snapshot in snapshots:
+                        args.extend(["--evidence", str(snapshot)])
+                    result = subprocess.run(args, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, int(expected_error is not None), result.stdout + result.stderr)
+                    body = json.loads(result.stdout)
+                    if expected_error:
+                        self.assertTrue(body[expected_error])
+                    else:
+                        self.assertEqual(body["pendingReview"], ["model", "replacement"])
+
+    def test_incomplete_verified_artifact_record_cannot_authorize_a_replacement(self):
+        catalog, evidence = fixture()
+        valid = migration.migrate(catalog, json.dumps(evidence).encode())
+        model = valid["models"][0]
+        identity = {key: model[key] for key in (
+            "source_repo", "source_revision", "gguf_file", "gguf_url", "gguf_sha256")}
+        identity.update(size_bytes=1024, quantization="Q4_K_M")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "catalog.json"
+            evidence_path = Path(temporary) / "evidence.json"
+            path.write_text(json.dumps(valid), encoding="utf-8")
+            variants = [{key: value for key, value in identity.items() if key != missing} for missing in identity]
+            variants.extend([{**identity, "size_bytes": True}, {**identity, "size_bytes": 0},
+                             {**identity, "source_revision": "main"}, {**identity, "gguf_sha256": ""}])
+            for incomplete in variants:
+                with self.subTest(identity=incomplete):
+                    candidate = copy.deepcopy(evidence)
+                    candidate["entries"][0]["verified_download"] = incomplete
+                    evidence_path.write_text(json.dumps(candidate), encoding="utf-8")
+                    result = subprocess.run([sys.executable, str(ROOT / "scripts/check-model-terms.py"),
+                                             "--catalog", str(path), "--evidence", str(evidence_path)],
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn("complete immutable download identity", json.loads(result.stdout)["evidenceError"])
+
+    def test_repaired_models_cannot_revert_to_the_obsolete_artifact_observation(self):
+        catalog = json.loads((ROOT / "config/model-library.json").read_text(encoding="utf-8"))
+        historical_hash = hashlib.sha256((ROOT / "docs/MODEL_TERMS_AUDIT.json").read_bytes()).hexdigest()
+        repaired = {"gemma4-26b-a4b-q4", "gemma4-31b-q4"}
+        for model in catalog["models"]:
+            if model["id"] in repaired:
+                # Both IDs exist in the historical snapshot with the same license
+                # documents. Matching those fields cannot approve a replacement.
+                model["terms"]["evidence_sha256"] = historical_hash
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "catalog.json"
+            path.write_text(json.dumps(catalog), encoding="utf-8")
+            result = subprocess.run([sys.executable, str(ROOT / "scripts/check-model-terms.py"),
+                                     "--catalog", str(path)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            body = json.loads(result.stdout)
+            self.assertEqual(body["invalidRecords"], [])
+            self.assertEqual({record["modelId"] for record in body["evidenceErrors"]}, repaired)
+            for record in body["evidenceErrors"]:
+                self.assertIn("supplemental artifact replacement evidence", record["errors"][0])
+
 
 if __name__ == "__main__":
     unittest.main()

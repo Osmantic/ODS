@@ -4,11 +4,14 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "extensions/services/dashboard-api"))
 from model_terms import project_terms  # noqa: E402
+
+DOWNLOAD_KEYS = ("source_repo", "source_revision", "gguf_file", "gguf_url", "gguf_sha256", "size_bytes", "quantization")
 
 
 def load_evidence(path):
@@ -30,6 +33,15 @@ def load_evidence(path):
         documents = review.get("retrieved_terms_documents") if isinstance(review, dict) else None
         if not isinstance(documents, list) or any(not isinstance(doc, dict) for doc in documents):
             raise ValueError("Each evidence entry must explicitly list retrieved terms documents")
+        if "verified_download" in entry:
+            verified = entry["verified_download"]
+            if (not isinstance(verified, dict)
+                    or any(not isinstance(verified.get(key), str) or not verified[key].strip()
+                           for key in DOWNLOAD_KEYS if key != "size_bytes")
+                    or type(verified.get("size_bytes")) is not int or verified["size_bytes"] <= 0
+                    or not re.fullmatch(r"[0-9a-f]{40}", verified["source_revision"])
+                    or not re.fullmatch(r"[0-9a-f]{64}", verified["gguf_sha256"])):
+                raise ValueError("Verified artifact replacements must specify the complete immutable download identity")
         indexed[entry["id"]] = entry
     return hashlib.sha256(data).hexdigest(), indexed
 
@@ -46,13 +58,18 @@ def evidence_errors(model, fingerprint, entries):
         # Preserve external publisher license links, but require the exact
         # reviewed records (including publisher, URL and content fingerprint).
         errors.append("License documents differ from the supplied source evidence")
+    if entry is not None and "verified_download" in entry:
+        verified = entry["verified_download"]
+        if any(model.get(key) != verified[key] for key in DOWNLOAD_KEYS):
+            errors.append("Download identity differs from the verified artifact replacement")
     return errors
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path, default=ROOT / "config/model-library.json")
-    parser.add_argument("--evidence", type=Path, default=ROOT / "docs/MODEL_TERMS_AUDIT.json")
+    parser.add_argument("--evidence", type=Path, action="append",
+                        help="Reviewed snapshot; repeat for supplemental observations")
     parser.add_argument("--release-ready", action="store_true")
     args = parser.parse_args()
     try:
@@ -71,7 +88,20 @@ def main():
         print(json.dumps({"catalogError": str(error)}))
         return 1
     try:
-        evidence_fingerprint, evidence_entries = load_evidence(args.evidence)
+        evidence_paths = args.evidence or [ROOT / "docs/MODEL_TERMS_AUDIT.json",
+                                          ROOT / "docs/MODEL_ARTIFACT_REPAIRS.json"]
+        snapshots = {}
+        replacements = {}
+        for path in evidence_paths:
+            fingerprint, entries = load_evidence(path)
+            if fingerprint in snapshots:
+                raise ValueError("Source evidence snapshots must be distinct")
+            for identity, entry in entries.items():
+                if "verified_download" in entry:
+                    if identity in replacements:
+                        raise ValueError("Artifact replacements must have one unambiguous evidence snapshot")
+                    replacements[identity] = fingerprint
+            snapshots[fingerprint] = entries
     except (OSError, ValueError) as error:
         print(json.dumps({"evidenceError": str(error)}))
         return 1
@@ -79,7 +109,14 @@ def main():
     malformed = [r for r in records if not r["recordValid"]]
     unbound = []
     for model in models:
-        errors = evidence_errors(model, evidence_fingerprint, evidence_entries)
+        terms = model.get("terms")
+        fingerprint = terms.get("evidence_sha256") if isinstance(terms, dict) else None
+        if model["id"] in replacements and fingerprint != replacements[model["id"]]:
+            errors = ["The model must reference its supplemental artifact replacement evidence"]
+        elif fingerprint not in snapshots:
+            errors = ["The source evidence fingerprint differs from the supplied snapshots"]
+        else:
+            errors = evidence_errors(model, fingerprint, snapshots[fingerprint])
         if errors:
             unbound.append({"modelId": model["id"], "errors": errors})
     pending = [r["modelId"] for r in records if not r["releaseReady"]]

@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "retrieved_at": "2026-09-23T08:29:52.304968+00:00",
+  "supersedes_only": "The two absent artifact identities; the original audit snapshot is unchanged.",
+  "entries": [
+    {
+      "id": "gemma4-26b-a4b-q4",
+      "previous_download": {
+        "source_repo": "ggml-org/gemma-4-26B-A4B-it-GGUF",
+        "source_revision": "bb4531cda34d1ea09d9814959ed4d5833cf2a4c8",
+        "gguf_file": "gemma-4-26B-A4B-it-Q4_K_M.gguf",
+        "gguf_url": "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf",
+        "gguf_sha256": "23c6997912cb7fa36147fe05877de73ddbb2a80ff69b18ff171b354dccf2b5b5",
+        "size_mb": 18000,
+        "quantization": "Q4_K_M"
+      },
+      "verified_download": {
+        "source_repo": "bartowski/google_gemma-4-26B-A4B-it-GGUF",
+        "source_revision": "10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d",
+        "gguf_file": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+        "gguf_url": "https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/resolve/10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d/google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+        "gguf_sha256": "a07f72221e8e3f77455ab0d7f7652d01a9f63c262b954aa6932a53275a0e895a",
+        "size_bytes": 17035039872,
+        "quantization": "Q4_K_M"
+      },
+      "source_metadata": {
+        "url": "https://huggingface.co/api/models/bartowski/google_gemma-4-26B-A4B-it-GGUF/revision/10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d?blobs=true",
+        "sha256": "6fa90306f1756bf1d3a84fe277f1cbb6890a1aeedd65fd9236d594d7fd9fea0d",
+        "private": false,
+        "gated": false,
+        "card_metadata": {
+          "quantized_by": "bartowski",
+          "pipeline_tag": "image-text-to-text",
+          "license": "apache-2.0",
+          "base_model": "google/gemma-4-26B-A4B-it",
+          "base_model_relation": "quantized",
+          "license_link": "https://ai.google.dev/gemma/docs/gemma_4_license"
+        }
+      },
+      "artifact_observation": {
+        "repo": "bartowski/google_gemma-4-26B-A4B-it-GGUF",
+        "revision": "10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d",
+        "documents": [
+          {
+            "url": "https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/raw/10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d/README.md",
+            "sha256": "3d9be46bbe0456f62d0c06f1e7aedd135dc569bb642173b564e91286c48c96ef"
+          }
+        ],
+        "head": {
+          "status": 200,
+          "content_length": "17035039872",
+          "etag": "\"3638e33d1a2bece2a2f0e5cf9a4e35b29b5d681680491e68b4b0ce278f425a8d\""
+        },
+        "lfs_pointer": "version https://git-lfs.github.com/spec/v1\noid sha256:a07f72221e8e3f77455ab0d7f7652d01a9f63c262b954aa6932a53275a0e895a\nsize 17035039872\n",
+        "lfs_pointer_sha256": "39e88b1fac91e811843cbc628a15355cbf6c4e53908b8b91a818db68977784d2"
+      },
+      "review": {
+        "retrieved_terms_documents": [
+          {
+            "repo": "google/gemma-4-26B-A4B-it",
+            "kind": "declared_license_link",
+            "url": "https://ai.google.dev/gemma/apache_2",
+            "sha256": "7341ceb428a3586d6d7cd83ba8626a49fb650a31f60260bf4f9d857c2707279a"
+          }
+        ],
+        "status": "not_assessed"
+      }
+    },
+    {
+      "id": "gemma4-31b-q4",
+      "previous_download": {
+        "source_repo": "ggml-org/gemma-4-31B-it-GGUF",
+        "source_revision": "4fa4fdf38bee237b5c9e8a5b4e72cf39404c9dcc",
+        "gguf_file": "gemma-4-31B-it-Q4_K_M.gguf",
+        "gguf_url": "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf",
+        "gguf_sha256": "a20deaf2f8fc27c501f32fadfd538f8f31a76f10f47d5d3eb895f3d1112d752c",
+        "size_mb": 19800,
+        "quantization": "Q4_K_M"
+      },
+      "verified_download": {
+        "source_repo": "unsloth/gemma-4-31B-it-GGUF",
+        "source_revision": "c1ac76e99d5513b141e8adde7288b85c3f9c32ec",
+        "gguf_file": "gemma-4-31B-it-Q4_K_M.gguf",
+        "gguf_url": "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf",
+        "gguf_sha256": "38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84",
+        "size_bytes": 18323733440,
+        "quantization": "Q4_K_M"
+      },
+      "source_metadata": {
+        "url": "https://huggingface.co/api/models/unsloth/gemma-4-31B-it-GGUF/revision/c1ac76e99d5513b141e8adde7288b85c3f9c32ec?blobs=true",
+        "sha256": "928e80843e5dd14fb73497c99dd2ce62dfd92bae9902c2c2e4878918bd4f7331",
+        "private": false,
+        "gated": false,
+        "card_metadata": {
+          "license": "apache-2.0",
+          "license_link": "https://ai.google.dev/gemma/docs/gemma_4_license",
+          "pipeline_tag": "image-text-to-text",
+          "base_model": "google/gemma-4-31B-it",
+          "tags": [
+            "gemma4",
+            "unsloth",
+            "gemma",
+            "google"
+          ]
+        }
+      },
+      "artifact_observation": {
+        "repo": "unsloth/gemma-4-31B-it-GGUF",
+        "revision": "c1ac76e99d5513b141e8adde7288b85c3f9c32ec",
+        "documents": [
+          {
+            "url": "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/raw/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/README.md",
+            "sha256": "214e78a7cf8d369adbb5315142d373a4eb4a30059ff7dbc31fe435f60de3f598"
+          }
+        ],
+        "head": {
+          "status": 200,
+          "content_length": "18323733440",
+          "etag": "\"7040015cf9ed4c4e68cb5da545cbff30aad9ae567e8a65681148ca4dad20c7d0\""
+        },
+        "lfs_pointer": "version https://git-lfs.github.com/spec/v1\noid sha256:38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84\nsize 18323733440\n",
+        "lfs_pointer_sha256": "601b20a6c82d322548420a7dda175832a78205d2dd3b5fd73e3d4d4333e44407"
+      },
+      "review": {
+        "retrieved_terms_documents": [
+          {
+            "repo": "google/gemma-4-31B-it",
+            "kind": "declared_license_link",
+            "url": "https://ai.google.dev/gemma/apache_2",
+            "sha256": "7341ceb428a3586d6d7cd83ba8626a49fb650a31f60260bf4f9d857c2707279a"
+          }
+        ],
+        "status": "not_assessed"
+      }
+    }
+  ]
+}

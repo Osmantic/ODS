@@ -1,0 +1,3 @@
+# Linux optional mDNS fallback; retain dependency compatibility with Python 3.8+.
+# The distro package-manager path remains preferred and separate from this lock.
+zeroconf

@@ -6093,10 +6093,10 @@
       "id": "gemma4-26b-a4b-q4",
       "name": "Gemma 4 26B-A4B",
       "family": "gemma4",
-      "gguf_file": "gemma-4-26B-A4B-it-Q4_K_M.gguf",
-      "gguf_url": "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf",
-      "gguf_sha256": "23c6997912cb7fa36147fe05877de73ddbb2a80ff69b18ff171b354dccf2b5b5",
-      "size_mb": 18000,
+      "gguf_file": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/resolve/10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d/google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+      "gguf_sha256": "a07f72221e8e3f77455ab0d7f7652d01a9f63c262b954aa6932a53275a0e895a",
+      "size_mb": 17035,
       "vram_required_gb": 22,
       "context_length": 16384,
       "quantization": "Q4_K_M",
@@ -6105,25 +6105,25 @@
       "tokens_per_sec_estimate": 50,
       "llm_model_name": "gemma-4-26b-a4b-it",
       "llama_server_image": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014",
-      "source_repo": "ggml-org/gemma-4-26B-A4B-it-GGUF",
-      "source_revision": "bb4531cda34d1ea09d9814959ed4d5833cf2a4c8",
-      "source_url": "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/tree/bb4531cda34d1ea09d9814959ed4d5833cf2a4c8",
+      "source_repo": "bartowski/google_gemma-4-26B-A4B-it-GGUF",
+      "source_revision": "10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d",
+      "source_url": "https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/tree/10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d",
       "license": "apache-2.0",
-      "license_url": null,
+      "license_url": "https://ai.google.dev/gemma/apache_2",
       "terms": {
         "schema_version": 1,
-        "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
-        "observed_at": "2026-09-23T07:35:44.253572+00:00",
+        "evidence_sha256": "797c519fc468bf13d53c0fdf63a341c383038e3dfecf5016ac81ae4caa391d8c",
+        "observed_at": "2026-09-23T08:29:52.304968+00:00",
         "review_status": "not_assessed",
         "sources": [
           {
             "role": "artifact_publisher",
-            "repository": "ggml-org/gemma-4-26B-A4B-it-GGUF",
-            "revision": "bb4531cda34d1ea09d9814959ed4d5833cf2a4c8",
-            "url": "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/tree/bb4531cda34d1ea09d9814959ed4d5833cf2a4c8",
+            "repository": "bartowski/google_gemma-4-26B-A4B-it-GGUF",
+            "revision": "10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d",
+            "url": "https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/tree/10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d",
             "license_id": "apache-2.0",
             "license_name": null,
-            "declaration_url": "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/blob/bb4531cda34d1ea09d9814959ed4d5833cf2a4c8/README.md",
+            "declaration_url": "https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/blob/10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d/README.md",
             "gated": false
           },
           {
@@ -6149,9 +6149,9 @@
         ],
         "artifacts": [
           {
-            "url": "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf",
-            "path": "gemma-4-26B-A4B-it-Q4_K_M.gguf",
-            "observed_present": false
+            "url": "https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/resolve/10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d/google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+            "path": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+            "observed_present": true
           }
         ],
         "license_documents": [
@@ -6164,10 +6164,10 @@
         ],
         "notice_documents": [
           {
-            "repository": "ggml-org/gemma-4-26B-A4B-it-GGUF",
+            "repository": "bartowski/google_gemma-4-26B-A4B-it-GGUF",
             "path": "README.md",
-            "url": "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/blob/bb4531cda34d1ea09d9814959ed4d5833cf2a4c8/README.md",
-            "sha256": "76ac506e27049a905b29054bf969ef79b969fdf51607a474d318826fc44774d1"
+            "url": "https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/blob/10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d/README.md",
+            "sha256": "3d9be46bbe0456f62d0c06f1e7aedd135dc569bb642173b564e91286c48c96ef"
           },
           {
             "repository": "google/gemma-4-26B-A4B-it",
@@ -6184,12 +6184,10 @@
         ],
         "commercial_use": "not_assessed",
         "upstream_acceptance": "not_assessed",
-        "issues": [
-          "ARTIFACT_PATH_ABSENT",
-          "ARTIFACT_IDENTITY_REQUIRES_REPAIR"
-        ],
-        "note": "Configured artifact path is absent from the reviewed repository inventory; anonymous HEAD of the configured URL returned HTTP 404. Fix/verify artifact identity separately before binding these terms to bytes."
-      }
+        "issues": [],
+        "note": "Replaced an unavailable artifact with this publisher's Q4_K_M file. Revision, LFS SHA-256 and size were checked against public pinned metadata and the LFS pointer; HEAD returned 200 with matching length. Full weights and inference were not tested during this audit."
+      },
+      "size_bytes": 17035039872
     },
     {
       "id": "qwen3-30b-a3b-q4",
@@ -6313,9 +6311,9 @@
       "name": "Gemma 4 31B",
       "family": "gemma4",
       "gguf_file": "gemma-4-31B-it-Q4_K_M.gguf",
-      "gguf_url": "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf",
-      "gguf_sha256": "a20deaf2f8fc27c501f32fadfd538f8f31a76f10f47d5d3eb895f3d1112d752c",
-      "size_mb": 19800,
+      "gguf_url": "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf",
+      "gguf_sha256": "38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84",
+      "size_mb": 18324,
       "vram_required_gb": 24,
       "context_length": 131072,
       "quantization": "Q4_K_M",
@@ -6324,25 +6322,25 @@
       "tokens_per_sec_estimate": 40,
       "llm_model_name": "gemma-4-31b-it",
       "llama_server_image": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014",
-      "source_repo": "ggml-org/gemma-4-31B-it-GGUF",
-      "source_revision": "4fa4fdf38bee237b5c9e8a5b4e72cf39404c9dcc",
-      "source_url": "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/tree/4fa4fdf38bee237b5c9e8a5b4e72cf39404c9dcc",
+      "source_repo": "unsloth/gemma-4-31B-it-GGUF",
+      "source_revision": "c1ac76e99d5513b141e8adde7288b85c3f9c32ec",
+      "source_url": "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/tree/c1ac76e99d5513b141e8adde7288b85c3f9c32ec",
       "license": "apache-2.0",
-      "license_url": null,
+      "license_url": "https://ai.google.dev/gemma/apache_2",
       "terms": {
         "schema_version": 1,
-        "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
-        "observed_at": "2026-09-23T07:35:44.253572+00:00",
+        "evidence_sha256": "797c519fc468bf13d53c0fdf63a341c383038e3dfecf5016ac81ae4caa391d8c",
+        "observed_at": "2026-09-23T08:29:52.304968+00:00",
         "review_status": "not_assessed",
         "sources": [
           {
             "role": "artifact_publisher",
-            "repository": "ggml-org/gemma-4-31B-it-GGUF",
-            "revision": "4fa4fdf38bee237b5c9e8a5b4e72cf39404c9dcc",
-            "url": "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/tree/4fa4fdf38bee237b5c9e8a5b4e72cf39404c9dcc",
+            "repository": "unsloth/gemma-4-31B-it-GGUF",
+            "revision": "c1ac76e99d5513b141e8adde7288b85c3f9c32ec",
+            "url": "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/tree/c1ac76e99d5513b141e8adde7288b85c3f9c32ec",
             "license_id": "apache-2.0",
             "license_name": null,
-            "declaration_url": "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/blob/4fa4fdf38bee237b5c9e8a5b4e72cf39404c9dcc/README.md",
+            "declaration_url": "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/blob/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/README.md",
             "gated": false
           },
           {
@@ -6368,9 +6366,9 @@
         ],
         "artifacts": [
           {
-            "url": "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf",
+            "url": "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf",
             "path": "gemma-4-31B-it-Q4_K_M.gguf",
-            "observed_present": false
+            "observed_present": true
           }
         ],
         "license_documents": [
@@ -6383,10 +6381,10 @@
         ],
         "notice_documents": [
           {
-            "repository": "ggml-org/gemma-4-31B-it-GGUF",
+            "repository": "unsloth/gemma-4-31B-it-GGUF",
             "path": "README.md",
-            "url": "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/blob/4fa4fdf38bee237b5c9e8a5b4e72cf39404c9dcc/README.md",
-            "sha256": "5f4c9e4289abcb4f78591e2d49c4b528d6f8bce0fdd6db68690b754846885684"
+            "url": "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/blob/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/README.md",
+            "sha256": "214e78a7cf8d369adbb5315142d373a4eb4a30059ff7dbc31fe435f60de3f598"
           },
           {
             "repository": "google/gemma-4-31B-it",
@@ -6403,12 +6401,10 @@
         ],
         "commercial_use": "not_assessed",
         "upstream_acceptance": "not_assessed",
-        "issues": [
-          "ARTIFACT_PATH_ABSENT",
-          "ARTIFACT_IDENTITY_REQUIRES_REPAIR"
-        ],
-        "note": "Configured artifact path is absent from the reviewed repository inventory; anonymous HEAD of the configured URL returned HTTP 404. Fix/verify artifact identity separately before binding these terms to bytes."
-      }
+        "issues": [],
+        "note": "Replaced an unavailable artifact with this publisher's Q4_K_M file. Revision, LFS SHA-256 and size were checked against public pinned metadata and the LFS pointer; HEAD returned 200 with matching length. Full weights and inference were not tested during this audit."
+      },
+      "size_bytes": 18323733440
     },
     {
       "id": "deepseek-r1-32b-q4",

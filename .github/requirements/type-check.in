@@ -1,0 +1,5 @@
+# These three services are checked in one CI interpreter; resolve their union.
+mypy
+-r ../../ods/extensions/services/dashboard-api/requirements.txt
+-r ../../ods/extensions/services/token-spy/requirements.txt
+-r ../../ods/extensions/services/privacy-shield/requirements.txt

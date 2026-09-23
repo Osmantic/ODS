@@ -176,7 +176,8 @@ _phase11_download_hf_artifact() {
 
     if ! "$python_cmd" -c "import huggingface_hub, hf_xet" >/dev/null 2>&1; then
         if ods_ensure_python_pip "$python_cmd" "Hugging Face downloader"; then
-            ods_python_pip_install_user "$python_cmd" "$log_file" "huggingface_hub[hf_xet]>=0.27" || true
+            ods_python_pip_install_user "$python_cmd" "$log_file" --require-hashes --only-binary=:all: \
+                -r "${SCRIPT_DIR:-$INSTALL_DIR}/installers/python-deps/host-agent.txt" || return 1
         fi
     fi
 
@@ -216,13 +217,14 @@ _phase11_prefetch_embeddings_model() {
 
     if ! "$python_cmd" -c "import huggingface_hub, hf_xet" >/dev/null 2>&1; then
         if ods_ensure_python_pip "$python_cmd" "Embeddings Hugging Face downloader"; then
-            ods_python_pip_install_user "$python_cmd" "$LOG_FILE" "huggingface_hub[hf_xet]>=0.27" || true
+            ods_python_pip_install_user "$python_cmd" "$LOG_FILE" --require-hashes --only-binary=:all: \
+                -r "${SCRIPT_DIR:-$INSTALL_DIR}/installers/python-deps/host-agent.txt" || true
         fi
     fi
     if ! "$python_cmd" -c "import huggingface_hub, hf_xet" >/dev/null 2>&1; then
         ai_bad "Could not install huggingface_hub[hf_xet] for embeddings prefetch."
         ai "Install it manually and re-run:"
-        ai "  $python_cmd -m pip install --user 'huggingface_hub[hf_xet]>=0.27'"
+        ai "  $python_cmd -m pip install --user --require-hashes --only-binary=:all: -r '${SCRIPT_DIR:-$INSTALL_DIR}/installers/python-deps/host-agent.txt'"
         return 1
     fi
 

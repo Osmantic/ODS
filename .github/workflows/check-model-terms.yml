@@ -7,18 +7,26 @@ on:
       - '.github/workflows/check-model-terms.yml'
       - 'ods/config/model-library.json'
       - 'ods/docs/MODEL_TERMS_AUDIT.json'
+      - 'ods/docs/MODEL_ARTIFACT_REPAIRS.json'
       - 'ods/scripts/*model-terms.py'
       - 'ods/extensions/services/dashboard-api/model_terms.py'
       - 'ods/tests/test_model_terms.py'
+      - 'ods/tests/test-gemma4-artifact-pins.py'
+      - 'ods/tests/test-tier-map*.sh'
+      - 'ods/installers/**/tier-map.*'
   pull_request:
     branches: [main, public-beta]
     paths:
       - '.github/workflows/check-model-terms.yml'
       - 'ods/config/model-library.json'
       - 'ods/docs/MODEL_TERMS_AUDIT.json'
+      - 'ods/docs/MODEL_ARTIFACT_REPAIRS.json'
       - 'ods/scripts/*model-terms.py'
       - 'ods/extensions/services/dashboard-api/model_terms.py'
       - 'ods/tests/test_model_terms.py'
+      - 'ods/tests/test-gemma4-artifact-pins.py'
+      - 'ods/tests/test-tier-map*.sh'
+      - 'ods/installers/**/tier-map.*'
   workflow_dispatch:
     inputs:
       release_ready:
@@ -32,17 +40,28 @@ permissions:
 
 jobs:
   model-provenance:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: '3.12'
-      - name: Validate source observations and regression tests
+      - name: Validate source observations
+        run: python ods/scripts/check-model-terms.py
+      - name: Source evidence regression tests
+        run: python ods/tests/test_model_terms.py
+      - name: Resolve installer artifacts against the recorded identities
+        run: python ods/tests/test-gemma4-artifact-pins.py
+      - name: Validate POSIX tier selection and parity
+        if: runner.os != 'Windows'
         run: |
-          python ods/scripts/check-model-terms.py
-          python ods/tests/test_model_terms.py
+          bash ods/tests/test-tier-map.sh
+          bash ods/tests/test-tier-map-parity.sh
       - name: Require reviewed model terms for release qualification
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ready }}
         run: python ods/scripts/check-model-terms.py --release-ready
