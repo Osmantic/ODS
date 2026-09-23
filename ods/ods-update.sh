@@ -513,15 +513,21 @@ _update_rollback() {
         return 1
     fi
 
+    local -a rollback_compose_args=()
+    if ! compose_flags_parse "$compose_flags_arg"; then
+        log_error "Cannot restart rollback with malformed compose flags."
+        return 1
+    fi
+    rollback_compose_args=("${COMPOSE_PARSED_ARGS[@]}")
     cd "$INSTALL_DIR"
     if [[ -n "${compose_flags_arg}" ]]; then
-        if ! docker compose ${compose_flags_arg} down --remove-orphans; then
+        if ! docker compose "${rollback_compose_args[@]}" down --remove-orphans; then
             log_warn "docker compose v2 down failed, trying v1..."
-            docker-compose ${compose_flags_arg} down --remove-orphans
+            docker-compose "${rollback_compose_args[@]}" down --remove-orphans
         fi
-        if ! docker compose ${compose_flags_arg} up -d; then
+        if ! docker compose "${rollback_compose_args[@]}" up -d; then
             log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose ${compose_flags_arg} up -d
+            docker-compose "${rollback_compose_args[@]}" up -d
         fi
     else
         if ! docker compose down --remove-orphans; then
@@ -793,6 +799,12 @@ cmd_update() {
     # Resolve compose flags once — used in restart and rollback paths.
     local compose_flags=""
     compose_flags=$(resolve_compose_flags 2>/dev/null || true)
+    local -a compose_args=()
+    if ! compose_flags_parse "$compose_flags"; then
+        log_error "Cannot update with malformed compose flags."
+        return 1
+    fi
+    compose_args=("${COMPOSE_PARSED_ARGS[@]}")
 
     # ── Step 2: pull latest changes ───────────────────────────────────────────
     log_info "Pulling latest changes..."
@@ -830,13 +842,13 @@ cmd_update() {
     log_info "Restarting services..."
     cd "$INSTALL_DIR"
     if [[ -n "${compose_flags}" ]]; then
-        if ! docker compose ${compose_flags} down --remove-orphans; then
+        if ! docker compose "${compose_args[@]}" down --remove-orphans; then
             log_warn "docker compose v2 down failed, trying v1..."
-            docker-compose ${compose_flags} down --remove-orphans
+            docker-compose "${compose_args[@]}" down --remove-orphans
         fi
-        if ! docker compose ${compose_flags} up -d; then
+        if ! docker compose "${compose_args[@]}" up -d; then
             log_warn "docker compose v2 up failed, trying v1..."
-            if ! docker-compose ${compose_flags} up -d; then
+            if ! docker-compose "${compose_args[@]}" up -d; then
                 _update_rollback "Both Docker Compose v2 and v1 failed to restart services." \
                     "$snap_dir" "$compose_flags"
                 return 1
