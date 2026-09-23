@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useState} from 'react'
+import {useEffect, useMemo, useRef, useState} from 'react'
 import {ChevronLeft, ChevronRight, RefreshCw, Search, Download, Activity, Cpu, Layers, Wallet} from 'lucide-react'
 import MetalMetricIcon from '../MetalMetricIcon'
 import DailyUsageExport from './DailyUsageExport'
@@ -40,20 +40,31 @@ export function csvForRows(rows, telemetrySource) {
 
 export default function UsageView({compact=false,report,readiness,loading,error,range,onPrevious,onNext,onRefresh,actionState,onAction}) {
   const [view,setView]=useState('activity')
+  const headingRef=useRef(null)
+  const regionRef=useRef(null)
+  const refreshRef=useRef(null)
+  const restoreRefreshFocusRef=useRef(false)
+  useEffect(()=>{(headingRef.current || regionRef.current)?.focus()},[])
+  useEffect(()=>{
+    if(!loading && restoreRefreshFocusRef.current){
+      restoreRefreshFocusRef.current=false
+      Promise.resolve().then(()=>refreshRef.current?.focus())
+    }
+  },[loading])
   const summary=report.summary || {}
   const available=report.source?.status==='ok' && !error && !loading
   const requestsUnavailable=!requestCountAvailable(summary,report.source)
   const stats=[['Total tokens',summary.total_tokens,'Input, output and cache'],['Requests',requestsUnavailable ? null : summary.requests,requestsUnavailable ? 'Counter unavailable' : 'Recorded calls'],['Input',summary.input_tokens,'Prompt tokens'],['Output',summary.output_tokens,'Generated tokens']]
   const tabs=[['activity','Activity',Activity],['models','Models',Cpu],['services','Services',Layers],['costs','Costs',Wallet]]
-  return <section className="usage-refined" aria-label="Usage analytics" aria-busy={loading}>
+  return <section ref={regionRef} tabIndex={-1} className="usage-refined" aria-label="Usage analytics" aria-busy={loading}>
     <header className="usage-intro">
-      {!compact && <h1>Usage</h1>}
+      {!compact && <h1 ref={headingRef} tabIndex={-1}>Usage</h1>}
       <p>Inference, at a glance.</p>
       <div className="usage-period">
         <button aria-label="Previous month" onClick={onPrevious}><ChevronLeft size={15}/></button>
         <span>{new Date(`${range.start}T00:00:00Z`).toLocaleDateString('en-US',{month:'long',year:'numeric',timeZone:'UTC'})}</span>
         <button aria-label="Next month" onClick={onNext}><ChevronRight size={15}/></button>
-        <button className="usage-refresh" aria-label="Refresh usage" title="Refresh usage" onClick={onRefresh} disabled={loading}><RefreshCw size={14}/></button>
+        <button ref={refreshRef} className="usage-refresh" aria-label="Refresh usage" title="Refresh usage" onClick={()=>{restoreRefreshFocusRef.current=true; onRefresh?.()}} disabled={loading}><RefreshCw size={14}/></button>
       </div>
       <div className="usage-source-state"><span className={`usage-status-dot ${available ? 'is-ready' : ''}`}/>{loading ? 'Updating usage…' : available ? 'Recorded activity · refreshes every 10s' : 'Usage data unavailable'}</div>
     </header>
