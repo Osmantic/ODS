@@ -253,8 +253,13 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
             echo "  --restore-all        Restore all archived models"
             echo "  --status             Show current hot/cold status"
             ;;
-        *)
+        "")
             do_archive true
+            ;;
+        *)
+            echo "ERROR: Unrecognized argument: $1" >&2
+            echo "Usage: $0 [--execute|--restore <name>|--restore-all|--status|--help]" >&2
+            exit 1
             ;;
     esac
 fi
