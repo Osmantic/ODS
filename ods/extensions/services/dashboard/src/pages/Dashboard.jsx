@@ -609,6 +609,8 @@ function buildChartPoints(values, maxValue) {
 
 export default function Dashboard({ status, loading, compact = false }) {
   const [featuresData, setFeaturesData] = useState(null)
+  const [featuresError, setFeaturesError] = useState(null)
+  const [featuresRetry, setFeaturesRetry] = useState(0)
   const [serviceResources, setServiceResources] = useState(null)
 
   useEffect(() => {
@@ -617,11 +619,14 @@ export default function Dashboard({ status, loading, compact = false }) {
     const fetchFeatures = async () => {
       try {
         const res = await fetch('/api/features')
-        if (!res.ok) return
+        if (!res.ok) throw new Error(`Feature metadata request failed (${res.status})`)
         const data = await res.json()
-        if (mounted) setFeaturesData(data)
-      } catch {
-        // Feature cards degrade gracefully to status-only view when API fails.
+        if (mounted) {
+          setFeaturesData(data)
+          setFeaturesError(null)
+        }
+      } catch (error) {
+        if (mounted) setFeaturesError(error instanceof Error ? error.message : 'Feature metadata could not be loaded')
       }
     }
 
@@ -636,7 +641,7 @@ export default function Dashboard({ status, loading, compact = false }) {
       clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [])
+  }, [featuresRetry])
 
   useEffect(() => {
     let mounted = true
@@ -855,12 +860,13 @@ export default function Dashboard({ status, loading, compact = false }) {
           <FeatureCard
             icon={MessageSquare}
             title="AI Chat"
-            description="Feature metadata is loading..."
+            description={featuresError || 'Feature metadata is loading...'}
             href={null}
             status="disabled"
-            hint="Waiting for /api/features"
+            hint={featuresError ? 'Retry feature metadata' : 'Waiting for /api/features'}
           />
         )}
+        {featuresError && <button type="button" onClick={() => setFeaturesRetry(value => value + 1)} className="text-xs text-theme-accent hover:underline">Retry feature metadata</button>}
       </div>
 
       {/* Multi-GPU summary strip — only shown when gpu_count > 1 */}
