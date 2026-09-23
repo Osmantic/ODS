@@ -31,7 +31,8 @@ test('reads current wrapped requests and structured user content',async()=>{
   const context=createExtensionRepositoryContext({tool:{execute:async()=>{count++;return {content:[{type:'text',text:'README'}]};}}});
   assert.match(await context({prompt:'History\n[Current message - respond to this]\nUser: /extension https://github.com/a/b'}),/README/);
   assert.match(await context({messages:[{role:'user',content:[{type:'text',text:'/extensions https://github.com/c/d'}]}]}),/README/);
-  assert.equal(count,2);
+  assert.match(await context({prompt:'/extensions install https://github.com/e/f'}),/README/);
+  assert.equal(count,3);
 });
 
 test('failed reads remain explicit and retryable; cached evidence expires',async()=>{
@@ -56,7 +57,7 @@ test('GitHub installation guidance survives failed evidence reads and goal wrapp
       assert.match(value, /pixel_ods_web_extract/);
       assert.match(value, /pixel_ods_extension_request_advance/);
       assert.match(value, /pending operation must be observed/);
-      assert.match(value, /draft, not an installation/);
+      assert.match(value, /A draft alone never proves installation/);
       assert.match(value, /Honor research-only requests/);
       assert.match(value, /sandbox does not register an ODS extension/);
     }

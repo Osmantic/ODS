@@ -57,6 +57,44 @@ def make_plan(states, configured=True):
                               definitions.__getitem__, lambda key: configured)
 
 
+@pytest.mark.parametrize('progress, expected', [
+    ('absent', 'install'), ('present', 'blocked'), ('unsafe', 'blocked'), (None, 'blocked')])
+def test_portless_stopped_cli_needs_fresh_install_only_without_progress(progress, expected):
+    definition = {'id': 'cli-tool', 'port': 0, 'startup_check': False}
+    row = {'id': 'cli-tool', 'status': 'stopped', 'installable': True}
+    if progress is not None:
+        row['_ods_progress_file'] = progress
+    plan = build_install_plan('cli-tool', [row], lambda _key: definition, lambda _key: False)
+    assert plan['steps'][0]['action'] == expected
+    assert plan['blocked'] is (expected == 'blocked')
+
+
+def test_stopped_http_service_still_plans_enable():
+    definition = {'id': 'server', 'port': 8080, 'startup_check': True}
+    plan = build_install_plan('server', [{'id': 'server', 'status': 'stopped',
+        'installable': True, '_ods_progress_file': 'absent'}],
+        lambda _key: definition, lambda _key: False)
+    assert plan['steps'][0]['action'] == 'enable'
+
+
+def test_portless_stopped_cli_dispatches_install_once(tmp_path):
+    definition = {'id': 'cli-tool', 'port': 0, 'startup_check': False}
+    read = lambda: build_install_plan('cli-tool', [{'id': 'cli-tool',
+        'status': 'stopped', 'installable': True, '_ods_progress_file': 'absent'}],
+        lambda _key: definition, lambda _key: False)
+    calls = []
+    path = tmp_path / 'journal.json'
+    first = advance_installation(read, InstallationJournal(path),
+        lambda _key: contextlib.nullcontext(), lambda *args: calls.append(args))
+    assert first['state'] == 'pending'
+    assert first['dispatched'] is True
+    assert calls == [('cli-tool', 'install')]
+    replay = advance_installation(read, InstallationJournal(path),
+        lambda _key: contextlib.nullcontext(), lambda *args: calls.append(args))
+    assert replay['state'] == 'reconciliation_required'
+    assert calls == [('cli-tool', 'install')]
+
+
 def test_dependencies_wait_for_readiness_and_repeated_requests_do_not_replay(tmp_path):
     path = tmp_path / 'journal.json'
     states = {'app': 'not_installed', 'db': 'not_installed'}
@@ -304,6 +342,79 @@ def test_other_attempt_receipt_cannot_reconcile_installation(tmp_path):
     result = advance_installation(read, InstallationJournal(path), lambda key: contextlib.nullcontext(), dispatch, observe=observe)
     assert result['state'] == 'reconciliation_required'
     assert dispatch.call_count == 1
+
+
+def test_explicit_retry_rechecks_exact_failed_attempt_and_dispatches_once(tmp_path):
+    path = tmp_path / 'journal.json'
+    old_operation = 'a' * 32
+    request_id = 'b' * 64
+    journal = InstallationJournal(path)
+    journal.records['app'] = {'action': 'install', 'state': 'accepted',
+                              'operationId': old_operation}
+    journal.save()
+    plan = lambda: make_plan({'app': 'error', 'db': 'enabled'})
+    dispatch = Mock()
+
+    def observe(service_id, operation_id):
+        assert service_id == 'app'
+        return {'service_id': service_id, 'operation_id': operation_id,
+                'state': 'failed' if operation_id == old_operation else 'running'}
+
+    first = advance_installation(plan, InstallationJournal(path),
+        lambda key: contextlib.nullcontext(), dispatch, observe=observe,
+        retry_request_id=request_id)
+    assert first['state'] == 'pending' and first['dispatched'] is True
+    assert first['operationId'] != old_operation
+    dispatch.assert_called_once_with('app', 'install', operation_id=first['operationId'])
+    saved = InstallationJournal(path).records['app']
+    assert saved['retryRequestId'] == request_id
+    second = advance_installation(plan, InstallationJournal(path),
+        lambda key: contextlib.nullcontext(), dispatch, observe=observe,
+        retry_request_id=request_id)
+    assert second['state'] == 'pending' and second['dispatched'] is False
+    assert dispatch.call_count == 1
+
+
+@pytest.mark.parametrize('host_state', ['running', 'accepted', 'succeeded', None])
+def test_retry_never_replays_unconfirmed_or_nonfailed_host_effect(tmp_path, host_state):
+    path = tmp_path / 'journal.json'
+    journal = InstallationJournal(path)
+    journal.records['app'] = {'action': 'install', 'state': 'accepted',
+                              'operationId': 'a' * 32}
+    journal.save()
+    dispatch = Mock()
+    receipt = None if host_state is None else {
+        'service_id': 'app', 'operation_id': 'a' * 32, 'state': host_state}
+    result = advance_installation(lambda: make_plan({'app': 'error', 'db': 'enabled'}),
+        InstallationJournal(path), lambda key: contextlib.nullcontext(),
+        dispatch, observe=lambda *_: receipt, retry_request_id='b' * 64)
+    assert result['dispatched'] is False
+    dispatch.assert_not_called()
+    assert InstallationJournal(path).records['app']['operationId'] == 'a' * 32
+
+
+def test_retry_requires_prior_failure_and_new_owner_request(tmp_path):
+    path = tmp_path / 'journal.json'
+    dispatch = Mock()
+    no_failure = advance_installation(
+        lambda: make_plan({'app': 'not_installed', 'db': 'enabled'}),
+        InstallationJournal(path), lambda key: contextlib.nullcontext(), dispatch,
+        observe=Mock(), retry_request_id='b' * 64)
+    assert no_failure['state'] == 'blocked'
+    dispatch.assert_not_called()
+
+    journal = InstallationJournal(path)
+    journal.records['app'] = {'action': 'install', 'state': 'accepted',
+                              'operationId': 'a' * 32, 'retryRequestId': 'b' * 64}
+    journal.save()
+    failed = lambda *_: {'service_id': 'app', 'operation_id': 'a' * 32,
+                         'state': 'failed'}
+    same_request = advance_installation(
+        lambda: make_plan({'app': 'error', 'db': 'enabled'}),
+        InstallationJournal(path), lambda key: contextlib.nullcontext(), dispatch,
+        observe=failed, retry_request_id='b' * 64)
+    assert same_request['state'] == 'failed'
+    dispatch.assert_not_called()
 
 @pytest.mark.parametrize('reply,accepted', [
     ({'status':'accepted','service_id':'app','operation_id':'a'*32}, True),

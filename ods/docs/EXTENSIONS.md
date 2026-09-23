@@ -22,8 +22,13 @@ been downloaded, configured or started.
   reports readiness separately from acceptance of an installation request.
 - `/extensions https://github.com/owner/repository` asks the model to inspect
   that public repository and propose an ODS recipe at an immutable commit.
-  A validated proposal is bound to the current conversation request before
-  becoming available and entering the normal installation coordinator.
+  This is research only; accepting a proposal does not start installation.
+- `/extensions install https://github.com/owner/repository` authorizes the
+  managed installation. The model researches and proposes the recipe, and ODS
+  prepares and advances that exact accepted proposal, returning actual receipts.
+  Free text after a URL does not grant automatic installation authority: it may
+  contain conditions or negations. A later installation needs a new explicit
+  install command; a saved research request is never silently promoted.
 - Required secrets are entered into the configuration form, outside the
   conversation. Saving the missing values resumes the GitHub request without
   asking the model to create a second recipe.

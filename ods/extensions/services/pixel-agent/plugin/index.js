@@ -1,6 +1,7 @@
 import {createAgentSkillTool} from './agent-skills.mjs';
 import {createActivityTool, ACTIVITY_CONTRACT} from './activity-display.mjs';
 import {compactToolResultEnvelope} from './tool-result-envelope.mjs';
+import {withPiToolErrorContract} from './pi-tool-result.mjs';
 import {createGoalProgress, createGoalProgressTool, GOAL_CONTRACT} from './goal-progress.mjs';
 // Pixel ODS integration plugin entry.
 //
@@ -66,7 +67,7 @@ import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import {createContextCompaction, readContextRequest, prepareStableContextModel} from './context-compaction.mjs';
 import {registerHistoryIntegration} from './history-context.mjs';
-import {createExtensionProposalTool, createSourceProposalTool, createPythonLibraryProposalTool, createExtensionRequestStatusTool, createExtensionRequestPrepareTool, createExtensionRequestAdvanceTool} from './extension-proposal.mjs';
+import {createExtensionProposalTool, createSourceProposalTool, createPythonLibraryProposalTool, createExtensionRequestStatusTool, createExtensionRequestPrepareTool, createExtensionRequestAdvanceTool, createExtensionRequestRetryTool, submitExtensionProposal} from './extension-proposal.mjs';
 import { createOpenClawCodingTools, resolveSandboxContext, OPENCLAW_VERSION } from "openclaw/plugin-sdk/agent-harness";
 
 const AGENT_ID = process.env.PIXEL_AGENT_ID ?? "pixel";
@@ -87,7 +88,7 @@ const evidenceArtifactWriter = createEvidenceArtifactWriter();
 // agent id declared by this plugin (see openclaw.plugin.json); this guards the
 // registration path regardless of how the plugin is loaded.
 const onlyPixel = (factory) => (context) =>
-  context.agentId === AGENT_ID ? factory(context) : null;
+  context.agentId === AGENT_ID ? withPiToolErrorContract(factory(context)) : null;
 
 function registerTool(api, tool, opts) {
   const names = opts.names || [tool.name];
@@ -468,6 +469,74 @@ export default definePluginEntry({
         return true;
       },
     });
+    api.registerHttpRoute({
+      path: "/pixel-ods/read-only-extension-continuation",
+      auth: "gateway",
+      match: "exact",
+      handler: async (req, res) => {
+        const parsed = await readVerificationRun(req);
+        if (parsed.status !== 200) {
+          sendJson(res, parsed.status, { error: "invalid continuation request" });
+          return true;
+        }
+        const observed = toolLoopGuard.readOnlyExtensionRecoveryForRun(parsed.runId);
+        if (!observed.eligible) { sendJson(res, 200, observed); return true; }
+        try {
+          // Reconcile the same durable request immediately before granting a
+          // second model turn. This route never prepares or installs anything.
+          const current = await submitExtensionProposal({schemaVersion:1, action:'github-request-status',
+            chatId:observed.chatId, requestId:observed.requestId});
+          if (current?.schemaVersion === 1 && current.kind === 'ods-extension-request-status' &&
+              current.chatId === observed.chatId && current.requestId === observed.requestId &&
+              current.requestState === 'pending' && current.authorizationMode === 'install') {
+            sendJson(res, 200, observed);
+            return true;
+          }
+        } catch { /* A missing or changed receipt never grants continuation. */ }
+        sendJson(res, 200, {schemaVersion:1,kind:'ods-extension-read-only-continuation',eligible:false});
+        return true;
+      },
+    });
+    api.registerHttpRoute({
+      path: "/pixel-ods/unfinished-extension-decision",
+      auth: "gateway",
+      match: "exact",
+      handler: async (req, res) => {
+        const parsed = await readVerificationRun(req);
+        if (parsed.status !== 200) {
+          sendJson(res, parsed.status, {error:"invalid continuation request"});
+          return true;
+        }
+        const blocked = {schemaVersion:1,kind:'ods-extension-unfinished-decision',eligible:false};
+        const observed = toolLoopGuard.unfinishedExtensionDecisionForRun(parsed.runId);
+        if (!observed.eligible) { sendJson(res, 200, blocked); return true; }
+        try {
+          // Both reads are owner-bound and side-effect-free. A missing proposal
+          // and unprepared runtime prove that this request did not dispatch an
+          // installation; no GitHub lookup or model-supplied source is used.
+          const identity = {chatId:observed.chatId,requestId:observed.requestId};
+          const source = await submitExtensionProposal({schemaVersion:1,action:'github-request-read',...identity});
+          const status = await submitExtensionProposal({schemaVersion:1,action:'github-request-status',...identity});
+          if (status?.schemaVersion === 1 && status.kind === 'ods-extension-request-status' &&
+              source?.schemaVersion === 1 && source.kind === 'ods-extension-request-source' &&
+              [status,source].every(value => value.chatId === identity.chatId && value.requestId === identity.requestId) &&
+              status.requestState === 'pending' && source.requestState === 'pending' &&
+              status.authorizationMode === 'install' && source.authorizationMode === 'install' &&
+              status.proposalAccepted === false && status.integrationBound === false &&
+              status.prepared === false && status.extensionId === null &&
+              status.runtimeStatus === 'not_observed' &&
+              Array.isArray(status.existingExtensionIds) && status.existingExtensionIds.length === 0 &&
+              source.installationStarted === false &&
+              typeof source.repository === 'string' &&
+              /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(source.repository)) {
+            sendJson(res, 200, {...observed,repository:source.repository});
+            return true;
+          }
+        } catch { /* Unverified state never grants another model turn. */ }
+        sendJson(res, 200, blocked);
+        return true;
+      },
+    });
 
     registerTool(
       api,
@@ -562,12 +631,13 @@ export default definePluginEntry({
     registerTool(api, createAskUserTool(), {names:['pixel_ods_ask_user']});
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
     registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});
-    api.registerTool(context => createExtensionProposalTool(context), {names:['pixel_ods_extension_proposal']});
-    api.registerTool(context => createSourceProposalTool(context), {names:['pixel_ods_source_proposal']});
-    api.registerTool(context => createPythonLibraryProposalTool(context), {names:['pixel_ods_python_library_proposal']});
-    api.registerTool(context => createExtensionRequestStatusTool(context), {names:['pixel_ods_extension_request_status']});
-    api.registerTool(context => createExtensionRequestPrepareTool(context), {names:['pixel_ods_extension_request_prepare']});
-    api.registerTool(context => createExtensionRequestAdvanceTool(context), {names:['pixel_ods_extension_request_advance']});
+    api.registerTool(onlyPixel(context => createExtensionProposalTool(context)), {names:['pixel_ods_extension_proposal']});
+    api.registerTool(onlyPixel(context => createSourceProposalTool(context)), {names:['pixel_ods_source_proposal']});
+    api.registerTool(onlyPixel(context => createPythonLibraryProposalTool(context)), {names:['pixel_ods_python_library_proposal']});
+    api.registerTool(onlyPixel(context => createExtensionRequestStatusTool(context)), {names:['pixel_ods_extension_request_status']});
+    api.registerTool(onlyPixel(context => createExtensionRequestPrepareTool(context)), {names:['pixel_ods_extension_request_prepare']});
+    api.registerTool(onlyPixel(context => createExtensionRequestAdvanceTool(context)), {names:['pixel_ods_extension_request_advance']});
+    api.registerTool(onlyPixel(context => createExtensionRequestRetryTool(context)), {names:['pixel_ods_extension_request_retry']});
 
     registerTool(api, createDownloadPromoteTool(), {
       names: ["pixel_ods_download_promote"],

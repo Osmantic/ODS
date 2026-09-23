@@ -56,11 +56,17 @@ let socketCounter = 0;
 function fakeGateway({
   onRequest,
   onVerificationRequest,
+  onRecoveryRequest,
+  onDecisionRequest,
+  recovery = {schemaVersion:1,kind:'ods-extension-read-only-continuation',eligible:false},
+  decisionProof = {schemaVersion:1,kind:'ods-extension-unfinished-decision',eligible:false},
+  completionResponses,
   verification = { status: "none" },
   abortReplies = [true],
   completionText = "ok",
 } = {}) {
   let abortIndex = 0;
+  let completionIndex = 0;
   const server = http.createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -82,6 +88,18 @@ function fakeGateway({
         res.end(JSON.stringify(verification));
         return;
       }
+      if (req.url === "/pixel-ods/read-only-extension-continuation") {
+        onRecoveryRequest?.(captured);
+        res.writeHead(200,{"Content-Type":"application/json"});
+        res.end(JSON.stringify(recovery));
+        return;
+      }
+      if (req.url === "/pixel-ods/unfinished-extension-decision") {
+        onDecisionRequest?.(captured);
+        res.writeHead(200,{"Content-Type":"application/json"});
+        res.end(JSON.stringify(decisionProof));
+        return;
+      }
       if (onRequest) onRequest(captured);
       if (req.url === "/pixel-ods/abort") {
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -97,7 +115,8 @@ function fakeGateway({
         return;
       }
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ id: TEST_RUN_ID, choices: [{ message: { content: completionText } }] }));
+      res.end(JSON.stringify(completionResponses?.[completionIndex++] ??
+        { id: TEST_RUN_ID, choices: [{ message: { content: completionText } }] }));
     });
   });
   return new Promise((resolve) => {
@@ -139,6 +158,114 @@ test('re-reads a briefly unavailable final receipt without resubmitting work', a
     assert.equal(submissions,1);assert.equal(reads,2);
   } finally {
     await new Promise(resolve=>srv.close(resolve));await new Promise(resolve=>gw.server.close(resolve));
+  }
+});
+
+test('empty response continues once only after a matching read-only extension proof',async()=>{
+  const first={id:TEST_RUN_ID,choices:[{message:{role:'assistant',content:
+    "⚠️ Agent couldn't generate a response. Please try again."},finish_reason:'stop'}]};
+  const second={id:'chatcmpl_aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',choices:[{
+    message:{role:'assistant',content:'Verified continuation.'},finish_reason:'stop'}]};
+  const observed=[], recoveryCalls=[];
+  const gw=await fakeGateway({completionResponses:[first,second],
+    recovery:{schemaVersion:1,kind:'ods-extension-read-only-continuation',eligible:true,
+      chatId:'chat',requestId:'turn'},onRequest:value=>observed.push(value),
+    onRecoveryRequest:value=>recoveryCalls.push(value)});
+  const srv=await startIngress({gatewayPort:gw.port});
+  try {
+    const response=await request(srv,'POST','/v1/chat/completions',{
+      body:JSON.stringify({user:'chat',messages:[{role:'user',content:'/extensions install https://github.com/example/project'}],stream:true}),
+      headers:{'Content-Type':'application/json'},
+    });
+    assert.equal(response.status,200);
+    assert.match(response.body,/Verified continuation/);
+    assert.equal(observed.length,2);
+    assert.equal(recoveryCalls.length,1);
+    assert.deepEqual(recoveryCalls[0].body,{runId:TEST_RUN_ID});
+    assert.equal(observed[0].body.user,observed[1].body.user);
+    assert.notDeepEqual(observed[0].body.messages,observed[1].body.messages);
+    assert.match(observed[1].body.messages[0].content,/ODS internal continuation/);
+    assert.doesNotMatch(observed[1].body.messages[0].content,/github.com\/example/);
+  } finally {
+    await new Promise(resolve=>srv.close(resolve));await new Promise(resolve=>gw.server.close(resolve));
+  }
+});
+
+test('empty response does not continue from a mismatched or absent proof',async()=>{
+  const first={id:TEST_RUN_ID,choices:[{message:{role:'assistant',content:
+    "⚠️ Agent couldn't generate a response. Please try again."},finish_reason:'stop'}]};
+  for(const recovery of [
+    {schemaVersion:1,kind:'ods-extension-read-only-continuation',eligible:false},
+    {schemaVersion:1,kind:'ods-extension-read-only-continuation',eligible:true,chatId:'other',requestId:'turn'},
+  ]) {
+    const observed=[];
+    const gw=await fakeGateway({completionResponses:[first],recovery,onRequest:value=>observed.push(value)});
+    const srv=await startIngress({gatewayPort:gw.port});
+    try {
+      const response=await request(srv,'POST','/v1/chat/completions',{
+        body:JSON.stringify({user:'chat',messages:[{role:'user',content:'continue'}],stream:true}),
+        headers:{'Content-Type':'application/json'},
+      });
+      assert.equal(response.status,200);
+      assert.equal(observed.length,1);
+      assert.doesNotMatch(response.body,/Verified continuation/);
+    } finally {
+      await new Promise(resolve=>srv.close(resolve));await new Promise(resolve=>gw.server.close(resolve));
+    }
+  }
+});
+
+test('unfinished extension decision continues once only from matching durable proof',async()=>{
+  const first={id:TEST_RUN_ID,choices:[{message:{role:'assistant',content:'I will propose the install next.'},finish_reason:'stop'}]};
+  const second={id:'chatcmpl_aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',choices:[{
+    message:{role:'assistant',content:'Verified proposal receipt.'},finish_reason:'stop'}]};
+  const observed=[], decisionCalls=[];
+  const gw=await fakeGateway({completionResponses:[first,second],
+    decisionProof:{schemaVersion:1,kind:'ods-extension-unfinished-decision',eligible:true,
+      chatId:'chat',requestId:'turn',repository:'https://github.com/example/project'},
+    onRequest:value=>observed.push(value),onDecisionRequest:value=>decisionCalls.push(value)});
+  const srv=await startIngress({gatewayPort:gw.port});
+  try {
+    const response=await request(srv,'POST','/v1/chat/completions',{
+      body:JSON.stringify({user:'chat',messages:[{role:'user',content:'/extensions https://github.com/example/project install'}]}),
+      headers:{'Content-Type':'application/json'},
+    });
+    assert.equal(response.status,200);
+    assert.match(response.body,/Verified proposal receipt/);
+    assert.doesNotMatch(response.body,/I will propose/);
+    assert.equal(observed.length,2);
+    assert.equal(decisionCalls.length,1);
+    assert.deepEqual(decisionCalls[0].body,{runId:TEST_RUN_ID});
+    assert.equal(observed[0].body.user,observed[1].body.user);
+    assert.match(observed[1].body.messages[0].content,
+      /^\/extensions https:\/\/github\.com\/example\/project ODS internal continuation/);
+    assert.match(observed[1].body.messages[0].content,/saved request turn/);
+  } finally {
+    await new Promise(resolve=>srv.close(resolve));await new Promise(resolve=>gw.server.close(resolve));
+  }
+});
+
+test('unfinished extension decision does not continue from absent or mismatched proof',async()=>{
+  const first={id:TEST_RUN_ID,choices:[{message:{role:'assistant',content:'I will propose next.'},finish_reason:'stop'}]};
+  for(const decisionProof of [
+    {schemaVersion:1,kind:'ods-extension-unfinished-decision',eligible:false},
+    {schemaVersion:1,kind:'ods-extension-unfinished-decision',eligible:true,chatId:'other',requestId:'turn',repository:'https://github.com/example/project'},
+    {schemaVersion:1,kind:'ods-extension-unfinished-decision',eligible:true,chatId:'chat',requestId:'turn',repository:'https://github.com/example/project',extra:true},
+  ]) {
+    const observed=[];
+    const gw=await fakeGateway({completionResponses:[first],decisionProof,onRequest:value=>observed.push(value)});
+    const srv=await startIngress({gatewayPort:gw.port});
+    try {
+      const response=await request(srv,'POST','/v1/chat/completions',{
+        body:JSON.stringify({user:'chat',messages:[{role:'user',content:'continue'}]}),
+        headers:{'Content-Type':'application/json'},
+      });
+      assert.equal(response.status,200);
+      assert.equal(observed.length,1);
+      assert.match(response.body,/I will propose next/);
+    } finally {
+      await new Promise(resolve=>srv.close(resolve));await new Promise(resolve=>gw.server.close(resolve));
+    }
   }
 });
 

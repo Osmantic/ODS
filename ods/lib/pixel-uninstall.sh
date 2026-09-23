@@ -455,6 +455,10 @@ ods_pixel_uninstall_managed() {
     local unix_peer_program="$libexec_dir/unix_peer.py"
     local workspace_preview_source="$install_dir/extensions/services/pixel-agent/host/workspace_preview.py"
     local workspace_preview_owner_unit="$install_dir/data/pixel/workspace-preview.service"
+    local wsl_bridge_unit="$systemd_dir/ods-pixel-wsl-runtime-bridge.service"
+    local wsl_bridge_program="$libexec_dir/ods-pixel-wsl-runtime-bridge"
+    local wsl_bridge_source="$install_dir/extensions/services/pixel-agent/host/pixel-wsl-runtime-bridge.sh"
+    local wsl_bridge_unit_source="$install_dir/extensions/services/pixel-agent/host/pixel-wsl-runtime-bridge.service"
     local workspace_preview_state="${ODS_PIXEL_UNINSTALL_PREVIEW_STATE_DIR:-/var/lib/ods-pixel-preview}"
     local system_observer_program="$libexec_dir/ods-pixel-system-observe.py"
     local system_observer_source="$install_dir/extensions/services/pixel-agent/host/system_observe.py"
@@ -527,6 +531,7 @@ ods_pixel_uninstall_managed() {
         "$extension_manager_unit" "$extension_manager_program" \
         "$artifact_promoter_unit" "$artifact_promoter_program" \
         "$workspace_preview_unit" "$workspace_preview_program" "$workspace_preview_state" "$unix_peer_program" "$ops_unix_peer" \
+        "$wsl_bridge_unit" "$wsl_bridge_program" "$wsl_bridge_source" "$wsl_bridge_unit_source" \
         "$system_observer_program" "$access_unit" "$access_program" "$access_config" \
         "$access_source" "$access_state" "$access_probe_base" \
         "$access_dropin_dir" "$access_dropin"; do
@@ -573,6 +578,22 @@ ods_pixel_uninstall_managed() {
     owner_uid="$(id -u)"
     owner_gid="$(id -g)"
     owner_name="$(id -un)"
+    if [[ -e "$wsl_bridge_unit" || -L "$wsl_bridge_unit" \
+        || -e "$wsl_bridge_program" || -L "$wsl_bridge_program" ]]; then
+        [[ -f "$wsl_bridge_unit" && ! -L "$wsl_bridge_unit" \
+            && -f "$wsl_bridge_program" && ! -L "$wsl_bridge_program" \
+            && -f "$wsl_bridge_source" && ! -L "$wsl_bridge_source" \
+            && -f "$wsl_bridge_unit_source" && ! -L "$wsl_bridge_unit_source" \
+            && "$(stat -c '%u:%a' -- "$wsl_bridge_unit")" == "$root_uid:644" \
+            && "$(stat -c '%u:%a' -- "$wsl_bridge_program")" == "$root_uid:755" \
+            && "$(stat -c '%u' -- "$wsl_bridge_source")" == "$owner_uid" \
+            && "$(stat -c '%u' -- "$wsl_bridge_unit_source")" == "$owner_uid" ]] \
+            && cmp -s -- "$wsl_bridge_source" "$wsl_bridge_program" \
+            && cmp -s -- "$wsl_bridge_unit_source" "$wsl_bridge_unit" || {
+                log_error "ODS-managed WSL socket bridge differs from its reviewed source"
+                return 1
+            }
+    fi
     if ! _ods_pixel_validate_ingress_env "$ingress_env" "$root_uid"; then
         log_error "ODS-managed Pixel ingress environment validation failed"
         return 1
@@ -2111,6 +2132,8 @@ PY
         || -e "$artifact_promoter_unit" || -L "$artifact_promoter_unit" \
         || -e "$artifact_promoter_program" || -L "$artifact_promoter_program" \
         || -e "$workspace_preview_unit" || -L "$workspace_preview_unit" \
+        || -e "$wsl_bridge_unit" || -L "$wsl_bridge_unit" \
+        || -e "$wsl_bridge_program" || -L "$wsl_bridge_program" \
         || -e "$workspace_preview_program" || -L "$workspace_preview_program" \
         || -e "$unix_peer_program" || -L "$unix_peer_program" \
         || -e "$system_observer_program" || -L "$system_observer_program" \
@@ -2125,12 +2148,18 @@ PY
 
     if [[ -e "$gateway_unit" || -e "$ingress_unit" || -e "$extension_manager_unit" \
         || -e "$artifact_promoter_unit" || -e "$workspace_preview_unit" \
+        || -e "$wsl_bridge_unit" \
         || -e "$ops_unit" || -e "$access_unit" ]]; then
         # Stop the ingress before the gateway it proxies to. Keep these as
         # separate calls so the shutdown order is an enforced contract rather
         # than an argument-order hint to systemctl. An interrupted first install
         # can have created the gateway before it creates ingress, so only ask
         # systemd to disable unit files whose exact reviewed artifacts exist.
+        if [[ -e "$wsl_bridge_unit" ]] \
+            && ! timeout 30s sudo systemctl disable --now ods-pixel-wsl-runtime-bridge.service; then
+            log_error "Could not stop ODS-managed Pixel socket bridge; no Pixel files were removed"
+            return 1
+        fi
         if [[ -e "$access_unit" ]] \
             && ! timeout 30s sudo systemctl disable --now ods-pixel-access.service; then
             log_error "Could not stop ODS-managed Pixel system services; no Pixel files were removed"
@@ -2172,6 +2201,7 @@ PY
             || systemctl is-active --quiet pixel-extension-manager.service \
             || systemctl is-active --quiet pixel-artifact-promoter.service \
             || systemctl is-active --quiet pixel-workspace-preview.service \
+            || systemctl is-active --quiet ods-pixel-wsl-runtime-bridge.service \
             || systemctl is-active --quiet pixel-ops-broker.service \
             || systemctl is-active --quiet ods-pixel-access.service; then
             log_error "ODS-managed Pixel system services are still active; no Pixel files were removed"
@@ -2546,6 +2576,7 @@ PY
             "$extension_manager_unit" "$extension_manager_program" \
             "$artifact_promoter_unit" "$artifact_promoter_program" \
             "$workspace_preview_unit" "$workspace_preview_program" "$unix_peer_program" \
+            "$wsl_bridge_unit" "$wsl_bridge_program" \
             "$system_observer_program" \
             || ! sudo systemctl daemon-reload; then
             log_error "Could not remove ODS-managed Pixel system artifacts"
@@ -2556,6 +2587,7 @@ PY
             || -e "$extension_manager_program" || -e "$artifact_promoter_unit" \
             || -e "$artifact_promoter_program" || -e "$workspace_preview_unit" \
             || -e "$workspace_preview_program" || -e "$unix_peer_program" || -e "$system_observer_program" \
+            || -e "$wsl_bridge_unit" || -e "$wsl_bridge_program" \
             || -e "$workspace_preview_state" || -e "$access_unit" || -L "$access_unit" \
             || -e "$access_program" || -L "$access_program" \
             || -e "$access_config" || -L "$access_config" \

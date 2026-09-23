@@ -337,7 +337,7 @@ updated_agent_tools["deny"] = [
     if item not in {
         "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
         "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-        "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance",
+        "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry",
         "pixel_web_extract"
     }
 ]
@@ -347,7 +347,7 @@ for extension_tool in (
     "cron", "create_goal", "get_goal", "update_goal", "update_plan",
     "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
     "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance"
+    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"
 ):
     if extension_tool not in updated_also_allow:
         updated_also_allow.append(extension_tool)
@@ -355,7 +355,7 @@ for permitted_tool in (
     "cron", "create_goal", "get_goal", "update_goal", "update_plan",
     "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
     "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance"
+    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"
 ):
     if permitted_tool not in updated_sandbox_allow:
         updated_sandbox_allow.append(permitted_tool)

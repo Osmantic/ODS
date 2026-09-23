@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {EventEmitter} from 'node:events';
-import {createSourceProposalTool, createExtensionProposalTool, createPythonLibraryProposalTool, createExtensionRequestStatusTool, createExtensionRequestPrepareTool, createExtensionRequestAdvanceTool, submitExtensionProposal} from '../plugin/extension-proposal.mjs';
+import {createSourceProposalTool, createExtensionProposalTool, createPythonLibraryProposalTool, createExtensionRequestStatusTool, createExtensionRequestPrepareTool, createExtensionRequestAdvanceTool, createExtensionRequestRetryTool, submitExtensionProposal} from '../plugin/extension-proposal.mjs';
 
 const context = {agentId: 'pixel', sessionKey: 'agent:pixel:openai-user:ods-' + createHash('sha256').update('chat').digest('hex')};
 const args = {chatId: 'chat', requestId: 'turn', candidate: {repository: 'https://github.com/o/r',
@@ -26,7 +26,7 @@ for (const [factory, input] of [
   assert.equal(tool.parameters.properties.chatId,undefined);
   assert.equal(tool.parameters.properties.requestId,undefined);
   assert.equal((await tool.execute('proposal',input)).isError,undefined);
-  assert.equal(calls.length,2);
+  assert.deepEqual(calls.map(x=>x.action),['github-request-resolve','github-request-propose','github-request-status']);
   assert.equal(calls[1].action,'github-request-propose');
   assert.equal(calls[1].chatId,'chat');
   assert.equal(calls[1].requestId,'turn');
@@ -73,6 +73,8 @@ test('request status is owner-bound, read-only and never promotes missing eviden
   assert.equal((await tool.execute('id',{chatId:'chat',requestId:'turn',action:'install'})).isError,true);
   assert.equal(calls.length,0);
   assert.deepEqual((await tool.execute('id',{chatId:'chat',requestId:'turn'})).details,value);
+  const pending = await tool.execute('id',{chatId:'chat',requestId:'turn'});
+  assert.match(JSON.parse(pending.content[1].text).next, /pixel_ods_extension_request_prepare/);
   assert.equal(calls[0].action,'github-request-status');
   value.runtimeStatus='enabled';
   assert.equal((await tool.execute('id',{chatId:'chat',requestId:'turn'})).isError,true);
@@ -99,6 +101,132 @@ test('request status is owner-bound, read-only and never promotes missing eviden
   assert.equal((await tool.execute('id',{chatId:'chat',requestId:'turn'})).isError,true);
 });
 
+test('status separates an active request record from verified installation readiness', async () => {
+  const value={schemaVersion:1,kind:'ods-extension-request-status',chatId:'chat',requestId:'turn',
+    requestState:'pending',authorizationMode:'install',proposalAccepted:true,integrationBound:false,
+    prepared:true,extensionId:'example',runtimeStatus:'cli_installed',installationVerified:true};
+  const tool=createExtensionRequestStatusTool(context,{submit:async()=>value});
+  const observed=await tool.execute('id',{chatId:'chat',requestId:'turn'});
+  assert.equal(observed.isError,undefined);
+  assert.equal(observed.details.requestState,'pending');
+  assert.equal(observed.details.installationVerified,true);
+  assert.equal(observed.content.length,1);
+  const visible=JSON.parse(observed.content[0].text);
+  assert.equal(Object.hasOwn(visible,'requestState'),false);
+  assert.equal(visible.requestRecordState,'active');
+  assert.equal(visible.installationState,'verified_installed');
+  assert.equal(visible.installationVerified,true);
+  assert.equal(visible.runtimeStatus,'cli_installed');
+  assert.equal(visible.scope,'managed-runtime-readiness');
+  value.requestState='cancelled';value.installationVerified=false;value.prepared=false;value.runtimeStatus='not_observed';
+  const closed=await tool.execute('id',{chatId:'chat',requestId:'turn'});
+  assert.equal(JSON.parse(closed.content[0].text).requestRecordState,'cancelled');
+  value.requestState='pending';value.prepared=true;value.runtimeStatus='cli_installed';
+  value.installationVerified=false;
+  assert.equal((await tool.execute('id',{chatId:'chat',requestId:'turn'})).isError,true);
+  value.installationVerified=true; value.runtimeStatus='installing';
+  assert.equal((await tool.execute('id',{chatId:'chat',requestId:'turn'})).isError,true);
+});
+
+test('saved research scope cannot be mistaken for installation authority', async () => {
+  const sessionHash=context.sessionKey.split('ods-')[1];
+  const value={schemaVersion:1,kind:'ods-extension-request-status',chatId:'chat',requestId:'turn',
+    requestState:'pending',authorizationMode:'research',proposalAccepted:false,prepared:false,
+    extensionId:null,runtimeStatus:'not_observed',existingExtensionIds:[]};
+  const tool=createExtensionRequestStatusTool(context,{submit:async payload=>
+    payload.action==='github-request-resolve'
+      ? {schemaVersion:1,kind:'ods-extension-request-scope',sessionHash,
+        request:{chatId:'chat',requestId:'turn'},authorizationMode:'research'} : value});
+  const result=await tool.execute('id',{});
+  assert.equal(result.details.authorizationMode,'research');
+  assert.match(JSON.parse(result.content[1].text).next,/does not authorize preparing or installing/);
+  value.authorizationMode='install';
+  assert.match(JSON.parse((await tool.execute('id',{})).content[1].text).next,/pixel_ods_python_library_proposal/);
+  value.authorizationMode='unknown';
+  assert.equal((await tool.execute('id',{})).isError,true);
+});
+
+test('advance rejection names missing preparation only after a matching status read', async () => {
+  const status={schemaVersion:1,kind:'ods-extension-request-status',chatId:'chat',requestId:'turn',
+    requestState:'pending',proposalAccepted:true,prepared:false,extensionId:'example',
+    runtimeStatus:'not_observed',existingExtensionIds:[],integrationBound:false};
+  const calls=[];
+  const tool=createExtensionRequestAdvanceTool(context,{submit:async payload=>{
+    calls.push(payload.action);
+    if (payload.action==='github-request-advance') return {
+      kind:'ods-pixel-extension-lifecycle',outcome:'failed',externalEffectOccurred:false,
+    };
+    if (payload.action==='github-request-resolve') return {schemaVersion:1,
+      kind:'ods-extension-request-scope',sessionHash:context.sessionKey.split('ods-')[1],
+      request:{chatId:'chat',requestId:'turn'}};
+    if (payload.action==='github-request-status') return status;
+    throw Error('Unexpected action');
+  }});
+  const result=await tool.execute('id',{chatId:'chat',requestId:'turn'});
+  assert.equal(result.isError,true);
+  assert.deepEqual(calls,['github-request-advance','github-request-status']);
+  assert.equal(JSON.parse(result.content[0].text).installationStarted,false);
+  assert.match(JSON.parse(result.content[0].text).next,/pixel_ods_extension_request_prepare/);
+});
+
+test('advance without a proposal reports the verified prerequisite, not an uncertain host operation', async () => {
+  const status={schemaVersion:1,kind:'ods-extension-request-status',chatId:'chat',requestId:'turn',
+    requestState:'pending',authorizationMode:'install',proposalAccepted:false,prepared:false,
+    extensionId:null,runtimeStatus:'not_observed',existingExtensionIds:[],integrationBound:false};
+  const failed={kind:'ods-pixel-extension-lifecycle',outcome:'failed',externalEffectOccurred:false};
+  const calls=[];
+  let value=status;
+  const submit=async payload=>{calls.push(payload.action);
+    if(payload.action==='github-request-advance') return failed;
+    if(payload.action==='github-request-status') return value;
+    throw Error('Unexpected action');
+  };
+  const tool=createExtensionRequestAdvanceTool(context,{submit});
+  const result=await tool.execute('id',{chatId:'chat',requestId:'turn'});
+  assert.deepEqual(calls,['github-request-advance','github-request-status']);
+  assert.equal(result.isError,true);
+  assert.equal(result.details.reason,'proposal_required');
+  assert.equal(result.details.installationStarted,false);
+  assert.match(result.details.next,/pixel_ods_python_library_proposal/);
+  assert.doesNotMatch(result.content[0].text,/outcome is unconfirmed/);
+
+  value={...status,existingExtensionIds:['existing']};
+  const existing=await tool.execute('id',{chatId:'chat',requestId:'turn'});
+  assert.equal(existing.details.reason,'integration_preparation_required');
+  assert.deepEqual(existing.details.existingExtensionIds,['existing']);
+  assert.match(existing.details.next,/pixel_ods_extension_request_prepare/);
+
+  value={...status,authorizationMode:'research'};
+  const research=await tool.execute('id',{chatId:'chat',requestId:'turn'});
+  assert.equal(research.details.reason,'installation_not_authorized');
+  assert.match(research.details.next,/\/extensions install https:\/\/github\.com\/OWNER\/REPO/);
+});
+
+test('advance preserves uncertainty when a host effect or matching no-work receipt is not proven', async () => {
+  const status={schemaVersion:1,kind:'ods-extension-request-status',chatId:'chat',requestId:'turn',
+    requestState:'pending',authorizationMode:'install',proposalAccepted:false,prepared:false,
+    extensionId:null,runtimeStatus:'not_observed',existingExtensionIds:[],integrationBound:false};
+  let lifecycle={kind:'ods-pixel-extension-lifecycle',outcome:'failed',externalEffectOccurred:false};
+  let observed=status;
+  const tool=createExtensionRequestAdvanceTool(context,{submit:async payload=>
+    payload.action==='github-request-advance' ? lifecycle : observed});
+  for (const changed of [
+    {requestId:'different'}, {prepared:true,extensionId:'example'},
+    {runtimeStatus:'installing'}, {requestState:'expired'}, {authorizationMode:undefined},
+  ]) {
+    observed={...status,...changed};
+    const result=await tool.execute('id',{chatId:'chat',requestId:'turn'});
+    assert.equal(result.isError,true);
+    assert.equal(result.details,undefined);
+    assert.match(result.content[0].text,/outcome is unconfirmed/);
+  }
+  observed=status;
+  lifecycle={...lifecycle,externalEffectOccurred:true};
+  const result=await tool.execute('id',{chatId:'chat',requestId:'turn'});
+  assert.equal(result.details,undefined);
+  assert.match(result.content[0].text,/outcome is unconfirmed/);
+});
+
 test('preparation uses only the bound request and does not claim an installation', async () => {
   const value={schemaVersion:1,kind:'ods-extension-request-preparation',chatId:'chat',requestId:'turn',
     draftId:'a'.repeat(64),recipeDigest:'b'.repeat(64),extensionId:'example',state:'available',
@@ -118,6 +246,76 @@ test('preparation uses only the bound request and does not claim an installation
   }
 });
 
+test('an explicitly authorized accepted proposal advances by verified managed receipts', async () => {
+  const mode = {value:'install'};
+  const actions=[];
+  const status={schemaVersion:1,kind:'ods-extension-request-status',chatId:'chat',requestId:'turn',
+    authorizationMode:'install',requestState:'pending',proposalAccepted:true,prepared:false,
+    extensionId:'example',runtimeStatus:'not_observed',existingExtensionIds:[],integrationBound:false};
+  const preparation={schemaVersion:1,kind:'ods-extension-request-preparation',chatId:'chat',requestId:'turn',
+    draftId:receipt.proposal.draftId,recipeDigest:receipt.proposal.recipeDigest,extensionId:'example',
+    state:'available',installationStarted:false,registered:false,runtimeVerified:false};
+  const installation={schemaVersion:1,kind:'ods-extension-request-installation',chatId:'chat',requestId:'turn',
+    extensionId:'example',state:'pending',activeExtensionId:'example',operationId:'a'.repeat(32),dispatched:true};
+  const tool=createExtensionProposalTool(context,{submit:async payload=>{
+    actions.push(payload.action);
+    if (payload.action==='github-request-propose') return receipt;
+    if (payload.action==='github-request-status') return {...status,authorizationMode:mode.value};
+    if (payload.action==='github-request-prepare') return preparation;
+    if (payload.action==='github-request-advance') return installation;
+    throw Error('Unexpected action');
+  }});
+  const pending=await tool.execute('id',args);
+  assert.equal(pending.isError,undefined);
+  assert.deepEqual(actions,['github-request-propose','github-request-status','github-request-prepare','github-request-advance']);
+  assert.equal(pending.details.state,'pending');
+  assert.equal(pending.details.authorizationMode,'install');
+  assert.match(pending.content.at(-1).text,/not yet verified complete/);
+  mode.value='research'; actions.length=0;
+  const research=await tool.execute('id',args);
+  assert.equal(research.isError,undefined);
+  assert.deepEqual(actions,['github-request-propose','github-request-status']);
+  assert.equal(JSON.parse(research.content[0].text).installationStarted,false);
+  assert.equal(research.details?.authorizationMode,undefined);
+});
+
+test('accepted proposal never claims installation when preparation has no matching receipt', async () => {
+  const actions=[];
+  const tool=createExtensionProposalTool(context,{submit:async payload=>{
+    actions.push(payload.action);
+    if (payload.action==='github-request-propose') return receipt;
+    if (payload.action==='github-request-status') return {schemaVersion:1,kind:'ods-extension-request-status',
+      chatId:'chat',requestId:'turn',authorizationMode:'install',requestState:'pending',
+      proposalAccepted:true,prepared:false,extensionId:'example',runtimeStatus:'not_observed'};
+    if (payload.action==='github-request-prepare') return {kind:'unknown'};
+    throw Error('Advance must not follow uncertain preparation');
+  }});
+  const blocked=await tool.execute('id',args);
+  assert.equal(blocked.isError,true);
+  assert.deepEqual(actions,['github-request-propose','github-request-status','github-request-prepare']);
+  assert.match(blocked.content.at(-1).text,/No installation success/);
+});
+
+test('accepted proposal carries a verified preparation blocker and never advances it', async () => {
+  const actions=[];
+  const rejection={schemaVersion:1,kind:'ods-extension-request-preparation-rejected',
+    chatId:'chat',requestId:'turn',reason:'license_review_required',installationStarted:false};
+  const tool=createExtensionProposalTool(context,{submit:async payload=>{
+    actions.push(payload.action);
+    if (payload.action==='github-request-propose') return receipt;
+    if (payload.action==='github-request-status') return {schemaVersion:1,kind:'ods-extension-request-status',
+      chatId:'chat',requestId:'turn',authorizationMode:'install',requestState:'pending',
+      proposalAccepted:true,prepared:false,extensionId:'example',runtimeStatus:'not_observed'};
+    if (payload.action==='github-request-prepare') return rejection;
+    throw Error('Advance must not follow a preparation blocker');
+  }});
+  const blocked=await tool.execute('id',args);
+  assert.equal(blocked.isError,true);
+  assert.deepEqual(blocked.details,rejection);
+  assert.deepEqual(actions,['github-request-propose','github-request-status','github-request-prepare']);
+  assert.match(blocked.content.at(-1).text,/Stop this installation attempt/);
+});
+
 test('only Portal sessions can submit proposals for their own conversation', async () => {
   let calls = 0;
   const tool = createExtensionProposalTool(context, {submit: async () => {calls++; return receipt;}});
@@ -129,12 +327,12 @@ test('only Portal sessions can submit proposals for their own conversation', asy
   const result = await tool.execute('id', args);
   assert.equal(result.isError, undefined);
   assert.equal(JSON.parse(result.content[0].text).state, 'draft');
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
 });
 
 test('flat Python library proposals keep identical owner binding and immutable source checks', async () => {
   let submitted;
-  const tool = createPythonLibraryProposalTool(context, {submit:async value => {submitted=value; return receipt;}});
+  const tool = createPythonLibraryProposalTool(context, {submit:async value => {if(value.action==='github-request-propose')submitted=value; return receipt;}});
   const input = {chatId:'chat',requestId:'turn',repository:'https://github.com/o/r',commit:'a'.repeat(40),
     serviceId:'example',name:'Example',pythonVersion:'3.12',pythonImports:['actual_package']};
   assert.equal(createPythonLibraryProposalTool({...context,agentId:'other'}),null);
@@ -148,6 +346,51 @@ test('flat Python library proposals keep identical owner binding and immutable s
   assert.match(submitted.candidate.compose.services.example.command[2], /importlib.import_module/);
   assert.equal(tool.parameters.properties.command,undefined);
   assert.equal(tool.parameters.properties.source,undefined);
+});
+
+test('small-model HEAD or omitted commit is pinned from the saved request before proposal submission', async () => {
+  const pinned = 'd'.repeat(40);
+  const base = {repository:'https://github.com/o/r',serviceId:'example',name:'Example',
+    pythonVersion:'3.12',pythonImports:['example']};
+  const actions=[];
+  const pin = {schemaVersion:1,kind:'ods-extension-request-commit',chatId:'chat',requestId:'turn',
+    repository:base.repository,commit:pinned,evidenceScope:'repository-default-branch-at-inspection',
+    installationStarted:false};
+  let pinResult=pin;
+  const tool=createPythonLibraryProposalTool(context,{submit:async payload=>{
+    actions.push(payload);
+    if (payload.action==='github-request-resolve') return {schemaVersion:1,
+      kind:'ods-extension-request-scope',sessionHash:context.sessionKey.split('ods-')[1],
+      request:{chatId:'chat',requestId:'turn'}};
+    if (payload.action==='github-request-pin') return pinResult;
+    return receipt;
+  }});
+  assert.equal(tool.parameters.required.includes('commit'),false);
+  for (const input of [base,{...base,commit:'HEAD'}]) {
+    actions.length=0;
+    const proposed = await tool.execute('id',input);
+    assert.equal(proposed.isError,undefined);
+    assert.deepEqual(actions.map(x=>x.action),['github-request-resolve','github-request-pin',
+      'github-request-propose','github-request-status']);
+    assert.equal(actions[2].candidate.commit,pinned);
+    assert.deepEqual(JSON.parse(proposed.content[0].text).pinnedSource,
+      {repository:base.repository,commit:pinned});
+    assert.equal(actions[2].candidate.compose.services.example.build.context,
+      'https://github.com/o/r.git#'+pinned);
+  }
+  actions.length=0;
+  assert.equal((await tool.execute('id',{...base,commit:'a'.repeat(40)})).isError,undefined);
+  assert.deepEqual(actions.map(x=>x.action),['github-request-resolve',
+    'github-request-propose','github-request-status']);
+
+  for (const changed of [{repository:'https://github.com/other/repo'},
+    {commit:'HEAD'}, {chatId:'other'}, {installationStarted:true},
+    {evidenceScope:'unverified'}, {secret:'unexpected'}]) {
+    pinResult={...pin,...changed}; actions.length=0;
+    const result=await tool.execute('id',{...base,commit:'HEAD'});
+    assert.equal(result.isError,true);
+    assert.deepEqual(actions.map(x=>x.action),['github-request-resolve','github-request-pin']);
+  }
 });
 
 test('rejects large proposals and ambiguous or changed receipts without echoing errors', async () => {
@@ -273,7 +516,7 @@ test('repository conflicts retain existing IDs without suggesting a renamed dupl
 
 test('simple source proposals use the same scoped API and immutable recipe validation', async () => {
   let submitted;
-  const tool = createExtensionProposalTool(context, {submit: async payload => { submitted = payload; return receipt; }});
+  const tool = createExtensionProposalTool(context, {submit: async payload => { if(payload.action==='github-request-propose')submitted = payload; return receipt; }});
   const source = {repository: args.candidate.repository, commit: args.candidate.commit,
     serviceId: 'example', name: 'Example', dockerfile: 'Dockerfile', port: 8080, healthPath: '/health',
     healthcheck: ['CMD', 'curl', '-f', 'http://localhost:8080/health']};
@@ -318,6 +561,18 @@ test('managed advance binds the session and preserves uncertain host outcomes', 
   assert.equal((await tool.execute('id',{chatId:'chat',requestId:'turn'})).isError,true);
 });
 
+test('managed retry uses the same request binding and cannot supply a target', async () => {
+  const value={schemaVersion:1,kind:'ods-extension-request-installation',chatId:'chat',requestId:'turn',
+    extensionId:'example',state:'pending',activeExtensionId:'example',operationId:'b'.repeat(32),dispatched:true};
+  const calls=[];
+  const tool=createExtensionRequestRetryTool(context,{submit:async payload=>{calls.push(payload);return value;}});
+  assert.equal((await tool.execute('id',{chatId:'chat',requestId:'turn',extensionId:'other'})).isError,true);
+  assert.equal(calls.length,0);
+  assert.deepEqual((await tool.execute('id',{chatId:'chat',requestId:'turn'})).details,value);
+  assert.equal(calls[0].action,'github-request-retry');
+  assert.deepEqual(Object.keys(calls[0]).sort(),['action','chatId','requestId','schemaVersion']);
+});
+
 test('invalid small-model library arguments identify fields without submitting or coercing a version', async () => {
   const calls=[];
   const tool=createPythonLibraryProposalTool(context,{submit:async payload=>{calls.push(payload);return receipt;}});
@@ -330,7 +585,7 @@ test('invalid small-model library arguments identify fields without submitting o
   assert.equal(calls.length,0);
   const repaired=await tool.execute('id',{...input,serviceId:'example',pythonVersion:'3.10'});
   assert.equal(repaired.isError,undefined);
-  assert.equal(calls.length,1);
+  assert.equal(calls.length,2);
   assert.match(calls[0].candidate.compose.services.example.build.dockerfile_inline,/FROM python:3\.10-slim/);
 });
 
@@ -345,10 +600,34 @@ test('library description becomes catalog metadata without changing runtime veri
   assert.match(calls[0].candidate.compose.services.example.command[2],/import_module/);
   for(const description of ['', '   ']) {
     assert.equal((await tool.execute('id',{...input,description})).isError,undefined);
-    assert.equal(Object.hasOwn(calls.at(-1).candidate.manifest.service,'description'),false);
+    assert.equal(Object.hasOwn(calls.filter(x=>x.action==='github-request-propose').at(-1).candidate.manifest.service,'description'),false);
   }
   for(const description of [{},'x'.repeat(601)]) assert.equal((await tool.execute('id',{...input,description})).isError,true);
-  assert.equal(calls.length,3);
+  assert.equal(calls.filter(x=>x.action==='github-request-propose').length,3);
+});
+
+test('flat Python library can add a documented function check without host commands', async () => {
+  const calls=[];
+  const tool=createPythonLibraryProposalTool(context,{submit:async payload=>{
+    calls.push(payload);
+    return payload.action==='github-request-resolve'
+      ? {schemaVersion:1,kind:'ods-extension-request-scope',sessionHash:context.sessionKey.split('ods-')[1],
+        request:{chatId:'chat',requestId:'turn'}} : receipt;
+  }});
+  const input={repository:'https://github.com/o/r',commit:'a'.repeat(40),
+    serviceId:'example',name:'Example',pythonVersion:'3.12',pythonImports:['example'],
+    description:'Documented parser.',pythonVerification:{expression:'modules["example"].parse("v1")',expected:'1'}};
+  assert.equal((await tool.execute('one',input)).isError,undefined);
+  assert.deepEqual(calls.map(x=>x.action),['github-request-resolve','github-request-propose','github-request-status']);
+  const candidate=calls[1].candidate;
+  assert.equal(candidate.manifest.service.description,input.description);
+  assert.match(candidate.compose.services.example.command[2],/importlib\.import_module/);
+  assert.match(candidate.compose.services.example.command[2],/assert str\(actual\) ==/);
+  assert.match(candidate.compose.services.example.command[2],/modules\[/);
+  assert.equal(tool.parameters.properties.pythonVerification.required.join(','),'expression,expected');
+  calls.length=0;
+  assert.equal((await tool.execute('one',{...input,pythonVerification:{expression:'',expected:'x'}})).isError,true);
+  assert.deepEqual(calls.map(x=>x.action),['github-request-resolve']);
 });
 
 
@@ -368,16 +647,43 @@ test('repository matches are bounded discovery evidence, not a prepared installa
   }
 });
 
+test('an unproposed GitHub request explains its pending state and the managed next step', async () => {
+  const value={schemaVersion:1,kind:'ods-extension-request-status',chatId:'chat',requestId:'turn',
+    requestState:'pending',proposalAccepted:false,prepared:false,extensionId:null,
+    runtimeStatus:'not_observed',existingExtensionIds:[]};
+  const tool=createExtensionRequestStatusTool(context,{submit:async()=>value});
+  const result=await tool.execute('status',{chatId:'chat',requestId:'turn'});
+  assert.deepEqual(result.details,value);
+  const guidance=JSON.parse(result.content[1].text);
+  assert.equal(guidance.kind,'ods-extension-request-next-step');
+  assert.equal(guidance.installationStarted,false);
+  assert.match(guidance.meaning,/active GitHub request record/);
+  assert.match(guidance.next,/pixel_ods_python_library_proposal/);
+  assert.match(guidance.next,/pixel_ods_extension_request_advance/);
+  assert.match(guidance.next,/Do not read GitHub source from the agent workspace/);
+  value.existingExtensionIds=['existing'];
+  const existing=JSON.parse((await tool.execute('status',{chatId:'chat',requestId:'turn'})).content[1].text);
+  assert.match(existing.next,/pixel_ods_extension_request_prepare/);
+  assert.doesNotMatch(existing.next,/pixel_ods_python_library_proposal/);
+  value.proposalAccepted=true;
+  value.extensionId='existing';
+  const proposed=await tool.execute('status',{chatId:'chat',requestId:'turn'});
+  assert.equal(proposed.content.length,2);
+  assert.match(JSON.parse(proposed.content[1].text).next,/pixel_ods_extension_request_prepare/);
+});
+
 test('preparation rejections preserve scope and distinguish missing proposal from transport uncertainty', async () => {
   const rejection={schemaVersion:1,kind:'ods-extension-request-preparation-rejected',
     chatId:'chat',requestId:'turn',reason:'proposal_required',installationStarted:false};
   let value=rejection;
   const tool=createExtensionRequestPrepareTool(context,{submit:async()=>value});
-  for (const reason of ['proposal_required','integration_selection_required']) {
+  for (const reason of ['proposal_required','integration_selection_required',
+    'license_review_required','repository_evidence_unavailable','recipe_inspection_required','request_changed']) {
     value={...rejection,reason};
     const result=await tool.execute('prepare',{chatId:'chat',requestId:'turn'});
     assert.equal(result.isError,true);
     assert.deepEqual(JSON.parse(result.content[0].text),value);
+    assert.match(result.content[1].text,/No installation started|No installation started\.|Stop this|Do not repeat|Stop this attempt/);
   }
   for (const changed of [{chatId:'other'},{requestId:'other'},{reason:'secret error'},
     {installationStarted:true},{installationStarted:0},{extra:'unexpected'}]) {
@@ -444,4 +750,31 @@ test('flat source capability preserves the same compiled request and validation 
   await flat.execute('web',web);
   assert.deepEqual(calls[1].candidate.compose.services.example.healthcheck.test,['CMD',...web.verificationCommand]);
   assert.equal(calls[1].candidate.compose.services.example.command,undefined);
+});
+
+test('flat source proposal also pins HEAD while advanced candidates keep a full SHA requirement', async () => {
+  const pin={schemaVersion:1,kind:'ods-extension-request-commit',chatId:'chat',requestId:'turn',
+    repository:'https://github.com/o/r',commit:'e'.repeat(40),
+    evidenceScope:'repository-default-branch-at-inspection',installationStarted:false};
+  const calls=[];
+  const submit=async payload=>{
+    calls.push(payload);
+    if (payload.action==='github-request-resolve') return {schemaVersion:1,
+      kind:'ods-extension-request-scope',sessionHash:context.sessionKey.split('ods-')[1],
+      request:{chatId:'chat',requestId:'turn'}};
+    if (payload.action==='github-request-pin') return pin;
+    return receipt;
+  };
+  const flat=createSourceProposalTool(context,{submit});
+  assert.equal(flat.parameters.required.includes('commit'),false);
+  const input={repository:'https://github.com/o/r',commit:'HEAD',serviceId:'example',
+    name:'Example',port:0,runtime:'cli',buildKind:'dockerfile',
+    buildDefinition:'Dockerfile',verificationCommand:['example','self-test']};
+  assert.equal((await flat.execute('id',input)).isError,undefined);
+  assert.equal(calls.find(x=>x.action==='github-request-propose').candidate.commit,pin.commit);
+  calls.length=0;
+  assert.equal((await createExtensionProposalTool(context,{submit}).execute('id',
+    {candidate:{...args.candidate,commit:'HEAD'}})).isError,true);
+  assert.equal(calls.some(x=>x.action==='github-request-pin'),false);
+  assert.equal(calls.some(x=>x.action==='github-request-propose'),false);
 });

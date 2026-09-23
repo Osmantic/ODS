@@ -535,6 +535,55 @@ def _patch_mutation_config(monkeypatch, tmp_path, lib_dir=None, user_dir=None):
 
 class TestInstallExtension:
 
+    @pytest.mark.parametrize('condition', ['valid', 'wrong-operation', 'progress-present',
+                                             'changed-definition', 'changed-build-file'])
+    def test_managed_cli_reuses_only_unchanged_definition_without_progress(
+        self, monkeypatch, tmp_path, condition,
+    ):
+        from extension_installation import InstallationJournal
+        from routers import extensions as ext_mod
+
+        service_id, operation_id = 'cli-tool', 'a' * 32
+        library = _setup_library_ext(tmp_path, service_id)
+        manifest = library / service_id / 'manifest.yaml'
+        definition = yaml.safe_load(manifest.read_text())
+        definition['service'].update(port=0, startup_check=False)
+        manifest.write_text(yaml.safe_dump(definition))
+        (library / service_id / 'Dockerfile').write_text('FROM scratch\n')
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=library)
+        monkeypatch.setattr(ext_mod, '_extensions_lock_path', lambda: tmp_path / '.lock')
+        with ext_mod._extensions_lock():
+            ext_mod._install_from_library(service_id)
+        installed = tmp_path / 'user' / service_id
+        (installed / 'data').mkdir()
+        (installed / 'data' / 'owner.txt').write_text('preserve me')
+        operations = tmp_path / '.extension-installations'
+        operations.mkdir()
+        journal = InstallationJournal(operations / 'journal.json')
+        journal.records[service_id] = {'action': 'install', 'state': 'dispatching',
+            'operationId': 'b' * 32 if condition == 'wrong-operation' else operation_id}
+        journal.save()
+        if condition == 'progress-present':
+            progress_dir = tmp_path / 'extension-progress'
+            progress_dir.mkdir()
+            (progress_dir / (service_id + '.json')).write_text(json.dumps({
+                'service_id': service_id, 'status': 'starting',
+                'operation_id': 'b' * 32}))
+        if condition == 'changed-definition':
+            (installed / 'compose.yaml').write_text('services: {owner-edit: {image: changed}}\n')
+        if condition == 'changed-build-file':
+            (installed / 'Dockerfile').write_text('FROM busybox\n')
+        before = (installed / 'compose.yaml').read_bytes()
+        with ext_mod._extensions_lock():
+            if condition == 'valid':
+                ext_mod._install_from_library(service_id, operation_id=operation_id)
+            else:
+                with pytest.raises(HTTPException) as failure:
+                    ext_mod._install_from_library(service_id, operation_id=operation_id)
+                assert failure.value.status_code == 409
+        assert (installed / 'compose.yaml').read_bytes() == before
+        assert (installed / 'data' / 'owner.txt').read_text() == 'preserve me'
+
     def test_failed_config_sync_does_not_request_container_install(self, test_client, monkeypatch, tmp_path):
         from routers import extensions as ext_mod
         lib_dir = _setup_library_ext(tmp_path, "my-ext")

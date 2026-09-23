@@ -20,7 +20,7 @@ def test_request_preparation_rechecks_scope_after_upstream_lookup(monkeypatch, t
     requests = tmp_path / '.extension-requests'; requests.mkdir()
     library = tmp_path / 'library'; library.mkdir()
     draft = save_draft(drafts, 'owner', proposal, evidence(proposal))
-    create_request(requests, 'owner', 'chat', 'turn', '/extensions ' + proposal['repository'])
+    create_request(requests, 'owner', 'chat', 'turn', '/extensions install ' + proposal['repository'])
     bind_proposal(requests, 'owner', 'chat', 'turn', proposal, evidence(proposal), draft)
     monkeypatch.setattr(extensions, '_extensions_lock_path', lambda: tmp_path / '.lock')
     monkeypatch.setattr(extensions, 'EXTENSIONS_LIBRARY_DIR', library)

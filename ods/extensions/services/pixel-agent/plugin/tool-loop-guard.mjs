@@ -17,6 +17,7 @@ import { isIP } from "node:net";
 import { isDeepStrictEqual } from "node:util";
 import { projectWebResult } from "./web-result-projection.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
+import { createExtensionCompletionGate } from "./extension-completion-gate.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
 import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir } from "./workspace-path-contract.mjs";
@@ -34,6 +35,13 @@ export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
 const MAX_COMPARE_SWAP_REPAIR_CHARS = 32_768;
 const MAX_COMPARE_SWAP_REPAIRS_PER_PATH = 3;
 const MAX_TRACKED_WORKSPACE_FILE_BYTES = 4 * 1024 * 1024;
+// Read-only capabilities allowed before an ODS-owned continuation of an
+// unfinished extension decision. A prepare call requires its separate,
+// validated no-work rejection; no generic exec or workspace mutation qualifies.
+const EXTENSION_DECISION_READ_TOOLS = new Set([
+  'pixel_ods_extension_request_status', 'web_fetch', 'web_search',
+  'pixel_ods_web_extract', 'pixel_ods_research', 'read', 'memory_search', 'memory_get',
+]);
 
 export const WEB_BUDGET_EXHAUSTED_REASON =
   "Pixel's web-research budget is exhausted for this response. Do not call web tools again. Finish using the evidence already collected and any otherwise-authorized tools, including saving the requested report. Preserve existing evidence and clearly state any missing external information.";
@@ -6023,6 +6031,15 @@ export function userMessageGitHubRepositoryUrl(messages, prompt = undefined) {
   return `https://github.com/${match[1]}/${repository}`;
 }
 
+export function userMessageGitHubExtensionRequest(messages, prompt = undefined) {
+  const text = currentUserText(messages, prompt);
+  return Boolean(
+    text &&
+    /^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(text) &&
+    userMessageGitHubRepositoryUrl(messages, prompt)
+  );
+}
+
 export function userMessageGitHubFileUrl(messages, prompt = undefined) {
   const text = currentUserText(messages, prompt);
   const repositoryUrl = userMessageGitHubRepositoryUrl(messages, prompt);
@@ -6221,6 +6238,9 @@ export function createToolLoopGuard({
       pruneRuns();
       state = {
         completionAssurance: createCompletionAssurance(),
+        extensionCompletionGate: undefined,
+        extensionReadOnlyRecovery: {statusCalls:0, completedStatusCalls:0, otherToolSeen:false},
+        extensionDecisionRecovery: {prepareCalls:0, unsafeToolSeen:false, gateRevisionRequested:false},
         progressBudget: createRunProgressBudget(),
         progressAbortAttempted: false,
         search: 0,
@@ -6443,6 +6463,18 @@ export function createToolLoopGuard({
     // that truly need a session still fail closed on the optional sessionId.
     const state = runId ? stateFor(runId) : undefined;
     const delegatedName=typeof toolName==='string' && toolName==='tool_call' ? String((normalizedParams ?? event?.params)?.id ?? '').split(':').at(-1) : toolName;
+    if (state?.extensionCompletionGate?.active) {
+      // OpenClaw marks every plugin tool replay-unsafe. An ODS-owned second
+      // model turn can be considered only when this entire run used exactly
+      // one directly observed status read and no other tool, including a
+      // rejected or wrapped call that could conceal another action.
+      if (toolName === 'pixel_ods_extension_request_status') state.extensionReadOnlyRecovery.statusCalls += 1;
+      else state.extensionReadOnlyRecovery.otherToolSeen = true;
+      if (toolName === 'pixel_ods_extension_request_prepare')
+        state.extensionDecisionRecovery.prepareCalls += 1;
+      else if (!EXTENSION_DECISION_READ_TOOLS.has(delegatedName))
+        state.extensionDecisionRecovery.unsafeToolSeen = true;
+    }
     if(state?.managedTeamCoordinator)return {block:true,blockReason:'Choose the team size only. Return a JSON object with count from 1 to 6. Do not perform the task or use tools.'};
     if (state?.managedTeamWorker && ['task','hub','sessions_spawn','sessions_send','subagents'].includes(delegatedName)) {
       return {block:true,blockReason:'This team is already managed by the owner. Do your assigned work in this session; creating or steering more agents is disabled for team workers.'};
@@ -8122,7 +8154,8 @@ export function createToolLoopGuard({
       const state = stateFor(runId);
       state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
-      if (/^\s*(?:\/goal\s+)?\/extensions?\s+https:\/\/github\.com\//i.test(ownerIntent ?? '')) state.githubExtensionRequest = true;
+      state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);
+      if (/^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(ownerIntent ?? '')) state.githubExtensionRequest = true;
       if (capabilities !== undefined) state.preparationExecutionHost = capabilities.executionHost;
       if (ownerIntent) state.playgroundOwnerIntent = ownerIntent;
       if (ownerIntent) state.ownerQuestionIntent=requestsChoiceQuestion(ownerIntent);
@@ -8425,6 +8458,21 @@ export function createToolLoopGuard({
     if (typeof runId !== "string" || !runId) return;
     const state = stateFor(runId);
     state.completionAssurance.observe(toolName, event);
+    if (state.extensionCompletionGate?.active) {
+      for (const name of [
+        'pixel_ods_extension_request_status', 'pixel_ods_extension_request_prepare',
+        'pixel_ods_extension_request_advance', 'pixel_ods_extension_request_retry',
+        'pixel_ods_python_library_proposal', 'pixel_ods_source_proposal',
+        'pixel_ods_extension_proposal',
+      ]) {
+        const observed = toolName === name ? event : toolName === 'tool_call'
+          ? toolSearchSelectedToolEvent(event, name, 'pixel-ods') : undefined;
+        if (observed) state.extensionCompletionGate.observe(name, observed.result);
+      }
+      if (toolName === 'pixel_ods_extension_request_status' &&
+          state.extensionCompletionGate.observedInstallStatus)
+        state.extensionReadOnlyRecovery.completedStatusCalls += 1;
+    }
     const questionResult = toolName === 'pixel_ods_ask_user' ? event
       : toolName === 'tool_call' ? toolSearchSelectedToolEvent(event, 'pixel_ods_ask_user', 'pixel-ods') : undefined;
     if (!state.ownerQuestions && questionResult?.result?.details?.status === 'awaiting_user' && !failedToolOutcome(questionResult)) {
@@ -9354,6 +9402,9 @@ export function createToolLoopGuard({
       return undefined;
     }
     const message = event?.message;
+    if (state?.extensionCompletionGate?.active &&
+        message.toolName !== 'pixel_ods_extension_request_status')
+      state.extensionReadOnlyRecovery.otherToolSeen = true;
     // Native loop blocks can bypass before/after_tool_call entirely. Count
     // their persisted error receipt too; call IDs prevent double accounting.
     if (state && message.isError === true) {
@@ -9537,7 +9588,14 @@ export function createToolLoopGuard({
     const continuation =
       trustedOperationsContinuation(state, runId) ??
       trustedWorkspacePreviewContinuation(state);
-    if (!continuation) return state?.completionAssurance.finalize(event?.lastAssistantMessage ?? '');
+    if (!continuation) {
+      const decision = state?.extensionCompletionGate?.active
+        ? state.extensionCompletionGate.finalize()
+        : state?.completionAssurance.finalize(event?.lastAssistantMessage ?? '');
+      if (state?.extensionCompletionGate?.active)
+        state.extensionDecisionRecovery.gateRevisionRequested = decision?.action === 'revise';
+      return decision;
+    }
     return {
       action: "revise",
       reason: "Pixel has not completed every owner-requested verified step.",
@@ -9567,6 +9625,7 @@ export function createToolLoopGuard({
     if ((state.operationsRequired || state.exactDownloadPromotion) && state.latestVerificationStatus === "pending") {
       return { status: "pending", text: VERIFICATION_PENDING_DELIVERY_PREFIX };
     }
+    if (state.extensionCompletionGate?.verification) return state.extensionCompletionGate.verification;
     if (
       (state.workspacePreviewRequired || state.workspacePreviewAttempted) &&
       !state.operationsRequired &&
@@ -9834,6 +9893,9 @@ export function createToolLoopGuard({
   function deliveryVerificationForRun(runId) {
     const verification = verificationForRun(runId);
     const state = runs.get(runId);
+    if (state?.extensionCompletionGate?.active && !state.extensionCompletionGate.verification && verification.status === 'none') {
+      return {status:'failed', text:'ODS did not observe a verified managed installation receipt for this GitHub extension request.'};
+    }
     if (state?.ownerQuestions && !state.clientCancelled) return {status:'pending',text:questionsText(state.ownerQuestions),questions:state.ownerQuestions};
     if (state?.completionAssurance.terminal && verification.status === 'none') {
       return {status:state.completionAssurance.terminalStatus, text:state.completionAssurance.terminal};
@@ -9921,6 +9983,28 @@ export function createToolLoopGuard({
     abortUserRun,
     verificationForRun,
     deliveryVerificationForRun,
+    readOnlyExtensionRecoveryForRun: (runId) => {
+      const state = runs.get(runId);
+      const observed = state?.extensionCompletionGate?.observedInstallStatus;
+      const record = state?.extensionReadOnlyRecovery;
+      if (!observed || !record || record.otherToolSeen || record.statusCalls !== 1 ||
+          record.completedStatusCalls !== 1 || state.clientCancelled ||
+          state.progressBudget.exhausted || state.ownerQuestions || state.webLoopAborted)
+        return {schemaVersion:1, kind:'ods-extension-read-only-continuation', eligible:false};
+      return {schemaVersion:1, kind:'ods-extension-read-only-continuation',
+        eligible:true, chatId:observed.chatId, requestId:observed.requestId};
+    },
+    unfinishedExtensionDecisionForRun: (runId) => {
+      const state = runs.get(runId);
+      const observed = state?.extensionCompletionGate?.proposalRequiredNoWork;
+      const record = state?.extensionDecisionRecovery;
+      if (!observed || !record?.gateRevisionRequested || record.prepareCalls !== 1 ||
+          record.unsafeToolSeen || state.clientCancelled || state.progressBudget.exhausted ||
+          state.ownerQuestions || state.webLoopAborted || state.recursiveDeleteDenied)
+        return {schemaVersion:1,kind:'ods-extension-unfinished-decision',eligible:false};
+      return {schemaVersion:1,kind:'ods-extension-unfinished-decision',eligible:true,
+        chatId:observed.chatId,requestId:observed.requestId};
+    },
     continuationAllowed: (runId) => {
       const state=runs.get(runId);
       return Boolean(state && !state.clientCancelled && !state.progressBudget.exhausted

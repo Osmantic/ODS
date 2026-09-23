@@ -41,7 +41,7 @@ class ExtensionManagerTests(unittest.TestCase):
         session_hash = hashlib.sha256(b'chat').hexdigest()
         payload = json.dumps({'schemaVersion':1,'action':'github-request-resolve','sessionHash':session_hash}).encode()
         value = {'schemaVersion':1,'kind':'ods-extension-request-scope','sessionHash':session_hash,
-                 'request':{'chatId':'chat','requestId':'original'}}
+                 'authorizationMode':'install','request':{'chatId':'chat','requestId':'original'}}
         with mock.patch.object(manager, '_request_json', return_value=(200,value)) as request:
             self.assertEqual(manager._resolve_request(self.env_path,3002,payload),value)
             self.assertEqual(request.call_args.kwargs['path'],'/api/extensions/github/requests/resolve')
@@ -50,13 +50,18 @@ class ExtensionManagerTests(unittest.TestCase):
             with self.subTest(bad=bad), mock.patch.object(manager, '_request_json',
                     return_value=(200,{**value,'request':bad})), self.assertRaises(manager.ManagerError):
                 manager._resolve_request(self.env_path,3002,payload)
-        with mock.patch.object(manager, '_request_json', return_value=(200,{**value,'request':None})):
+        with mock.patch.object(manager, '_request_json', return_value=(200,{**value,'request':None,'authorizationMode':None})):
             self.assertIsNone(manager._resolve_request(self.env_path,3002,payload)['request'])
+        for bad in [{'authorizationMode': 'unknown'}, {'authorizationMode': None}]:
+            with self.subTest(bad=bad), mock.patch.object(manager, '_request_json',
+                    return_value=(200,{**value,**bad})), self.assertRaises(manager.ManagerError):
+                manager._resolve_request(self.env_path,3002,payload)
 
     def test_session_resolution_crosses_the_http_request_boundary(self):
         session_hash = hashlib.sha256(b'chat').hexdigest()
         value = {'schemaVersion':1,'kind':'ods-extension-request-scope',
-                 'sessionHash':session_hash,'request':{'chatId':'chat','requestId':'original'}}
+                 'sessionHash':session_hash,'authorizationMode':'install',
+                 'request':{'chatId':'chat','requestId':'original'}}
         response=mock.Mock(status=200)
         response.headers.get_content_type.return_value='application/json'
         response.headers.get.return_value=None
@@ -851,6 +856,156 @@ class RepositoryEvidenceTests(unittest.TestCase):
         self.assertNotIn('never-return-this', json.dumps(result))
         self.assertNotIn('f' * 64, json.dumps(result))
 
+    def test_verified_pypa_packaging_dual_license_evidence_can_be_pinned(self):
+        repository = 'https://github.com/pypa/packaging'
+        evidence = {**self.evidence(), 'repository': repository,
+                    'commit': '10590c194edb33c82f84a127883d6097c56b7840',
+                    'licenseIdentifier': 'Apache-2.0 OR BSD-2-Clause',
+                    'licenseText': 'See LICENSE.APACHE and LICENSE.BSD at this commit.'}
+        current = {'schemaVersion': 1, 'chatId': 'chat', 'requestId': 'turn',
+                   'state': 'pending', 'authorizationMode': 'install',
+                   'repository': repository, 'installationStarted': False}
+        def response(**kwargs):
+            return (200, current if kwargs['path'] == '/api/extensions/github/requests'
+                    else evidence)
+        with mock.patch.object(manager, '_read_env', return_value={'DASHBOARD_API_KEY': 'f' * 64}), \
+             mock.patch.object(manager, '_request_json', side_effect=response):
+            pinned = manager._pin_request_repository(pathlib.Path('/unused'), 3002,
+                json.dumps({'schemaVersion': 1, 'action': 'github-request-pin',
+                            'chatId': 'chat', 'requestId': 'turn'}).encode())
+        self.assertEqual(pinned['repository'], repository)
+        self.assertEqual(pinned['commit'], evidence['commit'])
+        self.assertFalse(pinned['installationStarted'])
+        for expression in ('Apache-2.0 OR BSD-2-Clause',
+                           '(MIT OR Apache-2.0) AND BSD-3-Clause'):
+            self.assertTrue(manager._bounded_spdx_identifier(expression))
+        for expression in ('MIT OR', 'MIT OR MIT', 'MIT WITH GPL-3.0',
+                           'LicenseRef-private OR MIT', 'MIT; rm -rf / OR ISC',
+                           '(MIT OR Apache-2.0', 'MIT AND OR ISC', 'x' * 257):
+            self.assertFalse(manager._bounded_spdx_identifier(expression))
+
+    def test_scoped_source_read_projects_only_saved_request_without_github_lookup(self):
+        envelope = {'schemaVersion': 1, 'action': 'github-request-read',
+                    'chatId': 'chat', 'requestId': 'turn'}
+        current = {'schemaVersion': 1, 'chatId': 'chat', 'requestId': 'turn',
+                   'state': 'pending', 'authorizationMode': 'install',
+                   'repository': 'https://github.com/owner/repo',
+                   'installationStarted': False, 'private': 'do-not-return'}
+        with mock.patch.object(manager, '_read_env', return_value={'DASHBOARD_API_KEY': 'f' * 64}), \
+             mock.patch.object(manager, '_request_json', return_value=(200, current)) as request, \
+             mock.patch.object(manager, '_inspect_repository') as inspect:
+            result = manager._read_request_source(pathlib.Path('/unused'), 3002,
+                json.dumps(envelope).encode())
+        self.assertEqual(result, {'schemaVersion': 1, 'kind': 'ods-extension-request-source',
+            'chatId': 'chat', 'requestId': 'turn', 'repository': current['repository'],
+            'authorizationMode': 'install', 'requestState': 'pending',
+            'installationStarted': False})
+        self.assertEqual(request.call_args.kwargs['body'],
+                         {'action': 'read', 'chatId': 'chat', 'requestId': 'turn'})
+        inspect.assert_not_called()
+        for change in ({'requestId': 'other'}, {'state': 'expired'},
+                       {'installationStarted': True}, {'repository': 'http://localhost/repo'}):
+            with self.subTest(change=change), \
+                 mock.patch.object(manager, '_read_env', return_value={'DASHBOARD_API_KEY': 'f' * 64}), \
+                 mock.patch.object(manager, '_request_json', return_value=(200, {**current, **change})), \
+                 self.assertRaises(manager.ManagerError):
+                manager._read_request_source(pathlib.Path('/unused'), 3002,
+                    json.dumps(envelope).encode())
+        with self.assertRaises(manager.ManagerError):
+            manager._read_request_source(pathlib.Path('/unused'), 3002,
+                json.dumps({**envelope, 'url': 'https://github.com/other/repo'}).encode())
+
+    def test_request_pin_uses_saved_pending_repository_and_returns_only_immutable_commit(self):
+        envelope = {'schemaVersion': 1, 'action': 'github-request-pin',
+                    'chatId': 'chat', 'requestId': 'turn'}
+        current = {'schemaVersion': 1, 'chatId': 'chat', 'requestId': 'turn',
+                   'state': 'pending', 'authorizationMode': 'install',
+                   'repository': 'https://github.com/owner/repo',
+                   'installationStarted': False}
+        inspected = {'repository': current['repository'], 'commit': 'a' * 40,
+                     'evidenceScope': 'repository-documents-at-commit',
+                     'installationStarted': False}
+        with mock.patch.object(manager, '_read_env', return_value={'DASHBOARD_API_KEY': 'f' * 64}), \
+             mock.patch.object(manager, '_request_json', return_value=(200, current)) as request, \
+             mock.patch.object(manager, '_inspect_repository', return_value=inspected) as inspect:
+            result = manager._pin_request_repository(pathlib.Path('/unused'), 3002,
+                json.dumps(envelope).encode())
+        self.assertEqual(request.call_args.kwargs['path'], '/api/extensions/github/requests')
+        self.assertEqual(request.call_args.kwargs['body'],
+                         {'action': 'read', 'chatId': 'chat', 'requestId': 'turn'})
+        inspect.assert_called_once_with(pathlib.Path('/unused'), 3002, current['repository'])
+        self.assertEqual(result, {'schemaVersion': 1, 'kind': 'ods-extension-request-commit',
+            'chatId': 'chat', 'requestId': 'turn', 'repository': current['repository'],
+            'commit': 'a' * 40, 'evidenceScope': 'repository-default-branch-at-inspection',
+            'installationStarted': False})
+
+        for change in ({'state': 'expired'}, {'repository': 'http://localhost/repo'},
+                       {'requestId': 'other'}, {'authorizationMode': 'invalid'},
+                       {'installationStarted': True}):
+            with self.subTest(change=change), \
+                 mock.patch.object(manager, '_read_env', return_value={'DASHBOARD_API_KEY': 'f' * 64}), \
+                 mock.patch.object(manager, '_request_json', return_value=(200, {**current, **change})), \
+                 mock.patch.object(manager, '_inspect_repository') as inspect, \
+                 self.assertRaises(manager.ManagerError):
+                manager._pin_request_repository(pathlib.Path('/unused'), 3002,
+                    json.dumps(envelope).encode())
+            inspect.assert_not_called()
+        with self.assertRaises(manager.ManagerError):
+            manager._pin_request_repository(pathlib.Path('/unused'), 3002,
+                json.dumps({**envelope, 'repositoryUrl': 'https://github.com/other/repo'}).encode())
+
+    def test_request_pin_reads_saved_request_through_real_http_body_filter(self):
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        import threading
+
+        repository = 'https://github.com/owner/repo'
+        current = {'schemaVersion': 1, 'chatId': 'chat', 'requestId': 'turn',
+                   'state': 'pending', 'authorizationMode': 'install',
+                   'repository': repository, 'installationStarted': False}
+        observed = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                observed.append((self.path, json.loads(self.rfile.read(int(self.headers['Content-Length'])))))
+                payload = json.dumps(current).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                env = pathlib.Path(directory) / '.env'
+                env.write_text('DASHBOARD_API_KEY=' + 'a' * 64 + '\n')
+                env.chmod(0o600)
+                inspection = {'repository': repository, 'commit': 'a' * 40,
+                              'evidenceScope': 'repository-documents-at-commit',
+                              'installationStarted': False}
+                with mock.patch.object(manager, '_inspect_repository', return_value=inspection):
+                    result = manager._pin_request_repository(env, server.server_port,
+                        json.dumps({'schemaVersion': 1, 'action': 'github-request-pin',
+                                    'chatId': 'chat', 'requestId': 'turn'}).encode())
+                self.assertEqual(result['commit'], inspection['commit'])
+                self.assertEqual(observed, [('/api/extensions/github/requests',
+                    {'action': 'read', 'chatId': 'chat', 'requestId': 'turn'})])
+                for changed in ({'action': 'create'}, {'requestId': '../turn'}, {'extra': 'x'}):
+                    with self.assertRaises(manager.ManagerError):
+                        manager._request_json(port=server.server_port, credential='a' * 64,
+                            method='POST', path='/api/extensions/github/requests', timeout=2,
+                            body={'action': 'read', 'chatId': 'chat', 'requestId': 'turn', **changed})
+                self.assertEqual(len(observed), 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=2)
+
     def test_documents_are_explicitly_truncated_for_model_context(self):
         value = self.evidence()
         value['readme'] = 'x' * 30000
@@ -1116,7 +1271,8 @@ class RecipeValidationTests(unittest.TestCase):
     def test_scoped_request_status_is_fixed_read_and_rejects_inconsistent_receipts(self):
         envelope = {'schemaVersion': 1, 'action': 'github-request-status', 'chatId': 'chat', 'requestId': 'turn'}
         receipt = {'schemaVersion': 1, 'kind': 'ods-extension-request-status', 'chatId': 'chat', 'requestId': 'turn',
-                   'requestState': 'pending', 'proposalAccepted': True, 'prepared': False,
+                   'requestState': 'pending', 'authorizationMode': 'install',
+                   'proposalAccepted': True, 'prepared': False,
                    'extensionId': 'example', 'runtimeStatus': 'not_observed'}
         with mock.patch.object(manager, '_read_env', return_value={'DASHBOARD_API_KEY': 'a' * 64}), \
              mock.patch.object(manager, '_request_json', return_value=(200, receipt)) as request:
@@ -1126,17 +1282,33 @@ class RecipeValidationTests(unittest.TestCase):
             failed = {**receipt, 'prepared': True, 'runtimeStatus': 'error', 'runtimeError': 'missing pyproject.toml'}
             request.return_value = (200, failed)
             self.assertEqual(manager._read_request_status(pathlib.Path('/unused'), 3002, json.dumps(envelope).encode()), failed)
+            failed['runtimeError'] = 'Source image build failed. ' + 'x' * 7000
+            request.return_value = (200, failed)
+            self.assertEqual(manager._read_request_status(pathlib.Path('/unused'), 3002, json.dumps(envelope).encode()), failed)
+            failed['runtimeError'] = 'x' * 8192
+            self.assertEqual(manager._read_request_status(pathlib.Path('/unused'), 3002, json.dumps(envelope).encode()), failed)
             for change in [{'runtimeError': ''}, {'runtimeError': None}, {'runtimeError': 42},
-                           {'runtimeError': 'x' * 2001}, {'runtimeStatus': 'enabled'}, {'requestId': 'other'}]:
+                           {'runtimeError': 'x' * 8193}, {'runtimeStatus': 'enabled'}, {'requestId': 'other'}]:
                 request.return_value = (200, {**failed, **change})
                 with self.assertRaises(manager.ManagerError):
                     manager._read_request_status(pathlib.Path('/unused'), 3002, json.dumps(envelope).encode())
             for matches in [[], ['existing-a']]:
                 request.return_value = (200, {**receipt, 'existingExtensionIds': matches})
                 self.assertEqual(manager._read_request_status(pathlib.Path('/unused'), 3002, json.dumps(envelope).encode())['existingExtensionIds'], matches)
+            verified = {**receipt, 'prepared': True, 'runtimeStatus': 'cli_installed',
+                        'installationVerified': True}
+            request.return_value = (200, verified)
+            self.assertTrue(manager._read_request_status(pathlib.Path('/unused'), 3002,
+                json.dumps(envelope).encode())['installationVerified'])
+            for change in ({'installationVerified': False}, {'installationVerified': 'true'},
+                           {'requestState': 'cancelled'}, {'runtimeStatus': 'stopped'}):
+                request.return_value = (200, {**verified, **change})
+                with self.assertRaises(manager.ManagerError):
+                    manager._read_request_status(pathlib.Path('/unused'), 3002, json.dumps(envelope).encode())
             for change in [{'existingExtensionIds': None}, {'existingExtensionIds': ['../escape']},
                            {'existingExtensionIds': ['same', 'same']}, {'existingExtensionIds': ['a'] * 65},
-                           {'requestId': 'other'}, {'runtimeStatus': 'enabled'}, {'extensionId': '../escape'}, {'secret': 'never-return'}]:
+                            {'requestId': 'other'}, {'authorizationMode': 'unknown'},
+                            {'runtimeStatus': 'enabled'}, {'extensionId': '../escape'}, {'secret': 'never-return'}]:
                 request.return_value = (200, {**receipt, **change})
                 with self.assertRaises(manager.ManagerError):
                     manager._read_request_status(pathlib.Path('/unused'), 3002, json.dumps(envelope).encode())
@@ -1213,6 +1385,24 @@ class RecipeValidationTests(unittest.TestCase):
             manager._serve_connection(connection, expected_uid=os.getuid() + 1, env_path=self.env_path, port=3002)
             execute.assert_not_called()
 
+    def test_owner_peer_can_read_request_pin_without_dispatching_lifecycle(self):
+        connection = mock.Mock()
+        connection.recv.return_value = (b'{"schemaVersion":1,"action":"github-request-pin",'
+                                        b'"chatId":"chat","requestId":"turn"}\n')
+        receipt = {'schemaVersion': 1, 'kind': 'ods-extension-request-commit',
+                   'chatId': 'chat', 'requestId': 'turn',
+                   'repository': 'https://github.com/owner/repo', 'commit': 'a' * 40,
+                   'evidenceScope': 'repository-default-branch-at-inspection',
+                   'installationStarted': False}
+        with mock.patch.object(manager, 'peer_ids', return_value=(os.getuid(), 0)), \
+             mock.patch.object(manager, '_pin_request_repository', return_value=receipt) as pin, \
+             mock.patch.object(manager, '_execute') as execute:
+            manager._serve_connection(connection, expected_uid=os.getuid() + 1,
+                                      env_path=pathlib.Path('/unused-test-env'), port=3002)
+        pin.assert_called_once()
+        execute.assert_not_called()
+        self.assertEqual(json.loads(connection.sendall.call_args.args[0]), receipt)
+
 
     def test_integration_guidance_is_bounded_evidence_not_runtime_proof(self):
         value = {'schemaVersion': 1, 'extensionId': 'demo', 'scope': 'recipe-integration-guidance',
@@ -1265,6 +1455,7 @@ class RecipeValidationTests(unittest.TestCase):
                 {key: envelope[key] for key in ('chatId', 'requestId', 'candidate')})])
             receipt = {'schemaVersion': 1, 'kind': 'ods-extension-request-status',
                        'chatId': 'chat', 'requestId': 'turn', 'requestState': 'pending',
+                       'authorizationMode': 'install',
                        'proposalAccepted': True, 'prepared': False, 'extensionId': 'example',
                        'runtimeStatus': 'not_observed'}
             status_envelope = {'schemaVersion': 1, 'action': 'github-request-status',
@@ -1275,7 +1466,16 @@ class RecipeValidationTests(unittest.TestCase):
                 result = manager._read_request_status(env, server.server_port, json.dumps(status_envelope).encode())
             self.assertEqual(result, receipt)
             self.assertEqual(observed[-1], ('/api/extensions/github/requests/status',
-                                           {'chatId': 'chat', 'requestId': 'turn'}))
+                                            {'chatId': 'chat', 'requestId': 'turn'}))
+            receipt = {**receipt, 'prepared': True, 'runtimeStatus': 'error',
+                       'runtimeError': 'Source image build failed. ' + 'x' * 7000}
+            with tempfile.TemporaryDirectory() as directory:
+                env = pathlib.Path(directory) / '.env'
+                env.write_text('DASHBOARD_API_KEY=' + 'a' * 64 + '\n');env.chmod(0o600)
+                result = manager._read_request_status(env, server.server_port, json.dumps(status_envelope).encode())
+            self.assertEqual(result['runtimeError'], receipt['runtimeError'])
+            self.assertEqual(observed[-1], ('/api/extensions/github/requests/status',
+                                            {'chatId': 'chat', 'requestId': 'turn'}))
             receipt = {'schemaVersion': 1, 'kind': 'ods-extension-request-preparation',
                        'chatId': 'chat', 'requestId': 'turn', 'draftId': 'd' * 64,
                        'recipeDigest': digest, 'extensionId': 'example', 'state': 'available',
@@ -1318,6 +1518,15 @@ class RecipeValidationTests(unittest.TestCase):
                     manager._advance_request(env, server.server_port, json.dumps(advance_envelope).encode())
             self.assertEqual(observed[-1], ('/api/extensions/github/requests/advance',
                                            {'chatId': 'chat', 'requestId': 'turn'}))
+            receipt['state'] = 'pending'
+            retry_envelope = {**status_envelope, 'action': 'github-request-retry'}
+            with tempfile.TemporaryDirectory() as directory:
+                env = pathlib.Path(directory) / '.env'
+                env.write_text('DASHBOARD_API_KEY=' + 'a' * 64 + '\n');env.chmod(0o600)
+                result = manager._advance_request(env, server.server_port, json.dumps(retry_envelope).encode())
+                self.assertEqual(result, receipt)
+            self.assertEqual(observed[-1], ('/api/extensions/github/requests/retry',
+                                           {'chatId': 'chat', 'requestId': 'turn'}))
             for path, body in [('/api/extensions/github/requests', {'action': 'create'}),
                                ('/api/extensions/github/requests/status', {'chatId': '../chat', 'requestId': 'turn'}),
                                ('/api/extensions/github/requests/prepare', {'chatId': 'chat', 'requestId': 'turn', 'draftId': 'd' * 64}),
@@ -1326,7 +1535,7 @@ class RecipeValidationTests(unittest.TestCase):
                 with self.assertRaises(manager.ManagerError):
                     manager._request_json(port=server.server_port, credential='a' * 64, method='POST',
                                           path=path, timeout=2, body=body)
-            self.assertEqual(len(observed), 7)
+            self.assertEqual(len(observed), 9)
         finally:
             server.shutdown();server.server_close();worker.join(timeout=2)
 
@@ -1340,7 +1549,9 @@ class RecipeValidationTests(unittest.TestCase):
             env = pathlib.Path(directory) / '.env'
             env.write_text('DASHBOARD_API_KEY=' + 'a' * 64 + '\n'); env.chmod(0o600)
             with patch.object(manager, '_request_json') as transport:
-                for reason in ('proposal_required', 'integration_selection_required'):
+                for reason in ('proposal_required', 'integration_selection_required',
+                               'license_review_required', 'repository_evidence_unavailable',
+                               'recipe_inspection_required', 'request_changed'):
                     value = {**rejection, 'reason':reason}
                     transport.return_value = (409, {'detail':value})
                     self.assertEqual(manager._prepare_request(env, 3002, json.dumps(envelope).encode()), value)

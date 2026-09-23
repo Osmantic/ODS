@@ -47,8 +47,17 @@ def build_install_plan(target, entries, load_service, configured, protected=()):
                   'stopped': 'enable', 'not_installed': 'install',
                   'installing': 'wait', 'setting_up': 'wait'}.get(status, 'blocked')
         reason = None
+        if status == 'stopped' and type(svc.get('port')) is int and svc['port'] == 0 \
+                and svc.get('startup_check') is False:
+            # A portless CLI cannot be made ready by starting a long-running
+            # service. Only the API's observed absence of progress permits a
+            # fresh install; any record could represent unfinished host work.
+            if row.get('_ods_progress_file') == 'absent':
+                action = 'install'
+            else:
+                action, reason = 'blocked', 'CLI installation progress requires inspection'
         if action == 'blocked':
-            reason = 'Inspect the unavailable or failed service before changing it'
+            reason = reason or 'Inspect the unavailable or failed service before changing it'
         if key in protected and action not in {'none', 'wait'}:
             action, reason = 'blocked', 'ODS manages this service'
         if action == 'install' and row.get('installable') is not True:

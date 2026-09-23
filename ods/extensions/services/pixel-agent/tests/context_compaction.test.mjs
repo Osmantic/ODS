@@ -217,6 +217,27 @@ test('overflow precheck cannot attribute a historical cumulative reply to the ne
   assert.equal(f.runtime.context(user).context.used,7200,'aborted output preserves the last verified call');
 });
 
+test('over-window usage is unknown instead of showing a false percentage above 100',t=>{
+  const f=fixture(t,{requireModelObservation:true});
+  f.entry.totalTokensFresh=false;
+  const ctx={agentId:'pixel',sessionKey,sessionId:f.entry.sessionId};
+  observed(f.runtime,{contextTokenBudget:32768,lastAssistant:{usage:{input:7000,output:200}}},ctx);
+  assert.equal(f.runtime.context(user).context.used,7200);
+  const stale={...ctx,runId:'stale-overflow'};
+  f.runtime.observeModelInput({},stale);
+  f.runtime.observeModelOutput({contextTokenBudget:32768,lastAssistant:{timestamp:1,usage:{input:100000,output:100}}},stale);
+  assert.equal(f.runtime.context(user).context.used,7200,'historical overflow does not retire a valid proof');
+  observed(f.runtime,{contextTokenBudget:32768,lastAssistant:{usage:{input:100000,output:100}}},ctx);
+  assert.equal(f.runtime.context(user).context,null,'a current impossible report retires the old proof');
+  observed(f.runtime,{contextTokenBudget:32768,lastAssistant:{usage:{input:32000,output:768}}},ctx);
+  assert.equal(f.runtime.context(user).context.used,32768,'a verified full window remains measurable');
+  const filename=path.join(f.directory,`${user}.json`);
+  const ledger=JSON.parse(fs.readFileSync(filename,'utf8'));
+  ledger.measurement.used=111195;
+  fs.writeFileSync(filename,JSON.stringify(ledger));
+  assert.equal(createContextCompaction(f.args).context(user).context,null,'an older impossible proof stays hidden after restart');
+});
+
 test('a model change between input and output cannot relabel usage',t=>{
   let model='before';
   const time=Date.now();

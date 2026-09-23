@@ -443,13 +443,13 @@ else
 fi
 unset INSTALL_DIR PIXEL_SOURCE_URL PIXEL_SOURCE_REF
 
-# Valid GitHub URL + valid ref
+# The former private GitHub source must not be a public-beta dependency.
 PIXEL_SOURCE_URL="https://github.com/Osmantic/Pixel.git"
 PIXEL_SOURCE_REF="abcdef0123456789abcdef0123456789abcdef01"
-if ods_pixel_validate_source; then
-    pass "Valid GitHub URL + valid ref accepted"
+if ! ods_pixel_validate_source 2>/dev/null; then
+    pass "Former private GitHub source is rejected"
 else
-    fail "Valid GitHub URL + valid ref should be accepted"
+    fail "Former private GitHub source should be rejected"
 fi
 
 # URL with credentials
@@ -594,12 +594,12 @@ section "ods_pixel_activate_source_contract"
 
 if (
     unset PIXEL_SOURCE_URL PIXEL_SOURCE_REF PIXEL_SOURCE_DIR
+    INSTALL_DIR="$SCRIPT_DIR/.."
     ods_pixel_activate_source_contract \
-        "https://github.com/Osmantic/Pixel.git" \
-        "abcdef0123456789abcdef0123456789abcdef01" ""
+        bundled "$ODS_PIXEL_BUNDLED_REF" ""
     python3 -c 'import os
-assert os.environ["PIXEL_SOURCE_URL"] == "https://github.com/Osmantic/Pixel.git"
-assert os.environ["PIXEL_SOURCE_REF"] == "abcdef0123456789abcdef0123456789abcdef01"
+assert os.environ["PIXEL_SOURCE_URL"] == "bundled"
+assert os.environ["PIXEL_SOURCE_REF"] == "817214d5ec3d8aa583fe50c1dc7561f3c1a16dff"
 assert os.environ["PIXEL_SOURCE_DIR"] == ""'
 ); then
     pass "Validated Pixel source contract persists across installer phases"
@@ -712,7 +712,9 @@ assert expected <= properties.keys()
 assert properties["PIXEL_SOURCE_REF"]["pattern"] == "^[0-9a-f]{40}$"
 assert properties["PIXEL_OPENWEBUI_KEY"]["minLength"] == 64
 assert properties["PIXEL_OPENWEBUI_KEY"]["maxLength"] == 64
-assert properties["PIXEL_PREVIEW_RUNTIME_DIR"]["enum"] == ["/run/ods-pixel-preview"]
+assert properties["PIXEL_PREVIEW_RUNTIME_DIR"]["enum"] == ["/run/ods-pixel-preview", "/mnt/host/wsl/ods-portal-runtime/preview"]
+assert properties["PIXEL_INGRESS_RUNTIME_DIR"]["enum"] == ["/run/ods-pixel", "/mnt/host/wsl/ods-portal-runtime/ingress"]
+assert properties["PIXEL_RUNTIME_BIND_PROPAGATION"]["enum"] == ["rprivate", "rshared"]
 assert properties["PIXEL_INGRESS_GID"]["minimum"] == 1
 assert "PIXEL_LICENSE_ACCEPTED" not in properties
 PY

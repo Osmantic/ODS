@@ -25,8 +25,20 @@ services:
     group_add:
       - "${PIXEL_INGRESS_GID:?Set PIXEL_INGRESS_GID in .env}"
     volumes:
-      - "${PIXEL_INGRESS_RUNTIME_DIR:?Set PIXEL_INGRESS_RUNTIME_DIR in .env}:/pixel-runtime:ro"
-      - "${PIXEL_PREVIEW_RUNTIME_DIR:?Set PIXEL_PREVIEW_RUNTIME_DIR in .env}:/pixel-preview-runtime:ro"
+      - type: bind
+        source: ${PIXEL_INGRESS_RUNTIME_DIR:?Set PIXEL_INGRESS_RUNTIME_DIR in .env}
+        target: /pixel-runtime
+        read_only: true
+        bind:
+          create_host_path: true
+          propagation: ${PIXEL_RUNTIME_BIND_PROPAGATION:-rprivate}
+      - type: bind
+        source: ${PIXEL_PREVIEW_RUNTIME_DIR:?Set PIXEL_PREVIEW_RUNTIME_DIR in .env}
+        target: /pixel-preview-runtime
+        read_only: true
+        bind:
+          create_host_path: true
+          propagation: ${PIXEL_RUNTIME_BIND_PROPAGATION:-rprivate}
       - pixel-transition-state:/pixel-transition-state
     tmpfs:
       - /tmp:size=1M,noexec,nosuid,nodev,mode=1777

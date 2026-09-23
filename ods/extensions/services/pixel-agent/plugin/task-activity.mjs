@@ -31,7 +31,8 @@ function failedResult(event) {
   let result = event?.result;
   for (let depth = 0; depth < 3 && result && typeof result === 'object'; depth++) {
     const details = result.details;
-    if (result.isError === true || ['failed', 'error', 'blocked'].includes(details?.status)
+    if (result.isError === true || details?.ok === false || details?.success === false
+      || ['failed', 'error', 'blocked'].includes(details?.status)
       || (Number.isInteger(details?.exitCode) && details.exitCode !== 0)) return true;
     result = details?.result;
   }

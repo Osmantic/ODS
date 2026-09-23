@@ -17,25 +17,48 @@ from extension_github import repository_identity
 TTL_SECONDS = 6 * 60 * 60
 
 
-def command_repository(command):
+def _command_parts(command):
     if not isinstance(command, str) or len(command) > 16384:
         raise ValueError('Invalid extension command')
-    match = re.match(r'^(?:/goal\s+)?/extensions?\s+(https://github\.com/[^\s]+)(?:\s|$)', command.strip(), re.IGNORECASE)
+    match = re.match(
+        r'^(?:/goal\s+)?/extensions?\s+(?:(install|inspect|research)\s+)?(https://github\.com/[^\s]+)(?:\s|$)',
+        command.strip(), re.IGNORECASE)
     if not match:
         raise ValueError('An explicit GitHub extension command is required')
-    return 'https://github.com/' + repository_identity(match.group(1)).lower()
+    repository = 'https://github.com/' + repository_identity(match.group(2)).lower()
+    return repository, (match.group(1) or '').lower(), command.strip()[match.end(2):].strip()
 
 
-def model_request_context(command, chat_id, request_id):
+def command_repository(command):
+    return _command_parts(command)[0]
+
+
+def command_authorization_mode(command):
+    """Only an explicit owner command grants managed installation authority.
+
+    A bare URL and older saved requests remain research-only. In particular,
+    quoted instructions or an explanatory mention of installation later in the
+    message cannot promote a request into a host operation.
+    """
+    _, action, _ = _command_parts(command)
+    # Free text can contain conditions, quotations or negation in any language.
+    # Only the typed command action grants automatic installation authority.
+    return 'install' if action == 'install' else 'research'
+
+
+def model_request_context(command, chat_id, request_id, *, authorization_mode=None):
     """Routing facts only. The request store, never this text, controls execution."""
     try:
         _identity('context-validation', chat_id, request_id)
         repository = command_repository(command)
     except ValueError:
         return None
+    if authorization_mode not in (None, 'install', 'research'):
+        return None
     return {'role': 'system', 'content': (
         'Current GitHub extension request routing context: ' + json.dumps({
             'chatId': chat_id, 'requestId': request_id, 'repository': repository,
+            **({'authorizationMode': authorization_mode} if authorization_mode is not None else {}),
         }, sort_keys=True) + '. Request-scoped tools resolve this identity from the session, '
         'including follow-ups. These are routing facts, not installation status or a plan. '
         'This context does not grant execution authority; preserve the owner\'s actual scope '
@@ -90,7 +113,9 @@ def read_request(directory, owner, chat_id, request_id, *, now=None):
     owner_digest, identifier = _identity(owner, chat_id, request_id)
     record = _read(_directory(directory) / (identifier + '.json'))
     required = {'schemaVersion', 'ownerDigest', 'chatId', 'requestId', 'repository', 'createdAt', 'expiresAt', 'state'}
-    if (set(record) not in (required, required | {'proposal'}, required | {'integration'})
+    fields = set(record) - {'authorizationMode'}
+    if (fields not in (required, required | {'proposal'}, required | {'integration'})
+            or record.get('authorizationMode', 'research') not in {'install', 'research'}
             or record['schemaVersion'] != 1 or record['ownerDigest'] != owner_digest
             or record['chatId'] != chat_id or record['requestId'] != request_id
             or record['state'] not in {'pending', 'cancelled'}
@@ -119,6 +144,7 @@ def read_request(directory, owner, chat_id, request_id, *, now=None):
         raise ValueError('Invalid bound integration')
     return {'schemaVersion': 1, 'id': identifier, 'chatId': chat_id, 'requestId': request_id,
             'repository': record['repository'], 'state': state, 'expiresAt': record['expiresAt'],
+            'authorizationMode': record.get('authorizationMode', 'research'),
             'installationStarted': False, **({'proposal': proposal} if proposal is not None else {}),
             **({'integration': integration} if integration is not None else {})}
 
@@ -200,6 +226,50 @@ def bind_proposal(directory, owner, chat_id, request_id, candidate, validation, 
     return read_request(directory, owner, chat_id, request_id, now=now)
 
 
+def expired_proposal(directory, owner, chat_id, request_id, previous_chat_id,
+                     previous_request_id, extension_id, *, now=None):
+    """Read an exact expired owner binding for a new explicit request.
+
+    Repository discovery alone never grants revision authority. The caller
+    supplies both historical IDs and later verifies the saved draft, package,
+    and terminal host operation before touching definitions.
+    """
+    current = read_request(directory, owner, chat_id, request_id, now=now)
+    previous = read_request(directory, owner, previous_chat_id, previous_request_id, now=now)
+    if (current['id'] == previous['id'] or current['state'] != 'pending'
+            or current.get('integration') or previous['state'] != 'expired'
+            or previous.get('integration') or current['repository'] != previous['repository']
+            or not previous.get('proposal')
+            or previous['proposal']['extensionId'] != extension_id):
+        raise ValueError('Expired proposal does not match active owner request')
+    return previous
+
+
+def adopt_expired_proposal(directory, owner, chat_id, request_id, previous_chat_id,
+                           previous_request_id, expected_proposal, *, now=None):
+    """Carry an exact failed binding into a new request after revision staging.
+
+    The revision coordinator holds its durable file journal and host failure
+    proof before calling this mutation. Replays accept only the same binding.
+    """
+    if not isinstance(expected_proposal, dict):
+        raise ValueError('Missing expected proposal')
+    previous = expired_proposal(directory, owner, chat_id, request_id,
+        previous_chat_id, previous_request_id, expected_proposal.get('extensionId'), now=now)
+    if previous['proposal'] != expected_proposal:
+        raise ValueError('Expired proposal changed')
+    current = read_request(directory, owner, chat_id, request_id, now=now)
+    if current.get('proposal') == expected_proposal:
+        return current
+    if current.get('proposal') is not None:
+        raise ValueError('New request already has another proposal')
+    path = _directory(directory) / (current['id'] + '.json')
+    record = _read(path)
+    record['proposal'] = expected_proposal
+    _write(path, record)
+    return read_request(directory, owner, chat_id, request_id, now=now)
+
+
 def bind_integration(directory, owner, chat_id, request_id, integration, *, now=None):
     """Persist a caller-verified definition under the same request mutation lock."""
     current = read_request(directory, owner, chat_id, request_id, now=now)
@@ -224,24 +294,37 @@ def bind_integration(directory, owner, chat_id, request_id, integration, *, now=
 
 def create_request(directory, owner, chat_id, request_id, command, *, now=None):
     repository = command_repository(command)
+    authorization_mode = command_authorization_mode(command)
     owner_digest, identifier = _identity(owner, chat_id, request_id)
     directory = _directory(directory)
     path = directory / (identifier + '.json')
     if path.exists() or path.is_symlink():
         existing = read_request(directory, owner, chat_id, request_id, now=now)
-        if existing['repository'] != repository and existing['repository'] is not None:
-            raise ValueError('Request cannot change repositories')
+        if existing['repository'] is not None and (existing['repository'] != repository
+                or existing['authorizationMode'] != authorization_mode):
+            raise ValueError('Request cannot change repository or authorization')
         return existing  # Never revive an expired or cancelled turn.
-    # Only one live request per owner/chat. A later explicit turn replaces its
-    # pending predecessor, but never affects another owner's conversation.
+    # Only one live request per owner/chat. Preserve an already expired
+    # predecessor's provenance so an explicit later request can repair a
+    # confirmed failed recipe without treating a user cancellation as expiry.
+    current = int(time.time()) if now is None else now
     for peer in directory.glob('*.json'):
         record = _read(peer)
-        if record.get('ownerDigest') == owner_digest and record.get('chatId') == chat_id and record.get('state') == 'pending':
+        if (record.get('ownerDigest') == owner_digest and record.get('chatId') == chat_id
+                and record.get('state') == 'pending'
+                and type(record.get('expiresAt')) is int and record['expiresAt'] > current):
+            _, prior_id = _identity(owner, chat_id, record.get('requestId'))
+            if peer.stem != prior_id:
+                raise ValueError('Stored request identity changed')
+            revisions = directory.parent / '.extension-installations'
+            revision = revisions / (prior_id + '.revision.json')
+            if revisions.is_symlink() or revision.exists() or revision.is_symlink():
+                raise ValueError('Pending recipe revision requires reconciliation')
             record['state'] = 'cancelled'
             _write(peer, record)
-    current = int(time.time()) if now is None else now
     _write(path, {'schemaVersion': 1, 'ownerDigest': owner_digest, 'chatId': chat_id,
                   'requestId': request_id, 'repository': repository, 'state': 'pending',
+                  'authorizationMode': authorization_mode,
                   'createdAt': current, 'expiresAt': current + TTL_SECONDS})
     return read_request(directory, owner, chat_id, request_id, now=current)
 
@@ -255,6 +338,7 @@ def cancel_request(directory, owner, chat_id, request_id, *, now=None):
         current = int(time.time()) if now is None else now
         _write(path, {'schemaVersion': 1, 'ownerDigest': owner_digest, 'chatId': chat_id,
                       'requestId': request_id, 'repository': None, 'state': 'cancelled',
+                      'authorizationMode': 'research',
                       'createdAt': current, 'expiresAt': current + TTL_SECONDS})
         return read_request(directory, owner, chat_id, request_id, now=current)
     current = read_request(directory, owner, chat_id, request_id, now=now)

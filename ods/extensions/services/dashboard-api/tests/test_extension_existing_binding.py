@@ -37,7 +37,7 @@ def existing(monkeypatch, tmp_path):
                           'upstream.json': json.dumps({'repository': 'https://github.com/owner/repo', 'origin':'github-proposal'})}.items():
         (package / name).write_text(content, encoding='utf-8')
     directory = tmp_path / '.extension-requests'; directory.mkdir()
-    create_request(directory, 'owner', 'chat', 'original', '/extensions https://github.com/owner/repo')
+    create_request(directory, 'owner', 'chat', 'original', '/extensions install https://github.com/owner/repo')
     for key, root in zip(('USER_EXTENSIONS_DIR', 'EXTENSIONS_DIR', 'EXTENSIONS_LIBRARY_DIR'), roots):
         monkeypatch.setattr(extensions, key, root)
     monkeypatch.setattr(extensions, '_extensions_lock_path', lambda: tmp_path / '.lock')
@@ -88,6 +88,19 @@ def test_binding_rejects_wrong_owner_repository_cancel_and_ambiguous_files(exist
     cancel_request(directory, 'owner', 'chat', 'original')
     with pytest.raises(extensions.HTTPException):
         asyncio.run(extensions.extension_github_prepare_request(request(payload), api_key='owner'))
+
+
+def test_research_only_request_cannot_prepare_existing_integration(existing):
+    _, _, directory, _ = existing
+    create_request(directory, 'owner', 'research-chat', 'turn',
+                   '/extensions https://github.com/owner/repo')
+    identity = {'chatId': 'research-chat', 'requestId': 'turn'}
+    with pytest.raises(extensions.HTTPException) as denied:
+        asyncio.run(extensions.extension_github_prepare_request(
+            request({**identity, 'extensionId': 'example'}), api_key='owner'))
+    assert denied.value.status_code == 409
+    saved = read_request(directory, 'owner', 'research-chat', 'turn')
+    assert saved['authorizationMode'] == 'research' and 'integration' not in saved
 
 
 def test_reused_integration_uses_durable_journal_and_never_replays_unknown_attempt(monkeypatch, existing):

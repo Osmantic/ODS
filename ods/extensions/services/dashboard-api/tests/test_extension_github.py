@@ -2,11 +2,129 @@ import asyncio
 import base64
 import json
 import hashlib
+import time
 
 import httpx
 import pytest
 
-from extension_github import document, existing_recipes, inspect_file, inspect_repository, repository_identity
+from extension_github import (GitHubRateLimitError, _cache_ttl, _github_json, _reset_github_cache,
+                              document, existing_recipes, inspect_file, inspect_repository,
+                              repository_identity)
+
+
+@pytest.fixture
+def github_cache():
+    _reset_github_cache()
+    yield
+    _reset_github_cache()
+
+
+def test_github_get_cache_requires_opt_in_and_returns_independent_evidence(github_cache):
+    calls = []
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json={'full_name': 'owner/repo', 'private': False})
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            first = await _github_json(client, 'owner/repo', cache_enabled=True)
+            first['private'] = True
+            second = await _github_json(client, 'owner/repo', cache_enabled=True)
+            assert second['private'] is False
+            await _github_json(client, 'owner/repo')
+    asyncio.run(run())
+    assert len(calls) == 2
+    assert _cache_ttl('owner/repo') < _cache_ttl('owner/repo/readme?ref=' + 'a' * 40)
+    assert _cache_ttl('owner/repo/commits/main') < _cache_ttl('owner/repo/commits/' + 'a' * 40)
+
+
+def test_concurrent_github_gets_share_one_inflight_request(github_cache):
+    calls = []
+    async def handler(request):
+        calls.append(str(request.url))
+        await asyncio.sleep(0.02)
+        return httpx.Response(200, json={'sha': 'a' * 40})
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await asyncio.gather(*(
+                _github_json(client, 'owner/repo/commits/main', cache_enabled=True)
+                for _ in range(8)))
+    results = asyncio.run(run())
+    assert len(calls) == 1
+    assert all(result['sha'] == 'a' * 40 for result in results)
+
+
+def test_shared_evidence_cache_has_a_byte_limit(github_cache):
+    import extension_github
+    calls = []
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, json={'text': 'x' * 500000})
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            for index in range(18):
+                await _github_json(client, f'owner/repo/contents/file-{index}?ref=' + 'a' * 40,
+                                   cache_enabled=True)
+            await _github_json(client, 'owner/repo/contents/file-0?ref=' + 'a' * 40,
+                               cache_enabled=True)
+    asyncio.run(run())
+    assert len(calls) == 19  # the oldest immutable response was evicted
+    assert extension_github._CACHE_BYTES <= extension_github._CACHE_MAX_BYTES
+    assert len(extension_github._CACHE) <= extension_github._CACHE_MAX_ENTRIES
+
+
+def test_quota_response_has_sanitized_retry_and_cools_down_without_hiding_cached_data(github_cache):
+    calls = []
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path.endswith('/cached'):
+            return httpx.Response(200, json={'ready': True})
+        return httpx.Response(403, headers={'X-RateLimit-Remaining': '0',
+                                            'X-RateLimit-Reset': str(int(time.time()) + 120)},
+                              text='private GitHub diagnostic must not leak')
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await _github_json(client, 'owner/repo/cached', cache_enabled=True)
+            with pytest.raises(GitHubRateLimitError) as first:
+                await _github_json(client, 'owner/repo/missing', cache_enabled=True)
+            assert 1 <= first.value.retry_after <= 120
+            assert 'private GitHub diagnostic' not in str(first.value)
+            assert await _github_json(client, 'owner/repo/cached', cache_enabled=True) == {'ready': True}
+            with pytest.raises(GitHubRateLimitError):
+                await _github_json(client, 'owner/repo/other', cache_enabled=True)
+    asyncio.run(run())
+    assert calls == ['/repos/owner/repo/cached', '/repos/owner/repo/missing']
+
+
+def test_concurrent_quota_failures_collapse_to_one_get(github_cache):
+    calls = []
+    async def handler(request):
+        calls.append(request.url.path)
+        await asyncio.sleep(0.02)
+        return httpx.Response(429, headers={'Retry-After': '45'})
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            results = await asyncio.gather(*(
+                _github_json(client, 'owner/repo', cache_enabled=True) for _ in range(8)),
+                return_exceptions=True)
+            assert all(isinstance(result, GitHubRateLimitError) for result in results)
+            assert all(result.retry_after == 45 for result in results)
+            with pytest.raises(GitHubRateLimitError):
+                await _github_json(client, 'owner/another', cache_enabled=True)
+    asyncio.run(run())
+    assert calls == ['/repos/owner/repo']
+
+
+@pytest.mark.parametrize('header,expected', [('999999', 3600), ('bad', 30)])
+def test_http_429_retry_after_is_bounded(github_cache, header, expected):
+    def handler(request):
+        return httpx.Response(429, headers={'Retry-After': header}, text='sensitive upstream body')
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(GitHubRateLimitError) as error:
+                await _github_json(client, 'owner/repo', cache_enabled=True)
+            assert error.value.retry_after == expected
+            assert 'sensitive' not in str(error.value)
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize('url', ['http://github.com/a/b', 'https://github.com.evil/a/b',
@@ -108,7 +226,8 @@ def test_saved_revision_never_moves_to_new_default_branch(tmp_path, returned):
         assert len(calls) == 2
     else:
         assert asyncio.run(operation)['commit'] == requested
-        assert len(calls) == 4
+        assert len(calls) == 5
+        assert calls[-1].endswith('/contents?ref=' + requested)
 
 
 @pytest.mark.parametrize('revision', ['main', '../other', '', 42])

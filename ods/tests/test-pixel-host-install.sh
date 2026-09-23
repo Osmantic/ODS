@@ -506,13 +506,13 @@ fi
 plugin_list_bin="$TEST_ROOT/openclaw-plugin-list"
 cat > "$plugin_list_bin" <<SH
 #!/usr/bin/env bash
-printf '%s\n' '{"plugins":[{"id":"pixel-ods","status":"loaded","rootDir":"$plugin_tree","contracts":{"tools":["pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance"]}}]}'
+printf '%s\n' '{"plugins":[{"id":"pixel-ods","status":"loaded","rootDir":"$plugin_tree","contracts":{"tools":["pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"]}}]}'
 SH
 chmod 0755 "$plugin_list_bin"
 check _ods_pixel_verify_plugin_loaded "$owner" "$home" "$plugin_list_bin" "$plugin_tree"
 cat > "$plugin_list_bin" <<SH
 #!/usr/bin/env bash
-printf '%s\n' '{"plugins":[{"id":"pixel-ods","status":"blocked","rootDir":"$plugin_tree","contracts":{"tools":["pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance"]}}]}'
+printf '%s\n' '{"plugins":[{"id":"pixel-ods","status":"blocked","rootDir":"$plugin_tree","contracts":{"tools":["pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"]}}]}'
 SH
 if _ods_pixel_verify_plugin_loaded "$owner" "$home" "$plugin_list_bin" "$plugin_tree" >/dev/null 2>&1; then
     fail "blocked ODS Pixel plugin rejected"
@@ -560,7 +560,7 @@ fi
 plugin_registry_bin="$TEST_ROOT/openclaw-plugin-registry"
 cat > "$plugin_registry_bin" <<SH
 #!/usr/bin/env bash
-printf '%s\n' '{"refreshed":true,"registry":{"version":1,"refreshReason":"manual","plugins":[{"pluginId":"pixel-ods","enabled":true,"rootDir":"$plugin_tree","contributions":{"contracts":{"tools":["pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_status","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance"]}}}]}}'
+printf '%s\n' '{"refreshed":true,"registry":{"version":1,"refreshReason":"manual","plugins":[{"pluginId":"pixel-ods","enabled":true,"rootDir":"$plugin_tree","contributions":{"contracts":{"tools":["pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_status","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"]}}}]}}'
 SH
 chmod 0755 "$plugin_registry_bin"
 check _ods_pixel_refresh_plugin_registry "$owner" "$home" "$plugin_registry_bin" "$plugin_tree"
@@ -805,6 +805,21 @@ else
     fail "missing prior Pixel validation source was not reconstructed safely"
 fi
 
+if (
+    INSTALL_DIR="$transition_install"
+    PIXEL_SOURCE_URL=bundled
+    PIXEL_SOURCE_REF=817214d5ec3d8aa583fe50c1dc7561f3c1a16dff
+    restored="$(_ods_pixel_restore_transition_source \
+        "$owner" "$transition_home" "$PIXEL_SOURCE_REF")"
+    [[ "$restored" == "$transition_install/data/pixel/source-$previous_source_ref" \
+        && "$(git -C "$restored" rev-parse HEAD)" == "$previous_source_ref" \
+        && -z "$(git -C "$restored" status --porcelain)" ]]
+); then
+    pass "public bundle transition verifies an existing legacy checkout without fetching the private source"
+else
+    fail "public bundle transition could not reuse the verified local legacy checkout"
+fi
+
 sudo_mask_probe="$TEST_ROOT/sudo-mask-probe"
 if (
     ods_sudo_available() { return 0; }
@@ -827,7 +842,7 @@ cat > "$mock_bin/git" <<'SH'
 sleep 10
 SH
 chmod +x "$mock_bin/git"
-PIXEL_SOURCE_URL="https://github.com/Osmantic/Pixel.git"
+PIXEL_SOURCE_URL="$TEST_ROOT/slow-local-source"
 PIXEL_SOURCE_REF="$(printf 'f%.0s' {1..40})"
 timed_checkout="$TEST_ROOT/timed-checkouts/source-$PIXEL_SOURCE_REF"
 if PATH="$mock_bin:$PATH" ODS_PIXEL_SOURCE_TIMEOUT_SECONDS=1 \
@@ -838,6 +853,15 @@ elif [[ ! -e "$timed_checkout" ]] \
     pass "hung Pixel source clone is bounded and leaves no partial checkout"
 else
     fail "failed Pixel source clone left a partial checkout"
+fi
+
+PIXEL_SOURCE_URL="https://github.com/Osmantic/Pixel.git"
+if _ods_pixel_source_checkout "$owner" "$home" "$timed_checkout" >/dev/null 2>&1; then
+    fail "private Pixel source is rejected before checkout"
+elif [[ ! -e "$timed_checkout" ]]; then
+    pass "private Pixel source is rejected before checkout"
+else
+    fail "private Pixel source rejection left a checkout"
 fi
 
 answers="$TEST_ROOT/onboarding.json"
@@ -1313,7 +1337,7 @@ assert v["modelMaxTokens"] == 8192
 assert v["modelReasoning"] is False
 assert v["frontierBudgetProfile"] == "starter"
 assert v["operationsPolicyFile"] == sys.argv[2]
-assert v["gatewayExtensions"] == [{"id":"pixel-ods","path":"/opt/ods/pixel-plugin","sha256":"a"*64,"tools":["pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance"]}]
+assert v["gatewayExtensions"] == [{"id":"pixel-ods","path":"/opt/ods/pixel-plugin","sha256":"a"*64,"tools":["pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"]}]
 assert v["operationsLimbEnabled"] is True
 assert all(v[name] is False for name in ("emailLimbEnabled","calendarLimbEnabled","socialLimbEnabled","webLimbEnabled","frontierLimbEnabled"))
 ' "$answers" "$operations_policy"
@@ -1896,13 +1920,17 @@ check test "$(_ods_pixel_managed_source_ref "$owner" "$reconcile_home")" = "$rec
 if (
     unset PIXEL_SOURCE_URL
     [[ "$(_ods_pixel_reconciliation_source_url 817214d5ec3d8aa583fe50c1dc7561f3c1a16dff)" == bundled ]]
-    [[ "$(_ods_pixel_reconciliation_source_url b33730436baf5d98bf58f7d57c090318fe19f433)" == 'https://github.com/Osmantic/Pixel.git' ]]
+    ! _ods_pixel_reconciliation_source_url b33730436baf5d98bf58f7d57c090318fe19f433 >/dev/null 2>&1
+    PIXEL_SOURCE_URL=bundled
+    ! _ods_pixel_reconciliation_source_url b33730436baf5d98bf58f7d57c090318fe19f433 >/dev/null 2>&1
+    PIXEL_SOURCE_URL=https://github.com/Osmantic/Pixel.git
+    ! _ods_pixel_reconciliation_source_url 817214d5ec3d8aa583fe50c1dc7561f3c1a16dff >/dev/null 2>&1
     PIXEL_SOURCE_URL=/safe/developer-checkout
     [[ "$(_ods_pixel_reconciliation_source_url 817214d5ec3d8aa583fe50c1dc7561f3c1a16dff)" == /safe/developer-checkout ]]
 ); then
-    pass "model reconciliation chooses bundled source for the public ref and preserves developer overrides"
+    pass "model reconciliation uses bundled or explicit local source and rejects private or mismatched pins"
 else
-    fail "model reconciliation chooses bundled source for the public ref and preserves developer overrides"
+    fail "model reconciliation accepted a private or mismatched source"
 fi
 mkdir -p "$reconcile_home/.config/pixel-deployment"
 chmod 0700 "$reconcile_home/.config/pixel-deployment"
@@ -2359,7 +2387,7 @@ import json,sys
 p=json.load(open(sys.argv[1])); m=json.load(open(sys.argv[2]))
 assert p["type"] == "module" and p["openclaw"]["extensions"] == ["./index.js"]
 assert "dependencies" not in p
-assert sorted(m["contracts"]["tools"]) == sorted(["pixel_ods_apps_list","pixel_ods_download_promote","pixel_ods_evidence_readback","pixel_ods_evidence_report","pixel_ods_extensions", "pixel_ods_host_command_propose","pixel_ods_host_observe","pixel_ods_research","pixel_ods_status","pixel_ods_web_extract","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance"])
+assert sorted(m["contracts"]["tools"]) == sorted(["pixel_ods_apps_list","pixel_ods_download_promote","pixel_ods_evidence_readback","pixel_ods_evidence_report","pixel_ods_extensions", "pixel_ods_host_command_propose","pixel_ods_host_observe","pixel_ods_research","pixel_ods_status","pixel_ods_web_extract","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"])
 import re
 reserved = re.compile(r"^pixel_(?:gmail|calendar|social|web|ops|frontier)_")
 assert all(name != "pixel_limb_status" and not reserved.match(name) for name in m["contracts"]["tools"])

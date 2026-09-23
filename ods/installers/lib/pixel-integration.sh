@@ -198,12 +198,8 @@ ods_pixel_validate_source() {
         return
     fi
 
-    if [[ "$source" == "https://github.com/Osmantic/Pixel.git" ]]; then
-        return 0
-    fi
-
     [[ "$source" == /* && "$owner_root" == /* ]] || {
-        printf '%s\n' 'error: invalid-pixel-source' >&2
+        printf '%s\n' 'error: Pixel source must be the verified ODS bundle or an absolute local checkout' >&2
         return 1
     }
     _ods_pixel_secure_owner_directory "$owner_root" || return 1

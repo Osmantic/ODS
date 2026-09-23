@@ -14,8 +14,12 @@ export const sourceRecipeSchema = {
     description: {type:'string',maxLength:600,description:'Optional factual project purpose supported by the inspected repository. Empty means omitted. Do not claim installation, compatibility or verification status.'},
     dockerfile: {type: 'string', description: 'Observed repository-relative Dockerfile path. Use this OR dockerfileInline.'},
     dockerfileInline: {type: 'string', description: 'Complete project-specific Dockerfile if upstream has none. COPY the checked-out source and install that source, not a same-named registry package. Research dependencies and the actual entrypoint first. Shell dollars are escaped by ODS.'},
-    pythonVersion: {type: 'string', pattern: '^3\\.(10|11|12|13|14)$', description: 'Alternative to dockerfile/dockerfileInline ONLY for an inspected installable Python project (pyproject.toml or setup.py). Choose a version supported by its metadata. ODS copies and pip-installs the entire pinned source and runs pip check. Supply the real application command, or pythonImports for a library. Projects needing extra OS packages or custom build steps must use a researched Dockerfile instead.'},
+    pythonVersion: {type: 'string', pattern: '^3\\.(10|11|12|13|14)$', description: 'Alternative to dockerfile/dockerfileInline ONLY for an inspected installable Python project (pyproject.toml or setup.py). Choose a version supported by its metadata. ODS retains the pinned Git metadata, fetches its tag history for SCM versioning such as hatch-vcs, pip-installs the whole checkout and runs pip check. Supply the real application command, or pythonImports for a library. Other OS packages or custom build steps still require a researched Dockerfile.'},
     pythonImports: {type: 'array', minItems: 1, maxItems: 16, items: {type: 'string', pattern: '^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$'}, description: 'For a Python LIBRARY only: actual import module names observed in its source or documented usage, e.g. ["actual_package"]. Requires pythonVersion and cliOnly=true. Use instead of command; ODS imports these modules in the built image and checks the exit status. Do not assume the distribution name is also a CLI executable or an import name.'},
+    pythonVerification: {type:'object', additionalProperties:false, required:['expression','expected'], properties:{
+      expression:{type:'string',minLength:1,maxLength:2048,description:'Optional documented Python expression evaluated after pythonImports inside the installed image. Refer to imported modules as modules["module.name"], for example modules["humanize"].intcomma(12345). Statements, shell commands and workspace paths do not belong here.'},
+      expected:{type:'string',maxLength:2048,description:'Exact expected str(expression) from the documented function. A mismatch fails the managed installation verification.'},
+    },description:'Optional functional check for a Python library. Requires pythonImports; the managed one-shot verification still imports every module first. Use only an observed documented behavior.'},
     port: {type: 'integer', minimum: 0, maximum: 65535, description: 'Actual HTTP application port, or 0 for a CLI-only image.'},
     healthPath: {type: 'string', description: 'Required for a web service: actual HTTP health path. Omit for a CLI-only image.'},
     healthcheck: {type: 'array', minItems: 2, items: {type: 'string'}, description: 'Required for a web service: real Docker healthcheck starting with CMD or CMD-SHELL. For cliOnly, omit; ODS verifies the command exit instead.'},
@@ -31,6 +35,16 @@ export function compileSourceRecipe(source) {
   if (missing.length) throw Error('Missing source fields: ' + missing.join(', ') + '. Read this tool schema. A CLI-only image needs cliOnly=true, port=0 and a real verification command.');
   const {repository, commit, serviceId, name, port, healthPath = '', healthcheck, cliOnly = false} = source;
   let command = source.command;
+  const verification = source.pythonVerification;
+  if (verification !== undefined && (source.pythonImports === undefined
+      || !verification || typeof verification !== 'object' || Array.isArray(verification)
+      || Object.keys(verification).sort().join() !== 'expected,expression'
+      || typeof verification.expression !== 'string' || !verification.expression.trim()
+      || verification.expression.length > 2048 || verification.expression.includes('\0')
+      || typeof verification.expected !== 'string' || verification.expected.length > 2048
+      || verification.expected.includes('\0'))) {
+    throw Error('pythonVerification requires pythonImports, a documented expression up to 2048 characters and its exact expected string output.');
+  }
   if (source.pythonImports !== undefined) {
     const modules = source.pythonImports;
     if (cliOnly !== true || source.pythonVersion === undefined || command !== undefined
@@ -39,7 +53,14 @@ export function compileSourceRecipe(source) {
           || !/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(name))) {
       throw Error('pythonImports requires pythonVersion, cliOnly=true and observed Python module names. Supply pythonImports OR command, not both.');
     }
-    command = ['python', '-c', `import importlib; [importlib.import_module(name) for name in ${JSON.stringify(modules)}]`];
+    command = ['python', '-c', verification === undefined
+      ? `import importlib; [importlib.import_module(name) for name in ${JSON.stringify(modules)}]`
+      : [
+        'import importlib',
+        `modules = {name: importlib.import_module(name) for name in ${JSON.stringify(modules)}}`,
+        `actual = eval(${JSON.stringify(verification.expression)}, {"__builtins__": {"str": str, "repr": repr, "len": len, "int": int, "float": float, "bool": bool}}, {"modules": modules})`,
+        `assert str(actual) == ${JSON.stringify(verification.expected)}, "Documented Python function returned an unexpected value"`,
+      ].join('\n')];
   }
   const issues = [];
   if (source.description !== undefined && (typeof source.description !== 'string' || source.description.length > 600))
@@ -89,7 +110,10 @@ export function compileSourceRecipe(source) {
   }
   const canonicalRepository = repository.replace(/\/$/, '').replace(/\.git$/, '');
   const escapeCompose = value => value.replace(/\$/g, '$$$$');
-  // This installs the selected checkout using its own packaging metadata. It
+  // This installs the selected checkout using its own packaging metadata. The
+  // host passes BUILDKIT_CONTEXT_KEEP_GIT_DIR=1 for the pinned Git context;
+  // git and its tag history must also exist inside the image for SCM version
+  // builders. BuildKit supplies only a shallow, untagged checkout. It
   // neither substitutes a registry package nor invents application behavior.
   // Dependency/build/import failures remain real installer failures.
   const inline = hasPython ? [
@@ -97,6 +121,7 @@ export function compileSourceRecipe(source) {
     'RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*',
     'WORKDIR /opt/ods/source',
     'COPY . .',
+    `RUN if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git fetch --quiet --unshallow --tags origin; else git fetch --quiet --tags origin; fi && git rev-parse HEAD | grep -Fx '${commit}'`,
     'RUN python -m pip install --no-cache-dir . && python -m pip check',
     // Do not let the checkout shadow the installed package during verification.
     'WORKDIR /opt/ods',

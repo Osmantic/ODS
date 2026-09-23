@@ -163,7 +163,12 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
     // That alone does not invalidate this model's measured usage. A subsequent
     // compaction does, unless it supplied its own post-compaction measurement.
     const observedFresh = proof && (integer(entry?.compactionCount) ?? 0) <= (integer(proof.compactionCount) ?? 0);
-    const used = !requireModelObservation || proof ? nativeFresh ? integer(entry.totalTokens) : observedFresh ? proof.used : null : null;
+    const reportedWindow = proof?.window || window;
+    const measuredUsed = !requireModelObservation || proof ? nativeFresh ? integer(entry.totalTokens) : observedFresh ? proof.used : null : null;
+    // A single model call cannot occupy more than its own effective context
+    // budget. OpenClaw may report cumulative session usage after a continuation;
+    // keep that impossible value out of the context meter and manual receipt.
+    const used = measuredUsed !== null && reportedWindow && measuredUsed <= reportedWindow ? measuredUsed : null;
     const at = nativeFresh ? entry?.updatedAt : proof?.measuredAt;
     const measuredAt = Number.isSafeInteger(at) && at > 0 && at <= 8640000000000000 ? new Date(at).toISOString() : null;
     const count = integer(entry?.compactionCount) ?? 0;
@@ -175,7 +180,7 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
     return {schemaVersion:1, status:uncertain || status?.available !== true ? 'unavailable'
       : pending.has(user) || activeSession(keyFor(user)) ? 'busy' : sessionRevision ? 'ready' : 'missing',
       sessionExists:sessionRevision !== null, sessionRevision,
-      context:used !== null && (proof?.window || window) && measuredAt ? {used,window:proof?.window || window,measuredAt} : null,
+      context:used !== null && measuredAt ? {used,window:reportedWindow,measuredAt} : null,
       model:id && provider && window && provider !== 'ods-policy' ? {id,provider,contextWindow:proof?.window || window,
         ...(model.routeFingerprint ? {routeFingerprint:model.routeFingerprint} : {})} : null, compaction};
   }
@@ -312,7 +317,15 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
     try {
       const entry=entryFor(user), model=modelFor(readConfig(),entry,agentId), revision=revisionFor(user,{sessionId:context.sessionId});
       if(!revision || model.revision!==attempt.modelRevision || model.window && window>model.window) return;
-      const ledger=read(user);ledger.measurement={source:'model-call-v2',modelRevision:model.revision,sessionRevision:revision,used,window,measuredAt:now(),compactionCount:integer(entry?.compactionCount) ?? 0};
+      const ledger=read(user);
+      if(used>window) {
+        // This reply belongs to the current run, but its usage cannot be a
+        // single-window occupancy. Retire the prior proof rather than showing
+        // an old percentage while the current call is unmeasured.
+        if(ledger.measurement) {delete ledger.measurement;save(user,ledger);}
+        return;
+      }
+      ledger.measurement={source:'model-call-v2',modelRevision:model.revision,sessionRevision:revision,used,window,measuredAt:now(),compactionCount:integer(entry?.compactionCount) ?? 0};
       save(user,ledger);
     } catch { /* Unknown metadata stays unknown; never break the agent reply. */ }
   }

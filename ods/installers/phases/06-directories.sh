@@ -76,6 +76,23 @@ _phase06_env_hex_secret() {
     printf '%s%s' "$prefix" "$value"
 }
 
+_phase06_pixel_runtime_layout() {
+    PIXEL_INGRESS_RUNTIME_DIR_VALUE=/run/ods-pixel
+    PIXEL_PREVIEW_RUNTIME_DIR_VALUE=/run/ods-pixel-preview
+    PIXEL_RUNTIME_BIND_PROPAGATION_VALUE=rprivate
+    [[ -r /proc/sys/kernel/osrelease ]] || return 0
+    grep -qi microsoft /proc/sys/kernel/osrelease || return 0
+    # Docker Desktop's daemon runs in a different WSL distro. /run in this
+    # distro is therefore not its /run; /mnt/wsl is the shared tmpfs bridge.
+    local docker_os
+    docker_os="$(timeout 10s docker info --format '{{.OperatingSystem}}' 2>/dev/null)" || return 1
+    [[ "$docker_os" == "Docker Desktop" ]] || return 0
+    [[ -d /mnt/wsl && "$(findmnt -n -o PROPAGATION -T /mnt/wsl)" == shared ]] || return 1
+    PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/host/wsl/ods-portal-runtime/ingress
+    PIXEL_PREVIEW_RUNTIME_DIR_VALUE=/mnt/host/wsl/ods-portal-runtime/preview
+    PIXEL_RUNTIME_BIND_PROPAGATION_VALUE=rshared
+}
+
 if $DRY_RUN; then
     log "[DRY RUN] Would create: $INSTALL_DIR/{config,data,models}"
     log "[DRY RUN] Would copy compose files ($COMPOSE_FLAGS) and source tree"
@@ -1096,6 +1113,12 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     fi
 
     # Generate .env file
+    if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]]; then
+        _phase06_pixel_runtime_layout || {
+            error "Pixel could not verify the WSL/Docker Desktop shared runtime mount"
+            return 1
+        }
+    fi
     # Subshell-scope a tighter umask so the file is created 0600 from the start
     # (closes a brief window on systems where $HOME is world-readable, e.g.
     # Ubuntu defaults). The umask MUST NOT leak to the rest of phase 06 or
@@ -1334,8 +1357,9 @@ $(if [[ -n "$PIXEL_WEB_SEARCH_PROVIDER_VALUE" ]]; then printf 'PIXEL_WEB_SEARCH_
 PIXEL_OPENWEBUI_KEY=$(dotenv_value "${PIXEL_OPENWEBUI_KEY_VALUE}")
 PIXEL_MODEL_RELAY_KEY=$(dotenv_value "${PIXEL_MODEL_RELAY_KEY_VALUE}")
 PIXEL_MODEL_RELAY_PORT=$(dotenv_value "${PIXEL_MODEL_RELAY_PORT_VALUE}")
-PIXEL_INGRESS_RUNTIME_DIR=/run/ods-pixel
-PIXEL_PREVIEW_RUNTIME_DIR=/run/ods-pixel-preview
+PIXEL_INGRESS_RUNTIME_DIR=${PIXEL_INGRESS_RUNTIME_DIR_VALUE}
+PIXEL_PREVIEW_RUNTIME_DIR=${PIXEL_PREVIEW_RUNTIME_DIR_VALUE}
+PIXEL_RUNTIME_BIND_PROPAGATION=${PIXEL_RUNTIME_BIND_PROPAGATION_VALUE}
 PIXEL_INGRESS_GID=${PIXEL_INGRESS_GID_VALUE}
 PIXEL_GATEWAY_PORT=$(dotenv_value "${PIXEL_GATEWAY_PORT_VALUE}")
 PIXEL_PREVIEW_PORT=$(dotenv_value "${PIXEL_PREVIEW_PORT_VALUE}")

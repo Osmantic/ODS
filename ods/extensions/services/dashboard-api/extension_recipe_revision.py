@@ -5,6 +5,7 @@ does not grant revision authority, stop processes, change settings or install.
 Only definition files are touched; application data stays in its directory.
 """
 import base64
+import errno
 import hashlib
 import json
 import os
@@ -24,18 +25,34 @@ def _read(path):
 def _atomic(path, content):
     descriptor, temporary = tempfile.mkstemp(prefix='.revision-', dir=path.parent)
     try:
+        original_mode = path.stat().st_mode & 0o777 if path.exists() else None
         with os.fdopen(descriptor, 'wb') as stream:
-            if path.exists():
-                os.fchmod(stream.fileno(), path.stat().st_mode & 0o777)
+            if original_mode is not None and hasattr(os, 'fchmod'):
+                os.fchmod(stream.fileno(), original_mode)
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
+        if original_mode is not None and not hasattr(os, 'fchmod'):
+            os.chmod(temporary, original_mode)
         os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        # Python cannot open a directory for fsync on Windows. The file was
+        # flushed before the atomic replace; keep the additional parent flush
+        # on platforms that support it without making Windows revisions fail.
+        if os.name != 'nt':
+            try:
+                directory_fd = os.open(path.parent, os.O_RDONLY)
+            except OSError as error:
+                if error.errno not in {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS}:
+                    raise
+            else:
+                try:
+                    try:
+                        os.fsync(directory_fd)
+                    except OSError as error:
+                        if error.errno not in {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS}:
+                            raise
+                finally:
+                    os.close(directory_fd)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

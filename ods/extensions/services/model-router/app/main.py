@@ -39,6 +39,8 @@ from typing import Any, AsyncIterator
 
 import anyio
 import httpx
+from jsonschema import validators as jsonschema_validators
+from jsonschema.exceptions import SchemaError, ValidationError
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -106,6 +108,181 @@ _CHAT_TEMPLATE_ARTIFACTS = (
     re.compile(r"<\|start_header_id\|>\s*(?:assistant|user|system|tool)?\s*<\|end_header_id\|>"),
     re.compile(r"<\|(?:im_start|im_end|eot_id|endoftext|end)\|>"),
 )
+_NATIVE_FUNCTION_NAME = r"[A-Za-z_][A-Za-z0-9_-]{0,127}"
+_NATIVE_CALL = re.compile(
+    rf"<tool_call>\r?\n<function=({_NATIVE_FUNCTION_NAME})>\r?\n"
+    r"(.*?)\r?\n</function>\r?\n</tool_call>", re.DOTALL,
+)
+_NATIVE_PARAMETER = re.compile(
+    rf"<parameter=({_NATIVE_FUNCTION_NAME})>\r?\n(.*?)\r?\n</parameter>",
+    re.DOTALL,
+)
+_MAX_NATIVE_CALLS = 8
+_MAX_NATIVE_MARKUP_CHARS = 32_768
+
+
+def _schema_has_references(value: Any) -> bool:
+    """Keep normalization local; advertised schemas must not resolve URLs."""
+    if isinstance(value, dict):
+        return any(
+            key in {"$ref", "$dynamicRef", "$recursiveRef"}
+            or _schema_has_references(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, list):
+        return any(_schema_has_references(child) for child in value)
+    return False
+
+
+def _complete_native_envelope_names(completion: dict[str, Any]) -> list[str] | None:
+    """Recognize the whole native envelope before considering a repair.
+
+    This deliberately does not infer a tool from prose, examples, or a partial
+    prefix. Semantic checks against the request's tools happen separately.
+    """
+    choices = completion.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        return None
+    choice = choices[0]
+    if not isinstance(choice, dict) or choice.get("finish_reason") != "stop":
+        return None
+    message = choice.get("message")
+    if (not isinstance(message, dict) or message.get("role") != "assistant"
+            or "tool_calls" in message or message.get("refusal")):
+        return None
+    content = message.get("content")
+    if (not isinstance(content, str) or not content
+            or len(content) > _MAX_NATIVE_MARKUP_CHARS):
+        return None
+    markup = content.strip()
+    if not markup.startswith("<tool_call>"):
+        return None
+    names: list[str] = []
+    cursor = 0
+    while cursor < len(markup):
+        match = _NATIVE_CALL.match(markup, cursor)
+        if match is None or len(names) >= _MAX_NATIVE_CALLS:
+            return None
+        parameter_markup = match.group(2)
+        parameter_cursor = 0
+        while parameter_cursor < len(parameter_markup):
+            parameter_match = _NATIVE_PARAMETER.match(
+                parameter_markup, parameter_cursor,
+            )
+            if parameter_match is None:
+                return None
+            parameter_cursor = parameter_match.end()
+            if parameter_cursor < len(parameter_markup):
+                separator = re.match(r"\r?\n", parameter_markup[parameter_cursor:])
+                if separator is None:
+                    return None
+                parameter_cursor += separator.end()
+        names.append(match.group(1))
+        cursor = match.end()
+        if cursor < len(markup):
+            separator = re.match(r"\r?\n", markup[cursor:])
+            if separator is None:
+                return None
+            cursor += separator.end()
+    return names or None
+
+
+def _repairable_native_tool_request(payload: dict[str, Any]) -> bool:
+    offered = payload.get("tools")
+    if not isinstance(offered, list) or not offered:
+        return False
+    choice = payload.get("tool_choice", "auto")
+    if isinstance(choice, str):
+        return choice in {"auto", "required"}
+    return (isinstance(choice, dict) and choice.get("type") == "function"
+            and isinstance(choice.get("function"), dict)
+            and isinstance(choice["function"].get("name"), str))
+
+
+def _native_tool_repair_feedback(
+    names: list[str], payload: dict[str, Any],
+) -> str:
+    offered = [
+        item["function"]["name"]
+        for item in payload["tools"]
+        if isinstance(item, dict) and item.get("type") == "function"
+        and isinstance(item.get("function"), dict)
+        and isinstance(item["function"].get("name"), str)
+    ]
+    # The original request retains the exact, authoritative JSON Schemas. Do
+    # not synthesize aliases or copy long tool descriptions into the context.
+    unknown = [name for name in names if name not in offered]
+    issue = ("Unknown function name(s): " + ", ".join(unknown) + ". "
+             if unknown else "The function arguments did not satisfy its advertised schema. ")
+    return (
+        "Tool protocol error: your previous completion was discarded before "
+        "any tool ran. " + issue + "Choose a function exactly from the "
+        "provided tools and follow its attached JSON parameter schema. "
+        "Available function names: " + ", ".join(offered) + ". "
+        "Return one valid tool call through the API tool-call channel, or "
+        "answer normally if no tool is appropriate."
+    )
+
+
+def _repaired_tool_decision_invalid(
+    completion: dict[str, Any], payload: dict[str, Any],
+) -> bool:
+    """Check the sole retry without executing or inventing a function call."""
+    names = _complete_native_envelope_names(completion)
+    if names is not None:
+        return not _normalize_native_tool_markup(completion, payload)
+    choices = completion.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        return True
+    choice = choices[0]
+    message = choice.get("message") if isinstance(choice, dict) else None
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return True
+    content = message.get("content")
+    if isinstance(content, str) and content.strip().startswith("<tool_call>"):
+        return True
+    calls = message.get("tool_calls")
+    if calls is None:
+        # A normal answer or refusal is valid only after a complete stop.
+        return (choice.get("finish_reason") != "stop"
+                or payload.get("tool_choice") == "required"
+                or isinstance(payload.get("tool_choice"), dict))
+    if not isinstance(calls, list) or not calls:
+        return True
+    if choice.get("finish_reason") != "tool_calls":
+        return True
+    if payload.get("parallel_tool_calls") is False and len(calls) > 1:
+        return True
+    tool_choice = payload.get("tool_choice")
+    forced_function = tool_choice.get("function") if isinstance(tool_choice, dict) else None
+    forced_name = (forced_function.get("name")
+                   if isinstance(forced_function, dict) else None)
+    offered = {
+        item["function"]["name"]: item["function"].get("parameters")
+        for item in payload["tools"]
+        if isinstance(item, dict) and item.get("type") == "function"
+        and isinstance(item.get("function"), dict)
+        and isinstance(item["function"].get("name"), str)
+    }
+    for call in calls:
+        if (not isinstance(call, dict) or not isinstance(call.get("id"), str)
+                or not call["id"] or call.get("type") != "function"):
+            return True
+        function = call.get("function") if isinstance(call, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        schema = offered.get(name) if isinstance(name, str) else None
+        if (not isinstance(schema, dict) or _schema_has_references(schema)
+                or (forced_name is not None and name != forced_name)
+                or not isinstance(function.get("arguments"), str)):
+            return True
+        try:
+            args = json.loads(function["arguments"])
+            validator_class = jsonschema_validators.validator_for(schema)
+            validator_class.check_schema(schema)
+            validator_class(schema).validate(args)
+        except (ValueError, TypeError, SchemaError, ValidationError):
+            return True
+    return False
 
 app = FastAPI(title="ODS Model Router", docs_url=None, redoc_url=None,
               openapi_url=None)
@@ -753,6 +930,232 @@ def _rewrite_sse_event(
     return b"".join(content + ending for content, ending in retained), models, [obj], False
 
 
+def _normalize_native_tool_markup(
+    completion: dict[str, Any], request_payload: dict[str, Any],
+) -> bool:
+    """Recover a *complete* native tool envelope from a tool-bearing response.
+
+    Some GGUF chat templates teach the model an XML tool-call grammar, while a
+    local backend may occasionally return that exact envelope as plain text.
+    This adapter has no tool-selection policy: it accepts only names advertised
+    in this request and arguments valid against their advertised JSON Schemas.
+    Normal prose, mixed/partial markup, or an explicit tool_choice=none remains
+    text. The agent and ODS tool gates still authorize any resulting action.
+    """
+    if request_payload.get("tool_choice") == "none":
+        return False
+    choice_constraint = request_payload.get("tool_choice", "auto")
+    forced_name: str | None = None
+    if isinstance(choice_constraint, dict):
+        function = choice_constraint.get("function")
+        if (choice_constraint.get("type") != "function"
+                or not isinstance(function, dict)
+                or not isinstance(function.get("name"), str)):
+            return False
+        forced_name = function["name"]
+    elif not isinstance(choice_constraint, str) or choice_constraint not in {"auto", "required"}:
+        return False
+
+    offered_tools = request_payload.get("tools")
+    if not isinstance(offered_tools, list):
+        return False
+    parallel = request_payload.get("parallel_tool_calls")
+    if parallel is not None and type(parallel) is not bool:
+        return False
+    advertised: dict[str, dict[str, Any]] = {}
+    for item in offered_tools:
+        if not isinstance(item, dict) or item.get("type") != "function":
+            continue
+        function = item.get("function")
+        if not isinstance(function, dict):
+            continue
+        name, schema = function.get("name"), function.get("parameters")
+        if (not isinstance(name, str) or not isinstance(schema, dict)
+                or name in advertised):
+            return False
+        advertised[name] = schema
+    if not advertised:
+        return False
+
+    choices = completion.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        return False
+    choice = choices[0]
+    if not isinstance(choice, dict) or choice.get("finish_reason") != "stop":
+        return False
+    message = choice.get("message")
+    if (not isinstance(message, dict) or message.get("role") != "assistant"
+            or "tool_calls" in message or message.get("refusal")):
+        return False
+    content = message.get("content")
+    if (not isinstance(content, str) or not content
+            or len(content) > _MAX_NATIVE_MARKUP_CHARS):
+        return False
+    markup = content.strip()
+    if not markup.startswith("<tool_call>"):
+        return False
+
+    calls: list[dict[str, Any]] = []
+    cursor = 0
+    while cursor < len(markup):
+        match = _NATIVE_CALL.match(markup, cursor)
+        if match is None or len(calls) >= _MAX_NATIVE_CALLS:
+            return False
+        name, parameter_markup = match.group(1), match.group(2)
+        schema = advertised.get(name)
+        if schema is None or (forced_name is not None and name != forced_name):
+            return False
+        if _schema_has_references(schema):
+            return False
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return False
+        arguments: dict[str, Any] = {}
+        parameter_cursor = 0
+        while parameter_cursor < len(parameter_markup):
+            parameter_match = _NATIVE_PARAMETER.match(
+                parameter_markup, parameter_cursor,
+            )
+            if parameter_match is None:
+                return False
+            key, raw_value = parameter_match.group(1), parameter_match.group(2)
+            property_schema = properties.get(key)
+            if key in arguments or not isinstance(property_schema, dict):
+                return False
+            if property_schema.get("type") == "string":
+                value: Any = raw_value
+            else:
+                try:
+                    value = json.loads(raw_value)
+                except (ValueError, TypeError):
+                    # An untyped/union string can still be valid JSON Schema.
+                    value = raw_value
+            arguments[key] = value
+            parameter_cursor = parameter_match.end()
+            if parameter_cursor < len(parameter_markup):
+                separator = re.match(r"\r?\n", parameter_markup[parameter_cursor:])
+                if separator is None:
+                    return False
+                parameter_cursor += separator.end()
+        try:
+            validator_class = jsonschema_validators.validator_for(schema)
+            validator_class.check_schema(schema)
+            validator_class(schema).validate(arguments)
+        except (SchemaError, ValidationError, ValueError, TypeError):
+            return False
+        calls.append({
+            "id": f"call_ods_{uuid.uuid4().hex}", "type": "function",
+            "function": {"name": name, "arguments": json.dumps(
+                arguments, separators=(",", ":"), ensure_ascii=False,
+            )},
+        })
+        cursor = match.end()
+        if cursor < len(markup):
+            separator = re.match(r"\r?\n", markup[cursor:])
+            if separator is None:
+                return False
+            cursor += separator.end()
+    if not calls or (parallel is False and len(calls) > 1):
+        return False
+    message["content"] = None
+    message["tool_calls"] = calls
+    choice["finish_reason"] = "tool_calls"
+    return True
+
+
+def _completed_chat_as_sse(completion: dict[str, Any]) -> bytes:
+    """Present one completed Chat response as a standards-shaped SSE stream.
+
+    llama.cpp's incremental tool parser can retract a previously detected tool
+    call and terminate the stream. Its completed response has no incremental
+    tool-call diff to reconcile. Keep the original call IDs and full arguments;
+    only add the per-stream index required by ChatCompletionChunk.
+    """
+    choices = completion.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("Chat completion has no choices")
+    if not isinstance(completion.get("model"), str) or not completion["model"]:
+        raise ValueError("Chat completion has no model identity")
+    base = {
+        "id": str(completion.get("id") or f"ods-{uuid.uuid4().hex}"),
+        "object": "chat.completion.chunk",
+        "created": completion.get("created")
+        if type(completion.get("created")) is int else int(time.time()),
+        "model": completion.get("model"),
+    }
+    if "system_fingerprint" in completion:
+        base["system_fingerprint"] = completion["system_fingerprint"]
+
+    events: list[dict[str, Any]] = []
+    endings: list[dict[str, Any]] = []
+    for position, choice in enumerate(choices):
+        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+            raise ValueError("Chat completion choice has no message")
+        message = choice["message"]
+        index = choice.get("index", position)
+        if type(index) is not int or index < 0:
+            raise ValueError("Chat completion choice has an invalid index")
+        finish_reason = choice.get("finish_reason")
+        if not isinstance(finish_reason, str) or not finish_reason:
+            raise ValueError("Chat completion choice has no terminal reason")
+        delta = {key: value for key, value in message.items() if key != "tool_calls"}
+        delta.setdefault("role", "assistant")
+        if "tool_calls" in message:
+            calls = message["tool_calls"]
+            if not isinstance(calls, list):
+                raise ValueError("Chat completion tool calls are malformed")
+            delta["tool_calls"] = []
+            for call_index, call in enumerate(calls):
+                function = call.get("function") if isinstance(call, dict) else None
+                if (not isinstance(call, dict)
+                        or not isinstance(call.get("id"), str)
+                        or not call["id"]
+                        or call.get("type") != "function"
+                        or not isinstance(function, dict)
+                        or not isinstance(function.get("name"), str)
+                        or not function["name"]
+                        or not isinstance(function.get("arguments"), str)):
+                    raise ValueError("Chat completion tool call is malformed")
+                delta["tool_calls"].append({**call, "index": call_index})
+        events.append({
+            **base,
+            "choices": [{"index": index, "delta": delta, "finish_reason": None}],
+        })
+        endings.append({
+            "index": index, "delta": {}, "finish_reason": finish_reason,
+        })
+    terminal = {**base, "choices": endings}
+    if isinstance(completion.get("usage"), dict):
+        terminal["usage"] = completion["usage"]
+    events.append(terminal)
+    return b"".join(
+        b"data: " + json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n\n"
+        for event in events
+    ) + b"data: [DONE]\n\n"
+
+
+def _lemonade_context_error(completion: dict[str, Any]) -> dict[str, Any] | None:
+    """Recognize Lemonade's HTTP-200 wrapper around a llama.cpp 400 error."""
+    outer = completion.get("error")
+    details = outer.get("details") if isinstance(outer, dict) else None
+    response = details.get("response") if isinstance(details, dict) else None
+    inner = response.get("error") if isinstance(response, dict) else None
+    if (not isinstance(inner, dict) or details.get("status_code") != 400
+            or inner.get("type") != "exceed_context_size_error"):
+        return None
+    context = inner.get("n_ctx")
+    prompt = inner.get("n_prompt_tokens")
+    if (type(context) is not int or context <= 0
+            or type(prompt) is not int or prompt <= 0):
+        return None
+    return {"error": {
+        "message": (f"Request ({prompt} tokens) exceeds the available context size "
+                    f"({context} tokens)"),
+        "type": "exceed_context_size_error", "code": "400",
+        "n_ctx": context, "n_prompt_tokens": prompt,
+    }}
+
+
 def _is_terminal_stream_payload(payload: dict[str, Any]) -> bool:
     """Recognize terminal Chat/Completions and Responses API stream events."""
     choices = payload.get("choices")
@@ -1209,6 +1612,20 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     request_id = str(uuid.uuid4())
     probe_id = _verify_probe_marker(raw_body.decode("utf-8", "replace"))
     is_stream = bool(payload.get("stream"))
+    completed_tool_stream = (
+        is_stream
+        and path == "/v1/chat/completions"
+        and route["backendKind"] in {"llama-server", "lemonade"}
+        and isinstance(payload.get("tools"), list)
+        and bool(payload["tools"])
+    )
+    if completed_tool_stream:
+        # llama.cpp may withdraw an incrementally parsed tool call, aborting
+        # its SSE stream. Ask this backend for its complete decision, then
+        # present that verified decision as SSE to the existing client.
+        # This is a transport adapter: tools and model selection are unchanged.
+        payload["stream"] = False
+        payload.pop("stream_options", None)
 
     headers = _sanitize_headers(request)
     api_key = os.environ.get(route["apiKeyEnv"], "") if route["apiKeyEnv"] else ""
@@ -1237,7 +1654,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     }
 
     try:
-        if is_stream:
+        if is_stream and not completed_tool_stream:
             upstream_request = client.build_request(
                 "POST", url, content=json.dumps(payload).encode("utf-8"),
                 headers=headers, timeout=UPSTREAM_TIMEOUT_SECONDS,
@@ -1329,6 +1746,65 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             status_code=502, headers=ods_headers,
         ), False
 
+    # One bounded protocol repair is allowed only before the agent has seen a
+    # tool call. A complete native envelope is a model decision, not an
+    # executed action; no host/tool operation is replayed here.
+    if (path == "/v1/chat/completions"
+            and route["backendKind"] in {"llama-server", "lemonade"}
+            and _repairable_native_tool_request(payload)
+            and isinstance(payload.get("messages"), list)
+            and 200 <= upstream.status_code < 300):
+        try:
+            initial_decision = json.loads(upstream.content.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            initial_decision = None
+        if isinstance(initial_decision, dict):
+            native_names = _complete_native_envelope_names(initial_decision)
+            if native_names is not None and not _normalize_native_tool_markup(
+                initial_decision, payload,
+            ):
+                if (pinned_route and initial_decision.get("model")
+                        != route["runtimeModelId"]):
+                    return JSONResponse({'error': {'message': 'Backend response identity changed',
+                        'type': 'response_identity_mismatch', 'code': '502'}},
+                        status_code=502, headers=ods_headers), False
+                remaining = UPSTREAM_TIMEOUT_SECONDS - (time.monotonic() - telemetry_started)
+                if remaining <= 0:
+                    return JSONResponse({"error": {
+                        "message": "Upstream model runtime timed out during tool protocol repair",
+                        "type": "upstream_timeout", "code": "504",
+                    }}, status_code=504, headers=ods_headers), False
+                repair_payload = {**payload, "stream": False,
+                    "messages": [*payload["messages"], {"role": "user",
+                        "content": _native_tool_repair_feedback(native_names, payload)}]}
+                repair_payload.pop("stream_options", None)
+                try:
+                    upstream = await client.post(
+                        url, content=json.dumps(repair_payload).encode("utf-8"),
+                        headers=headers, timeout=remaining,
+                    )
+                except httpx.TimeoutException:
+                    return JSONResponse({"error": {
+                        "message": "Upstream model runtime timed out during tool protocol repair",
+                        "type": "upstream_timeout", "code": "504",
+                    }}, status_code=504, headers=ods_headers), False
+                except httpx.HTTPError as exc:
+                    return JSONResponse({"error": {
+                        "message": f"Upstream model runtime unavailable during tool protocol repair: {exc}",
+                        "type": "upstream_unavailable", "code": "502",
+                    }}, status_code=502, headers=ods_headers), False
+                if 200 <= upstream.status_code < 300:
+                    try:
+                        repaired = json.loads(upstream.content.decode("utf-8"))
+                    except (ValueError, UnicodeDecodeError):
+                        repaired = None
+                    if (not isinstance(repaired, dict)
+                            or _repaired_tool_decision_invalid(repaired, payload)):
+                        return JSONResponse({"error": {
+                            "message": "Model returned an invalid tool decision after one protocol repair",
+                            "type": "tool_protocol_invalid", "code": "502",
+                        }}, status_code=502, headers=ods_headers), False
+
     lemonade_route = upstream.headers.get("x-lemonade-route")
     if lemonade_route:
         ods_headers["X-Lemonade-Route"] = lemonade_route
@@ -1342,9 +1818,11 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     }
     stop_reason = ""
     content = upstream.content
+    parsed: dict[str, Any] | None = None
     try:
-        parsed = json.loads(content.decode("utf-8"))
-        if isinstance(parsed, dict):
+        decoded = json.loads(content.decode("utf-8"))
+        if isinstance(decoded, dict):
+            parsed = decoded
             response_usage, stop_reason = _usage_from_response(parsed)
             response_model = parsed.get("model")
             if "model" in parsed:
@@ -1360,9 +1838,37 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     except (ValueError, UnicodeDecodeError):
         pass
 
+    if (route["backendKind"] == "lemonade" and 200 <= upstream.status_code < 300
+            and path == "/v1/chat/completions" and parsed is not None):
+        context_error = _lemonade_context_error(parsed)
+        if context_error is not None:
+            return JSONResponse(context_error, status_code=400,
+                                headers=ods_headers), False
+
     if pinned_route and 200 <= upstream.status_code < 300 and response_model != route['runtimeModelId']:
         return JSONResponse({'error': {'message': 'Backend response identity changed',
             'type': 'response_identity_mismatch', 'code': '502'}}, status_code=502, headers=ods_headers), False
+
+    if (parsed is not None and 200 <= upstream.status_code < 300
+            and path == "/v1/chat/completions"
+            and route["backendKind"] in {"llama-server", "lemonade"}
+            and isinstance(payload.get("tools"), list) and payload["tools"]
+            and _normalize_native_tool_markup(parsed, payload)):
+        content = json.dumps(parsed).encode("utf-8")
+        stop_reason = "tool_calls"
+
+    completed_stream_body: bytes | None = None
+    if completed_tool_stream and 200 <= upstream.status_code < 300:
+        try:
+            if parsed is None:
+                raise ValueError("Backend returned a non-JSON Chat completion")
+            completed_stream_body = _completed_chat_as_sse(parsed)
+        except ValueError as exc:
+            logger.warning("invalid completed tool response from model backend: %s", exc)
+            return JSONResponse({"error": {
+                "message": "Backend returned an invalid completed tool response",
+                "type": "upstream_invalid_response", "code": "502",
+            }}, status_code=502, headers=ods_headers), False
 
     if probe_id:
         _record_evidence({**evidence_base,
@@ -1381,6 +1887,10 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             usage=response_usage,
             stop_reason=stop_reason,
         ))
+
+    if completed_stream_body is not None:
+        return Response(content=completed_stream_body, status_code=200,
+                        media_type="text/event-stream", headers=ods_headers), False
 
     media_type = upstream.headers.get("content-type", "application/json")
     return Response(content=content, status_code=upstream.status_code,

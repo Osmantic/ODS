@@ -4,6 +4,7 @@ import {
   ODS_COMPACT_CONVERSATION_CONTRACT,
   ODS_CONVERSATION_CONTRACT,
   ODS_EXTENSION_CATALOG_CONTRACT,
+  ODS_EXTENSION_GITHUB_CONTRACT,
   ODS_EXTENSION_INVENTORY_CONTRACT,
   ODS_EXTENSION_LIFECYCLE_CONTRACT,
   ODS_HOST_COMMAND_CONTRACT,
@@ -617,6 +618,21 @@ test("adds only a validated exact GitHub repository source to its turn", () => {
     ),
     { appendSystemContext: `${ODS_CONVERSATION_CONTRACT}${exact}` }
   );
+});
+
+test("routes an explicit GitHub extension request to managed installation guidance", () => {
+  const prompt = "/extensions https://github.com/pypa/packaging instale como biblioteca isolada";
+  const context = promptContractForAgent({ agentId: "pixel" }, "pixel", { prompt }).appendSystemContext;
+  assert.match(context, /pixel_ods_python_library_proposal/);
+  assert.match(context, /proposalAccepted=false means the request awaits a proposal/);
+  assert.match(context, /never read or exec a guessed upstream path/);
+  assert.match(context, /pixel_ods_extension_request_advance/);
+  assert.ok(context.includes(ODS_EXTENSION_GITHUB_CONTRACT));
+
+  const research = promptContractForAgent({ agentId: "pixel" }, "pixel", {
+    prompt: "Research https://github.com/pypa/packaging",
+  }).appendSystemContext;
+  assert.doesNotMatch(research, /pixel_ods_python_library_proposal/);
 });
 
 test("uses the current prompt instead of stale session messages for private URLs", () => {

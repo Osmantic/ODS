@@ -62,7 +62,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Install isolated inference test dependencies
-        run: python -m pip install -r extensions/services/pixel-inference/requirements.txt 'pytest>=8,<9'
+        run: python -m pip install -r extensions/services/pixel-inference/requirements.txt -r extensions/services/model-router/requirements.txt 'pytest>=8,<9'
       - name: mDNS publication recovery contracts
         run: python -m pytest tests/test_mdns_refresh_recovery.py tests/test_mdns_subdomains.py -q
       - name: Compressed backup extraction safety and recovery
@@ -437,6 +437,7 @@ jobs:
           python3 -m unittest -v tests/test_pixel_model_transition.py
           python3 -m unittest -v tests/test_pixel_native_search.py
           bash tests/test-pixel-compose-wiring.sh
+          bash tests/test-pixel-wsl-runtime-bridge.sh
           python3 tests/test_pixel_timeout_contract.py
           python3 -m unittest -v tests/test_pixel_edge_buffered_content.py
           python3 -m unittest -v extensions/services/pixel-agent/tests/test_artifact_promoter.py

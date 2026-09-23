@@ -8,7 +8,7 @@ import pytest
 from test_router import router  # noqa: F401
 
 
-@pytest.mark.parametrize('phase', ['admission','route-queue','headers','json-body','stream-body','silent-stream'])
+@pytest.mark.parametrize('phase', ['admission','route-queue','headers','json-body','stream-body','silent-stream','completed-tool'])
 @pytest.mark.parametrize('spec_version', ['2.3', '2.4'])
 def test_disconnect_cancels_work_and_releases_admission(router, phase, spec_version):
     mod, _client, write_state, _calls = router
@@ -30,7 +30,7 @@ def test_disconnect_cancels_work_and_releases_admission(router, phase, spec_vers
                 closed.set()
         async def handler(request):
             forwarded.append(request)
-            if phase == 'headers':
+            if phase in ('headers', 'completed-tool'):
                 started.set()
                 try:
                     await asyncio.sleep(60)
@@ -45,8 +45,12 @@ def test_disconnect_cancels_work_and_releases_admission(router, phase, spec_vers
             scope = {'type':'http','asgi':{'version':'3.0','spec_version':spec_version},'http_version':'1.1',
                 'method':'POST','scheme':'http','path':'/v1/chat/completions','raw_path':b'/v1/chat/completions',
                 'query_string':b'','headers':[],'server':('127.0.0.1',9099),'client':('127.0.0.1',1000)}
-            await pending.put({'type':'http.request','body':json.dumps({'model':'ods/shared',
-                'messages':[{'role':'user','content':'synthetic'}],'stream':phase in ('stream-body','silent-stream')}).encode(),'more_body':False})
+            body = {'model':'ods/shared',
+                'messages':[{'role':'user','content':'synthetic'}],
+                'stream':phase in ('stream-body','silent-stream','completed-tool')}
+            if phase == 'completed-tool':
+                body['tools'] = [{'type':'function','function':{'name':'lookup'}}]
+            await pending.put({'type':'http.request','body':json.dumps(body).encode(),'more_body':False})
             async def send(_message):
                 pass
             task = asyncio.create_task(mod.app(scope,pending.get,send))

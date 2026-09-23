@@ -37,6 +37,17 @@ def test_public_ods_bundle_acquires_without_private_repository(tmp_path, monkeyp
         assert bootstrap.selected_release(destination, bootstrap.ODS_BUNDLED_REF)['pixel'] == '4.3.27'
 
 
+@pytest.mark.parametrize('source_url', [None, 'https://github.com/Osmantic/Pixel.git'])
+def test_source_acquisition_never_falls_back_to_private_repository(tmp_path, monkeypatch, source_url):
+    monkeypatch.setattr(bootstrap.sys, 'platform', 'darwin')
+    monkeypatch.setattr(bootstrap.os, 'geteuid', lambda: 501, raising=False)
+    destination = tmp_path / 'source'
+    with pytest.raises(bootstrap.BootstrapError, match='local-pixel-source-required'):
+        bootstrap.acquire_source(ref=bootstrap.ODS_BUNDLED_REF,
+            destination=destination, source_url=source_url)
+    assert not destination.exists()
+
+
 @pytest.mark.parametrize('fault', [None, 'unreferenced', 'ref', 'existing', 'missing-commit', 'release'])
 def test_source_acquisition_uses_exact_commit_without_changing_input(tmp_path, release, monkeypatch, fault):
     monkeypatch.setattr(bootstrap.sys, 'platform', 'darwin')

@@ -232,6 +232,15 @@ def _read_progress(service_id: str) -> dict | None:
         return None
 
 
+def _progress_file_presence(service_id: str) -> str:
+    """Report raw progress presence; stale or malformed records are not absence."""
+    directory = Path(DATA_DIR) / 'extension-progress'
+    path = directory / f'{service_id}.json'
+    if directory.is_symlink() or path.is_symlink():
+        return 'unsafe'
+    return 'present' if path.exists() else 'absent'
+
+
 def _cleanup_stale_progress() -> None:
     """Remove progress files in terminal state past their TTL."""
     progress_dir = Path(DATA_DIR) / "extension-progress"
@@ -300,6 +309,44 @@ def _clear_progress(service_id: str) -> None:
         progress_file.unlink(missing_ok=True)
     except OSError as exc:
         logger.warning("Failed to clear progress file for %s: %s", service_id, exc)
+
+
+def _clear_retired_failed_progress(service_id: str, operation_id: str) -> bool:
+    """Clear only the failed progress for a recipe revision's retired attempt.
+
+    Host operation receipts live elsewhere and remain intact. A different or
+    newly written progress record is never treated as the retired attempt.
+    """
+    _validate_service_id(service_id)
+    if not isinstance(operation_id, str) or not re.fullmatch(r'[a-f0-9]{32}', operation_id):
+        raise ValueError('Invalid retired operation identity')
+    directory = Path(DATA_DIR) / 'extension-progress'
+    path = directory / f'{service_id}.json'
+    if directory.is_symlink() or path.is_symlink():
+        raise ValueError('Progress location requires inspection')
+    if not path.exists():
+        return False
+    if not path.is_file():
+        raise ValueError('Progress location requires inspection')
+    try:
+        before = path.stat()
+        if before.st_size > 1024 * 1024:
+            raise ValueError('Progress record requires inspection')
+        raw = path.read_bytes()
+        progress = json.loads(raw)
+        if (not isinstance(progress, dict) or progress.get('service_id') != service_id
+                or progress.get('status') != 'error'
+                or progress.get('operation_id') != operation_id):
+            raise ValueError('Progress no longer matches retired attempt')
+        after = path.stat()
+        if ((after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                or path.is_symlink() or path.read_bytes() != raw):
+            raise ValueError('Progress changed during revision cleanup')
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError('Progress record requires inspection') from exc
+    path.unlink()
+    return True
 
 
 def _sync_extension_config(service_id: str, *, preserve_existing: bool = False) -> bool:
@@ -1345,8 +1392,13 @@ async def extension_install_plan(service_id: str, api_key: str = Depends(verify_
     _validate_service_id(service_id)
     snapshot = await extensions_catalog(api_key=api_key)
     try:
+        from extension_install_plan import ID
+        entries = [{**entry, '_ods_progress_file': _progress_file_presence(entry['id'])}
+                   if isinstance(entry, dict) and isinstance(entry.get('id'), str)
+                   and ID.fullmatch(entry['id']) else entry
+                   for entry in snapshot['extensions']]
         return await asyncio.to_thread(
-            build_install_plan, service_id, snapshot["extensions"],
+            build_install_plan, service_id, entries,
             _installation_plan_service, lambda key: bool(_read_env_value(key)), ALWAYS_ON_SERVICES,
         )
     except (ValueError, OSError, yaml.YAMLError) as exc:
@@ -1355,7 +1407,8 @@ async def extension_install_plan(service_id: str, api_key: str = Depends(verify_
         raise HTTPException(status_code=400, detail="Extension installation prerequisites are invalid") from exc
 
 
-def _advance_extension_installation(service_id: str, api_key: str, loop, request_identity=None):
+def _advance_extension_installation(service_id: str, api_key: str, loop, request_identity=None,
+                                    retry_request_id=None):
     from extension_installation import InstallationJournal, advance_installation
 
     # Separate from _extensions_lock: the existing installers acquire that
@@ -1371,6 +1424,16 @@ def _advance_extension_installation(service_id: str, api_key: str, loop, request
         raise ValueError("Installation coordinator lock is a symlink")
     with _exclusive_file_lock(lock):
         journal = InstallationJournal(directory / "journal.json")
+        if retry_request_id is not None:
+            # A staged recipe revision may have carried a failed binding into
+            # this request before its file/binding transaction finished. A new
+            # host attempt would invalidate the exact receipt needed for replay.
+            from extension_recipe_revision import read_revision_context
+            for pending in directory.glob('*.revision.json'):
+                context = read_revision_context(pending)
+                if (isinstance(context.get('old'), dict)
+                        and context['old'].get('extensionId') == service_id):
+                    raise ValueError('Pending recipe revision must reconcile before retry')
 
         def read_plan():
             # Health clients belong to the API loop. A new loop in this worker
@@ -1405,7 +1468,8 @@ def _advance_extension_installation(service_id: str, api_key: str, loop, request
                 timeout=_AGENT_TIMEOUT)
             return response.get('operation') if isinstance(response, dict) else None
 
-        return advance_installation(read_plan, journal, _extension_operation_lock, dispatch, observe=observe)
+        return advance_installation(read_plan, journal, _extension_operation_lock, dispatch,
+                                    observe=observe, retry_request_id=retry_request_id)
 
 
 def _verify_bound_integration(current):
@@ -1428,10 +1492,10 @@ def _bound_prepared_request(owner, identity):
     with _extensions_lock():
         parent = _extensions_lock_path().parent.resolve()
         current = read_request(parent / '.extension-requests', owner, identity['chatId'], identity['requestId'])
-        if current['state'] == 'pending' and current.get('integration'):
+        if current['state'] == 'pending' and current['authorizationMode'] == 'install' and current.get('integration'):
             return _verify_bound_integration(current)
         proposal = current.get('proposal')
-        if current['state'] != 'pending' or not proposal:
+        if current['state'] != 'pending' or current['authorizationMode'] != 'install' or not proposal:
             raise ValueError('No active extension proposal')
         candidate = read_draft(parent / '.extension-recipe-drafts', owner, proposal['draftId'])
         if (recipe_digest(candidate) != proposal['recipeDigest']
@@ -1450,6 +1514,33 @@ async def extension_github_advance_request(request: Request, api_key: str = Depe
                                         asyncio.get_running_loop(), identity)
     except (ValueError, OSError, KeyError, TypeError, yaml.YAMLError):
         raise HTTPException(status_code=409, detail='Managed installation requires an active prepared request') from None
+    return JSONResponse({'schemaVersion': 1, 'kind': 'ods-extension-request-installation',
+        **identity, 'extensionId': service_id, 'state': result['state'],
+        'activeExtensionId': result['activeExtensionId'], 'operationId': result['operationId'],
+        'dispatched': result['dispatched']}, headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/api/extensions/github/requests/retry')
+async def extension_github_retry_request(request: Request, api_key: str = Depends(verify_api_key)):
+    """Retry only a confirmed failed host attempt for this bound owner request.
+
+    The coordinator rechecks the exact terminal receipt under the service lock
+    and journals a new operation before any host effect. A second call from the
+    same request can observe that operation but cannot dispatch another retry.
+    """
+    from extension_requests import _identity
+
+    identity = await _github_recipe_payload(request)
+    try:
+        service_id = await asyncio.to_thread(_bound_prepared_request, api_key, identity)
+        _assert_not_core(service_id)
+        if not _is_installable(service_id) or not _has_error_progress(service_id):
+            raise ValueError('No failed, installable extension to retry')
+        _owner, retry_request_id = _identity(api_key, identity['chatId'], identity['requestId'])
+        result = await asyncio.to_thread(_advance_extension_installation, service_id, api_key,
+            asyncio.get_running_loop(), identity, retry_request_id)
+    except (ValueError, OSError, KeyError, TypeError, yaml.YAMLError):
+        raise HTTPException(status_code=409, detail='Failed installation requires inspection') from None
     return JSONResponse({'schemaVersion': 1, 'kind': 'ods-extension-request-installation',
         **identity, 'extensionId': service_id, 'state': result['state'],
         'activeExtensionId': result['activeExtensionId'], 'operationId': result['operationId'],
@@ -1504,7 +1595,8 @@ async def chat_extension_request_context(owner, chat_id, request_id, command, *,
         if not current or current['state'] != 'pending':
             return None
         return current, model_request_context('/extensions ' + current['repository'],
-                                              current['chatId'], current['requestId'])
+                                               current['chatId'], current['requestId'],
+                                               authorization_mode=current['authorizationMode'])
     resolved = await asyncio.to_thread(resolve)
     if not resolved:
         return None
@@ -1613,6 +1705,7 @@ async def extension_github_request_resolve(request: Request, api_key: str = Depe
         raise HTTPException(status_code=409, detail='Request scope unavailable')
     return JSONResponse({'schemaVersion': 1, 'kind': 'ods-extension-request-scope',
         'sessionHash': payload['sessionHash'],
+        'authorizationMode': current['authorizationMode'] if current else None,
         'request': ({key: current[key] for key in ('chatId', 'requestId')} if current else None)},
         headers={'Cache-Control': 'no-store'})
 
@@ -1655,8 +1748,10 @@ async def _observe_extension_request(payload, api_key):
                                    payload['chatId'], payload['requestId'])
             result = {'schemaVersion': 1, 'kind': 'ods-extension-request-status',
                       **payload, 'requestState': current['state'],
+                      'authorizationMode': current['authorizationMode'],
                       'proposalAccepted': bool(current.get('proposal')), 'prepared': False,
-                      'extensionId': None, 'runtimeStatus': 'not_observed'}
+                      'extensionId': None, 'runtimeStatus': 'not_observed',
+                      'installationVerified': False}
             result['integrationBound'] = bool(current.get('integration'))
             # Matches are discovery evidence, not binding or execution authority.
             from extension_github import existing_recipes, repository_identity
@@ -1695,6 +1790,9 @@ async def _observe_extension_request(payload, api_key):
             if status in {'enabled', 'cli_installed', 'disabled', 'stopped', 'not_installed',
                           'installing', 'setting_up', 'unhealthy', 'error', 'unavailable'}:
                 result['runtimeStatus'] = status
+                # The request record remains pending while it is available for
+                # follow-up. Installation readiness is a separate observation.
+                result['installationVerified'] = status in {'enabled', 'cli_installed'}
                 error = detail.get('error_message')
                 if status == 'error' and isinstance(error, str) and error.strip():
                     # Preserve observed failure evidence, not a new action or
@@ -1722,7 +1820,10 @@ async def extension_github_request_proposal(request: Request, api_key: str = Dep
     from extension_recipe_package import recipe_digest
     from extension_github import repository_identity
     payload = await _github_recipe_payload(request)
-    if not isinstance(payload, dict) or set(payload) != {'chatId', 'requestId', 'candidate'}:
+    required = {'chatId', 'requestId', 'candidate'}
+    if (not isinstance(payload, dict) or set(payload) not in (required, required | {'recoveryFrom'})
+            or ('recoveryFrom' in payload and (not isinstance(payload['recoveryFrom'], dict)
+                or set(payload['recoveryFrom']) != {'chatId', 'requestId'}))):
         raise HTTPException(status_code=400, detail='Invalid extension proposal request')
     loop = asyncio.get_running_loop()
 
@@ -1788,7 +1889,22 @@ async def extension_github_request_proposal(request: Request, api_key: str = Dep
                     and (bound['recipeDigest'] != recipe_digest(candidate)
                          or (operations / (current['id'] + '.revision.json')).exists())):
                 with _extension_operation_lock(bound['extensionId']), _extensions_lock():
-                    return _revise_extension_request(payload, api_key, loop, operations)
+                    return _revise_extension_request(payload, api_key, loop, operations,
+                        recovery_from=payload.get('recoveryFrom'))
+            if 'recoveryFrom' in payload:
+                if bound and bound['recipeDigest'] == recipe_digest(candidate):
+                    return bind()  # Idempotent response after successful recovery.
+                if (bound or not isinstance(candidate, dict)
+                        or not isinstance(candidate.get('manifest'), dict)
+                        or not isinstance(candidate['manifest'].get('service'), dict)):
+                    raise ValueError('Recovery requires an unbound active request')
+                identifier = candidate['manifest']['service'].get('id')
+                _validate_service_id(identifier)
+                if not (EXTENSIONS_LIBRARY_DIR / identifier).exists():
+                    raise ValueError('Recovery requires an installed imported recipe')
+                with _extension_operation_lock(identifier), _extensions_lock():
+                    return _revise_extension_request(payload, api_key, loop, operations,
+                        recovery_from=payload['recoveryFrom'])
             return bind()
 
     try:
@@ -1798,14 +1914,15 @@ async def extension_github_request_proposal(request: Request, api_key: str = Dep
     return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
-def _revise_extension_request(payload, api_key, loop, operations):
+def _revise_extension_request(payload, api_key, loop, operations, *, recovery_from=None):
     """Revise only a failed, owner-bound imported recipe; never dispatch here.
 
     Caller holds coordinator, service lifecycle and extension mutation locks.
     The durable file journal also retains bindings and the retired attempt so
     a lost response or interrupted write can reconcile without a second install.
     """
-    from extension_requests import read_request, bind_proposal
+    from extension_requests import (read_request, bind_proposal, expired_proposal,
+                                    adopt_expired_proposal)
     from extension_recipe_drafts import read_draft, save_draft
     from extension_recipe_package import recipe_digest, verify_package, publish_package
     from extension_recipe_revision import (stage_revision, read_revision_context,
@@ -1825,7 +1942,13 @@ def _revise_extension_request(payload, api_key, loop, operations):
         return value
 
     current = current_request()
-    old = current['proposal']
+    candidate_identifier = candidate['manifest']['service']['id']
+    if recovery_from is not None:
+        previous = expired_proposal(requests, api_key, payload['chatId'], payload['requestId'],
+            recovery_from['chatId'], recovery_from['requestId'], candidate_identifier)
+        old = previous['proposal']
+    else:
+        old = current['proposal']
     identifier = old['extensionId']
     _validate_service_id(identifier)
     _assert_not_core(identifier)
@@ -1856,12 +1979,23 @@ def _revise_extension_request(payload, api_key, loop, operations):
 
     if journal_path.exists() or journal_path.is_symlink():
         context = read_revision_context(journal_path)
-        if (set(context) != {'requestId', 'old', 'new', 'attempt', 'validation', 'draft'}
+        expected_keys = {'requestId', 'old', 'new', 'attempt', 'validation', 'draft'}
+        if (set(context) not in (expected_keys, expected_keys | {'recoveryFrom'})
                 or context['requestId'] != current['id']
                 or context['new']['recipeDigest'] != recipe_digest(candidate)
                 or context['new']['extensionId'] != identifier
                 or read_draft(drafts, api_key, context['new']['draftId']) != candidate):
             raise ValueError('Another recipe revision requires reconciliation')
+        saved_recovery = context.get('recoveryFrom')
+        if saved_recovery is not None:
+            if recovery_from is not None and saved_recovery != recovery_from:
+                raise ValueError('Recovery identity changed')
+            previous = expired_proposal(requests, api_key, payload['chatId'], payload['requestId'],
+                saved_recovery['chatId'], saved_recovery['requestId'], identifier)
+            if previous['proposal'] != context['old']:
+                raise ValueError('Expired proposal changed')
+        elif recovery_from is not None:
+            raise ValueError('Recovery identity changed')
         old = context['old']
     else:
         expected = verify_failed_attempt(attempts, identifier, observe)
@@ -1912,8 +2046,14 @@ def _revise_extension_request(payload, api_key, loop, operations):
             _write_library_receipt(package, source_digest=source_digest, installed_digest=source_digest)
             user_files = {**files, '.ods-library-receipt.json': (package / '.ods-library-receipt.json').read_bytes()}
             context = {'requestId': current['id'], 'old': old, 'new': new,
-                       'attempt': expected, 'validation': validation, 'draft': draft}
+                       'attempt': expected, 'validation': validation, 'draft': draft,
+                       **({'recoveryFrom': recovery_from} if recovery_from is not None else {})}
             stage_revision(journal_path, directories, {'library': files, 'user': user_files}, context=context)
+
+    if context.get('recoveryFrom') and current_request().get('proposal') is None:
+        source = context['recoveryFrom']
+        adopt_expired_proposal(requests, api_key, payload['chatId'], payload['requestId'],
+            source['chatId'], source['requestId'], old)
 
     def bind_new():
         return bind_proposal(requests, api_key, payload['chatId'], payload['requestId'],
@@ -1921,6 +2061,7 @@ def _revise_extension_request(payload, api_key, loop, operations):
 
     commit_bound_revision(journal_path, directories, attempts, identifier, context['attempt'],
         old, context['new'], lambda: current_request()['proposal'], bind_new, observe)
+    _clear_retired_failed_progress(identifier, context['attempt']['operationId'])
     for directory in directories.values():
         _invalidate_extension_digest_cache(directory)
     # Files, binding and retirement are now committed. The immutable drafts and
@@ -1931,7 +2072,7 @@ def _revise_extension_request(payload, api_key, loop, operations):
 
 @router.post("/api/extensions/github/inspect")
 async def extension_github_inspect(request: Request, api_key: str = Depends(verify_api_key)):
-    from extension_github import inspect_repository
+    from extension_github import GitHubRateLimitError, inspect_repository
     import httpx
     raw = bytearray()
     async for chunk in request.stream():
@@ -1944,6 +2085,10 @@ async def extension_github_inspect(request: Request, api_key: str = Depends(veri
             raise ValueError()
         result = await inspect_repository(payload['url'], EXTENSIONS_LIBRARY_DIR,
                                           existing_roots=(USER_EXTENSIONS_DIR, EXTENSIONS_DIR))
+    except GitHubRateLimitError as error:
+        raise HTTPException(status_code=429,
+                            detail={'code': 'github-rate-limited', 'retryAfter': error.retry_after},
+                            headers={'Retry-After': str(error.retry_after)}) from None
     except (ValueError, UnicodeError, httpx.HTTPError):
         raise HTTPException(status_code=400, detail="Could not inspect the public GitHub repository") from None
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
@@ -1951,7 +2096,7 @@ async def extension_github_inspect(request: Request, api_key: str = Depends(veri
 
 @router.post("/api/extensions/github/file")
 async def extension_github_file(request: Request, api_key: str = Depends(verify_api_key)):
-    from extension_github import inspect_file
+    from extension_github import GitHubRateLimitError, inspect_file
     import httpx
     raw = bytearray()
     async for chunk in request.stream():
@@ -1963,6 +2108,10 @@ async def extension_github_file(request: Request, api_key: str = Depends(verify_
         if not isinstance(payload, dict) or set(payload) != {"url", "commit", "path"}:
             raise ValueError()
         result = await inspect_file(payload['url'], payload['commit'], payload['path'])
+    except GitHubRateLimitError as error:
+        raise HTTPException(status_code=429,
+                            detail={'code': 'github-rate-limited', 'retryAfter': error.retry_after},
+                            headers={'Retry-After': str(error.retry_after)}) from None
     except (ValueError, UnicodeError, httpx.HTTPError):
         raise HTTPException(status_code=400, detail="Could not inspect the public GitHub file") from None
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
@@ -2100,6 +2249,17 @@ async def extension_github_prepare_draft(draft_id: str, api_key: str = Depends(v
     return await _prepare_github_draft(draft_id, api_key)
 
 
+def _github_preparation_conflict(reason, request_identity, fallback):
+    """Expose only bounded, request-bound reasons to the model's broker."""
+    if request_identity is None:
+        return HTTPException(status_code=409, detail=fallback)
+    return HTTPException(status_code=409, detail={
+        'schemaVersion': 1, 'kind': 'ods-extension-request-preparation-rejected',
+        **{key: request_identity[key] for key in ('chatId', 'requestId')},
+        'reason': reason, 'installationStarted': False,
+    })
+
+
 @router.post("/api/extensions/github/requests/prepare")
 async def extension_github_prepare_request(request: Request, api_key: str = Depends(verify_api_key)):
     from extension_requests import read_request
@@ -2113,7 +2273,7 @@ async def extension_github_prepare_request(request: Request, api_key: str = Depe
     def reuse():
         with _extensions_lock():
             current = read_request(directory, api_key, payload['chatId'], payload['requestId'])
-            if current['state'] != 'pending':
+            if current['state'] != 'pending' or current['authorizationMode'] != 'install':
                 raise ValueError('Inactive request')
             if current.get('proposal') and 'extensionId' not in payload:
                 return None  # The already accepted recipe remains authoritative.
@@ -2144,7 +2304,8 @@ async def extension_github_prepare_request(request: Request, api_key: str = Depe
         return JSONResponse(receipt, headers={'Cache-Control': 'no-store'})
     try:
         current = await asyncio.to_thread(read_request, directory, api_key, payload['chatId'], payload['requestId'])
-        if current['state'] != 'pending' or not current.get('proposal'):
+        if (current['state'] != 'pending' or current['authorizationMode'] != 'install'
+                or not current.get('proposal')):
             raise ValueError('No active proposal')
     except (ValueError, OSError, KeyError, TypeError):
         raise HTTPException(status_code=409, detail='Extension request has no active proposal') from None
@@ -2156,7 +2317,7 @@ async def extension_github_prepare_request(request: Request, api_key: str = Depe
 
 async def _prepare_github_draft(draft_id, api_key, *, request_identity=None):
     from extension_recipe_drafts import read_draft
-    from extension_recipe_package import publish_package, verify_package, package_receipt
+    from extension_recipe_package import LicenseEvidenceError, publish_package, verify_package, package_receipt
     from extension_github import inspect_repository, inspect_file
     from extension_source_build import inspect_source_builds
     import httpx
@@ -2166,6 +2327,9 @@ async def _prepare_github_draft(draft_id, api_key, *, request_identity=None):
     except (ValueError, OSError, KeyError, TypeError):
         raise HTTPException(status_code=404, detail='Recipe draft is unavailable') from None
 
+    class RequestChanged(ValueError):
+        pass
+
     def check_request():
         if request_identity is None:
             return
@@ -2174,19 +2338,23 @@ async def _prepare_github_draft(draft_id, api_key, *, request_identity=None):
         from extension_github import repository_identity
         current = read_request(directory.parent / '.extension-requests', api_key,
                                request_identity['chatId'], request_identity['requestId'])
-        if (current['state'] != 'pending'
+        if (current['state'] != 'pending' or current['authorizationMode'] != 'install'
                 or current['repository'] != 'https://github.com/' + repository_identity(candidate['repository']).lower()
                 or current.get('proposal') != {'draftId': draft_id, 'recipeDigest': recipe_digest(candidate),
                                               'extensionId': candidate['manifest']['service']['id']}):
-            raise ValueError('Extension request changed')
+            raise RequestChanged('Extension request changed')
 
     try:
         await asyncio.to_thread(check_request)
         evidence = await inspect_repository(candidate['repository'], EXTENSIONS_LIBRARY_DIR,
             existing_roots=(USER_EXTENSIONS_DIR, EXTENSIONS_DIR), revision=candidate['commit'])
         evidence['sourceFiles'] = await inspect_source_builds(candidate, inspect_file)
+    except RequestChanged:
+        raise _github_preparation_conflict('request_changed', request_identity,
+            'Extension request changed') from None
     except (ValueError, UnicodeError, httpx.HTTPError):
-        raise HTTPException(status_code=409, detail='Repository evidence is unavailable') from None
+        raise _github_preparation_conflict('repository_evidence_unavailable', request_identity,
+            'Repository evidence is unavailable') from None
     loop = asyncio.get_running_loop()
 
     def prepare():
@@ -2203,8 +2371,15 @@ async def _prepare_github_draft(draft_id, api_key, *, request_identity=None):
             return publish_package(EXTENSIONS_LIBRARY_DIR, candidate, validation, evidence)
     try:
         result = await asyncio.to_thread(prepare)
+    except RequestChanged:
+        raise _github_preparation_conflict('request_changed', request_identity,
+            'Extension request changed') from None
+    except LicenseEvidenceError:
+        raise _github_preparation_conflict('license_review_required', request_identity,
+            'Repository license requires review') from None
     except (ValueError, OSError, TypeError, KeyError, yaml.YAMLError):
-        raise HTTPException(status_code=409, detail='Recipe preparation requires inspection') from None
+        raise _github_preparation_conflict('recipe_inspection_required', request_identity,
+            'Recipe preparation requires inspection') from None
     return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
@@ -2552,7 +2727,7 @@ def _staged_library_extension(service_id: str, dest: Path):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _install_from_library(service_id: str) -> None:
+def _install_from_library(service_id: str, *, operation_id: str | None = None) -> None:
     """Copy an extension from the library to USER_EXTENSIONS_DIR atomically.
 
     Must be called inside _extensions_lock() by the caller. Performs the
@@ -2572,11 +2747,31 @@ def _install_from_library(service_id: str) -> None:
     if dest.exists():
         has_compose = (dest / "compose.yaml").exists()
         has_disabled = (dest / "compose.yaml.disabled").exists()
-        if (has_compose or has_disabled) and not _has_error_progress(service_id):
+        failed_progress = _has_error_progress(service_id)
+        if (has_compose or has_disabled) and not failed_progress and not operation_id:
             raise HTTPException(
                 status_code=409,
                 detail=f"Extension already installed: {service_id}",
             )
+        if operation_id:
+            from extension_installation import InstallationJournal
+            record = InstallationJournal(
+                _extensions_lock_path().parent.resolve() / '.extension-installations' / 'journal.json'
+            ).records.get(service_id)
+            if (not isinstance(record, dict) or record.get('action') != 'install'
+                    or record.get('state') != 'dispatching'
+                    or record.get('operationId') != operation_id
+                    or _progress_file_presence(service_id) == 'unsafe'):
+                raise HTTPException(status_code=409,
+                    detail='Existing installation requires operation reconciliation')
+        if not failed_progress and operation_id:
+            svc = _installation_plan_service(service_id)
+            if (not isinstance(svc, dict) or type(svc.get('port')) is not int
+                    or svc['port'] != 0 or svc.get('startup_check') is not False
+                    or not _is_installable(service_id)
+                    or _progress_file_presence(service_id) != 'absent'):
+                raise HTTPException(status_code=409,
+                    detail='Existing CLI installation requires operation reconciliation')
         # A failed install may already have created settings or application
         # data. Retry its existing definition; never delete the directory.
         if (not has_compose or has_disabled or not (dest / 'manifest.yaml').is_file()
@@ -2586,11 +2781,15 @@ def _install_from_library(service_id: str) -> None:
         # preserves curated-library policy without granting those privileges to
         # a modified installed definition or an imported GitHub recipe.
         with _staged_library_extension(service_id, dest) as (staged, _source_digest):
-            for name in ('manifest.yaml', 'compose.yaml', 'upstream.json'):
-                actual, expected = dest / name, staged / name
-                if (actual.is_symlink() or actual.exists() != expected.exists()
-                        or (expected.exists() and (not actual.is_file()
-                            or actual.stat().st_size != expected.stat().st_size
+            # Compose may build or mount any file shipped by the library,
+            # including Dockerfiles and scripts. Check every staged source
+            # path, while leaving owner-added data and configuration intact.
+            for expected in staged.rglob('*'):
+                actual = dest / expected.relative_to(staged)
+                if (actual.is_symlink() or (expected.is_dir() and not actual.is_dir())
+                        or (expected.is_file() and (not actual.is_file()
+                            or bool(actual.stat().st_mode & 0o111)
+                               != bool(expected.stat().st_mode & 0o111)
                             or actual.read_bytes() != expected.read_bytes()))):
                     raise HTTPException(status_code=409,
                         detail='Existing extension definition changed; files were preserved')
@@ -2725,7 +2924,7 @@ def _install_extension(service_id: str, api_key: str, operation_id: str | None =
     if dest.exists():
         has_compose = (dest / "compose.yaml").exists()
         has_disabled = (dest / "compose.yaml.disabled").exists()
-        if (has_compose or has_disabled) and not _has_error_progress(service_id):
+        if (has_compose or has_disabled) and not _has_error_progress(service_id) and operation_id is None:
             raise HTTPException(
                 status_code=409, detail=f"Extension already installed: {service_id}",
             )
@@ -2739,7 +2938,10 @@ def _install_extension(service_id: str, api_key: str, operation_id: str | None =
 
     # Atomic install via shared helper (used by templates too)
     with _extensions_lock():
-        _install_from_library(service_id)
+        if operation_id is None:
+            _install_from_library(service_id)
+        else:
+            _install_from_library(service_id, operation_id=operation_id)
         _call_agent_invalidate_compose_cache()
 
     # Sync config/ subdirectory to INSTALL_DIR/config/ for bind mounts.

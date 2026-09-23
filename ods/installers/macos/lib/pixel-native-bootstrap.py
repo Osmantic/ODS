@@ -80,27 +80,28 @@ ODS_BUNDLED_SHA256 = '8fea465b1b42d82da0a286936d0e029b038321fd39793f5a849843ef11
 
 
 def acquire_source(*, ref, destination, license_authorized=False,
-                   source_url='https://github.com/Osmantic/Pixel.git'):
+                   source_url=None):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise BootstrapError('native-macos-owner-required')
     if not re.fullmatch(r'[a-f0-9]{40}', ref):
         raise BootstrapError('exact-pixel-source-ref-required')
-    # The public ODS installer passes its pinned local bundle. Retain the
-    # canonical remote and a clean local checkout as explicit developer paths.
-    if source_url != 'https://github.com/Osmantic/Pixel.git':
-        local = Path(source_url)
-        if not local.is_absolute() or local.is_symlink():
-            raise BootstrapError('official-or-local-pixel-source-required')
-        if local.is_file():
-            if local.name != 'pixel.bundle' or ref != ODS_BUNDLED_REF:
-                raise BootstrapError('invalid-bundled-pixel-source')
-            if local.stat().st_size > 64 * 1024 * 1024:
-                raise BootstrapError('bundled-pixel-source-too-large')
-            if hashlib.sha256(local.read_bytes()).hexdigest() != ODS_BUNDLED_SHA256:
-                raise BootstrapError('bundled-pixel-source-digest-mismatch')
-        elif not local.is_dir():
-            raise BootstrapError('official-or-local-pixel-source-required')
-        source_url = str(local.resolve(strict=True))
+    # The public ODS installer passes its pinned local bundle. Developer
+    # checkouts must also be explicit local paths; no remote source fallback.
+    if source_url is None:
+        raise BootstrapError('explicit-local-pixel-source-required')
+    local = Path(source_url)
+    if not local.is_absolute() or local.is_symlink():
+        raise BootstrapError('bundled-or-local-pixel-source-required')
+    if local.is_file():
+        if local.name != 'pixel.bundle' or ref != ODS_BUNDLED_REF:
+            raise BootstrapError('invalid-bundled-pixel-source')
+        if local.stat().st_size > 64 * 1024 * 1024:
+            raise BootstrapError('bundled-pixel-source-too-large')
+        if hashlib.sha256(local.read_bytes()).hexdigest() != ODS_BUNDLED_SHA256:
+            raise BootstrapError('bundled-pixel-source-digest-mismatch')
+    elif not local.is_dir():
+        raise BootstrapError('bundled-or-local-pixel-source-required')
+    source_url = str(local.resolve(strict=True))
     destination = Path(destination)
     if not destination.is_absolute() or os.path.lexists(destination):
         raise BootstrapError('new-absolute-source-destination-required')

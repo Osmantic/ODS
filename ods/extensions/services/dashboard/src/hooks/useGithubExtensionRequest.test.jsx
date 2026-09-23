@@ -59,10 +59,29 @@ test('accepted draft remains observation-only while awaiting agent advancement',
 
 test('parses only explicit repository commands, preserving the repository boundary', () => {
   expect(githubExtensionRepository(command)).toBe('https://github.com/owner/repo')
+  for (const action of ['install', 'inspect', 'research']) {
+    expect(githubExtensionRepository(`/extensions ${action} https://github.com/Owner/Repo.git`))
+      .toBe('https://github.com/owner/repo')
+    expect(githubExtensionRepository(`/goal /extensions ${action} https://github.com/Owner/Repo.git`))
+      .toBe('https://github.com/owner/repo')
+  }
   for (const invalid of ['discuss ' + command, '/extensions @repo', '/extensions https://github.com/o/r/tree/main',
-    '/extensions https://github.com/o/r?token=secret', '/extensions https://github.com.evil/o/r']) {
+    '/extensions https://github.com/o/r?token=secret', '/extensions https://github.com.evil/o/r',
+    '/extensions install http://github.com/o/r', '/extensions install https://github.com/o/r/tree/main']) {
     expect(githubExtensionRepository(invalid)).toBeNull()
   }
+})
+
+test('explicit install command registers the exact owner command once, without UI host mutation', async () => {
+  const explicit = '/extensions install https://github.com/Owner/Repo.git'
+  const fetcher = vi.fn().mockResolvedValue(response(receipt))
+  vi.stubGlobal('fetch', fetcher)
+  const view = renderHook(() => useGithubExtensionRequest('chat'))
+  await act(async () => { view.result.current.start(explicit, identity); await Promise.resolve() })
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  expect(fetcher.mock.calls[0][0]).toBe('/api/extensions/github/requests')
+  expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({ action: 'create', ...identity, command: explicit })
+  view.unmount()
 })
 
 test('history rendering has no effect; a fresh accepted command registers once and never installs', async () => {

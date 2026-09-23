@@ -4,7 +4,8 @@ import json
 import pytest
 from starlette.requests import Request
 
-from extension_requests import create_request, read_request, cancel_request, bind_proposal, TTL_SECONDS
+from extension_requests import (create_request, read_request, cancel_request, bind_proposal,
+                                command_authorization_mode, TTL_SECONDS)
 
 
 COMMAND = '/extensions https://github.com/Owner/Repo.git configure for my project'
@@ -56,6 +57,7 @@ def test_request_evidence_resolves_commit_without_forwarding_unbounded_documents
     assert 'pixel_ods_web_extract' not in result['content']
     saved = read_request(tmp_path / '.extension-requests', 'owner', 'chat', 'turn')
     assert saved['installationStarted'] is False and 'proposal' not in saved
+    assert saved['authorizationMode'] == 'research'
     inspect.assert_awaited_once()
     inspect.reset_mock()
     assert asyncio.run(extensions.chat_extension_request_context('owner', 'different', 'turn', 'hello',
@@ -83,12 +85,58 @@ def test_request_is_repo_and_turn_bound_and_never_an_installation(tmp_path):
     record = create_request(tmp_path, 'owner-secret', 'chat', 'turn', COMMAND, now=10)
     assert record['repository'] == 'https://github.com/owner/repo'
     assert record['state'] == 'pending' and record['installationStarted'] is False
+    assert record['authorizationMode'] == 'research'
     assert 'owner-secret' not in json.dumps(record)
     assert create_request(tmp_path, 'owner-secret', 'chat', 'turn', COMMAND, now=100) == record
     with pytest.raises(ValueError):
         create_request(tmp_path, 'owner-secret', 'chat', 'turn', '/extensions https://github.com/other/repo', now=100)
     with pytest.raises((ValueError, OSError)):
         read_request(tmp_path, 'other-owner', 'chat', 'turn', now=100)
+
+
+@pytest.mark.parametrize(('command', 'mode'), [
+    ('/extensions https://github.com/o/r', 'research'),
+    ('/extensions inspect https://github.com/o/r', 'research'),
+    ('/extensions research https://github.com/o/r', 'research'),
+    ('/extensions https://github.com/o/r antes de instalar, explique', 'research'),
+    ('/extensions https://github.com/o/r não instale', 'research'),
+    ('/extensions https://github.com/o/r você pode instalar?', 'research'),
+    ('/extensions install https://github.com/o/r', 'install'),
+    ('/goal /extensions install https://github.com/o/r', 'install'),
+    ('/extensions https://github.com/o/r instale no ODS como biblioteca isolada', 'research'),
+    ('/extensions https://github.com/o/r pode ja começar instalar.', 'research'),
+    ('/extensions https://github.com/o/r pode já começar a instalar.', 'research'),
+    ('/extensions https://github.com/o/r pode instalar', 'research'),
+    ('/extensions https://github.com/o/r pode instalar?', 'research'),
+    ('/extensions https://github.com/o/r instale só depois que eu autorizar', 'research'),
+    ('/extensions https://github.com/o/r pode instalar apenas se eu confirmar', 'research'),
+    ('/extensions https://github.com/o/r install only after I confirm', 'research'),
+])
+def test_request_authorization_requires_explicit_owner_install_command(tmp_path, command, mode):
+    assert command_authorization_mode(command) == mode
+    request = create_request(tmp_path, 'owner', 'chat', 'turn', command, now=10)
+    assert request['authorizationMode'] == mode
+    assert read_request(tmp_path, 'owner', 'chat', 'turn', now=11)['authorizationMode'] == mode
+
+
+def test_request_authorization_is_immutable_and_legacy_records_are_research_only(tmp_path):
+    initial = create_request(tmp_path, 'owner', 'chat', 'turn',
+                             '/extensions https://github.com/o/r', now=10)
+    with pytest.raises(ValueError):
+        create_request(tmp_path, 'owner', 'chat', 'turn',
+                       '/extensions install https://github.com/o/r', now=11)
+    path = tmp_path / (initial['id'] + '.json')
+    record = json.loads(path.read_text(encoding='utf-8'))
+    record['authorizationMode'] = 'unrecognized'
+    path.write_text(json.dumps(record), encoding='utf-8')
+    with pytest.raises(ValueError):
+        read_request(tmp_path, 'owner', 'chat', 'turn', now=11)
+    del record['authorizationMode']
+    path.write_text(json.dumps(record), encoding='utf-8')
+    assert read_request(tmp_path, 'owner', 'chat', 'turn', now=11)['authorizationMode'] == 'research'
+    with pytest.raises(ValueError):
+        create_request(tmp_path, 'owner', 'chat', 'turn',
+                       '/extensions install https://github.com/o/r', now=11)
 
 
 def test_expired_and_cancelled_requests_cannot_be_revived(tmp_path):
@@ -152,6 +200,16 @@ def test_revision_binding_requires_exact_previous_binding_and_preserves_identity
     assert read_request(tmp_path, 'owner', 'chat', 'turn', now=11) == second
     cancel_request(tmp_path, 'owner', 'chat', 'turn', now=12)
     with pytest.raises(ValueError): bind(initial, expected_proposal=second['proposal'])
+
+
+def test_new_explicit_request_preserves_expired_predecessor(tmp_path):
+    old = create_request(tmp_path, 'owner', 'chat', 'old', COMMAND, now=10)
+    fresh = create_request(tmp_path, 'owner', 'chat', 'fresh', COMMAND,
+                           now=10 + TTL_SECONDS + 1)
+    assert fresh['state'] == 'pending'
+    assert read_request(tmp_path, 'owner', 'chat', 'old',
+                        now=10 + TTL_SECONDS + 1)['state'] == 'expired'
+    assert json.loads((tmp_path / (old['id'] + '.json')).read_text())['state'] == 'pending'
 
 
 def test_api_request_lifecycle_never_calls_installation(monkeypatch, tmp_path):
@@ -369,7 +427,9 @@ def test_session_scope_endpoint_uses_authenticated_owner(monkeypatch, tmp_path):
     result=asyncio.run(call('owner',payload))
     assert result.headers['cache-control']=='no-store'
     assert json.loads(result.body)['request']=={'chatId':'chat','requestId':'original'}
-    assert json.loads(asyncio.run(call('stranger',payload)).body)['request'] is None
+    assert json.loads(result.body)['authorizationMode'] == 'research'
+    stranger = json.loads(asyncio.run(call('stranger',payload)).body)
+    assert stranger['request'] is None and stranger['authorizationMode'] is None
     with pytest.raises(extensions.HTTPException):
         asyncio.run(call('owner',{'sessionHash':'bad'}))
 

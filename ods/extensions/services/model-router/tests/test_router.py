@@ -239,6 +239,489 @@ class TestForwarding:
         assert b"Concrete.gguf" not in raw
         assert b"[DONE]" in raw
 
+    def test_local_tool_stream_uses_completed_backend_decision(self, router):
+        mod, client, write_state, _calls = router
+        write_state(mutate=lambda state: state["active"]["backend"].update(
+            kind="lemonade"))
+        sent = []
+
+        def handler(request):
+            body = json.loads(request.content)
+            sent.append(body)
+            # This backend fails while diffing streamed calls, but its
+            # completed Chat response contains the exact tool decision.
+            if body["stream"]:
+                return httpx.Response(500, json={"error": {
+                    "message": "Invalid diff: now finding less tool calls!"}})
+            return httpx.Response(200, json={
+                "id": "backend-call", "object": "chat.completion",
+                "created": 123, "model": "Concrete.gguf",
+                "choices": [{"index": 0, "message": {
+                    "role": "assistant", "content": None,
+                    "tool_calls": [{"id": "call-1", "type": "function",
+                                    "function": {"name": "lookup",
+                                                 "arguments": '{"key":"ok"}'}}],
+                }, "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 8,
+                          "total_tokens": 28},
+            })
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True,
+            "stream_options": {"include_usage": True},
+            "messages": [{"role": "user", "content": "look up ok"}],
+            "tools": [{"type": "function", "function": {
+                "name": "lookup", "parameters": {"type": "object"}}}],
+        })
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        assert sent[0]["stream"] is False
+        assert "stream_options" not in sent[0]
+        assert sent[0]["tools"][0]["function"]["name"] == "lookup"
+        frames = [item for item in response.text.split("\n\n") if item]
+        assert frames[-1] == "data: [DONE]"
+        chunks = [json.loads(item.removeprefix("data: ")) for item in frames[:-1]]
+        assert all(chunk["model"] == "ods/current" for chunk in chunks)
+        assert chunks[0]["choices"][0]["delta"]["tool_calls"] == [{
+            "id": "call-1", "type": "function",
+            "function": {"name": "lookup", "arguments": '{"key":"ok"}'},
+            "index": 0,
+        }]
+        assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+        assert chunks[-1]["usage"]["total_tokens"] == 28
+
+    def test_local_tool_stream_reports_lemonade_context_error_not_invalid_completion(self, router):
+        mod, client, write_state, _calls = router
+        write_state(mutate=lambda state: state["active"]["backend"].update(
+            kind="lemonade"))
+
+        def handler(_request):
+            return httpx.Response(200, json={"error": {
+                "message": "llama-server request failed", "details": {
+                    "status_code": 400, "response": {"error": {
+                        "type": "exceed_context_size_error", "n_ctx": 8192,
+                        "n_prompt_tokens": 9000,
+                        "message": "untrusted backend detail"}}}}})
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"type": "function", "function": {
+                "name": "lookup", "parameters": {"type": "object"}}}],
+        })
+
+        assert response.status_code == 400
+        assert response.json()["error"] == {
+            "message": "Request (9000 tokens) exceeds the available context size (8192 tokens)",
+            "type": "exceed_context_size_error", "code": "400",
+            "n_ctx": 8192, "n_prompt_tokens": 9000,
+        }
+        assert "untrusted backend detail" not in response.text
+        assert "[DONE]" not in response.text
+
+    def test_complete_native_markup_uses_only_advertised_valid_tool(self, router):
+        mod, client, write_state, _calls = router
+        write_state(mutate=lambda state: state["active"]["backend"].update(
+            kind="lemonade"))
+        native = (
+            "<tool_call>\n<function=pixel_ods_python_library_proposal>\n"
+            "<parameter=repository>\nhttps://github.com/pypa/packaging\n</parameter>\n"
+            "<parameter=serviceId>\npackaging-core-utilities\n</parameter>\n"
+            "<parameter=name>\npackaging-core-utilities\n</parameter>\n"
+            "<parameter=pythonVersion>\n3.10\n</parameter>\n"
+            '<parameter=pythonImports>\n["packaging.version"]\n</parameter>\n'
+            "</function>\n</tool_call>"
+        )
+        def handler(_request):
+            return httpx.Response(200, json={
+                "id": "native-call", "model": "Concrete.gguf",
+                "choices": [{"index": 0, "message": {
+                    "role": "assistant", "content": native,
+                }, "finish_reason": "stop"}],
+            })
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True,
+            "messages": [{"role": "user", "content": "propose packaging"}],
+            "tools": [{"type": "function", "function": {
+                "name": "pixel_ods_python_library_proposal",
+                "parameters": {"type": "object", "additionalProperties": False,
+                    "required": ["repository", "serviceId", "name",
+                                 "pythonVersion", "pythonImports"],
+                    "properties": {
+                        "repository": {"type": "string"},
+                        "serviceId": {"type": "string"},
+                        "name": {"type": "string"},
+                        "pythonVersion": {"type": "string", "pattern": r"^3\.10$"},
+                        "pythonImports": {"type": "array", "minItems": 1,
+                                          "items": {"type": "string"}},
+                    }},
+            }}],
+        })
+        assert response.status_code == 200
+        chunks = [json.loads(frame.removeprefix("data: "))
+                  for frame in response.text.split("\n\n")
+                  if frame and frame != "data: [DONE]"]
+        delta = chunks[0]["choices"][0]["delta"]
+        assert delta["content"] is None
+        assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+        call = delta["tool_calls"][0]
+        assert call["function"]["name"] == "pixel_ods_python_library_proposal"
+        assert json.loads(call["function"]["arguments"]) == {
+            "repository": "https://github.com/pypa/packaging",
+            "serviceId": "packaging-core-utilities",
+            "name": "packaging-core-utilities",
+            "pythonVersion": "3.10",
+            "pythonImports": ["packaging.version"],
+        }
+
+    @pytest.mark.parametrize("content,choice,offered,parallel", [
+        ("prefix <tool_call>\n<function=lookup>\n<parameter=key>\nok\n</parameter>\n</function>\n</tool_call>", "auto", True, True),
+        ("<tool_call>\n<function=lookup>\n<parameter=key>\nok\n</parameter>\n</function>", "auto", True, True),
+        ("<tool_call>\n<function=pixel_ods_web_fetch>\n<parameter=key>\nok\n</parameter>\n</function>\n</tool_call>", "auto", True, True),
+        ("<tool_call>\n<function=lookup>\n<parameter=key>\nok\n</parameter>\n</function>\n</tool_call>", "none", True, True),
+        ("<tool_call>\n<function=lookup>\n<parameter=key>\nok\n</parameter>\n</function>\n</tool_call>", "auto", False, True),
+        ("<tool_call>\n<function=lookup>\n<parameter=key>\nok\n</parameter>\n<parameter=key>\nagain\n</parameter>\n</function>\n</tool_call>", "auto", True, True),
+        ("<tool_call>\n<function=lookup>\n<parameter=key>\nok\n</parameter>\n</function>\n</tool_call>\nextra", "auto", True, True),
+    ])
+    def test_native_markup_rejects_untrusted_or_incomplete_text(
+        self, router, content, choice, offered, parallel,
+    ):
+        mod, _client, _write_state, _calls = router
+        completion = {"choices": [{"message": {"role": "assistant",
+            "content": content}, "finish_reason": "stop"}]}
+        request = {"tool_choice": choice, "parallel_tool_calls": parallel,
+                   "tools": ([{"type": "function", "function": {
+                       "name": "lookup", "parameters": {"type": "object",
+                       "additionalProperties": False, "required": ["key"],
+                       "properties": {"key": {"type": "string"}}}}}]
+                             if offered else [])}
+        assert mod._normalize_native_tool_markup(completion, request) is False
+        assert completion["choices"][0]["message"] == {
+            "role": "assistant", "content": content,
+        }
+
+    def test_native_markup_validates_arguments_and_parallel_choice(self, router):
+        mod, _client, _write_state, _calls = router
+        call = ("<tool_call>\n<function=lookup>\n"
+                "<parameter=key>\nok\n</parameter>\n</function>\n</tool_call>")
+        request = {"tools": [{"type": "function", "function": {
+            "name": "lookup", "parameters": {"type": "object",
+                "additionalProperties": False, "required": ["key"],
+                "properties": {"key": {"type": "integer"}}}}}],
+            "parallel_tool_calls": False}
+        completion = {"choices": [{"message": {"role": "assistant",
+            "content": call}, "finish_reason": "stop"}]}
+        assert mod._normalize_native_tool_markup(completion, request) is False
+        request["tools"][0]["function"]["parameters"]["properties"]["key"] = {"type": "string"}
+        completion["choices"][0]["message"]["content"] = call + "\n" + call
+        assert mod._normalize_native_tool_markup(completion, request) is False
+        request["parallel_tool_calls"] = True
+        assert mod._normalize_native_tool_markup(completion, request) is True
+        assert len(completion["choices"][0]["message"]["tool_calls"]) == 2
+
+    def test_native_markup_rejects_reference_schema_and_forced_other_tool(self, router):
+        mod, _client, _write_state, _calls = router
+        native = ("<tool_call>\n<function=lookup>\n"
+                  "<parameter=key>\nok\n</parameter>\n</function>\n</tool_call>")
+        completion = {"choices": [{"message": {"role": "assistant",
+            "content": native}, "finish_reason": "stop"}]}
+        tool = {"type": "function", "function": {"name": "lookup",
+            "parameters": {"type": "object", "required": ["key"],
+                "properties": {"key": {"$ref": "https://example.invalid/schema"}}}}}
+        request = {"tools": [tool]}
+        assert mod._normalize_native_tool_markup(completion, request) is False
+        assert completion["choices"][0]["message"]["content"] == native
+        tool["function"]["parameters"]["properties"]["key"] = {"type": "string"}
+        request["tool_choice"] = {"type": "function", "function": {"name": "other"}}
+        assert mod._normalize_native_tool_markup(completion, request) is False
+
+    def test_invalid_complete_native_name_gets_one_completion_repair(self, router):
+        mod, client, write_state, _calls = router
+        write_state(mutate=lambda state: state["active"]["backend"].update(
+            kind="lemonade"))
+        sent = []
+        def handler(request):
+            body = json.loads(request.content)
+            sent.append(body)
+            if len(sent) == 1:
+                message = {"role": "assistant", "content": (
+                    "<tool_call>\n<function=pixel_ods_web_fetch>\n"
+                    "<parameter=url>\nhttps://example.org\n</parameter>\n"
+                    "</function>\n</tool_call>")}
+                reason = "stop"
+            else:
+                message = {"role": "assistant", "content": None,
+                    "tool_calls": [{"id": "call-1", "type": "function",
+                        "function": {"name": "web_fetch",
+                                     "arguments": '{"url":"https://example.org"}'}}]}
+                reason = "tool_calls"
+            return httpx.Response(200, json={"model": "Concrete.gguf",
+                "choices": [{"index": 0, "message": message,
+                             "finish_reason": reason}]})
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True,
+            "messages": [{"role": "user", "content": "fetch the URL"}],
+            "tools": [{"type": "function", "function": {"name": "web_fetch",
+                "parameters": {"type": "object", "required": ["url"],
+                    "properties": {"url": {"type": "string"}}}}}],
+        })
+        assert response.status_code == 200
+        assert len(sent) == 2 and all(body["stream"] is False for body in sent)
+        assert sent[1]["messages"][:-1] == sent[0]["messages"]
+        feedback = sent[1]["messages"][-1]["content"]
+        assert sent[1]["messages"][-1]["role"] == "user"
+        assert "pixel_ods_web_fetch" in feedback and "web_fetch" in feedback
+        assert sent[1]["tools"] == sent[0]["tools"]
+        chunks = [json.loads(frame.removeprefix("data: "))
+                  for frame in response.text.split("\n\n")
+                  if frame and frame != "data: [DONE]"]
+        assert chunks[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "web_fetch"
+
+    def test_second_invalid_native_decision_returns_typed_error(self, router):
+        mod, client, write_state, _calls = router
+        write_state()
+        sent = []
+        native = ("<tool_call>\n<function=missing_tool>\n"
+                  "<parameter=key>\nok\n</parameter>\n</function>\n</tool_call>")
+        def handler(request):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"model": "Concrete.gguf",
+                "choices": [{"index": 0, "message": {"role": "assistant",
+                    "content": native}, "finish_reason": "stop"}]})
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [{"type": "function", "function": {"name": "lookup",
+                "parameters": {"type": "object", "properties": {
+                    "key": {"type": "string"}}}}}],
+        })
+        assert response.status_code == 502
+        assert response.json()["error"]["type"] == "tool_protocol_invalid"
+        assert len(sent) == 2
+
+    @pytest.mark.parametrize("tool_choice", [
+        "required", {"type": "function", "function": {"name": "lookup"}},
+    ])
+    def test_repair_cannot_finish_as_text_when_tool_choice_requires_a_call(
+        self, router, tool_choice,
+    ):
+        mod, client, write_state, _calls = router
+        write_state()
+        sent = []
+        def handler(request):
+            sent.append(json.loads(request.content))
+            content = ("<tool_call>\n<function=missing_tool>\n"
+                       "<parameter=key>\nx\n</parameter>\n</function>\n</tool_call>"
+                       if len(sent) == 1 else "I did the work.")
+            return httpx.Response(200, json={"model": "Concrete.gguf",
+                "choices": [{"index": 0, "message": {"role": "assistant",
+                    "content": content}, "finish_reason": "stop"}]})
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": False, "tool_choice": tool_choice,
+            "messages": [{"role": "user", "content": "look this up"}],
+            "tools": [{"type": "function", "function": {"name": "lookup",
+                "parameters": {"type": "object", "properties": {}}}}],
+        })
+        assert len(sent) == 2
+        assert response.status_code == 502
+        assert response.json()["error"]["type"] == "tool_protocol_invalid"
+
+    @pytest.mark.parametrize("call", [
+        {"type": "function", "function": {"name": "lookup", "arguments": "{}"}},
+        {"id": "call-1", "type": "not-function",
+         "function": {"name": "lookup", "arguments": "{}"}},
+    ])
+    def test_nonstream_repair_rejects_malformed_structured_call(self, router, call):
+        mod, client, write_state, _calls = router
+        write_state()
+        sent = []
+        def handler(request):
+            sent.append(json.loads(request.content))
+            message = ({"role": "assistant", "content":
+                "<tool_call>\n<function=missing_tool>\n"
+                "<parameter=key>\nx\n</parameter>\n</function>\n</tool_call>"}
+                if len(sent) == 1 else
+                {"role": "assistant", "content": None, "tool_calls": [call]})
+            return httpx.Response(200, json={"model": "Concrete.gguf",
+                "choices": [{"index": 0, "message": message,
+                             "finish_reason": "stop" if len(sent) == 1 else "tool_calls"}]})
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": False,
+            "messages": [{"role": "user", "content": "look this up"}],
+            "tools": [{"type": "function", "function": {"name": "lookup",
+                "parameters": {"type": "object", "properties": {}}}}],
+        })
+        assert len(sent) == 2
+        assert response.status_code == 502
+        assert response.json()["error"]["type"] == "tool_protocol_invalid"
+
+    @pytest.mark.parametrize("content,tool_choice,tools", [
+        ("Some prose <tool_call>\n<function=missing_tool>\n</function>\n</tool_call>", "auto", True),
+        ("<tool_call>\n<function=missing_tool>\n</function>", "auto", True),
+        ("<tool_call>\n<function=missing_tool>\n</function>\n</tool_call>", "none", True),
+        ("<tool_call>\n<function=missing_tool>\n</function>\n</tool_call>", "auto", False),
+    ])
+    def test_native_repair_requires_complete_exclusive_authorized_envelope(
+        self, router, content, tool_choice, tools,
+    ):
+        mod, client, write_state, _calls = router
+        write_state()
+        sent = []
+        def handler(request):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"model": "Concrete.gguf",
+                "choices": [{"index": 0, "message": {"role": "assistant",
+                    "content": content}, "finish_reason": "stop"}]})
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        body = {"model": "ods/current", "stream": True, "tool_choice": tool_choice,
+            "messages": [{"role": "user", "content": "test"}]}
+        if tools:
+            body["tools"] = [{"type": "function", "function": {"name": "lookup",
+                "parameters": {"type": "object", "properties": {}}}}]
+        response = client.post("/v1/chat/completions", json=body)
+        assert response.status_code == 200
+        assert len(sent) == 1
+
+    def test_repaired_structured_calls_obey_forced_name_and_parallel_limit(self, router):
+        mod, _client, _write_state, _calls = router
+        call = lambda name: {"id": "id-" + name, "type": "function",
+            "function": {"name": name, "arguments": '{}'}}
+        tools = [{"type": "function", "function": {"name": name,
+            "parameters": {"type": "object", "properties": {}}}}
+                 for name in ("lookup", "other")]
+        completion = {"choices": [{"message": {"role": "assistant",
+            "content": None, "tool_calls": [call("other")]},
+            "finish_reason": "tool_calls"}]}
+        request = {"tools": tools, "tool_choice": {"type": "function",
+            "function": {"name": "lookup"}}, "parallel_tool_calls": False}
+        assert mod._repaired_tool_decision_invalid(completion, request) is True
+        completion["choices"][0]["message"]["tool_calls"] = [call("lookup"), call("other")]
+        assert mod._repaired_tool_decision_invalid(completion, request) is True
+        completion["choices"][0]["message"]["tool_calls"] = [call("lookup")]
+        assert mod._repaired_tool_decision_invalid(completion, request) is False
+
+    @pytest.mark.parametrize("role,reason,calls,invalid", [
+        ("assistant", "stop", None, False),
+        ("assistant", "length", None, True),
+        ("assistant", "tool_calls", None, True),
+        ("user", "stop", None, True),
+        ("assistant", "stop", [{"id": "c1", "type": "function",
+            "function": {"name": "lookup", "arguments": "{}"}}], True),
+        ("assistant", "tool_calls", [{"id": "c1", "type": "function",
+            "function": {"name": "lookup", "arguments": "{}"}}], False),
+    ])
+    def test_repaired_completion_requires_consistent_role_and_finish(
+        self, router, role, reason, calls, invalid,
+    ):
+        mod, _client, _write_state, _calls = router
+        message = {"role": role, "content": "Normal answer"}
+        if calls is not None:
+            message["tool_calls"] = calls
+        completion = {"choices": [{"message": message,
+                                  "finish_reason": reason}]}
+        request = {"tools": [{"type": "function", "function": {
+            "name": "lookup", "parameters": {"type": "object",
+                "properties": {}}}}]}
+        assert mod._repaired_tool_decision_invalid(completion, request) is invalid
+
+    def test_refusal_native_markup_never_triggers_protocol_repair(self, router):
+        mod, client, write_state, _calls = router
+        write_state()
+        sent = []
+        native = ("<tool_call>\n<function=missing_tool>\n"
+                  "</function>\n</tool_call>")
+        def handler(request):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"model": "Concrete.gguf",
+                "choices": [{"index": 0, "message": {
+                    "role": "assistant", "content": native,
+                    "refusal": "I cannot comply"},
+                    "finish_reason": "stop"}]})
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [{"type": "function", "function": {"name": "lookup",
+                "parameters": {"type": "object", "properties": {}}}}],
+        })
+        assert response.status_code == 200
+        assert len(sent) == 1
+
+    def test_local_tool_stream_preserves_backend_error_status(self, router):
+        mod, client, write_state, _calls = router
+        write_state()
+
+        def handler(_request):
+            return httpx.Response(503, json={"error": {"message": "backend busy"}})
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True, "messages": [],
+            "tools": [{"type": "function", "function": {"name": "lookup"}}],
+        })
+        assert response.status_code == 503
+        assert response.json()["error"]["message"] == "backend busy"
+        assert "[DONE]" not in response.text
+
+    def test_local_tool_stream_rejects_malformed_completed_call(self, router):
+        mod, client, write_state, _calls = router
+        write_state()
+
+        def handler(_request):
+            return httpx.Response(200, json={
+                "model": "Concrete.gguf", "choices": [{
+                    "index": 0, "message": {"role": "assistant",
+                    "tool_calls": [{"id": "call-1", "type": "function",
+                                    "function": {"name": "lookup",
+                                                 "arguments": {"key": "ok"}}}]},
+                    "finish_reason": "tool_calls",
+                }],
+            })
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True, "messages": [],
+            "tools": [{"type": "function", "function": {"name": "lookup"}}],
+        })
+        assert response.status_code == 502
+        assert response.json()["error"]["type"] == "upstream_invalid_response"
+        assert "[DONE]" not in response.text
+
+    def test_other_backend_keeps_native_tool_stream(self, router):
+        mod, client, write_state, calls = router
+        write_state(mutate=lambda state: state["active"]["backend"].update(
+            kind="unknown"))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True, "messages": [],
+            "tools": [{"type": "function", "function": {"name": "lookup"}}],
+        })
+        assert response.status_code == 200
+        assert calls[-1]["stream"] is True
+
     def test_chat_template_artifacts_stripped_from_sse_delta(self, router):
         mod, client, write_state, calls = router
         write_state()

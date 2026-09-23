@@ -9,16 +9,26 @@ import tempfile
 import yaml
 
 from extension_github import repository_identity
+from extension_license import RECOGNIZED_OPEN_SOURCE_LICENSES, verified_expression_evidence
 from extension_source_build import verify_source_receipts
 
-RECOGNIZED_OPEN_SOURCE_LICENSES = frozenset({
-    'MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'Zlib', 'Unlicense',
-    'MPL-2.0', 'EPL-1.0', 'EPL-2.0', 'BSL-1.0', '0BSD', 'Artistic-2.0',
-    'GPL-2.0', 'GPL-3.0', 'AGPL-3.0', 'LGPL-2.1', 'LGPL-3.0',
-    'GPL-2.0-only', 'GPL-2.0-or-later', 'GPL-3.0-only', 'GPL-3.0-or-later',
-    'AGPL-3.0-only', 'AGPL-3.0-or-later', 'LGPL-2.1-only', 'LGPL-2.1-or-later',
-    'LGPL-3.0-only', 'LGPL-3.0-or-later',
-})
+class LicenseEvidenceError(ValueError):
+    """The repository's license cannot be established from this commit."""
+
+
+def _validated_license(evidence):
+    identifier = evidence.get('licenseIdentifier')
+    if isinstance(identifier, str) and identifier in RECOGNIZED_OPEN_SOURCE_LICENSES:
+        if isinstance(evidence.get('licenseText'), str) and evidence['licenseText'].strip():
+            return identifier
+    else:
+        try:
+            expression = verified_expression_evidence(evidence.get('licenseExpressionEvidence'))
+            if expression == identifier:
+                return expression
+        except ValueError:
+            pass
+    raise LicenseEvidenceError('Repository license requires review')
 
 def recipe_digest(candidate):
     return hashlib.sha256(json.dumps(candidate, sort_keys=True, separators=(',', ':'),
@@ -77,9 +87,7 @@ def publish_package(library, candidate, validation, evidence):
         raise ValueError('Matching repository evidence required')
     if library.is_symlink() or not library.is_dir():
         raise ValueError('Invalid recipe library')
-    if (evidence.get('licenseIdentifier') not in RECOGNIZED_OPEN_SOURCE_LICENSES
-            or not isinstance(evidence.get('licenseText'), str) or not evidence['licenseText'].strip()):
-        raise ValueError('Repository license requires review')
+    license_identifier = _validated_license(evidence)
     verify_source_receipts(candidate, evidence.get('sourceFiles'))
     destination = library / identifier
     if destination.exists() or destination.is_symlink():
@@ -87,8 +95,14 @@ def publish_package(library, candidate, validation, evidence):
     else:
         provenance = {'origin': 'github-proposal', 'repository': candidate['repository'],
                       'commit': candidate['commit'], 'recipeDigest': digest,
-                      'licenseIdentifier': evidence.get('licenseIdentifier'),
+                      'licenseIdentifier': license_identifier,
                       'licenseEvidenceScope': 'repository-documents-at-commit', 'runtimeVerified': False}
+        if evidence.get('licenseExpressionEvidence') and license_identifier not in RECOGNIZED_OPEN_SOURCE_LICENSES:
+            expression_evidence = evidence['licenseExpressionEvidence']
+            provenance['licenseMetadataBlob'] = expression_evidence['metadata']['blob']
+            provenance['licenseDocuments'] = [
+                {key: document[key] for key in ('path', 'blob')}
+                for document in expression_evidence['documents']]
         if evidence.get('sourceFiles'):
             provenance['sourceFiles'] = evidence['sourceFiles']
         # Temporary directories are hidden from discovery; publish all files

@@ -19,7 +19,7 @@ export function createExtensionRepositoryContext({ tool, now = Date.now } = {}) 
       if (prompt.indexOf(delimiter, boundary + delimiter.length) >= 0) return '';
       prompt = prompt.slice(boundary + delimiter.length).trimStart();
     }
-    if (!/^\s*(?:\/goal\s+)?\/extensions?\s+https:\/\/github\.com\//i.test(prompt)) return '';
+    if (!/^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(prompt)) return '';
     const repository = userMessageGitHubRepositoryUrl([], prompt);
     if (!repository) return '';
     for (const [key, entry] of cache) if (entry.expires <= now()) cache.delete(key);

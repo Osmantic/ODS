@@ -23,7 +23,9 @@ assert "http://pixel-edge:9595/v1;${OPEN_WEBUI_LLM_BASE_URL:-${LLM_API_URL:-http
 assert "${PIXEL_OPENWEBUI_KEY:?Set PIXEL_OPENWEBUI_KEY in .env};${OPEN_WEBUI_LLM_API_KEY:-}" in text
 assert "PIXEL_PREVIEW_PROXY_KEY=${DASHBOARD_API_KEY:?Set DASHBOARD_API_KEY in .env}" in text
 assert "PIXEL_PREVIEW_SOCKET=/pixel-preview-runtime/http.sock" in text
-assert "${PIXEL_PREVIEW_RUNTIME_DIR:?Set PIXEL_PREVIEW_RUNTIME_DIR in .env}:/pixel-preview-runtime:ro" in text
+assert "source: ${PIXEL_INGRESS_RUNTIME_DIR:?Set PIXEL_INGRESS_RUNTIME_DIR in .env}" in text
+assert "source: ${PIXEL_PREVIEW_RUNTIME_DIR:?Set PIXEL_PREVIEW_RUNTIME_DIR in .env}" in text
+assert "propagation: ${PIXEL_RUNTIME_BIND_PROPAGATION:-rprivate}" in text
 assert 'TASK_MODEL_EXTERNAL: "${OPEN_WEBUI_TASK_MODEL:-${GGUF_FILE:-${LLM_MODEL:-default}}}"' in text
 for required in (
     'ENABLE_OPENAI_API: "true"',
@@ -79,6 +81,7 @@ assert set(edge["networks"]) == {"default"}
 assert edge["environment"]["PIXEL_PREVIEW_PROXY_KEY"] == "c" * 64
 assert edge["environment"]["PIXEL_PREVIEW_SOCKET"] == "/pixel-preview-runtime/http.sock"
 assert any(mount["target"] == "/pixel-preview-runtime" and mount["read_only"] for mount in edge["volumes"])
+assert all(mount["bind"]["propagation"] == "rprivate" for mount in edge["volumes"] if mount["type"] == "bind")
 webui = value["services"]["open-webui"]
 assert "pixel-edge" not in webui.get("depends_on", {})
 assert webui["environment"]["OPENAI_API_BASE_URLS"].startswith("http://pixel-edge:9595/v1;")
@@ -96,6 +99,22 @@ dashboard = value["services"]["dashboard-api"]
 assert "pixel-edge" not in dashboard.get("depends_on", {})
 ui = value["services"]["dashboard"]
 assert "pixel-edge" not in ui.get("depends_on", {})
+PY
+    PIXEL_OPENWEBUI_KEY="$(printf 'a%.0s' {1..64})" \
+    PIXEL_INGRESS_GID=1234 \
+    PIXEL_INGRESS_RUNTIME_DIR=/mnt/host/wsl/ods-portal-runtime/ingress \
+    PIXEL_PREVIEW_RUNTIME_DIR=/mnt/host/wsl/ods-portal-runtime/preview \
+    PIXEL_RUNTIME_BIND_PROPAGATION=rshared \
+    DASHBOARD_API_KEY="$(printf 'c%.0s' {1..64})" \
+    WEBUI_SECRET="$(printf 'b%.0s' {1..64})" \
+        docker compose -f "$BASE" -f "$EDGE" config --format json > "$runtime/config-wsl.json"
+    python3 - "$runtime/config-wsl.json" <<'PY'
+import json, sys
+edge = json.load(open(sys.argv[1], encoding="utf-8"))["services"]["pixel-edge"]
+mounts = {item["target"]: item for item in edge["volumes"] if item["type"] == "bind"}
+assert mounts["/pixel-runtime"]["source"] == "/mnt/host/wsl/ods-portal-runtime/ingress"
+assert mounts["/pixel-preview-runtime"]["source"] == "/mnt/host/wsl/ods-portal-runtime/preview"
+assert all(item["read_only"] and item["bind"]["propagation"] == "rshared" for item in mounts.values())
 PY
     PIXEL_OPENWEBUI_KEY="$(printf 'a%.0s' {1..64})" \
     PIXEL_INGRESS_GID=1234 \

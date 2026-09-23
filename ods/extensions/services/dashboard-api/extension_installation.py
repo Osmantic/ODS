@@ -29,9 +29,12 @@ class InstallationJournal:
                 raise ValueError('Invalid installation journal')
             for key, record in value['records'].items():
                 if (not ID.fullmatch(key) or not isinstance(record, dict)
-                        or set(record) not in ({'action', 'state'}, {'action', 'state', 'operationId'})
+                        or set(record) not in ({'action', 'state'}, {'action', 'state', 'operationId'},
+                            {'action', 'state', 'operationId', 'retryRequestId'})
                         or ('operationId' in record and (not isinstance(record['operationId'], str)
                             or not re.fullmatch(r'[a-f0-9]{32}', record['operationId'])))
+                        or ('retryRequestId' in record and (not isinstance(record['retryRequestId'], str)
+                            or not re.fullmatch(r'[a-f0-9]{64}', record['retryRequestId'])))
                         or record['action'] not in ('install', 'enable')
                         or record['state'] not in ('dispatching', 'accepted', 'uncertain')):
                     raise ValueError('Invalid installation journal record')
@@ -94,8 +97,13 @@ def retire_failed_attempt(journal, service_id, expected_record, observe):
         raise
 
 
-def advance_installation(read_plan, journal, operation_lock, dispatch, *, observe=None):
+def advance_installation(read_plan, journal, operation_lock, dispatch, *, observe=None,
+                         retry_request_id=None):
     """Recheck after acquiring the lifecycle lock; retain ambiguous effects."""
+    if retry_request_id is not None and (not isinstance(retry_request_id, str)
+            or not re.fullmatch(r'[a-f0-9]{64}', retry_request_id) or observe is None):
+        raise ValueError('Invalid managed retry identity')
+
     def choose(plan):
         # A healthy observation reconciles a prior request. Never equate the
         # install endpoint's HTTP acceptance with application readiness.
@@ -127,6 +135,19 @@ def advance_installation(read_plan, journal, operation_lock, dispatch, *, observ
                 if state in {'accepted', 'running'}:
                     return 'pending', step
                 if state == 'failed':
+                    # A retry is a separate, explicit request. It is permitted
+                    # only for this target's exact terminal host attempt and
+                    # unchanged installed definition. Never replay the same
+                    # failed attempt within one owner request.
+                    if (retry_request_id and record['action'] == 'install'
+                            and record.get('retryRequestId') != retry_request_id
+                            and step['extensionId'] == plan['extensionId']
+                            and step['status'] == 'error'
+                            and all(peer['action'] == 'none' for peer in plan['steps']
+                                    if peer['extensionId'] != step['extensionId'])
+                            and not any(field['required'] and not field['configured']
+                                        for field in step['configuration'])):
+                        return 'retry_ready', step
                     return 'failed', step
                 # A successful operation still needs catalog/runtime evidence.
                 return 'reconciliation_required', step
@@ -143,6 +164,8 @@ def advance_installation(read_plan, journal, operation_lock, dispatch, *, observ
                 # Includes a crash between sending to the host and saving the
                 # reply. Do not turn a missing/stale status into another POST.
                 return 'reconciliation_required', step
+            if retry_request_id is not None:
+                return 'blocked', step
             return 'ready', step
         return 'succeeded', None
 
@@ -154,7 +177,7 @@ def advance_installation(read_plan, journal, operation_lock, dispatch, *, observ
 
     plan = read_plan()
     state, step = choose(plan)
-    if state != 'ready':
+    if state not in {'ready', 'retry_ready'}:
         return result(state, plan, step)
     selected = step['extensionId']
     with operation_lock(selected):
@@ -162,19 +185,22 @@ def advance_installation(read_plan, journal, operation_lock, dispatch, *, observ
         # request waited. All mutations use the same per-service lock.
         plan = read_plan()
         state, step = choose(plan)
-        if state != 'ready':
+        if state not in {'ready', 'retry_ready'}:
             return result(state, plan, step)
         if step['extensionId'] != selected:
             return result('pending', plan, step)
-        journal.records[selected] = {'action': step['action'], 'state': 'dispatching'}
-        if observe is not None and step['action'] == 'install':
+        action = 'install' if state == 'retry_ready' else step['action']
+        journal.records[selected] = {'action': action, 'state': 'dispatching'}
+        if observe is not None and action == 'install':
             journal.records[selected]['operationId'] = secrets.token_hex(16)
+        if state == 'retry_ready':
+            journal.records[selected]['retryRequestId'] = retry_request_id
         journal.save()  # Must succeed before causing an external effect.
         try:
             if 'operationId' in journal.records[selected]:
-                dispatch(selected, step['action'], operation_id=journal.records[selected]['operationId'])
+                dispatch(selected, action, operation_id=journal.records[selected]['operationId'])
             else:
-                dispatch(selected, step['action'])
+                dispatch(selected, action)
         except Exception:
             # Do not expose host errors, configuration values, or raw logs.
             journal.records[selected]['state'] = 'uncertain'

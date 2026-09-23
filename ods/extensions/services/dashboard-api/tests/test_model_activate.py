@@ -4430,7 +4430,8 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     install_dir.mkdir()
     home.mkdir()
     (install_dir / ".env").write_text(
-        "PIXEL_SOURCE_URL=https://github.com/Osmantic/Pixel.git\n"
+        "PIXEL_SOURCE_URL=bundled\n"
+        "PIXEL_SOURCE_REF=817214d5ec3d8aa583fe50c1dc7561f3c1a16dff\n"
         f"{gateway_setting}",
         encoding="utf-8",
     )
@@ -4468,9 +4469,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     ]
     assert captured["kwargs"]["timeout"] == 900
     assert captured["kwargs"]["check"] is False
-    assert captured["kwargs"]["env"]["PIXEL_SOURCE_URL"] == (
-        "https://github.com/Osmantic/Pixel.git"
-    )
+    assert captured["kwargs"]["env"]["PIXEL_SOURCE_URL"] == "bundled"
     assert captured["kwargs"]["env"]["PIXEL_GATEWAY_PORT"] == expected_gateway_port
     assert "UNRELATED_SECRET" not in captured["kwargs"]["env"]
 
@@ -4503,6 +4502,30 @@ def test_managed_pixel_reconcile_accepts_bundled_source(
 
     assert _mod._reconcile_ods_managed_pixel_model("safe-model", 65536) == "reconciled"
     assert captured["env"]["PIXEL_SOURCE_URL"] == "bundled"
+
+
+@pytest.mark.parametrize("source_setting", [
+    "PIXEL_SOURCE_URL=https://github.com/Osmantic/Pixel.git\n",
+    "PIXEL_SOURCE_URL=bundled\nPIXEL_SOURCE_REF=b33730436baf5d98bf58f7d57c090318fe19f433\n",
+    "PIXEL_SOURCE_REF=b33730436baf5d98bf58f7d57c090318fe19f433\n",
+])
+def test_managed_pixel_reconcile_rejects_private_or_legacy_source_before_subprocess(
+    tmp_path, monkeypatch, source_setting,
+):
+    install_dir = tmp_path / "install"
+    home = tmp_path / "owner-home"
+    install_dir.mkdir()
+    home.mkdir()
+    (install_dir / ".env").write_text(source_setting, encoding="utf-8")
+    monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+    monkeypatch.setattr(_mod, "_ods_managed_pixel_identity", lambda: ("pixel-owner", home))
+    monkeypatch.setattr(
+        _mod.subprocess, "run",
+        lambda *_args, **_kwargs: pytest.fail("private source must fail before subprocess"),
+    )
+
+    with pytest.raises(RuntimeError, match="Pixel source|Pixel source pin"):
+        _mod._reconcile_ods_managed_pixel_model("safe-model", 65536)
 
 
 def test_managed_pixel_reconcile_rejects_relative_source(tmp_path, monkeypatch):

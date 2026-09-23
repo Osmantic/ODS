@@ -37,6 +37,7 @@ const MAX_STREAM_RESPONSE = 4 * 1024 * 1024; // 4 MiB terminal completion cap fo
 const MAX_VERIFICATION_TEXT = 32 * 1024;
 const MAX_VERIFICATION_RESPONSE = 1024 * 1024;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const EMPTY_ASSISTANT_RESPONSE = "⚠️ Agent couldn't generate a response. Please try again.";
 const OPERATIONS_UNAVAILABLE_ZERO_SUBMISSIONS_CODE =
   "operations-unavailable-zero-submissions";
 const CONNECT_TIMEOUT_MS = 5000;
@@ -1054,6 +1055,107 @@ function abortActiveGatewayTransports(activeGatewayTransports, user) {
   for (const controller of [...controllers]) controller.abort();
 }
 
+function isEmptyAssistantFailure(completion) {
+  return OPENAI_RUN_ID.test(completion?.id ?? '') && completion?.choices?.length === 1 &&
+    completion.choices[0]?.finish_reason === 'stop' &&
+    completion.choices[0]?.message?.content === EMPTY_ASSISTANT_RESPONSE;
+}
+
+async function readOnlyExtensionContinuation(runId, user, token, gatewayPort, signal, deps) {
+  if (!OPENAI_RUN_ID.test(runId ?? '') || typeof user !== 'string') return false;
+  try {
+    const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/read-only-extension-continuation`, {
+      method:'POST', headers:upstreamHeaders(false, token),
+      body:JSON.stringify({runId}), redirect:'error', signal,
+    });
+    if (response.status !== 200 || !String(response.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) {
+      await drain(response.body); return false;
+    }
+    const proof = JSON.parse((await readBounded(response.body, 1024)).toString('utf8'));
+    if (proof?.schemaVersion !== 1 || proof.kind !== 'ods-extension-read-only-continuation' ||
+        proof.eligible !== true || Object.keys(proof).sort().join() !== 'chatId,eligible,kind,requestId,schemaVersion' ||
+        typeof proof.chatId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(proof.chatId) ||
+        typeof proof.requestId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(proof.requestId)) return false;
+    return user === 'ods-' + createHash('sha256').update(proof.chatId, 'utf8').digest('hex');
+  } catch { return false; }
+}
+
+async function maybeContinueReadOnlyExtensionTurn(completion, outgoing, token, gatewayPort, signal, deps) {
+  if (!isEmptyAssistantFailure(completion) ||
+      !await readOnlyExtensionContinuation(completion.id, outgoing.user, token, gatewayPort, signal, deps))
+    return completion;
+  if (signal.aborted) throw new HttpError(503, 'extension continuation interrupted');
+  // This is a new, bounded model continuation, never a replay of the owner's
+  // original request or any tool. The request manager reconciled state above.
+  const continuation = {...outgoing, stream:false, messages:[{role:'user', content:
+    'ODS internal continuation: your previous response ended empty after the saved extension request status read. Continue the owner\'s existing request from the recorded conversation and exact durable receipts. Do not repeat any proposal or host action without checking its saved outcome. Give a visible answer based only on observed results.'}]};
+  const upstream = await deps.fetch(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+    method:'POST', headers:upstreamHeaders(false, token), body:JSON.stringify(continuation),
+    redirect:'error', signal,
+  });
+  if (upstream.status !== 200 || !String(upstream.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) {
+    await drain(upstream.body);
+    throw new HttpError(502, 'extension continuation unavailable');
+  }
+  const recovered = JSON.parse((await readBounded(upstream.body, MAX_NONSTREAM_RESPONSE)).toString('utf8'));
+  if (!OPENAI_RUN_ID.test(recovered?.id ?? '') || recovered.id === completion.id ||
+      !Array.isArray(recovered.choices) || recovered.choices.length !== 1 ||
+      typeof recovered.choices[0]?.message?.content !== 'string')
+    throw new HttpError(502, 'extension continuation invalid');
+  return recovered;
+}
+
+async function unfinishedExtensionDecision(completion, user, token, gatewayPort, signal, deps) {
+  if (!OPENAI_RUN_ID.test(completion?.id ?? '') || typeof user !== 'string' ||
+      completion?.choices?.length !== 1 || completion.choices[0]?.finish_reason !== 'stop' ||
+      typeof completion.choices[0]?.message?.content !== 'string' ||
+      completion.choices[0].message.content === EMPTY_ASSISTANT_RESPONSE) return null;
+  try {
+    const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/unfinished-extension-decision`, {
+      method:'POST', headers:upstreamHeaders(false, token),
+      body:JSON.stringify({runId:completion.id}), redirect:'error', signal,
+    });
+    if (response.status !== 200 || !String(response.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) {
+      await drain(response.body); return null;
+    }
+    const proof = JSON.parse((await readBounded(response.body, 2048)).toString('utf8'));
+    if (proof?.schemaVersion !== 1 || proof.kind !== 'ods-extension-unfinished-decision' ||
+        proof.eligible !== true ||
+        Object.keys(proof).sort().join() !== 'chatId,eligible,kind,repository,requestId,schemaVersion' ||
+        typeof proof.chatId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(proof.chatId) ||
+        typeof proof.requestId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(proof.requestId) ||
+        typeof proof.repository !== 'string' ||
+        !/^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(proof.repository) ||
+        user !== 'ods-' + createHash('sha256').update(proof.chatId, 'utf8').digest('hex')) return null;
+    return proof;
+  } catch { return null; }
+}
+
+async function maybeContinueUnfinishedExtensionDecision(completion, outgoing, token, gatewayPort, signal, deps) {
+  const proof = await unfinishedExtensionDecision(completion, outgoing.user, token, gatewayPort, signal, deps);
+  if (!proof) return completion;
+  if (signal.aborted) throw new HttpError(503, 'extension continuation interrupted');
+  // The saved request has no proposal or host work. This bounded new model
+  // turn keeps the same session and activates the extension completion gate.
+  // It never replays the owner's message or a tool call.
+  const continuation = {...outgoing, stream:false, messages:[{role:'user', content:
+    `/extensions ${proof.repository} ODS internal continuation for saved request ${proof.requestId}: the authorized installation is still pending and the last prepare receipt required a proposal. Continue from the repository evidence already collected, submit the proposal for this same request, then check durable receipts and report only verified results. Do not repeat an uncertain host action.`}]};
+  const upstream = await deps.fetch(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+    method:'POST', headers:upstreamHeaders(false, token), body:JSON.stringify(continuation),
+    redirect:'error', signal,
+  });
+  if (upstream.status !== 200 || !String(upstream.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) {
+    await drain(upstream.body);
+    throw new HttpError(502, 'extension continuation unavailable');
+  }
+  const recovered = JSON.parse((await readBounded(upstream.body, MAX_NONSTREAM_RESPONSE)).toString('utf8'));
+  if (!OPENAI_RUN_ID.test(recovered?.id ?? '') || recovered.id === completion.id ||
+      !Array.isArray(recovered.choices) || recovered.choices.length !== 1 ||
+      typeof recovered.choices[0]?.message?.content !== 'string')
+    throw new HttpError(502, 'extension continuation invalid');
+  return recovered;
+}
+
 async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps, hooks = {}, activeGatewayTransports = new Map()) {
   const controller = new AbortController();
   const unregisterGatewayTransport = registerActiveGatewayTransport(activeGatewayTransports, outgoing.user, controller);
@@ -1129,10 +1231,17 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       let completionRunId;
       try {
         const body = await readBounded(upstream.body, MAX_STREAM_RESPONSE);
-        const completion = JSON.parse(body.toString("utf8"));
+        let completion = JSON.parse(body.toString("utf8"));
         if (typeof completion?.id === "string" && OPENAI_RUN_ID.test(completion.id)) {
           completionRunId = completion.id;
         }
+        deliveryStage = "read-only-continuation";
+        completion = await maybeContinueReadOnlyExtensionTurn(completion, gatewayOutgoing, token,
+          gatewayPort, controller.signal, deps);
+        deliveryStage = "unfinished-extension-decision";
+        completion = await maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
+          gatewayPort, controller.signal, deps);
+        completionRunId = completion?.id;
         deliveryStage = "verification";
         const verification = await verificationForRun(
           completion?.id,
@@ -1166,6 +1275,11 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       sendError(res, 502, "invalid upstream response");
       return;
     }
+    const originalCompletion = completion;
+    completion = await maybeContinueReadOnlyExtensionTurn(completion, gatewayOutgoing, token,
+      gatewayPort, controller.signal, deps);
+    completion = await maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
+      gatewayPort, controller.signal, deps);
     const verification = await verificationForRun(
       completion?.id,
       token,
@@ -1175,7 +1289,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     );
     await hooks.onComplete?.(completion,verification);
     const verifiedCompletion = applyVerificationToCompletion(completion, verification);
-    const responseBody = verifiedCompletion === completion
+    const responseBody = verifiedCompletion === completion && completion === originalCompletion
       ? body
       : Buffer.from(JSON.stringify(verifiedCompletion), "utf8");
     res.writeHead(200, {
