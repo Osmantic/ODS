@@ -643,6 +643,7 @@ function GeneratedTokenModal({ record, onClose }) {
   const [copied, setCopied] = useState(false)
   const [qrDataUrl, setQrDataUrl] = useState(null)
   const [qrError, setQrError] = useState(null)
+  const [qrRetry, setQrRetry] = useState(0)
   const owner = record.token_type === 'owner'
 
   useEffect(() => {
@@ -660,9 +661,11 @@ function GeneratedTokenModal({ record, onClose }) {
         if (!cancelled) setQrError(err.message)
       }
     }
+    setQrDataUrl(null)
+    setQrError(null)
     loadQr()
     return () => { cancelled = true }
-  }, [record.url])
+  }, [record.url, qrRetry])
 
   const copy = async () => {
     try {
@@ -726,6 +729,7 @@ function GeneratedTokenModal({ record, onClose }) {
           <div className="bg-theme-bg border border-theme-border rounded-xl p-6 flex flex-col items-center justify-center mb-4 min-h-56">
             <QrCode size={48} className="text-theme-text-muted mb-2" />
             <p className="text-xs text-theme-text-muted text-center">{qrError || 'Generating QR code...'}</p>
+            {qrError && <button type="button" onClick={() => setQrRetry(value => value + 1)} className="mt-3 rounded-lg border border-theme-border px-3 py-2 text-xs text-theme-text">Retry QR generation</button>}
           </div>
         )}
 
