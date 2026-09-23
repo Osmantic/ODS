@@ -44,7 +44,15 @@ export default function PixelProviderScopes({ chatId, sending = false }) {
     try {
       const response = await fetch(url, { ...(body === undefined ? {} : {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }), signal: controller.signal })
-      if (!response.ok) throw new Error('Request unavailable')
+      if (!response.ok) {
+        const raw = await response.text().catch(() => '')
+        let detail = ''
+        try {
+          const payload = JSON.parse(raw)
+          detail = payload?.detail || payload?.message || ''
+        } catch { detail = raw.trim() }
+        throw new Error(String(detail || `Request unavailable (${response.status})`).slice(0, 500))
+      }
       return await response.json()
     } finally { clearTimeout(timer); controllers.current.delete(controller) }
   }
