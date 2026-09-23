@@ -140,7 +140,7 @@ export default function Invites() {
     } finally {
       setLoading(false)
       setRefreshing(false)
-      if (restoreFocus) queueMicrotask(() => refreshButtonRef.current?.focus())
+      if (restoreFocus) Promise.resolve().then(() => refreshButtonRef.current?.focus())
     }
   }, [])
 
