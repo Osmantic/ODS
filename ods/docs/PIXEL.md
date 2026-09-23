@@ -2,7 +2,7 @@
 
 # Portal is the public-facing name of ODS's conversational assistant and a core
 feature under active development. Its internal runtime and compatibility route
-retain the Pixel identifier; on qualified hosts the `pixel/default` model in
+retain the Pixel identifier; on qualified hosts the `portal/default` model in
 Open WebUI and the dedicated **Portal** app in the ODS Dashboard use the same
 assistant. The full goal is to create projects, use host tools,
 manage ODS, and carry out sustained work through conversation.
@@ -351,16 +351,16 @@ Pixel Git credentials.
 
 After a successful install:
 
-1. Open `http://localhost:3000`. New chats default to `pixel/default` when
-   Pixel is enabled; the ordinary ODS model remains selectable.
-2. Open `http://localhost:3001/pixel`, or choose **Pixel** in the Dashboard
+1. Open `http://localhost:3000`. New chats default to `portal/default` when
+   Portal is enabled; the ordinary ODS model remains selectable.
+2. Open `http://localhost:3001/pixel`, or choose **Portal** in the Dashboard
    toolbar, for the dedicated streaming agent UI.
 3. Hermes remains at its authenticated proxy URL shown by the installer.
 4. OpenCode remains an independent coding UI when enabled.
 
 Pixel follows the active ODS model without a qualification allowlist. Every
 callable ODS chat model can be used in the dedicated Pixel UI and through
-`pixel/default`. Qualification affects recommendation and the displayed
+`portal/default`. Qualification affects recommendation and the displayed
 reliability tier only: a model that has not passed the demanding multi-step
 agent replay uses Pixel's **adaptive** route, while the composer remains enabled.
 Model intelligence may change the quality, speed, tool judgment, and length of
@@ -401,7 +401,9 @@ compatibility policy after the new runtime and downstream routes pass their
 proofs. Cloud, hybrid, and external Lemonade modes can change the route behind
 the same alias without teaching Pixel a provider-specific endpoint. The Pixel
 gateway is restarted and verified before the transaction commits. The public
-Open WebUI identity remains `pixel/default` throughout.
+Open WebUI identity remains `portal/default` throughout. Existing clients may
+continue to request the legacy `pixel/default` API alias; it is not listed for
+new conversations.
 
 The Dashboard Remote Provider page uses that same stable alias. A direct
 provider becomes active only after its egress probe, a real LiteLLM completion,
@@ -736,7 +738,7 @@ head:
 - Dashboard API tests, Dashboard component tests, and production build;
 - extension manifest validation and repository regression checks;
 - a clean supported-host install with PID1 systemd;
-- a real Open WebUI `pixel/default` chat;
+- a real Open WebUI `portal/default` chat;
 - a real Dashboard `/pixel` streaming chat;
 - a real static website build whose host-readback receipt opens the interactive
   Dashboard side panel, with click behavior verified and a model-authored

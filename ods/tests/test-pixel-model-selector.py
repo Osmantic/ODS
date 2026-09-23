@@ -326,7 +326,7 @@ def main() -> int:
     assert "strongest installable hardware-fit model" in detection
     assert '_selector_env="$(_run_catalog_selector 2>>' in detection
     assert 'PIXEL_AGENT_MODEL_READY:-unknown' in features
-    assert "Pixel adaptive mode will use this best-fit local model" in features
+    assert "Portal adaptive mode will use this best-fit local model" in features
     assert "catalog testing is performance guidance, not an access gate" in features
     assert "PIXEL_AGENT_MODE=hermes" not in features[
         features.index('PIXEL_AGENT_MODEL_READY:-unknown'):

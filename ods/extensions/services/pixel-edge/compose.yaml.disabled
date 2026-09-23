@@ -72,8 +72,8 @@ services:
       ENABLE_OPENAI_API: "true"
       OPENAI_API_BASE_URLS: "http://pixel-edge:9595/v1;${OPEN_WEBUI_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}/v1}"
       OPENAI_API_KEYS: "${PIXEL_OPENWEBUI_KEY:?Set PIXEL_OPENWEBUI_KEY in .env};${OPEN_WEBUI_LLM_API_KEY:-}"
-      DEFAULT_MODELS: "pixel/default"
-      DEFAULT_PINNED_MODELS: "pixel/default"
+      DEFAULT_MODELS: "portal/default"
+      DEFAULT_PINNED_MODELS: "portal/default"
       DEFAULT_PROMPT_SUGGESTIONS: >-
         [{"title":["Check ODS health","and explain what needs attention"],"content":"Check the current ODS status. Summarize what is healthy, identify anything degraded or stopped, and suggest the safest next action."},{"title":["Build something","and verify it in the workspace"],"content":"Help me build and verify something useful in your writable workspace. Start by asking what outcome I want if it is not clear."},{"title":["Research a topic","with exact public sources"],"content":"Research a public topic for me using current sources. Ask what topic and decision I need to make, then return a concise evidence-backed answer with exact source URLs."},{"title":["Plan a complex task","then carry it through safely"],"content":"Help me complete a multi-step task safely. Ask for the objective, then make a short plan and carry out the steps you can verify."}]
       # Pixel owns the visible conversation. Keep any explicit query-generation

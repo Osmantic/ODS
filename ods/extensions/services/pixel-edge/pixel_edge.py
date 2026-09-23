@@ -176,7 +176,9 @@ _PREVIEW_BEARER_TOKEN = os.environ.get("PIXEL_PREVIEW_PROXY_KEY", "")
 _PREVIEW_SOCKET_PATH = os.environ.get(
     "PIXEL_PREVIEW_SOCKET", "/pixel-preview-runtime/http.sock"
 )
-_ALLOWED_MODELS = ("pixel/default",)
+_PUBLIC_MODEL = "portal/default"
+_LEGACY_MODEL = "pixel/default"
+_ALLOWED_MODELS = (_PUBLIC_MODEL, _LEGACY_MODEL)
 _LISTEN_PORT = int(os.environ.get("PIXEL_EDGE_PORT_INTERNAL", "9595"))
 
 # Header names (case-insensitive) that may be forwarded to upstream.
@@ -214,7 +216,6 @@ _MAX_SSE_PENDING_BYTES = 1024 * 1024
 _MAX_SSE_PENDING_LINES = 4096
 
 _UPSTREAM_REWRITE = "openclaw/default"
-_PIXEL_REWRITE = "pixel/default"
 _SAFE_CHAT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _PREVIEW_SITE_ID = re.compile(r"^site-[a-f0-9]{24}$")
 _PREVIEW_PATH_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -239,14 +240,14 @@ _SHORT_TEST_MESSAGE = re.compile(
     re.IGNORECASE,
 )
 _SHORT_TEST_REPLY = (
-    "Pixel is online and responding. What would you like me to help with?"
+    "Portal is online and responding. What would you like me to help with?"
 )
 _EMPTY_REPLY = (
     "I couldn't produce a useful response to that request. Please try again or "
     "tell me what you'd like me to do differently."
 )
 _INTERACTIVE_DELIVERY_CONTRACT = (
-    "\n\n[ODS Pixel delivery requirement: Answer the owner's complete message above. "
+    "\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. "
     "If it asks for exact text, copy that full exact text. Do not answer with a "
     "generic acknowledgement. Do not output NO_REPLY.]"
 )
@@ -283,7 +284,7 @@ _EXACT_SINGLE_LINE_FILE = re.compile(
     re.IGNORECASE,
 )
 _WORKSPACE_MUTATION_ROUTE = (
-    "\n[ODS Pixel workspace task route: Perform the requested workspace mutation "
+    "\n[ODS Portal workspace task route: Perform the requested workspace mutation "
     "before verification. When tool_call is visible, use it with id write and normal "
     "write args for every new file. edit cannot create a file and requires a non-empty "
     "oldText copied from an existing file. Use edit or apply_patch only after reading "
@@ -292,7 +293,7 @@ _WORKSPACE_MUTATION_ROUTE = (
     "or hash proposed text instead of the created file.]"
 )
 _RUN_COMMAND_AND_WAIT_ROUTE = (
-    "\n[ODS Pixel command completion route: Call exec exactly once for the owner's "
+    "\n[ODS Portal command completion route: Call exec exactly once for the owner's "
     "command. If exec returns a running process session, do not call exec again. "
     "Use the visible tool_call control with id process and args containing action "
     "poll plus that exact returned sessionId, and keep polling only that session "
@@ -406,7 +407,7 @@ def _sanitize_headers(headers: dict) -> dict:
     return out
 
 
-def _rewrite_json_model(raw: bytes) -> bytes:
+def _rewrite_json_model(raw: bytes, response_model: str = _LEGACY_MODEL) -> bytes:
     """Rewrite exact JSON ``model`` fields without altering assistant text."""
     try:
         parsed = json.loads(raw)
@@ -418,7 +419,7 @@ def _rewrite_json_model(raw: bytes) -> bytes:
             return [_walk(v) for v in obj]
         if isinstance(obj, dict):
             return {
-                k: (_PIXEL_REWRITE if k == "model" and v == _UPSTREAM_REWRITE else _walk(v))
+                k: (response_model if k == "model" and v == _UPSTREAM_REWRITE else _walk(v))
                 for k, v in obj.items()
             }
         return obj
@@ -535,7 +536,7 @@ def _with_interactive_delivery_contract(data: dict) -> dict:
         # target and permissions. Do not prescribe a local identity receipt as
         # a substitute for a remote operation or force one tool-call sequence.
         contract += (
-            "\n[ODS Pixel network inspection route: Discover the available "
+            "\n[ODS Portal network inspection route: Discover the available "
             "Operations tools using tool_call. Use host.network-peer for bounded "
             "reachability of the owner's explicit endpoint and requested ports. "
             "Keep remote reachability, protocol banners and authenticated remote "
@@ -557,7 +558,7 @@ def _with_interactive_delivery_contract(data: dict) -> dict:
             and not (excludes_network_location and action in _ADDRESS_BEARING_HOST_ACTIONS)
         ]
         route = (
-            "\n[ODS Pixel host inspection route: Generic sandbox commands and "
+            "\n[ODS Portal host inspection route: Generic sandbox commands and "
             "status projections cannot establish host facts. Use the visible "
             "tool_call Tool Search control for the deferred Operations tools. "
         )
@@ -598,7 +599,7 @@ def _with_interactive_delivery_contract(data: dict) -> dict:
                 separators=(",", ":"),
             )
             contract += (
-                "\n[ODS Pixel exact workspace route: Use the visible tool_call control. "
+                "\n[ODS Portal exact workspace route: Use the visible tool_call control. "
                 "Call tool_call exactly once with id write and args "
                 f"{write_args}. After it succeeds, call tool_call once with id read and "
                 f"args {read_args}, then call tool_call once with id exec and args "
@@ -652,10 +653,11 @@ def _reserved_reply(value) -> bool:
     )
 
 
-def _rewrite_json_response(raw: bytes, fallback: str) -> bytes:
+def _rewrite_json_response(raw: bytes, fallback: str,
+                           response_model: str = _LEGACY_MODEL) -> bytes:
     """Rewrite model identity and replace only an exact reserved/empty final reply."""
     try:
-        parsed = json.loads(_rewrite_json_model(raw))
+        parsed = json.loads(_rewrite_json_model(raw, response_model))
     except (json.JSONDecodeError, ValueError):
         return raw
     choices = parsed.get("choices") if isinstance(parsed, dict) else None
@@ -773,7 +775,7 @@ async def handle_models(request: web.Request):
     if not await _ingress_ready():
         return web.json_response({"error": "service unavailable"}, status=503)
 
-    data = [{"id": m, "object": "model", "owned_by": "pixel"} for m in _ALLOWED_MODELS]
+    data = [{"id": _PUBLIC_MODEL, "name": "Portal", "object": "model", "owned_by": "ods"}]
     return web.json_response({"object": "list", "data": data})
 
 
@@ -1157,11 +1159,12 @@ async def handle_chat_completions(request: web.Request):
 
                 if resp.status >= 400:
                     status = 400 if 400 <= resp.status < 500 else 502
-                    return web.json_response({"error": "pixel request rejected"}, status=status)
+                    return web.json_response({"error": "Portal request rejected"}, status=status)
 
                 if "text/event-stream" in ctype:
                     return await _stream_upstream(
-                        request, resp, empty_reply_fallback, cancel_event, activity
+                        request, resp, empty_reply_fallback, cancel_event, activity,
+                        response_model=req_model
                     )
 
                 if "application/json" not in ctype:
@@ -1175,7 +1178,7 @@ async def handle_chat_completions(request: web.Request):
                         return web.json_response({"error": "upstream response too large"},
                                                  status=502)
 
-                rewritten = _rewrite_json_response(bytes(resp_body), empty_reply_fallback)
+                rewritten = _rewrite_json_response(bytes(resp_body), empty_reply_fallback, req_model)
                 activity["terminal"] = True
                 return web.Response(status=resp.status, body=rewritten,
                                     content_type="application/json")
@@ -1229,9 +1232,9 @@ async def handle_chat_cancel(request: web.Request):
                 headers={"Content-Type": "application/json", "Accept": "application/json"},
             ) as resp:
                 if resp.status != 200:
-                    return web.json_response({"error": "pixel cancellation failed"}, status=502)
+                    return web.json_response({"error": "Portal cancellation failed"}, status=502)
                 if "application/json" not in resp.headers.get("Content-Type", "").lower():
-                    return web.json_response({"error": "pixel cancellation failed"}, status=502)
+                    return web.json_response({"error": "Portal cancellation failed"}, status=502)
                 raw_result = await _read_bounded(resp.content, _MAX_CANCEL_RESPONSE_BYTES)
                 result = json.loads(raw_result)
                 if (
@@ -1239,7 +1242,7 @@ async def handle_chat_cancel(request: web.Request):
                     or set(result) != {"aborted"}
                     or not isinstance(result.get("aborted"), bool)
                 ):
-                    return web.json_response({"error": "pixel cancellation failed"}, status=502)
+                    return web.json_response({"error": "Portal cancellation failed"}, status=502)
                 if result["aborted"]:
                     active = request.app[_CANCEL_EVENTS_KEY].get(data["user"], ())
                     for event in tuple(active):
@@ -1250,9 +1253,9 @@ async def handle_chat_cancel(request: web.Request):
                         _remember_chat_activity(request.app, data["user"], "terminal")
                 return web.json_response({"aborted": result["aborted"]})
     except (ConnectionError, OSError, asyncio.TimeoutError, json.JSONDecodeError, ValueError):
-        return web.json_response({"error": "pixel cancellation failed"}, status=502)
+        return web.json_response({"error": "Portal cancellation failed"}, status=502)
     except Exception:
-        return web.json_response({"error": "pixel cancellation failed"}, status=502)
+        return web.json_response({"error": "Portal cancellation failed"}, status=502)
 
 
 async def _stream_upstream(
@@ -1261,6 +1264,7 @@ async def _stream_upstream(
     empty_reply_fallback: str,
     cancel_event: asyncio.Event | None = None,
     activity: dict | None = None,
+    response_model: str = _LEGACY_MODEL,
 ):
     """Stream bounded SSE while replacing only a reserved/empty final reply."""
     response = web.StreamResponse(
@@ -1328,7 +1332,7 @@ async def _stream_upstream(
                 if line.rstrip(b"\r") == b"data: [DONE]" and activity is not None:
                     activity["terminal"] = True
                 if line.startswith(b"data: ") and line != b"data: [DONE]":
-                    line = b"data: " + _rewrite_json_model(line[6:])
+                    line = b"data: " + _rewrite_json_model(line[6:], response_model)
                 if passthrough:
                     await response.write(line + b"\n")
                     continue
@@ -1338,7 +1342,7 @@ async def _stream_upstream(
                     if not normalized or normalized in _RESERVED_ASSISTANT_REPLIES:
                         template = next(
                             (item[1] for item in reversed(pending) if isinstance(item[1], dict)),
-                            {"model": _PIXEL_REWRITE},
+                            {"model": response_model},
                         )
                         await replace_pending(template, synthesize_finish=True)
                     else:
@@ -1362,7 +1366,7 @@ async def _stream_upstream(
                     if not normalized or normalized in _RESERVED_ASSISTANT_REPLIES:
                         template = event if isinstance(event, dict) else next(
                             (item[1] for item in reversed(pending) if isinstance(item[1], dict)),
-                            {"model": _PIXEL_REWRITE},
+                            {"model": response_model},
                         )
                         await replace_pending(template, synthesize_finish=False)
                     else:
@@ -1392,7 +1396,7 @@ async def _stream_upstream(
             if line.rstrip(b"\r") == b"data: [DONE]" and activity is not None:
                 activity["terminal"] = True
             if line.startswith(b"data: ") and line != b"data: [DONE]":
-                line = b"data: " + _rewrite_json_model(line[6:])
+                line = b"data: " + _rewrite_json_model(line[6:], response_model)
             if passthrough:
                 await response.write(line)
             else:
@@ -1405,7 +1409,7 @@ async def _stream_upstream(
             if not normalized or normalized in _RESERVED_ASSISTANT_REPLIES:
                 template = next(
                     (item[1] for item in reversed(pending) if isinstance(item[1], dict)),
-                    {"model": _PIXEL_REWRITE},
+                    {"model": response_model},
                 )
                 has_finish = any(item[3] is not None for item in pending)
                 await replace_pending(template, synthesize_finish=not has_finish)

@@ -929,7 +929,7 @@ class TestModelAllowlist(BaseEdgeTest):
         ) as resp:
             self.assertEqual(resp.status, 200)
         content = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
-        self.assertNotIn("ODS Pixel network inspection route", content)
+        self.assertNotIn("ODS Portal network inspection route", content)
 
     async def test_code_about_a_machine_does_not_get_host_execution_route(self):
         async with self.client.post(
@@ -965,8 +965,8 @@ class TestModelAllowlist(BaseEdgeTest):
         ) as resp:
             self.assertEqual(resp.status, 200)
         content = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
-        self.assertIn("[ODS Pixel workspace task route:", content)
-        self.assertNotIn("[ODS Pixel host inspection route:", content)
+        self.assertIn("[ODS Portal workspace task route:", content)
+        self.assertNotIn("[ODS Portal host inspection route:", content)
         self.assertNotIn("pixel_ods_host_observe", content)
 
     async def test_workspace_mutation_gets_mutate_before_verify_route(self):
@@ -1005,7 +1005,7 @@ class TestModelAllowlist(BaseEdgeTest):
         ) as resp:
             self.assertEqual(resp.status, 200)
         content = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
-        self.assertIn("ODS Pixel command completion route", content)
+        self.assertIn("ODS Portal command completion route", content)
         self.assertIn("Call exec exactly once", content)
         self.assertIn("tool_call control with id process", content)
         self.assertIn("action poll", content)
@@ -1028,7 +1028,7 @@ class TestModelAllowlist(BaseEdgeTest):
         ) as resp:
             self.assertEqual(resp.status, 200)
         content = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
-        self.assertIn("ODS Pixel exact workspace route", content)
+        self.assertIn("ODS Portal exact workspace route", content)
         self.assertIn("tool_call exactly once with id write", content)
         self.assertIn("tool_call once with id read", content)
         self.assertIn("tool_call once with id exec", content)
@@ -1060,7 +1060,7 @@ class TestModelAllowlist(BaseEdgeTest):
         ) as resp:
             self.assertEqual(resp.status, 200)
         content = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
-        self.assertIn("ODS Pixel exact workspace route", content)
+        self.assertIn("ODS Portal exact workspace route", content)
         self.assertIn("tool_call exactly once with id write", content)
         self.assertIn(
             r'{"path":"pixel-qualification/model-flex-9b.txt","content":"Pixel 9B model flexibility passed.\n"}',
@@ -1152,7 +1152,7 @@ class TestModelAllowlist(BaseEdgeTest):
             {"messages": [{"role": "user", "content": original}]}
         )["messages"][-1]["content"]
         self.assertTrue(content.startswith(original + self.pe._INTERACTIVE_DELIVERY_CONTRACT))
-        self.assertIn("[ODS Pixel exact workspace route:", content)
+        self.assertIn("[ODS Portal exact workspace route:", content)
         self.assertIn(json.dumps({"path": "/workspace/rules.txt", "content": '"Do not edit files".\n'},
                                  separators=(",", ":")), content)
 
@@ -1349,10 +1349,11 @@ class TestSyntheticModels(BaseEdgeTest):
             data = await resp.json()
             self.assertEqual(data["object"], "list")
             ids = [m["id"] for m in data["data"]]
-            self.assertIn("pixel/default", ids)
+            self.assertEqual(ids, ["portal/default"])
             self.assertNotIn("openclaw/default", ids)
             for m in data["data"]:
-                self.assertEqual(m["owned_by"], "pixel")
+                self.assertEqual(m["owned_by"], "ods")
+                self.assertEqual(m["name"], "Portal")
 
 
 # ---------------------------------------------------------------------------
@@ -1386,6 +1387,17 @@ class TestResponseRewrite(BaseEdgeTest):
                 data["choices"][0]["message"]["content"],
                 "openclaw/default is assistant text",
             )
+
+    async def test_public_model_alias_rewrites_response_without_breaking_legacy(self):
+        for model in ("portal/default", "pixel/default"):
+            with self.subTest(model=model):
+                async with self.client.post(
+                    "http://localhost/v1/chat/completions", headers=self.auth(),
+                    json={"model": model, "messages": [{"role": "user", "content": "hi"}]},
+                ) as response:
+                    self.assertEqual(response.status, 200)
+                    data = await response.json()
+                    self.assertEqual(data["model"], model)
 
     async def test_non_stream_reserved_reply_becomes_natural_test_acknowledgement(self):
         async with self.client.post(
@@ -1544,6 +1556,24 @@ class TestPrivateUrlBoundary(BaseEdgeTest):
 # ---------------------------------------------------------------------------
 
 class TestSSE(BaseEdgeTest):
+    async def test_public_model_alias_is_preserved_in_stream_and_portal_reply(self):
+        async with self.client.post(
+            "http://localhost/v1/chat/completions", headers=self.auth(),
+            json={"model": "portal/default", "stream": True,
+                  "messages": [{"role": "user", "content": "hello"}],
+                  "trigger_reserved": True},
+        ) as response:
+            self.assertEqual(response.status, 200)
+            body = await response.text()
+        packets = [json.loads(line[6:]) for line in body.splitlines()
+                   if line.startswith("data: {")]
+        self.assertTrue(packets)
+        self.assertTrue(all(packet.get("model") == "portal/default" for packet in packets))
+        answer = "".join(packet["choices"][0].get("delta", {}).get("content", "")
+                         for packet in packets)
+        self.assertIn("Portal is online", answer)
+        self.assertNotIn("Pixel is online", answer)
+
     async def test_fallback_frames_are_independently_decodable_sse_events(self):
         for no_space in (False, True):
             for crlf in (False, True):
@@ -1644,7 +1674,7 @@ class TestSanitizedErrors(BaseEdgeTest):
         ) as resp:
             self.assertEqual(resp.status, 502)
             body = await resp.text()
-            self.assertIn("pixel request rejected", body)
+            self.assertIn("Portal request rejected", body)
             self.assertNotIn("upstream-secret", body)
             self.assertNotIn("private/token", body)
 
@@ -1703,8 +1733,8 @@ class TestHostRequestIntent(BaseEdgeTest):
         ]:
             content = await self.forwarded_content(prompt)
             self.assertIn(prompt, content)
-            self.assertIn("[ODS Pixel delivery requirement:", content)
-            self.assertNotIn("[ODS Pixel host inspection route:", content)
+            self.assertIn("[ODS Portal delivery requirement:", content)
+            self.assertNotIn("[ODS Portal host inspection route:", content)
 
     async def test_host_route_uses_only_positive_facets(self):
         content = await self.forwarded_content(

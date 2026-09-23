@@ -61,7 +61,7 @@ class ProviderSession:
         selected = [config['roles']['leader'],*config['roles']['backups']]
         if any(by_id[pid]['kind'] == 'cloud' for pid in selected) and allow_cloud is not True:
             raise StoreError('cloud-transfer-confirmation-required')
-        if any(by_id[pid]['model'] in ('ods/pixel','pixel/default','openclaw/default') for pid in selected):
+        if any(by_id[pid]['model'] in ('ods/pixel','pixel/default','portal/default','openclaw/default') for pid in selected):
             raise StoreError('provider-route-cycle')
         credentials = {pid:store.resolve_credential(pid,expected_revision=expected_revision) for pid in selected}
         if store.load()['revision'] != expected_revision:

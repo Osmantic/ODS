@@ -38,6 +38,35 @@ def activation_command(preparation, prepared, *, install_dir, ods_source, owner,
     return command
 
 
+def migrate_public_identity(*, source, preparation, node):
+    """Refresh only unmodified legacy profiles after a proved native update.
+
+    This owner-side profile repair is intentionally outside the protected runtime
+    activation transaction: failure leaves the activated runtime and owner data
+    untouched, and is reported for manual review instead of claiming rollback.
+    """
+    try:
+        candidate = preparation / 'candidate'
+        document = helper('pixel-native-config').private_json(candidate / 'openclaw.json')
+        agents = document['agents']['list']
+        if len(agents) != 1 or agents[0].get('id') != 'pixel':
+            raise ValueError('native-portal-profile-agent-required')
+        workspace = Path(agents[0]['workspace'])
+        if not workspace.is_absolute() or not workspace.is_dir() or workspace.resolve(strict=True) != workspace:
+            raise ValueError('native-portal-profile-workspace-required')
+        generated = candidate / 'workspace'
+        script = source / 'scripts/migrate-portal-identity.mjs'
+        if not generated.is_dir() or not script.is_file():
+            raise ValueError('native-portal-profile-candidate-required')
+        result = subprocess.run([str(node), str(script), str(workspace), str(generated)],
+            capture_output=True, text=True, timeout=30, check=False)
+        if result.returncode:
+            raise ValueError('native-portal-profile-migration-failed')
+        return {'status': 'checked', 'detail': result.stdout.strip()}
+    except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError):
+        return {'status': 'manual-review-required'}
+
+
 def update(*, install_dir, ods_source, prepare_only=False):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
@@ -86,7 +115,10 @@ def update(*, install_dir, ods_source, prepare_only=False):
         if prepare_only:
             return {'status': 'prepared', 'preparation': str(preparation)}
         subprocess.run(command, check=True, timeout=1800)
-        return helper('pixel-native-finalize').finalize_update(preparation)
+        outcome = helper('pixel-native-finalize').finalize_update(preparation)
+        outcome['portalIdentityMigration'] = migrate_public_identity(
+            source=source, preparation=preparation, node=node)
+        return outcome
     finally:
         for key, value in saved.items():
             if value is None:

@@ -103,7 +103,7 @@ class NativeComposeTests(unittest.TestCase):
         self.assertEqual(services['dashboard-api']['environment']['PIXEL_EDGE_URL'],
                          'http://pixel-edge:9595')
         self.assertEqual(services['open-webui']['environment']['DEFAULT_MODELS'],
-                         'pixel/default')
+                         'portal/default')
 
     def test_preview_has_only_workspace_read_access_and_loopback_publish(self):
         service = self.document()['services']['pixel-workspace-preview']

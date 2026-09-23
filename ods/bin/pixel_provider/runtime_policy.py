@@ -20,7 +20,7 @@ def select_candidates(config,payload):
     for provider in ordered:
         if provider['kind'] == 'cloud' and not config['policy']['allowCloud']:
             raise StoreError('cloud-not-authorized')
-        if provider['model'] in ('ods/pixel','pixel/default','openclaw/default'):
+        if provider['model'] in ('ods/pixel','pixel/default','portal/default','openclaw/default'):
             raise StoreError('provider-route-cycle')
         incompatible = (not provider['enabled'] or provider['contextTokens'] < leader['contextTokens']
             or provider['maxOutputTokens'] < budget or tools and not provider['supportsTools']

@@ -29,8 +29,8 @@ assert "propagation: ${PIXEL_RUNTIME_BIND_PROPAGATION:-rprivate}" in text
 assert 'TASK_MODEL_EXTERNAL: "${OPEN_WEBUI_TASK_MODEL:-${GGUF_FILE:-${LLM_MODEL:-default}}}"' in text
 for required in (
     'ENABLE_OPENAI_API: "true"',
-    'DEFAULT_MODELS: "pixel/default"',
-    'DEFAULT_PINNED_MODELS: "pixel/default"',
+    'DEFAULT_MODELS: "portal/default"',
+    'DEFAULT_PINNED_MODELS: "portal/default"',
     "DEFAULT_PROMPT_SUGGESTIONS:",
     "TASK_MODEL_EXTERNAL:",
     'ENABLE_TITLE_GENERATION: "false"',
@@ -85,7 +85,7 @@ assert all(mount["bind"]["propagation"] == "rprivate" for mount in edge["volumes
 webui = value["services"]["open-webui"]
 assert "pixel-edge" not in webui.get("depends_on", {})
 assert webui["environment"]["OPENAI_API_BASE_URLS"].startswith("http://pixel-edge:9595/v1;")
-assert webui["environment"]["DEFAULT_MODELS"] == "pixel/default"
+assert webui["environment"]["DEFAULT_MODELS"] == "portal/default"
 suggestions = json.loads(webui["environment"]["DEFAULT_PROMPT_SUGGESTIONS"])
 assert [item["title"][0] for item in suggestions] == [
     "Check ODS health", "Build something", "Research a topic", "Plan a complex task",

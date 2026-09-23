@@ -8,7 +8,8 @@ The trust chain is deliberately split:
 2. This container accepts only `GET /v1/models`, `GET /v1/activity`,
    `POST /v1/chat/completions`, `POST /v1/chat/cancel`, and authenticated
    `GET /preview/<site-id>/<path>` requests from Dashboard nginx. Chat fixes
-   the model to `pixel/default`, strips browser credentials and every
+   the model to `portal/default` (while accepting the legacy `pixel/default`
+   API alias), strips browser credentials and every
    `x-openclaw-*` header, and connects to the private ingress Unix socket. The
    preview route connects to a separate read-only host Unix socket and relays
    only immutable content-addressed files with a script-capable opaque CSP

@@ -113,6 +113,7 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
             if failure is None:
                 expected += ['activate', 'finalize']
                 assert result['status'] == 'selection-ready'
+                assert result['portalIdentityMigration']['status'] == 'manual-review-required'
             else:
                 assert result['status'] == 'prepared'
             assert stages == expected
@@ -125,3 +126,32 @@ def test_update_reaches_installation_validation_without_license_flag(monkeypatch
     monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
     with pytest.raises(FileNotFoundError):
         module.update(install_dir='/missing', ods_source='/missing')
+
+
+def test_native_update_checks_owner_profile_after_activation(tmp_path, monkeypatch):
+    source = tmp_path / 'source'
+    script = source / 'scripts/migrate-portal-identity.mjs'
+    script.parent.mkdir(parents=True)
+    script.write_text('// tested separately by the bundled source suite\n')
+    preparation = tmp_path / 'preparation'
+    generated = preparation / 'candidate/workspace'
+    generated.mkdir(parents=True)
+    workspace = tmp_path / 'owner-workspace'
+    workspace.mkdir()
+    document = {'agents': {'list': [{'id': 'pixel', 'workspace': str(workspace)}]}}
+    monkeypatch.setattr(module, 'helper', lambda _name: SimpleNamespace(private_json=lambda _path: document))
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout='Portal profile: SOUL.md current; IDENTITY.md current\n')
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    result = module.migrate_public_identity(source=source, preparation=preparation, node=Path('/node'))
+    assert result == {'status': 'checked', 'detail':
+        'Portal profile: SOUL.md current; IDENTITY.md current'}
+    assert calls == [(['/node', str(script), str(workspace), str(generated)],
+        {'capture_output': True, 'text': True, 'timeout': 30, 'check': False})]
+
+
+def test_native_update_does_not_claim_profile_migration_without_candidate(tmp_path):
+    assert module.migrate_public_identity(source=tmp_path, preparation=tmp_path, node=Path('/node')) == {
+        'status': 'manual-review-required'}

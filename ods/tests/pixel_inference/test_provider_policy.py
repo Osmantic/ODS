@@ -36,7 +36,7 @@ def test_max_attempts_and_cloud_checks():
         select_candidates(config,payload())
 
 
-@pytest.mark.parametrize('model',['ods/pixel','pixel/default','openclaw/default'])
+@pytest.mark.parametrize('model',['ods/pixel','pixel/default','portal/default','openclaw/default'])
 def test_route_cycles_rejected(model):
     config = configuration(); config['providers'][1]['model']=model
     with pytest.raises(StoreError,match='provider-route-cycle'):

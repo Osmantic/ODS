@@ -45,7 +45,7 @@ class AdvisoryCall:
             raise StoreError('cloud-transfer-confirmation-required')
         if provider['kind'] == 'cloud' and not body['acceptUnknownCost']:
             raise StoreError('unknown-cost-confirmation-required')
-        if provider['model'] in ('ods/pixel','pixel/default','openclaw/default'):
+        if provider['model'] in ('ods/pixel','pixel/default','portal/default','openclaw/default'):
             raise StoreError('provider-route-cycle')
         # A conservative byte budget avoids silently truncating the capsule.
         # No provider-specific tokenizer is assumed by this transport contract.
@@ -88,7 +88,7 @@ class AdvisoryCall:
             raise StoreError('invalid-advice-snapshot')
         provider = config['providers'][0]
         if (provider['id'] != body['providerId'] or not provider['enabled']
-                or provider['model'] in ('ods/pixel','pixel/default','openclaw/default')
+                or provider['model'] in ('ods/pixel','pixel/default','portal/default','openclaw/default')
                 or body['maxOutputTokens'] > provider['maxOutputTokens']
                 or len((INSTRUCTION+body['capsule']).encode())+body['maxOutputTokens']+256 > provider['contextTokens']
                 or provider['kind'] == 'cloud' and not (config['policy']['allowCloud']

@@ -24,9 +24,9 @@ You should receive a text response within a few seconds. If you see an error, ch
 
 Open your browser and navigate to the address shown at the end of installation (default: `http://localhost:3000`). The Open WebUI chat interface should load and let you send a message.
 
-If the installer selected Pixel, confirm the default model is `pixel/default`,
+If the installer selected Portal, confirm the default model is `portal/default`,
 send a real message, then open `http://localhost:3001/pixel` and send another
-message through the dedicated Dashboard app. Ask Pixel to check ODS status and
+message through the dedicated Dashboard app. Ask Portal to check ODS status and
 confirm it uses `pixel_ods_status` without exposing credentials or internal
 paths. Also check the private path:
 
