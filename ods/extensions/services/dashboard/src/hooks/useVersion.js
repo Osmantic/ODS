@@ -17,9 +17,14 @@ export function useVersion() {
     let timer
     let controller
     let inFlight = false
+    let refreshQueued = false
     let pendingChecks = 0
     const checkVersion = async () => {
-      if (disposed || inFlight) return
+      if (disposed) return
+      if (inFlight) {
+        refreshQueued = true
+        return
+      }
       inFlight = true
       clearTimeout(timer)
       controller = new AbortController()
@@ -48,7 +53,12 @@ export function useVersion() {
         inFlight = false
         if (!disposed) {
           setLoading(false)
-          timer = setTimeout(checkVersion, delay)
+          if (refreshQueued) {
+            refreshQueued = false
+            void checkVersion()
+          } else {
+            timer = setTimeout(checkVersion, delay)
+          }
         }
       }
     }
