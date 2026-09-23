@@ -1,6 +1,6 @@
 # Portal in ODS
 
-# Portal is the public-facing name of ODS's conversational assistant and a core
+Portal is the public-facing name of ODS's conversational assistant and a core
 feature under active development. Its internal runtime and compatibility route
 retain the Pixel identifier; on qualified hosts the `portal/default` model in
 Open WebUI and the dedicated **Portal** app in the ODS Dashboard use the same
@@ -55,10 +55,12 @@ unfinished access transition is shown as needing attention. `busy` alone is
 activity, not failed proof; `pending: false` does not establish that admission
 is open. No paths, credentials, or raw upstream errors enter this projection.
 
-Portal shows the readiness warning separately from model availability. Unknown
-readiness does not itself disable chat, select another model, change access,
-or bypass existing admission and recovery controls. During rolling upgrades,
-missing or unsupported readiness data is displayed as unverified, not Ready.
+Portal shows a readiness warning only for a concrete access failure, an
+unfinished access transition, or a runtime file mismatch. Unknown, missing,
+or unsupported readiness remains unverified in status diagnostics without a
+persistent chat warning. It does not disable chat, select another model,
+change access, bypass admission and recovery controls, or establish that the
+runtime is ready.
 
 ## Legal and release boundary
 
