@@ -71,15 +71,18 @@ explanation. Embedding, speech and image service downloads remain separate work.
 
 ## Factual license review
 
-The separate [license review snapshot](MODEL_LICENSE_REVIEWS.json) records
-30 exact source chains: 29 with permissive licenses subject to conditions and
-one with research/evaluation restrictions. The other 27 remain unassessed.
+The initial [license review snapshot](MODEL_LICENSE_REVIEWS.json) records
+30 exact source chains. The [supplemental review](MODEL_LICENSE_REVIEWS_FOLLOWUP.json)
+adds nine Granite chains and SmolLM3 without rewriting that snapshot or changing
+any download identity. Together they record 39 chains with permissive licenses
+subject to conditions and one with research/evaluation restrictions. The other
+17 remain unassessed.
 Reviewed status records the findings; it does not make a restricted model
 permissive or establish permission for a particular use. Conditions for each
 layer remain visible instead of applying a quantizer's declaration to every
 ancestor.
 
-Eleven [retained license and notice files](../config/model-notices/) preserve
+Thirteen [retained license and notice files](../config/model-notices/) preserve
 the reviewed bytes, including full license text, the Phi component notice and
 the complete Google license HTML block plus its extracted text. The review
 records the full response fingerprint and the verified extraction; unrelated
@@ -87,13 +90,18 @@ website scripts and client configuration are not shipped. Git
 attributes preserve their fingerprints across checkout. The original source
 inventory and artifact repair observations have not been rewritten.
 
+The supplement explicitly records three newly resolved Granite ancestors using
+pinned IBM documentation, source-card declarations and response fingerprints.
+Those are consulted documentation revisions, not asserted training-input commits.
+Displayed conditions summarize the retained full license; they do not replace it.
+
 ## Validation and remaining work
 
 `python ods/scripts/check-model-terms.py` validates structured observations;
 `--release-ready` additionally rejects incomplete license reviews. The dedicated
 model-provenance workflow runs structural regressions and offers the explicit
 release qualification check. Its structural success must not be reported as
-completed legal review. The release check still fails because 27 reviews are
+completed legal review. The release check still fails because 17 reviews are
 pending.
 The validator accepts multiple observation snapshots and binds each model to
 the declared snapshot hash. Supplemental artifact identities must be complete;

@@ -272,7 +272,10 @@ def main():
         reviews = {}
         reviewed_ids = set()
         # Fixture catalogs may supply their own source snapshots without reviews.
-        review_paths = args.review_evidence or ([] if args.evidence else [ROOT / "docs/MODEL_LICENSE_REVIEWS.json"])
+        review_paths = args.review_evidence or ([] if args.evidence else [
+            ROOT / "docs/MODEL_LICENSE_REVIEWS.json",
+            ROOT / "docs/MODEL_LICENSE_REVIEWS_FOLLOWUP.json",
+        ])
         for path in review_paths:
             fingerprint, entries = load_license_review(path, ROOT.parent)
             if fingerprint in reviews or reviewed_ids.intersection(entries):

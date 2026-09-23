@@ -1347,7 +1347,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -1368,6 +1368,16 @@
             "license_name": null,
             "declaration_url": "https://huggingface.co/ibm-granite/granite-4.0-h-micro/blob/d5f01a3ea75f088947be3aae039f4ad52837dfde/README.md",
             "gated": false
+          },
+          {
+            "role": "declared_ancestor",
+            "repository": "ibm-granite/granite-4.0-h-micro-base",
+            "revision": "372ede0bc484284e08ce574e773c96cd2b89b367",
+            "url": "https://huggingface.co/ibm-granite/granite-4.0-h-micro-base/tree/372ede0bc484284e08ce574e773c96cd2b89b367",
+            "license_id": "apache-2.0",
+            "license_name": null,
+            "declaration_url": "https://huggingface.co/ibm-granite/granite-4.0-h-micro-base/blob/372ede0bc484284e08ce574e773c96cd2b89b367/README.md",
+            "gated": false
           }
         ],
         "artifacts": [
@@ -1377,7 +1387,26 @@
             "observed_present": true
           }
         ],
-        "license_documents": [],
+        "license_documents": [
+          {
+            "repo": "ibm-granite/granite-4.0-h-micro",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-4.0-h-micro-base",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-4.0-language-models",
+            "kind": "repository_license_document",
+            "url": "https://raw.githubusercontent.com/ibm-granite/granite-4.0-language-models/de23701d1627c767cfc91a0ccfa360a5b247dde2/LICENSE",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+          }
+        ],
         "notice_documents": [
           {
             "repository": "ibm-granite/granite-4.0-h-micro-GGUF",
@@ -1390,14 +1419,69 @@
             "path": "README.md",
             "url": "https://huggingface.co/ibm-granite/granite-4.0-h-micro/blob/d5f01a3ea75f088947be3aae039f4ad52837dfde/README.md",
             "sha256": "126c44c04a83c9fc86257dddca4ffd5f0cf02592005b873418cd942258697fb3"
+          },
+          {
+            "repository": "ibm-granite/granite-4.0-h-micro-base",
+            "path": "README.md",
+            "url": "https://huggingface.co/ibm-granite/granite-4.0-h-micro-base/blob/372ede0bc484284e08ce574e773c96cd2b89b367/README.md",
+            "sha256": "50a8560ec0a23e29916398a7d36824f59fb49a3498dd94068a17935fd5cb334b"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
-        "issues": [
-          "NO_SEPARATE_TERMS_DOCUMENT_RETRIEVED"
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
+        "issues": [],
+        "note": "Exact publisher/base/ancestor cards declare Apache 2.0; the model-scoped declarations link to the complete versioned Apache text retained by SHA-256. Publisher conversion declarations and base relationships were retained together. No separate NOTICE-named file appears in the inspected public repository metadata. No separate account/click-through acceptance requirement was observed. This factual review is not legal clearance, beta approval, acceptance on behalf of a user, or assurance about all training-data/output rights. Displayed conditions are a synopsis; the complete retained license governs, including contributions and voluntarily offered warranty/support obligations.",
+        "license_review_evidence_sha256": "029765e1dc4b6b08fd4fefb6c44da0c0009e6aaca7927a8cd15dfa86acdedb67",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
         ],
-        "note": null
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "source_url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "source_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-ibm-c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.txt",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+            "source_url": "https://raw.githubusercontent.com/ibm-granite/granite-4.0-language-models/de23701d1627c767cfc91a0ccfa360a5b247dde2/LICENSE",
+            "source_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -1457,7 +1541,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -1478,6 +1562,16 @@
             "license_name": null,
             "declaration_url": "https://huggingface.co/ibm-granite/granite-4.0-h-tiny/blob/791e0d3d28c86e106c9b6e0b4cecdee0375b6124/README.md",
             "gated": false
+          },
+          {
+            "role": "declared_ancestor",
+            "repository": "ibm-granite/granite-4.0-h-tiny-base",
+            "revision": "f95c8e83b06c12f877486f18d2e2d109ab252bd0",
+            "url": "https://huggingface.co/ibm-granite/granite-4.0-h-tiny-base/tree/f95c8e83b06c12f877486f18d2e2d109ab252bd0",
+            "license_id": "apache-2.0",
+            "license_name": null,
+            "declaration_url": "https://huggingface.co/ibm-granite/granite-4.0-h-tiny-base/blob/f95c8e83b06c12f877486f18d2e2d109ab252bd0/README.md",
+            "gated": false
           }
         ],
         "artifacts": [
@@ -1487,7 +1581,26 @@
             "observed_present": true
           }
         ],
-        "license_documents": [],
+        "license_documents": [
+          {
+            "repo": "ibm-granite/granite-4.0-h-tiny",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-4.0-h-tiny-base",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-4.0-language-models",
+            "kind": "repository_license_document",
+            "url": "https://raw.githubusercontent.com/ibm-granite/granite-4.0-language-models/de23701d1627c767cfc91a0ccfa360a5b247dde2/LICENSE",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+          }
+        ],
         "notice_documents": [
           {
             "repository": "ibm-granite/granite-4.0-h-tiny-GGUF",
@@ -1500,14 +1613,69 @@
             "path": "README.md",
             "url": "https://huggingface.co/ibm-granite/granite-4.0-h-tiny/blob/791e0d3d28c86e106c9b6e0b4cecdee0375b6124/README.md",
             "sha256": "9a2b7bc35ca60174c314e16e61260214f329eaf2372dccdc27814fe719990d95"
+          },
+          {
+            "repository": "ibm-granite/granite-4.0-h-tiny-base",
+            "path": "README.md",
+            "url": "https://huggingface.co/ibm-granite/granite-4.0-h-tiny-base/blob/f95c8e83b06c12f877486f18d2e2d109ab252bd0/README.md",
+            "sha256": "64a3f3d1e0e4cb8d9282ed8edb56d7f7a4e1f6a89496cb675e2a9fc4e68f33ae"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
-        "issues": [
-          "NO_SEPARATE_TERMS_DOCUMENT_RETRIEVED"
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
+        "issues": [],
+        "note": "Exact publisher/base/ancestor cards declare Apache 2.0; the model-scoped declarations link to the complete versioned Apache text retained by SHA-256. Publisher conversion declarations and base relationships were retained together. No separate NOTICE-named file appears in the inspected public repository metadata. No separate account/click-through acceptance requirement was observed. This factual review is not legal clearance, beta approval, acceptance on behalf of a user, or assurance about all training-data/output rights. Displayed conditions are a synopsis; the complete retained license governs, including contributions and voluntarily offered warranty/support obligations.",
+        "license_review_evidence_sha256": "029765e1dc4b6b08fd4fefb6c44da0c0009e6aaca7927a8cd15dfa86acdedb67",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
         ],
-        "note": null
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "source_url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "source_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-ibm-c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.txt",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+            "source_url": "https://raw.githubusercontent.com/ibm-granite/granite-4.0-language-models/de23701d1627c767cfc91a0ccfa360a5b247dde2/LICENSE",
+            "source_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -1586,7 +1754,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -1626,7 +1794,26 @@
             "observed_present": true
           }
         ],
-        "license_documents": [],
+        "license_documents": [
+          {
+            "repo": "unsloth/SmolLM3-3B-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "HuggingFaceTB/SmolLM3-3B",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "HuggingFaceTB/SmolLM3-3B-Base",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          }
+        ],
         "notice_documents": [
           {
             "repository": "unsloth/SmolLM3-3B-GGUF",
@@ -1647,12 +1834,53 @@
             "sha256": "9bb1fff003df8f9497d2589c345b80817af6864a39938c14edc5207bc5717009"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
-        "issues": [
-          "NO_SEPARATE_TERMS_DOCUMENT_RETRIEVED"
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
+        "issues": [],
+        "note": "Exact publisher/base/ancestor cards declare Apache 2.0; the model-scoped declarations link to the complete versioned Apache text retained by SHA-256. Publisher conversion declarations and base relationships were retained together. No separate NOTICE-named file appears in the inspected public repository metadata. No separate account/click-through acceptance requirement was observed. This factual review is not legal clearance, beta approval, acceptance on behalf of a user, or assurance about all training-data/output rights. Displayed conditions are a synopsis; the complete retained license governs, including contributions and voluntarily offered warranty/support obligations.",
+        "license_review_evidence_sha256": "029765e1dc4b6b08fd4fefb6c44da0c0009e6aaca7927a8cd15dfa86acdedb67",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
         ],
-        "note": null
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "source_url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "source_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -1795,7 +2023,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -1835,7 +2063,20 @@
             "observed_present": true
           }
         ],
-        "license_documents": [],
+        "license_documents": [
+          {
+            "repo": "ibm-granite/granite-4.0-h-1b",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-4.0-h-1b-base",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          }
+        ],
         "notice_documents": [
           {
             "repository": "ibm-granite/granite-4.0-h-1b-GGUF",
@@ -1856,12 +2097,53 @@
             "sha256": "45d59b0dc0c8ae5248f1397ad72a6207db25a5fb6c11bdf5ea3a1552791e231e"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
-        "issues": [
-          "NO_SEPARATE_TERMS_DOCUMENT_RETRIEVED"
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
+        "issues": [],
+        "note": "Exact publisher/base/ancestor cards declare Apache 2.0; the model-scoped declarations link to the complete versioned Apache text retained by SHA-256. Publisher conversion declarations and base relationships were retained together. No separate NOTICE-named file appears in the inspected public repository metadata. No separate account/click-through acceptance requirement was observed. This factual review is not legal clearance, beta approval, acceptance on behalf of a user, or assurance about all training-data/output rights. Displayed conditions are a synopsis; the complete retained license governs, including contributions and voluntarily offered warranty/support obligations.",
+        "license_review_evidence_sha256": "029765e1dc4b6b08fd4fefb6c44da0c0009e6aaca7927a8cd15dfa86acdedb67",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
         ],
-        "note": null
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "source_url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "source_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -2378,7 +2660,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -2399,6 +2681,16 @@
             "license_name": null,
             "declaration_url": "https://huggingface.co/ibm-granite/granite-4.1-3b/blob/c0650403e44e78ec0262dab1c90914c65b196c4e/README.md",
             "gated": false
+          },
+          {
+            "role": "declared_ancestor",
+            "repository": "ibm-granite/granite-4.1-3b-base",
+            "revision": "dacb9cb9157bec98e99b09f285c92a4d58405c96",
+            "url": "https://huggingface.co/ibm-granite/granite-4.1-3b-base/tree/dacb9cb9157bec98e99b09f285c92a4d58405c96",
+            "license_id": "apache-2.0",
+            "license_name": null,
+            "declaration_url": "https://huggingface.co/ibm-granite/granite-4.1-3b-base/blob/dacb9cb9157bec98e99b09f285c92a4d58405c96/README.md",
+            "gated": false
           }
         ],
         "artifacts": [
@@ -2408,7 +2700,26 @@
             "observed_present": true
           }
         ],
-        "license_documents": [],
+        "license_documents": [
+          {
+            "repo": "ibm-granite/granite-4.1-3b",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-4.1-3b-base",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-4.1-language-models",
+            "kind": "repository_license_document",
+            "url": "https://raw.githubusercontent.com/ibm-granite/granite-4.1-language-models/1f82511b399b633ee9368b4d637401e5f53f43d0/LICENSE",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+          }
+        ],
         "notice_documents": [
           {
             "repository": "ibm-granite/granite-4.1-3b-GGUF",
@@ -2421,14 +2732,69 @@
             "path": "README.md",
             "url": "https://huggingface.co/ibm-granite/granite-4.1-3b/blob/c0650403e44e78ec0262dab1c90914c65b196c4e/README.md",
             "sha256": "7868b8ead19d157ad23ec827f252f6709a380d1b2cedc35c0e7a533b91550f1f"
+          },
+          {
+            "repository": "ibm-granite/granite-4.1-3b-base",
+            "path": "README.md",
+            "url": "https://huggingface.co/ibm-granite/granite-4.1-3b-base/blob/dacb9cb9157bec98e99b09f285c92a4d58405c96/README.md",
+            "sha256": "6fe5a89323370ac421f4264ccf0a51347a2d79a0af43e7360b025bf80c0792e3"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
-        "issues": [
-          "NO_SEPARATE_TERMS_DOCUMENT_RETRIEVED"
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
+        "issues": [],
+        "note": "Exact publisher/base/ancestor cards declare Apache 2.0; the model-scoped declarations link to the complete versioned Apache text retained by SHA-256. Publisher conversion declarations and base relationships were retained together. No separate NOTICE-named file appears in the inspected public repository metadata. No separate account/click-through acceptance requirement was observed. This factual review is not legal clearance, beta approval, acceptance on behalf of a user, or assurance about all training-data/output rights. Displayed conditions are a synopsis; the complete retained license governs, including contributions and voluntarily offered warranty/support obligations.",
+        "license_review_evidence_sha256": "029765e1dc4b6b08fd4fefb6c44da0c0009e6aaca7927a8cd15dfa86acdedb67",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
         ],
-        "note": null
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "source_url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "source_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          },
+          {
+            "path": "ods/config/model-notices/apache-2.0-ibm-c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.txt",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+            "source_url": "https://raw.githubusercontent.com/ibm-granite/granite-4.1-language-models/1f82511b399b633ee9368b4d637401e5f53f43d0/LICENSE",
+            "source_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -2474,7 +2840,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -2514,7 +2880,20 @@
             "observed_present": true
           }
         ],
-        "license_documents": [],
+        "license_documents": [
+          {
+            "repo": "ibm-granite/granite-4.0-1b",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-4.0-1b-base",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          }
+        ],
         "notice_documents": [
           {
             "repository": "ibm-granite/granite-4.0-1b-GGUF",
@@ -2535,12 +2914,53 @@
             "sha256": "cfd9e95e36f2e2e75d36e09d5896ecdc71ba91916525d014f96747ba75507a5b"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
-        "issues": [
-          "NO_SEPARATE_TERMS_DOCUMENT_RETRIEVED"
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
+        "issues": [],
+        "note": "Exact publisher/base/ancestor cards declare Apache 2.0; the model-scoped declarations link to the complete versioned Apache text retained by SHA-256. Publisher conversion declarations and base relationships were retained together. No separate NOTICE-named file appears in the inspected public repository metadata. No separate account/click-through acceptance requirement was observed. This factual review is not legal clearance, beta approval, acceptance on behalf of a user, or assurance about all training-data/output rights. Displayed conditions are a synopsis; the complete retained license governs, including contributions and voluntarily offered warranty/support obligations.",
+        "license_review_evidence_sha256": "029765e1dc4b6b08fd4fefb6c44da0c0009e6aaca7927a8cd15dfa86acdedb67",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
         ],
-        "note": null
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "source_url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "source_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -2582,7 +3002,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -2622,7 +3042,20 @@
             "observed_present": true
           }
         ],
-        "license_documents": [],
+        "license_documents": [
+          {
+            "repo": "ibm-granite/granite-4.0-h-350m",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-4.0-h-350m-base",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          }
+        ],
         "notice_documents": [
           {
             "repository": "ibm-granite/granite-4.0-h-350m-GGUF",
@@ -2643,12 +3076,53 @@
             "sha256": "3b4333050854128ccdd7161c992c4af876f351d4316e6e7290ffc92fd05b562f"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
-        "issues": [
-          "NO_SEPARATE_TERMS_DOCUMENT_RETRIEVED"
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
+        "issues": [],
+        "note": "Exact publisher/base/ancestor cards declare Apache 2.0; the model-scoped declarations link to the complete versioned Apache text retained by SHA-256. Publisher conversion declarations and base relationships were retained together. No separate NOTICE-named file appears in the inspected public repository metadata. No separate account/click-through acceptance requirement was observed. This factual review is not legal clearance, beta approval, acceptance on behalf of a user, or assurance about all training-data/output rights. Displayed conditions are a synopsis; the complete retained license governs, including contributions and voluntarily offered warranty/support obligations.",
+        "license_review_evidence_sha256": "029765e1dc4b6b08fd4fefb6c44da0c0009e6aaca7927a8cd15dfa86acdedb67",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
         ],
-        "note": null
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "source_url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "source_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -2726,7 +3200,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -2776,7 +3250,32 @@
             "observed_present": true
           }
         ],
-        "license_documents": [],
+        "license_documents": [
+          {
+            "repo": "ibm-research/granite-3.2-2b-instruct-GGUF",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-3.2-2b-instruct",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-3.1-2b-instruct",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-3.1-2b-base",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          }
+        ],
         "notice_documents": [
           {
             "repository": "ibm-research/granite-3.2-2b-instruct-GGUF",
@@ -2803,12 +3302,53 @@
             "sha256": "4a52a5e1bd4201486235db5f28940d6a7c45bf9a62ecb39398524b7e066adfc3"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
-        "issues": [
-          "NO_SEPARATE_TERMS_DOCUMENT_RETRIEVED"
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
+        "issues": [],
+        "note": "Exact publisher/base/ancestor cards declare Apache 2.0; the model-scoped declarations link to the complete versioned Apache text retained by SHA-256. Publisher conversion declarations and base relationships were retained together. No separate NOTICE-named file appears in the inspected public repository metadata. No separate account/click-through acceptance requirement was observed. This factual review is not legal clearance, beta approval, acceptance on behalf of a user, or assurance about all training-data/output rights. Displayed conditions are a synopsis; the complete retained license governs, including contributions and voluntarily offered warranty/support obligations.",
+        "license_review_evidence_sha256": "029765e1dc4b6b08fd4fefb6c44da0c0009e6aaca7927a8cd15dfa86acdedb67",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
         ],
-        "note": null
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "source_url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "source_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -2851,7 +3391,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -2891,7 +3431,20 @@
             "observed_present": true
           }
         ],
-        "license_documents": [],
+        "license_documents": [
+          {
+            "repo": "ibm-granite/granite-3.1-2b-instruct",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-3.1-2b-base",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          }
+        ],
         "notice_documents": [
           {
             "repository": "bartowski/granite-3.1-2b-instruct-GGUF",
@@ -2912,12 +3465,53 @@
             "sha256": "4a52a5e1bd4201486235db5f28940d6a7c45bf9a62ecb39398524b7e066adfc3"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
-        "issues": [
-          "NO_SEPARATE_TERMS_DOCUMENT_RETRIEVED"
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
+        "issues": [],
+        "note": "Exact publisher/base/ancestor cards declare Apache 2.0; the model-scoped declarations link to the complete versioned Apache text retained by SHA-256. Publisher conversion declarations and base relationships were retained together. No separate NOTICE-named file appears in the inspected public repository metadata. No separate account/click-through acceptance requirement was observed. This factual review is not legal clearance, beta approval, acceptance on behalf of a user, or assurance about all training-data/output rights. Displayed conditions are a synopsis; the complete retained license governs, including contributions and voluntarily offered warranty/support obligations.",
+        "license_review_evidence_sha256": "029765e1dc4b6b08fd4fefb6c44da0c0009e6aaca7927a8cd15dfa86acdedb67",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
         ],
-        "note": null
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "source_url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "source_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {
@@ -5380,7 +5974,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -5420,7 +6014,20 @@
             "observed_present": true
           }
         ],
-        "license_documents": [],
+        "license_documents": [
+          {
+            "repo": "ibm-granite/granite-3.3-8b-instruct",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "repo": "ibm-granite/granite-3.3-8b-base",
+            "kind": "declared_license_link",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          }
+        ],
         "notice_documents": [
           {
             "repository": "ibm-granite/granite-3.3-8b-instruct-GGUF",
@@ -5441,12 +6048,53 @@
             "sha256": "bb7792802f1a1400f659e3fd4306d60b9f3f2393ac81a4f3c31f7357c16fd1da"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
-        "issues": [
-          "NO_SEPARATE_TERMS_DOCUMENT_RETRIEVED"
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
+        "issues": [],
+        "note": "Exact publisher/base/ancestor cards declare Apache 2.0; the model-scoped declarations link to the complete versioned Apache text retained by SHA-256. Publisher conversion declarations and base relationships were retained together. No separate NOTICE-named file appears in the inspected public repository metadata. No separate account/click-through acceptance requirement was observed. This factual review is not legal clearance, beta approval, acceptance on behalf of a user, or assurance about all training-data/output rights. Displayed conditions are a synopsis; the complete retained license governs, including contributions and voluntarily offered warranty/support obligations.",
+        "license_review_evidence_sha256": "029765e1dc4b6b08fd4fefb6c44da0c0009e6aaca7927a8cd15dfa86acdedb67",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
         ],
-        "note": null
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/apache-2.0-cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "source_url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "source_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+            "content_type": "text/plain",
+            "extraction": "identity"
+          }
+        ]
       }
     },
     {

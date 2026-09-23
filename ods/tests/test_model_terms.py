@@ -145,13 +145,17 @@ class ModelTermsTests(unittest.TestCase):
         self.assertEqual(len(catalog["models"]), 57)
         fingerprint, entries = gate.load_license_review(ROOT / "docs/MODEL_LICENSE_REVIEWS.json", ROOT.parent)
         self.assertEqual(len(entries), 30)
+        followup, added = gate.load_license_review(ROOT / "docs/MODEL_LICENSE_REVIEWS_FOLLOWUP.json", ROOT.parent)
+        self.assertEqual(len(added), 10)
+        self.assertFalse(set(entries) & set(added))
+        snapshots = {fingerprint: entries, followup: added}
         for model in catalog["models"]:
             with self.subTest(model=model["id"]):
                 self.assertEqual(validate_terms(model), [])
-                reviewed = model["id"] in entries
+                reviewed = model["id"] in entries or model["id"] in added
                 self.assertEqual(project_terms(model)["releaseReady"], reviewed)
                 self.assertEqual(model["terms"]["review_status"], "reviewed" if reviewed else "not_assessed")
-                self.assertEqual(gate.license_review_errors(model, {fingerprint: entries}), [])
+                self.assertEqual(gate.license_review_errors(model, snapshots), [])
         self.assertEqual(sum(m["terms"]["commercial_use"] == "restricted" for m in catalog["models"]), 1)
 
     def test_review_cannot_be_reused_after_model_source_condition_or_artifact_changes(self):
@@ -281,7 +285,7 @@ class ModelTermsTests(unittest.TestCase):
             self.assertEqual(body["models"], 57)
             self.assertEqual(body["invalidRecords"], [])
             self.assertEqual(body["evidenceErrors"], [])
-            self.assertEqual(len(body["pendingReview"]), 27)
+            self.assertEqual(len(body["pendingReview"]), 17)
 
     def test_malformed_observations_return_errors_instead_of_crashing(self):
         catalog, evidence = fixture()
