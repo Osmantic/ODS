@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import MetalMetricIcon from './MetalMetricIcon'
 import {
   MessageSquare, Image, Code, Shield, Layers, Package,
@@ -32,6 +32,7 @@ const fetchJson = async (url, options = {}) => {
  */
 export function TemplatePicker({ templates, onApplied, compact = false, variant = 'cards' }) {
   const [preview, setPreview] = useState(null)
+  const openerRef = useRef(null)
 
   if (!templates || templates.length === 0) return null
 
@@ -46,7 +47,7 @@ export function TemplatePicker({ templates, onApplied, compact = false, variant 
           const isApplied = status === 'applied'
           const disabled = inProgress || isApplied
 
-          if (variant === 'library') return <button key={tmpl.id} className="collection-entry" disabled={disabled} aria-disabled={disabled} onClick={() => setPreview(tmpl)}>
+          if (variant === 'library') return <button key={tmpl.id} className="collection-entry" disabled={disabled} aria-disabled={disabled} onClick={event => { openerRef.current = event.currentTarget; setPreview(tmpl) }}>
             <MetalMetricIcon icon={inProgress ? Loader2 : hasErrors ? AlertTriangle : isApplied ? Check : Icon} size={19}/>
             <span className="collection-copy"><strong>{tmpl.name}</strong><span>{tmpl.description}</span><small>{tmpl.services?.length || 0} services{tmpl.estimated_disk_gb ? ` · ~${tmpl.estimated_disk_gb} GB` : ''}{inProgress ? ' · Installing…' : hasErrors ? ' · Has errors' : isApplied ? ' · Applied' : ''}</small></span>
             <ChevronRight size={14} aria-hidden="true"/>
@@ -64,7 +65,7 @@ export function TemplatePicker({ templates, onApplied, compact = false, variant 
           return (
             <button
               key={tmpl.id}
-              onClick={() => !disabled && setPreview(tmpl)}
+              onClick={event => { if (!disabled) { openerRef.current = event.currentTarget; setPreview(tmpl) } }}
               disabled={disabled}
               aria-disabled={disabled}
               className={`${cardBase} ${cardByStatus}`}
@@ -118,7 +119,7 @@ export function TemplatePicker({ templates, onApplied, compact = false, variant 
       {preview && (
         <TemplatePreview
           template={preview}
-          onClose={() => setPreview(null)}
+          onClose={() => { setPreview(null); Promise.resolve().then(() => openerRef.current?.focus()) }}
           onApplied={onApplied}
         />
       )}
@@ -137,6 +138,17 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   const [applied, setApplied] = useState(false)
   const [applyResult, setApplyResult] = useState(null)
   const requestClose = () => { if (!applying) onClose() }
+
+  useEffect(() => {
+    const handleKeyDown = event => {
+      if (event.key === 'Escape') {
+        event.stopPropagation()
+        requestClose()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  })
 
   const Icon = ICON_MAP[template.icon] || Package
 

@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { TemplatePicker } from '../TemplatePicker' // eslint-disable-line no-unused-vars
 
 const baseTemplate = {
@@ -84,5 +84,18 @@ describe('TemplatePicker accessibility', () => {
   test('returns null when handed an undefined template list (defensive)', () => {
     const { container } = render(<TemplatePicker templates={undefined} />)
     expect(container.firstChild).toBeNull()
+  })
+
+  test('closes the collection preview with Escape and restores focus to its opener', async () => {
+    render(<TemplatePicker templates={[{ ...baseTemplate, _status: 'available' }]} variant="library" />)
+
+    const card = screen.getByRole('button', { name: /Chat Stack/i })
+    fireEvent.click(card)
+    expect(await screen.findByRole('dialog', { name: /Chat Stack template preview/i })).toBeInTheDocument()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(card).toHaveFocus()
   })
 })
