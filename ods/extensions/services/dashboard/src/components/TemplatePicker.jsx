@@ -211,7 +211,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
               <p className="text-xs text-theme-text-muted">{template.description}</p>
             </div>
           </div>
-          <button onClick={requestClose} disabled={applying} className="text-theme-text-muted hover:text-theme-text transition-colors disabled:opacity-50">
+          <button aria-label="Close template preview" onClick={requestClose} disabled={applying} className="text-theme-text-muted hover:text-theme-text transition-colors disabled:opacity-50">
             <X size={18} />
           </button>
         </div>
