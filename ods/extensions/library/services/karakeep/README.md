@@ -18,6 +18,6 @@ Set `KARAKEEP_SECRET` and `MEILI_MASTER_KEY` in `.env`, enable **Karakeep**, the
 
 ## Notes
 
-- Meilisearch and headless Chrome run on a private internal network with no published ports.
+- Meilisearch stays on a private internal network. Headless Chrome uses a separate outbound network to fetch saved pages; neither sidecar publishes a port.
 - Set `KARAKEEP_USE_LOCAL_LLM=false` to disable auto-tagging, or point `OPENAI_BASE_URL`/`INFERENCE_TEXT_MODEL` at another OpenAI-compatible endpoint in compose overrides.
 - First startup downloads browser + search images (~1 GB).
