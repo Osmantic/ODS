@@ -27,7 +27,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: '3.11'
       - name: Install the exact reviewed OpenClaw package without lifecycle scripts
@@ -49,7 +49,7 @@ jobs:
           echo "OPENCLAW_STATE_DIR=$runtime/state" >> "$GITHUB_ENV"
           echo "ODS_TEST_GRAMMAR_WORKSPACE=$runtime/workspace" >> "$GITHUB_ENV"
           mkdir -p "$runtime/state" "$runtime/workspace"
-          python -m pip install pytest
+          python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/test-tools.txt
       - name: Fetch the default Compose runtime's exact source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
