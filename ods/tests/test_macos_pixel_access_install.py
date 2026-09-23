@@ -1351,9 +1351,13 @@ def test_staging_failure_keeps_original_running_and_new_autostart_disabled(migra
     assert json.loads(m.journal.read_bytes())['phase'] == 'staging-failed'
 
 
-def test_disabled_user_job_is_preserved_before_staging(migration, bundled_deployment, monkeypatch):
+@pytest.mark.parametrize('initial', [False, True])
+@pytest.mark.parametrize('disabled_source_only', [False, True])
+def test_disabled_user_job_is_preserved_before_staging(migration, bundled_deployment, monkeypatch,
+                                                       initial, disabled_source_only):
     m = migration
     m.plan = installer.make_plan(**bundled_deployment)
+    m.plan['initial_install'] = initial
     monkeypatch.setattr(installer, '_runtime_config', lambda *a, **k: None)
     monkeypatch.setattr(installer.sys, 'platform', 'darwin')
     monkeypatch.setattr(installer.os, 'geteuid', lambda: 0)
@@ -1361,12 +1365,22 @@ def test_disabled_user_job_is_preserved_before_staging(migration, bundled_deploy
     monkeypatch.setattr(installer, '_preflight_directory', lambda *a, **k: None)
     monkeypatch.setattr(installer, '_preflight_file', lambda *a, **k: None)
     monkeypatch.setattr(installer, '_activation_services', lambda _: m.services)
-    monkeypatch.setattr(installer, '_job_disabled', lambda _: True)
+    monkeypatch.setattr(installer, '_job_disabled',
+        lambda target: target == m.old.target if disabled_source_only else True)
+    absent = Mock()
+    monkeypatch.setattr(installer, '_require_initial_absence', absent)
+    def reached_staging(*args):
+        raise installer.InstallError('test-reached-staging')
+    monkeypatch.setattr(installer, '_migration_phase', reached_staging)
+    monkeypatch.setattr(installer._launchd, 'ACCESS_STATE', m.journal.parent / 'state')
+    monkeypatch.setattr(installer, '_check_directory', lambda *a, **k: None)
     write = Mock()
     monkeypatch.setattr(installer, '_write_exact', write)
-    with pytest.raises(installer.InstallError, match='migration-disabled-job'):
+    expected = 'test-reached-staging' if initial and disabled_source_only else 'migration-disabled-job'
+    with pytest.raises(installer.InstallError, match=expected):
         installer.install(m.plan, ROOT)
-    assert not m.events
+    if initial:
+        absent.assert_called_once_with(m.plan, m.old)
     write.assert_not_called()
 
 

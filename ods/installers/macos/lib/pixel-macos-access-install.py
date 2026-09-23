@@ -2647,12 +2647,15 @@ def install(plan, source):
     _runtime_config(plan)
     services = _activation_services(plan)
     old, *candidates = services
-    # Disabled jobs are intentional user state, not ours to override.
-    if any(_job_disabled(service.target) for service in services):
-        raise InstallError('native-migration-disabled-job')
     if plan.get('initial_install'):
         _require_initial_absence(plan, old)
-    else:
+    # An absent legacy user job can retain a disabled override after uninstall.
+    # Initial installs never enable or modify it; live migration state and all
+    # protected destination jobs must still honor intentional disablement.
+    checked = candidates if plan.get('initial_install') else services
+    if any(_job_disabled(service.target) for service in checked):
+        raise InstallError('native-migration-disabled-job')
+    if not plan.get('initial_install'):
         old.process_identity()
     journal = Path(_launchd.ACCESS_STATE) / 'installation.json'
     if os.path.lexists(journal):
