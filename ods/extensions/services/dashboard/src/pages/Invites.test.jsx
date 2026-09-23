@@ -210,6 +210,8 @@ describe('Invites', () => {
     })
     expect(screen.getByDisplayValue('http://auth.ods.local/magic-link/plain-secret-token')).toBeInTheDocument()
     expect(await screen.findByAltText('QR code for invite link')).toHaveAttribute('src', 'data:image/png;base64,abc123')
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'New guest invite' })).toHaveFocus())
   })
 
   test('shows voice fallback when the browser origin is not secure', async () => {
