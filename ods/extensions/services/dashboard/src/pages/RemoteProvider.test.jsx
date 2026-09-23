@@ -427,6 +427,19 @@ test('plans direct provider configuration without rendering secret material', as
   expect(screen.queryByText('unit-test-provider-token')).not.toBeInTheDocument()
 })
 
+test('invalidates a displayed plan when configuration fields change', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockResolvedValueOnce(response(configurePlanPayload))
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button', { name: /plan/i }))
+  expect(await screen.findByText('Configure plan ready')).toBeInTheDocument()
+  fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'different-model' } })
+  expect(screen.queryByText('Configure plan ready')).toBeNull()
+  expect(screen.queryByText('REMOTE_LLM_API_KEY')).toBeNull()
+})
+
 test('applies direct provider configuration and clears the secret input', async () => {
   globalThis.fetch
     .mockResolvedValueOnce(response(statusPayload))
