@@ -46,6 +46,7 @@ test('serializes automatic and manual log reads and resumes polling after a slow
   await act(async () => manual(json({ logs: 'Fresh manual snapshot' })))
   expect(consoleView.getByText('Fresh manual snapshot')).toBeInTheDocument()
   expect(refresh).toBeEnabled()
+  expect(refresh).toHaveFocus()
   await act(async () => vi.advanceTimersByTimeAsync(2000))
   expect(readLogs).toHaveBeenCalledTimes(3)
   expect(consoleView.getByText('Latest automatic snapshot')).toBeInTheDocument()
