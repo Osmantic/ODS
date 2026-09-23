@@ -13,6 +13,7 @@ export default function PixelAccessCard({ showHeading = true }) {
   const inspection = useRef(0)
   const pendingInspection = useRef(null)
   const mutation = useRef(false)
+  const mounted = useRef(true)
   const refresh = useCallback(async ({forChange = false, preserveError = false, background = false} = {}) => {
     if (mutation.current && !forChange) return
     // Host inspections can take up to 30 seconds. A five-second poll must
@@ -26,15 +27,19 @@ export default function PixelAccessCard({ showHeading = true }) {
       const response = await fetch('/api/pixel/access-mode')
       if (!response.ok) throw new Error()
       const value = await response.json()
-      if (version !== inspection.current) return
+      if (!mounted.current || version !== inspection.current) return
       setStatus(value)
       setStale(false)
       if (!preserveError) setError('')
       return value
-    } catch { if (version === inspection.current) setError('Portal permissions could not be checked on the agent runtime. The current mode is unconfirmed. Refresh to check the actual status before requesting another change.') }
+    } catch { if (mounted.current && version === inspection.current) setError('Portal permissions could not be checked on the agent runtime. The current mode is unconfirmed. Refresh to check the actual status before requesting another change.') }
     finally { if (pendingInspection.current === version) pendingInspection.current = null }
   }, [])
-  useEffect(() => { void refresh(); return () => { inspection.current++; pendingInspection.current = null } }, [refresh])
+  useEffect(() => {
+    mounted.current = true
+    void refresh()
+    return () => { mounted.current = false; inspection.current++; pendingInspection.current = null }
+  }, [refresh])
   useEffect(() => {
     if (!status?.pending && !status?.busy) return undefined
     const timer = setInterval(() => { void refresh({background: true}) }, 5000)
@@ -49,6 +54,7 @@ export default function PixelAccessCard({ showHeading = true }) {
       // Runs can change the inspection revision while Settings remains open.
       // The host still checks this revision atomically before changing access.
       const current = await refresh({forChange: true})
+      if (!mounted.current) return
       if (!current?.available || !current?.revision) {
         setError('Current access status could not be verified. No change was requested. Refresh the status before trying again.')
         return
@@ -61,11 +67,15 @@ export default function PixelAccessCard({ showHeading = true }) {
       const response = await fetch('/api/pixel/access-mode', {method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({mode, revision: current.revision, confirmed: mode === 'full-access' && confirmed})})
       if (!response.ok) throw new Error()
-      setStatus(await response.json()); setStale(false); setConfirming(false); setConfirmed(false)
+      const value = await response.json()
+      if (!mounted.current) return
+      setStatus(value); setStale(false); setConfirming(false); setConfirmed(false)
     } catch {
-      setError('The change was not verified. Refresh the status and restore Sandbox if recovery is required.')
-      await refresh({forChange: true, preserveError: true})
-    } finally { mutation.current = false; setChanging(false) }
+      if (mounted.current) {
+        setError('The change was not verified. Refresh the status and restore Sandbox if recovery is required.')
+        await refresh({forChange: true, preserveError: true})
+      }
+    } finally { mutation.current = false; if (mounted.current) setChanging(false) }
   }
 
   const disabled = changing || stale || !status?.available || status?.busy || !status?.revision
