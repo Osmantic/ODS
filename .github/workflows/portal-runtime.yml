@@ -6,6 +6,7 @@ on:
       - 'ods/bin/**'
       - 'ods/extensions/services/pixel-agent/**'
       - 'ods/extensions/services/pixel-edge/**'
+      - 'ods/extensions/services/dashboard/src/pages/Pixel.jsx'
       - 'ods/installers/**'
       - '.github/workflows/portal-runtime.yml'
   workflow_dispatch:
@@ -14,6 +15,24 @@ permissions:
   contents: read
 
 jobs:
+  preview-browser:
+    # Keep Chromium's OS sandbox enabled. Ubuntu 24.04's AppArmor policy
+    # rejects this standalone browser's user namespaces before tests start.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '22'
+      - name: Install pinned browser test runtime
+        run: npm install --prefix "$RUNNER_TEMP/preview-browser" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org playwright@1.62.1
+      - name: Install Chromium and operating-system dependencies
+        run: node "$RUNNER_TEMP/preview-browser/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Verify preview interactions and isolation in Chromium
+        env:
+          NODE_PATH: ${{ runner.temp }}/preview-browser/node_modules
+        run: node --test --test-timeout=120000 ods/extensions/services/pixel-agent/tests/preview_browser.test.cjs
   compaction-lock:
     strategy:
       fail-fast: false

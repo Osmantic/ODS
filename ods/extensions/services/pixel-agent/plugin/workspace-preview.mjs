@@ -203,7 +203,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
   return {
     name: "pixel_ods_workspace_preview",
     description:
-      "Publish and verify a static visual artifact already created by the active model in Pixel's writable workspace. Pass only relativeDirectory after writing the complete site, app, SVG, game, or visualization with workspace tools. ODS never supplies creative starter bytes: it validates and snapshots the model-authored files, then returns the only localhost URL Pixel may claim is browser-accessible. Never start a sandbox server.",
+      "Publish and verify a static visual artifact already created by the active model in Pixel's writable workspace. Pass only relativeDirectory after writing the complete site, app, SVG, game, or visualization with workspace tools. ODS never supplies creative starter bytes: it validates and snapshots the model-authored files, then returns the only localhost URL Pixel may claim is browser-accessible. Never start a sandbox server. Dashboard previews have opaque origins: localStorage/sessionStorage property getters, reads and writes may throw. Guard every storage access/operation with try/catch and keep an in-memory fallback; optional persistence must not block startup or controls. Do not claim durable storage or weaken isolation. HTTP readback does not prove startup or interactions.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -230,7 +230,8 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
             type: "text",
             text:
               `ODS independently published and read back ${response.files} workspace static files ` +
-              `(${response.bytes} bytes). Verified browser URL: ${response.url}`,
+              `(${response.bytes} bytes). Verified browser URL: ${response.url}. ` +
+              "This receipt proves publication and HTTP readback only, not successful startup, interactions or durable browser storage. Verify requested behavior in the actual preview before claiming it works.",
           }],
           details: response,
         };

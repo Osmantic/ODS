@@ -42,7 +42,7 @@ phrases.
 | VIS-01 | Open-ended showcase | “Make the coolest visual demo you can to show what you can do.” | Useful first result, verified preview, automatic side panel, two distinct controls exercised |
 | VIS-02 | Polished multi-file site | “Build a high-quality responsive site for a fictional observatory with local CSS and JavaScript.” | All files snapshotted, desktop and narrow viewport render, navigation and one semantic control work |
 | VIS-03 | Playable canvas game | “Make a Breakout-style videogame.” | Launch, movement, collision/score, life or restart, pause/resume, keyboard and pointer/touch paths |
-| VIS-04 | Stateful browser app | “Create a small task board where I can add, complete, filter, and remove items.” | Add, mutate, filter, remove, empty state, and full iframe reload preserve the stated origin-scoped state; a second preview cannot read it |
+| VIS-04 | Stateful browser app | “Create a small task board where I can add, complete, filter, and remove items.” | Add, mutate, filter, remove and empty state work despite unavailable browser storage; failed saving does not interrupt work. Reload behavior is tested and reported honestly; no durable persistence is promised, and the preview cannot read Dashboard or another preview's state |
 | VIS-05 | Voxel-style art | “Create an interactive voxel landscape with a dramatic day/night change.” | Scene renders without external assets, view or scene control changes pixels, narrow viewport remains usable |
 | VIS-06 | Animated SVG | “Make an intricate animated SVG illustration with pause and color controls.” | SVG is present in the snapshot, animation visibly changes, pause freezes it, color control changes it |
 | VIS-07 | Data visualization | “Build an interactive local dashboard from this small inline dataset.” | Labels and values are accurate, filter/selection changes the view, keyboard access works, no invented data |
@@ -73,14 +73,14 @@ A qualifying result must meet all of these conditions:
 4. The side panel opens only from a structurally verified preview receipt with
    independent HTTP 200 readback. Model-authored prose or an invented localhost
    URL cannot open it. The receipt binds one content-addressed site ID to its
-   canonical origin and URL path. Local access uses the same
-   `site-*.localhost` hostname and path. A remote owner uses the authenticated
+   canonical host snapshot URL and path. Every Dashboard client, including
+   localhost and SSH-forwarded clients, uses the authenticated
    same-Dashboard `/pixel-preview/<site-id>/` relay, whose response and iframe
    both omit same-origin authority while keeping scripts and immutable local
    assets usable; it must never send a client to its own loopback. Cross-site
    host/path pairs and unauthenticated relay requests are rejected.
-   Client-side form validation and submit handlers must work in both embedded
-   routes, including handlers that cancel submission with `preventDefault()`.
+   Client-side form validation and submit handlers must work in the embedded
+   preview, including handlers that cancel submission with `preventDefault()`.
    Network form actions remain forbidden by CSP. A clicked Blob/download link
    must export the exact app-produced bytes without popups or top navigation.
    Browser-managed download permission is not a user-gesture-only guarantee.
@@ -94,9 +94,16 @@ A qualifying result must meet all of these conditions:
    are current.
 8. Failures are short, honest, recoverable, and leave no hidden server,
    process, route, or host effect behind.
-9. Stateful previews use their own browser origin. Reloading one preview keeps
-   its local state, while another preview begins with separate storage and
-   cannot read the first preview's values.
+9. Dashboard previews have opaque origins, including the new-tab view. Accessing
+   `localStorage` or `sessionStorage` property getters, reads and writes may
+   throw. Browser persistence is optional: model-authored code must guard every
+   storage access and operation with `try/catch` and retain an in-memory fallback.
+   Startup, requested pointer/keyboard controls and continued work after failed
+   saving must succeed in the actual preview. Reload may reset in-memory state;
+   neither publication nor HTTP readback proves durable persistence or working
+   interactions. Record actual reload behavior without promising preservation.
+   Parent DOM/storage and other previews remain inaccessible; never add
+   `allow-same-origin`, inject storage shims, or bypass the sandbox.
 10. A configured private remote Dashboard path must not silently degrade to a
     client-local URL. Remote preview transport preserves the same receipt
     binding, browser containment, origin isolation, and interaction behavior as

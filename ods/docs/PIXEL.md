@@ -496,27 +496,36 @@ act as a capability gate:
   performs an HTTP readback before returning a receipt. The private ingress
   carries that exact receipt in a structured terminal frame; the Dashboard
   never opens a URL parsed from model prose. The Pixel portal automatically
-  shows the snapshot in a side panel with a script-capable iframe. On the ODS
-  host, each content-addressed snapshot receives its own `site-*.localhost`
-  origin, and the host rejects a request whose origin hostname does not match
-  the snapshot path. That path retains ordinary origin-scoped browser storage.
-  When the Dashboard itself is opened on another private LAN or Tailscale
-  client, it uses `/pixel-preview/<site-id>/` on that same Dashboard authority.
+  shows the snapshot in a side panel with a script-capable iframe. Every
+  Dashboard client, including localhost and SSH-forwarded clients, uses
+  `/pixel-preview/<site-id>/` on that same Dashboard authority. The underlying
+  host snapshot retains its content-addressed `site-*.localhost` URL and rejects
+  mismatched host/path pairs; that URL is not the Dashboard's iframe route.
   Nginx authenticates the hop to the internal-only Pixel Edge, Pixel Edge reads
   through a group-scoped Unix socket rather than opening a host port, and the
   returned document receives an enforced CSP sandbox without
-  `allow-same-origin`. The remote document can run its scripts and load its own
+  `allow-same-origin`. The preview document can run its scripts and load its own
   immutable local assets, but it cannot inherit Dashboard cookies, DOM, or
-  storage authority; the same CSP applies to the new-tab view. Both routes
+  storage authority; the same CSP applies to the new-tab view. Accessing
+  `localStorage` or `sessionStorage`, including their property getters, reads
+  and writes, may throw. Model-authored apps must treat persistence as optional:
+  keep working state in memory and guard storage access and every operation
+  with `try/catch` and an in-memory fallback. Failed saving must not prevent
+  startup or continued interaction. In-memory state does not survive reload;
+  neither the preview contract nor a publication receipt promises durable
+  persistence. Do not add `allow-same-origin`, inject a storage shim, or bypass
+  isolation to make an artifact work. Dashboard previews
   allow client-side form validation/submit handlers and browser downloads for
   exports (for example, a clicked CSV download link). CSP still denies every
-  network form action with `form-action 'none'`. Both routes block external
+  network form action with `form-action 'none'`. They block external
   connections, popups, top-level navigation, camera, microphone, and
   geolocation. The standard `allow-downloads` permission enables browser-managed
   downloads; it does not guarantee that every download required a user gesture,
-  and it grants no application execution or arbitrary host-file access. Starting a
-  development server inside Pixel's disposable sandbox is explicitly rejected
-  because that port is not the owner's browser-facing host.
+  and it grants no application execution or arbitrary host-file access. A
+  development server inside Pixel's disposable sandbox is not the owner's
+  browser-facing host. HTTP readback establishes publication only, not successful
+  script startup or interaction. Verify requested controls and continued work
+  after failed saving at the exact published URL before claiming they work.
 
   Every creative artifact follows the same model-authored workspace path.
   Open-ended demos, games, task boards, animated SVGs, voxel scenes, named

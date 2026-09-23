@@ -66,6 +66,11 @@ test("exposes a publish-only schema with no creative generator input", () => {
   assert.equal(tool.parameters.additionalProperties, false);
   assert.match(tool.description, /already created by the active model/);
   assert.match(tool.description, /never supplies creative starter bytes/i);
+  assert.match(tool.description, /localStorage\/sessionStorage property getters, reads and writes may throw/);
+  assert.match(tool.description, /Guard every storage access\/operation with try\/catch and keep an in-memory fallback/);
+  assert.match(tool.description, /optional persistence must not block startup or controls/);
+  assert.match(tool.description, /Do not claim durable storage or weaken isolation/);
+  assert.match(tool.description, /HTTP readback does not prove startup or interactions/);
   assert.doesNotMatch(JSON.stringify(tool.parameters), /scaffold|template|title|tagline|theme/);
 });
 
@@ -81,6 +86,7 @@ test("publishes only the exact existing workspace directory", async () => {
   assert.equal(result.isError, undefined);
   assert.equal(result.details.readbackVerified, true);
   assert.match(result.content[0].text, /independently published and read back/);
+  assert.match(result.content[0].text, /publication and HTTP readback only, not successful startup, interactions or durable browser storage/);
   assert.deepEqual(calls, [{
     schemaVersion: 1,
     action: "publish",

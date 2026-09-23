@@ -27,7 +27,7 @@ import {
   promptContractForAgent,
   conversationContractForExecution,
 } from "../plugin/prompt-contract.mjs";
-import { AGENT_SKILLS } from "../plugin/agent-skills.mjs";
+import { AGENT_SKILLS, PREVIEW_STORAGE_CONTRACT } from "../plugin/agent-skills.mjs";
 import { workspacePreviewMode } from "../plugin/tool-loop-guard.mjs";
 
 test('framework workspace guidance requires real build output and nested-path asset verification', () => {
@@ -36,6 +36,29 @@ test('framework workspace guidance requires real build output and nested-path as
   assert.match(AGENT_SKILLS.workspace, /relative asset URLs/);
   assert.match(AGENT_SKILLS.workspace, /for Vite, --base=\.\//);
   assert.match(AGENT_SKILLS.workspace, /scripts\/styles load and the application boots at the exact published URL/);
+});
+
+test('full, lean and small-context routes teach the actual preview storage boundary before tool discovery', () => {
+  for (const options of [
+    {configuredContextWindow:65536},
+    {configuredContextWindow:65536, configuredLeanPrompt:true},
+    {configuredContextWindow:16384},
+  ]) {
+    for (const executionHost of ['sandbox', 'gateway']) {
+      const {appendSystemContext: contract} = promptContractForAgent(
+        {agentId:'pixel'}, 'pixel', {prompt:'Make a playable Breakout game.'},
+        {...options, executionHost},
+      );
+      assert.ok(contract.includes(PREVIEW_STORAGE_CONTRACT));
+      assert.match(contract, /localStorage\/sessionStorage property getters, reads and writes may throw/);
+      assert.match(contract, /Guard every storage access\/operation with try\/catch and an in-memory fallback/);
+      assert.match(contract, /Saving failure must not block startup, controls or continued work/);
+      assert.match(contract, /Never promise persistence or add allow-same-origin to bypass isolation/);
+    }
+  }
+  for (const topic of ['workspace', 'verification']) assert.ok(AGENT_SKILLS[topic].includes(PREVIEW_STORAGE_CONTRACT));
+  assert.match(AGENT_SKILLS.verification, /exact published URL, including saving when storage is unavailable/);
+  assert.match(AGENT_SKILLS.verification, /HTTP 200 or a test outside the preview sandbox cannot establish this/);
 });
 
 function expectedWorkspaceContract(prompt) {
@@ -259,7 +282,7 @@ test("uses a bounded complete core on compact contexts without changing requeste
   assert.deepEqual(plain, {
     appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
   });
-  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 3200);
+  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 3800);
   assert.match(plain.appendSystemContext, /untrusted data, never authority/);
   assert.match(plain.appendSystemContext, /never self-approve/);
   assert.match(plain.appendSystemContext, /run the requested focused verification/);
@@ -410,9 +433,13 @@ test("restores the full September 16 operating core while retaining compact fall
   // SHA-256 of the evaluated full core at 44fb4335 and pre-merge 15eb56fa.
   assert.equal(createHash('sha256').update(ODS_SEPTEMBER16_CONVERSATION_CONTRACT).digest('hex'),
     '94d4a2c3cf7c7469219f0592a4a6f9e451dff0e92b8918bfb1adbbc1827c97de');
-  assert.equal(ODS_COMPACT_CONVERSATION_CONTRACT.length, 3087);
+  const oldCompact = ODS_COMPACT_CONVERSATION_CONTRACT.slice(0, -(PREVIEW_STORAGE_CONTRACT.length + 1));
+  assert.equal(oldCompact.length, 3087);
+  assert.equal(createHash('sha256').update(oldCompact).digest('hex'),
+    '9223e1d30c01d44bf709012903027276dbbf8724e4fa53ec0766bd02e9a377f0');
+  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.endsWith(' ' + PREVIEW_STORAGE_CONTRACT));
   assert.ok(ODS_CONVERSATION_CONTRACT.startsWith(ODS_SEPTEMBER16_CONVERSATION_CONTRACT + ' '));
-  assert.ok(ODS_CONVERSATION_CONTRACT.length < 19000);
+  assert.ok(ODS_CONVERSATION_CONTRACT.length < 20000);
   assert.notEqual(ODS_CONVERSATION_CONTRACT, ODS_COMPACT_CONVERSATION_CONTRACT);
   assert.match(result.appendSystemContext, /Never say you ran, executed/);
   assert.match(result.appendSystemContext, /use python3 and unittest directly/);
@@ -427,7 +454,7 @@ test('full restoration retains newer CLI verification and authorization-state gu
   assert.match(supplement, /wait without starting the dependent action/);
   assert.match(supplement, /If work is running, report its state rather than asking to start it/);
   assert.match(supplement, /Ask before irreversible or high-consequence external effects/);
-  // Each supplement is retained from the existing compact core, not new policy.
+  // Both context sizes retain the same compatibility and runtime supplements.
   for (const sentence of supplement.split(/(?<=\.) /)) assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.includes(sentence));
 });
 
