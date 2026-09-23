@@ -523,7 +523,8 @@ agent:
             # LiteLLM master key must not retain that broad DACL. Match the
             # current-user-only protection used for .env, including on
             # reinstalls where icacls may have made the grant explicit.
-            $secretAcl = Get-Acl -LiteralPath $Path
+            $secretItem = Get-Item -LiteralPath $Path
+            $secretAcl = $secretItem.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Access)
             $secretAcl.SetAccessRuleProtection($true, $false)
             foreach ($existingRule in @($secretAcl.Access)) {
                 $secretAcl.RemoveAccessRuleSpecific($existingRule)
@@ -535,7 +536,7 @@ agent:
                 "Allow"
             )
             $secretAcl.SetAccessRule($currentUserRule)
-            Set-Acl -LiteralPath $Path -AclObject $secretAcl
+            $secretItem.SetAccessControl($secretAcl)
         } catch {
             Write-AIWarn "Could not restrict Hermes credential file permissions: $Path"
             return $false
