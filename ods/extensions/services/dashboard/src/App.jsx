@@ -1,5 +1,5 @@
 import { Navigate, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
-import { useState, useEffect, Suspense, useMemo, useCallback, lazy } from 'react'
+import { useState, useEffect, Suspense, useMemo, useCallback, useRef, lazy } from 'react'
 import Sidebar from './components/Sidebar'
 import WallpaperVideo from './components/WallpaperVideo'
 import PanelResizeHandle from './components/PanelResizeHandle'
@@ -48,9 +48,17 @@ function App() {
   }, [location.pathname, navigate])
   const panelLocation = location
   const panelOpen = !['/', '/pixel'].includes(panelLocation.pathname)
+  const [panelReturnPath, setPanelReturnPath] = useState(null)
   const [panelCollapsed, setPanelCollapsed] = useState(false)
   const [panelWidth, setPanelWidth] = useState(440)
   useEffect(() => { setPanelCollapsed(false) }, [panelLocation.pathname])
+  useEffect(() => {
+    if (location.pathname === '/' && panelReturnPath) {
+      const returnLink = document.querySelector(`a[href="${panelReturnPath}"], a[href^="${panelReturnPath}?"]`)
+      returnLink?.focus()
+      setPanelReturnPath(null)
+    }
+  }, [location.pathname, panelReturnPath])
   const isTalkHost = typeof window !== 'undefined' && window.location.hostname.startsWith('talk.')
   const isTalkPath = isTalkHost || location.pathname.startsWith('/talk')
 
@@ -145,7 +153,7 @@ function App() {
         </div>
         {panelOpen && <aside style={{'--portal-panel-width':`${panelWidth}px`}} className={`portal-side-panel ${panelCollapsed ? 'is-collapsed' : ''}`} aria-label="Workspace panel">
           {!panelCollapsed && <PanelResizeHandle width={panelWidth} onResize={setPanelWidth} />}
-          <header><strong>{routes.find(route => route.path === panelLocation.pathname)?.label || 'Workspace'}</strong><button className="pixel-metal-control" aria-label={panelCollapsed ? 'Expand workspace panel' : 'Collapse workspace panel'} onClick={() => setPanelCollapsed(value => !value)}><MetalMetricIcon icon={panelCollapsed ? PanelRightOpen : PanelRightClose}/></button><button className="pixel-metal-control" aria-label="Close workspace panel" onClick={() => navigate('/')}><MetalMetricIcon icon={X}/></button></header>
+          <header><strong>{routes.find(route => route.path === panelLocation.pathname)?.label || 'Workspace'}</strong><button className="pixel-metal-control" aria-label={panelCollapsed ? 'Expand workspace panel' : 'Collapse workspace panel'} onClick={() => setPanelCollapsed(value => !value)}><MetalMetricIcon icon={panelCollapsed ? PanelRightOpen : PanelRightClose}/></button><button className="pixel-metal-control" aria-label="Close workspace panel" onClick={() => { setPanelReturnPath(panelLocation.pathname); navigate('/') }}><MetalMetricIcon icon={X}/></button></header>
           <div className="portal-panel-content" hidden={panelCollapsed}>
         <Suspense fallback={
           <div className="p-8 animate-pulse">
