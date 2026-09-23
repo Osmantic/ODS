@@ -14,12 +14,20 @@ QUIET=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --compose-flags|--env-file)
+            if [[ $# -lt 2 || -z "$2" || "$2" == "--compose-flags" || "$2" == "--env-file" || "$2" == "--quiet" ]]; then
+                echo "ERROR: $1 requires an argument" >&2
+                exit 1
+            fi
+            ;;
+    esac
+    case "$1" in
         --compose-flags)
-            COMPOSE_FLAGS="${2:-}"
+            COMPOSE_FLAGS="$2"
             shift 2
             ;;
         --env-file)
-            ENV_FILE="${2:-}"
+            ENV_FILE="$2"
             shift 2
             ;;
         --quiet)
