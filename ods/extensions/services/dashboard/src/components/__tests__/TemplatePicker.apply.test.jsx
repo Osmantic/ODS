@@ -87,6 +87,29 @@ describe('TemplatePreview apply result', () => {
     expect(screen.queryByText(/all services.*already active/i)).not.toBeInTheDocument()
   })
 
+  test('restores focus to Close after an apply finishes with service failures', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({
+        changes: { to_enable: ['svc-a'], already_enabled: [], incompatible: [] },
+        warnings: [],
+      }))
+      .mockResolvedValueOnce(response({
+        enabled_count: 1,
+        started_count: 0,
+        failed_services: ['svc-a'],
+        skipped_services: [],
+        warnings: [],
+        restart_required: true,
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<TemplatePreview template={template} onClose={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /apply template/i }))
+
+    const close = await screen.findByRole('button', { name: 'Close' })
+    await waitFor(() => expect(close).toHaveFocus())
+  })
+
   test('shows targeted restart recovery when a service failed to start', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({

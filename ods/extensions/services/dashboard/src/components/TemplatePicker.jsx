@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import MetalMetricIcon from './MetalMetricIcon'
 import {
   MessageSquare, Image, Code, Shield, Layers, Package,
@@ -136,7 +136,16 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   const [error, setError] = useState(null)
   const [applied, setApplied] = useState(false)
   const [applyResult, setApplyResult] = useState(null)
+  const resultButtonRef = useRef(null)
+  const restoreResultFocusRef = useRef(false)
   const requestClose = () => { if (!applying) onClose() }
+
+  useEffect(() => {
+    if (!applying && applied && restoreResultFocusRef.current) {
+      restoreResultFocusRef.current = false
+      Promise.resolve().then(() => resultButtonRef.current?.focus())
+    }
+  }, [applying, applied])
 
   const Icon = ICON_MAP[template.icon] || Package
 
@@ -156,6 +165,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
 
   const handleApply = async () => {
     if (applying || !canApply) return
+    restoreResultFocusRef.current = true
     setApplying(true)
     setError(null)
     try {
@@ -352,6 +362,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
         {applying && <p role="status" className="mt-4 text-xs text-theme-text-muted">Applying template. Keep this dialog open while the services are prepared.</p>}
         <div className="flex justify-end gap-3 mt-4">
           <button
+            ref={resultButtonRef}
             onClick={requestClose}
             disabled={applying}
             className="px-4 py-2 text-sm text-theme-text-muted hover:text-theme-text transition-colors disabled:opacity-50"
