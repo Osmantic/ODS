@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native retirement must reject mismatched authority before mutation."""
 import importlib.util
+import copy
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -87,6 +88,84 @@ class RetirementSelection(unittest.TestCase):
         source = (ROOT / 'ods-uninstall.sh').read_text()
         self.assertLess(source.index('pixel-native-uninstall.py'), source.index('# A pending Pixel transition'))
         self.assertIn('Native Pixel retirement failed before ODS uninstall mutation', source)
+
+    def sandbox(self):
+        base = str(self.root / 'data/pixel-native/home/.openclaw')
+        return {'Id': 'a' * 64, 'Name': '/pixel-sbx-agent-pixel-12345678',
+            'Image': 'sha256:' + 'b' * 64, 'State': {'Running': True},
+            'Config': {'Labels': {'openclaw.sandbox': '1', 'openclaw.sessionKey': 'agent:pixel',
+                'org.osmantic.pixel.sandbox-uid': '501'}},
+            'Mounts': [{'Type': 'bind', 'Source': base + '/workspace-pixel', 'Destination': '/workspace', 'RW': True},
+                {'Type': 'bind', 'Source': base + '/.ods-exec-control', 'Destination': '/run/pixel-ods-control', 'RW': False}]}
+
+    def select_sandbox(self, value):
+        return retirement.sandbox_selection(value, owner=self.owner, root=self.root)
+
+    def test_sandbox_exact_owner_and_mounts(self):
+        self.assertEqual(self.select_sandbox(self.sandbox())['id'], 'a' * 64)
+
+    def test_sandbox_foreign_owner_and_extra_mount_refused(self):
+        value = self.sandbox()
+        value['Config']['Labels']['org.osmantic.pixel.sandbox-uid'] = '502'
+        with self.assertRaisesRegex(ValueError, 'owner-mismatch'): self.select_sandbox(value)
+        value = self.sandbox()
+        value['Mounts'].append({'Type': 'bind', 'Source': '/Users/foreign', 'Destination': '/foreign'})
+        with self.assertRaisesRegex(ValueError, 'mount-mismatch'): self.select_sandbox(value)
+
+    def test_sandbox_foreign_root_and_other_consumers_untouched(self):
+        value = self.sandbox()
+        for mount in value['Mounts']: mount['Source'] = mount['Source'].replace('/ods/', '/ods-other/')
+        self.assertIsNone(self.select_sandbox(value))
+        value = self.sandbox()
+        value['Name'] = '/ods-pixel-workspace-preview'
+        value['Config']['Labels'] = {'com.docker.compose.project': 'ods'}
+        self.assertIsNone(self.select_sandbox(value))
+
+    def test_sandbox_wrong_control_binding_refused(self):
+        for change in ({'Source': '/foreign'}, {'RW': True}, {'Type': 'volume'}):
+            value = self.sandbox(); value['Mounts'][1].update(change)
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'mount-mismatch'):
+                self.select_sandbox(value)
+
+    def test_sandbox_preserved_container_skipped_only_when_stopped(self):
+        value = self.sandbox(); value['Name'] = '/ods-pixel-retired-' + 'a' * 16
+        value['State']['Running'] = False
+        self.assertIsNone(self.select_sandbox(value))
+        value['State']['Running'] = True
+        with self.assertRaisesRegex(ValueError, 'name-mismatch'): self.select_sandbox(value)
+
+    def test_sandbox_retirement_stops_then_renames_exact_id(self):
+        value = self.sandbox(); plan = self.select_sandbox(value)
+        client = object.__new__(retirement.NativeSandboxes)
+        def call(*args):
+            if args[0] == 'stop': value['State']['Running'] = False
+            elif args[0] == 'rename': value['Name'] = '/' + args[2]
+        with patch.object(client, 'inspect', side_effect=lambda _: copy.deepcopy(value)), \
+                patch.object(client, 'call', side_effect=call) as commands:
+            client.preserve([plan])
+            self.assertEqual(commands.call_args_list[0].args, ('stop', '--time', '10', 'a' * 64))
+            self.assertEqual(commands.call_args_list[1].args, ('rename', 'a' * 64, 'ods-pixel-retired-' + 'a' * 16))
+            commands.reset_mock(); client.preserve([plan]); commands.assert_not_called()
+
+    def test_sandbox_identity_changed_fails_before_stop(self):
+        value = self.sandbox(); plan = self.select_sandbox(value)
+        changed = copy.deepcopy(value); changed['Image'] = 'sha256:' + 'c' * 64
+        client = object.__new__(retirement.NativeSandboxes)
+        with patch.object(client, 'inspect', return_value=changed), patch.object(client, 'call') as commands:
+            with self.assertRaisesRegex(ValueError, 'identity-changed'): client.preserve([plan])
+            commands.assert_not_called()
+
+    def test_docker_executes_as_owner_with_bound_context(self):
+        self.owner.pw_dir, self.owner.pw_gid = '/Users/owner', 20
+        definition = {'ProgramArguments': ['DOCKER_HOST=unix:///Users/owner/.colima/test/docker.sock',
+            'DOCKER_CONFIG=/Users/owner/ods/data/pixel-native/home/docker-config',
+            'PIXEL_HISTORY_DOCKER=/opt/homebrew/bin/docker']}
+        client = retirement.NativeSandboxes(definition, owner=self.owner, root=self.root)
+        with patch.object(retirement.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout='')) as run:
+            client.call('ps', '-aq')
+            self.assertEqual(run.call_args.kwargs['user'], 501)
+            self.assertEqual(run.call_args.kwargs['extra_groups'], [])
+            self.assertEqual(run.call_args.kwargs['env']['DOCKER_HOST'], 'unix:///Users/owner/.colima/test/docker.sock')
 
 
 if __name__ == '__main__':

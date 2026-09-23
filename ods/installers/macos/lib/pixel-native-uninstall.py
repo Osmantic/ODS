@@ -84,6 +84,110 @@ def prove_absent(target):
     return command(['/bin/launchctl', 'print', target]).returncode == 113
 
 
+def sandbox_selection(value, *, owner, root):
+    """Bind Docker custody to the protected native gateway's exact mount roots."""
+    base = str(root / 'data/pixel-native/home/.openclaw')
+    mounts = value.get('Mounts', [])
+    if not any(m.get('Type') == 'bind' and
+            (m.get('Source') == base or m.get('Source', '').startswith(base + '/')) for m in mounts):
+        return None
+    cid = value.get('Id', '')
+    labels = value.get('Config', {}).get('Labels') or {}
+    if labels.get('openclaw.sandbox') != '1' and not value.get('Name', '').startswith('/pixel-sbx-'):
+        return None  # Other ODS consumers can share the workspace bind.
+    if (not re.fullmatch('[a-f0-9]{64}', cid)
+            or labels.get('openclaw.sandbox') != '1'
+            or labels.get('openclaw.sessionKey') != 'agent:pixel'
+            or labels.get('org.osmantic.pixel.sandbox-uid') != str(owner.pw_uid)):
+        raise ValueError('native-retirement-sandbox-owner-mismatch')
+    expected = {'/workspace': (base + '/workspace-pixel', True),
+                '/run/pixel-ods-control': (base + '/.ods-exec-control', False)}
+    seen = set()
+    for mount in mounts:
+        dest, source = mount.get('Destination'), mount.get('Source', '')
+        if dest in seen or mount.get('Type') != 'bind':
+            raise ValueError('native-retirement-sandbox-mount-mismatch')
+        seen.add(dest)
+        if dest in expected:
+            if (source, mount.get('RW')) != expected[dest]:
+                raise ValueError('native-retirement-sandbox-mount-mismatch')
+        elif (dest != '/workspace/.openclaw/sandbox-skills/skills'
+                or not re.fullmatch(re.escape(base) + r'/sandbox/skills-workspaces/agent-pixel-[a-f0-9]+/\.openclaw/sandbox-skills/skills', source)
+                or mount.get('RW') is not False):
+            raise ValueError('native-retirement-sandbox-mount-mismatch')
+    if not set(expected).issubset(seen):
+        raise ValueError('native-retirement-sandbox-mount-mismatch')
+    retired = '/ods-pixel-retired-' + cid[:16]
+    name = value.get('Name', '')
+    if name == retired and value.get('State', {}).get('Running') is False:
+        return None  # An earlier retirement's preserved container is not live state.
+    if not re.fullmatch(r'/pixel-sbx-agent-pixel-[a-f0-9]+', name):
+        raise ValueError('native-retirement-sandbox-name-mismatch')
+    return {'id': cid, 'name': name, 'retiredName': retired,
+            'image': value.get('Image'), 'mounts': mounts, 'labels': labels,
+            'inspect': value}
+
+
+class NativeSandboxes:
+    def __init__(self, definition, *, owner, root):
+        self.owner, self.root = owner, root
+        arguments = definition.get('ProgramArguments', [])
+        self.env = {'HOME': owner.pw_dir, 'PATH': '/usr/bin:/bin'}
+        for key in ('DOCKER_HOST', 'DOCKER_CONFIG', 'PIXEL_HISTORY_DOCKER'):
+            values = [x[len(key) + 1:] for x in arguments if x.startswith(key + '=')]
+            if len(values) != 1: raise ValueError('native-retirement-docker-binding-missing')
+            self.env[key] = values[0]
+        self.binary = self.env.pop('PIXEL_HISTORY_DOCKER')
+        if (not Path(self.binary).is_absolute() or
+                not self.env['DOCKER_HOST'].startswith('unix:///') or
+                self.env['DOCKER_CONFIG'] != str(root / 'data/pixel-native/home/docker-config')):
+            raise ValueError('native-retirement-docker-binding-invalid')
+
+    def call(self, *args):
+        # Docker and its user-controlled configuration never execute as root.
+        result = subprocess.run([self.binary, *args], cwd='/', env=self.env,
+            user=self.owner.pw_uid, group=self.owner.pw_gid, extra_groups=[],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        if result.returncode or len(result.stdout) > 1024 * 1024:
+            raise ValueError('native-retirement-docker-command-failed')
+        return result.stdout
+
+    def inspect(self, cid):
+        values = json.loads(self.call('inspect', cid))
+        if len(values) != 1 or values[0].get('Id') != cid:
+            raise ValueError('native-retirement-sandbox-identity-changed')
+        return values[0]
+
+    def plan(self):
+        ids = self.call('ps', '-aq', '--no-trunc').splitlines()
+        if len(ids) > 256 or any(not re.fullmatch('[a-f0-9]{64}', cid) for cid in ids):
+            raise ValueError('native-retirement-sandbox-inventory-invalid')
+        result = []
+        for cid in ids:
+            selected = sandbox_selection(self.inspect(cid), owner=self.owner, root=self.root)
+            if selected: result.append(selected)
+        return result
+
+    def preserve(self, plans):
+        for plan in plans:
+            current = self.inspect(plan['id'])
+            if (current.get('Image') != plan['image'] or current.get('Mounts') != plan['mounts']
+                    or current.get('Config', {}).get('Labels') != plan['labels']
+                    or current.get('Name') not in (plan['name'], plan['retiredName'])):
+                raise ValueError('native-retirement-sandbox-identity-changed')
+            if current['Name'] == plan['retiredName']:
+                if current['State']['Running']:
+                    raise ValueError('native-retirement-sandbox-restarted')
+                continue
+            self.call('stop', '--time', '10', plan['id'])
+            if self.inspect(plan['id'])['State']['Running']:
+                raise ValueError('native-retirement-sandbox-still-running')
+            self.call('rename', plan['id'], plan['retiredName'].removeprefix('/'))
+            current = self.inspect(plan['id'])
+            if current['Name'] != plan['retiredName'] or current['State']['Running']:
+                raise ValueError('native-retirement-sandbox-retirement-unconfirmed')
+
+
 def verify_witness(value, *, owner, boot, hashes, targets):
     if (type(value) is not dict or value.get('schema') != 1 or value.get('owner') != owner
             or value.get('boot') != boot or value.get('hashes') != hashes
@@ -168,6 +272,11 @@ def retire(install_dir, owner_name, *, validate_only=False):
             # Snapshot all root-controlled files used as retirement authority.
             snapshots = {str(p): custody.protected_bytes(p, limit=32 * 1024 * 1024)
                          for p in [SETTINGS, *plists, *(STATE / n for n in os.listdir(directory) if n != 'retirement.json')]}
+            gateway = plistlib.loads(snapshots[str(plists[0])])
+            if launchd_definition_digest(gateway, ValueError) != settings.get('gateway_binding', {}).get('definition'):
+                raise ValueError('native-retirement-gateway-binding-mismatch')
+            sandboxes = NativeSandboxes(gateway, owner=owner, root=root)
+            sandbox_plans = sandboxes.plan()
             jobs = []
             for path in plists:
                 definition = plistlib.loads(snapshots[str(path)])
@@ -206,8 +315,13 @@ def retire(install_dir, owner_name, *, validate_only=False):
             witness_path = STATE / 'retirement.json'
             targets = [target for target, _, _ in jobs]
             if os.path.lexists(witness_path):
-                trees = verify_witness(record(witness_path), owner=owner.pw_uid,
+                witness = record(witness_path)
+                trees = verify_witness(witness, owner=owner.pw_uid,
                     boot=boot, hashes=hashes, targets=targets)
+                prior = witness.get('sandboxes')
+                if not isinstance(prior, list) or not {p['id'] for p in sandbox_plans}.issubset({p['id'] for p in prior}):
+                    raise ValueError('native-retirement-sandbox-witness-mismatch')
+                sandbox_plans = prior
                 for target, tree, loaded in jobs:
                     if loaded and [list(row) for row in tree] != trees[target]:
                         raise ValueError('native-retirement-job-restarted')
@@ -223,7 +337,7 @@ def retire(install_dir, owner_name, *, validate_only=False):
                     raise ValueError('native-retirement-authority-changed')
             if not os.path.lexists(witness_path):
                 atomic_json(witness_path, {'schema': 1, 'owner': owner.pw_uid,
-                    'boot': boot, 'hashes': hashes, 'trees': trees})
+                    'boot': boot, 'hashes': hashes, 'trees': trees, 'sandboxes': sandbox_plans})
             for target, tree, loaded in jobs:
                 if loaded and command(['/bin/launchctl', 'bootout', target]).returncode:
                     raise ValueError('native-retirement-stop-failed')
@@ -240,6 +354,10 @@ def retire(install_dir, owner_name, *, validate_only=False):
                 if absent and not survivors: break
                 if time.monotonic() >= deadline: raise ValueError('native-retirement-processes-survive')
                 time.sleep(0.25)
+            # Bind mounts retain old directory inodes after --force removes the
+            # install root. Preserve the container, but vacate its live name and
+            # stop its processes before moving any native or workspace paths.
+            sandboxes.preserve(sandbox_plans)
             for path, body in snapshots.items():
                 if custody.protected_bytes(path, limit=32 * 1024 * 1024) != body:
                     raise ValueError('native-retirement-authority-changed-after-stop')
