@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import './invites.css'
 import {
   UserPlus, Copy, Check, Trash2, RefreshCw, QrCode, Share2, X,
@@ -84,9 +84,17 @@ export default function Invites() {
   const [error, setError] = useState(null)
   const [showOwnerCreate, setShowOwnerCreate] = useState(false)
   const [showGuestCreate, setShowGuestCreate] = useState(false)
+  const guestCreateTriggerRef = useRef(null)
   const [generated, setGenerated] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [ownerCardStatus, setOwnerCardStatus] = useState(null)
+
+  useEffect(() => {
+    if (!showGuestCreate && guestCreateTriggerRef.current) {
+      guestCreateTriggerRef.current.focus()
+      guestCreateTriggerRef.current = null
+    }
+  }, [showGuestCreate])
 
   useEffect(() => {
     const tick = () => setNow(Date.now())
@@ -252,7 +260,7 @@ export default function Invites() {
             </p>
           </div>
           <button
-            onClick={() => setShowGuestCreate(true)}
+            onClick={(event) => { guestCreateTriggerRef.current = event.currentTarget; setShowGuestCreate(true) }}
             className="owner-access-action"
           >
             <UserPlus size={18} />
