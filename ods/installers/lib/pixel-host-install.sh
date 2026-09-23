@@ -1936,14 +1936,24 @@ _ods_pixel_restore_model_reconciliation() {
 }
 
 _ods_pixel_reconciliation_source_url() {
-    local source_ref="$1"
-    if [[ -n "${PIXEL_SOURCE_URL:-}" ]]; then
-        printf '%s\n' "$PIXEL_SOURCE_URL"
+    local source_ref="$1" source="${PIXEL_SOURCE_URL:-}" cached
+    # Legacy configurations may name the former remote, but reconciliation
+    # must use the installed exact source instead of acquiring it from GitHub.
+    [[ "$source" != 'https://github.com/Osmantic/Pixel.git' ]] || source=""
+    if [[ -n "$source" ]]; then
+        [[ "$source" == bundled || "$source" == /* ]] || return 1
+        printf '%s\n' "$source"
     elif [[ "$source_ref" == '817214d5ec3d8aa583fe50c1dc7561f3c1a16dff' ]]; then
         printf '%s\n' bundled
     else
-        # Existing developer/private installs retain their original source.
-        printf '%s\n' 'https://github.com/Osmantic/Pixel.git'
+        [[ "$source_ref" =~ ^[0-9a-f]{40}$ ]] || return 1
+        cached="${INSTALL_DIR:?}/data/pixel/source-$source_ref"
+        if [[ -d "$cached/.git" && ! -L "$cached" && ! -L "$cached/.git" ]]; then
+            printf '%s\n' "$cached"
+        else
+            printf '%s\n' 'error: Pixel legacy source is missing locally; migrate through the ODS installer before changing models' >&2
+            return 1
+        fi
     fi
 }
 
@@ -2600,6 +2610,10 @@ _ods_pixel_source_checkout() {
     local owner="$1" home="$2" source_root="$3"
     local source="${PIXEL_SOURCE_URL:?}" ref="${PIXEL_SOURCE_REF:?}"
     local source_timeout="${ODS_PIXEL_SOURCE_TIMEOUT_SECONDS:-180}"
+    [[ "$source" == bundled || "$source" == /* ]] || {
+        printf '%s\n' 'error: Pixel source must be bundled or an absolute local checkout' >&2
+        return 1
+    }
     [[ "$source_root" == /* && "$source_root" != / && ! -L "$source_root" ]] || return 1
     [[ "$source_timeout" =~ ^[0-9]+$ && "$source_timeout" -ge 1 && "$source_timeout" -le 900 ]] || return 1
 
@@ -2617,14 +2631,6 @@ _ods_pixel_source_checkout() {
                 env GIT_TERMINAL_PROMPT=0 git -c credential.interactive=never \
                 clone --no-local --no-checkout -- "${INSTALL_DIR:?}/vendor/pixel.bundle" "$checkout" >/dev/null; then
                 ods_pixel_run_as_owner "$owner" "$home" rm -rf -- "$stage"
-                return 1
-            fi
-        elif [[ "$source" == https://github.com/Osmantic/Pixel.git ]]; then
-            if ! ods_pixel_run_as_owner_with_umask "$owner" "$home" 0022 timeout "${source_timeout}s" \
-                env GIT_TERMINAL_PROMPT=0 git -c credential.interactive=never \
-                clone --filter=blob:none --no-checkout -- "$source" "$checkout" >/dev/null; then
-                ods_pixel_run_as_owner "$owner" "$home" rm -rf -- "$stage"
-                printf '%s\n' 'error: Pixel source clone failed or timed out; configure authorized Git access or use the documented local checkout' >&2
                 return 1
             fi
         else

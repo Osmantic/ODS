@@ -712,8 +712,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         PIXEL_SOURCE_REF_VALUE="$(_env_get_explicit_first PIXEL_SOURCE_REF "$ODS_PIXEL_BUNDLED_REF")"
         # Migrate the former public-beta private-repository default without
         # requiring that repository or its credentials on an ODS upgrade.
-        if [[ "$PIXEL_SOURCE_URL_VALUE" == "https://github.com/Osmantic/Pixel.git" \
-            && "$PIXEL_SOURCE_REF_VALUE" == "b33730436baf5d98bf58f7d57c090318fe19f433" ]]; then
+        if [[ "$PIXEL_SOURCE_URL_VALUE" == "https://github.com/Osmantic/Pixel.git" ]]; then
             PIXEL_SOURCE_URL_VALUE=bundled
             PIXEL_SOURCE_REF_VALUE="$ODS_PIXEL_BUNDLED_REF"
         fi

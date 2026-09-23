@@ -29,12 +29,34 @@ def test_public_ods_bundle_acquires_without_private_repository(tmp_path, monkeyp
     if tampered:
         with pytest.raises(bootstrap.BootstrapError, match='bundled-pixel-source-digest-mismatch'):
             bootstrap.acquire_source(ref=bootstrap.ODS_BUNDLED_REF,
-                destination=destination, license_authorized=True, source_url=str(bundle))
+                destination=destination, source_url=str(bundle))
         assert not destination.exists()
     else:
         assert bootstrap.acquire_source(ref=bootstrap.ODS_BUNDLED_REF,
-            destination=destination, license_authorized=True, source_url=str(bundle)) == destination
+            destination=destination, source_url=str(bundle)) == destination
         assert bootstrap.selected_release(destination, bootstrap.ODS_BUNDLED_REF)['pixel'] == '4.3.27'
+
+
+def test_source_defaults_to_ods_bundle(tmp_path, monkeypatch):
+    monkeypatch.setattr(bootstrap.sys, 'platform', 'darwin')
+    monkeypatch.setattr(bootstrap.os, 'geteuid', lambda: 501)
+    destination = bootstrap.acquire_source(ref=bootstrap.ODS_BUNDLED_REF,
+        destination=tmp_path / 'source')
+    origin = subprocess.check_output(['git', 'remote', 'get-url', 'origin'],
+        cwd=destination, text=True).strip()
+    assert origin == str(Path(bootstrap.__file__).resolve().parents[3] / 'vendor/pixel.bundle')
+
+
+@pytest.mark.parametrize('source_url', ['https://github.com/Osmantic/Pixel.git',
+    'git@github.com:Osmantic/Pixel.git', 'ssh://git@github.com/Osmantic/Pixel.git'])
+def test_remote_source_rejected_before_git(tmp_path, monkeypatch, source_url):
+    monkeypatch.setattr(bootstrap.sys, 'platform', 'darwin')
+    monkeypatch.setattr(bootstrap.os, 'geteuid', lambda: 501)
+    monkeypatch.setattr(bootstrap, 'command', lambda *a, **k: pytest.fail('Git must not run'))
+    with pytest.raises(bootstrap.BootstrapError, match='bundled-or-local-pixel-source-required'):
+        bootstrap.acquire_source(ref=bootstrap.ODS_BUNDLED_REF,
+            destination=tmp_path / 'source', source_url=source_url)
+    assert not (tmp_path / 'source').exists()
 
 
 @pytest.mark.parametrize('fault', [None, 'unreferenced', 'ref', 'existing', 'missing-commit', 'release'])
