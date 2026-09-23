@@ -56,8 +56,9 @@ def strip_secrets(env_vars: list[dict]) -> list[dict]:
     """Return env_vars list with the 'secret' field removed from each entry."""
     cleaned = []
     for var in env_vars:
-        entry = {k: v for k, v in var.items() if k != "secret"}
-        cleaned.append(entry)
+        if isinstance(var, dict):
+            entry = {k: v for k, v in var.items() if k != "secret"}
+            cleaned.append(entry)
     return cleaned
 
 
