@@ -47,6 +47,8 @@ _amd_sort_card_dirs() {
 amd_memory_type() {
     local vram_bytes="${1:-0}"
     local gtt_bytes="${2:-0}"
+    [[ "$vram_bytes" =~ ^[0-9]+$ ]] || vram_bytes=0
+    [[ "$gtt_bytes" =~ ^[0-9]+$ ]] || gtt_bytes=0
     local gtt_gb_int=$(( gtt_bytes / 1073741824 ))
     local vram_gb_int=$(( vram_bytes / 1073741824 ))
 
