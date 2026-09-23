@@ -607,6 +607,16 @@ function buildChartPoints(values, maxValue) {
   })
 }
 
+const fetchWithTimeout = async (url, timeoutMs = 8000) => {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { signal: controller.signal })
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 export default function Dashboard({ status, loading, compact = false }) {
   const [featuresData, setFeaturesData] = useState(null)
   const [serviceResources, setServiceResources] = useState(null)
@@ -616,7 +626,7 @@ export default function Dashboard({ status, loading, compact = false }) {
 
     const fetchFeatures = async () => {
       try {
-        const res = await fetch('/api/features')
+        const res = await fetchWithTimeout('/api/features')
         if (!res.ok) return
         const data = await res.json()
         if (mounted) setFeaturesData(data)
@@ -643,7 +653,7 @@ export default function Dashboard({ status, loading, compact = false }) {
 
     const fetchServiceResources = async () => {
       try {
-        const res = await fetch('/api/services/resources')
+        const res = await fetchWithTimeout('/api/services/resources')
         if (!res.ok) return
         const data = await res.json()
         if (mounted) setServiceResources(data)
