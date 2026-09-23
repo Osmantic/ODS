@@ -17,6 +17,11 @@ DISK_POLICY="${DISK_POLICY:-install}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --report|--tier|--ram-gb|--disk-gb|--gpu-backend|--gpu-vram-mb|--gpu-name|--platform-id|--compose-overlays|--script-dir|--host-arch|--disk-policy)
+            [[ $# -ge 2 ]] || { echo "ERROR: $1 requires an argument" >&2; exit 1; }
+            ;;
+    esac
+    case "$1" in
         --report)
             REPORT_FILE="${2:-$REPORT_FILE}"
             shift 2
