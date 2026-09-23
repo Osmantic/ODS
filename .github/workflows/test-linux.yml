@@ -245,6 +245,9 @@ jobs:
       - name: Pixel Agent Model Selection Tests
         run: python3 tests/test-pixel-model-selector.py
 
+      - name: Pixel Catalog Source Permissions
+        run: bash tests/test-bootstrap-pixel-catalog-permissions.sh
+
       - name: Pixel Provider and Access Contracts
         run: python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
 

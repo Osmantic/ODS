@@ -5,6 +5,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
+# GNU stat reads modes with -c, BSD/macOS stat with -f. Same helper the other
+# permission suites use, so this one runs on both platforms.
+file_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+
 eval "$(sed -n '/^secure_pixel_catalog_sources() {/,/^}/p' "$ROOT/get-ods.sh")"
 type secure_pixel_catalog_sources >/dev/null 2>&1
 
@@ -20,8 +24,8 @@ install_root="$TEST_ROOT/ods"
     printf '%s\n' 'services: {}' > "$install_root/extensions/services/builtin-fixture/compose.yaml"
 )
 
-[[ "$(stat -c '%a' "$install_root/config/extensions-catalog.json")" == 664 ]]
-[[ "$(stat -c '%a' "$install_root/extensions/services")" == 775 ]]
+[[ "$(file_mode "$install_root/config/extensions-catalog.json")" == 664 ]]
+[[ "$(file_mode "$install_root/extensions/services")" == 775 ]]
 
 # Match BSD/macOS chmod's option surface while still applying the permission
 # change on Linux. The bootstrap helper must not rely on GNU-only `--`.
@@ -37,7 +41,7 @@ secure_pixel_catalog_sources "$install_root"
 unset -f chmod
 
 while IFS= read -r -d '' path; do
-    mode="$(stat -c '%a' "$path")"
+    mode="$(file_mode "$path")"
     (( (8#$mode & 8#022) == 0 )) || {
         printf 'FAIL: Pixel catalog input remained writable: %s (%s)\n' "$path" "$mode" >&2
         exit 1
