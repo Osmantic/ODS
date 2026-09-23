@@ -320,7 +320,9 @@ export function useModels() {
       if (signal?.aborted) return null
       if (requestId >= latestSettledModelsRequestRef.current) {
         latestSettledModelsRequestRef.current = requestId
-        setFetchError(err.message)
+        setFetchError(err.name === 'AbortError'
+          ? 'The model service request was interrupted. Refresh and retry.'
+          : err.message)
       }
       // No silent fallback - let error propagate to UI
     } finally {
