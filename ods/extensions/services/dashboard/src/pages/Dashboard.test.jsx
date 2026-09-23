@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Dashboard from './Dashboard' // eslint-disable-line no-unused-vars
 
@@ -565,6 +565,22 @@ describe('Dashboard system overview', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('menuitem', { name: /Restart service/i })).not.toBeInTheDocument()
+  })
+
+  it('clears delayed restart state work when the dashboard unmounts', async () => {
+    restartDeferred = createDeferred()
+    mockResources = { services: [{
+      id: 'ape', name: 'APE (Agent Policy Engine)', type: 'docker', restartable: true,
+      restart_unavailable_reason: null, container: null, disk: null,
+    }] }
+    const mounted = render(<Dashboard status={baseStatus} loading={false} />)
+    const row = await screen.findByTestId('service-row-ape')
+    fireEvent.click(within(row).getByRole('button', { name: 'APE (Agent Policy Engine) actions' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Restart service/i }))
+    await within(row).findByText('Restarting')
+    mounted.unmount()
+    await act(async () => { restartDeferred.resolve(); await restartDeferred.promise })
+    expect(screen.queryByText('Restarted')).toBeNull()
   })
 
   it('does not offer restart for host-level services', async () => {

@@ -1285,6 +1285,14 @@ const ServicesPanel = memo(function ServicesPanel({ services }) {
   const [openMenuId, setOpenMenuId] = useState(null)
   const [actionState, setActionState] = useState({})
   const panelRef = useRef(null)
+  const restartTimersRef = useRef(new Set())
+  const mountedRef = useRef(true)
+
+  useEffect(() => () => {
+    mountedRef.current = false
+    restartTimersRef.current.forEach(timer => window.clearTimeout(timer))
+    restartTimersRef.current.clear()
+  }, [])
   const cpuHistory = useServiceCpuHistory(services)
   useEffect(() => {
     if (!openMenuId) return undefined
@@ -1409,15 +1417,20 @@ const ServicesPanel = memo(function ServicesPanel({ services }) {
                     const res = await fetch(`/api/services/${encodeURIComponent(service.id)}/restart`, { method: 'POST' })
                     const data = await res.json().catch(() => ({}))
                     if (!res.ok) throw new Error(data.detail || data.error || 'Restart failed')
+                    if (!mountedRef.current) return
                     setActionState(current => ({ ...current, [service.id]: { type: 'success', text: 'Restarted' } }))
-                    window.setTimeout(() => {
+                    const timer = window.setTimeout(() => {
+                      restartTimersRef.current.delete(timer)
+                      if (!mountedRef.current) return
                       setActionState(current => {
                         const next = { ...current }
                         delete next[service.id]
                         return next
                       })
                     }, 3500)
+                    restartTimersRef.current.add(timer)
                   } catch (error) {
+                    if (!mountedRef.current) return
                     setActionState(current => ({
                       ...current,
                       [service.id]: { type: 'error', text: error?.message || 'Restart failed' },
