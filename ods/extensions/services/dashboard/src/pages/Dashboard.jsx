@@ -455,7 +455,9 @@ function buildServiceRows(statusServices, resourceServices) {
     .filter(service => service.status !== 'not_deployed')
     .forEach((service, index) => {
       const resource = resourcesByName.get(normalizeServiceKey(service.name))
-      const id = resource?.id || normalizeServiceKey(service.name) || `service-${index}`
+      const baseId = resource?.id || normalizeServiceKey(service.name) || `service-${index}`
+      let id = baseId
+      while (seen.has(id)) id = `${baseId}-${index}`
       const hasSemantics = typeof service.required === 'boolean' || service.impact || service.category
       seen.add(id)
       rows.push({
