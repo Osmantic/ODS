@@ -188,6 +188,7 @@ export default function Settings({ activeSection = 'all' }) {
   const [routesExpanded, setRoutesExpanded] = useState(false)
   const [envOpen, setEnvOpen] = useState(true)
   const envEditorRef = useRef(null)
+  const updateCheckRef = useRef(null)
 
   useEffect(() => { fetchSettings() }, [])
 
@@ -406,7 +407,7 @@ export default function Settings({ activeSection = 'all' }) {
       /></div>
 
       {error ? <Banner tone="danger">{error} - <button className="underline" onClick={fetchSettings}>Retry</button></Banner> : null}
-      {notice ? <Banner tone={notice.type} onClose={() => setNotice(null)}>{notice.text}</Banner> : null}
+      {notice ? <Banner tone={notice.type} onClose={() => { setNotice(null); Promise.resolve().then(() => updateCheckRef.current?.focus()) }}>{notice.text}</Banner> : null}
 
       <div className="w-full space-y-5">
         <div hidden={!['all','general','appearance','usage','owner'].includes(activeSection)} className="grid items-stretch gap-4 xl:grid-cols-12">
@@ -432,7 +433,7 @@ export default function Settings({ activeSection = 'all' }) {
         <div hidden={!['all','storage','updates'].includes(activeSection) && !(activeSection === 'advanced' && !envOpen)} className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(22rem,0.85fr)]">
           <div hidden={!visible('storage')}><StorageCard storage={storage} showHeading={activeSection === 'all'} /></div>
           <div hidden={!['all','updates','advanced'].includes(activeSection)} className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
-            <div hidden={!visible('updates')}><UpdatesCard version={version} showHeading={activeSection === 'all'} onCheckUpdates={() => fetchVersionInfo({ announce: true })} /></div>
+            <div hidden={!visible('updates')}><UpdatesCard version={version} showHeading={activeSection === 'all'} checkButtonRef={updateCheckRef} onCheckUpdates={() => fetchVersionInfo({ announce: true })} /></div>
             <div hidden={!visible('advanced')} className="settings-advanced-tools"><CommandsCard onExportConfig={handleExportConfig} />{!envOpen && <button className="settings-open-editor" onClick={handleOpenEnvironmentEditor}>Open environment editor</button>}</div>
           </div>
         </div>
@@ -751,7 +752,7 @@ function StorageCard({ storage, showHeading = true }) {
   )
 }
 
-function UpdatesCard({ version, onCheckUpdates, showHeading = true }) {
+function UpdatesCard({ version, onCheckUpdates, checkButtonRef, showHeading = true }) {
   const checkedAt = formatCheckedAt(version?.checked_at)
   const updateText = version?.update_check_ok
     ? (version?.update_available ? 'Update available' : 'Current release')
@@ -781,7 +782,7 @@ function UpdatesCard({ version, onCheckUpdates, showHeading = true }) {
           </p>
           <p className="text-xs text-theme-text-muted">{updateText}</p>
         </div>
-        <button type="button" onClick={onCheckUpdates} className="inline-flex items-center gap-2 rounded-lg border border-theme-border bg-theme-card px-3 py-2 text-sm text-theme-text hover:border-theme-accent/50">
+        <button ref={checkButtonRef} type="button" onClick={onCheckUpdates} className="inline-flex items-center gap-2 rounded-lg border border-theme-border bg-theme-card px-3 py-2 text-sm text-theme-text hover:border-theme-accent/50">
           <RefreshCw size={15} />
           Check
         </button>
