@@ -13,9 +13,15 @@ module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 
 
+@pytest.mark.parametrize('custom_config', [False, True])
 @pytest.mark.parametrize('fault', [None, 'configure', 'environment', 'keys', 'files', 'config', 'existing',
     'prerequisites', 'infrastructure', 'protected', 'health', 'webui-routing'])
-def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, monkeypatch, fault):
+def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, monkeypatch, fault, custom_config):
+    docker_config = tmp_path / ('custom-docker' if custom_config else '.docker')
+    monkeypatch.delenv('DOCKER_CONFIG', raising=False)
+    if custom_config:
+        monkeypatch.setenv('DOCKER_CONFIG', str(docker_config))
+    monkeypatch.setenv('DOCKER_CONTEXT', 'unrelated-remote')
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
     owner = SimpleNamespace(pw_name='fixture', pw_uid=501, pw_dir=str(tmp_path))
@@ -88,6 +94,8 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
             return SimpleNamespace(returncode=1 if fault == 'protected' else 0)
         assert argv[:2] == ['/docker', 'compose']
         assert kw['env']['DOCKER_HOST'] == 'unix:///socket'
+        assert kw['env']['DOCKER_CONFIG'] == str(docker_config)
+        assert 'DOCKER_CONTEXT' not in kw['env']
         if argv[-2:] == ['config', '--quiet']:
             events.append('config')
             return SimpleNamespace(returncode=1 if fault == 'config' else 0)

@@ -88,8 +88,11 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
         '--project-name', source_env['PIXEL_HISTORY_PROJECT'], '--env-file', str(install_dir / '.env')]
     for path in paths:
         command.extend(['-f', str(path)])
+    # Owner-side Compose needs Desktop's CLI plugins. The gateway keeps its
+    # separate empty Docker configuration and never receives these credentials.
     process_env = {'HOME': owner.pw_dir, 'PATH': source_env['PATH'],
-        'DOCKER_HOST': source_env['DOCKER_HOST'], 'DOCKER_CONFIG': source_env['DOCKER_CONFIG']}
+        'DOCKER_HOST': source_env['DOCKER_HOST'],
+        'DOCKER_CONFIG': os.environ.get('DOCKER_CONFIG') or str(Path(owner.pw_dir) / '.docker')}
     def run(*args, timeout=60, input=None):
         return subprocess.run([*command, *args], cwd=install_dir, env=process_env,
             capture_output=True, text=True, timeout=timeout, input=input)

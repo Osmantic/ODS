@@ -2,7 +2,7 @@
 
 **Osmantic Deployment System**
 
-[![License: Apache 2.0 + Pixel ODS-only](https://img.shields.io/badge/License-Apache%202.0%20%2B%20Pixel%20ODS--only-blue.svg)](LICENSING.md)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Required-2496ED?logo=docker)](https://docs.docker.com/get-docker/)
 [![NVIDIA](https://img.shields.io/badge/NVIDIA-GPU%20Accelerated-76B900?logo=nvidia)](https://developer.nvidia.com/cuda-toolkit)
 [![AMD](https://img.shields.io/badge/AMD-Strix%20Halo%20ROCm-ED1C24?logo=amd)](https://rocm.docs.amd.com/)
@@ -10,9 +10,11 @@
 
 **Your turnkey local AI stack.** Buy hardware. Run installer. AI running.
 
-Pixel source ships inside ODS with an ODS-only use and distribution grant;
-other ODS code remains Apache-2.0. See [Licensing](LICENSING.md) for the
-boundary and third-party notices.
+ODS is distributed under [Apache-2.0](LICENSE). The Pixel integration in this
+repository currently acquires its runtime source separately from the private
+`Osmantic/Pixel` repository and requires explicit authorization. A public ODS
+checkout alone does not supply that runtime or grant Pixel rights. See the
+[Pixel installation requirements](docs/PIXEL.md#legal-and-release-boundary).
 
 ---
 
