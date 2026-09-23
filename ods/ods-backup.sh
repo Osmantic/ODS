@@ -669,7 +669,7 @@ main() {
                 shift 2
                 ;;
             --description)
-                description="$2"
+                description="$(echo "$2" | tr '\n\r' ' ')"
                 shift 2
                 ;;
             *)
