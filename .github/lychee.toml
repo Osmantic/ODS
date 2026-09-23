@@ -12,7 +12,7 @@ max_concurrency = 6
 host_concurrency = 2
 host_request_interval = "500ms"
 timeout = 15
-max_retries = 0
+max_retries = 1
 max_redirects = 5
 accept = ["200..=299"]
 cache = false
@@ -31,7 +31,9 @@ exclude = [
 ]
 
 # Model-term evidence contains many distinct Hugging Face URLs. Give that host
-# a slower, single-request lane; 429 remains a failure, never an accepted code.
+# a slower, single-request lane: anonymous pages allow 100 requests/5 minutes.
+# 3.5s leaves headroom below that quota; retries also use this lane. Exhausted
+# retries remain failures, and 429 is never an accepted code.
 [hosts."huggingface.co"]
 concurrency = 1
-request_interval = "2s"
+request_interval = "3.5s"

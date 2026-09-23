@@ -12,7 +12,7 @@ import time
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
-DEADLINE_SECONDS = 900
+DEADLINE_SECONDS = 1200
 
 
 def markdown_inventory(root):
@@ -60,7 +60,39 @@ def classify(entry, timeout=False):
     return 'transport'
 
 
+def validate_report(raw):
+    """Validate the counters/maps emitted by reviewed Lychee 0.24.2."""
+    if not isinstance(raw, dict):
+        raise ValueError('Lychee report must be a JSON object')
+    counters = ('total', 'unique', 'successful', 'unknown', 'unsupported', 'timeouts',
+                'redirects', 'remaps', 'excludes', 'errors', 'cached')
+    for key in counters:
+        if type(raw.get(key)) is not int or raw[key] < 0:
+            raise ValueError(f'Lychee counter {key} must be a nonnegative integer')
+    if not 0 < raw['unique'] <= raw['total']:
+        raise ValueError('Lychee must report at least one checked URI and a valid total')
+    # ResponseStats::increment_status_counters increments exactly one terminal
+    # category per response; cached/redirect/remap counters overlap categories.
+    terminal = ('successful', 'unknown', 'unsupported', 'timeouts', 'excludes', 'errors')
+    if raw['total'] != sum(raw[key] for key in terminal):
+        raise ValueError('Lychee terminal counters do not match total responses')
+    for key in ('success_map', 'error_map', 'timeout_map', 'excluded_map'):
+        if not isinstance(raw.get(key), dict):
+            raise ValueError(f'Lychee {key} must be a per-source object')
+        for source, entries in raw[key].items():
+            if not isinstance(source, str) or not isinstance(entries, list):
+                raise ValueError(f'Lychee {key} must contain per-source lists')
+            for entry in entries:
+                if (not isinstance(entry, dict) or not isinstance(entry.get('url'), str)
+                        or not entry['url'] or not isinstance(entry.get('status'), dict)
+                        or not isinstance(entry['status'].get('text'), str)):
+                    raise ValueError(f'Lychee {key} contains an invalid response')
+                if entry.get('span') is not None and not isinstance(entry['span'], dict):
+                    raise ValueError(f'Lychee {key} contains an invalid source span')
+
+
 def summarize(raw, exceptions):
+    validate_report(raw)
     failures = []
     deferred = []
     counts = Counter()
@@ -69,7 +101,7 @@ def summarize(raw, exceptions):
             for entry in entries:
                 category = classify(entry, timeout=kind == 'timeout_map')
                 finding = {'source': source.replace('\\', '/'), 'url': entry['url'], 'category': category,
-                           'status': entry['status'], 'line': entry.get('span', {}).get('line')}
+                           'status': entry['status'], 'line': (entry.get('span') or {}).get('line')}
                 counts[category] += 1
                 exception = exceptions.get(entry['url'])
                 if exception and category in exception['categories']:

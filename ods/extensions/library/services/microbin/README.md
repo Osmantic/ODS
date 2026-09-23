@@ -70,4 +70,7 @@ real uploads or model inference were started during preparation.
 
 - [Versioned source](https://github.com/szabodanika/microbin/tree/v2.1.0)
 - [Versioned authentication middleware](https://github.com/szabodanika/microbin/blob/v2.1.0/src/main.rs)
-- [Configuration guide](https://microbin.eu/docs/installation-and-configuration/configuration/)
+- [Configuration variables for the integrated release](https://github.com/szabodanika/microbin/blob/v2.1.0/.env)
+
+This upstream example documents the available variables; retain the credentials
+and settings described above instead of importing its sample defaults.

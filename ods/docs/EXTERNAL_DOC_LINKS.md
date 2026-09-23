@@ -11,7 +11,7 @@ Linux and Windows x86-64 release archives have fixed SHA-256 digests in
 [the tool manifest](../../.github/lychee-tool.json). The installer verifies the
 complete archive before writing its executable. Python uses only its standard
 library. The [workflow](../../.github/workflows/check-external-doc-links.yml)
-also runs the offline classification and integrity regressions and retains
+also runs classification, integrity, and local HTTP retry regressions and retains
 the input list, raw log, JSON report when available, and interpreted findings
 as a CI artifact for 14 days.
 
@@ -35,10 +35,24 @@ as a CI artifact for 14 days.
   scope. No public domain is blanket-excluded.
 - The [configuration](../../.github/lychee.toml) limits total concurrency to 6,
   concurrency per host to 2, and spacing per host to 500 ms. Hugging Face uses
-  one request at a time with a 2-second interval. Each request has a 15-second
-  timeout, zero retries, and at most 5 redirects. The process stops after
-  15 minutes; a deadline or unusable report fails the gate as incomplete.
+  one request at a time with a 3.5-second interval. Each request has a 15-second
+  timeout, at most one retry for a retryable failure, and at most 5 redirects.
+  The process stops after 20 minutes; a deadline or unusable report fails the
+  gate as incomplete. The workflow allows 25 minutes including setup, tests,
+  and result upload.
   These controls follow Lychee's [configuration options](https://lychee.cli.rs/guides/config/).
+
+Hugging Face documents an anonymous page quota of 100 requests per five-minute
+window, subject to change; API and file resolver quotas differ. The 3.5-second
+interval allows about 86 requests per window, including retries, below the
+published page limit. The observed inventory of 285 Hugging Face URLs needs
+about 994 seconds of spacing alone, so the previous 900-second deadline had
+insufficient margin for this pacing. See the [official rate-limit policy](https://huggingface.co/docs/hub/rate-limits).
+Lychee 0.24.2 applies [host backoff and `Retry-After`](https://github.com/lycheeverse/lychee/blob/lychee-v0.24.2/lychee-lib/src/ratelimit/host/host.rs) (capped at 60 seconds), but
+does not parse Hugging Face's structured `RateLimit` reset field. One retry is
+bounded recovery, not a guarantee against a shared-IP quota or a long cooldown;
+exhausted retries remain findings. No token, status-code waiver, persistent
+success cache, or replacement URL is used to turn a rate limit into a pass.
 
 Only final 2xx responses count as successful HTTP checks. A 401 or 403 is
 classified as access unconfirmed; 429, 5xx, and timeouts remain transient
@@ -46,6 +60,9 @@ failures. A 404 or 410 records a missing or not publicly exposed target; it
 does not distinguish removal from a private resource. TLS and other transport
 failures remain failures. Incomplete scans retain any observed failures without
 claiming a total failure count or a passing result.
+An empty, zero-link, malformed, or inconsistent JSON report is incomplete even
+when the checker exits with code 0. Required counters must be nonnegative
+integers, terminal counts must add up, and result maps must have valid shapes.
 
 The [exception ledger](../../.github/external-link-exceptions.json) starts empty.
 A reviewed temporary deferral must name one exact URL, failure categories,
@@ -61,7 +78,7 @@ printed by the same installer):
 
 ```sh
 python .github/scripts/install_lychee.py --destination output/lychee-bin
-python -m unittest discover -s .github/scripts -p test_external_links.py -v
+LYCHEE_BINARY="$PWD/output/lychee-bin/lychee" python -m unittest discover -s .github/scripts -p test_external_links.py -v
 python .github/scripts/check_external_links.py --lychee output/lychee-bin/lychee
 ```
 
@@ -69,6 +86,10 @@ Results appear in `output/external-links/`. The CLI returns 0 for a complete run
 with no unreviewed failures, 1 for unresolved findings, and 2 for an incomplete
 scan. Setup or integrity errors also exit unsuccessfully. Avoid immediate full
 reruns after rate limits; review the preserved report first.
+`LYCHEE_BINARY` enables five loopback-only tests with the reviewed binary:
+429 recovery after `Retry-After`, 429 followed by 404, persistent 429, direct
+404, and spacing between distinct URLs. Without it, those integration tests
+are explicitly skipped; the workflow always supplies it.
 
 ## Audit observation: 2026-09-23
 
@@ -106,6 +127,20 @@ anonymous API probe returned 401; the later bounded recheck and badge correction
 are recorded above. Intel's access restriction and the MicroBin timeout remain
 unresolved. Hugging Face evidence URLs were preserved; 429 does not establish
 that their targets are wrong.
+
+A follow-up scan of 563 Markdown files completed in 825.99 seconds with 18
+findings: 13 Hugging Face 429 responses, one GitHub 503, one MicroBin timeout,
+one Intel 403, and two Unsplash 401 responses. A single anonymous probe of one
+of those Hugging Face URLs then returned 200 with a page policy of 100 requests
+per 300 seconds. This supports adjusting pacing and retries; it does not
+resolve the other findings or establish a passing complete scan.
+
+Intel now links to its current official Windows driver download page, whose
+anonymous HTTP response still returned 403. MicroBin now links to the official
+release 2.1.0 configuration file, which returned 200 anonymously. The Intel and
+two Unsplash access challenges remain explicit, with no deferrals added. The
+new pacing and retry policy has local fixture coverage; the next CI scan must
+establish the complete online result.
 
 The metadata sweep of current nonvendor documentation found generic user-path
 examples, container paths, and source or artifact hashes. No additional concrete

@@ -23,7 +23,7 @@ jobs:
   public-http:
     name: Anonymous public HTTP links
     runs-on: ubuntu-latest
-    timeout-minutes: 18
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -31,11 +31,13 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: '3.12'
-      - name: Test classification, review expiry and checker integrity
-        run: python -m unittest discover -s .github/scripts -p test_external_links.py -v
       - name: Install checksum-pinned Lychee 0.24.2
         run: python .github/scripts/install_lychee.py --destination "$RUNNER_TEMP/lychee"
-      - name: Check every public Markdown file with a fifteen-minute deadline
+      - name: Test classification, integrity and local retry behavior
+        env:
+          LYCHEE_BINARY: ${{ runner.temp }}/lychee/lychee
+        run: python -m unittest discover -s .github/scripts -p test_external_links.py -v
+      - name: Check every public Markdown file with a twenty-minute deadline
         run: python .github/scripts/check_external_links.py --lychee "$RUNNER_TEMP/lychee/lychee"
       - name: Preserve anonymous results and reviewed exceptions
         if: always()
