@@ -32,6 +32,7 @@ export default function PixelAdviceRuntime({ onReadyChange, title = 'Advisory ru
   const polling = useRef(false)
   const jobVersion = useRef(0)
   const controllers = useRef(new Set())
+  const mounted = useRef(true)
   const epoch = useRef(0)
   const notify = useRef(onReadyChange)
   notify.current = onReadyChange
@@ -69,8 +70,9 @@ export default function PixelAdviceRuntime({ onReadyChange, title = 'Advisory ru
 
   useEffect(() => {
     const pending = controllers.current
+    mounted.current = true
     void refresh()
-    return () => { epoch.current++; for (const controller of pending) controller.abort() }
+    return () => { mounted.current = false; epoch.current++; for (const controller of pending) controller.abort() }
   }, [refresh])
 
   const inspect = useCallback(async () => {
@@ -109,11 +111,11 @@ export default function PixelAdviceRuntime({ onReadyChange, title = 'Advisory ru
       const result = await request('/prepare', { requestId: id, expectedRevision: readiness.revision,
         sourceSha256: readiness.sourceSha256, candidateId: selected, confirmed: true })
       if (!validJob(result) || result.jobId !== id) throw new Error('Invalid setup job')
-      if (tracked.current !== id) return
+      if (!mounted.current || tracked.current !== id) return
       setJob(result); setError('')
       if (done.has(result.status)) await refresh()
-    } catch { setError(tracked.current === id ? 'Setup start is unconfirmed. Check this setup; it will not be submitted again automatically.' : 'Could not track setup. Nothing was submitted.') }
-    finally { setConsent(false); setSubmitting(false); inflight.current = false }
+    } catch { if (mounted.current) setError(tracked.current === id ? 'Setup start is unconfirmed. Check this setup; it will not be submitted again automatically.' : 'Could not track setup. Nothing was submitted.') }
+    finally { if (mounted.current) { setConsent(false); setSubmitting(false) }; inflight.current = false }
   }
 
   async function stop() {
@@ -122,11 +124,11 @@ export default function PixelAdviceRuntime({ onReadyChange, title = 'Advisory ru
     try {
       const result = await request('/cancel', { jobId })
       if (!validJob(result) || result.jobId !== jobId) throw new Error('Invalid setup job')
-      if (tracked.current !== jobId) return
+      if (!mounted.current || tracked.current !== jobId) return
       setJob(result); setError('')
       if (done.has(result.status)) await refresh()
-    } catch { if (tracked.current === jobId) setError('Stop setup is unconfirmed. Check the tracked setup again.') }
-    finally { inflight.current = false; setSubmitting(false) }
+    } catch { if (mounted.current && tracked.current === jobId) setError('Stop setup is unconfirmed. Check the tracked setup again.') }
+    finally { inflight.current = false; if (mounted.current) setSubmitting(false) }
   }
 
   function forget() {
