@@ -38,6 +38,10 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --gpu-count)
+            if [[ -n "${2:-}" && "$2" =~ ^-[0-9]+$ ]]; then
+                echo "Error: GPU count cannot be negative" >&2
+                exit 1
+            fi
             GPU_COUNT="${2:-$GPU_COUNT}"
             shift 2
             ;;
