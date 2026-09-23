@@ -50,6 +50,10 @@ ODS_AP_PREFIX="${ODS_AP_PREFIX:-}"
 ODS_AP_NETMASK="${ODS_AP_NETMASK:-255.255.255.0}"
 ODS_AP_DHCP_RANGE="${ODS_AP_DHCP_RANGE:-192.168.7.10,192.168.7.50,1h}"
 ODS_AP_CHANNEL="${ODS_AP_CHANNEL:-6}"
+if ! [[ "${ODS_AP_CHANNEL}" =~ ^[0-9]+$ ]] || (( ODS_AP_CHANNEL < 1 || ODS_AP_CHANNEL > 165 )); then
+    echo "Error: ODS_AP_CHANNEL must be between 1 and 165" >&2
+    exit 1
+fi
 
 # Load operator overrides if present. Sourced — be deliberate about what
 # you put in there.
