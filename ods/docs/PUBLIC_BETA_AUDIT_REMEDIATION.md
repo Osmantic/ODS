@@ -37,6 +37,30 @@ below is the release checklist; a passing structural gate does not close it.
 
 ## Evidence boundaries
 
+- September 23 live Windows/Ubuntu 24.04 WSL checkpoint: the Core Only + Pixel
+  installer completed at `7c6128e0`, reusing the owner's existing 4B runtime.
+  Docker and Ubuntu storage were migrated to D: with backups retained. This was
+  a reinstallation on an existing computer, not a fresh operating-system image.
+  Stale access-coordinator state from the former deployment required explicit
+  preservation/recovery before the new sandboxed runtime proof succeeded.
+- The real Portal returned `OK`, then created a Python program, executed two
+  assertions and wrote its JSON result. The four tool calls reported no failures
+  or blocks; an independent execution inside the sandbox passed both assertions.
+  These two cases do not establish arbitrary-repository installation reliability.
+- That live test exposed an external-runtime context mismatch (32,768 loaded
+  versus 65,536 configured). The external installer now bounds its agent budget
+  to the single selected llama.cpp runtime's reported per-slot capacity; it does
+  not use training limits or attribute unscoped metadata to multi-model gateways.
+  All 33 external-service fixtures pass, including smaller explicit budgets,
+  malformed metadata and runtime capacity below the agent minimum. Other external
+  providers without this metadata retain their existing context handling.
+- At `7c6128e0`, 85 hosted checks passed, including Linux integration and the
+  Windows/macOS jobs. Anonymous external links failed on three access-unconfirmed
+  URLs (two Unsplash sources and the Intel driver page); no blanket exemption was
+  added. The Portal reports its installed-release identity as unverified even
+  though host access is verified. Neither that limitation nor native macOS/Linux
+  hardware qualification is closed by the successful Windows/WSL smoke tests.
+
 - Scanner findings are package/advisory occurrences, not confirmed exploits.
   Conversely, absence of a published fix is not an applicability waiver.
 - The repository retains Pixel source locally. Tests must verify source/bundle

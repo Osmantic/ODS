@@ -96,7 +96,15 @@ run_phase_case() {
                 ;;
             */v1/models)
                 [[ "${MOCK_LMSTUDIO:-down}" == "up" ]] || return 22
+                if [[ "${case_name}" == context-* ]]; then
+                    printf '{"data":[{"id":"local-model"}]}'
+                    return 0
+                fi
                 printf '{"data":[{"id":"qwen3.5-9b"},{"id":"local-model"}]}'
+                ;;
+            */props)
+                [[ "$case_name" == context-* ]] || return 22
+                printf '{"default_generation_settings":{"n_ctx":%s}}' "$MOCK_CONTEXT"
                 ;;
             */v1/chat/completions)
                 printf '{"choices":[{"message":{"content":"OK"}}]}'
@@ -142,13 +150,19 @@ run_phase_case() {
             EXTERNAL_LLM_PROVIDER="ollama"
             EXTERNAL_LLM_MODEL="qwen3.5:9b"
             ;;
-        explicit-openai|detect-openai)
+        explicit-openai|detect-openai|context-*)
             MOCK_LMSTUDIO=up
             MOCK_OLLAMA=down
             EXTERNAL_LLM_URL="http://10.0.2.2:18080"
             EXTERNAL_LLM_PROVIDER="openai-compatible"
             [[ "$case_name" != detect-openai ]] || EXTERNAL_LLM_PROVIDER=auto
             EXTERNAL_LLM_MODEL="local-model"
+            case "$case_name" in
+                context-clamp) MAX_CONTEXT=65536; MOCK_CONTEXT=32768 ;;
+                context-smaller) MAX_CONTEXT=16384; MOCK_CONTEXT=32768 ;;
+                context-too-small) MAX_CONTEXT=65536; MOCK_CONTEXT=2048 ;;
+                context-invalid) MAX_CONTEXT=16384; MOCK_CONTEXT=true ;;
+            esac
             ;;
         explicit-cloud)
             MOCK_OLLAMA=up
@@ -182,6 +196,21 @@ run_phase_case() {
 
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
+
+for context_case in clamp smaller invalid; do
+    expected=16384
+    [[ "$context_case" != clamp ]] || expected=32768
+    if output="$(run_phase_case "context-$context_case" "$TEMP_DIR/context-$context_case"; printf '%s' "$MAX_CONTEXT")"; then
+        assert_eq "$output" "$expected" "external runtime context: $context_case"
+    else
+        fail "external runtime context: $context_case"
+    fi
+done
+if run_phase_case context-too-small "$TEMP_DIR/context-too-small"; then
+    fail "rejects an observed runtime below the minimum agent context"
+else
+    pass "rejects an observed runtime below the minimum agent context"
+fi
 
 for external_case in explicit-openai detect-openai; do
     if output="$(run_phase_case "$external_case" "$TEMP_DIR/$external_case"; printf '%s|%s\n' \

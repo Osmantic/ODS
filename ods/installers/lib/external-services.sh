@@ -130,6 +130,29 @@ external_llm_detect_provider() {
     return 1
 }
 
+external_llm_runtime_context() {
+    # llama.cpp reports its loaded per-slot capacity here. Model training
+    # limits and the unrelated local catalog selection are not runtime limits.
+    local provider="${1:-}" url="${2:-}" model="${3:-}" models response
+    [[ "$provider" == openai-compatible ]] || return 1
+    url="$(external_llm_host_url "$url")"
+    models="$(external_llm_models "$provider" "$url")" || return 1
+    # /props has no model selector. Do not attribute it through a multi-model
+    # gateway or to a route that changed since discovery.
+    [[ -n "$model" && "$models" == "$model" ]] || return 1
+    response="$(curl -fsS --max-time 5 "${url}/props" 2>/dev/null)" || return 1
+    python3 -c '
+import json, sys
+try:
+    value = json.load(sys.stdin)["default_generation_settings"]["n_ctx"]
+    if type(value) is not int or not 1 <= value <= 10_000_000:
+        raise ValueError()
+except (ValueError, TypeError, KeyError):
+    sys.exit(1)
+print(value)
+' <<<"$response"
+}
+
 external_llm_resolve_model() {
     local provider="${1:-}" url="${2:-}" requested="${3:-}" target="${4:-}"
     local models

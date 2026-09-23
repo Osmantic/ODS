@@ -121,6 +121,20 @@ EXTERNAL_LLM_URL="$_external_url"
 EXTERNAL_LLM_CONTAINER_URL="$(external_llm_container_url "$_external_url")"
 EXTERNAL_LLM_PROVIDER="$_external_provider"
 EXTERNAL_LLM_MODEL="$_resolved_external_model"
+if _external_context="$(external_llm_runtime_context \
+    "$EXTERNAL_LLM_PROVIDER" "$EXTERNAL_LLM_URL" "$EXTERNAL_LLM_MODEL")"; then
+    if (( _external_context < 4096 )); then
+        ai_bad "The external runtime provides fewer than the required 4096 context tokens."
+        return 1
+    fi
+    # Keep a smaller operator/catalog budget, but never overstate the loaded
+    # server's capacity. The same value feeds Pixel onboarding and compaction.
+    if [[ ! "${MAX_CONTEXT:-}" =~ ^[0-9]+$ ]] || (( MAX_CONTEXT > _external_context )); then
+        MAX_CONTEXT="$_external_context"
+        export MAX_CONTEXT
+        log "Bound agent context to the external runtime capacity: $MAX_CONTEXT tokens"
+    fi
+fi
 SKIP_MODEL_DOWNLOAD=true
 export EXTERNAL_LLM_URL EXTERNAL_LLM_CONTAINER_URL EXTERNAL_LLM_PROVIDER
 export EXTERNAL_LLM_MODEL SKIP_MODEL_DOWNLOAD
