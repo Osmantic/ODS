@@ -169,3 +169,64 @@ test("shows actionable fixed failure categories without echoing host exception t
     assert.doesNotMatch(JSON.stringify(blocked), /\/home\/private|wrong boundary/);
   }
 });
+
+
+test("receipt names only delivered files when requested source copies remain outside public", async () => {
+  const tool = createWorkspacePreviewTool({ request: async () => succeededResponse({
+    publishedPaths: ["index.html", "sources.json", "test-results.txt"],
+    publishedPathsOmitted: 0,
+  }) });
+  const result = await tool.execute("missing-copies", { relativeDirectory: "demo-site" });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.details.publishedPaths, ["index.html", "sources.json", "test-results.txt"]);
+  assert.match(result.content[0].text, /\["index.html","sources.json","test-results.txt"\]/);
+  assert.doesNotMatch(result.content[0].text, /report\.py\.txt|totals\.py\.txt|readbacks are complete/);
+  assert.match(result.content[0].text, /does not determine whether requested files or checks are missing/);
+});
+
+test("bounded lists explicitly report omitted paths and never claim completeness", async () => {
+  const tool = createWorkspacePreviewTool({ request: async () => succeededResponse({
+    publishedPaths: ["assets/app.js"], publishedPathsOmitted: 2,
+  }) });
+  const result = await tool.execute("bounded", { relativeDirectory: "demo-site" });
+  assert.equal(result.isError, undefined);
+  assert.match(result.content[0].text, /2 additional published paths omitted/);
+  assert.doesNotMatch(result.content[0].text, /complete published file list/);
+});
+
+test("legacy receipts remain valid without inventing a file list", async () => {
+  const tool = createWorkspacePreviewTool({ request: async () => succeededResponse() });
+  const result = await tool.execute("legacy", { relativeDirectory: "demo-site" });
+  assert.equal(result.isError, undefined);
+  assert.match(result.content[0].text, /does not include a file list/);
+  assert.match(result.content[0].text, /do not infer that every requested file was published/);
+  assert.equal(result.details.publishedPaths, undefined);
+});
+
+test("rejects unsafe, unbounded, inconsistent or incomplete file-list receipts", async () => {
+  for (const fields of [
+    { publishedPaths: ["index.html"] },
+    { publishedPathsOmitted: 2 },
+    { publishedPaths: ["index.html"], publishedPathsOmitted: 0 },
+    { publishedPaths: ["index.html"], publishedPathsOmitted: -1 },
+    { publishedPaths: ["index.html"], publishedPathsOmitted: 2.5 },
+    { publishedPaths: ["index.html", "index.html"], publishedPathsOmitted: 1 },
+    { publishedPaths: ["sources.json", "index.html"], publishedPathsOmitted: 1 },
+    { publishedPaths: ["a.txt", "b.txt", "c.txt"], publishedPathsOmitted: 0 },
+    { publishedPaths: ["../private.txt"], publishedPathsOmitted: 2 },
+    { publishedPaths: ["/private.txt"], publishedPathsOmitted: 2 },
+    { publishedPaths: ["a//b.txt"], publishedPathsOmitted: 2 },
+    { publishedPaths: ["a\\b.txt"], publishedPathsOmitted: 2 },
+    { publishedPaths: ["a\nsecret.txt"], publishedPathsOmitted: 2 },
+    { publishedPaths: [42], publishedPathsOmitted: 2 },
+    { publishedPaths: null, publishedPathsOmitted: 3 },
+    { publishedPaths: Array.from({ length: 33 }, (_, i) => `a${String(i).padStart(2, "0")}.txt`), publishedPathsOmitted: 0, files: 33 },
+    { publishedPaths: [Array(20).fill("a".repeat(120)).join("/") + ".txt"], publishedPathsOmitted: 2 },
+  ]) {
+    const tool = createWorkspacePreviewTool({ request: async () => succeededResponse(fields) });
+    const result = await tool.execute("bad-list", { relativeDirectory: "demo-site" });
+    assert.equal(result.isError, true, JSON.stringify(fields));
+    assert.equal(result.details.status, "failed");
+    assert.doesNotMatch(JSON.stringify(result), /private\.txt|secret\.txt/);
+  }
+});

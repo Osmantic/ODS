@@ -403,6 +403,7 @@ def publish_snapshot(
         "relativeDirectory": relative_directory,
         "siteId": site_id,
         "files": len(captured),
+        **_published_path_feedback(observed),
         "bytes": total,
         "sha256": full_digest,
         "entryFile": "index.html",
@@ -411,6 +412,19 @@ def publish_snapshot(
         "overwritten": overwritten,
         "boundary": BOUNDARY,
     }
+
+
+def _published_path_feedback(paths):
+    """Bounded names from the verified snapshot; never infer requested files."""
+    ordered = sorted(paths)
+    shown = []
+    total = 0
+    for relative in ordered:
+        if len(shown) >= 32 or total + len(relative) > 2048:
+            break
+        shown.append(relative)
+        total += len(relative)
+    return {"publishedPaths": shown, "publishedPathsOmitted": len(ordered) - len(shown)}
 
 
 def snapshot_manifest(previews: pathlib.Path, site_id: str) -> bytes:

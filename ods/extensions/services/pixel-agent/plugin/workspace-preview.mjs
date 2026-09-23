@@ -70,11 +70,16 @@ function validResponse(value, request) {
     "status",
     "url",
   ];
+  const hasPaths = value && typeof value === "object" &&
+    (Object.hasOwn(value, "publishedPaths") || Object.hasOwn(value, "publishedPathsOmitted"));
+  const receiptKeys = hasPaths
+    ? [...expectedKeys, "publishedPaths", "publishedPathsOmitted"].sort()
+    : expectedKeys;
   if (
     !value ||
     typeof value !== "object" ||
     Array.isArray(value) ||
-    Object.keys(value).sort().join("\n") !== expectedKeys.join("\n") ||
+    Object.keys(value).sort().join("\n") !== receiptKeys.join("\n") ||
     value.schemaVersion !== 1 ||
     value.kind !== "ods-pixel-workspace-preview" ||
     value.status !== "succeeded" ||
@@ -104,7 +109,29 @@ function validResponse(value, request) {
   ) {
     throw new Error("invalid Pixel workspace preview response");
   }
+  if (hasPaths && (
+    !Array.isArray(value.publishedPaths) || value.publishedPaths.length > 32 ||
+    value.publishedPaths.some((path) => typeof path !== "string" ||
+      path.length < 1 || path.split("/").some((part) => !PATH_COMPONENT.test(part))) ||
+    value.publishedPaths.reduce((size, path) => size + path.length, 0) > 2048 ||
+    value.publishedPaths.some((path, index, paths) => index > 0 && paths[index - 1] >= path) ||
+    !Number.isInteger(value.publishedPathsOmitted) || value.publishedPathsOmitted < 0 ||
+    value.publishedPaths.length + value.publishedPathsOmitted !== value.files ||
+    (value.publishedPathsOmitted === 0 && !value.publishedPaths.includes(value.entryFile))
+  )) throw new Error("invalid Pixel workspace preview file list");
   return value;
+}
+
+function publishedPathFeedback(response) {
+  if (!Object.hasOwn(response, "publishedPaths")) {
+    return "The host receipt does not include a file list; do not infer that every requested file was published. ";
+  }
+  return `Exact published paths relative to ${JSON.stringify(response.relativeDirectory)}: ` +
+    `${JSON.stringify(response.publishedPaths)}. ` +
+    (response.publishedPathsOmitted > 0
+      ? `${response.publishedPathsOmitted} additional published paths omitted from this bounded list. `
+      : "This is the complete published file list. ") +
+    "Compare the delivered files with the owner's request; this receipt does not determine whether requested files or checks are missing. ";
 }
 
 function socketRequest(payload, { socketPath = SOCKET_PATH, signal, timeoutMs = 30_000 } = {}) {
@@ -231,6 +258,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
             text:
               `ODS independently published and read back ${response.files} workspace static files ` +
               `(${response.bytes} bytes). Verified browser URL: ${response.url}. ` +
+              publishedPathFeedback(response) +
               "This receipt proves publication and HTTP readback only, not successful startup, interactions or durable browser storage. Verify requested behavior in the actual preview before claiming it works.",
           }],
           details: response,

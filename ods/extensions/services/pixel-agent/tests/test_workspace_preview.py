@@ -571,3 +571,42 @@ def test_changes_use_the_same_lf_line_boundaries_as_verified_source():
                         connection.close()
                         server.shutdown()
                         thread.join(timeout=5)
+
+
+def test_published_path_receipt_excludes_unpublished_sibling_source_copies(tmp_path):
+    workspace, previews = tmp_path / "workspace", tmp_path / "previews"
+    workspace.mkdir(mode=0o700)
+    previews.mkdir(mode=0o700)
+    project, public = workspace / "project", workspace / "public"
+    project.mkdir(mode=0o700)
+    public.mkdir(mode=0o700)
+    for folder, names in ((project, ["report.py.txt", "totals.py.txt", "test_totals.py.txt"]),
+                          (public, ["index.html", "sources.json", "test-results.txt"])):
+        for name in names:
+            (folder / name).write_text("actual bytes")
+            (folder / name).chmod(0o600)
+    result = MODULE.publish_snapshot(workspace, previews, "public", os.getuid())
+    assert result["publishedPaths"] == ["index.html", "sources.json", "test-results.txt"]
+    assert result["publishedPathsOmitted"] == 0
+    manifest = json.loads(MODULE.snapshot_manifest(previews, result["siteId"]))
+    assert result["publishedPaths"] == [row["path"] for row in manifest["files"]]
+    assert MODULE.publish_snapshot(workspace, previews, "public", os.getuid()) == result
+    (public / "report.py.txt").write_text("new bytes")
+    (public / "report.py.txt").chmod(0o600)
+    changed = MODULE.publish_snapshot(workspace, previews, "public", os.getuid())
+    assert changed["siteId"] != result["siteId"]
+    assert "report.py.txt" in changed["publishedPaths"]
+    assert "report.py.txt" not in result["publishedPaths"]
+
+
+def test_published_path_feedback_caps_count_and_total_characters():
+    names = [f"asset-{n:03}.txt" for n in range(127)] + ["index.html"]
+    result = MODULE._published_path_feedback(names)
+    assert result["publishedPaths"] == sorted(names)[:32]
+    assert result["publishedPathsOmitted"] == 96
+    names = [f"a{n:03}" + "x" * 115 + ".txt" for n in range(30)] + ["index.html"]
+    result = MODULE._published_path_feedback(names)
+    assert sum(map(len, result["publishedPaths"])) <= 2048
+    assert result["publishedPaths"] == sorted(names)[:len(result["publishedPaths"])]
+    assert len(result["publishedPaths"]) + result["publishedPathsOmitted"] == len(names)
+    assert len(json.dumps(result).encode()) < 4096
