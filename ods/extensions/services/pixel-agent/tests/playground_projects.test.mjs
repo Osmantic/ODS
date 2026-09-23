@@ -148,6 +148,9 @@ test('failed binding permits simple workspace inspection but never resumes mutat
       assert.equal(actual.command,command);
     }
     for(const command of ['ls; touch bad','ls $(touch bad)','ls `touch bad`','ls > bad','rg --pre=touch x','git status','python --version']) assert.equal(exec(command).block,true,command);
+    const explicit=guard.beforeToolCall({toolName:'exec',params:{command:'ls',workdir:'/workspace/Playground'}},context);
+    assert.notEqual(explicit?.block,true,explicit?.blockReason);
+    assert.equal(explicit.params.workdir,path.join(root,'Playground'));
     assert.equal(guard.beforeToolCall({toolName:'write',params:{path:'index.html',content:'overwrite'}},context).block,true);
     assert.equal(fs.readFileSync(path.join(root,'Playground/index.html/index.html'),'utf8'),'<html>keep</html>');
     assert.equal(fs.existsSync(path.join(root,'Playground/fleet-website')),false);

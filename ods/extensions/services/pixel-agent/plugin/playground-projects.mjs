@@ -247,7 +247,8 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
     if (simpleInspection(selected)) {
       try {
         safeRoot(root);
-        return {params:selected.wrap({...selected.args,workdir:'/workspace'})};
+        const workdir = selected.args.workdir;
+        return {params:selected.wrap({...selected.args,workdir:workdir === undefined || workdir === '.' ? '/workspace' : workdir})};
       } catch { /* An unavailable workspace cannot support safe inspection. */ }
     }
     return {block:true,blockReason:'The project folder could not be safely prepared or restored. Preserve existing files. Inspect the workspace with pwd or ls and check the project metadata before retrying; do not bypass this by writing elsewhere.'};
