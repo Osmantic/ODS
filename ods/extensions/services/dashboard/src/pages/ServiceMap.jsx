@@ -411,6 +411,7 @@ export default function ServiceMap({ compact = false }) {
         </div>
         <div className="flex items-center gap-2 rounded-lg border border-theme-border bg-theme-card px-3 py-2 font-mono text-xs text-theme-text-muted"><RefreshCw size={12} className="text-theme-accent" />live · 10s</div>
       </div>
+      {error && <p role="alert" className="mb-4 text-sm text-red-400">Showing stale topology data. {error} <button type="button" onClick={fetchTopology} className="underline">Retry</button></p>}
 
       <div className="mb-4 flex flex-wrap gap-4 text-xs text-theme-text-muted">
         <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-green-400" />Healthy</span>
