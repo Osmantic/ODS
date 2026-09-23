@@ -37,7 +37,10 @@ deployments should use a pinned release or audited commit.
 - The Dashboard source updater and `ods-update.sh` cannot safely coordinate
   native Pixel updates or source-built service rollback. They must refuse those
   installations before pulling source. The separate `ods update` image/runtime
-  command is not a source or native Pixel upgrade.
+  command is not a source or native Pixel upgrade. Source update also refuses
+  root-owned or ambiguous owner contexts where native identity cannot be
+  established. These guards do not retrofit an older installed updater or
+  establish transactional rollback for other source updates.
 - Generic ODS backups do not capture the complete native Pixel deployment.
   Full/user-data backup and applying restore must stop on native Pixel state
   until a coordinated capture and recovery contract is implemented. A
@@ -62,8 +65,15 @@ release checker does not advertise this branch promotion as a version upgrade.
   and backup/restore rollback contracts. The gate log SHA-256 is
   `c76992bde91320cb1ab19d54a49ef494d21d4607469ae0814b5e927c02c63736`.
 - The initial promotion CI exposed Python and shell lint failures that had not
-  run on public-beta. Their resolution and final CI are required before this
-  candidate can be considered ready for review.
+  run on public-beta. PR #6519 resolved them, enabled both gates for public-beta,
+  and rebuilt the Pixel source bundle with matching reproducible content.
+- Candidate `f91a67ab86d583cc2db45f48fe0d7bc3022f5879` subsequently passed the
+  complete source release gate from a clean checkout. Its log SHA-256 is
+  `bbc9139863f465d6cff43fe6b201f3310e4ead0afcb3c4178c961576622db70d`.
+  The later promotion audit reproduced Windows credential protection,
+  quoted Compose path, native backup coverage, and source update limitations.
+  Fixes and their final-head validation must be recorded on PR #6515 before
+  considering promotion; the earlier gate did not cover those defects.
 - Prior installed tests span several revisions. They provide useful failure
   evidence but do not establish acceptance of this exact candidate on all six
   target machines.
