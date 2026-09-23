@@ -1,6 +1,6 @@
 import {csvForRows,tokens} from './UsageView'
 import UsageView from './UsageView'
-import {render,screen,fireEvent,within} from '@testing-library/react'
+import {render,screen,fireEvent,within,waitFor} from '@testing-library/react'
 
 function show(report) {
   return render(<UsageView report={{source:{status:'ok'},summary:{},...report}} readiness={{status:'ready'}} range={{start:'2026-05-01'}} />)
@@ -14,6 +14,16 @@ test('places focus on the Usage heading when the page mounts',()=>{
 test('places focus on the Usage analytics region in compact mode',()=>{
   render(<UsageView compact report={{source:{status:'ok'},summary:{}}} readiness={{status:'ready'}} range={{start:'2026-05-01'}} />)
   expect(screen.getByRole('region',{name:'Usage analytics'})).toHaveFocus()
+})
+
+test('restores focus to Refresh usage after a manual refresh settles',async()=>{
+  const report={source:{status:'ok'},summary:{}}
+  const view=render(<UsageView report={report} readiness={{status:'ready'}} loading={false} range={{start:'2026-05-01'}} onRefresh={()=>{}} />)
+  const refresh=screen.getByRole('button',{name:'Refresh usage'})
+  refresh.focus()
+  view.rerender(<UsageView report={report} readiness={{status:'ready'}} loading={true} range={{start:'2026-05-01'}} onRefresh={()=>{}} />)
+  view.rerender(<UsageView report={report} readiness={{status:'ready'}} loading={false} range={{start:'2026-05-01'}} onRefresh={()=>{}} />)
+  await waitFor(()=>expect(refresh).toHaveFocus())
 })
 
 test.each(['All Providers','All Services','All Sources'])('keeps missing metadata rows when filtering %s as unknown',label=>{

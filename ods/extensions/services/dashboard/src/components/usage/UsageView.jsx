@@ -42,7 +42,15 @@ export default function UsageView({compact=false,report,readiness,loading,error,
   const [view,setView]=useState('activity')
   const headingRef=useRef(null)
   const regionRef=useRef(null)
+  const refreshRef=useRef(null)
+  const restoreRefreshFocusRef=useRef(false)
   useEffect(()=>{(headingRef.current || regionRef.current)?.focus()},[])
+  useEffect(()=>{
+    if(!loading && restoreRefreshFocusRef.current){
+      restoreRefreshFocusRef.current=false
+      Promise.resolve().then(()=>refreshRef.current?.focus())
+    }
+  },[loading])
   const summary=report.summary || {}
   const available=report.source?.status==='ok' && !error && !loading
   const requestsUnavailable=!requestCountAvailable(summary,report.source)
@@ -56,7 +64,7 @@ export default function UsageView({compact=false,report,readiness,loading,error,
         <button aria-label="Previous month" onClick={onPrevious}><ChevronLeft size={15}/></button>
         <span>{new Date(`${range.start}T00:00:00Z`).toLocaleDateString('en-US',{month:'long',year:'numeric',timeZone:'UTC'})}</span>
         <button aria-label="Next month" onClick={onNext}><ChevronRight size={15}/></button>
-        <button className="usage-refresh" aria-label="Refresh usage" title="Refresh usage" onClick={onRefresh} disabled={loading}><RefreshCw size={14}/></button>
+        <button ref={refreshRef} className="usage-refresh" aria-label="Refresh usage" title="Refresh usage" onClick={()=>{restoreRefreshFocusRef.current=true; onRefresh?.()}} disabled={loading}><RefreshCw size={14}/></button>
       </div>
       <div className="usage-source-state"><span className={`usage-status-dot ${available ? 'is-ready' : ''}`}/>{loading ? 'Updating usage…' : available ? 'Recorded activity · refreshes every 10s' : 'Usage data unavailable'}</div>
     </header>
