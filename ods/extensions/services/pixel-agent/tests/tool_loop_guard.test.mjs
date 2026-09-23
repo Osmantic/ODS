@@ -16014,3 +16014,31 @@ for(const change of ['end','write']) test(`final restore rejects ${change} in th
   assert.equal(result,false);
   assert.notEqual(guard.verificationForRun('run-1').status,'passed');
 });
+import { createWorkspaceExportPlanTool, workspaceExportPlan } from '../plugin/workspace-export-plan.mjs';
+
+test('planning leaves current publication intact; its ordinary exec invalidates it', async () => {
+  const guard = createToolLoopGuard();
+  guard.observeRun({agentId:'pixel',runId:'run-1',sessionId:'session-1'},'pixel',
+    {prompt:'Create and publish a website, then export the source files.'});
+  const write = {path:'export-demo/index.html',content:'<!doctype html><title>Export demo</title>'};
+  call(guard,'write',{event:{params:write}});
+  afterCall(guard,'write',{event:{params:write,result:{details:{status:'completed'}}}});
+  const snapshot = workspacePreviewSnapshot('export-demo',[write]);
+  const details = {schemaVersion:1,kind:'ods-pixel-workspace-preview',status:'succeeded',
+    relativeDirectory:'export-demo',...snapshot,port:9437,
+    url:`http://${snapshot.siteId}.localhost:9437/${snapshot.siteId}/`,
+    httpStatus:200,readbackVerified:true,executable:false,overwritten:false};
+  call(guard,'pixel_ods_workspace_preview',{event:{params:{relativeDirectory:'export-demo'}}});
+  afterCall(guard,'pixel_ods_workspace_preview',{event:{params:{relativeDirectory:'export-demo'},result:{details}}});
+  assert.equal(guard.verificationForRun('run-1').status,'passed');
+  const params={files:[{source:'export-demo/index.html',destination:'export-v2/index.html.txt'}]};
+  const planned=await createWorkspaceExportPlanTool().execute('plan',params);
+  call(guard,'pixel_ods_workspace_export_plan',{event:{params}});
+  afterCall(guard,'pixel_ods_workspace_export_plan',{event:{params,result:planned}});
+  assert.equal(guard.verificationForRun('run-1').status,'passed');
+  const args=JSON.parse(planned.content[0].text).exec;
+  assert.notEqual(call(guard,'exec',{event:{params:args}})?.block,true);
+  afterCall(guard,'exec',{event:{params:args,result:{details:{status:'completed',exitCode:0}}}});
+  assert.equal(guard.verificationForRun('run-1').status,'failed');
+  assert.equal(guard.verificationForRun('run-1').preview.sha256,details.sha256);
+});

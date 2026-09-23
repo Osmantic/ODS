@@ -129,3 +129,39 @@ test('denied and ambiguous preview tools remain unavailable directly', () => {
   assert.deepEqual(result.tools,controls); assert.equal(result.catalogToolCount,2);
   assert.deepEqual(run([tool('pixel_ods_workspace_preview')],{agentId:'another-agent'}).tools,controls);
 });
+import {createWorkspaceExportPlanTool} from '../plugin/workspace-export-plan.mjs';
+import {compactToolResultEnvelope} from '../plugin/tool-result-envelope.mjs';
+
+test('real catalog retains the plan as deferred and returns the exact bounded ordinary-exec command', async () => {
+  const planner=createWorkspaceExportPlanTool();
+  const {o:setMeta}=await import(new URL('./tools-D5HS8Q_I.js',pathToFileURL(file)));
+  const {d:truncate}=await import(new URL('./tool-result-truncation-CbxVHy2D.js',pathToFileURL(file)));
+  setMeta(planner,{pluginId:'pixel-ods'});
+  const {tools,catalogRef}=run([planner]);
+  assert.ok(!tools.some(t=>t.name===planner.name));
+  const ctx={agentId:'pixel',catalogRef,config:{tools:{toolSearch:{enabled:true,mode:'tools'}}}};
+  const controlsByName=Object.fromEntries(createControls(ctx).map(t=>[t.name,t]));
+  const search=await controlsByName.tool_search.execute('search',{query:planner.name,limit:10});
+  assert.ok(search.details.some(t=>t.name===planner.name));
+  let accepted=0;
+  for(let count=1;count<=16;count++) {
+    const params={files:Array.from({length:count},(_,i)=>({source:`src/file-${i}.py`,destination:`out/file-${i}.py.txt`,key:`file-${i}.py`})),textMap:'out/text-map.json'};
+    let native;
+    try {native=await planner.execute('native',params);} catch(error) {assert.match(error.message,/large|budget/);continue;}
+    accepted++;
+    const deferred=await controlsByName.tool_call.execute('deferred',{id:planner.name,args:params});
+    const persisted=compactToolResultEnvelope({role:'toolResult',toolName:'tool_call',toolCallId:'deferred',...deferred});
+    const parsed=JSON.parse(persisted.content[0].text);
+    assert.deepEqual(parsed.result,native);
+    assert.ok(native.content[0].text.length<=3500);
+    assert.deepEqual(truncate({role:'toolResult',toolName:planner.name,...native},4000).content,native.content);
+    assert.deepEqual(truncate({role:'toolResult',toolName:'tool_call',...deferred},4000).content,deferred.content);
+    assert.ok(deferred.content[0].text.length<4000,`actual deferred length ${deferred.content[0].text.length}`);
+    assert.ok(persisted.content[0].text.length<4000);
+    assert.equal(JSON.parse(parsed.result.content[0].text).executed,false);
+    assert.equal(JSON.parse(parsed.result.content[0].text).exec.command,JSON.parse(native.content[0].text).exec.command);
+  }
+  assert.ok(accepted>=3);
+  await assert.rejects(controlsByName.tool_call.execute('denied',{id:'exec',args:{command:'true'}}));
+  assert.ok(!tools.some(t=>t.name==='exec'),'the planner does not synthesize execution permission');
+});

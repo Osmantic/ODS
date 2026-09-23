@@ -27,6 +27,7 @@
       "pixel_ods_web_extract",
       "pixel_ods_download_promote",
       "pixel_ods_workspace_preview",
+      "pixel_ods_workspace_export_plan",
       "pixel_ods_research",
       "pixel_ods_extension_request_advance",
       "pixel_ods_extension_request_retry",
@@ -59,6 +60,9 @@
       "replaySafe": true
     },
     "pixel_ods_skill": {
+      "replaySafe": true
+    },
+    "pixel_ods_workspace_export_plan": {
       "replaySafe": true
     }
   },

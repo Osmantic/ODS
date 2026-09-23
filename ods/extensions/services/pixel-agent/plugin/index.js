@@ -64,6 +64,7 @@ import {
 } from "./host-observe.mjs";
 import { createEvidenceArtifactWriter } from "./evidence-artifact.mjs";
 import { createWorkspacePreviewTool, createWorkspacePreviewVerifier } from "./workspace-preview.mjs";
+import { createWorkspaceExportPlanTool } from "./workspace-export-plan.mjs";
 import { createTaskActivity } from "./task-activity.mjs";
 import { createWorkspaceProjects } from "./workspace-projects.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
@@ -673,6 +674,8 @@ export default definePluginEntry({
     registerTool(api, createDownloadPromoteTool(), {
       names: ["pixel_ods_download_promote"],
     });
+
+    registerTool(api, createWorkspaceExportPlanTool(), { names: ["pixel_ods_workspace_export_plan"] });
 
     registerTool(api, createWorkspacePreviewTool({ transport: api.pluginConfig?.workspacePreviewTransport }), {
       names: ["pixel_ods_workspace_preview"],
