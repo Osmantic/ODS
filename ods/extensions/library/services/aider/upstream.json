@@ -19,13 +19,13 @@
   "provenance_checked_at": "2026-09-23",
   "review_status": "provenance_recorded_with_gaps",
   "runtime_validation": "not_run",
-  "notes": "Aider CLI source is Apache-2.0. Configured image selects release v0.86.2; LLM providers and user-selected weights retain separate terms.",
+  "notes": "Aider CLI source is Apache-2.0. Configured image selects release v0.86.2; LLM providers and user-selected weights retain separate terms. The local recipe explicitly labels its existing --version installation check as a one-shot task; upstream image and source references are unchanged.",
   "deployment": {
     "kind": "container_image",
     "recipe_files": [
       {
         "path": "compose.yaml",
-        "sha256": "8101ec13a1478b9c019f2faf5a2b52d12bf6930727fea4997ea42287a1f794fe"
+        "sha256": "1692ee6c7d855d0b6255f3b1a2943202a987d52368b6f1033d31eb6bab4e1449"
       },
       {
         "path": "manifest.yaml",

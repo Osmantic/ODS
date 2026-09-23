@@ -134,6 +134,15 @@ if (has_retired_reference(retired_product_prefix + retired_fleet_name, allow_fle
     raise SystemExit("[FAIL] Vendored Pixel exception is broader than the Fleet name")
 
 repo_path = pathlib.Path(repo_root)
+sys.path.insert(0, str(repo_path / "ods/tests"))
+from install_doc_history import historical_line_masks
+
+# Historical scanner identities retain their original source paths. Only an
+# exact, unique SHA/path/rule/line pair across the ignore file and review ledger
+# may mask its path span; live prose, comments and every other file stay guarded.
+history_masks = historical_line_masks(
+    repo_path, retired_product_prefix + "-" + retired_product_name
+)
 tracked_output = subprocess.check_output(
     ["git", "-C", repo_root, "ls-files", "-z"]
 )
@@ -169,7 +178,8 @@ for relative_path in tracked_files:
 
     text = data.decode("utf-8", errors="ignore")
     for line_number, line in enumerate(text.splitlines(), start=1):
-        if has_retired_reference(line, allow_fleet=allow_fleet):
+        checked_line = history_masks.get((relative_path, line_number), line)
+        if has_retired_reference(checked_line, allow_fleet=allow_fleet):
             matches.append(f"{relative_path}:{line_number}:{line}")
 
 if matches:
@@ -249,6 +259,7 @@ for file in "${compatible_ref_docs[@]}"; do
     require_literal "$file" 'Reviewed merges reach it automatically after edge-cache refresh' "Automatic hosted refresh guidance"
 done
 
+python3 "$ROOT_DIR/tests/test_install_doc_history.py"
 assert_no_retired_names
 
 trust_doc="$ROOT_DIR/docs/INSTALLER_TRUST.md"

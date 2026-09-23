@@ -3,6 +3,8 @@
 install_mock_update_agent() {
     local mock_bin="$1" mock_install="$2"
     export TEST_AGENT_INSTALL="$mock_install"
+    export TEST_AGENT_REAL_UNAME
+    TEST_AGENT_REAL_UNAME="$(command -v uname)"
     printf stopped > "$mock_install/.fixture-agent-state"
     cat > "$mock_bin/systemctl" <<'SH'
 #!/usr/bin/env bash
@@ -35,5 +37,10 @@ if [[ "$*" == *':7710/health'* && "$(cat "$TEST_AGENT_INSTALL/.fixture-agent-sta
 fi
 exit 7
 SH
-    chmod +x "$mock_bin/systemctl" "$mock_bin/sudo" "$mock_bin/curl"
+    cat > "$mock_bin/uname" <<'SH'
+#!/usr/bin/env bash
+# Select this fixture's simulated systemd platform even on macOS test hosts.
+if [[ "$*" == -s ]]; then printf 'Linux\n'; else exec "$TEST_AGENT_REAL_UNAME" "$@"; fi
+SH
+    chmod +x "$mock_bin/systemctl" "$mock_bin/sudo" "$mock_bin/curl" "$mock_bin/uname"
 }

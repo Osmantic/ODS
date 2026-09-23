@@ -29,6 +29,12 @@ class PythonLockTests(unittest.TestCase):
                         self.assertNotIn('://', entry)
 
     def test_windows_runtime_installer_rejects_substituted_wheel_before_import(self):
+        self._assert_runtime_rejects_substituted_wheel()
+
+    def test_runtime_lock_path_alias_still_rejects_substituted_wheel(self):
+        self._assert_runtime_rejects_substituted_wheel(use_parent_alias=True)
+
+    def _assert_runtime_rejects_substituted_wheel(self, use_parent_alias=False):
         # Run the real Windows helper against an offline fixture wheel. Replace
         # only the interpreter/path/import probes; no agent or service starts.
         agent_file = ROOT / 'ods/bin/ods-host-agent.py'
@@ -39,6 +45,14 @@ class PythonLockTests(unittest.TestCase):
             stage = pathlib.Path(directory)
             wheels = stage / 'wheels'
             wheels.mkdir()
+            if use_parent_alias:
+                # An existing directory followed by '..' produces an alias on
+                # every runner without privileged Windows symlink creation.
+                # The real helper canonicalizes __file__; the expected lock
+                # intentionally retains the alias, as macOS /var and Windows
+                # short temporary-directory names do in CI.
+                stage = wheels / '..'
+                self.assertNotEqual(stage, stage.resolve())
             wheel = wheels / 'ods_hash_fixture-0.0.0-py3-none-any.whl'
             with zipfile.ZipFile(wheel, 'w') as archive:
                 archive.writestr('ods_hash_fixture.py', 'VALUE = "original"\n')
@@ -58,7 +72,7 @@ class PythonLockTests(unittest.TestCase):
             def offline_pip(command, **kwargs):
                 self.assertIn('--require-hashes', command)
                 self.assertIn('--only-binary=:all:', command)
-                self.assertEqual(pathlib.Path(command[-1]), lock)
+                self.assertTrue(pathlib.Path(command[-1]).samefile(lock))
                 command = [item for item in command if item != '--user']
                 return subprocess.run([*command, '--no-index', '--find-links', str(wheels),
                                        '--target', str(target)], **kwargs)
