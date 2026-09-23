@@ -231,18 +231,23 @@ function Get-ODSDockerProjectResourceNames {
     try {
         switch ($Kind) {
             "container" {
-                return @(& docker ps -aq --filter $filter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                $resources = @(& docker ps -aq --filter $filter 2>$null)
             }
             "network" {
-                return @(& docker network ls -q --filter $filter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                $resources = @(& docker network ls -q --filter $filter 2>$null)
             }
             "volume" {
-                return @(& docker volume ls -q --filter $filter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                $resources = @(& docker volume ls -q --filter $filter 2>$null)
             }
         }
+        if ($LASTEXITCODE -ne 0) { throw "Docker resource enumeration failed" }
     } catch {
-        return @()
+        # An unavailable inventory cannot prove that cleanup finished.
+        throw "ODS_UNINSTALL_DOCKER_QUERY_FAILED: $Kind"
     }
+    # PowerShell unwraps function output, even `return @(...)`. Callers must
+    # capture with @() before counting or splatting a possible singleton ID.
+    return $resources | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 }
 
 function Test-ODSComposeFlagsFilesAvailable {
@@ -289,7 +294,7 @@ function Test-ODSComposeFlagsFilesAvailable {
 function Remove-ODSDockerProjectByLabel {
     param([switch]$RemoveVolumes)
 
-    $containers = Get-ODSDockerProjectResourceNames -Kind "container"
+    $containers = @(Get-ODSDockerProjectResourceNames -Kind "container")
     if ($containers.Count -gt 0) {
         Write-AI "Removing ODS containers by Docker label..."
         & docker rm -f @containers | Out-Host
@@ -298,7 +303,7 @@ function Remove-ODSDockerProjectByLabel {
         }
     }
 
-    $networks = Get-ODSDockerProjectResourceNames -Kind "network"
+    $networks = @(Get-ODSDockerProjectResourceNames -Kind "network")
     if ($networks.Count -gt 0) {
         Write-AI "Removing ODS Docker networks by label..."
         & docker network rm @networks | Out-Host
@@ -308,7 +313,7 @@ function Remove-ODSDockerProjectByLabel {
     }
 
     if ($RemoveVolumes) {
-        $volumes = Get-ODSDockerProjectResourceNames -Kind "volume"
+        $volumes = @(Get-ODSDockerProjectResourceNames -Kind "volume")
         if ($volumes.Count -gt 0) {
             Write-AI "Removing ODS Docker volumes by label..."
             & docker volume rm @volumes | Out-Host
@@ -422,9 +427,12 @@ function Invoke-Uninstall {
 
     $dockerAvailable = Test-ODSDockerRunningQuiet
     $hasInstallDir = Test-Path -LiteralPath $InstallDir
-    $hasProjectContainers = $false
+    $hasProjectResources = $false
     if ($dockerAvailable) {
-        $hasProjectContainers = ((Get-ODSDockerProjectResourceNames -Kind "container").Count -gt 0)
+        $containerCount = @(Get-ODSDockerProjectResourceNames -Kind "container").Count
+        $networkCount = @(Get-ODSDockerProjectResourceNames -Kind "network").Count
+        $volumeCount = if ($removeVolumes) { @(Get-ODSDockerProjectResourceNames -Kind "volume").Count } else { 0 }
+        $hasProjectResources = ($containerCount -gt 0 -or $networkCount -gt 0 -or $volumeCount -gt 0)
     }
 
     if (-not $dockerAvailable) {
@@ -433,7 +441,7 @@ function Invoke-Uninstall {
         throw "ODS_UNINSTALL_DOCKER_UNAVAILABLE"
     }
 
-    if (-not $hasInstallDir -and -not $hasProjectContainers) {
+    if (-not $hasInstallDir -and -not $hasProjectResources) {
         Write-AISuccess "No ODS install found at $InstallDir"
         return
     }
@@ -497,14 +505,17 @@ function Invoke-Uninstall {
         }
     }
 
-    if (-not $composeDownSucceeded -or (Get-ODSDockerProjectResourceNames -Kind "container").Count -gt 0) {
+    if (-not $composeDownSucceeded -or
+        @(Get-ODSDockerProjectResourceNames -Kind "container").Count -gt 0 -or
+        @(Get-ODSDockerProjectResourceNames -Kind "network").Count -gt 0 -or
+        ($removeVolumes -and @(Get-ODSDockerProjectResourceNames -Kind "volume").Count -gt 0)) {
         Remove-ODSDockerProjectByLabel -RemoveVolumes:$removeVolumes
     }
 
-    $remainingContainers = (Get-ODSDockerProjectResourceNames -Kind "container").Count
-    $remainingNetworks = (Get-ODSDockerProjectResourceNames -Kind "network").Count
+    $remainingContainers = @(Get-ODSDockerProjectResourceNames -Kind "container").Count
+    $remainingNetworks = @(Get-ODSDockerProjectResourceNames -Kind "network").Count
     $remainingVolumes = if ($removeVolumes) {
-        (Get-ODSDockerProjectResourceNames -Kind "volume").Count
+        @(Get-ODSDockerProjectResourceNames -Kind "volume").Count
     } else {
         0
     }

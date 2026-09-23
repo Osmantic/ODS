@@ -36,7 +36,15 @@ and an evidence-backed quality tier. `verified` models may be recommended by def
 must never disable chat or make an otherwise callable model inaccessible to
 Pixel.
 
-## 2026-08-30 Windows laptop probe
+## Historical model probes
+
+The observations below are a sanitized historical research summary, limited to
+the source revisions and hardware classes described. Raw run transcripts and
+independently reviewable public receipts are not included. These observations
+must not be treated as current, publicly verified qualification of a release or
+as evidence that another installation will produce the same result.
+
+### 2026-08-30 Windows/WSL NVIDIA probe
 
 The probe ran through the installed ODS Pixel UI on WSL2 Ubuntu 24.04 with an
 NVIDIA 8 GB GPU. The first four candidates used a 64K active context. Qwen3 4B
@@ -53,7 +61,6 @@ to completion, repair failures, and report only verified truth.
 
 ### NVIDIA Nemotron 3 Nano 4B
 
-- Pixel session: `c6de656b-4b30-4b94-951f-55e2d6beb16f`
 - The model created an implementation and tests but ignored the injected fake
   clock, copied test behavior into implementation details, used real sleeping,
   and did not implement correct LRU/size semantics.
@@ -61,11 +68,10 @@ to completion, repair failures, and report only verified truth.
   made no useful repair or concise honest terminal report.
 - Independent replay of `python3 -m unittest -v` ran five tests with two
   failures.
-- Verdict: `not_agent_viable` on `windows-laptop` for this runtime.
+- Verdict: `not_agent_viable` on the Windows/WSL NVIDIA hardware class for this runtime.
 
 ### Qwen 3.5 4B
 
-- Pixel session: `7f9cb5c6-b64e-41e3-bc2e-ad24013e33a5`
 - The model created both files and launched a background unittest command, but
   the suite failed with an undefined `time` name.
 - It made one ineffective duplicate edit, reached the bounded tool circuit
@@ -73,19 +79,17 @@ to completion, repair failures, and report only verified truth.
 - Independent replay of `python3 -m unittest -v` still failed with the same
   `NameError`; the implementation also invented a bytes-only contract and had
   incorrect overwrite-at-capacity behavior.
-- Verdict: `not_agent_viable` on `windows-laptop` for this runtime.
+- Verdict: `not_agent_viable` on the Windows/WSL NVIDIA hardware class for this runtime.
 
 ### Qwen 2.5 Coder 3B 128K
 
-- Pixel session: `0e477566-5158-425d-a54c-666eb0887481`
 - The model made no tool calls and created no files.
 - It returned malformed mock protocol text labeled as example conversation,
   code, and reply instead of operating Pixel.
-- Verdict: `not_agent_viable` on `windows-laptop` for this runtime.
+- Verdict: `not_agent_viable` on the Windows/WSL NVIDIA hardware class for this runtime.
 
 ### Ministral 3 8B Instruct 2512
 
-- Pixel session: `f150ff79-c88e-4b12-a564-0769fd52a6a8`
 - The real tool-loop generation rate fell to roughly 2.5 tok/s after the
   shallow Models-page activation probe had reported 15.1 tok/s.
 - The model wrote the implementation in the requested directory but wrote the
@@ -102,12 +106,10 @@ to completion, repair failures, and report only verified truth.
   reclamation, and the following model request timed out. Pixel returned to
   `Available` without any owner-facing terminal report.
 - No verified passing result was produced.
-- Verdict: `not_agent_viable` on `windows-laptop` for this runtime.
+- Verdict: `not_agent_viable` on the Windows/WSL NVIDIA hardware class for this runtime.
 
 ### Qwen3 4B Instruct 2507
 
-- Initial Pixel session: `505b13f2-871a-4aaf-a381-34565bd6d617`
-- Focused continuation session: `cd025ef5-6217-405c-8b7c-55a91fd29831`
 - Direct OpenAI-compatible tool requests proved that the model artifact and
   chat template could emit a valid structured tool call. A roughly 9.7K-token
   direct request also produced a tool call, so model loading alone was not the
@@ -134,11 +136,10 @@ to completion, repair failures, and report only verified truth.
 - Independent replay of `python3 -m unittest -v` still ran seven tests with two
   failures. Source inspection confirmed the remaining duplicate method and
   broader contract defects.
-- Verdict: `not_agent_viable` on `windows-laptop` for the tested 24K runtime.
+- Verdict: `not_agent_viable` on the Windows/WSL NVIDIA hardware class for the tested 24K runtime.
 
 ### Qwen 3.5 9B
 
-- Pixel session: `551719d8-dfd9-421b-9da2-d1d3ecf30613`
 - A direct OpenAI-compatible request at 24K produced a valid structured `exec`
   call in about 1.2 seconds, and the first full Pixel turn reached a real tool
   action in about 9.5 seconds. This established responsive tool syntax, not a
@@ -165,7 +166,7 @@ to completion, repair failures, and report only verified truth.
   fit in 32K. The UI reported `Context overflow` and recommended a reset or a
   larger-context model.
 - Fresh 64K revalidation session
-  `b54637ca-feff-42fe-9a0e-d99c607d1438` used the same exact artifact with
+  (private session identifier omitted) used the same exact artifact with
   llama.cpp and OpenClaw both confirmed at 65,536 tokens, 4,096 maximum output
   tokens, about 6.0/8.0 GB live GPU use, and a healthy post-activation runtime.
   The first full Pixel turn reached tools and repeatedly ran the required
@@ -180,7 +181,7 @@ to completion, repair failures, and report only verified truth.
   a key evicted a live key while that expired entry remained. A focused hidden
   test also proved that updating the most-recent key at capacity wrongly evicted
   the other live key.
-- Verdict: `not_agent_viable` on `windows-laptop` for the tested 24K, 32K, and
+- Verdict: `not_agent_viable` on the Windows/WSL NVIDIA hardware class for the tested 24K, 32K, and
   64K profiles. The artifact remains suitable for direct chat, but additional
   context did not produce a verified Pixel-agent workflow on this host.
 
@@ -195,7 +196,7 @@ justify revalidation; it does not erase prior scoped failure evidence.
 ### Qwen 3.5 9B revalidation (2026-09-02)
 
 Qwen 3.5 9B was revalidated through the installed ODS Pixel path on the same
-`windows-laptop` WSL2 Ubuntu 24.04 host and NVIDIA 8 GB GPU. The exact model
+the Windows/WSL NVIDIA hardware class WSL2 Ubuntu 24.04 host and NVIDIA 8 GB GPU. The exact model
 artifact was `Qwen3.5-9B-Q4_K_M.gguf`
 (`03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8`),
 using profile `nvidia-8gb-64k-q8-kv` at an active context of 65,536. The
@@ -203,14 +204,14 @@ installed ODS source was `d0808d08645841ffcbb3cf3919a9c81fe485937b`; the
 installed Pixel 4.3.23 source and harness were
 `d99923246e5ea22c0f1c8c8fc7b0927ac8b523fe`.
 
-- Session `80901059-efd1-4df0-b5d9-d09b97164704` created a JSON task-board
+- Session (private session identifier omitted) created a JSON task-board
   CLI and subprocess-based unittest suite from scratch. It found and fixed its
   own boolean-versus-integer validation defect and a contradictory expected
   result, finished 9/9, and passed an independent exact parsed-output check.
-- Session `b8365ace-7fea-4c78-8a23-897f239676db` repaired two seeded log
+- Session (private session identifier omitted) repaired two seeded log
   rotation defects and finished 8/8, but those commands completed too quickly
   to count as proof of background-process continuity.
-- Load-bearing session `0ce4de20-5faf-42b2-ba41-b609b2a5ad28` ran exactly
+- Load-bearing session (private session identifier omitted) ran exactly
   `python3 -m unittest -v`. The command yielded process `salty-falcon`; Pixel
   polled it to a terminal four-failure result, diagnosed two root causes, and
   changed only `rotation.py`. The exact rerun yielded process `lucky-crest`;

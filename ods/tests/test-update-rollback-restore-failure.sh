@@ -41,8 +41,8 @@ build_fixture() {
     cat > "$install/bin/docker" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
-    *'ps --services'*) echo fixture ;;
-    *'ps --format json'*) echo '{"State":"running"}' ;;
+    *'config --services'*) echo fixture ;;
+    *'ps --all --format json'*) echo '{"State":"running","Health":"healthy"}' ;;
 esac
 exit 0
 SH

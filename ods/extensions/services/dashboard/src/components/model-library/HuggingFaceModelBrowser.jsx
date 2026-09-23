@@ -17,6 +17,7 @@ import {
   ShieldCheck,
   X,
 } from 'lucide-react'
+import ModelTermsDialog from './ModelTermsDialog'
 
 const SEARCH_DELAY_MS = 350
 const SEARCH_TIMEOUT_MS = 30000
@@ -34,6 +35,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
   const [detailsLoading, setDetailsLoading] = useState(false)
   const [detailsError, setDetailsError] = useState(null)
   const [importingArtifact, setImportingArtifact] = useState(null)
+  const [reviewArtifact, setReviewArtifact] = useState(null)
   const [searchAttempt, setSearchAttempt] = useState(0)
   const detailsRequestRef = useRef(0)
 
@@ -74,6 +76,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
   }, [query, sort, searchAttempt])
 
   const openRepository = async (model) => {
+    setReviewArtifact(null)
     const requestId = detailsRequestRef.current + 1
     detailsRequestRef.current = requestId
     setSelectedRepo(model)
@@ -104,18 +107,24 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
     setDetailsError(null)
   }
 
-  const importArtifact = async (artifact) => {
+  const importArtifact = async (artifact, acknowledgement) => {
     if (!details?.id || downloadBusy || importingArtifact) return
+    setReviewArtifact(null)
     setImportingArtifact(artifact.id)
     setDetailsError(null)
     try {
       const response = await fetch('/api/models/huggingface/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repoId: details.id, artifactId: artifact.id }),
+        body: JSON.stringify({ repoId: details.id, artifactId: artifact.id, termsAcknowledgement: acknowledgement }),
       })
       const body = await responseJson(response)
-      if (!response.ok) throw new Error(errorMessage(body, 'Could not start the GGUF import'))
+      if (!response.ok) {
+        if (body?.detail?.code === 'model_terms_changed' || body?.code === 'model_terms_changed') {
+          await openRepository(selectedRepo)
+        }
+        throw new Error(errorMessage(body, 'Could not start the GGUF import'))
+      }
       await onImportStarted?.(body)
       setSelectedRepo(null)
       setDetails(null)
@@ -226,7 +235,15 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
         </div>
       </section>
 
-      {selectedRepo && (
+      {reviewArtifact && <ModelTermsDialog
+        modelId={reviewArtifact.termsPreview?.modelId || reviewArtifact.id}
+        modelName={reviewArtifact.label || reviewArtifact.id}
+        preview={reviewArtifact.termsPreview || null}
+        confirmLabel="Confirm import"
+        onCancel={() => setReviewArtifact(null)}
+        onConfirm={acknowledgement => importArtifact(reviewArtifact, acknowledgement)}
+      />}
+      {selectedRepo && !reviewArtifact && (
         <ArtifactDialog
           key={selectedRepo.id}
           model={selectedRepo}
@@ -237,7 +254,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
           downloadBusy={downloadBusy}
           importingArtifact={importingArtifact}
           onClose={closeRepository}
-          onImport={importArtifact}
+          onImport={artifact => setReviewArtifact(artifact)}
           onRetry={() => openRepository(selectedRepo)}
         />
       )}
@@ -469,6 +486,7 @@ async function responseJson(response) {
 function errorMessage(body, fallback) {
   if (typeof body?.detail === 'string') return body.detail
   if (typeof body?.detail?.message === 'string') return body.detail.message
+  if (typeof body?.detail?.error === 'string') return body.detail.error
   if (typeof body?.error === 'string') return body.error
   return fallback
 }

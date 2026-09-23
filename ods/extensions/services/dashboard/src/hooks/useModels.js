@@ -367,12 +367,13 @@ export function useModels() {
     }
   }, [pollInterval, pollModels])
 
-  const downloadModel = async (modelId) => {
+  const downloadModel = async (modelId, acknowledgement) => {
     const action = startAction(modelId, 'download')
     try {
       await modelActionRequest(
         '/api/models/' + encodeURIComponent(modelId) + '/download',
-        { method: 'POST' }, MODEL_DOWNLOAD_START_TIMEOUT_MS,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ termsAcknowledgement: acknowledgement }) }, MODEL_DOWNLOAD_START_TIMEOUT_MS,
         'Download for ' + modelId + ' did not start within 15 seconds. The server may still be working; refresh before retrying.',
         'Failed to start download for ' + modelId,
       )

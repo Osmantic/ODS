@@ -1,6 +1,6 @@
 import { fireEvent, screen } from '@testing-library/react'
 import { render } from '../../test/test-utils'
-import EnvEditor from '../settings/EnvEditor' // eslint-disable-line no-unused-vars
+import EnvEditor from '../settings/EnvEditor'
 
 const baseEditor = {
   path: '.env',

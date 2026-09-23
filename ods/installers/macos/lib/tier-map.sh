@@ -64,7 +64,7 @@ set_qwen_tier_config() {
             TIER_NAME="Enterprise"
             LLM_MODEL="qwen3-30b-a3b"
             GGUF_FILE="Qwen3-30B-A3B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/main/Qwen3-30B-A3B-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/d5b1d57bd0b504ac62ae6c725904e96ef228dc74/Qwen3-30B-A3B-Q4_K_M.gguf"
             GGUF_SHA256="9f1a24700a339b09c06009b729b5c809e0b64c213b8af5b711b3dbdfd0c5ba48"
             MAX_CONTEXT=131072
             ;;
@@ -72,7 +72,7 @@ set_qwen_tier_config() {
             TIER_NAME="Pro"
             LLM_MODEL="qwen3-30b-a3b"
             GGUF_FILE="Qwen3-30B-A3B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/main/Qwen3-30B-A3B-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/d5b1d57bd0b504ac62ae6c725904e96ef228dc74/Qwen3-30B-A3B-Q4_K_M.gguf"
             GGUF_SHA256="9f1a24700a339b09c06009b729b5c809e0b64c213b8af5b711b3dbdfd0c5ba48"
             MAX_CONTEXT=32768
             ;;
@@ -80,7 +80,7 @@ set_qwen_tier_config() {
             TIER_NAME="Prosumer"
             LLM_MODEL="qwen3.5-9b"
             GGUF_FILE="Qwen3.5-9B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
             GGUF_SHA256="03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
             MAX_CONTEXT=32768
             ;;
@@ -88,15 +88,15 @@ set_qwen_tier_config() {
             TIER_NAME="Lightweight"
             LLM_MODEL="qwen3.5-2b"
             GGUF_FILE="Qwen3.5-2B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
+            GGUF_SHA256="aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
             MAX_CONTEXT=8192
             ;;
         1)
             TIER_NAME="Entry Level"
             LLM_MODEL="qwen3.5-9b"
             GGUF_FILE="Qwen3.5-9B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
             GGUF_SHA256="03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
             MAX_CONTEXT=16384
             ;;
@@ -123,16 +123,16 @@ set_gemma4_tier_config() {
             TIER_NAME="Enterprise"
             LLM_MODEL="gemma-4-31b-it"
             GGUF_FILE="gemma-4-31B-it-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_URL="https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf"
+            GGUF_SHA256="38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84"
             MAX_CONTEXT=65536
             ;;
         3)
             TIER_NAME="Pro"
             LLM_MODEL="gemma-4-26b-a4b-it"
-            GGUF_FILE="gemma-4-26B-A4B-it-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_FILE="google_gemma-4-26B-A4B-it-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/resolve/10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d/google_gemma-4-26B-A4B-it-Q4_K_M.gguf"
+            GGUF_SHA256="a07f72221e8e3f77455ab0d7f7652d01a9f63c262b954aa6932a53275a0e895a"
             MAX_CONTEXT=16384
             ;;
         2)
@@ -147,8 +147,8 @@ set_gemma4_tier_config() {
             TIER_NAME="Lightweight"
             LLM_MODEL="qwen3.5-2b"
             GGUF_FILE="Qwen3.5-2B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
+            GGUF_SHA256="aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
             MAX_CONTEXT=8192
             ;;
         1)
@@ -220,7 +220,7 @@ auto_select_tier() {
 # ============================================================================
 
 BOOTSTRAP_GGUF_FILE="Qwen3.5-2B-Q4_K_M.gguf"
-BOOTSTRAP_GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
+BOOTSTRAP_GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
 BOOTSTRAP_GGUF_SHA256="aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
 BOOTSTRAP_LLM_MODEL="qwen3.5-2b"
 # Hermes requires at least a 64K context window. Keep the fast-start model at

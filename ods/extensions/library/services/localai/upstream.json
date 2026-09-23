@@ -1,0 +1,86 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/mudler/LocalAI",
+  "source_ref": "v3.12.1",
+  "source_revision": "fcecc12e57be39bad2ebf50cf729408b64409553",
+  "source_revision_scope": "configured_version_reference",
+  "source_url": "https://github.com/mudler/LocalAI/tree/fcecc12e57be39bad2ebf50cf729408b64409553",
+  "license": "MIT",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/mudler/LocalAI/blob/fcecc12e57be39bad2ebf50cf729408b64409553/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/mudler/LocalAI/blob/fcecc12e57be39bad2ebf50cf729408b64409553/LICENSE",
+      "sha256": "56bef7ba54ae4e4477b9effe34b6e6cadc1b0bcfaacc5be503096a1ce0a9d391"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "LocalAI source at v3.12.1 is MIT. The recipe does not select a model; gallery selections and downloaded weights require their own identity, revision and license review.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.yaml",
+        "sha256": "dfcb38fd9c2f28253b03468188e80da4b772101825e654820ce79ea686f0eca4"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "041c3f53cfe964a60e4bce77e823381299b30f5fed52ffe14c7bcbf256718253"
+      },
+      {
+        "path": "workflow-text-generation.json",
+        "sha256": "9905ad06a8f2ab0bd497efa13ace3601c6593741210ff8f8eeeadb60186e087f"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "localai",
+        "image": "localai/localai:v3.12.1@sha256:558efc7610e2ce43e702eaed4fcf456102a416471929d99819ef251fdbbf8b51",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_selected_by_recipe",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/mudler/LocalAI",
+      "retrieved_at": "2026-09-23T07:53:47.502508+00:00",
+      "success": true,
+      "response_sha256": "4f654b2e6b4ed313ad86e35585edeeea6bbb8d06f578e593063f5f508a026916"
+    },
+    {
+      "url": "https://api.github.com/repos/mudler/LocalAI/commits/v3.12.1",
+      "retrieved_at": "2026-09-23T07:53:48.144603+00:00",
+      "success": true,
+      "response_sha256": "411853f9a601c61413eac0e81935f88fa37c349222d6cd207b14d82df9b2730f"
+    },
+    {
+      "url": "https://api.github.com/repos/mudler/LocalAI/license?ref=fcecc12e57be39bad2ebf50cf729408b64409553",
+      "retrieved_at": "2026-09-23T07:53:48.939444+00:00",
+      "success": true,
+      "response_sha256": "1a37509752229a2a5392ecf588561751255ef9f6fa3fdc8b356ac4f0a66cd4a6"
+    },
+    {
+      "url": "https://api.github.com/repos/mudler/LocalAI/contents?ref=fcecc12e57be39bad2ebf50cf729408b64409553",
+      "retrieved_at": "2026-09-23T07:53:49.653391+00:00",
+      "success": true,
+      "response_sha256": "9eabb207bd42ebc09e37a6dd57dc834cfad0e2458b0220208a7563ffa3eed051"
+    }
+  ],
+  "gaps": [
+    "Source release reference matches the configured version; an image digest does not by itself prove the image was built from this commit.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "localai/localai:v3.12.1@sha256:558efc7610e2ce43e702eaed4fcf456102a416471929d99819ef251fdbbf8b51"
+}

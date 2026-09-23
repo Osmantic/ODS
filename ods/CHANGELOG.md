@@ -99,17 +99,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   installer-context parity, rootless doctor, dashboard API regressions
   (`502 passed, 5 skipped`), and Perplexica/remote-provider/token-spy tests
   (`35 passed, 1 skipped`).
-- Linux rootless ownership contract passed on Tower2 with
+- Linux rootless ownership contract passed on a Linux NVIDIA target with
   `25` rootless ownership tests.
 - Release-prep fleet validation on 2026-07-28 passed regressions,
   zero-prereq bootstrap, fresh install, verify, cloud-mode, dashboard, Hermes,
   UI policy, full-model capability finalize, lifecycle reinstall/restart, and
-  `ods doctor` across Tower2, Strix Halo, Spark, M5 MacBook Pro,
-  Windows laptop, and Strixy. The run recorded zero product bugs, zero harness
+  `ods doctor` across Linux NVIDIA (x86_64 and aarch64), Linux AMD, macOS arm64,
+  Windows NVIDIA, and Windows AMD hardware classes. The run recorded zero product bugs, zero harness
   limitations, and zero environment notes.
 - Strict User Green is not claimed for this candidate: the long six-cycle
   browser model-management matrix was intentionally waived after partial pass
-  evidence, and `dgx-gpu01` was excluded because its SSH host key changed and
+  evidence, and an additional Linux aarch64 target was excluded because its SSH host key changed and
   was not owner-verified.
 
 ## [2.5.3] - 2026-05-26

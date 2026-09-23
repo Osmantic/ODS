@@ -1,6 +1,6 @@
 # Gitleaks ignore file
-# Add fingerprints of known false positives here (one per line)
-# Get fingerprints from gitleaks output when a false positive is detected
+# Add individually reviewed fingerprints here (one per line), with evidence.
+# An ignored historical credential is not proof of provider-side revocation.
 #
 # Example: abc123def456...
 
@@ -29,7 +29,9 @@ ce863df7a784f4d2406bf2c151e9c5c497b3d085:SECURITY_AUDIT.md:generic-api-key:31
 ce863df7a784f4d2406bf2c151e9c5c497b3d085:SECURITY_AUDIT.md:generic-api-key:32
 ce863df7a784f4d2406bf2c151e9c5c497b3d085:SECURITY_AUDIT.md:generic-api-key:59
 
-# Archive/cookbook examples (historical test code and documentation)
+# Inherited archive exceptions: historical test code and documentation.
+# The LiveKit occurrences require maintainer/provider retirement evidence;
+# do not classify the entire group as harmless examples. See SECRET_SCAN_REVIEW.md.
 b21a7e1cf78cb925a8b0fe2d3819890c8a0e5751:archive/cookbook/android-labs/cookbooks/agent-template-writing.md:generic-api-key:383
 b21a7e1cf78cb925a8b0fe2d3819890c8a0e5751:archive/cookbook/android-labs/products/privacy-shield/test_shield.py:generic-api-key:34
 b21a7e1cf78cb925a8b0fe2d3819890c8a0e5751:archive/cookbook/android-labs/products/privacy-shield/test_shield.py:generic-api-key:157
@@ -51,3 +53,66 @@ a3b26dbd450fd0dc5d0651ffa6f21fe20acb1195:archive/cookbook/voice-agent-framework/
 
 # Configuration examples (default/placeholder values)
 48a1d87d3d155359fb23d7a65d1db55b036b7508:ods/config/searxng/settings.yml:generic-api-key:3
+
+# PB-001: reviewed fixed historical occurrences, 2026-09-23.
+# Each exception binds commit + path + rule + line; new commits are scanned.
+# See ods/docs/SECRET_SCAN_REVIEW.md; no global path or rule exclusions.
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/extensions/library/services/keycloak/compose.yaml:generic-api-key:19
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/RELEASE-MANIFEST.json:generic-api-key:306
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/scripts/generated/release.env:discord-api-token:17
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/security-evals/agent-comparison/task-battery-v1.json:generic-api-key:179
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/tests/test_source_audit.py:generic-api-key:178
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/tests/test_ops_broker.py:curl-auth-header:177
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/tests/test_frontier_broker.py:generic-api-key:1309
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/tests/test_mesh_peer.py:generic-api-key:2879
+24c8b714a4fa1eb022b9c5ff5a4e1109c29ef630:ods/extensions/services/dashboard/src/lib/pixelConversationWriter.test.js:generic-api-key:31
+bb21a9cf1fb2df67dfac195f721662f57fd230b4:ods/extensions/services/dashboard/src/pages/Pixel.legacy-history.test.jsx:generic-api-key:6
+bdd6f35727c2beb44f3952491cc57e7a07d3ded9:ods/extensions/services/dashboard/src/lib/pixelConversations.test.js:generic-api-key:11
+bdd6f35727c2beb44f3952491cc57e7a07d3ded9:ods/extensions/services/dashboard/src/lib/pixelConversations.test.js:generic-api-key:43
+c611570c493ca448bd08a45c936dd5e03ccffc86:ods/extensions/services/dashboard/src/lib/pixelSavedPrompts.js:generic-api-key:1
+54292586f9da910e6a3e3121781a317f69e864cc:ods/extensions/services/dashboard/src/components/PixelCommandSearch.test.jsx:generic-api-key:56
+5ed81190fb88e545fdc138b726f62279b6cc0ae4:ods/extensions/services/dashboard/src/lib/pixelConversations.js:generic-api-key:2
+ef5f6e60cad0bce05a965811d6dc59bfaf217649:ods/tests/pixel_inference/test_advice_process.py:generic-api-key:100
+7963d4f799873c32756e06483022bb4d766f753b:ods/extensions/services/model-router/tests/test_router.py:generic-api-key:343
+4b257f2ee04bd6aa4f0ec9ae98a5daee4a0dffcf:ods/extensions/services/model-router/tests/test_router.py:generic-api-key:946
+39164d8c5bc3306dd4e7ac3e884dcc8574b9930a:ods/tests/test-perplexica-entrypoint.py:generic-api-key:203
+0fba8b3cd452afa3575128e427f989d90e15e142:dream-server/extensions/services/ape/tests/conftest.py:generic-api-key:19
+676dc575c623a32114b77d1f9c4e3252111dd673:dream-server/extensions/services/dreamforge/rust/crates/runtime/src/secret_scanner.rs:jwt:200
+dd97e51445ea4d01fd6f291ce384e46988d1d584:resources/dev/extensions-library/services/gitea/README.md:curl-auth-header:36
+bc47367431025198fcbea19a54abcde8c30847fd:dream-server/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:125
+bc47367431025198fcbea19a54abcde8c30847fd:dream-server/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:131
+bc47367431025198fcbea19a54abcde8c30847fd:dream-server/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:181
+4ba4a3779264f44b247af06fbad391c1f4d38269:dream-server/extensions/services/litellm/README.md:curl-auth-header:89
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/services/privacy_shield/pii_scrubber.py:generic-api-key:149
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/workflows/comfyui/README.md:curl-auth-header:32
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/workflows/comfyui/README.md:curl-auth-header:64
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/workflows/flowise/README.md:curl-auth-header:30
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/workflows/langflow/README.md:curl-auth-header:30
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/services/privacy_shield/pii_scrubber.py:generic-api-key:149
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/workflows/comfyui/README.md:curl-auth-header:32
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/workflows/comfyui/README.md:curl-auth-header:64
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/workflows/flowise/README.md:curl-auth-header:30
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/workflows/langflow/README.md:curl-auth-header:30
+9539512e06bef98b9276e339ef3cb2d6273e8f1f:dream-server/installers/macos/lib/env-generator.sh:generic-api-key:80
+5c5151fe050ac570fb022ccb99d86bda93dfedb2:dream-server/installers/windows/lib/env-generator.ps1:generic-api-key:115
+48a1d87d3d155359fb23d7a65d1db55b036b7508:dream-server/config/searxng/settings.yml:generic-api-key:3
+6a5047fd3f7cc0369416d14289740b8c3f02dd06:dream-server/privacy-shield-offline/pii_scrubber.py:generic-api-key:146
+6a5047fd3f7cc0369416d14289740b8c3f02dd06:dream-server/privacy-shield/pii_scrubber.py:generic-api-key:149
+
+# PB-001: same reviewed fixture/hash occurrences inside the single-commit bundle.
+817214d5ec3d8aa583fe50c1dc7561f3c1a16dff:RELEASE-MANIFEST.json:generic-api-key:306
+817214d5ec3d8aa583fe50c1dc7561f3c1a16dff:scripts/generated/release.env:discord-api-token:17
+817214d5ec3d8aa583fe50c1dc7561f3c1a16dff:security-evals/agent-comparison/task-battery-v1.json:generic-api-key:179
+817214d5ec3d8aa583fe50c1dc7561f3c1a16dff:tests/test_source_audit.py:generic-api-key:178
+817214d5ec3d8aa583fe50c1dc7561f3c1a16dff:tests/test_ops_broker.py:curl-auth-header:177
+817214d5ec3d8aa583fe50c1dc7561f3c1a16dff:tests/test_frontier_broker.py:generic-api-key:1309
+817214d5ec3d8aa583fe50c1dc7561f3c1a16dff:tests/test_mesh_peer.py:generic-api-key:2879
+
+# PB-001: unchanged reviewed occurrences in the rebuilt public documentation bundle.
+69f4ad0bd062fe006e9d5b473a04b9a38eff8533:RELEASE-MANIFEST.json:generic-api-key:306
+69f4ad0bd062fe006e9d5b473a04b9a38eff8533:scripts/generated/release.env:discord-api-token:17
+69f4ad0bd062fe006e9d5b473a04b9a38eff8533:tests/test_source_audit.py:generic-api-key:178
+69f4ad0bd062fe006e9d5b473a04b9a38eff8533:security-evals/agent-comparison/task-battery-v1.json:generic-api-key:179
+69f4ad0bd062fe006e9d5b473a04b9a38eff8533:tests/test_ops_broker.py:curl-auth-header:177
+69f4ad0bd062fe006e9d5b473a04b9a38eff8533:tests/test_frontier_broker.py:generic-api-key:1309
+69f4ad0bd062fe006e9d5b473a04b9a38eff8533:tests/test_mesh_peer.py:generic-api-key:2879

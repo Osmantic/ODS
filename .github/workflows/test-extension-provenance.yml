@@ -1,0 +1,45 @@
+name: Legacy extension provenance
+
+on:
+  push:
+    branches: [main, public-beta]
+    paths:
+      - 'ods/extensions/library/services/**'
+      - 'ods/scripts/audit-extension-provenance.py'
+      - 'ods/tests/test_extension_provenance.py'
+      - 'ods/tests/test_xtts_consent.py'
+      - 'ods/docs/EXTENSION_PROVENANCE_EVIDENCE.md'
+      - '.github/workflows/test-extension-provenance.yml'
+  pull_request:
+    branches: [main, public-beta]
+    paths:
+      - 'ods/extensions/library/services/**'
+      - 'ods/scripts/audit-extension-provenance.py'
+      - 'ods/tests/test_extension_provenance.py'
+      - 'ods/tests/test_xtts_consent.py'
+      - 'ods/docs/EXTENSION_PROVENANCE_EVIDENCE.md'
+      - '.github/workflows/test-extension-provenance.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  coverage-and-drift:
+    name: Evidence coverage and consent regressions (not license clearance)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Check 34 legacy provenance records and local input drift
+        run: python ods/scripts/audit-extension-provenance.py
+      - name: Run stdlib evidence regressions
+        run: python -m unittest discover -s ods/tests -p test_extension_provenance.py -v
+      - name: Check XTTS consent without pulling or starting an image
+        # Compose only renders JSON; execution uses a temporary python3 stand-in.
+        # No image, model or Python package download occurs in these checks.
+        run: python -m unittest discover -s ods/tests -p test_xtts_consent.py -v

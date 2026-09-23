@@ -4,13 +4,18 @@ doc_type: how-to
 audience: [contributor, security-reviewer, maintainer]
 feature_status: supported
 owners: [documentation, maintainers]
-sources_of_truth: [CONTRIBUTING.md, .github/pull_request_template.md, .github/workflows/, QUALIFICATION.md]
+sources_of_truth: [CONTRIBUTING.md, QUALIFICATION.md, tests/run.sh, scripts/docs/check.mjs]
 last_verified_at: 2026-08-27
 ---
 
 # Pixel pull request guide
 
 Keep a change narrow enough that reviewers can identify its authority, data, network, filesystem, recovery, upgrade, and documentation effects.
+
+The upstream pull-request template and CI workflow directory are not included
+in this public export. Use the facts listed below and the containing ODS
+repository's contribution process. Local validation is inspectable here;
+private workflow requirements or successful upstream runs are not implied.
 
 ## Before editing
 

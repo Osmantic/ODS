@@ -19,6 +19,8 @@ import {
 import { Link } from 'react-router-dom'
 import { useModels } from '../hooks/useModels'
 import { useDownloadProgress } from '../hooks/useDownloadProgress'
+import ModelTermsDetails from '../components/model-library/ModelTermsDetails'
+import ModelTermsDialog from '../components/model-library/ModelTermsDialog'
 import HuggingFaceModelBrowser from '../components/model-library/HuggingFaceModelBrowser'
 import ExternalLemonadeAdoption from '../components/ExternalLemonadeAdoption'
 import MetalMetricIcon from '../components/MetalMetricIcon'
@@ -87,6 +89,7 @@ export default function Models({ compact = false }) {
   } = useModels()
 
   const [downloadStarting, setDownloadStarting] = useState(null)
+  const [downloadReviewModel, setDownloadReviewModel] = useState(null)
   const [downloadAwaitingStatus, setDownloadAwaitingStatus] = useState(false)
   const [downloadStartFailure, setDownloadStartFailure] = useState(null)
   const [page, setPage] = useState(1)
@@ -195,13 +198,20 @@ export default function Models({ compact = false }) {
     setPage(1)
   }, [categoryFilter, compatibilityFilter, contextFloor, libraryScope, query, scopedModels.length, speedFilter])
 
-  const handleDownload = async (modelId) => {
+  const handleDownload = modelId => {
+    setDownloadReviewModel(models.find(model => model.id === modelId) || { id: modelId })
+  }
+
+  const handleConfirmDownload = async acknowledgement => {
+    if (!downloadReviewModel) return
+    const modelId = downloadReviewModel.id
+    setDownloadReviewModel(null)
     setDownloadStartFailure(null)
     downloadProgress.clearTerminal?.()
     setDownloadAwaitingStatus(false)
     setDownloadStarting(modelId)
     try {
-      await downloadModel(modelId)
+      await downloadModel(modelId, acknowledgement)
       setDownloadAwaitingStatus(true)
       await downloadProgress.refresh()
     } catch (downloadError) {
@@ -463,6 +473,12 @@ export default function Models({ compact = false }) {
       </div>
       )}
 
+      {downloadReviewModel && <ModelTermsDialog
+        modelId={downloadReviewModel.id}
+        modelName={downloadReviewModel.name}
+        onCancel={() => setDownloadReviewModel(null)}
+        onConfirm={handleConfirmDownload}
+      />}
       {deleteConfirmModel && (
         <DeleteModelDialog
           model={deleteConfirmModel}
@@ -850,7 +866,7 @@ function ModelTableRow({
       <PrimaryAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} downloadBusy={downloadBusy} downloadStarting={downloadStarting} runDisabledReason={runDisabledReason} hermesMinimumContext={hermesMinimumContext} onDownload={onDownload} onLoad={onLoad} onBenchmark={onBenchmark}/>
       {isLoaded && !isRuntimeManaged && <button aria-label={`Configure context for ${model.name}`} title={`Configure context for ${model.name}`} disabled={activationBusy} onClick={onLoad}><MetalMetricIcon icon={SlidersHorizontal} size={14}/></button>}
       <DeleteAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} onDelete={onDelete}/>
-    </div><details className="model-entry-details"><summary>Details <ChevronRight size={12}/></summary><div><p>{model.description || 'No description available.'}</p><p>{tags.join(' · ')}</p>{performanceBadge && <p>{performanceBadge.label}</p>}<p>{compatibility.label}: {compatibility.detail}</p>{runDisabledReason && <p>{runDisabledReason}</p>}</div></details></footer>
+    </div><details className="model-entry-details"><summary>Details <ChevronRight size={12}/></summary><div><p>{model.description || 'No description available.'}</p><p>{tags.join(' · ')}</p>{performanceBadge && <p>{performanceBadge.label}</p>}<p>{compatibility.label}: {compatibility.detail}</p>{runDisabledReason && <p>{runDisabledReason}</p>}<ModelTermsDetails modelId={model.id}/></div></details></footer>
   </article>
 
   return (
@@ -864,6 +880,7 @@ function ModelTableRow({
               {model.quantization && <Badge>{model.quantization}</Badge>}
             </div>
             <p className="mt-1 truncate text-[11px] text-theme-text-muted/75">{model.description}</p>
+            <ModelTermsDetails modelId={model.id} />
             <div className="mt-2 flex flex-wrap gap-1.5">
               {tags.map(tag => <Badge key={tag} subdued>{tag}</Badge>)}
               {performanceBadge && <Badge tone={performanceBadge.tone}>{performanceBadge.label}</Badge>}
@@ -959,7 +976,6 @@ function PrimaryAction({
   downloadBusy,
   downloadStarting,
   runDisabledReason,
-  hermesMinimumContext,
   onDownload,
   onLoad,
   onBenchmark,
@@ -1507,7 +1523,6 @@ function getRunDisabledReason({
   gpu,
   canActivateModels,
   activationModeError,
-  hermesMinimumContext,
   pixelMinimumContext,
   loadBusy,
   activationBusy,
@@ -1880,11 +1895,6 @@ const CORE_MODEL_COMPATIBILITY_KEYS = new Set([
   'openaiChat',
   'pixelAgent',
 ])
-
-function isHermesTalkBlocked(compatibility) {
-  const status = String(compatibility?.status || '').toLowerCase()
-  return BLOCKING_MODEL_COMPATIBILITY_STATUSES.includes(status)
-}
 
 function isHermesTalkVerified(compatibility) {
   const status = String(compatibility?.status || '').toLowerCase()

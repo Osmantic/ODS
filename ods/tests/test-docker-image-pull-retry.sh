@@ -270,7 +270,137 @@ else
 fi
 
 echo ""
-echo "3. Retry Strategy Tests (source-level sanity checks)"
+echo "3. Phase 08 selection (complete phase, inert Docker/config/pull fixtures)"
+echo "────────────────────────────────────────────────────────────────────"
+
+run_phase08_selection() (
+  set -euo pipefail
+  local scenario="$1" backend="$2"
+  local case_dir="$TMP_DIR/phase08-$scenario-$backend"
+  export INSTALL_DIR="$case_dir/install with spaces"
+  export PHASE08_CASE_DIR="$case_dir"
+  mkdir -p "$INSTALL_DIR/scripts" "$case_dir/source"
+  : > "$INSTALL_DIR/.env"
+  : > "$case_dir/pulled"
+  : > "$case_dir/validated"
+  : > "$case_dir/warnings"
+  export LOG_FILE="$case_dir/install.log"
+
+  # Only the installed resolver knows the overlays written by phase 06. Check
+  # its exact directory/hardware arguments, then return a distinct installed
+  # overlay so using the stale source flags cannot accidentally pass.
+  cat > "$INSTALL_DIR/scripts/resolve-compose-stack.sh" <<'RESOLVER'
+#!/usr/bin/env bash
+[[ $# == 10 && $1 == --script-dir && $2 == "$INSTALL_DIR" &&
+   $3 == --tier && $4 == 2 && $5 == --gpu-backend && $6 == "$GPU_BACKEND" &&
+   $7 == --gpu-count && $8 == 2 && $9 == --ods-mode && ${10} == "$ODS_MODE" ]] || exit 92
+printf '%s\n' "$@" > "$PHASE08_CASE_DIR/resolver.args"
+printf '%s\n' '-f docker-compose.base.yml -f docker-compose.fixture-installed.yml'
+RESOLVER
+  chmod +x "$INSTALL_DIR/scripts/resolve-compose-stack.sh"
+  cat > "$case_dir/docker" <<'DOCKER'
+#!/usr/bin/env bash
+[[ $PWD == "$INSTALL_DIR" && -f .env && $1 == compose ]] || exit 93
+[[ "$*" == 'compose -f docker-compose.base.yml -f docker-compose.fixture-installed.yml config --format json' ]] || exit 94
+printf '%s\n' "$PWD" > "$PHASE08_CASE_DIR/compose.cwd"
+printf '%s\n' '{"services":{"selected":{"image":"example.invalid/selected:v1"},"built":{"image":"ods-built:local","build":{"context":"."}}}}'
+DOCKER
+  chmod +x "$case_dir/docker"
+
+  export GPU_BACKEND="$backend" ODS_MODE=local
+  TIER=2; GPU_COUNT=2; DRY_RUN=false
+  LEMONADE_EXTERNAL=false; EXTERNAL_LLM_URL=''
+  ENABLE_PERPLEXICA=false; ENABLE_COMFYUI=false; ENABLE_VOICE=false
+  ENABLE_WORKFLOWS=false; ENABLE_RAG=false; ENABLE_QDRANT=false
+  ENABLE_EMBEDDINGS=false; ENABLE_HERMES=false; ENABLE_OPENCLAW=false
+  LLAMA_SERVER_IMAGE="example.invalid/llama-$backend:v1"
+  LEMONADE_SERVER_IMAGE='example.invalid/lemonade:v1'
+  DOCKER_COMPOSE_CMD="$case_dir/docker compose"
+  COMPOSE_FLAGS='-f docker-compose.base.yml -f docker-compose.stale-source.yml'
+  BGRN=''; AMB=''; NC=''
+  case "$scenario" in
+    external) EXTERNAL_LLM_URL='http://127.0.0.1:9999/v1' ;;
+    lemonade-external) LEMONADE_EXTERNAL=true ;;
+    cloud) ODS_MODE=cloud ;;
+    local) ENABLE_PERPLEXICA=true ;;
+    optional) EXTERNAL_LLM_URL='http://127.0.0.1:9999/v1'; ENABLE_PERPLEXICA=true
+      ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_QDRANT=true
+      ENABLE_EMBEDDINGS=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=true ;;
+    *) return 90 ;;
+  esac
+  ods_progress() { :; }; show_phase() { :; }; bootline() { :; }; signal() { :; }
+  ai() { :; }; ai_ok() { :; }; ai_bad() { :; }
+  ai_warn() { printf '%s\n' "$*" >> "$case_dir/warnings"; }
+  pull_with_progress() { printf '%s\n' "$1" >> "$case_dir/pulled"; }
+  validate_docker_image_or_fallback() {
+    printf '%s\n' "$2" >> "$case_dir/validated"
+    printf -v "$1" '%s' "$2"
+  }
+  source "$ROOT_DIR/installers/lib/compose-images.sh"
+  cd "$case_dir/source"
+  source "$ROOT_DIR/installers/phases/08-images.sh" > "$case_dir/output"
+
+  [[ "$PWD" == "$case_dir/source" && ! -s "$case_dir/warnings" ]]
+  [[ "$(cat "$case_dir/compose.cwd")" == "$INSTALL_DIR" ]]
+  [[ -s "$case_dir/resolver.args" ]]
+  grep -Fxq 'example.invalid/selected:v1' "$case_dir/pulled"
+  grep -Fxq 'ghcr.io/open-webui/open-webui:v0.7.2' "$case_dir/pulled"
+  if grep -q '^ods-built:' "$case_dir/pulled"; then return 1; fi
+  if [[ "$scenario" == local ]]; then
+    if [[ "$backend" == amd ]]; then
+      grep -Fxq 'example.invalid/lemonade:v1' "$case_dir/pulled"
+    else
+      grep -Fxq "$LLAMA_SERVER_IMAGE" "$case_dir/pulled"
+      grep -Fxq "$LLAMA_SERVER_IMAGE" "$case_dir/validated"
+    fi
+  else
+    if grep -Eq '^example\.invalid/(llama-|lemonade:)' "$case_dir/pulled"; then return 1; fi
+    if grep -Eq '^example\.invalid/(llama-|lemonade:)' "$case_dir/validated"; then return 1; fi
+  fi
+  if [[ "$ENABLE_PERPLEXICA" == true ]]; then
+    grep -q '^itzcrazykns1337/perplexica:.*@sha256:' "$case_dir/pulled"
+  else
+    if grep -q '^itzcrazykns1337/perplexica:' "$case_dir/pulled"; then return 1; fi
+  fi
+  if [[ "$scenario" == optional ]]; then
+    for image in ghcr.io/speaches-ai/speaches ghcr.io/remsky/kokoro-fastapi-cpu n8nio/n8n \
+      qdrant/qdrant ghcr.io/huggingface/text-embeddings-inference nousresearch/hermes-agent caddy ghcr.io/openclaw/openclaw; do
+      grep -q "^$image:" "$case_dir/pulled"
+    done
+  elif [[ "$scenario" != local ]]; then
+    [[ $(wc -l < "$case_dir/pulled") -eq 2 ]]
+  fi
+)
+
+for scenario in external lemonade-external cloud local; do
+  for backend in cpu nvidia amd; do
+    printf "  %-60s " "Phase 08 $scenario / $backend selects only requested images..."
+    # Do not invoke the fixture in an `if` condition: Bash would suppress its
+    # errexit and a later assertion could hide an earlier failed assertion.
+    set +e
+    (set -e; run_phase08_selection "$scenario" "$backend")
+    phase08_status=$?
+    set -e
+    if [[ $phase08_status -eq 0 ]]; then
+      print_pass
+    else
+      print_fail "(see $TMP_DIR/phase08-$scenario-$backend)"
+    fi
+  done
+done
+printf "  %-60s " "external LLM preserves explicitly enabled optional modules..."
+set +e
+(set -e; run_phase08_selection optional cpu)
+phase08_status=$?
+set -e
+if [[ $phase08_status -eq 0 ]]; then
+  print_pass
+else
+  print_fail
+fi
+
+echo ""
+echo "4. Retry Strategy Tests (source-level sanity checks)"
 echo "────────────────────────────────────────────────────"
 
 printf "  %-60s " "max_attempts is 4..."

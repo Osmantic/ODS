@@ -293,4 +293,3 @@ def test_health_preserves_truthful_host_status(client, mock_request, status):
     mock_request.return_value = {"status": status}
     response = client.get("/api/pixel/providers/health", headers={"Authorization": "Bearer test-key-12345"})
     assert response.json() == {"status": status}
-

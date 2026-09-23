@@ -7,8 +7,22 @@ services:
     volumes:
       - ./data/xtts:/app/tts_models
     environment:
-      - COQUI_TOS_AGREED=1
+      - COQUI_TOS_AGREED=${COQUI_TOS_AGREED:?Review XTTS model terms in NOTICE.md and explicitly set COQUI_TOS_AGREED=1 only if you agree}
       - PORT=80
+    # The pinned image's default command pipes "y" into the model downloader.
+    # Replace that command while preserving its NVIDIA entrypoint.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        if [ "$${COQUI_TOS_AGREED:-}" != "1" ]; then
+          printf '%s\n' 'XTTS requires explicit acceptance: review the model terms in the recipe NOTICE.md, then set COQUI_TOS_AGREED=1.' >&2
+          exit 78
+        fi
+        exec python3 -m xtts_api_server -hs 0.0.0.0 \
+          -sf "$${EXAMPLE_FOLDER:-/app/example}" \
+          -t "$${TUNNEL:-http://localhost:80}" \
+          -p "$${PORT:-80}" -ms "$${MODEL_SOURCE:-apiManual}" </dev/null
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

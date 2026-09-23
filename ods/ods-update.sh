@@ -84,6 +84,47 @@ env_file_value() {
 }
 
 COMPOSE_PARSED_ARGS=()
+UPDATE_COMPOSE=()
+
+select_update_compose() {
+    if (( ${#UPDATE_COMPOSE[@]} > 0 )); then return 0; fi
+    if docker compose version >/dev/null 2>&1; then
+        UPDATE_COMPOSE=(docker compose)
+    else
+        log_error "Docker Compose v2 is required for source-update activation and verification; no update was attempted."
+        return 1
+    fi
+}
+
+update_compose() {
+    local flags="$1"
+    shift
+    select_update_compose || return 1
+    compose_flags_parse "$flags" || return 1
+    "${UPDATE_COMPOSE[@]}" "${COMPOSE_PARSED_ARGS[@]}" "$@"
+}
+
+restart_updated_host_agent() {
+    local cli="${INSTALL_DIR}/ods-cli" deadline
+    if [[ ! -f "$cli" || ! -f "${INSTALL_DIR}/bin/ods-host-agent.py" ]]; then
+        log_error "Updated host-agent files are missing; source update cannot be verified."
+        return 1
+    fi
+    log_info "Restarting the host agent from the updated installation..."
+    if ! INSTALL_DIR="$INSTALL_DIR" "$BASH" "$cli" agent restart; then
+        log_error "Host-agent restart failed; the updated code is not confirmed active."
+        return 1
+    fi
+    deadline=$(( SECONDS + HEALTH_TIMEOUT ))
+    while (( SECONDS < deadline )); do
+        if INSTALL_DIR="$INSTALL_DIR" "$BASH" "$cli" agent status >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    log_error "Host-agent health did not become ready after restart."
+    return 1
+}
 
 compose_flags_parse() {
     local flags="$1" parsed="" token
@@ -265,7 +306,7 @@ snapshot_pre_update() {
 
     local snap_dir="${ROLLBACK_DIR}/pre-update-${timestamp}"
     log_info "Creating rollback snapshot: pre-update-${timestamp}" >&2
-    mkdir -p "${snap_dir}"
+    mkdir -p "${snap_dir}" || return 1
 
     local files_saved=0
 
@@ -273,7 +314,10 @@ snapshot_pre_update() {
     for pattern in ".env" ".env.*"; do
         for f in "${INSTALL_DIR}"/${pattern}; do
             [[ -f "$f" ]] || continue
-            cp "$f" "${snap_dir}/"
+            cp "$f" "${snap_dir}/" || {
+                log_error "Snapshot copy failed; update was not started." >&2
+                return 1
+            }
             files_saved=$(( files_saved + 1 ))
         done
     done
@@ -281,14 +325,17 @@ snapshot_pre_update() {
     # Active compose overlays — needed to re-create the exact stack on rollback
     for f in "${INSTALL_DIR}"/docker-compose*.yml "${INSTALL_DIR}"/docker-compose*.yaml; do
         [[ -f "$f" ]] || continue
-        cp "$f" "${snap_dir}/"
+        cp "$f" "${snap_dir}/" || {
+            log_error "Snapshot copy failed; update was not started." >&2
+            return 1
+        }
         files_saved=$(( files_saved + 1 ))
     done
 
     # Cached compose flags — records which overlays were active, so rollback
     # can bring the restored stack up with the same file selection
     if [[ -f "${INSTALL_DIR}/.compose-flags" ]]; then
-        cp "${INSTALL_DIR}/.compose-flags" "${snap_dir}/"
+        cp "${INSTALL_DIR}/.compose-flags" "${snap_dir}/" || return 1
         files_saved=$(( files_saved + 1 ))
     fi
 
@@ -296,14 +343,14 @@ snapshot_pre_update() {
     for ext_dir in litellm n8n openclaw searxng; do
         local src="${INSTALL_DIR}/config/${ext_dir}"
         if [[ -d "$src" ]]; then
-            cp -r "$src" "${snap_dir}/config-${ext_dir}"
+            cp -r "$src" "${snap_dir}/config-${ext_dir}" || return 1
             files_saved=$(( files_saved + 1 ))
         fi
     done
 
     # Version file
     if [[ -f "$VERSION_FILE" ]]; then
-        cp "$VERSION_FILE" "${snap_dir}/.version"
+        cp "$VERSION_FILE" "${snap_dir}/.version" || return 1
         files_saved=$(( files_saved + 1 ))
     fi
 
@@ -314,7 +361,7 @@ snapshot_pre_update() {
         --argjson fc "$files_saved" \
         --arg dir "$INSTALL_DIR" \
         '{type:"pre-update", timestamp:$ts, version:$ver, files_count:$fc, install_dir:$dir}' \
-        > "${snap_dir}/snapshot.json"
+        > "${snap_dir}/snapshot.json" || return 1
 
     # Integrity check: verify metadata is valid JSON before declaring success
     if ! jq empty "${snap_dir}/snapshot.json"; then
@@ -514,26 +561,12 @@ _update_rollback() {
     fi
 
     cd "$INSTALL_DIR"
-    if [[ -n "${compose_flags_arg}" ]]; then
-        if ! docker compose ${compose_flags_arg} down --remove-orphans; then
-            log_warn "docker compose v2 down failed, trying v1..."
-            docker-compose ${compose_flags_arg} down --remove-orphans
-        fi
-        if ! docker compose ${compose_flags_arg} up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose ${compose_flags_arg} up -d
-        fi
-    else
-        if ! docker compose down --remove-orphans; then
-            log_warn "docker compose v2 down failed, trying v1..."
-            docker-compose down --remove-orphans
-        fi
-        if ! docker compose up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose up -d
-        fi
+    if ! update_compose "$compose_flags_arg" down --remove-orphans \
+      || ! update_compose "$compose_flags_arg" up -d --no-build; then
+        log_error "Configuration was restored, but restarting its stack failed. Manual recovery required."
+        return 1
     fi
-    log_warn "Rollback complete. Run 'ods-update.sh health' to verify."
+    log_warn "Configuration restored. This snapshot does not revert Git source, built images or migration side effects. Run 'ods-update.sh health' to verify the runtime."
 }
 
 #==============================================================================
@@ -783,30 +816,56 @@ cmd_update() {
     if ! ensure_source_checkout_for_update; then
         return 1
     fi
+    if (( BASH_VERSINFO[0] < 4 )); then
+        log_error "Source updates require Bash 4+ to activate ods-cli. Run this command with your installed modern Bash."
+        return 1
+    fi
+    if [[ ! -f "${INSTALL_DIR}/ods-cli" || ! -f "${INSTALL_DIR}/bin/ods-host-agent.py" ]]; then
+        log_error "The source checkout lacks host-agent activation files. Reinstall the complete ODS checkout."
+        return 1
+    fi
+    select_update_compose || return 1
+
+    # Resolve and validate before modifying files or touching running services.
+    local compose_flags="" update_branch
+    compose_flags=$(resolve_compose_flags) || {
+        log_error "No valid Compose stack was found; no source update was attempted."
+        return 1
+    }
+    cd "$INSTALL_DIR"
+    update_branch=$(git branch --show-current 2>/dev/null || true)
+    if [[ -z "$update_branch" ]]; then
+        log_error "Cannot update a detached checkout safely. Check out a branch first."
+        return 1
+    fi
 
     # ── Step 1: rollback snapshot ─────────────────────────────────────────────
     local timestamp
     timestamp=$(date +%Y%m%d-%H%M%S)
     local snap_dir
-    snap_dir=$(snapshot_pre_update "$timestamp")
-
-    # Resolve compose flags once — used in restart and rollback paths.
-    local compose_flags=""
-    compose_flags=$(resolve_compose_flags 2>/dev/null || true)
+    snap_dir=$(snapshot_pre_update "$timestamp") || {
+        log_error "Could not create a complete configuration snapshot; update was not started."
+        return 1
+    }
 
     # ── Step 2: pull latest changes ───────────────────────────────────────────
     log_info "Pulling latest changes..."
     cd "$INSTALL_DIR"
-    local update_branch
-    update_branch=$(git branch --show-current 2>/dev/null || true)
-    if [[ -z "$update_branch" ]]; then
-        _update_rollback "Cannot update a detached checkout safely. Check out a branch first." \
-            "$snap_dir" "$compose_flags"
+    if ! git fetch origin; then
+        log_error "Git fetch failed; no source update was activated."
         return 1
     fi
-    git fetch origin
     if ! git pull --ff-only origin "$update_branch"; then
-        _update_rollback "Git pull failed." "$snap_dir" "$compose_flags"
+        log_error "Git pull failed; running services were not restarted. Resolve the checkout before retrying."
+        return 1
+    fi
+
+    # Build before migrations or stopping the running stack. Compose builds
+    # only services with a build context; image-only services remain image-based.
+    # Do not retry a failed build with another Compose implementation.
+    log_info "Building updated local service images..."
+    if ! update_compose "$compose_flags" build; then
+        log_error "Image build failed. Running services were not restarted and no new version was recorded. The source checkout has advanced; fix the build before retrying."
         return 1
     fi
 
@@ -829,34 +888,14 @@ cmd_update() {
     # ── Step 4: restart services ──────────────────────────────────────────────
     log_info "Restarting services..."
     cd "$INSTALL_DIR"
-    if [[ -n "${compose_flags}" ]]; then
-        if ! docker compose ${compose_flags} down --remove-orphans; then
-            log_warn "docker compose v2 down failed, trying v1..."
-            docker-compose ${compose_flags} down --remove-orphans
-        fi
-        if ! docker compose ${compose_flags} up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            if ! docker-compose ${compose_flags} up -d; then
-                _update_rollback "Both Docker Compose v2 and v1 failed to restart services." \
-                    "$snap_dir" "$compose_flags"
-                return 1
-            fi
-        fi
-    elif [[ -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
-        if ! docker compose down --remove-orphans; then
-            log_warn "docker compose v2 down failed, trying v1..."
-            docker-compose down --remove-orphans
-        fi
-        if ! docker compose up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            if ! docker-compose up -d; then
-                _update_rollback "Both Docker Compose v2 and v1 failed to restart services." \
-                    "$snap_dir" "$compose_flags"
-                return 1
-            fi
-        fi
-    else
-        log_warn "No compose files found. Skipping container restart."
+    if ! update_compose "$compose_flags" down --remove-orphans \
+      || ! update_compose "$compose_flags" up -d --no-build; then
+        _update_rollback "Docker Compose failed to restart services." "$snap_dir" "$compose_flags"
+        return 1
+    fi
+    if ! restart_updated_host_agent; then
+        _update_rollback "Host-agent activation failed." "$snap_dir" "$compose_flags"
+        return 1
     fi
 
     # ── Step 5: health-check with timeout ────────────────────────────────────
@@ -1087,7 +1126,6 @@ cmd_changelog() {
 cmd_health() {
     log_info "Running health checks..."
     local all_healthy=true
-    local timeout_start=$SECONDS
     
     # Check Docker is running
     if ! docker info &>/dev/null; then
@@ -1120,7 +1158,10 @@ cmd_health() {
     fi
     
     local services
-    services=$("${compose_cmd[@]}" "${compose_args[@]}" ps --services 2>/dev/null || echo "")
+    services=$("${compose_cmd[@]}" "${compose_args[@]}" config --services 2>/dev/null) || {
+        log_error "Cannot enumerate the configured Compose services"
+        return 1
+    }
     
     if [[ -z "$services" ]]; then
         if [[ -n "$compose_flags" ]]; then
@@ -1133,39 +1174,69 @@ cmd_health() {
     
     for service in $services; do
         local status
-        status=$("${compose_cmd[@]}" "${compose_args[@]}" ps --format json "$service" 2>/dev/null \
-            | jq -r 'if type == "array" then (.[0].State // "unknown") else (.State // "unknown") end' 2>/dev/null \
+        status=$("${compose_cmd[@]}" "${compose_args[@]}" ps --all --format json "$service" 2>/dev/null \
+            | jq -sr '
+                [ .[] | if type == "array" then .[] else . end ] as $containers
+                | if ($containers | length) == 0 then "missing"
+                  elif all($containers[]; .State == "running"
+                       and ((.Health // "") == "" or .Health == "healthy"))
+                  then "running"
+                  elif all($containers[]; .State == "exited" and .ExitCode == 0)
+                  then "completed" else "not ready" end' 2>/dev/null \
             || echo "unknown")
         
         if [[ "$status" == "running" ]]; then
             log_ok "Service ${service}: running"
+        elif [[ "$status" == "completed" ]] && \
+            "${compose_cmd[@]}" "${compose_args[@]}" config --format json 2>/dev/null \
+                | jq -e --arg service "$service" '
+                    .services[$service]
+                    | .labels["com.ods.lifecycle"] == "oneshot" and .restart == "no"
+                ' >/dev/null 2>&1; then
+            log_ok "Service ${service}: declared one-shot completed successfully"
         else
             log_error "Service ${service}: ${status}"
             all_healthy=false
         fi
     done
     
+    # Probe the actual published bind. A wildcard listener is reachable locally;
+    # a specific LAN/IPv6 bind is not necessarily reachable through 127.0.0.1.
+    local probe_host="${BIND_ADDRESS:-}"
+    [[ -n "$probe_host" ]] || probe_host="$(env_file_value BIND_ADDRESS)"
+    case "$probe_host" in
+        ''|0.0.0.0) probe_host=127.0.0.1 ;;
+        ::|'[::]') probe_host='[::1]' ;;
+        *:*) [[ "$probe_host" == \[*\] ]] || probe_host="[$probe_host]" ;;
+    esac
+
     # Check dashboard API health endpoint
     local dashboard_api_port="${DASHBOARD_API_PORT:-}"
     [[ -n "$dashboard_api_port" ]] || dashboard_api_port="$(env_file_value DASHBOARD_API_PORT)"
     dashboard_api_port="${dashboard_api_port:-3002}"
-    if curl -sf --max-time 15 "http://127.0.0.1:${dashboard_api_port}/health" &>/dev/null; then
-        log_ok "Dashboard API: healthy"
-    elif curl -sf --max-time 15 "http://127.0.0.1:${dashboard_api_port}/api/status" &>/dev/null; then
-        log_ok "Dashboard API: responding"
-    else
-        log_warn "Dashboard API: not responding on port ${dashboard_api_port}"
+    if grep -Fxq dashboard-api <<< "$services"; then
+        if curl -sf --max-time 15 "http://${probe_host}:${dashboard_api_port}/health" &>/dev/null; then
+            log_ok "Dashboard API: healthy"
+        elif curl -sf --max-time 15 "http://${probe_host}:${dashboard_api_port}/api/status" &>/dev/null; then
+            log_ok "Dashboard API: responding"
+        else
+            log_error "Dashboard API: not responding on port ${dashboard_api_port}"
+            all_healthy=false
+        fi
     fi
     
     # Check llama-server health
     local llama_server_port="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-}}"
     [[ -n "$llama_server_port" ]] || llama_server_port="$(env_file_value OLLAMA_PORT)"
     [[ -n "$llama_server_port" ]] || llama_server_port="$(env_file_value LLAMA_SERVER_PORT)"
-    llama_server_port="${llama_server_port:-8080}"
-    if curl -sf --max-time 15 "http://127.0.0.1:${llama_server_port}/v1/models" &>/dev/null; then
-        log_ok "llama-server: healthy"
-    else
-        log_warn "llama-server: not responding on port ${llama_server_port}"
+    llama_server_port="${llama_server_port:-11434}"
+    if grep -Fxq llama-server <<< "$services"; then
+        if curl -sf --max-time 15 "http://${probe_host}:${llama_server_port}/v1/models" &>/dev/null; then
+            log_ok "llama-server: healthy"
+        else
+            log_error "llama-server: not responding on port ${llama_server_port}"
+            all_healthy=false
+        fi
     fi
     
     if $all_healthy; then
@@ -1191,8 +1262,8 @@ Commands:
   check          Check for available updates
   status         Show current version, update status, and rollback info
   backup [name]  Create a named general backup of current configuration
-  update         Source-checkout only: pull latest source, run migrations,
-                 restart, health-check, and auto-restore on failure
+  update         Source-checkout only: pull source, build local images,
+                 run migrations, restart containers/host agent and verify health
   rollback [id]  Restore from a rollback snapshot or general backup
                  (default: most recent pre-update snapshot)
   changelog [v]  Show changelog (optional: specific version)
@@ -1201,6 +1272,7 @@ Commands:
 Rollback snapshots:
   Stored in:  <install_dir>/data/backups/pre-update-<timestamp>/
   Contents:   .env, docker-compose overlays, config/{litellm,n8n,openclaw,searxng}/
+  Limits:     Configuration only; not Git source, built images or migration data
   Retained:   MAX_BACKUPS most recent snapshots (oldest pruned automatically)
 
 Environment Variables:
@@ -1209,7 +1281,7 @@ Environment Variables:
   MAX_BACKUPS         Number of snapshots/backups to retain (default: 10)
   HEALTH_TIMEOUT      Seconds to wait for healthy services (default: 120)
   DASHBOARD_API_PORT  Dashboard API port (default: 3002)
-  OLLAMA_PORT         llama-server port (default: 8080)
+  OLLAMA_PORT         llama-server published port (default: 11434)
 
 Examples:
   ods-update.sh check

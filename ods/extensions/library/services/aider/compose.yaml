@@ -18,6 +18,8 @@ services:
     stdin_open: true
     tty: true
     restart: "no"  # One-shot CLI tool
+    labels:
+      com.ods.lifecycle: oneshot
     security_opt:
       - no-new-privileges:true
     deploy:

@@ -8,6 +8,10 @@ intentionally expose services to your LAN.
 
 ## Install Paths
 
+For the public beta, follow [Public Beta Installation](PUBLIC_BETA_INSTALL.md).
+It describes the commit-bound installation kit and its release acceptance gates.
+The hosted commands below select the main/stable channels, not an audited beta.
+
 ### Public Linux/macOS Bootstrap
 
 The canonical one-liner is:

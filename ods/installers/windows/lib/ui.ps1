@@ -373,8 +373,11 @@ function Invoke-ODSHuggingFaceDownloadFallback {
 
     $checkArgs = @($python.PrefixArgs) + @("-c", "import huggingface_hub, hf_xet")
     if ((Invoke-ODSNativeQuiet -FilePath $python.FilePath -Arguments $checkArgs) -ne 0) {
-        $installArgs = @($python.PrefixArgs) + @("-m", "pip", "install", "--user", "-q", "huggingface_hub[hf_xet]>=0.27")
-        Invoke-ODSNativeQuiet -FilePath $python.FilePath -Arguments $installArgs | Out-Null
+        $dependencyRoot = Split-Path -Parent (Split-Path -Parent $helper)
+        $dependencyLock = Join-Path $dependencyRoot "installers\python-deps\host-agent.txt"
+        if (-not (Test-Path -LiteralPath $dependencyLock -PathType Leaf)) { return $false }
+        $installArgs = @($python.PrefixArgs) + @("-m", "pip", "install", "--user", "-q", "--require-hashes", "--only-binary=:all:", "-r", $dependencyLock)
+        if ((Invoke-ODSNativeQuiet -FilePath $python.FilePath -Arguments $installArgs) -ne 0) { return $false }
     }
 
     Write-AI "Retrying with Hugging Face client..."
@@ -500,6 +503,18 @@ function Invoke-ExtractionWithRetry {
         [int]$MaxRetries = 3
     )
 
+    # Resolve the exact destination once before recursive cleanup. Brackets in
+    # an owner-selected install directory are literal, never wildcard patterns.
+    if ([string]::IsNullOrWhiteSpace($DestinationPath)) { return $false }
+    $DestinationPath = [System.IO.Path]::GetFullPath($DestinationPath)
+    $destinationRoot = [System.IO.Path]::GetPathRoot($DestinationPath)
+    if ($DestinationPath.TrimEnd('\', '/') -ieq $destinationRoot.TrimEnd('\', '/')) { return $false }
+    $ZipPath = [System.IO.Path]::GetFullPath($ZipPath)
+    if ((Test-Path -LiteralPath $DestinationPath) -and
+        ((Get-Item -LiteralPath $DestinationPath).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        return $false
+    }
+
     for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
         if ($attempt -gt 1) {
             Write-AI "Extraction retry attempt $attempt of $MaxRetries..."
@@ -522,22 +537,25 @@ function Invoke-ExtractionWithRetry {
         # Attempt extraction
         try {
             # Remove partial extraction if it exists
-            if (Test-Path $DestinationPath) {
+            if (Test-Path -LiteralPath $DestinationPath) {
                 Write-AI "Cleaning up previous extraction attempt..."
-                Remove-Item -Path $DestinationPath -Recurse -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $DestinationPath -Recurse -Force -ErrorAction Stop
             }
 
             # Create parent directory if needed
             $parentDir = Split-Path -Parent $DestinationPath
-            if (-not (Test-Path $parentDir)) {
+            if (-not (Test-Path -LiteralPath $parentDir)) {
                 New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
             }
 
             # Extract
-            Expand-Archive -Path $ZipPath -DestinationPath $DestinationPath -Force -ErrorAction Stop
+            # Expand-Archive treats DestinationPath as a wildcard even when its
+            # archive input uses LiteralPath. .NET consumes both as literal paths.
+            Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $DestinationPath)
 
             # Verify extraction succeeded (check if directory exists and has content)
-            if ((Test-Path $DestinationPath) -and ((Get-ChildItem $DestinationPath).Count -gt 0)) {
+            if ((Test-Path -LiteralPath $DestinationPath) -and (@(Get-ChildItem -LiteralPath $DestinationPath).Count -gt 0)) {
                 return $true
             } else {
                 Write-AIWarn "Extraction completed but destination is empty"

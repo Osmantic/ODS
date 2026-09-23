@@ -20,7 +20,8 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install edge test dependencies
-        run: python -m pip install -r ods/extensions/services/pixel-edge/requirements.txt 'pytest>=8,<9'
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/pixel-edge-tests.txt
       - name: Verify durable admission and special-file rejection
         run: >-
           python -m pytest -q

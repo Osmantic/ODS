@@ -198,6 +198,9 @@ bash -c '
   cat > "$fake_py" <<PYEOF
 #!/usr/bin/env bash
 if [[ "\${1:-}" == "-m" && "\${2:-}" == "pip" && "\${3:-}" == "install" ]]; then
+  for required in --require-hashes --only-binary=:all: -r "$ROOT_DIR/installers/python-deps/host-agent.txt"; do
+    printf "%s\n" "\$@" | grep -Fxq -- "\$required" || exit 98
+  done
   if printf "%s\n" "\$@" | grep -q -- "--break-system-packages"; then
     echo "break-system-packages-used" >> "$tmpdir/pep668.calls"
     exit 0
@@ -210,7 +213,8 @@ PYEOF
   chmod +x "$fake_py"
 
   source installers/lib/python-runtime.sh
-  ods_python_pip_install_user "$fake_py" "$LOG_FILE" "huggingface_hub[hf_xet]>=0.27"
+  ods_python_pip_install_user "$fake_py" "$LOG_FILE" --require-hashes --only-binary=:all: \
+    -r "$ROOT_DIR/installers/python-deps/host-agent.txt"
   cat "$tmpdir/pep668.calls"
 ' bash "$ROOT_DIR" "$tmpdir" >"$pep668_out"
 assert_contains "$pep668_out" 'break-system-packages-used' "Python pip install helper did not retry with --break-system-packages"
@@ -873,7 +877,28 @@ assert_contains "extensions/services/embeddings/compose.yaml" 'HF_HUB_ETAG_TIMEO
 assert_contains "installers/phases/11-services.sh" '_phase11_prefetch_embeddings_model' "Linux installer should prefetch TEI embeddings before compose launch"
 assert_contains "installers/phases/11-services.sh" 'download-hf-snapshot.py' "Linux embeddings prefetch should use the Hugging Face snapshot helper"
 assert_contains "installers/phases/11-services.sh" 'data/embeddings' "Linux embeddings prefetch should populate the TEI cache mount"
-assert_contains "installers/phases/11-services.sh" 'huggingface_hub\[hf_xet\]>=0\.27' "Linux embeddings prefetch should install Xet-capable Hugging Face dependencies"
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+source = Path("installers/phases/11-services.sh").read_text()
+function = re.search(r"(?ms)^_phase11_prefetch_embeddings_model\(\) \{.*?^\}", source)
+assert function, "Linux embeddings prefetch helper is missing"
+body = function[0].replace("\\\n", " ")
+body = re.sub(r"[ \t]+", " ", body)
+assert ('ods_python_pip_install_user "$python_cmd" "$LOG_FILE" --require-hashes --only-binary=:all: '
+        '-r "${SCRIPT_DIR:-$INSTALL_DIR}/installers/python-deps/host-agent.txt"') in body, \
+    "Linux embeddings prefetch must consume the reviewed host lock through the pip helper"
+assert 'import huggingface_hub, hf_xet' in body, "Embeddings must verify Xet is importable"
+inputs = Path("installers/python-deps/host-agent.in").read_text()
+assert "huggingface_hub[hf_xet]>=0.27" in inputs, "Host lock must preserve the Xet extra and Hub lower bound"
+lock = Path("installers/python-deps/host-agent.txt").read_text().replace("\\\n", " ")
+for name in ("huggingface-hub", "hf-xet"):
+    records = [line for line in lock.splitlines() if line.startswith(name + "==")]
+    assert records, f"Host lock omits {name}"
+    assert all(re.search(r"--hash=sha256:[0-9a-f]{64}(?:\s|$)", line) for line in records), \
+        f"Every {name} version/marker branch must carry an artifact hash"
+PY
 assert_contains "installers/phases/11-services.sh" 'ODS_EMBEDDINGS_PREFETCH' "Linux embeddings prefetch should expose an operator escape hatch"
 assert_contains "docker-compose.base.yml" 'RAG_EMBEDDING_ENGINE: "\$\{RAG_EMBEDDING_ENGINE:-openai\}"' "Open WebUI should use API-backed embeddings instead of downloading sentence-transformers at startup"
 assert_contains "docker-compose.base.yml" 'RAG_OPENAI_API_BASE_URL: "\$\{RAG_OPENAI_API_BASE_URL:-http://embeddings:80/v1\}"' "Open WebUI RAG embeddings should route to the bundled TEI service"

@@ -1,0 +1,125 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/amd/gaia",
+  "source_ref": "0a074f1b6692e007674b627544de4257c4bdcc94",
+  "source_revision": "0a074f1b6692e007674b627544de4257c4bdcc94",
+  "source_revision_scope": "npm_declared_gitHead",
+  "source_url": "https://github.com/amd/gaia/tree/0a074f1b6692e007674b627544de4257c4bdcc94",
+  "license": "MIT",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/amd/gaia/blob/0a074f1b6692e007674b627544de4257c4bdcc94/LICENSE.md",
+  "license_documents": [
+    {
+      "path": "LICENSE.md",
+      "url": "https://github.com/amd/gaia/blob/0a074f1b6692e007674b627544de4257c4bdcc94/LICENSE.md",
+      "sha256": "c8817fa3324527cdf19911c1ac555e1a8735d895680a9862d5ccb4ec2b1fae84"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "The recipe builds @amd-gaia/agent-ui 0.19.0. Public npm metadata declares MIT and gitHead 0a074f1b6692e007674b627544de4257c4bdcc94, whose repository license was checked. Default configuration skips model initialization; enabling it requires model-specific terms.",
+  "deployment": {
+    "kind": "local_build",
+    "recipe_files": [
+      {
+        "path": "Dockerfile",
+        "sha256": "06549e46511a65cd1f3381c7a4d795af4815e0401018122d7b34cfb26d1575d1"
+      },
+      {
+        "path": "compose.yaml",
+        "sha256": "59cd403dbcbc076b7f9b200bd16eb2d5469d02ac13fa04b37bb34f3b9e82a691"
+      },
+      {
+        "path": "docker-entrypoint.sh",
+        "sha256": "7cac93d59e3a48f434cef6269ba7773bdf4a6f57c87ba4c2f4484948cfe90a97"
+      },
+      {
+        "path": "hooks/post_install.sh",
+        "sha256": "dd600593f21c0c917b36305af1faec662da3aa6a709e2faeb16ca6516e07933e"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "c37b3d0439e7a527ec3c4de1e664722b22d321c9ed5ec2fb73c76be69b3cb65d"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "Dockerfile",
+        "image": "node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732",
+        "scope": "build_base_not_covered_by_application_license"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_selected_by_recipe",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/amd/gaia",
+      "retrieved_at": "2026-09-23T07:53:37.423503+00:00",
+      "success": true,
+      "response_sha256": "872a82cafbd0bdf67721f73891679202ada588e08b28bd6b7e6d902f70468213"
+    },
+    {
+      "url": "https://api.github.com/repos/amd/gaia/commits/0a074f1b6692e007674b627544de4257c4bdcc94",
+      "retrieved_at": "2026-09-23T07:53:38.119767+00:00",
+      "success": true,
+      "response_sha256": "1aa09ead891f19447de28d223c71bc85117aac7bf7b382c19bb2ce3e3c7f4d44"
+    },
+    {
+      "url": "https://api.github.com/repos/amd/gaia/license?ref=0a074f1b6692e007674b627544de4257c4bdcc94",
+      "retrieved_at": "2026-09-23T07:53:39.022432+00:00",
+      "success": true,
+      "response_sha256": "0f6691e4d9eafef7a280879f815c92052a6887e367586804efe74e948daca357"
+    },
+    {
+      "url": "https://api.github.com/repos/amd/gaia/contents?ref=0a074f1b6692e007674b627544de4257c4bdcc94",
+      "retrieved_at": "2026-09-23T07:53:39.608032+00:00",
+      "success": true,
+      "response_sha256": "396df9c3af7ab059db7c3f50b2dd55efac6754445dbf795bb7ec3e93baa683fa"
+    }
+  ],
+  "gaps": [
+    "npm gitHead is publisher metadata, not a reproduced package build; transitive npm package notices are not inventoried.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "package_metadata": {
+    "url": "https://registry.npmjs.org/@amd-gaia/agent-ui/0.19.0",
+    "version": "0.19.0",
+    "gitHead": "0a074f1b6692e007674b627544de4257c4bdcc94",
+    "license": "MIT",
+    "scope": "publisher package metadata",
+    "response_sha256": "d141a43799c5c43738f5a2c909fb58f3c9028b7a58b71da3b100e02a4886b181",
+    "checked_at": "2026-09-23",
+    "repository": {
+      "url": "git+https://github.com/amd/gaia.git",
+      "type": "git",
+      "directory": "src/gaia/apps/webui"
+    },
+    "dist": {
+      "shasum": "944d3f9ef603386e33ccaf6cac17a2bb42d400c9",
+      "tarball": "https://registry.npmjs.org/@amd-gaia/agent-ui/-/agent-ui-0.19.0.tgz",
+      "fileCount": 35,
+      "integrity": "sha512-dDyXZj4QCCu4UVKIxaxYeUk6iyyH1B+/Xrx6d7M2rr/L8P3XBnmkHyh76oZ1NJcE62V1o6C8QIuzadbOuup9kg==",
+      "signatures": [
+        {
+          "sig": "MEQCIGCvEtZ3OPRAOLoYoI62F1/OBB/Q+UfejeM7osWqjpytAiAX8pph3Yt15ORJtUjhaxOLZLez8kzMLRoj2tqS6/hjmQ==",
+          "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+        }
+      ],
+      "attestations": {
+        "url": "https://registry.npmjs.org/-/npm/v1/attestations/@amd-gaia%2fagent-ui@0.19.0",
+        "provenance": {
+          "predicateType": "https://slsa.dev/provenance/v1"
+        }
+      },
+      "unpackedSize": 11538828
+    }
+  }
+}

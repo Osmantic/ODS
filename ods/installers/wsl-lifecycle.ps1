@@ -10,6 +10,51 @@ param(
 $ErrorActionPreference = 'Stop'
 $script:ODSWslLifecycleSource = $PSCommandPath
 
+function Get-ODSPhysicalFilePath([string]$Path) {
+    # A packaged desktop caller can see an AppData file that Task Scheduler
+    # cannot: MSIX redirects it into the package's LocalCache. Resolve the
+    # actual handle rather than assuming Get-Item.FullName is a physical path.
+    if (-not ('ODSWslNativeFilePath' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+public static class ODSWslNativeFilePath {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern uint GetFinalPathNameByHandle(SafeFileHandle handle, StringBuilder path, uint size, uint flags);
+}
+'@
+    }
+    $stream=[IO.File]::OpenRead($Path)
+    try {
+        $buffer=[Text.StringBuilder]::new(32768)
+        $length=[ODSWslNativeFilePath]::GetFinalPathNameByHandle($stream.SafeFileHandle,$buffer,32768,0)
+        if ($length -eq 0 -or $length -ge 32768) { throw 'Could not resolve physical lifecycle metadata path' }
+        $physical=$buffer.ToString()
+        if ($physical.StartsWith('\\?\UNC\',[StringComparison]::OrdinalIgnoreCase)) { return '\\'+$physical.Substring(8) }
+        if ($physical.StartsWith('\\?\',[StringComparison]::Ordinal)) { return $physical.Substring(4) }
+        $physical
+    } finally { $stream.Dispose() }
+}
+
+function Get-ODSWslStateDirectory([string]$Id) {
+    # UserProfile is visible to both the calling application and the user's
+    # Limited scheduled task. LocalAppData can be virtualized by an MSIX host.
+    $userProfileDirectory=[Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    if ([string]::IsNullOrWhiteSpace($userProfileDirectory)) { throw 'Could not resolve the Windows user profile' }
+    $directory=Join-Path $userProfileDirectory ".ods\wsl\$Id"
+    $legacy=Join-Path $env:LOCALAPPDATA "ODS\wsl\$Id"
+    $manifest=Join-Path $legacy 'instance.json'
+    if (-not (Test-Path -LiteralPath $directory) -and (Test-Path -LiteralPath $manifest)) {
+        # Preserve existing, physically shared legacy state. Never adopt an
+        # unsafe legacy directory or pretend a redirected path is shared.
+        Assert-ODSPrivatePath $legacy -Directory
+        Assert-ODSPrivatePath $manifest
+        if ((Get-ODSPhysicalFilePath $manifest) -ieq [IO.Path]::GetFullPath($manifest)) { return $legacy }
+    }
+    $directory
+}
+
 function Get-ODSWslIdentity([string]$Distro, [string]$InstallRoot) {
     if ([string]::IsNullOrWhiteSpace($Distro) -or $Distro -match '[\x00-\x1f"\\]') { throw 'Invalid WSL distribution name' }
     if ($InstallRoot -notmatch '^/[^\x00-\x1f]+$' -or $InstallRoot -match '(^|/)\.\.?(/|$)' -or $InstallRoot.Contains('//')) { throw 'An absolute, normalized Linux install root is required' }
@@ -18,7 +63,7 @@ function Get-ODSWslIdentity([string]$Distro, [string]$InstallRoot) {
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $hash = [Security.Cryptography.SHA256]::Create()
     try { $id = -join ($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes("$sid`n$Distro`n$InstallRoot")) | ForEach-Object { $_.ToString('x2') }) } finally { $hash.Dispose() }
-    [pscustomobject]@{ schemaVersion=1; ownerSid=$sid; distro=$Distro; installRoot=$InstallRoot; id=$id; taskName="ODS-WSL-$($id.Substring(0,24))"; directory=(Join-Path $env:LOCALAPPDATA "ODS\wsl\$id") }
+    [pscustomobject]@{ schemaVersion=1; ownerSid=$sid; distro=$Distro; installRoot=$InstallRoot; id=$id; taskName="ODS-WSL-$($id.Substring(0,24))"; directory=(Get-ODSWslStateDirectory $id) }
 }
 
 function Assert-ODSPrivatePath([string]$Path, [switch]$Directory) {

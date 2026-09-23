@@ -1,0 +1,6 @@
+# Preserve upstream license/notice bytes so recorded SHA-256 values survive checkout.
+* -text
+# Reviewed upstream bytes include CRLF and trailing spaces. The provenance gate
+# checks exact SHA-256; normalizing these legal documents would break evidence.
+*.txt whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof
+*.html whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof

@@ -80,6 +80,8 @@ if (-not [string]::IsNullOrWhiteSpace($InstallDir)) {
 $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "constants.ps1")
 . (Join-Path $LibDir "ui.ps1")
+. (Join-Path $LibDir "native-llama-artifact.ps1")
+. (Join-Path $LibDir "model-download-review.ps1")
 . (Join-Path $LibDir "compose-diagnostics.ps1")
 . (Join-Path $LibDir "backend-contract.ps1")
 . (Join-Path $LibDir "tier-map.ps1")
@@ -132,6 +134,29 @@ $installDir     = $script:ODS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
 
 # ── Phase dispatcher ──────────────────────────────────────────────────────────
+function Test-ODSVerifiedLemonadeMsi {
+    <# Verify local bytes only. This function never downloads or runs an installer. #>
+    [CmdletBinding()]
+    param(
+        [string]$Path,
+        [string]$ExpectedSha256
+    )
+
+    if ($ExpectedSha256 -notmatch '\A[0-9a-fA-F]{64}\z') {
+        throw "The Lemonade MSI contract has no valid reviewed SHA-256."
+    }
+    $msiItem = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if ($msiItem.PSIsContainer -or $msiItem.Length -le 0 -or
+        ($msiItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        throw "The Lemonade download is not a regular nonempty MSI file."
+    }
+    $msiSha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash
+    if ($msiSha256 -ine $ExpectedSha256) {
+        throw "The Lemonade MSI SHA-256 does not match the reviewed artifact."
+    }
+    return $true
+}
+
 function Get-UsableWindowsBash {
     <#
     .SYNOPSIS
@@ -220,6 +245,7 @@ if ($gpuInfo.Backend -eq "amd") {
     $amdLemonadeRuntime = Get-ODSAmdLemonadeRuntime -RootPath $SourceRoot
     $script:LEMONADE_VERSION = [string]$amdLemonadeRuntime.windows_version
     $script:LEMONADE_MSI_FILE = [string]$amdLemonadeRuntime.windows_msi_file
+    $script:LEMONADE_MSI_SHA256 = [string]$amdLemonadeRuntime.windows_msi_sha256
     $script:LEMONADE_MSI_URL = "https://github.com/lemonade-sdk/lemonade/releases/download/v$($script:LEMONADE_VERSION)/$($script:LEMONADE_MSI_FILE)"
     $script:LEMONADE_EXE = Join-Path (Join-Path $script:LEMONADE_INSTALL_DIR "bin") ([string]$amdLemonadeRuntime.windows_executable)
     $_resolvedLemonadeExe = Resolve-ODSLemonadeExe -ExecutableName ([string]$amdLemonadeRuntime.windows_executable)
@@ -329,6 +355,9 @@ if ($dryRun) {
             $bootstrapActive = $true
             $fullTierConfig = @{}
             foreach ($k in $tierConfig.Keys) { $fullTierConfig[$k] = $tierConfig[$k] }
+            Confirm-ODSModelDownloadReview -Root $SourceRoot -File $fullTierConfig.GgufFile `
+                -Url $fullTierConfig.GgufUrl -Sha256 $fullTierConfig.GgufSha256 `
+                -ReceiptPath (Join-Path $installDir "data\model-download-review.json") -Unattended:$NonInteractive
             $tierConfig.GgufFile   = $script:BOOTSTRAP_GGUF_FILE
             $tierConfig.GgufUrl    = $script:BOOTSTRAP_GGUF_URL
             $tierConfig.GgufSha256 = $script:BOOTSTRAP_GGUF_SHA256
@@ -372,6 +401,8 @@ if ($dryRun) {
             }
 
             if ($needsDownload) {
+                Confirm-ODSModelDownloadReview -Root $SourceRoot -File $tierConfig.GgufFile `
+                    -Url $tierConfig.GgufUrl -Sha256 $tierConfig.GgufSha256 -Unattended:$NonInteractive
                 $dlOk = Invoke-DownloadWithRetry -Url $tierConfig.GgufUrl `
                     -Destination $modelPath -Label "Downloading $($tierConfig.GgufFile)" -MaxRetries 4
                 if (-not $dlOk) {
@@ -447,11 +478,27 @@ if ($dryRun) {
 
                 if ($lemonadeChoice -match "^[Yy]") {
                     Write-AI "Installing AMD Lemonade Server..."
-                    $msiPath = Join-Path $env:TEMP $script:LEMONADE_MSI_FILE
+                    # A unique staging name prevents reusing a stale partial MSI.
+                    $msiPath = Join-Path $env:TEMP ("ods-lemonade-{0}.msi" -f [guid]::NewGuid().ToString("N"))
                     $lemonadeInstallDir = Get-ODSLemonadeUserInstallDir
                     $lemonadeMsiLog = Join-Path (Join-Path $installDir "logs") "lemonade-msi-install.log"
-                    $dlOk = Invoke-DownloadWithRetry -Url $script:LEMONADE_MSI_URL `
-                        -Destination $msiPath -Label "Downloading Lemonade Server (~3MB)"
+                    $dlOk = $false
+                    try {
+                        # This digest is reviewed and committed with the version contract;
+                        # never trust a checksum fetched alongside the install-time download.
+                        if ($script:LEMONADE_MSI_SHA256 -notmatch '\A[0-9a-fA-F]{64}\z') {
+                            throw "The Lemonade MSI contract has no valid reviewed SHA-256."
+                        }
+                        $dlOk = Invoke-DownloadWithRetry -Url $script:LEMONADE_MSI_URL `
+                            -Destination $msiPath -Label "Downloading Lemonade Server (~5MB)"
+                        if ($dlOk) {
+                            $dlOk = Test-ODSVerifiedLemonadeMsi -Path $msiPath `
+                                -ExpectedSha256 $script:LEMONADE_MSI_SHA256
+                        }
+                    } catch {
+                        $dlOk = $false
+                        Write-AIWarn "Lemonade MSI verification failed: $($_.Exception.Message)"
+                    }
                     if ($dlOk) {
                         if ([string]::IsNullOrWhiteSpace($lemonadeInstallDir)) {
                             Write-AIWarn "Could not determine the current user's Lemonade install directory."
@@ -463,7 +510,13 @@ if ($dryRun) {
                             # Keep Lemonade in its supported per-user location. ODS installs from a
                             # normal PowerShell and must not require an all-users MSI elevation.
                             $msiArgs = "/i `"$msiPath`" /quiet /norestart INSTALLDIR=`"$lemonadeInstallDir`" /L*V `"$lemonadeMsiLog`""
-                            $msiProc = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -NoNewWindow -PassThru
+                            try {
+                                $msiProc = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -NoNewWindow -PassThru
+                            } finally {
+                                if (Test-Path -LiteralPath $msiPath -PathType Leaf) {
+                                    Remove-Item -LiteralPath $msiPath -Force -ErrorAction SilentlyContinue
+                                }
+                            }
                             $_msiExit = $(if ($msiProc) { [int]$msiProc.ExitCode } else { 0 })
                             if ($_msiExit -eq 0) {
                                 $_resolvedLemonadeExe = Resolve-ODSLemonadeExe -ExecutableName ([string]$amdLemonadeRuntime.windows_executable)
@@ -487,7 +540,10 @@ if ($dryRun) {
                             }
                         }
                     } else {
-                        Write-AIWarn "Lemonade download failed. Falling back to llama-server (Vulkan)."
+                        Write-AIWarn "Lemonade download or verification failed. Falling back to llama-server (Vulkan)."
+                    }
+                    if (Test-Path -LiteralPath $msiPath -PathType Leaf) {
+                        Remove-Item -LiteralPath $msiPath -Force -ErrorAction SilentlyContinue
                     }
                 } else {
                     Write-AI "Skipped Lemonade. Using llama-server (Vulkan) instead."
@@ -696,45 +752,18 @@ if ($dryRun) {
 
             if (-not $useLemonade) {
                 # ── Fallback: llama-server.exe (Vulkan) ──
-                $llamaZip = Join-Path $env:TEMP $script:LLAMA_CPP_VULKAN_ASSET
-                if (-not (Test-Path $script:LLAMA_SERVER_EXE)) {
-                    if (-not (Test-Path $llamaZip)) {
-                        $dlOk = Invoke-DownloadWithRetry -Url $script:LLAMA_CPP_VULKAN_URL `
-                            -Destination $llamaZip -Label "Downloading llama-server (Vulkan)"
-                        if (-not $dlOk) {
-                            Write-AIError "Failed to download llama-server after retries."
-                            exit 1
-                        }
-                    }
-
-                    Write-AI "Validating llama-server archive..."
-                    $zipValid = Test-ZipIntegrity -Path $llamaZip
-                    if (-not $zipValid.Valid) {
-                        Write-AIWarn "Archive is corrupt: $($zipValid.ErrorMessage)"
-                        Remove-Item $llamaZip -Force -ErrorAction SilentlyContinue
-                        Write-AIError "Corrupted download. Re-run the installer."
+                if (-not (Test-Path -LiteralPath $script:LLAMA_SERVER_EXE)) {
+                    try {
+                        Install-ODSVerifiedNativeLlama -SourceRoot $SourceRoot `
+                            -Tag $script:LLAMA_CPP_RELEASE_TAG -InstallDir $installDir
+                    } catch {
+                        Write-AIError "Native llama-server was not accepted: $_"
                         exit 1
                     }
-
-                    Write-AI "Extracting llama-server..."
-                    New-Item -ItemType Directory -Path $script:LLAMA_SERVER_DIR -Force | Out-Null
-                    if (-not (Invoke-ExtractionWithRetry -ZipPath $llamaZip -DestinationPath $script:LLAMA_SERVER_DIR)) {
-                        Write-AIError "Failed to extract llama-server after retries."
-                        exit 1
-                    }
-
-                    $exeFound = Get-ChildItem -Path $script:LLAMA_SERVER_DIR -Recurse -Filter "llama-server.exe" |
-                        Select-Object -First 1
-                    if ($exeFound -and $exeFound.DirectoryName -ne $script:LLAMA_SERVER_DIR) {
-                        Get-ChildItem -Path $exeFound.DirectoryName -Force |
-                            Move-Item -Destination $script:LLAMA_SERVER_DIR -Force
-                    }
-                    if (-not (Test-Path $script:LLAMA_SERVER_EXE)) {
-                        Write-AIError "llama-server.exe not found after extraction."
-                        exit 1
-                    }
-                    Write-AISuccess "llama-server (Vulkan) extracted"
+                    Write-AISuccess "Verified llama-server (Vulkan) extracted"
                 } else {
+                    # Preserve owner-installed binaries; this is not a new
+                    # download and the archive manifest does not attest to it.
                     Write-AISuccess "llama-server.exe already present"
                 }
 

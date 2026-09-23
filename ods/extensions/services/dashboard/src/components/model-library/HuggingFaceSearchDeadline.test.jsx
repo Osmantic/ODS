@@ -1,6 +1,6 @@
 import {act, cleanup, fireEvent, render, screen} from '@testing-library/react'
 import {afterEach, beforeEach, expect, it, vi} from 'vitest'
-import HuggingFaceModelBrowser from './HuggingFaceModelBrowser' // eslint-disable-line no-unused-vars
+import HuggingFaceModelBrowser from './HuggingFaceModelBrowser'
 
 const tick = ms => act(async () => {await vi.advanceTimersByTimeAsync(ms)})
 const success = () => ({ok:true, json:async () => ({models:[], authenticated:false})})

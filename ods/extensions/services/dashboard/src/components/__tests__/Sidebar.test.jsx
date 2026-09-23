@@ -1,6 +1,6 @@
 import { screen, waitFor } from '@testing-library/react'
 import { render } from '../../test/test-utils'
-import Sidebar from '../Sidebar' // eslint-disable-line no-unused-vars
+import Sidebar from '../Sidebar'
 import { getSidebarExternalLinks } from '../../plugins/registry'
 
 vi.mock('../../plugins/registry', () => ({

@@ -252,7 +252,7 @@ describe('useModels', () => {
     expect(result.current.loading).toBe(false)
   })
 
-  test('downloadModel calls POST and refreshes', async () => {
+  test('downloadModel posts the exact terms acknowledgement and refreshes', async () => {
     fetch.mockImplementation((url, opts) => {
       if (opts?.method === 'POST') {
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
@@ -267,12 +267,14 @@ describe('useModels', () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     await act(async () => {
-      await result.current.downloadModel('new-model')
+      await result.current.downloadModel('new-model', { termsDigest: 'a'.repeat(64), acknowledged: true, upstreamAccepted: true })
     })
 
     const postCall = fetch.mock.calls.find(c => c[1]?.method === 'POST')
     expect(postCall[0]).toBe('/api/models/new-model/download')
-    expect(Object.keys(postCall[1]).sort()).toEqual(['method', 'signal'])
+    expect(Object.keys(postCall[1]).sort()).toEqual(['body', 'headers', 'method', 'signal'])
+    expect(postCall[1].headers).toEqual({ 'Content-Type': 'application/json' })
+    expect(JSON.parse(postCall[1].body)).toEqual({ termsAcknowledgement: { termsDigest: 'a'.repeat(64), acknowledged: true, upstreamAccepted: true } })
     expect(postCall[1]).toMatchObject({ method: 'POST' })
     expect(postCall[1].signal).toBeInstanceOf(globalThis.AbortSignal)
   })

@@ -1,0 +1,154 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/openinterpreter/openinterpreter",
+  "source_ref": "main",
+  "source_revision": "d9b49c828bf61d820c30e343a22033e3e7999583",
+  "source_revision_scope": "reviewed_current_source_only",
+  "source_url": "https://github.com/openinterpreter/openinterpreter/tree/d9b49c828bf61d820c30e343a22033e3e7999583",
+  "license": "AGPL-3.0",
+  "license_scope": "exact_PyPI_wheel_license; excludes transitive packages and weights",
+  "license_url": "https://files.pythonhosted.org/packages/4f/37/193d392bc8428509739f22f07902ff7e3daee6ee3e7c176c08ef3f0c0a8a/open_interpreter-0.4.3-py3-none-any.whl",
+  "license_documents": [
+    {
+      "url": "https://files.pythonhosted.org/packages/4f/37/193d392bc8428509739f22f07902ff7e3daee6ee3e7c176c08ef3f0c0a8a/open_interpreter-0.4.3-py3-none-any.whl",
+      "path": "open_interpreter-0.4.3.dist-info/LICENSE",
+      "sha256": "490a8e3e387d07097158f47e472d7365af5331099db5456a5bdadd5ff123c812"
+    }
+  ],
+  "notice_urls": [
+    "https://github.com/openinterpreter/openinterpreter/blob/d9b49c828bf61d820c30e343a22033e3e7999583/NOTICE"
+  ],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "The exact open-interpreter 0.4.3 PyPI wheel contains GNU AGPL version 3. The current repository has Apache-2.0, which is not substituted for that artifact license. No matching 0.4.3 source tag was resolved.",
+  "deployment": {
+    "kind": "local_build",
+    "recipe_files": [
+      {
+        "path": "Dockerfile",
+        "sha256": "23e2c9d439deccd5368215b851ca75f305b6eea38a9df463b6de2d6de9f8eee9"
+      },
+      {
+        "path": "compose.yaml",
+        "sha256": "10591b03fbca16a2b471b64e310d7e362f880666c4e6c70c00dc505d206ac6fe"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "875170e14e702b9be4cd4aa4056f93b1761283deee109e247adcc807c905f75d"
+      },
+      {
+        "path": "server.py",
+        "sha256": "57a11b690f2579282f9395f44fef55d17e463d6c1c2e2cd5d04fa640b2726df8"
+      },
+      {
+        "path": "setup.sh",
+        "sha256": "dcaee7b17a8affa28fc777e39a512044ede9bd460749b95688e7c3aa2ab65166"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "Dockerfile",
+        "image": "python:3.12-slim@sha256:ccc7089399c8bb65dd1fb3ed6d55efa538a3f5e7fca3f5988ac3b5b87e593bf0",
+        "scope": "build_base_not_covered_by_application_license"
+      }
+    ]
+  },
+  "code_components": [
+    {
+      "repository": "https://github.com/openinterpreter/openinterpreter",
+      "source_ref": "main",
+      "source_revision": "d9b49c828bf61d820c30e343a22033e3e7999583",
+      "source_revision_scope": "reviewed_current_source_only",
+      "license_url": "https://github.com/openinterpreter/openinterpreter/blob/d9b49c828bf61d820c30e343a22033e3e7999583/LICENSE",
+      "license": "Apache-2.0",
+      "scope": "Current repository reference only; Apache does not replace the 0.4.3 artifact AGPL license.",
+      "documents": [
+        {
+          "path": "LICENSE",
+          "url": "https://github.com/openinterpreter/openinterpreter/blob/d9b49c828bf61d820c30e343a22033e3e7999583/LICENSE",
+          "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+        },
+        {
+          "path": "NOTICE",
+          "url": "https://github.com/openinterpreter/openinterpreter/blob/d9b49c828bf61d820c30e343a22033e3e7999583/NOTICE",
+          "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+        }
+      ]
+    }
+  ],
+  "model_terms": {
+    "status": "not_selected_by_recipe",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/OpenInterpreter/open-interpreter",
+      "retrieved_at": "2026-09-23T07:53:51.635177+00:00",
+      "success": true,
+      "response_sha256": "1f087decaec35610ca7af90c26966bcdbea3ce0aebb09b90b92d562b5ac4772f"
+    },
+    {
+      "url": "https://api.github.com/repos/openinterpreter/openinterpreter/commits/v0.4.3",
+      "retrieved_at": "2026-09-23T07:53:52.188289+00:00",
+      "success": false,
+      "response_sha256": "4e6daf0ae65d427f5df14da3903de1f97bf5182cf2166f9b8e435550ae4afd76"
+    },
+    {
+      "url": "https://api.github.com/repos/openinterpreter/openinterpreter/commits/0.4.3",
+      "retrieved_at": "2026-09-23T07:53:52.723887+00:00",
+      "success": false,
+      "response_sha256": "948a26f791d0b126521b11433ca802d678ea196c69f18b0eb6875990cb3f8e39"
+    },
+    {
+      "url": "https://api.github.com/repos/openinterpreter/openinterpreter/commits/main",
+      "retrieved_at": "2026-09-23T07:53:53.295224+00:00",
+      "success": true,
+      "response_sha256": "90706eeef3b46f568fa20dcee4019647af146b3e672a281d14ace39ddce7a175"
+    },
+    {
+      "url": "https://api.github.com/repos/openinterpreter/openinterpreter/license?ref=d9b49c828bf61d820c30e343a22033e3e7999583",
+      "retrieved_at": "2026-09-23T07:53:53.953722+00:00",
+      "success": true,
+      "response_sha256": "e6d39e72c37b98e315074651ae51e0a44eb4b909eb33d3e17bf2e58387f90e26"
+    },
+    {
+      "url": "https://api.github.com/repos/openinterpreter/openinterpreter/contents?ref=d9b49c828bf61d820c30e343a22033e3e7999583",
+      "retrieved_at": "2026-09-23T07:53:54.769248+00:00",
+      "success": true,
+      "response_sha256": "b9422a611e04b9f6278227e1d85829869c137030c384511ce36f42a07a2af688"
+    }
+  ],
+  "gaps": [
+    "No v0.4.3/0.4.3 source tag was found; exact artifact-to-source revision remains unresolved.",
+    "The wheel AGPL license and current Apache source differ; distribution must use the terms of the actual installed artifact.",
+    "Reviewed current source is not proven to be the source revision of the deployed package/image.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "package_artifact": {
+    "name": "open-interpreter",
+    "version": "0.4.3",
+    "artifact": {
+      "url": "https://files.pythonhosted.org/packages/4f/37/193d392bc8428509739f22f07902ff7e3daee6ee3e7c176c08ef3f0c0a8a/open_interpreter-0.4.3-py3-none-any.whl",
+      "sha256": "bb694b826b11986a305b7d34acbabae830481bb1180b52fe1b912e882a21b590"
+    },
+    "documents": [
+      {
+        "path": "open_interpreter-0.4.3.dist-info/LICENSE",
+        "sha256": "490a8e3e387d07097158f47e472d7365af5331099db5456a5bdadd5ff123c812"
+      },
+      {
+        "path": "open_interpreter-0.4.3.dist-info/METADATA",
+        "sha256": "f838a92505742d9d8a6f49f9b03024223c938c2573df0bcb1a646a753b7a2b86"
+      }
+    ],
+    "evidence": [
+      {
+        "url": "https://pypi.org/pypi/open-interpreter/0.4.3/json",
+        "sha256": "e183ddb5e68e4eccec3cc965cf349793fbd69e4ae0155cea6415b60fcb3e5e46"
+      }
+    ]
+  }
+}

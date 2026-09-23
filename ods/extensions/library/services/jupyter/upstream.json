@@ -1,0 +1,88 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/jupyter/docker-stacks",
+  "source_ref": "main",
+  "source_revision": "2f973d0b6e86eaa0e21e3b16d481a14bde98b218",
+  "source_revision_scope": "reviewed_current_source_only",
+  "source_url": "https://github.com/jupyter/docker-stacks/tree/2f973d0b6e86eaa0e21e3b16d481a14bde98b218",
+  "license": "BSD-3-Clause",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/jupyter/docker-stacks/blob/2f973d0b6e86eaa0e21e3b16d481a14bde98b218/LICENSE.md",
+  "license_documents": [
+    {
+      "path": "LICENSE.md",
+      "url": "https://github.com/jupyter/docker-stacks/blob/2f973d0b6e86eaa0e21e3b16d481a14bde98b218/LICENSE.md",
+      "sha256": "9ccb28a18c2cf737840fc847e9f0a878d4bb1a734be8ab9810bdddb6159723a0"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "Jupyter Docker Stacks source is BSD-3-Clause. The python-3.11 image tag does not identify an exact stack source revision; bundled notebook packages retain their own licenses.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.yaml",
+        "sha256": "7101b10383570d0471bf374d7b44bac5fe14c789481f2c3be3464634659fb3f6"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "bf557b71d2d6bb86e7bab8dab591f62dddf3e27bdd181517c66399ec5747f981"
+      },
+      {
+        "path": "setup.sh",
+        "sha256": "fa1ae1a6911b3c6b9e01fb2157534e5586a56512941cff878b76770c10b6df72"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "jupyter",
+        "image": "jupyter/scipy-notebook:python-3.11",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_applicable_to_primary_application",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/jupyter/docker-stacks",
+      "retrieved_at": "2026-09-23T07:53:44.823246+00:00",
+      "success": true,
+      "response_sha256": "8db47e802209645bd9068c5e042243ab12b1b6381c0ae3b42886ae6c9ac4f499"
+    },
+    {
+      "url": "https://api.github.com/repos/jupyter/docker-stacks/commits/main",
+      "retrieved_at": "2026-09-23T07:53:45.458776+00:00",
+      "success": true,
+      "response_sha256": "1afd94326e124645f9891f1131648a9dae1a45aff391ec50f2543d47b0aafa5c"
+    },
+    {
+      "url": "https://api.github.com/repos/jupyter/docker-stacks/license?ref=2f973d0b6e86eaa0e21e3b16d481a14bde98b218",
+      "retrieved_at": "2026-09-23T07:53:46.204087+00:00",
+      "success": true,
+      "response_sha256": "93866c15772efc36f58ba784acedda69d6ae6695ca990acc5c7cd5518531ed67"
+    },
+    {
+      "url": "https://api.github.com/repos/jupyter/docker-stacks/contents?ref=2f973d0b6e86eaa0e21e3b16d481a14bde98b218",
+      "retrieved_at": "2026-09-23T07:53:46.886748+00:00",
+      "success": true,
+      "response_sha256": "47dda36a34330d9b08fd6fc1f3945873b0683f5426fe328497189d670e25cad1"
+    }
+  ],
+  "gaps": [
+    "Floating python-3.11 image tag is not mapped to a published digest/source commit; the current source record is reference-only.",
+    "Reviewed current source is not proven to be the source revision of the deployed package/image.",
+    "One or more configured image/base references are mutable tags; registry digest and full component inventory remain pending.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "jupyter/scipy-notebook:python-3.11"
+}

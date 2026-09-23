@@ -13,6 +13,25 @@ export DOCKER_INSTALLED_MARKER="$FIXTURE_DIR/native-docker-installed"
 export DOCKER_COMPOSE_SHIM_MARKER="$FIXTURE_DIR/docker-compose-shim-works"
 export PATH="$FIXTURE_DIR/bin:$PATH"
 
+# Keep the real hash verifier while substituting an inert installer and its
+# matching digest in a disposable phase snapshot. Production pins stay intact.
+export DOCKER_INSTALL_FIXTURE="$FIXTURE_DIR/inert-docker-install.sh"
+cat > "$DOCKER_INSTALL_FIXTURE" <<'INSTALLER'
+#!/bin/sh
+touch "$DOCKER_INSTALLED_MARKER"
+INSTALLER
+fixture_digest=$(sha256sum "$DOCKER_INSTALL_FIXTURE")
+fixture_digest=${fixture_digest%% *}
+reviewed_digest=fefa50ccd50efb42f438b506fc3a88574118f314aaf2a7cd5b6e1ffb1bffcf26
+[[ "$(grep -cF "$reviewed_digest" "$ODS_ROOT/installers/phases/05-docker.sh")" == 1 ]] || {
+    echo 'FAIL: reviewed Docker fixture binding changed; inspect the new phase pin'
+    exit 1
+}
+mkdir -p "$FIXTURE_DIR/source/installers/lib"
+cp "$ODS_ROOT/installers/lib/verified-download.sh" "$FIXTURE_DIR/source/installers/lib/"
+cp "$ODS_ROOT/installers/lib/podman-registries.sh" "$FIXTURE_DIR/source/installers/lib/"
+sed "s/$reviewed_digest/$fixture_digest/" "$ODS_ROOT/installers/phases/05-docker.sh" > "$FIXTURE_DIR/05-docker.sh"
+
 cat > "$FIXTURE_DIR/bin/docker" <<'STUB'
 #!/bin/bash
 if [[ ! -f "${DOCKER_INSTALLED_MARKER:?}" ]]; then
@@ -34,7 +53,7 @@ cat > "$FIXTURE_DIR/bin/curl" <<'STUB'
 #!/bin/bash
 output=""
 while (($#)); do
-    if [[ "$1" == "-o" ]]; then
+    if [[ "$1" == "-o" || "$1" == "--output" ]]; then
         output="$2"
         shift 2
     else
@@ -42,10 +61,7 @@ while (($#)); do
     fi
 done
 [[ -n "$output" ]] || exit 2
-cat > "$output" <<'INSTALLER'
-#!/bin/sh
-touch "$DOCKER_INSTALLED_MARKER"
-INSTALLER
+cp "$DOCKER_INSTALL_FIXTURE" "$output"
 STUB
 chmod +x "$FIXTURE_DIR/bin/curl"
 
@@ -63,7 +79,7 @@ chmod +x "$FIXTURE_DIR/bin/docker-compose"
 OUTPUT_FILE="$FIXTURE_DIR/output.txt"
 set +e
 (
-    export SCRIPT_DIR="$ODS_ROOT"
+    export SCRIPT_DIR="$FIXTURE_DIR/source"
     export SKIP_DOCKER=false
     export DRY_RUN=false
     export INTERACTIVE=false
@@ -109,7 +125,7 @@ set +e
     }
 
     # shellcheck disable=SC1091
-    source "$ODS_ROOT/installers/phases/05-docker.sh"
+    source "$FIXTURE_DIR/05-docker.sh"
 ) > "$OUTPUT_FILE" 2>&1
 source_rc=$?
 set -e
@@ -132,6 +148,11 @@ if grep -qF 'Docker already installed' "$OUTPUT_FILE"; then
 fi
 grep -qF 'AI: Installing Docker...' "$OUTPUT_FILE" || {
     echo "FAIL: installer did not enter the Docker installation path"
+    cat "$OUTPUT_FILE"
+    exit 1
+}
+grep -qF "[verified-download] sha256=$fixture_digest " "$OUTPUT_FILE" || {
+    echo 'FAIL: inert Docker installer did not pass the real checksum verifier'
     cat "$OUTPUT_FILE"
     exit 1
 }

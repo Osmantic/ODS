@@ -256,7 +256,7 @@ Intel Arc drivers on WSL2 are less mature than NVIDIA's. If the Arc GPU is not
 visible inside WSL2:
 
 1. Update Windows to the latest version (22H2+).
-2. Install the latest Intel Graphics driver from [intel.com/arc-drivers](https://www.intel.com/content/www/us/en/products/docs/discrete-gpus/arc/software.html).
+2. Install the appropriate driver from [Intel's Windows Arc driver page](https://www.intel.com/content/www/us/en/download/785597/intel-arc-graphics-windows.html), checking its supported hardware and OEM guidance first.
 3. Verify the GPU is visible: `wsl -- ls /dev/dri`
 4. If still missing, fall back to CPU mode: `./install.sh --tier 1` (runs inference on CPU, no GPU passthrough).
 

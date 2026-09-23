@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
-import Dashboard from './Dashboard' // eslint-disable-line no-unused-vars
+import Dashboard from './Dashboard'
 
 const services = [
   { name: 'APE (Agent Policy Engine)', status: 'healthy', port: 7890, uptime: 14400 },

@@ -54,7 +54,7 @@ async function open() {
 
 it('shows readable names and an installed-model menu, with an explicit switch confirmation',async()=>{
   render(view())
-  const trigger=await open()
+  await open()
   expect(screen.queryByText(technical)).toBeNull()
   expect(screen.getByRole('menuitemradio',{name:/Uncensored/})).toHaveAttribute('aria-checked','true')
   expect(screen.queryByRole('menuitemradio',{name:/Install me/})).toBeNull()

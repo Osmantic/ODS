@@ -20,10 +20,17 @@ bridge() {
         [[ "$source_inode" == "$target_inode" ]] || return 1
         if [[ "$action" == remove ]]; then
             umount -- "$target"
+        else
+            [[ "$(findmnt -n -o PROPAGATION -T "$target")" == shared ]] || return 1
         fi
         return
     fi
     [[ "$action" == remove ]] && return 0
+    # Do not chmod/chown an existing bind target: that changes its /run source.
+    if [[ ! -e "$target" ]]; then
+        install -d -o root -g root -m 0755 -- "$target"
+    fi
+    [[ -d "$target" && "$(stat -c '%u:%g:%a' -- "$target")" == 0:0:755 ]] || return 1
     [[ -z "$(find "$target" -mindepth 1 -maxdepth 1 -print -quit)" ]] || return 1
     mount --bind -- "$source" "$target"
     [[ "$(stat -Lc '%d:%i' -- "$target")" == "$source_inode" ]] || return 1
@@ -33,7 +40,10 @@ bridge() {
 base=/mnt/wsl/ods-portal-runtime
 [[ ! -L "$base" ]] || exit 1
 if [[ "$action" == ensure ]]; then
-    install -d -o root -g root -m 0755 -- "$base" "$base/ingress" "$base/preview"
+    if [[ ! -e "$base" ]]; then
+        install -d -o root -g root -m 0755 -- "$base"
+    fi
+    [[ -d "$base" && "$(stat -c '%u:%g:%a' -- "$base")" == 0:0:755 ]] || exit 1
 fi
 bridge /run/ods-pixel "$base/ingress"
 bridge /run/ods-pixel-preview "$base/preview"

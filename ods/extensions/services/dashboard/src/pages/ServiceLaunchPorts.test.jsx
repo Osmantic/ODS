@@ -1,7 +1,7 @@
 import {afterEach, expect, it, vi} from 'vitest'
 import {cleanup, fireEvent, render, screen} from '@testing-library/react'
-import ServiceMap from './ServiceMap' // eslint-disable-line no-unused-vars
-import Extensions from './Extensions' // eslint-disable-line no-unused-vars
+import ServiceMap from './ServiceMap'
+import Extensions from './Extensions'
 import {serviceUrl} from '../lib/serviceUrls'
 
 afterEach(() => {cleanup(); vi.unstubAllGlobals()})

@@ -10,7 +10,7 @@ Fork, branch, build, PR. That's it.
 git checkout -b my-change
 ```
 
-No CLA. No committee. No waiting for permission. If it makes ODS better, send it.
+Check the [path-specific contribution terms](LICENSING.md#contributions), then send a focused change with its validation results.
 
 If you're adding or extending services, read these first:
 - [docs/EXTENSIONS.md](docs/EXTENSIONS.md) — how to add a new service in 30 minutes
@@ -153,4 +153,13 @@ We're not precious about style, but we have standards:
 
 ## License
 
-[Apache 2.0](LICENSE). Your code stays open. That's the whole point.
+Contributions to Apache-2.0 ODS files use [Apache 2.0](LICENSE). Pixel under
+`vendor/pixel/` has a separate [ODS-only license](vendor/pixel/LICENSE.md), and
+third-party materials retain their own terms. The Apache contribution policy
+does not apply to either exception. Pixel changes require a documented inbound
+grant before acceptance; see [Licensing](LICENSING.md#contributions).
+
+For future commits, configure an email verified by your Git hosting account or
+its account-provided `noreply` address. Check `git var GIT_AUTHOR_IDENT` locally
+before committing; do not copy that output into a public issue if it contains
+personal details. Use your own identity, not a placeholder or workstation hostname.

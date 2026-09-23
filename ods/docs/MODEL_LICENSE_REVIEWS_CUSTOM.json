@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "retrieved_at": "2026-09-23T09:39:22.133378+00:00",
+  "scope": "Separate factual supplement for the exact AI21 Jamba Reasoning 3B GGUF chain. Its model-specific Apache 2.0 declarations resolve stale custom-license metadata; this is not a custom-license grant, acceptance, general Jamba-family conclusion or beta/release approval. Earlier 30-chain and 10-chain review snapshots are unchanged.",
+  "input_evidence": [
+    {
+      "path": "ods/docs/MODEL_TERMS_AUDIT.json",
+      "sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb"
+    }
+  ],
+  "review_method": [
+    "Reuse the SHA-verified public documents retained during the 2026-09-23 factual review; no new network requests, weights or publisher acceptance.",
+    "Compare exact artifact identity and complete source records with the current catalog before projection. Preserve license_name and record the legacy link and original fingerprint as an anomaly.",
+    "Retain the complete pinned publisher LICENSE.txt byte for byte, including all nine Apache sections and appendix. Check both pinned model-card declarations and model-specific official announcement.",
+    "Conditions summarize the full Apache license without replacing it. Repository access is public; not_required denotes no separate publisher acceptance step under these reviewed terms.",
+    "Supporting HTML response and extracted-text fingerprints are observations; only the complete plain-text license is shipped as retained legal content. No website scripts are copied."
+  ],
+  "counts": {
+    "models_reviewed_here": 1,
+    "models_reviewed_total": 41,
+    "models_left_not_assessed": 16
+  },
+  "entries": [
+    {
+      "id": "jamba-reasoning-3b-q4",
+      "source_evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
+      "artifact_identity": {
+        "repository": "ai21labs/AI21-Jamba-Reasoning-3B-GGUF",
+        "revision": "462e08a43c3c32f6b8b85f79ff0796e484d7b65a",
+        "artifacts": [
+          {
+            "file": "jamba-reasoning-3b-Q4_K_M.gguf",
+            "url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B-GGUF/resolve/462e08a43c3c32f6b8b85f79ff0796e484d7b65a/jamba-reasoning-3b-Q4_K_M.gguf",
+            "sha256": "5c8edf36ec3ad9792a639db8d6865e479038226cf8fc71ef47331c611854f6c8"
+          }
+        ]
+      },
+      "sources": [
+        {
+          "role": "artifact_publisher",
+          "repository": "ai21labs/AI21-Jamba-Reasoning-3B-GGUF",
+          "revision": "462e08a43c3c32f6b8b85f79ff0796e484d7b65a",
+          "url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B-GGUF/tree/462e08a43c3c32f6b8b85f79ff0796e484d7b65a",
+          "license_id": "apache-2.0",
+          "license_name": "jamba-open-model-license",
+          "declaration_url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B-GGUF/blob/462e08a43c3c32f6b8b85f79ff0796e484d7b65a/README.md",
+          "gated": false
+        },
+        {
+          "role": "declared_base",
+          "repository": "ai21labs/AI21-Jamba-Reasoning-3B",
+          "revision": "7524370414253301341370beba35e3d549cbf5f3",
+          "url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B/tree/7524370414253301341370beba35e3d549cbf5f3",
+          "license_id": "apache-2.0",
+          "license_name": "jamba-open-model-license",
+          "declaration_url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B/blob/7524370414253301341370beba35e3d549cbf5f3/README.md",
+          "gated": false
+        }
+      ],
+      "review": {
+        "review_status": "reviewed",
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
+        "retrieved_terms_documents": [
+          {
+            "repo": "ai21labs/AI21-Jamba-Reasoning-3B-GGUF",
+            "kind": "repository_license_document",
+            "url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B-GGUF/blob/462e08a43c3c32f6b8b85f79ff0796e484d7b65a/LICENSE.txt",
+            "sha256": "53c512bdc2892ce78925732eaa87373290ec208bbbfc917c6d42f8c4821c6cc9"
+          }
+        ],
+        "notice_documents": [
+          {
+            "repository": "ai21labs/AI21-Jamba-Reasoning-3B-GGUF",
+            "path": "LICENSE.txt",
+            "url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B-GGUF/blob/462e08a43c3c32f6b8b85f79ff0796e484d7b65a/LICENSE.txt",
+            "sha256": "53c512bdc2892ce78925732eaa87373290ec208bbbfc917c6d42f8c4821c6cc9"
+          },
+          {
+            "repository": "ai21labs/AI21-Jamba-Reasoning-3B-GGUF",
+            "path": "README.md",
+            "url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B-GGUF/blob/462e08a43c3c32f6b8b85f79ff0796e484d7b65a/README.md",
+            "sha256": "8e4b34e2beecbed5ef4408bf14bf074d3c00ae2ee908842c2164b276ab942f70"
+          },
+          {
+            "repository": "ai21labs/AI21-Jamba-Reasoning-3B",
+            "path": "README.md",
+            "url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B/blob/7524370414253301341370beba35e3d549cbf5f3/README.md",
+            "sha256": "8e6cb0d800dcdf5ca849e02be4886032be5a32aef1d533f39cc6944d3858f4ef"
+          }
+        ],
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
+        ],
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/custom-53c512bdc2892ce7-LICENSE.txt",
+            "sha256": "53c512bdc2892ce78925732eaa87373290ec208bbbfc917c6d42f8c4821c6cc9",
+            "source_url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B-GGUF/blob/462e08a43c3c32f6b8b85f79ff0796e484d7b65a/LICENSE.txt",
+            "source_sha256": "53c512bdc2892ce78925732eaa87373290ec208bbbfc917c6d42f8c4821c6cc9",
+            "content_type": "text/plain; charset=utf-8",
+            "extraction": "identity"
+          }
+        ],
+        "issues": [],
+        "note": "Specific Reasoning 3B evidence supports Apache 2.0: publisher-pinned GGUF LICENSE.txt is the full Apache license, both pinned cards identify Apache in their license section, and AI21’s model release announcement explicitly calls Reasoning 3B Apache 2.0. Preserve the stale jamba-open-model-license license_name/link as a metadata anomaly; do not apply Jamba 1.5 revenue limits to this separately licensed model or infer terms for other Jamba releases. Base identity is explicitly established by the publisher card prose."
+      },
+      "resolved_observations": [
+        "BASE_MODEL_FROM_CARD_PROSE: explicit publisher naming was retained, not inferred by family.",
+        "STALE_CUSTOM_LICENSE_METADATA: reconciled against this exact model’s LICENSE.txt, body declaration and official announcement."
+      ],
+      "source_observations": [
+        {
+          "url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B-GGUF/blob/462e08a43c3c32f6b8b85f79ff0796e484d7b65a/LICENSE.txt",
+          "source_sha256": "53c512bdc2892ce78925732eaa87373290ec208bbbfc917c6d42f8c4821c6cc9",
+          "sha256": "53c512bdc2892ce78925732eaa87373290ec208bbbfc917c6d42f8c4821c6cc9",
+          "extraction": "identity"
+        },
+        {
+          "url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B-GGUF/blob/462e08a43c3c32f6b8b85f79ff0796e484d7b65a/README.md",
+          "source_sha256": "8e4b34e2beecbed5ef4408bf14bf074d3c00ae2ee908842c2164b276ab942f70",
+          "sha256": "8e4b34e2beecbed5ef4408bf14bf074d3c00ae2ee908842c2164b276ab942f70",
+          "extraction": "identity"
+        },
+        {
+          "url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B/blob/7524370414253301341370beba35e3d549cbf5f3/README.md",
+          "source_sha256": "8e6cb0d800dcdf5ca849e02be4886032be5a32aef1d533f39cc6944d3858f4ef",
+          "sha256": "8e6cb0d800dcdf5ca849e02be4886032be5a32aef1d533f39cc6944d3858f4ef",
+          "extraction": "identity"
+        },
+        {
+          "name": "jamba-announcement",
+          "url": "https://www.ai21.com/blog/introducing-jamba-reasoning-3b/",
+          "final_url": "https://www.ai21.com/blog/introducing-jamba-reasoning-3b/",
+          "status": 200,
+          "content_type": "text/html",
+          "source_sha256": "3073d845d19620ece437c7c342586e4d0f4e2908131a6d2841a55c85fe072fff",
+          "sha256": "6e0bc80d7a579bda95319532a64027445317e4329c32c10fceb27925b2ef15cd",
+          "extraction": "html_article_text"
+        },
+        {
+          "name": "jamba-custom",
+          "url": "https://www.ai21.com/jamba-open-model-license/",
+          "final_url": "https://www.ai21.com/jamba-open-model-license/",
+          "status": 200,
+          "content_type": "text/html",
+          "retrieved_at": "2026-09-23T09:36:37.668152+00:00",
+          "source_sha256": "e92a13ba199782e5c96f9831b8808596134d4e9f8a3d318ee606d2f4489b021e",
+          "sha256": "80a6e71c5d60d901281095ff8ac3c32a1969939d5dedb8bca926eedd961f58a0",
+          "extraction": "html_article_text"
+        }
+      ],
+      "metadata_anomalies": [
+        {
+          "kind": "stale_custom_license_metadata",
+          "observed_license_name": "jamba-open-model-license",
+          "observed_link_documents": [
+            {
+              "repo": "ai21labs/AI21-Jamba-Reasoning-3B",
+              "kind": "declared_license_link",
+              "url": "https://www.ai21.com/jamba-open-model-license/",
+              "sha256": "3c5f18a0ed5c59fe040877b4bfef89cf38cd5651852dd151db6747898b0a504b"
+            }
+          ],
+          "resolution": "Preserve the observed name and linked document fingerprint. The exact pinned Reasoning 3B cards and full GGUF LICENSE.txt identify Apache 2.0; the linked legacy custom agreement defines Jamba 1.5. Do not transplant its revenue limits or infer terms for other Jamba releases."
+        }
+      ]
+    }
+  ]
+}

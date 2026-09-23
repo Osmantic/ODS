@@ -11,13 +11,15 @@
     "compatibilityStatus": "candidate",
     "qualifiedAt": "2026-09-14",
     "evidenceSourceCommit": "5983c27edb1c41d6e944abd13b6e6f780dd6cb4c",
-    "evidenceDocument": "LIVE-AUDIT-4.3.27.md"
+    "evidenceDocument": "LIVE-AUDIT-4.3.27.md",
+    "evidenceAvailable": false
   },
   "latestSupportedCompatibility": {
     "pixelVersion": "4.3.26",
     "qualifiedAt": "2026-09-03",
     "evidenceSourceCommit": "5d906c8b2dd29100b5850872b953d2a5d057f204",
-    "evidenceDocument": "LIVE-AUDIT-4.3.26.md"
+    "evidenceDocument": "LIVE-AUDIT-4.3.26.md",
+    "evidenceAvailable": false
   },
   "documentedHostScope": [
     "Ubuntu 24.04 LTS",

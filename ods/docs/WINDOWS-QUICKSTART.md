@@ -1,5 +1,8 @@
 # ODS Windows Quickstart
 
+**Testing public-beta?** Use the [verified beta installation guide](PUBLIC_BETA_INSTALL.md).
+The `main.zip` instructions below are for the main channel, not the beta candidate.
+
 ## Getting Started
 
 ODS is fully supported on Windows 10 2004+ and Windows 11 (NVIDIA and AMD). The installer detects your GPU, selects the right model, downloads it, starts all Docker services, and creates a Desktop shortcut.

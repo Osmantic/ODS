@@ -1,0 +1,34 @@
+name: Test AI Workflow Boundaries
+
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/bounded_ai.py'
+      - '.github/scripts/test_bounded_ai.py'
+      - '.github/scripts/test_workflow_pins.py'
+      - '.github/ci-image-pins.json'
+      - '.github/workflows/**'
+  push:
+    branches: [main, public-beta]
+    paths:
+      - '.github/scripts/bounded_ai.py'
+      - '.github/scripts/test_bounded_ai.py'
+      - '.github/scripts/test_workflow_pins.py'
+      - '.github/ci-image-pins.json'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  boundaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Adversarial offline tests
+        run: python3 -m unittest discover -s .github/scripts -p test_bounded_ai.py -v
+      - name: Immutable Action and image pins
+        run: python3 -m unittest discover -s .github/scripts -p test_workflow_pins.py -v

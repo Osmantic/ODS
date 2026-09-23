@@ -245,4 +245,3 @@ async def get_active_provider_health(_key: str = Depends(verify_api_key)):
         return JSONResponse(content=raw, headers=NO_STORE)
     except (AgentHTTPError, AgentUnavailable, AgentProtocolError, ValueError, TypeError):
         return JSONResponse(content={"status": "unavailable"}, headers=NO_STORE)
-

@@ -1,0 +1,86 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/weaviate/weaviate",
+  "source_ref": "v1.36.2",
+  "source_revision": "5af59176532cd20b467dcf1f223b6e9fe0f93bed",
+  "source_revision_scope": "configured_version_reference",
+  "source_url": "https://github.com/weaviate/weaviate/tree/5af59176532cd20b467dcf1f223b6e9fe0f93bed",
+  "license": "BSD-3-Clause",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/weaviate/weaviate/blob/5af59176532cd20b467dcf1f223b6e9fe0f93bed/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/weaviate/weaviate/blob/5af59176532cd20b467dcf1f223b6e9fe0f93bed/LICENSE",
+      "sha256": "61fc440e31f16993a0358f2c2325618275d4487913d4ec310d6f32293fd32950"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "Weaviate source at v1.36.2 is BSD-3-Clause. Vectorizer/model modules and externally downloaded weights require their own terms.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.yaml",
+        "sha256": "b8c5cf6b438c96a54f09177017a408fcf260a48fe4c79e6f4653418997006fc3"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "cd2931c9eb3a6a3c6057688dcc419a6b6cf12be8805dd18a8c607146041c0313"
+      },
+      {
+        "path": "setup.sh",
+        "sha256": "d3d54fb231622013e697ad771a622b33f53d75c8ff30efe4ce4617aac96c5eda"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "weaviate",
+        "image": "cr.weaviate.io/semitechnologies/weaviate:1.36.2@sha256:eda7b079b05e7e05deab9e90aae0de718720235e5b57577f0745c94cdd04c599",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_selected_by_recipe",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/weaviate/weaviate",
+      "retrieved_at": "2026-09-23T07:53:58.208249+00:00",
+      "success": true,
+      "response_sha256": "3730b3fbf1eec3c253cc146f1d0e4e1e0d0f43386b2851e692a717b89f42e74e"
+    },
+    {
+      "url": "https://api.github.com/repos/weaviate/weaviate/commits/v1.36.2",
+      "retrieved_at": "2026-09-23T07:53:58.874711+00:00",
+      "success": true,
+      "response_sha256": "26abc346233287228c0c65bd3ed253cfb55d89f9cb566e11d16228d9d8f8f53f"
+    },
+    {
+      "url": "https://api.github.com/repos/weaviate/weaviate/license?ref=5af59176532cd20b467dcf1f223b6e9fe0f93bed",
+      "retrieved_at": "2026-09-23T07:53:59.484308+00:00",
+      "success": true,
+      "response_sha256": "620294c6b2597b1c6179a2251360ea709001d924876c033c6ec85999d2e9e7da"
+    },
+    {
+      "url": "https://api.github.com/repos/weaviate/weaviate/contents?ref=5af59176532cd20b467dcf1f223b6e9fe0f93bed",
+      "retrieved_at": "2026-09-23T07:54:00.056242+00:00",
+      "success": true,
+      "response_sha256": "7fbfd9318b3067d8372f7c98ef7e8e1f76b6a5c3b7f643faf91a6e586e982ce6"
+    }
+  ],
+  "gaps": [
+    "Source release reference matches the configured version; an image digest does not by itself prove the image was built from this commit.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "cr.weaviate.io/semitechnologies/weaviate:1.36.2@sha256:eda7b079b05e7e05deab9e90aae0de718720235e5b57577f0745c94cdd04c599"
+}

@@ -19,7 +19,7 @@ BOOTSTRAP_GGUF_FILE="Qwen3.5-2B-Q4_K_M.gguf"
 # Exact artifact size rounded down to MiB. This is display metadata for the
 # pinned GGUF below; keep it aligned with tier-map.sh when the artifact changes.
 BOOTSTRAP_GGUF_SIZE_MB=1221
-BOOTSTRAP_GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
+BOOTSTRAP_GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
 BOOTSTRAP_GGUF_SHA256="aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
 BOOTSTRAP_LLM_MODEL="qwen3.5-2b"
 BOOTSTRAP_MAX_CONTEXT=65536

@@ -41,8 +41,10 @@ sdxl_spawn_block="$(awk '
 ' "$ROOT_DIR/installers/phases/11-services.sh")"
 grep -q '_phase11_close_inherited_fds_for_daemon' <<<"$sdxl_spawn_block" \
     || fail "detached SDXL download must close the installer lifecycle lock fd"
-grep -q 'exec nohup env' <<<"$sdxl_spawn_block" \
+grep -q 'exec nohup "${ODS_PYTHON_CMD:-python3}"' <<<"$sdxl_spawn_block" \
     || fail "detached SDXL download must exec only after inherited fds are closed"
+grep -q 'scripts/download-sdxl-model.py' <<<"$sdxl_spawn_block" \
+    || fail "detached SDXL download must use the integrity-checking helper"
 pass "detached Phase 11 downloads cannot retain the installer lifecycle lock"
 
 verify_line="$(grep -n '# .*Phase 2: Verify integrity' "$UPGRADER" | cut -d: -f1)"

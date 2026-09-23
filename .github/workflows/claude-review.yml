@@ -1,492 +1,107 @@
 name: Claude Code Review
 
-# Consolidated AI code review workflow (replaces phases 1, 2, 3)
-#
-# Jobs run conditionally:
-# - basic-review: every PR open/sync (~$1.50)
-# - detect-high-stakes + review-summary: flags sensitive files for extra human attention
-# - security-check + claude-fix: only when 'ai-fix' label applied (~$5-10, opt-in)
-#
-# Note: Draft PRs created by claude-fix use GITHUB_TOKEN, so CI won't
-# run automatically on them. A maintainer must interact to trigger CI.
-
+# Paid work requires an explicit request by a user with repository write access.
+# Model jobs receive no GitHub write permission, shell tools, or repository code.
 on:
-  pull_request:
-    types: [opened, ready_for_review, synchronize, labeled]
-    branches-ignore:
-      - 'ai/**'
-      - 'scanner/**'
-      - 'issue-fix/**'
-      - 'nightly/**'
-  issue_comment:
-    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Open same-repository PR number to review'
+        required: true
+        type: string
 
+permissions: {}
+
+# Shared across triage and review so budget checks cannot race paid work.
 concurrency:
-  # A normal status comment creates a skipped issue_comment run. Keep that run
-  # from cancelling the in-flight pull_request review for the same PR.
-  group: claude-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
+  group: bounded-ai-maintainer-requests
+  cancel-in-progress: false
 
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
+env:
+  TARGET_NUMBER: ${{ inputs.pr_number }}
 
 jobs:
-  # ─── Phase 1: Basic comment-only review ───────────────────────────
-  basic-review:
-    name: Basic Review
-    if: |
-      github.event.action != 'labeled' &&
-      github.actor != 'claude[bot]' &&
-      github.actor != 'dependabot[bot]' &&
-      github.actor != 'github-actions[bot]' &&
-      (
-        github.event_name == 'pull_request' ||
-        (github.event_name == 'issue_comment' &&
-         github.event.issue.pull_request &&
-         contains(github.event.comment.body, '@claude-review'))
-      )
-
+  prepare:
+    name: Validate maintainer, budget and target
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: read
+      pull-requests: read
     steps:
-      - name: Check if fork PR
-        id: fork_check
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Prepare bounded input from GitHub API
         env:
-          HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
-        run: |
-          IS_FORK="false"
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/bounded_ai.py prepare review
 
-          # For pull_request events, check head repo
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
-              IS_FORK="true"
-            fi
-          fi
-
-          # For issue_comment events, API key absence signals fork PR
-          if [ "${{ github.event_name }}" == "issue_comment" ] && [ "$HAS_API_KEY" != "true" ]; then
-            IS_FORK="true"
-          fi
-
-          echo "is_fork=$IS_FORK" >> $GITHUB_OUTPUT
-          if [ "$IS_FORK" == "true" ]; then
-            echo "::notice::Fork PR detected — skipping AI review (no API key available)"
-          fi
-
-      - name: Checkout code
-        if: steps.fork_check.outputs.is_fork != 'true'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          fetch-depth: 0
+          name: ai-request
+          path: ai-data/request.json
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Check PR size (cost control)
-        if: steps.fork_check.outputs.is_fork != 'true'
-        id: pr_size
-        run: |
-          BASE_REF="${{ github.base_ref || github.event.repository.default_branch || 'main' }}"
-          FILES_CHANGED=$(git diff --name-only origin/${BASE_REF}...HEAD | wc -l)
-          LINES_CHANGED=$(git diff --stat origin/${BASE_REF}...HEAD | tail -1 | awk '{print $4+$6}')
-
-          echo "files_changed=$FILES_CHANGED" >> $GITHUB_OUTPUT
-          echo "lines_changed=$LINES_CHANGED" >> $GITHUB_OUTPUT
-
-          if [ "$LINES_CHANGED" -gt 1000 ]; then
-            echo "skip_review=true" >> $GITHUB_OUTPUT
-            echo "::warning::PR too large for AI review (>1000 lines). Add 'force-review' label to override."
-          else
-            echo "skip_review=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Skip large PR notice
-        if: |
-          steps.fork_check.outputs.is_fork != 'true' &&
-          steps.pr_size.outputs.skip_review == 'true' &&
-          !contains(github.event.pull_request.labels.*.name, 'force-review')
-        run: |
-          echo "::notice::Skipping review for large PR. Add 'force-review' label to override."
-          exit 0
-
-      - name: Run Claude Code Review
-        if: |
-          steps.fork_check.outputs.is_fork != 'true' &&
-          (steps.pr_size.outputs.skip_review == 'false' || contains(github.event.pull_request.labels.*.name, 'force-review'))
-        uses: anthropics/claude-code-action@9db782c3a17ef2bfc274cd17411bc3e0a5ba1345 # v1
+  infer:
+    name: One bounded model request
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          claude_args: |
-            code-review --comment \
-            --model claude-opus-4-5-20251101 \
-            --max-turns 20 \
-            --allowedTools "Bash(git diff *),Bash(git log *),Bash(git blame *),Read"
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
 
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ai-request
+          path: ai-data
 
-      - name: Review metrics
-        if: always()
+      - name: Request JSON without agent tools or GitHub credentials
         env:
-          IS_FORK: ${{ steps.fork_check.outputs.is_fork }}
-          FILES_CHANGED: ${{ steps.pr_size.outputs.files_changed }}
-          LINES_CHANGED: ${{ steps.pr_size.outputs.lines_changed }}
-        run: |
-          echo "### Review Metrics" >> $GITHUB_STEP_SUMMARY
-          if [ "$IS_FORK" == "true" ]; then
-            echo "- Skipped: fork PR (no API key)" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- Files changed: ${FILES_CHANGED:-0}" >> $GITHUB_STEP_SUMMARY
-            echo "- Lines changed: ${LINES_CHANGED:-0}" >> $GITHUB_STEP_SUMMARY
-            echo "- Estimated cost: ~\$1.50" >> $GITHUB_STEP_SUMMARY
-          fi
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python3 .github/scripts/bounded_ai.py infer review
 
-  # ─── Phase 2: Sensitive file detection ────────────────────────────
-  detect-high-stakes:
-    name: Detect High-Stakes Changes
-    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ai-result
+          path: ai-data/result.json
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Apply validated advisory comment to exact target
+    needs: infer
     runs-on: ubuntu-latest
-    outputs:
-      is_high_stakes: ${{ steps.check.outputs.is_high_stakes }}
-      sensitive_files: ${{ steps.check.outputs.sensitive_files }}
-      reason: ${{ steps.check.outputs.reason }}
-      is_fork: ${{ steps.fork-check.outputs.is_fork }}
-
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
     steps:
-      - name: Check if fork PR
-        id: fork-check
-        run: |
-          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
-            echo "is_fork=true" >> $GITHUB_OUTPUT
-            echo "::notice::Fork PR detected — some review features will be skipped"
-          else
-            echo "is_fork=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
 
-      - name: Check for high-stakes changes
-        id: check
-        run: |
-          HIGH_STAKES_PATTERNS=(
-            "ods/installers/"
-            "ods/ods-cli"
-            "ods/config/"
-            "ods/extensions/services/dashboard-api/security.py"
-            ".github/workflows/"
-            ".env"
-            "docker-compose"
-          )
-
-          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref || github.event.repository.default_branch || 'main' }}...HEAD)
-
-          IS_HIGH_STAKES="false"
-          SENSITIVE_FILES=""
-          REASON=""
-
-          for pattern in "${HIGH_STAKES_PATTERNS[@]}"; do
-            if echo "$CHANGED_FILES" | grep -i "$pattern" > /dev/null; then
-              IS_HIGH_STAKES="true"
-              SENSITIVE_FILES=$(echo "$CHANGED_FILES" | grep -i "$pattern" | head -5)
-              REASON="Security-sensitive files detected: $pattern"
-              break
-            fi
-          done
-
-          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'ai-consensus') }}" == "true" ]]; then
-            IS_HIGH_STAKES="true"
-            REASON="Manual review escalation requested via label"
-          fi
-
-          echo "is_high_stakes=$IS_HIGH_STAKES" >> $GITHUB_OUTPUT
-          echo "sensitive_files<<EOF" >> $GITHUB_OUTPUT
-          echo "$SENSITIVE_FILES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          echo "reason=$REASON" >> $GITHUB_OUTPUT
-
-          if [ "$IS_HIGH_STAKES" == "true" ]; then
-            echo "::notice::High-stakes changes detected — flagging for extra review"
-          fi
-
-  review-summary:
-    name: Review Summary
-    needs: [detect-high-stakes]
-    if: |
-      always() &&
-      needs.detect-high-stakes.outputs.is_fork != 'true' &&
-      needs.detect-high-stakes.outputs.is_high_stakes == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Post high-stakes notice
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const reason = `${{ needs.detect-high-stakes.outputs.reason }}`;
-            const sensitiveFiles = `${{ needs.detect-high-stakes.outputs.sensitive_files }}`;
+          name: ai-result
+          path: ai-data
 
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              body: `## Sensitive Files Detected
-
-            **Trigger**: ${reason}
-
-            **Files flagged**:
-            \`\`\`
-            ${sensitiveFiles}
-            \`\`\`
-
-            Extra human review is recommended for this PR.
-
-            ---
-            Claude Code Review | Sensitive File Detection | ~$1.50`
-            });
-
-  # ─── Phase 3: Auto-fix (opt-in via 'ai-fix' label) ───────────────
-  security-check:
-    name: Pre-flight Security Check
-    if: |
-      github.event.action == 'labeled' &&
-      contains(github.event.pull_request.labels.*.name, 'ai-fix') &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    outputs:
-      safe_to_proceed: ${{ steps.check.outputs.safe }}
-      blocked_reason: ${{ steps.check.outputs.reason }}
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-
-      - name: Security validation
-        id: check
-        run: |
-          SAFE="true"
-          REASON=""
-
-          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref || github.event.repository.default_branch || 'main' }}...HEAD)
-
-          BLOCKED_PATTERNS=(
-            ".github/workflows/"
-            ".github/actions/"
-            "ods/installers/"
-            "ods/ods-cli"
-            "ods/config/"
-            "\.env"
-            "\.env\."
-            "\.key$"
-            "\.pem$"
-            "credentials"
-          )
-
-          for pattern in "${BLOCKED_PATTERNS[@]}"; do
-            if echo "$CHANGED_FILES" | grep -qE "$pattern" 2>/dev/null; then
-              SAFE="false"
-              REASON="Modifications to protected files detected: $pattern. AI patch generation not allowed."
-              break
-            fi
-          done
-
-          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
-            SAFE="false"
-            REASON="PR from fork — AI patch generation disabled for security"
-          fi
-
-          echo "safe=$SAFE" >> $GITHUB_OUTPUT
-          echo "reason=$REASON" >> $GITHUB_OUTPUT
-
-          if [ "$SAFE" == "false" ]; then
-            echo "::error::$REASON"
-          fi
-
-  claude-fix:
-    name: Claude Code Review + Patch Generation
-    needs: security-check
-    if: |
-      needs.security-check.outputs.safe_to_proceed == 'true' &&
-      github.actor != 'claude[bot]' &&
-      github.actor != 'dependabot[bot]' &&
-      github.actor != 'github-actions[bot]'
-
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run Claude Code Review with write permissions
-        id: review
-        uses: anthropics/claude-code-action@9db782c3a17ef2bfc274cd17411bc3e0a5ba1345 # v1
-        with:
-          claude_args: |
-            code-review \
-            --model claude-opus-4-5-20251101 \
-            --max-turns 25 \
-            --allowedTools "Bash(git diff *),Bash(git log *),Read,Edit,Write"
-
-          use_commit_signing: true
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-
-      - name: Parse review results
-        id: parse
-        run: |
-          if git diff --quiet; then
-            echo "has_suggestions=false" >> $GITHUB_OUTPUT
-            echo "::notice::No code changes suggested by AI review"
-          else
-            echo "has_suggestions=true" >> $GITHUB_OUTPUT
-
-            git diff > /tmp/ai-suggestions.patch
-
-            if git apply --check /tmp/ai-suggestions.patch 2>&1; then
-              echo "::notice::Valid patch generated — $(git diff --stat | tail -1)"
-            else
-              echo "has_suggestions=false" >> $GITHUB_OUTPUT
-              echo "::error::Generated patch cannot be cleanly applied"
-            fi
-          fi
-
-      - name: Apply AI suggestions
-        if: steps.parse.outputs.has_suggestions == 'true'
-        run: |
-          git checkout -- .
-          git apply /tmp/ai-suggestions.patch
-
-      - name: Run linters
-        if: steps.parse.outputs.has_suggestions == 'true'
-        run: |
-          pip install ruff 2>/dev/null || true
-          if command -v ruff &> /dev/null; then
-            ruff check . --fix || true
-            ruff format . || true
-          fi
-
-      - name: Run secret scanning
-        if: steps.parse.outputs.has_suggestions == 'true'
-        run: |
-          if git diff | grep -iE "(api[_-]?key|password|secret|token)" > /dev/null; then
-            echo "::warning::Potential secret detected in changes — manual review required"
-          fi
-
-      - name: Create Draft Pull Request
-        id: create_pr
-        if: steps.parse.outputs.has_suggestions == 'true'
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: |
-            AI-suggested improvements from PR #${{ github.event.pull_request.number }}
-
-            Generated by Claude Code Review.
-
-            Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
-          branch: ai/auto-fix-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}
-          delete-branch: true
-          draft: true
-          title: "AI Suggestions: ${{ github.event.pull_request.title }}"
-          body: |
-            ## Automated Improvements
-
-            This draft PR contains AI-suggested improvements for PR #${{ github.event.pull_request.number }}.
-
-            ### Review Process
-
-            1. **Claude Code Review**: Analyzed code and generated suggestions
-            2. **Security Checks**: Passed pre-flight validation
-            3. **Patch Application**: Applied cleanly
-
-            ### Important
-
-            - **This is a DRAFT PR** — requires human review before merge
-            - **Do not auto-merge** — maintainer approval required
-            - Review all changes carefully before approving
-            - CI won't run automatically (GITHUB_TOKEN created PR) — push a commit or close/reopen to trigger
-
-            ---
-            Generated by [Claude Code](https://claude.com/claude-code) | Auto-Fix (opt-in via `ai-fix` label)
-          labels: |
-            ai-generated
-            needs-human-review
-          reviewers: ${{ github.event.pull_request.user.login }}
-
-      - name: Comment on original PR
-        if: steps.create_pr.outputs.pull-request-number
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const prNumber = '${{ steps.create_pr.outputs.pull-request-number }}';
-            const prUrl = '${{ steps.create_pr.outputs.pull-request-url }}';
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `## AI Suggestions Available
-
-            I've analyzed this PR and created a draft PR with suggested improvements: **#${prNumber}**
-
-            [View Draft PR with AI Suggestions](${prUrl})
-
-            ### Next steps
-
-            1. Review the suggested changes in draft PR #${prNumber}
-            2. CI won't run automatically — push a commit or close/reopen to trigger checks
-            3. If approved, merge the draft PR
-
-            **The draft PR requires human approval** — do not auto-merge.
-
-            ---
-            Claude Code Review | Auto-Fix`
-            });
-
-  blocked-security:
-    name: Security Block Notice
-    needs: security-check
-    if: |
-      needs.security-check.outputs.safe_to_proceed == 'false' &&
-      github.event.action == 'labeled'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Post security notice
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const reason = `${{ needs.security-check.outputs.blocked_reason }}`;
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `## AI Patch Generation Blocked
-
-            ${reason}
-
-            **Security Policy**: Automated patch generation is disabled for:
-            - Workflow files (.github/workflows/*)
-            - Installer code (ods/installers/*)
-            - CLI tool (ods/ods-cli)
-            - Configuration files (ods/config/*)
-            - Secrets and credentials
-            - PRs from forks
-
-            You can still get a review comment via the basic review (triggered on PR open/sync).`
-            });
-
-# Required secrets:
-# - GITHUB_TOKEN (automatically provided)
-# - ANTHROPIC_API_KEY (for Claude Code review)
+      - name: Validate target again and publish through fixed API operation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/bounded_ai.py publish review

@@ -351,4 +351,3 @@ def create_app(config,credentials,token,*,events=None,client_factory=None):
                 await cleanup()
 
     return app
-

@@ -599,7 +599,7 @@ if (
         bundled "$ODS_PIXEL_BUNDLED_REF" ""
     python3 -c 'import os
 assert os.environ["PIXEL_SOURCE_URL"] == "bundled"
-assert os.environ["PIXEL_SOURCE_REF"] == "817214d5ec3d8aa583fe50c1dc7561f3c1a16dff"
+assert os.environ["PIXEL_SOURCE_REF"] == "69f4ad0bd062fe006e9d5b473a04b9a38eff8533"
 assert os.environ["PIXEL_SOURCE_DIR"] == ""'
 ); then
     pass "Validated Pixel source contract persists across installer phases"
@@ -712,8 +712,8 @@ assert expected <= properties.keys()
 assert properties["PIXEL_SOURCE_REF"]["pattern"] == "^[0-9a-f]{40}$"
 assert properties["PIXEL_OPENWEBUI_KEY"]["minLength"] == 64
 assert properties["PIXEL_OPENWEBUI_KEY"]["maxLength"] == 64
-assert properties["PIXEL_PREVIEW_RUNTIME_DIR"]["enum"] == ["/run/ods-pixel-preview", "/mnt/host/wsl/ods-portal-runtime/preview"]
-assert properties["PIXEL_INGRESS_RUNTIME_DIR"]["enum"] == ["/run/ods-pixel", "/mnt/host/wsl/ods-portal-runtime/ingress"]
+assert properties["PIXEL_PREVIEW_RUNTIME_DIR"]["enum"] == ["/run/ods-pixel-preview", "/mnt/wsl/ods-portal-runtime/preview"]
+assert properties["PIXEL_INGRESS_RUNTIME_DIR"]["enum"] == ["/run/ods-pixel", "/mnt/wsl/ods-portal-runtime/ingress"]
 assert properties["PIXEL_RUNTIME_BIND_PROPAGATION"]["enum"] == ["rprivate", "rshared"]
 assert properties["PIXEL_INGRESS_GID"]["minimum"] == 1
 assert "PIXEL_LICENSE_ACCEPTED" not in properties

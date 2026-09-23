@@ -1,7 +1,7 @@
 import {
   Database, Cpu, Workflow, Plug, Image, MessageSquare, Code,
   FileText, Shield, Globe, Music, Video, Search, Puzzle,
-  Box, Loader2, RefreshCw, RotateCcw, ChevronDown, ChevronUp, Package, Info, X, Download, Trash2, ExternalLink, Terminal, Copy, Check,
+  Box, Loader2, RefreshCw, RotateCcw, ChevronDown, Package, Info, X, Download, Trash2, ExternalLink, Terminal, Copy, Check,
 } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import { DependencyBadges, DependencyConfirmDialog, DisableDependentWarning } from '../components/DependencyBadges'
@@ -112,7 +112,6 @@ export default function Extensions({ compact = false }) {
   const [depConfirm, setDepConfirm] = useState(null)
   const [templates, setTemplates] = useState([])
   const [pollingLost, setPollingLost] = useState(false)
-  const installProgressRef = useRef(null)
   const activePollers = useRef({})
   // Per-service recovery tracker: counts consecutive fetch failures and
   // fires onThresholdReached/onRecovered to drive the polling-lost banner.

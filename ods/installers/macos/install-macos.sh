@@ -178,6 +178,7 @@ source "${LIB_DIR}/ui.sh"
 macos_apply_presentation_mode
 source "${LIB_DIR}/bridge-manager.sh"
 source "${LIB_DIR}/native-model.sh"
+source "${LIB_DIR}/native-llama-artifact.sh"
 source "${LIB_DIR}/tier-map.sh"
 source "${LIB_DIR}/detection.sh"
 source "${LIB_DIR}/preflight-fs.sh"
@@ -192,6 +193,7 @@ if [[ -f "${SOURCE_ROOT}/lib/python-cmd.sh" ]]; then
 fi
 source "${SOURCE_ROOT}/installers/lib/readiness-summary.sh"
 source "${SOURCE_ROOT}/installers/lib/secure-log.sh"
+source "${SOURCE_ROOT}/installers/lib/model-download-review.sh"
 
 # ── File-local helpers ──
 _close_inherited_fds_for_daemon() {
@@ -652,6 +654,8 @@ _macos_launch_detached_bootstrap_upgrade() {
     shift
     local pid_file="${INSTALL_DIR}/data/bootstrap-upgrade.pid"
     local log_file="${INSTALL_DIR}/logs/model-upgrade.log"
+    mkdir -p "${INSTALL_DIR}/logs" || return 1
+    ods_prepare_install_log_var log_file || return 1
     local python_cmd="${PYTHON_CMD:-/usr/bin/python3}"
     local bash_cmd="${BASH:-bash}"
     [[ -x "$python_cmd" ]] || python_cmd="/usr/bin/python3"
@@ -1035,35 +1039,18 @@ _install_opencode() {
         return 0
     fi
 
-    if command -v brew >/dev/null 2>&1; then
-        ai "Installing OpenCode with Homebrew..."
-        if brew install opencode >> "$ODS_LOG_FILE" 2>&1; then
-            OPENCODE_BIN="$(_find_opencode_bin 2>/dev/null || true)"
-            if [[ -n "$OPENCODE_BIN" ]]; then
-                ai_ok "OpenCode installed with Homebrew ($OPENCODE_BIN)"
-                return 0
-            fi
-            ai_warn "Homebrew reported success but opencode was not found on PATH"
-        else
-            ai_warn "Homebrew OpenCode install failed — falling back to upstream installer"
-        fi
-    fi
-
-    ai "Installing OpenCode with upstream installer..."
-    local tmpfile
-    tmpfile=$(mktemp /tmp/opencode-install.XXXXXX.sh)
-    if curl -fsSL --max-time 300 https://opencode.ai/install -o "$tmpfile" 2>/dev/null \
-       && bash "$tmpfile" >> "$ODS_LOG_FILE" 2>&1; then
+    source "${SOURCE_ROOT}/installers/lib/verified-download.sh"
+    ai "Installing verified OpenCode v1.2.18..."
+    if ods_install_verified_opencode >> "$ODS_LOG_FILE" 2>&1; then
         OPENCODE_BIN="$(_find_opencode_bin 2>/dev/null || true)"
         if [[ -n "$OPENCODE_BIN" ]]; then
             ai_ok "OpenCode installed ($OPENCODE_BIN)"
         else
-            ai_warn "OpenCode installer completed but opencode was not found"
+            ai_warn "Verified OpenCode install completed but opencode was not found"
         fi
     else
-        ai_warn "OpenCode install failed — install later with: brew install opencode"
+        ai_warn "Verified OpenCode install failed; inspect the installer log and retry."
     fi
-    rm -f "$tmpfile"
 }
 
 _require_docker_cpu_budget() {
@@ -1128,7 +1115,8 @@ _ensure_macos_agent_python() {
         "$bootstrap_python" -m venv "$venv_dir" >>"$ODS_LOG_FILE" 2>&1 || return 1
     fi
     if ! "$runtime" -c 'import yaml, huggingface_hub, hf_xet' >/dev/null 2>&1; then
-        "$runtime" -m pip install --quiet pyyaml 'huggingface_hub[hf_xet]>=0.27' \
+        "$runtime" -m pip install --quiet --require-hashes --only-binary=:all: \
+            -r "$SOURCE_ROOT/installers/python-deps/host-agent.txt" \
             >>"$ODS_LOG_FILE" 2>&1 || return 1
     fi
     "$runtime" -c 'import yaml, huggingface_hub, hf_xet' >/dev/null 2>&1 || return 1
@@ -1173,7 +1161,8 @@ _ensure_macos_pyyaml() {
         exit 1
     fi
 
-    if "$venv_python" -m pip install --quiet --no-warn-script-location pyyaml 2>&1 | tee -a "$ODS_LOG_FILE" >/dev/null \
+    if "$venv_python" -m pip install --quiet --no-warn-script-location --require-hashes --only-binary=:all: \
+        -r "$SOURCE_ROOT/installers/python-deps/pyyaml.txt" 2>&1 | tee -a "$ODS_LOG_FILE" >/dev/null \
        && _macos_python_imports_yaml "$venv_python"; then
         _set_installer_python_cmd "$venv_python"
         ai_ok "PyYAML available in installer venv"
@@ -1183,7 +1172,7 @@ _ensure_macos_pyyaml() {
     ai_err "Failed to install PyYAML for the macOS compose resolver."
     ai "  Log file: $ODS_LOG_FILE"
     ai "  Manual recovery:"
-    ai "    $pycmd -m venv '$venv_dir' && '$venv_python' -m pip install pyyaml"
+    ai "    $pycmd -m venv '$venv_dir' && '$venv_python' -m pip install --require-hashes --only-binary=:all: -r '$SOURCE_ROOT/installers/python-deps/pyyaml.txt'"
     exit 1
 }
 
@@ -1204,6 +1193,9 @@ if $ENABLE_PIXEL; then
     OPENCLAW_EXPLICIT=true
 fi
 
+# Refuse incompatible native installs before creating even the installer log.
+ods_prepare_install_log_var ODS_LOG_FILE /tmp/ods-install-macos.log || exit 1
+
 if ! $OPENCLAW_EXPLICIT; then
     _existing_openclaw=false
     if command -v docker >/dev/null 2>&1 \
@@ -1221,10 +1213,6 @@ if ! $OPENCLAW_EXPLICIT; then
     fi
     unset _existing_openclaw
 fi
-
-# Reuse the same private-log guard as Linux. In particular, an existing log
-# under macOS /tmp must be privatized before any diagnostic can append to it.
-ods_prepare_install_log "$ODS_LOG_FILE" || exit 1
 
 # ============================================================================
 # PHASE 1 -- PREFLIGHT CHECKS
@@ -2091,6 +2079,9 @@ else
         FULL_LLM_MODEL="$LLM_MODEL"
         FULL_MAX_CONTEXT="$MAX_CONTEXT"
 
+        ods_review_model_download "$SOURCE_ROOT" "$FULL_GGUF_FILE" "$FULL_GGUF_URL" \
+            "$FULL_GGUF_SHA256" "$INSTALL_DIR/data/model-download-review.json" || exit 1
+
         GGUF_FILE="$BOOTSTRAP_GGUF_FILE"
         GGUF_URL="$BOOTSTRAP_GGUF_URL"
         GGUF_SHA256="${BOOTSTRAP_GGUF_SHA256:-}"
@@ -2115,6 +2106,7 @@ else
         fi
 
         if [[ ! -f "$MODEL_PATH" ]]; then
+            ods_review_model_download "$SOURCE_ROOT" "$GGUF_FILE" "$GGUF_URL" "$GGUF_SHA256" || exit 1
             # Download with retry logic (built into download_with_progress)
             if ! download_with_progress "$GGUF_URL" "$MODEL_PATH" "Downloading ${GGUF_FILE}"; then
                 ai_err "Model download failed after retries. Re-run the installer to try again."
@@ -2239,15 +2231,18 @@ else
         LLAMA_SERVER_DIR="$(dirname "$LLAMA_SERVER_BIN")"
         MAX_CONTEXT="$MACOS_NATIVE_CONTEXT"
 
-        # Download llama.cpp Metal build
-        LLAMA_ZIP="/tmp/${LLAMA_CPP_MACOS_ASSET}"
+        # New archives must match the reviewed manifest before extraction.
+        # Existing owner-installed binaries retain the previous reuse policy.
         if [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
-            if [[ ! -f "$LLAMA_ZIP" ]]; then
-                download_with_progress "$LLAMA_CPP_MACOS_URL" "$LLAMA_ZIP" \
-                    "Downloading llama-server (Metal)" || {
-
-                    # Fallback: try Homebrew
-                    ai_warn "Pre-built binary download failed. Trying Homebrew..."
+            if ods_install_verified_macos_llama "$SOURCE_ROOT" "$LLAMA_CPP_RELEASE_TAG" "$LLAMA_SERVER_BIN"; then
+                ai_ok "Verified llama-server (Metal) extracted"
+            else
+                _llama_download_status=$?
+                if [[ "$_llama_download_status" == 10 ]]; then
+                    # Only transport/HTTP failures preserve the existing OS
+                    # package-manager fallback. Integrity/configuration errors
+                    # below must never silently switch suppliers or versions.
+                    ai_warn "Pre-built binary transport failed. Trying Homebrew (separate package-manager trust)..."
                     if command -v brew >/dev/null 2>&1; then
                         brew install llama.cpp 2>&1 | tail -5
                         BREW_LLAMA=$(command -v llama-server 2>/dev/null || true)
@@ -2267,46 +2262,11 @@ else
                         ai "Then: brew install llama.cpp"
                         exit 1
                     fi
-                }
-            fi
-
-            if [[ -f "$LLAMA_ZIP" ]] && [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
-                # Extract
-                ai "Extracting llama-server..."
-                mkdir -p "$LLAMA_SERVER_DIR"
-                TEMP_EXTRACT="/tmp/llama-extract-$$"
-                mkdir -p "$TEMP_EXTRACT"
-                # Format-aware extraction (handles .tar.gz and .zip)
-                if [[ "$LLAMA_ZIP" == *.tar.gz ]] || [[ "$LLAMA_ZIP" == *.tgz ]]; then
-                    tar xzf "$LLAMA_ZIP" -C "$TEMP_EXTRACT"
                 else
-                    unzip -o -q "$LLAMA_ZIP" -d "$TEMP_EXTRACT"
-                fi
-
-                # Find llama-server binary (may be in a subdirectory)
-                FOUND_BIN=$(find "$TEMP_EXTRACT" -name "llama-server" -type f -print -quit)
-                if [[ -n "$FOUND_BIN" ]]; then
-                    cp "$FOUND_BIN" "$LLAMA_SERVER_BIN"
-                    chmod +x "$LLAMA_SERVER_BIN"
-
-                    # Also copy any companion dylibs and Metal libraries
-                    FOUND_DIR=$(dirname "$FOUND_BIN")
-                    find "$FOUND_DIR" -name "*.dylib" -exec cp {} "$LLAMA_SERVER_DIR/" \; 2>/dev/null || true
-                    find "$FOUND_DIR" -name "*.metal" -exec cp {} "$LLAMA_SERVER_DIR/" \; 2>/dev/null || true
-
-                    ai_ok "Extracted llama-server"
-                else
-                    ai_err "llama-server binary not found in archive."
-                    ai "Try: brew install llama.cpp"
-                    rm -rf "$TEMP_EXTRACT"
+                    ai_err "Native llama-server archive was not accepted; no Homebrew fallback after integrity or configuration failure."
                     exit 1
                 fi
-                rm -rf "$TEMP_EXTRACT"
             fi
-
-            # Remove quarantine attribute (macOS Gatekeeper)
-            xattr -rd com.apple.quarantine "$LLAMA_SERVER_BIN" 2>/dev/null || true
-            xattr -rd com.apple.quarantine "$LLAMA_SERVER_DIR"/*.dylib 2>/dev/null || true
         else
             ai_ok "llama-server already present"
         fi
@@ -2794,6 +2754,7 @@ for service in (data.get("services") or {}).values():
 
     mkdir -p "${INSTALL_DIR}/logs"
     _compose_up_log="${INSTALL_DIR}/logs/compose-up.log"
+    ods_prepare_install_log_var _compose_up_log || exit 1
     : > "$_compose_up_log"
 
     if ! _macos_pre_pull_compose_images; then
@@ -2812,6 +2773,7 @@ for service in (data.get("services") or {}).values():
     fi
 
     _compose_launch_record="${INSTALL_DIR}/logs/compose-launch.txt"
+    ods_prepare_install_log_var _compose_launch_record || exit 1
     {
         printf 'timestamp=%s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
         printf 'cwd=%s\n' "$INSTALL_DIR"
@@ -2999,6 +2961,22 @@ for service in (data.get("services") or {}).values():
             ai "Check progress: tail -f $INSTALL_DIR/logs/model-upgrade.log"
         else
             ai_warn "bootstrap-upgrade.sh not found. Download the full model manually."
+        fi
+    fi
+
+    if [[ "${ODS_INSTALL_AI_CLIS:-false}" == "true" ]]; then
+        if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+            if ODS_INSTALL_AI_CLIS=true node "$SOURCE_ROOT/installers/ai-clis/install.mjs" >> "$ODS_LOG_FILE" 2>&1; then
+                export PATH="$HOME/.ods/ai-clis/bin:$PATH"
+                if ! grep -Fq '.ods/ai-clis/bin' "$HOME/.zprofile" 2>/dev/null; then
+                    printf '%s\n' 'export PATH="$HOME/.ods/ai-clis/bin:$PATH"' >> "$HOME/.zprofile"
+                fi
+                ai_ok "Locked Claude Code and Codex CLI installed"
+            else
+                ai_warn "Locked AI CLI install failed; inspect the installer log and retry with Node.js 22+."
+            fi
+        else
+            ai_warn "Optional AI CLIs require Node.js 22+ and npm; install them and re-run with ODS_INSTALL_AI_CLIS=true."
         fi
     fi
 

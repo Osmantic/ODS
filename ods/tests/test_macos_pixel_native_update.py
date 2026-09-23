@@ -13,6 +13,7 @@ SPEC = importlib.util.spec_from_file_location('native_update',
     Path(__file__).resolve().parents[1] / 'installers/macos/lib/pixel-native-update.py')
 module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
+PREVIOUS_BUNDLED_REF = '817214d5ec3d8aa583fe50c1dc7561f3c1a16dff'
 
 
 @pytest.fixture
@@ -48,7 +49,10 @@ python_fixture() { printf '%s\\n' "$@"; }
 def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path, monkeypatch, failure, docker_endpoint):
     installed, source = tmp_path / 'ods', tmp_path / 'source'
     (installed / 'data/pixel-native').mkdir(parents=True)
+    (installed / '.env').write_text('PIXEL_SOURCE_REF=' + PREVIOUS_BUNDLED_REF + '\n')
     source.mkdir()
+    current_ref = module.helper('pixel-native-install').DEFAULT_REF
+    assert current_ref != PREVIOUS_BUNDLED_REF
     endpoint = docker_endpoint
     stages = []
     old = 'a' * 64
@@ -60,19 +64,26 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
             raise ValueError('fixture failure')
     def acquire(**kwargs):
         step('acquire')
+        assert kwargs['ref'] == current_ref
+        assert kwargs['source_url'] == str(source / 'vendor/pixel.bundle')
         return kwargs['destination']
+    def stage(**kwargs):
+        step('stage')
+        assert kwargs['ref'] == current_ref
     def prepare(**kwargs):
         step('prepare')
+        assert kwargs['ref'] == current_ref
         destination = kwargs['destination']
         destination.mkdir()
         (destination / 'preparation.json').write_text(json.dumps(dict(status='prepared',
             installDir=str(installed), currentDigest=old, runtimeDigest='b' * 64,
-            serviceDigest='c' * 64, pixelSourceRef='d' * 40, gatewayPort=18789, accessPort=18790)))
+            serviceDigest='c' * 64, pixelSourceRef=current_ref, gatewayPort=18789, accessPort=18790)))
     def activate(command, **kwargs):
         step('activate')
         assert command[:2] == ['/usr/bin/sudo', '/usr/bin/python3']
         assert command[3] == 'migrate-native'
         assert command[command.index('--current-bundle-digest') + 1] == old
+        assert command[command.index('--pixel-source-ref') + 1] == current_ref
         assert '--activate' in command
         assert command[command.index('--ingress-image') + 1] == 'sha256:' + 'e' * 64
     def finalize(preparation):
@@ -83,13 +94,13 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
         PIXEL_HISTORY_PROJECT='ods', PIXEL_HISTORY_IMAGE='sha256:' + 'e' * 64, PIXEL_HISTORY_USER='501:20')
     modules = {
         'pixel-native-stack': SimpleNamespace(resolve_files=lambda *args: [],
-            read_selection=lambda *args: ({'runtimeDigest': old}, {})),
+            read_selection=lambda *args: ({'runtimeDigest': old, 'pixelSourceRef': PREVIOUS_BUNDLED_REF}, {})),
         'pixel-macos-access-install': SimpleNamespace(_launchd=SimpleNamespace(GATEWAY_PLIST='/fixture/plist'),
             _source_gateway=lambda *args: ({}, env, None, None, Path('/runtime') / old / 'node', None),
             _native_transport_environment=lambda *args: {}),
-        'pixel-native-install': SimpleNamespace(DEFAULT_REF='d' * 40, node_tools=lambda: ('node', 'npm')),
+        'pixel-native-install': SimpleNamespace(DEFAULT_REF=current_ref, node_tools=lambda: ('node', 'npm')),
         'pixel-native-config': SimpleNamespace(bootstrap=SimpleNamespace(acquire_source=acquire,
-            stage=lambda **kwargs: step('stage')), private_json=lambda path: json.loads(path.read_text())),
+            stage=stage), private_json=lambda path: json.loads(path.read_text())),
         'pixel-native-prepare': SimpleNamespace(prepare_migration=prepare),
         'pixel-native-finalize': SimpleNamespace(finalize_update=finalize),
     }
@@ -100,6 +111,7 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
     monkeypatch.setattr(module.subprocess, 'run', activate)
     monkeypatch.setenv('DOCKER_CONTEXT', 'unrelated-remote-context')
     monkeypatch.setenv('DOCKER_HOST', 'tcp://unrelated.invalid:2375')
+    monkeypatch.setenv('PIXEL_SOURCE_REF', PREVIOUS_BUNDLED_REF)
     before = dict(os.environ)
     try:
         arguments = dict(install_dir=installed, ods_source=source,

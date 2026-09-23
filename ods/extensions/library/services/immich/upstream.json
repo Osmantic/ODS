@@ -1,0 +1,96 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/immich-app/immich",
+  "source_ref": "v1.131.3",
+  "source_revision": "00d3b8d83a648ae136d4ca34c28b82741bfe62bd",
+  "source_revision_scope": "configured_version_reference",
+  "source_url": "https://github.com/immich-app/immich/tree/00d3b8d83a648ae136d4ca34c28b82741bfe62bd",
+  "license": "AGPL-3.0",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/immich-app/immich/blob/00d3b8d83a648ae136d4ca34c28b82741bfe62bd/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/immich-app/immich/blob/00d3b8d83a648ae136d4ca34c28b82741bfe62bd/LICENSE",
+      "sha256": "a3bad629f67f442b23b5224419e49edafc32e6b9c876b89464f7aafe6091ccde"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "Immich source at v1.131.3 is AGPL-3.0. PostgreSQL-vector and Redis companion images are separate components; optional machine-learning weights are not covered by the application code license.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.yaml",
+        "sha256": "858af88ac289266662c771efb8f3464b19337b95a11d783daa79254420b99e45"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "3848efccc93a29f357e4c18295f9591acab59285e12721a2f683c73ad133679c"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "immich",
+        "image": "ghcr.io/immich-app/immich-server:v1.131.3",
+        "scope": "application"
+      },
+      {
+        "file": "compose.yaml",
+        "service": "immich-postgres",
+        "image": "docker.io/tensorchord/pgvecto-rs:pg16-v0.2.0",
+        "scope": "companion_not_covered_by_application_license"
+      },
+      {
+        "file": "compose.yaml",
+        "service": "immich-redis",
+        "image": "redis:7-alpine",
+        "scope": "companion_not_covered_by_application_license"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "separate_review_required",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/immich-app/immich",
+      "retrieved_at": "2026-09-23T07:53:41.009195+00:00",
+      "success": true,
+      "response_sha256": "4647187d3d87221487b511364fb344fe2b44beed646647c5be1fd9c5a2542384"
+    },
+    {
+      "url": "https://api.github.com/repos/immich-app/immich/commits/v1.131.3",
+      "retrieved_at": "2026-09-23T07:53:41.734701+00:00",
+      "success": true,
+      "response_sha256": "1b190ba5cf6c5435684fb9d51466cf386a9b75186430ccf7a5527aaaa74dd677"
+    },
+    {
+      "url": "https://api.github.com/repos/immich-app/immich/license?ref=00d3b8d83a648ae136d4ca34c28b82741bfe62bd",
+      "retrieved_at": "2026-09-23T07:53:42.438080+00:00",
+      "success": true,
+      "response_sha256": "216834d8c136d0f60270fffe0e03a250afc26f5f0d8a6d12055333bff073d787"
+    },
+    {
+      "url": "https://api.github.com/repos/immich-app/immich/contents?ref=00d3b8d83a648ae136d4ca34c28b82741bfe62bd",
+      "retrieved_at": "2026-09-23T07:53:42.995858+00:00",
+      "success": true,
+      "response_sha256": "d7284294af03cbf22d33f0a6e163d39b45cf55dc6c636879ab2e128bf899ec14"
+    }
+  ],
+  "gaps": [
+    "Companion image licensing and any machine-learning model terms remain a separate inventory task.",
+    "Source release reference matches the configured version; an image digest does not by itself prove the image was built from this commit.",
+    "One or more configured image/base references are mutable tags; registry digest and full component inventory remain pending.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "ghcr.io/immich-app/immich-server:v1.131.3"
+}

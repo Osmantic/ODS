@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AlertCircle, ChevronDown, ChevronUp, Terminal, Copy, Check } from 'lucide-react'
+import { AlertCircle, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react'
 
 const commonIssues = [
   {

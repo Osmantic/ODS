@@ -9,7 +9,7 @@
 #           ENABLE_OPENCODE,
 #           PKG_MANAGER,
 #           ai(), ai_ok(), ai_warn(), log()
-# Provides: (developer tools installed to ~/.npm-global)
+# Provides: (opt-in developer tools installed to ~/.ods/ai-clis)
 #
 # Modder notes:
 #   Add new developer tools or change installation methods here.
@@ -18,8 +18,13 @@
 ods_progress 42 "devtools" "Installing developer tools"
 # shellcheck source=../lib/node-runtime.sh
 . "$SCRIPT_DIR/installers/lib/node-runtime.sh"
+. "$SCRIPT_DIR/installers/lib/verified-download.sh"
 if $DRY_RUN; then
-    log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
+    if [[ "${ODS_INSTALL_AI_CLIS:-false}" == "true" ]]; then
+        log "[DRY RUN] Would install locked Claude Code and Codex CLI packages"
+    else
+        log "[DRY RUN] Optional AI CLIs disabled (ODS_INSTALL_AI_CLIS=true enables them)"
+    fi
     if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
         log "[DRY RUN] Would install and configure the optional OpenCode browser IDE (user-level systemd service on port 3003)"
     else
@@ -28,6 +33,7 @@ if $DRY_RUN; then
     log "[DRY RUN] Would install ODS host agent systemd service (system-mode, port 7710)"
     log "[DRY RUN] Would install ODS mDNS announcer systemd service (if zeroconf available)"
 else
+    if [[ "${ODS_INSTALL_AI_CLIS:-false}" == "true" ]]; then
     ai "Installing AI developer tools..."
 
     # Ensure Node.js/npm is available (needed for Claude Code and Codex)
@@ -45,7 +51,9 @@ else
             case "$PKG_MANAGER" in
                 apt)
                     tmpfile=$(mktemp /tmp/nodesource-setup.XXXXXX.sh)
-                    if curl -fsSL --max-time 300 https://deb.nodesource.com/setup_22.x -o "$tmpfile" 2>/dev/null; then
+                    if ods_download_verified \
+                        'https://raw.githubusercontent.com/nodesource/distributions/9b431d8ae0f10df272598585855c6eca6c0e1bd2/scripts/deb/setup_22.x' \
+                        '575583bbac2fccc0b5edd0dbc03e222d9f9dc8d724da996d22754d6411104fd1' "$tmpfile"; then
                         ods_sudo -E bash "$tmpfile" 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to run NodeSource apt setup script (non-fatal — Claude Code/Codex CLI will be skipped)"
                     fi
                     rm -f "$tmpfile"
@@ -70,41 +78,22 @@ else
     fi
 
     if ods_linux_node_tools_available; then
-        # Set up user-level npm global prefix (no sudo needed)
-        NPM_GLOBAL_DIR="$HOME/.npm-global"
-        if [[ ! -d "$NPM_GLOBAL_DIR" ]]; then
-            mkdir -p "$NPM_GLOBAL_DIR"
-            npm config set prefix "$NPM_GLOBAL_DIR" 2>/dev/null || true
-        fi
-        # Ensure user-level bin is on PATH for this session
-        export PATH="$NPM_GLOBAL_DIR/bin:$PATH"
-
-        # Install Claude Code (Anthropic's CLI for Claude)
-        if ! command -v claude &> /dev/null; then
-            npm install -g @anthropic-ai/claude-code >> "$LOG_FILE" 2>&1 && \
-                ai_ok "Claude Code installed (run 'claude' to start)" || \
-                ai_warn "Claude Code install failed — install later with: npm i -g @anthropic-ai/claude-code"
+        if ODS_INSTALL_AI_CLIS=true node "$SCRIPT_DIR/installers/ai-clis/install.mjs" >> "$LOG_FILE" 2>&1; then
+            export PATH="$HOME/.ods/ai-clis/bin:$PATH"
+            if ! grep -Fq '.ods/ai-clis/bin' "$HOME/.bashrc" 2>/dev/null; then
+                printf '%s\n' 'export PATH="$HOME/.ods/ai-clis/bin:$PATH"' >> "$HOME/.bashrc"
+            fi
+            ai_ok "Locked Claude Code and Codex CLI installed"
         else
-            ai_ok "Claude Code already installed"
-        fi
-
-        # Install Codex CLI (OpenAI's terminal agent)
-        if ! command -v codex &> /dev/null; then
-            npm install -g @openai/codex >> "$LOG_FILE" 2>&1 && \
-                ai_ok "Codex CLI installed (run 'codex' to start)" || \
-                ai_warn "Codex CLI install failed — install later with: npm i -g @openai/codex"
-        else
-            ai_ok "Codex CLI already installed"
-        fi
-
-        # Ensure ~/.npm-global/bin is on PATH permanently
-        if [[ -d "$NPM_GLOBAL_DIR/bin" ]] && ! grep -q 'npm-global' "$HOME/.bashrc" 2>/dev/null; then
-            echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.bashrc"
-            ai "Added ~/.npm-global/bin to PATH in ~/.bashrc"
+            ai_warn "Locked AI CLI install failed; inspect the installer log and retry with Node.js 22+."
         fi
     else
-        ai_warn "Linux Node.js 20+ and npm are not available — skipping Claude Code and Codex CLI install"
+        ai_warn "Linux Node.js 22+ and npm are required — skipping Claude Code and Codex CLI install"
         ai "  Install Linux Node.js 22+ and re-run to add Claude Code / Codex."
+    fi
+
+    else
+        ai "Optional AI CLIs disabled; set ODS_INSTALL_AI_CLIS=true to install the reviewed versions."
     fi
 
     if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
@@ -132,14 +121,12 @@ else
     OPENCODE_BIN="$(_find_opencode_bin || true)"
     if [[ -z "$OPENCODE_BIN" ]]; then
         ai "Installing OpenCode..."
-        tmpfile=$(mktemp /tmp/opencode-install.XXXXXX.sh)
-        if curl -fsSL --max-time 300 https://opencode.ai/install -o "$tmpfile" 2>/dev/null && bash "$tmpfile" >> "$LOG_FILE" 2>&1; then
+        if ods_install_verified_opencode >> "$LOG_FILE" 2>&1; then
             OPENCODE_BIN="$(_find_opencode_bin || true)"
             ai_ok "OpenCode installer completed"
         else
-            ai_warn "OpenCode install failed — install later with: curl -fsSL https://opencode.ai/install | bash"
+            ai_warn "Verified OpenCode install failed — inspect the installer log and retry."
         fi
-        rm -f "$tmpfile"
         [[ -n "$OPENCODE_BIN" ]] && ai_ok "OpenCode installed ($OPENCODE_BIN)" || ai_warn "OpenCode installer completed but opencode was not found"
     else
         ai_ok "OpenCode already installed ($OPENCODE_BIN)"
@@ -362,20 +349,25 @@ _ods_start_session_host_agent() {
     if ! "$AGENT_PYTHON" -c "import huggingface_hub, hf_xet" >/dev/null 2>&1; then
         ai "Installing ODS host-agent model downloader dependencies..."
         if ods_ensure_python_pip "$AGENT_PYTHON" "ODS host-agent" && \
-           ods_python_pip_install_user "$AGENT_PYTHON" "$LOG_FILE" "huggingface_hub[hf_xet]>=0.27"; then
+           ods_python_pip_install_user "$AGENT_PYTHON" "$LOG_FILE" --require-hashes --only-binary=:all: \
+               -r "$SCRIPT_DIR/installers/python-deps/host-agent.txt"; then
             ai_ok "ODS host-agent Hugging Face downloader ready"
         else
             ai_warn "Could not install huggingface_hub[hf_xet]; model manager downloads may fail on Xet-backed Hugging Face models."
         fi
     fi
 
-    if ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent start >> "$LOG_FILE" 2>&1; then
+    # Reload the files phase 06 just installed even if an older session agent
+    # is healthy. The later network-bind restart is skipped for explicit binds.
+    # CLI restart also handles a first install and keeps its owned-PID checks
+    # and bounded health wait in one place.
+    if ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent restart >> "$LOG_FILE" 2>&1; then
         ai_ok "ODS host agent started for this session (background mode)"
         ai "  Run 'ods agent start' after reboot or login to start it again."
         return 0
     fi
 
-    ai_warn "Could not start the session host agent. Run: ods agent start"
+    ai_warn "Could not restart the session host agent. Run: ods agent restart"
     return 1
 }
 
@@ -429,10 +421,12 @@ if [[ -f "$INSTALL_DIR/bin/ods-host-agent.py" ]]; then
                 ai "Installing ODS host-agent model downloader dependencies..."
                 if ods_ensure_python_pip "$AGENT_PYTHON" "ODS host-agent" && {
                     sudo -u "$_agent_user" env HOME="$HOME" \
-                        "$AGENT_PYTHON" -m pip install --user -q "huggingface_hub[hf_xet]>=0.27" \
+                        "$AGENT_PYTHON" -m pip install --user -q --require-hashes --only-binary=:all: \
+                        -r "$SCRIPT_DIR/installers/python-deps/host-agent.txt" \
                         2>&1 | tee -a "$LOG_FILE" >/dev/null || \
                     sudo -u "$_agent_user" env HOME="$HOME" \
-                        "$AGENT_PYTHON" -m pip install --user --break-system-packages -q "huggingface_hub[hf_xet]>=0.27" \
+                        "$AGENT_PYTHON" -m pip install --user --break-system-packages -q --require-hashes --only-binary=:all: \
+                        -r "$SCRIPT_DIR/installers/python-deps/host-agent.txt" \
                         2>&1 | tee -a "$LOG_FILE" >/dev/null
                 }; then
                     ai_ok "ODS host-agent Hugging Face downloader ready"
@@ -536,8 +530,10 @@ if [[ -f "$INSTALL_DIR/bin/ods-mdns.py" ]] && [[ "$(uname -s)" == "Linux" ]]; th
         # don't need sudo and don't fight PEP 668 (Debian/Ubuntu mark the
         # system site-packages as externally-managed). The mDNS announcer
         # runs as $USER, not root, so --user is the right install scope.
-        if command -v pip3 >/dev/null 2>&1; then
-            pip3 install --user --quiet --no-warn-script-location zeroconf 2>&1 | tee -a "$LOG_FILE"
+        if python3 -m pip --version >/dev/null 2>&1; then
+            python3 -m pip install --user --quiet --no-warn-script-location \
+                --require-hashes --only-binary=:all: \
+                -r "$SCRIPT_DIR/installers/python-deps/zeroconf.txt" 2>&1 | tee -a "$LOG_FILE"
         else
             return 99
         fi

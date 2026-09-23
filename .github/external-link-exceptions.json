@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "exceptions": [
+    {
+      "url": "https://unsplash.com/photos/person-in-nadEf7Yjb_Q",
+      "categories": ["access-unconfirmed"],
+      "reason": "2026-09-23 review opened the public photo page and confirmed its author and license link. Anonymous CI still encounters an access challenge. This defers only that challenge, not missing/transport failures or asset-rights review; see ods/docs/EXTERNAL_DOC_LINKS.md.",
+      "owner": "PR #6421 documentation review",
+      "expires": "2026-10-07"
+    },
+    {
+      "url": "https://unsplash.com/license",
+      "categories": ["access-unconfirmed"],
+      "reason": "2026-09-23 review opened the official license page and read its license section. Anonymous CI still encounters an access challenge. This is not an anonymous HTTP success or a blanket Unsplash exception; see ods/docs/EXTERNAL_DOC_LINKS.md.",
+      "owner": "PR #6421 documentation review",
+      "expires": "2026-10-07"
+    },
+    {
+      "url": "https://www.intel.com/content/www/us/en/download/785597/intel-arc-graphics-windows.html",
+      "categories": ["access-unconfirmed"],
+      "reason": "2026-09-23 review opened Intel's official Arc Windows driver page and confirmed its driver description and download section. Anonymous CI receives 403. This defers only the access denial; it does not verify a driver download or accept Intel terms. See ods/docs/EXTERNAL_DOC_LINKS.md.",
+      "owner": "PR #6421 documentation review",
+      "expires": "2026-10-07"
+    }
+  ]
+}

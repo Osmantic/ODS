@@ -78,6 +78,11 @@ EOF
 
 printf 'bootstrap model\n' > "$install_dir/data/models/Bootstrap.gguf"
 printf '999999\n' > "$install_dir/data/.llama-server.pid"
+# The transfer failure must be reached through the real receipt guard, rather
+# than stopping earlier because this disposable installation has no review.
+expected_sha="$(printf 'expected test model' | sha256sum | awk '{print $1}')"
+model_url="https://huggingface.co/fixture/Model/resolve/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Full.gguf"
+python3 "$ROOT_DIR/tests/fixtures/write-model-review-fixture.py" "$install_dir" "$expected_sha"
 
 if grep -Eq -- '--retry|--retry-all-errors|--max-time[[:space:]]+3600' "$TARGET"; then
     fail "bootstrap-upgrade long GGUF curl should rely on script-level retry/resume, not curl internal retry"
@@ -133,8 +138,8 @@ printf '%s\n' "$existing_pid" > "$lock_dir/pid"
 PATH="$fakebin:$PATH" TMPDIR="$tmp/locks" bash "$TARGET" \
     "$locked_install_dir" \
     "Full.gguf" \
-    "https://example.invalid/Full.gguf" \
-    "" \
+    "$model_url" \
+    "$expected_sha" \
     "full-model" \
     "32768" \
     "Bootstrap.gguf" \
@@ -157,8 +162,8 @@ set +e
 PATH="$fakebin:$PATH" ODS_BOOTSTRAP_DOWNLOAD_ATTEMPTS=2 ODS_BOOTSTRAP_DOWNLOAD_MAX_SECONDS=0 bash "$TARGET" \
     "$install_dir" \
     "Full.gguf" \
-    "https://example.invalid/Full.gguf" \
-    "" \
+    "$model_url" \
+    "$expected_sha" \
     "full-model" \
     "32768" \
     "Bootstrap.gguf" \
@@ -187,13 +192,14 @@ mkdir -p "$unknown_install_dir/data/models" "$unknown_install_dir/config/llama-s
 cp "$install_dir/.env" "$unknown_install_dir/.env"
 printf 'bootstrap model\n' > "$unknown_install_dir/data/models/Bootstrap.gguf"
 printf '999999\n' > "$unknown_install_dir/data/.llama-server.pid"
+python3 "$ROOT_DIR/tests/fixtures/write-model-review-fixture.py" "$unknown_install_dir" "$expected_sha"
 
 set +e
 PATH="$fakebin:$PATH" ODS_FAKE_NO_CONTENT_LENGTH=1 ODS_BOOTSTRAP_DOWNLOAD_ATTEMPTS=1 ODS_BOOTSTRAP_DOWNLOAD_MAX_SECONDS=0 bash "$TARGET" \
     "$unknown_install_dir" \
     "Full.gguf" \
-    "https://example.invalid/Full.gguf" \
-    "" \
+    "$model_url" \
+    "$expected_sha" \
     "full-model" \
     "32768" \
     "Bootstrap.gguf" \

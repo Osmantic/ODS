@@ -8,6 +8,8 @@ on:
   issues:
     types: [labeled]
 
+permissions: {}
+
 concurrency:
   group: issue-to-pr-${{ github.event.issue.number }}
   cancel-in-progress: true
@@ -20,6 +22,10 @@ jobs:
     name: Validate Issue
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     if: >-
       github.event.label.name == 'ai-implement' &&
       github.event.issue.user.login != 'claude[bot]' &&
@@ -29,6 +35,18 @@ jobs:
       should_proceed: ${{ steps.dedup.outputs.should_proceed }}
 
     steps:
+      - name: Require a maintainer to request paid implementation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_ACTOR: ${{ github.actor }}
+          REQUEST_REPOSITORY: ${{ github.repository }}
+        run: |
+          permission=$(gh api "repos/${REQUEST_REPOSITORY}/collaborators/${REQUEST_ACTOR}/permission" --jq '.permission')
+          case "$permission" in
+            admin|maintain|write) ;;
+            *) echo "::error::Repository write access is required to request AI implementation"; exit 1 ;;
+          esac
+
       - name: Validate required secrets
         env:
           HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
@@ -87,7 +105,8 @@ jobs:
           python-version: '3.11'
 
       - name: Install tools
-        run: pip install ruff
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/ruff.txt
 
       - name: Claude Code implementation
         env:
@@ -159,6 +178,8 @@ jobs:
     if: needs.implement.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     outputs:
       passed: ${{ steps.final.outputs.passed }}
       diff_lines: ${{ steps.size.outputs.diff_lines }}
@@ -319,9 +340,13 @@ jobs:
   create-pr:
     name: Create Pull Request
     needs: [validate, implement, guardrails]
-    if: always()
+    if: always() && needs.validate.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     outputs:
       pr_number: ${{ steps.create.outputs.pull-request-number }}
       pr_url: ${{ steps.create.outputs.pull-request-url }}

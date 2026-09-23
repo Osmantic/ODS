@@ -58,4 +58,3 @@ def test_denial_and_bad_input_never_spawn_probe(owner, body, token, status, monk
     monkeypatch.setattr(connection_import.subprocess, 'run', forbidden)
     assert request(owner, body, token)[0] == status
     assert list(owner[1].iterdir()) == []
-

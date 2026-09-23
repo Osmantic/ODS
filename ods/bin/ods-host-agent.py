@@ -114,6 +114,13 @@ if _model_stores_spec is None or _model_stores_spec.loader is None:
 _model_stores = importlib.util.module_from_spec(_model_stores_spec)
 _model_stores_spec.loader.exec_module(_model_stores)
 
+_model_terms_spec = importlib.util.spec_from_file_location(
+    "_ods_model_terms", _MODEL_MEMORY_PATH.with_name("model_terms.py"))
+if _model_terms_spec is None or _model_terms_spec.loader is None:
+    raise ImportError("Cannot load shared model terms policy")
+_model_terms = importlib.util.module_from_spec(_model_terms_spec)
+_model_terms_spec.loader.exec_module(_model_terms)
+
 
 def _installed_model_file(filename: str) -> Path | None:
     return _model_stores.resolve_model_file(INSTALL_DIR / "data", filename, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
@@ -312,7 +319,8 @@ def _ensure_windows_resolver_pyyaml(python_cmd: str) -> None:
     )
     pip_cmd = [
         python_cmd, "-m", "pip", "install",
-        "--user", "--disable-pip-version-check", "--quiet", "PyYAML",
+        "--user", "--disable-pip-version-check", "--quiet", "--require-hashes", "--only-binary=:all:",
+        "-r", str(Path(__file__).resolve().parents[1] / "installers/python-deps/pyyaml.txt"),
     ]
     try:
         result = subprocess.run(
@@ -3086,7 +3094,7 @@ def _reconcile_ods_managed_pixel_model(
     owner, home = identity
     env_values = load_env(INSTALL_DIR / ".env")
     configured_ref = str(env_values.get("PIXEL_SOURCE_REF") or "")
-    bundled_ref = "817214d5ec3d8aa583fe50c1dc7561f3c1a16dff"
+    bundled_ref = "69f4ad0bd062fe006e9d5b473a04b9a38eff8533"
     source_url = str(env_values.get("PIXEL_SOURCE_URL") or "bundled")
     if any(character in source_url for character in "\r\n\x00"):
         raise RuntimeError("The configured Pixel source URL is invalid")
@@ -10729,6 +10737,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         # create a false-complete model that llama.cpp cannot load.
         allowed = False
         manifest = None
+        model_record = None
         try:
             library = _load_model_library_records()
         except RuntimeError as exc:
@@ -10741,6 +10750,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             candidate_manifest = _model_download_manifest(m)
             if candidate_manifest is None:
                 break
+            model_record = m
             if gguf_parts:
                 catalog_plan = [
                     (artifact["file"], artifact["url"])
@@ -10761,6 +10771,11 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         if manifest is None:
             json_response(self, 500, {"error": "Model catalog manifest is invalid"})
+            return
+
+        review_error = _model_terms.download_review_error(model_record, body.get("termsAcknowledgement"))
+        if review_error:
+            json_response(self, review_error.pop("status"), review_error)
             return
 
         models_dir = INSTALL_DIR / "data" / "models"

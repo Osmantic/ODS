@@ -1,5 +1,8 @@
 # ODS
 
+**Public-beta testing:** use the [verified beta installation guide](docs/PUBLIC_BETA_INSTALL.md).
+The hosted installer and default-branch commands target `main`, not this beta.
+
 **Osmantic Deployment System**
 
 [![License: Apache 2.0 + Pixel ODS-only](https://img.shields.io/badge/License-Apache%202.0%20%2B%20Pixel%20ODS--only-blue.svg)](LICENSING.md)
@@ -529,7 +532,7 @@ Thanks to [lhl](https://github.com/lhl) for [strix-halo-testing](https://github.
 
 ### Community Contributors
 
-For the full contributor list with detailed credits, see the [Wall of Heroes](../README.md#wall-of-heroes) in the root README.
+For the contributor list and the limits of the available evidence, see [Contributors and Recognition](../README.md#contributors-and-recognition) in the root README.
 
 If we missed anyone, [open an issue](https://github.com/Osmantic/ODS/issues). We want to get this right.
 

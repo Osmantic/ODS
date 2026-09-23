@@ -104,11 +104,11 @@ async def export_workspace_snapshot(_key: str = Depends(verify_api_key)):
     try:
         settings_raw = await request_agent_json("GET", "/v1/pixel/settings", timeout=10)
         settings = normalize_response(settings_raw)
-        
+
         providers_raw = await request_agent_json("GET", "/v1/pixel/providers", timeout=10)
         from pixel_provider_public import normalize_public
         providers = normalize_public(providers_raw)
-        
+
         content = {
             "schemaVersion": 1,
             "type": "ods-workspace-snapshot",
@@ -132,5 +132,3 @@ async def export_workspace_snapshot(_key: str = Depends(verify_api_key)):
         raise HTTPException(503, "Settings are unavailable for export", headers={"Cache-Control": "no-store"}) from None
     except (AgentProtocolError, ValueError, TypeError, RecursionError):
         raise HTTPException(502, "Invalid response during export", headers={"Cache-Control": "no-store"}) from None
-
-

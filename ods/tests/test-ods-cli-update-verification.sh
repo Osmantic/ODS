@@ -142,6 +142,8 @@ exit 0
 SLEEP
 
 chmod +x "$bin_dir/docker" "$bin_dir/sleep"
+source "$script_dir/fixtures/mock-update-agent.sh"
+install_mock_update_agent "$bin_dir" "$install_dir"
 : > "$docker_log"
 
 PATH="$bin_dir:$PATH" \

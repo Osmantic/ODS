@@ -1,0 +1,89 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/miniflux/v2",
+  "source_ref": "2.3.3",
+  "source_revision": "c4d54f87a81b30aa173fddf05d7ff83ae7da5796",
+  "source_revision_scope": "configured_version_reference",
+  "source_url": "https://github.com/miniflux/v2/tree/c4d54f87a81b30aa173fddf05d7ff83ae7da5796",
+  "license": "Apache-2.0",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/miniflux/v2/blob/c4d54f87a81b30aa173fddf05d7ff83ae7da5796/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/miniflux/v2/blob/c4d54f87a81b30aa173fddf05d7ff83ae7da5796/LICENSE",
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "Miniflux source at 2.3.3 is Apache-2.0. The PostgreSQL companion image is recorded as a separate, not yet inventoried component.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.yaml",
+        "sha256": "abb3e0f296499222d0bc663cc4eb430c35a447254a9564b3e93deeb1b0117d6a"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "819c476a0af554c919c42b8a4d925d0da0ee7ee75688aedcaac36f238127ce67"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "miniflux",
+        "image": "miniflux/miniflux:2.3.3@sha256:49d7b60987616387c306a8023087b31f2c9b7b21288b523026cb04058e8b6dbb",
+        "scope": "application"
+      },
+      {
+        "file": "compose.yaml",
+        "service": "miniflux-db",
+        "image": "postgres:17.11-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",
+        "scope": "companion_not_covered_by_application_license"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_applicable_to_primary_application",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/miniflux/v2",
+      "retrieved_at": "2026-09-23T07:53:49.732475+00:00",
+      "success": true,
+      "response_sha256": "569796064a209c62736934a162ded77859e0414d198f3e9452b58a559a98a1cb"
+    },
+    {
+      "url": "https://api.github.com/repos/miniflux/v2/commits/2.3.3",
+      "retrieved_at": "2026-09-23T07:53:50.367314+00:00",
+      "success": true,
+      "response_sha256": "e0a880dc47ba09ab148d1403393e9ea77cbe20aa2ac6d2617842ac0e1fad80af"
+    },
+    {
+      "url": "https://api.github.com/repos/miniflux/v2/license?ref=c4d54f87a81b30aa173fddf05d7ff83ae7da5796",
+      "retrieved_at": "2026-09-23T07:53:51.054370+00:00",
+      "success": true,
+      "response_sha256": "339888feee7b377918d0a69592ee1307462f68739b5e0e1e65aed3a51976231a"
+    },
+    {
+      "url": "https://api.github.com/repos/miniflux/v2/contents?ref=c4d54f87a81b30aa173fddf05d7ff83ae7da5796",
+      "retrieved_at": "2026-09-23T07:53:51.592976+00:00",
+      "success": true,
+      "response_sha256": "9bd1801f7d0c4ae76632df96c6d497944b2857842f67f766dc1e084fa0f4355f"
+    }
+  ],
+  "gaps": [
+    "PostgreSQL image has its own terms; it is listed but its distribution notices are not audited here.",
+    "Source release reference matches the configured version; an image digest does not by itself prove the image was built from this commit.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "miniflux/miniflux:2.3.3@sha256:49d7b60987616387c306a8023087b31f2c9b7b21288b523026cb04058e8b6dbb"
+}

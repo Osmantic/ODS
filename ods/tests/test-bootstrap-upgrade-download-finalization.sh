@@ -53,13 +53,15 @@ EOF
 
 printf 'bootstrap model\n' > "$install_dir/data/models/Bootstrap.gguf"
 printf '999999\n' > "$install_dir/data/.llama-server.pid"
+expected_sha="$(printf 'expected test model' | sha256sum | awk '{print $1}')"
+python3 "$ROOT_DIR/tests/fixtures/write-model-review-fixture.py" "$install_dir" "$expected_sha"
 
 set +e
 PATH="$fakebin:$PATH" ODS_BOOTSTRAP_DOWNLOAD_MAX_SECONDS=0 bash "$TARGET" \
     "$install_dir" \
     "Full.gguf" \
-    "https://example.invalid/Full.gguf" \
-    "" \
+    "https://huggingface.co/fixture/Model/resolve/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Full.gguf" \
+    "$expected_sha" \
     "full-model" \
     "32768" \
     "Bootstrap.gguf" \

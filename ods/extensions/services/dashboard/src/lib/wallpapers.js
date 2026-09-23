@@ -1,9 +1,9 @@
 import forest from '../assets/wallpapers/luisdelrio.jpg'
 import clouds from '../assets/wallpapers/sonoma-clouds.jpg'
 import nightfall from '../assets/wallpapers/wallpaper13.jpg'
-import blue from '../assets/wallpapers/blue.jpg'
-import purple from '../assets/wallpapers/purple.jpg'
-import red from '../assets/wallpapers/red.jpg'
+import blue from '../assets/wallpapers/ods-blue-circular.png'
+import purple from '../assets/wallpapers/ods-purple-circular.png'
+import red from '../assets/wallpapers/ods-red-circular.png'
 import bannalpsee from '../assets/wallpapers/bannalpsee.jpg'
 import vivoXFold from '../assets/wallpapers/vivo-x-fold.jpg'
 

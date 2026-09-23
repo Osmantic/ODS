@@ -1,0 +1,128 @@
+name: Python dependency locks
+
+on:
+  pull_request:
+    paths:
+      - '.github/requirements/**'
+      - '.github/scripts/test_python_locks.py'
+      - '.github/scripts/check_workflow_python_locks.py'
+      - '.github/scripts/test_workflow_python_locks.py'
+      - '.github/workflows/**'
+      - 'ods/installers/**'
+      - 'ods/bin/ods-host-agent.py'
+      - 'ods/scripts/pre-download.sh'
+      - 'ods/tests/test_extra_python_bootstrap_locks.py'
+      - 'ods/extensions/services/**/requirements*.txt'
+  push:
+    branches: [main, public-beta]
+    paths:
+      - '.github/requirements/**'
+      - '.github/scripts/test_python_locks.py'
+      - '.github/scripts/check_workflow_python_locks.py'
+      - '.github/scripts/test_workflow_python_locks.py'
+      - '.github/workflows/**'
+      - 'ods/installers/**'
+      - 'ods/bin/ods-host-agent.py'
+      - 'ods/scripts/pre-download.sh'
+      - 'ods/tests/test_extra_python_bootstrap_locks.py'
+      - 'ods/extensions/services/**/requirements*.txt'
+
+permissions:
+  contents: read
+
+jobs:
+  ci-tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install complete hashed CI tool sets
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all:
+          -r .github/requirements/ruff.txt -r .github/requirements/test-tools.txt
+          -r .github/requirements/bandit.txt -r .github/requirements/scanner-sdk.txt
+      - name: Check metadata and SDK construction without a paid request
+        run: |
+          python -m pip check
+          python -m ruff --version
+          python -m bandit --version
+          python -c "import pytest, yaml, jsonschema, anthropic, httpx; client=anthropic.Anthropic(api_key='offline-fixture'); client.close()"
+      - name: Inventory workflow Python installs and enforce hashed locks
+        run: |
+          python .github/scripts/check_workflow_python_locks.py
+          python -m unittest discover -s .github/scripts -p 'test_*python_locks.py' -v
+
+  service-locks:
+    name: ${{ matrix.lock }} (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, python: '3.11', lock: dashboard-tests, imports: 'fastapi, uvicorn, aiohttp, httpx, yaml, jsonschema, qrcode, pytest_asyncio, pytest_cov'}
+          - {os: ubuntu-24.04, python: '3.11', lock: pixel-edge-tests, imports: 'aiohttp, idna, httpx, yaml, pytest'}
+          - {os: ubuntu-24.04, python: '3.11', lock: inference-tests, imports: 'fastapi, uvicorn, httpx, jsonschema, pytest'}
+          - {os: ubuntu-24.04, python: '3.11', lock: type-check, imports: 'mypy.version, fastapi, uvicorn, aiohttp, httpx, psycopg2, cachetools, websockets'}
+          - {os: ubuntu-24.04, python: '3.12', lock: pixel-edge-tests, imports: 'aiohttp, idna, httpx, yaml, pytest'}
+          - {os: ubuntu-24.04, python: '3.12', lock: egress-tests, imports: 'fastapi, uvicorn, httpx, pytest'}
+          - {os: ubuntu-24.04, python: '3.12', lock: inference-tests, imports: 'fastapi, uvicorn, httpx, jsonschema, pytest'}
+          - {os: ubuntu-24.04, python: '3.12', lock: token-spy-tests, imports: 'fastapi, uvicorn, httpx, psycopg2, pytest'}
+          - {os: ubuntu-24.04, python: '3.12', lock: postgres-tests, imports: 'psycopg2, pytest'}
+          - {os: macos-latest, python: '3.13', lock: pixel-edge-tests, imports: 'aiohttp, idna, httpx, yaml, pytest'}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install complete hashed service test environment
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/${{ matrix.lock }}.txt
+      - name: Check metadata and public imports without starting services
+        env:
+          ODS_LOCK_IMPORTS: ${{ matrix.imports }}
+        run: |
+          python -m pip check
+          python -c "import importlib, os; [importlib.import_module(name.strip()) for name in os.environ['ODS_LOCK_IMPORTS'].split(',')]"
+
+  host-agent:
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-22.04, python: '3.8'}
+          - {os: ubuntu-22.04, python: '3.9'}
+          - {os: ubuntu-24.04, python: '3.12'}
+          - {os: windows-latest, python: '3.12'}
+          - {os: macos-14, python: '3.9'}
+          - {os: macos-14, python: '3.13'}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install the complete hashed host-agent dependency set
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all: -r ods/installers/python-deps/host-agent.txt
+      - name: Check metadata and imports without downloading any model
+        run: |
+          python -m pip check
+          python -c "import yaml, huggingface_hub, hf_xet; assert yaml.safe_load('ready: true')['ready']; assert huggingface_hub.hf_hub_url('fixture/model', 'weights.gguf', revision='0'*40).startswith('https://huggingface.co/fixture/model/resolve/')"
+      - name: Offline lock and substitution regressions
+        run: python -m unittest discover -s .github/scripts -p test_python_locks.py -v
+      - name: Reject substituted wheels at the installer bootstrap boundaries
+        run: python ods/tests/test_extra_python_bootstrap_locks.py

@@ -1,0 +1,55 @@
+name: Native llama archive integrity
+
+on:
+  pull_request:
+    paths:
+      - 'ods/installers/native-llama-artifacts.json'
+      - 'ods/installers/lib/native-llama-artifact.py'
+      - 'ods/installers/macos/**'
+      - 'ods/installers/windows/**'
+      - 'ods/tests/test_native_llama_artifacts.py'
+      - 'ods/tests/test-windows-native-llama-integrity.ps1'
+      - '.github/workflows/test-native-llama-artifacts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  posix-fixtures:
+    name: POSIX artifact fixtures (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Validate manifest and real macOS download boundary with inert fixtures
+        run: python3 -m unittest discover -s ods/tests -p test_native_llama_artifacts.py -v
+
+  windows-fixtures:
+    name: Windows artifact fixtures (PowerShell 5.1 and 7)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Validate archive integrity and literal extraction paths (PowerShell 7)
+        shell: pwsh
+        run: ./ods/tests/test-windows-native-llama-integrity.ps1
+      - name: Validate archive integrity and literal extraction paths (PowerShell 5.1)
+        shell: powershell
+        run: ./ods/tests/test-windows-native-llama-integrity.ps1
+      - name: Preserve shared extraction consumers
+        shell: pwsh
+        run: |
+          ./ods/tests/test-windows-opencode-integrity.ps1
+          ./ods/tests/test-windows-lemonade-msi-integrity.ps1

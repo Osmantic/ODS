@@ -16,6 +16,51 @@ import pytest
 
 _real_subprocess_run = subprocess.run
 
+
+def _powershell_context_fixture_env(shell, env):
+    """Forward synthetic parser inputs only across the WSL/Windows boundary."""
+    fixture_env = env.copy()
+    if (sys.platform == "linux" and shell.lower().endswith(".exe")
+            and (env.get("WSL_INTEROP") or env.get("WSL_DISTRO_NAME"))):
+        existing = fixture_env.get("WSLENV", "")
+        entries = existing.split(":") if existing else []
+        for name in ("ODS_EXPECTED_GGUF", "ODS_CONTEXT_TEST_COMMAND_LINE"):
+            if name not in entries:
+                # These are literal command-line data, not paths to translate.
+                entries.append(name)
+        fixture_env["WSLENV"] = ":".join(entries)
+    return fixture_env
+
+
+@pytest.mark.parametrize("host,shell,wsl,existing,forward", [
+    ("linux", "/mnt/c/PowerShell/pwsh.exe", {"WSL_INTEROP": "/run/WSL/1_interop"}, "KEEP/p:OTHER/lw", True),
+    ("linux", "/mnt/c/PowerShell/pwsh.exe", {"WSL_DISTRO_NAME": "Ubuntu"}, "ODS_EXPECTED_GGUF:KEEP/u", True),
+    ("linux", "/mnt/c/PowerShell/pwsh.exe", {"WSL_DISTRO_NAME": "Ubuntu"}, None, True),
+    ("linux", "/usr/bin/pwsh", {"WSL_DISTRO_NAME": "Ubuntu"}, "KEEP/p", False),
+    ("linux", "/mnt/c/PowerShell/pwsh.exe", {}, "KEEP/p", False),
+    ("win32", "C:/PowerShell/pwsh.exe", {"WSL_DISTRO_NAME": "Ubuntu"}, "KEEP/p", False),
+])
+def test_powershell_context_fixture_preserves_environment(monkeypatch, host, shell, wsl, existing, forward):
+    env = {"UNCHANGED": "value", "ODS_EXPECTED_GGUF": "model.gguf", **wsl}
+    if existing is not None:
+        env["WSLENV"] = existing
+    original = env.copy()
+    monkeypatch.setattr(sys, "platform", host)
+    result = _powershell_context_fixture_env(shell, env)
+    assert env == original
+    assert {key: value for key, value in result.items() if key != "WSLENV"} == {
+        key: value for key, value in original.items() if key != "WSLENV"
+    }
+    if forward:
+        entries = result["WSLENV"].split(":")
+        if existing:
+            assert entries[:len(existing.split(":"))] == existing.split(":")
+        assert entries.count("ODS_EXPECTED_GGUF") == 1
+        assert entries.count("ODS_CONTEXT_TEST_COMMAND_LINE") == 1
+    else:
+        assert result == original
+
+
 # Import the host agent module from bin/ using importlib.
 # The module has an ``if __name__ == "__main__":`` guard so no server starts.
 _agent_path = Path(__file__).resolve().parents[4] / "bin" / "ods-host-agent.py"
@@ -1812,8 +1857,20 @@ class TestOpenCodeModelRoute:
             kwargs["env"]["ODS_CONTEXT_TEST_COMMAND_LINE"] = (
                 '"C:\\Program Files\\llama-server.exe" "--model" "C:\\Models\\model.gguf" '
                 + arguments + ' "--parallel" "1"')
-            fixture = 'function Get-CimInstance { [pscustomobject]@{CommandLine=$env:ODS_CONTEXT_TEST_COMMAND_LINE; CreationDate=1} }\n'
-            return _real_subprocess_run([*command[:-1], fixture + command[-1]], **kwargs)
+            kwargs["env"] = _powershell_context_fixture_env(shell, kwargs["env"])
+            fixture = (
+                '[Console]::Error.WriteLine((@{expected=$env:ODS_EXPECTED_GGUF; '
+                'commandLine=$env:ODS_CONTEXT_TEST_COMMAND_LINE} | ConvertTo-Json -Compress))\n'
+                'function Get-CimInstance { [pscustomobject]@{CommandLine=$env:ODS_CONTEXT_TEST_COMMAND_LINE; CreationDate=1} }\n'
+            )
+            result = _real_subprocess_run([*command[:-1], fixture + command[-1]], **kwargs)
+            # Negative parser cases must also receive the synthetic process;
+            # missing environment must not make them pass accidentally.
+            assert json.loads(result.stderr.strip()) == {
+                "expected": kwargs["env"]["ODS_EXPECTED_GGUF"],
+                "commandLine": kwargs["env"]["ODS_CONTEXT_TEST_COMMAND_LINE"],
+            }
+            return result
         monkeypatch.setattr(_mod.subprocess, "run", run)
         assert _mod._windows_lemonade_process_context_length("model.gguf") == expected
         assert len(calls) == 1
@@ -4431,7 +4488,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     home.mkdir()
     (install_dir / ".env").write_text(
         "PIXEL_SOURCE_URL=bundled\n"
-        "PIXEL_SOURCE_REF=817214d5ec3d8aa583fe50c1dc7561f3c1a16dff\n"
+        "PIXEL_SOURCE_REF=69f4ad0bd062fe006e9d5b473a04b9a38eff8533\n"
         f"{gateway_setting}",
         encoding="utf-8",
     )
@@ -4482,7 +4539,7 @@ def test_managed_pixel_reconcile_accepts_bundled_source(
     home = tmp_path / "owner-home"
     install_dir.mkdir()
     home.mkdir()
-    source_ref = "817214d5ec3d8aa583fe50c1dc7561f3c1a16dff"
+    source_ref = "69f4ad0bd062fe006e9d5b473a04b9a38eff8533"
     source_setting = "PIXEL_SOURCE_URL=bundled\n" if explicit_source else ""
     (install_dir / ".env").write_text(
         f"{source_setting}PIXEL_SOURCE_REF={source_ref}\n",

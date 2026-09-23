@@ -1,0 +1,90 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/HumanSignal/label-studio",
+  "source_ref": "1.22.0",
+  "source_revision": "090298d3adceda6ed516682fcc37e374b13dd051",
+  "source_revision_scope": "configured_version_reference",
+  "source_url": "https://github.com/HumanSignal/label-studio/tree/090298d3adceda6ed516682fcc37e374b13dd051",
+  "license": "Apache-2.0",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/HumanSignal/label-studio/blob/090298d3adceda6ed516682fcc37e374b13dd051/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/HumanSignal/label-studio/blob/090298d3adceda6ed516682fcc37e374b13dd051/LICENSE",
+      "sha256": "ca656b15c1e22468c7798df4356660755fb1ccd12d7ee0bade82bd65e3038e1b"
+    },
+    {
+      "path": "NOTICE",
+      "url": "https://github.com/HumanSignal/label-studio/blob/090298d3adceda6ed516682fcc37e374b13dd051/NOTICE",
+      "sha256": "c2878293b2b07a7d4513e6938fd73b0fbe2bb5f441b0dcb4f200f2e8cf87fcf7"
+    }
+  ],
+  "notice_urls": [
+    "https://github.com/HumanSignal/label-studio/blob/090298d3adceda6ed516682fcc37e374b13dd051/NOTICE"
+  ],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "Label Studio source at 1.22.0 is Apache-2.0 and includes an upstream NOTICE. Connected labeling backends and model assets require separate terms.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.yaml",
+        "sha256": "32d2d66fbc6fc426ef046bc087c612a0576849142f57a5c3411d1f03dfc4ac61"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "934de6f505d545c1705110a5b428c2a1192eaaa74cd5d6321e0b6e5914dd7df9"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "label-studio",
+        "image": "heartexlabs/label-studio:1.22.0",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_selected_by_recipe",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/HumanSignal/label-studio",
+      "retrieved_at": "2026-09-23T07:53:45.207823+00:00",
+      "success": true,
+      "response_sha256": "227a34440c811b59c9eedbc069320b828ee62a30e92598fed75c9e59add92ee9"
+    },
+    {
+      "url": "https://api.github.com/repos/HumanSignal/label-studio/commits/1.22.0",
+      "retrieved_at": "2026-09-23T07:53:45.894813+00:00",
+      "success": true,
+      "response_sha256": "b18f79118fa879aad4aae733b2226f3da15a7aadf006ccd3f581130b87a7581d"
+    },
+    {
+      "url": "https://api.github.com/repos/HumanSignal/label-studio/license?ref=090298d3adceda6ed516682fcc37e374b13dd051",
+      "retrieved_at": "2026-09-23T07:53:46.616580+00:00",
+      "success": true,
+      "response_sha256": "f4d5030ad6b0e08edf317b53c545e8835c0715d11082530df6c6343335811163"
+    },
+    {
+      "url": "https://api.github.com/repos/HumanSignal/label-studio/contents?ref=090298d3adceda6ed516682fcc37e374b13dd051",
+      "retrieved_at": "2026-09-23T07:53:47.329987+00:00",
+      "success": true,
+      "response_sha256": "68b9294149b0fd01a09a30aad295160fdcc7f53ccc6679b80ddff5be669bcf12"
+    }
+  ],
+  "gaps": [
+    "Source release reference matches the configured version; an image digest does not by itself prove the image was built from this commit.",
+    "One or more configured image/base references are mutable tags; registry digest and full component inventory remain pending.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "heartexlabs/label-studio:1.22.0"
+}

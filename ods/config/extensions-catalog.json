@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-21T07:01:49Z",
+  "generated_at": "2026-09-23T08:18:04Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -329,7 +329,7 @@
     {
       "id": "audiocraft",
       "name": "AudioCraft",
-      "description": "Meta's AudioCraft is a generative AI for audio. Features MusicGen for\ntext-to-music generation and AudioGen for text-to-sound effects.\nCreate royalty-free music and sound effects from text descriptions.\n",
+      "description": "Meta's AudioCraft is a generative AI for audio. Features MusicGen for\ntext-to-music generation and AudioGen for text-to-sound effects.\nModel weights are licensed under CC BY-NC 4.0 for noncommercial use.\nThis extension does not grant commercial clearance for generated audio.\n",
       "category": "optional",
       "gpu_backends": [
         "nvidia"
@@ -11298,7 +11298,13 @@
       "port": 80,
       "external_port_default": 8100,
       "health_endpoint": "/health",
-      "env_vars": [],
+      "env_vars": [
+        {
+          "key": "COQUI_TOS_AGREED",
+          "required": true,
+          "description": "Set exactly 1 only after reviewing and accepting the XTTS model terms in NOTICE.md. No acceptance is supplied by ODS."
+        }
+      ],
       "tags": [],
       "features": [],
       "configuration_scope": "declared-environment-keys"

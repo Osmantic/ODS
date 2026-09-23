@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
-import Usage from './Usage' // eslint-disable-line no-unused-vars
+import Usage from './Usage'
 
 // The sparkline history store is keyed by period and read back per period, so
 // navigating between months must not drop the month you came from.

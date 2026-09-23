@@ -1,0 +1,138 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/ai-dock/stable-diffusion-webui-forge",
+  "source_ref": "main",
+  "source_revision": "bc8b1f5f4a421b48e6f44d35bda11c2f2738d23f",
+  "source_revision_scope": "reviewed_current_source_only",
+  "source_url": "https://github.com/ai-dock/stable-diffusion-webui-forge/tree/bc8b1f5f4a421b48e6f44d35bda11c2f2738d23f",
+  "license": "LicenseRef-AI-Dock-Custom",
+  "license_scope": "container_packager_source_only; bundled application, runtime dependencies and weights have separate terms",
+  "license_url": "https://github.com/ai-dock/stable-diffusion-webui-forge/blob/bc8b1f5f4a421b48e6f44d35bda11c2f2738d23f/LICENSE.md",
+  "license_documents": [
+    {
+      "path": "LICENSE.md",
+      "url": "https://github.com/ai-dock/stable-diffusion-webui-forge/blob/bc8b1f5f4a421b48e6f44d35bda11c2f2738d23f/LICENSE.md",
+      "sha256": "a70ad3d046305b184937158cc7ab01bc90fa29b952ea3da590fe82a7a9a416e2"
+    },
+    {
+      "path": "NOTICE.md",
+      "url": "https://github.com/ai-dock/stable-diffusion-webui-forge/blob/bc8b1f5f4a421b48e6f44d35bda11c2f2738d23f/NOTICE.md",
+      "sha256": "0094692b7818529c57c0846175412ced3eb096258749d10b3d1e6de90f0d43c4"
+    }
+  ],
+  "notice_urls": [
+    "https://github.com/ai-dock/stable-diffusion-webui-forge/blob/bc8b1f5f4a421b48e6f44d35bda11c2f2738d23f/NOTICE.md"
+  ],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "The configured container comes from AI-Dock. Its reviewed packager source uses a custom license with redistribution and modification restrictions; Forge application source is separately AGPL-3.0. The current packager license is not proven to describe the older pinned image revision.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.nvidia.yaml",
+        "sha256": "57b947540343a999e41ffd1b6ac697c7db3e673394c241ad2f8413961ed6ebcc"
+      },
+      {
+        "path": "compose.yaml",
+        "sha256": "28464a101763723291fcf67cb015adbaee2abc14d1adabf4eb0432bc80b15c09"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "9cb1f7566c55f840f2e0cccc61f1c92f6484bc2fa8bf5c9cda37ec5b91148f68"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "forge",
+        "image": "ghcr.io/ai-dock/stable-diffusion-webui-forge@sha256:36a8b82c9ddec17a88303d933f3d08d2c1d1286617f5642281859f64d40beddc",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [
+    {
+      "repository": "https://github.com/lllyasviel/stable-diffusion-webui-forge",
+      "source_ref": "main",
+      "source_revision": "dfdcbab685e57677014f05a3309b48cc87383167",
+      "source_revision_scope": "reviewed_current_source_only",
+      "license_url": "https://github.com/lllyasviel/stable-diffusion-webui-forge/blob/dfdcbab685e57677014f05a3309b48cc87383167/LICENSE.txt",
+      "license": "AGPL-3.0",
+      "scope": "Forge application current source only; image application revision unverified",
+      "documents": [
+        {
+          "path": "LICENSE.txt",
+          "url": "https://github.com/lllyasviel/stable-diffusion-webui-forge/blob/dfdcbab685e57677014f05a3309b48cc87383167/LICENSE.txt",
+          "sha256": "b7d209bbb4b140f12154cafcdc6446775689df5e800bc6db8ef6a72caf4f63e6"
+        }
+      ]
+    }
+  ],
+  "model_terms": {
+    "status": "separate_review_required",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/ai-dock/stable-diffusion-webui-forge",
+      "retrieved_at": "2026-09-23T07:53:36.851009+00:00",
+      "success": true,
+      "response_sha256": "9613cf963a0309a4a0768bc57f3f460c9652c4eceac72e82e33c5f9dc16a5f0d"
+    },
+    {
+      "url": "https://api.github.com/repos/ai-dock/stable-diffusion-webui-forge/commits/main",
+      "retrieved_at": "2026-09-23T07:53:37.480005+00:00",
+      "success": true,
+      "response_sha256": "74ef6866cb4ffebae2756d300df3097037381d5a538f9260147e0daddfdbbd9e"
+    },
+    {
+      "url": "https://api.github.com/repos/ai-dock/stable-diffusion-webui-forge/license?ref=bc8b1f5f4a421b48e6f44d35bda11c2f2738d23f",
+      "retrieved_at": "2026-09-23T07:53:38.436550+00:00",
+      "success": true,
+      "response_sha256": "720ddd2763a6623d44d1c46f7122934512eecc24b0e238f70817fe78d9d9efe1"
+    },
+    {
+      "url": "https://api.github.com/repos/ai-dock/stable-diffusion-webui-forge/contents?ref=bc8b1f5f4a421b48e6f44d35bda11c2f2738d23f",
+      "retrieved_at": "2026-09-23T07:53:38.928834+00:00",
+      "success": true,
+      "response_sha256": "4a335c4ba5a81466d7d53e69378945be5b1ee971a3c2fd382dc0fe24b2097d47"
+    }
+  ],
+  "gaps": [
+    "The source label identifies AI-Dock but no commit; applicability of the reviewed current custom license to the 2024 image must be resolved.",
+    "Bundled application revision, checkpoints and inherited image component notices remain unverified.",
+    "Reviewed current source is not proven to be the source revision of the deployed package/image.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "ghcr.io/ai-dock/stable-diffusion-webui-forge@sha256:36a8b82c9ddec17a88303d933f3d08d2c1d1286617f5642281859f64d40beddc",
+  "image_observation": {
+    "id": "forge",
+    "image": "ghcr.io/ai-dock/stable-diffusion-webui-forge@sha256:36a8b82c9ddec17a88303d933f3d08d2c1d1286617f5642281859f64d40beddc",
+    "checked_at": "2026-09-23T07:54:17.831913+00:00",
+    "success": true,
+    "response_sha256": "c04f9c5b2310eb62a19d374832f562d41faaedee98c029a372b9f8e2becf3c97",
+    "variants": [
+      {
+        "architecture": "amd64",
+        "os": "linux",
+        "created": "2024-09-27T14:00:12.464216956Z",
+        "labels": {
+          "maintainer": "Rob Ballantyne <rob@dynamedia.uk>",
+          "org.opencontainers.image.description": "Stable Diffusion Web UI Forge docker images for use in GPU cloud and local environments. Includes AI-Dock base for authentication and improved user experience.",
+          "org.opencontainers.image.ref.name": "ubuntu",
+          "org.opencontainers.image.source": "https://github.com/ai-dock/stable-diffusion-webui-forge",
+          "org.opencontainers.image.version": "22.04"
+        },
+        "upstream_urls_in_build_history": [
+          "https://github.com/ai-dock/base-image",
+          "https://github.com/ai-dock/python",
+          "https://github.com/ai-dock/stable-diffusion-webui-forge"
+        ]
+      }
+    ]
+  }
+}

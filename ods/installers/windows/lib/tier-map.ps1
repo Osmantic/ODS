@@ -116,8 +116,8 @@ function Resolve-QwenTierConfig {
                 TierName   = "NVIDIA Ultra (90GB+)"
                 LlmModel   = "qwen3-coder-next"
                 GgufFile   = "qwen3-coder-next-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/resolve/main/Qwen3-Coder-Next-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/resolve/ce09c67b53bc8739eef83fe67b2f5d293c270632/Qwen3-Coder-Next-Q4_K_M.gguf"
+                GgufSha256 = "9e6032d2f3b50a60f17ce8bf5a1d85c71af9b53b89c7978020ae7c660f29b090"
                 MaxContext = 131072
                 ModelProfileRequested = "qwen"
                 ModelProfileEffective = "qwen"
@@ -133,7 +133,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Strix Halo 90+"
                 LlmModel   = "qwen3.6-35b-a3b"
                 GgufFile   = "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
                 GgufSha256 = "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
                 MaxContext = 131072
                 ModelSizeMB = 21110
@@ -148,7 +148,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Strix Halo Compact"
                 LlmModel   = "qwen3-30b-a3b"
                 GgufFile   = "Qwen3-30B-A3B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/main/Qwen3-30B-A3B-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/d5b1d57bd0b504ac62ae6c725904e96ef228dc74/Qwen3-30B-A3B-Q4_K_M.gguf"
                 GgufSha256 = "9f1a24700a339b09c06009b729b5c809e0b64c213b8af5b711b3dbdfd0c5ba48"
                 MaxContext = 131072
                 ModelProfileRequested = "qwen"
@@ -162,8 +162,8 @@ function Resolve-QwenTierConfig {
                 TierName   = "Lightweight"
                 LlmModel   = "qwen3.5-2b"
                 GgufFile   = "Qwen3.5-2B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
+                GgufSha256 = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
                 MaxContext = 8192
                 ModelProfileRequested = "qwen"
                 ModelProfileEffective = "qwen"
@@ -176,7 +176,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Entry Level"
                 LlmModel   = "qwen3.5-9b"
                 GgufFile   = "Qwen3.5-9B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
                 GgufSha256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
                 MaxContext = 16384
                 ModelProfileRequested = "qwen"
@@ -190,7 +190,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Prosumer"
                 LlmModel   = "qwen3.5-9b"
                 GgufFile   = "Qwen3.5-9B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
                 GgufSha256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
                 MaxContext = 32768
                 ModelProfileRequested = "qwen"
@@ -204,7 +204,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Pro"
                 LlmModel   = "qwen3-30b-a3b"
                 GgufFile   = "Qwen3-30B-A3B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/main/Qwen3-30B-A3B-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/d5b1d57bd0b504ac62ae6c725904e96ef228dc74/Qwen3-30B-A3B-Q4_K_M.gguf"
                 GgufSha256 = "9f1a24700a339b09c06009b729b5c809e0b64c213b8af5b711b3dbdfd0c5ba48"
                 MaxContext = 32768
                 ModelProfileRequested = "qwen"
@@ -218,7 +218,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Enterprise"
                 LlmModel   = "qwen3-30b-a3b"
                 GgufFile   = "Qwen3-30B-A3B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/main/Qwen3-30B-A3B-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/d5b1d57bd0b504ac62ae6c725904e96ef228dc74/Qwen3-30B-A3B-Q4_K_M.gguf"
                 GgufSha256 = "9f1a24700a339b09c06009b729b5c809e0b64c213b8af5b711b3dbdfd0c5ba48"
                 MaxContext = 131072
                 ModelProfileRequested = "qwen"
@@ -264,8 +264,8 @@ function Resolve-GemmaTierConfig {
                 TierName   = "NVIDIA Ultra (90GB+)"
                 LlmModel   = "gemma-4-31b-it"
                 GgufFile   = "gemma-4-31B-it-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf"
+                GgufSha256 = "38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84"
                 MaxContext = 131072
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "gemma4"
@@ -278,8 +278,8 @@ function Resolve-GemmaTierConfig {
                 TierName   = "Strix Halo 90+"
                 LlmModel   = "gemma-4-31b-it"
                 GgufFile   = "gemma-4-31B-it-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf"
+                GgufSha256 = "38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84"
                 MaxContext = 131072
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "gemma4"
@@ -291,9 +291,9 @@ function Resolve-GemmaTierConfig {
             return @{
                 TierName   = "Strix Halo Compact"
                 LlmModel   = "gemma-4-26b-a4b-it"
-                GgufFile   = "gemma-4-26B-A4B-it-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufFile   = "google_gemma-4-26B-A4B-it-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/resolve/10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d/google_gemma-4-26B-A4B-it-Q4_K_M.gguf"
+                GgufSha256 = "a07f72221e8e3f77455ab0d7f7652d01a9f63c262b954aa6932a53275a0e895a"
                 MaxContext = 65536
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "gemma4"
@@ -306,8 +306,8 @@ function Resolve-GemmaTierConfig {
                 TierName   = "Lightweight"
                 LlmModel   = "qwen3.5-2b"
                 GgufFile   = "Qwen3.5-2B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
+                GgufSha256 = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
                 MaxContext = 8192
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "qwen"
@@ -347,9 +347,9 @@ function Resolve-GemmaTierConfig {
             return @{
                 TierName   = "Pro"
                 LlmModel   = "gemma-4-26b-a4b-it"
-                GgufFile   = "gemma-4-26B-A4B-it-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufFile   = "google_gemma-4-26B-A4B-it-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/resolve/10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d/google_gemma-4-26B-A4B-it-Q4_K_M.gguf"
+                GgufSha256 = "a07f72221e8e3f77455ab0d7f7652d01a9f63c262b954aa6932a53275a0e895a"
                 MaxContext = 16384
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "gemma4"
@@ -362,8 +362,8 @@ function Resolve-GemmaTierConfig {
                 TierName   = "Enterprise"
                 LlmModel   = "gemma-4-31b-it"
                 GgufFile   = "gemma-4-31B-it-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf"
+                GgufSha256 = "38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84"
                 MaxContext = 65536
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "gemma4"
@@ -861,7 +861,7 @@ function ConvertTo-ModelFromTier {
 # Tiny model for instant chat while the full tier model downloads in background.
 
 $script:BOOTSTRAP_GGUF_FILE    = "Qwen3.5-2B-Q4_K_M.gguf"
-$script:BOOTSTRAP_GGUF_URL     = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
+$script:BOOTSTRAP_GGUF_URL     = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
 $script:BOOTSTRAP_GGUF_SHA256  = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
 $script:BOOTSTRAP_LLM_MODEL    = "qwen3.5-2b"
 # Hermes requires at least a 64K context window. Keep the fast-start model at

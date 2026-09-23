@@ -1,0 +1,2 @@
+# Compose resolver dependency; supports the existing Python 3.8+ hosts.
+PyYAML

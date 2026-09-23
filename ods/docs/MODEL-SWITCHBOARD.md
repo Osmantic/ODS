@@ -6,17 +6,15 @@ Last audited: 2026-07-19; refreshed 2026-07-20 against post-merge `main` `5dd6f7
 
 Status: proposed implementation stack. The lifecycle foundation ([#1711](https://github.com/Osmantic/ODS/pull/1711)), swap-safety manifest contract ([#1766](https://github.com/Osmantic/ODS/pull/1766)), transactional swap sync ([#1887](https://github.com/Osmantic/ODS/pull/1887)), and model management UI/actions ([#1724](https://github.com/Osmantic/ODS/pull/1724)) are already merged; the state store, data plane, reconciler, and consumer migrations in this plan are not implemented.
 
-Goal of record (local planning source): `C:\Users\conta\Desktop\ODS-MODEL-SWAP-DESIGN.md`
-
-Portability rule: the absolute paths in this header are evidence pointers for this workstation, not execution dependencies. PR 1 must add the accepted version of this plan at `ods/docs/MODEL-SWITCHBOARD.md`; subsequent PRs reference that repository file and update its decision/status table in place.
+This is a historical design proposal, frozen at the source revisions below.
+Implementation and release status must be checked against the selected checkout;
+this page is not current deployment evidence.
 
 Research inputs:
 
 - ODS PR [#1724](https://github.com/Osmantic/ODS/pull/1724): merged into `main` 2026-07-19 (merge commit `5dd6f72d`); its former integration-vehicle role is retired
 - ODS GitHub `main` at `5dd6f72d` (contains the merged 77-PR fix sweep, #1888, #1766, #1711, #1887 content, and #1724)
-- Fleet harness `main` at `cb84c609fe897c1361967a844521fae7ab830848`
 - Lemonade `main` at `16dc27d2f3e249f2d826c97cde3f742df3b9d593`
-- Local Lemonade audit: `C:\Users\conta\Documents\Codex\2026-07-06\cl\LEMONADE_ROUTER_AUDIT.md`
 - [Lemonade router milestone #2389](https://github.com/lemonade-sdk/lemonade/issues/2389)
 - [Lemonade classifier wiring PR #2727](https://github.com/lemonade-sdk/lemonade/pull/2727)
 - [Lemonade router LRU isolation PR #2729](https://github.com/lemonade-sdk/lemonade/pull/2729)
@@ -502,7 +500,7 @@ Exit criteria:
 - `legacy` and `observe` are behaviorally identical to pre-PR routing; `enabled` is exercised only on named canaries.
 - Cloud-only mode's resolved Compose/LiteLLM configuration is byte-equivalent except for documented formatting.
 
-Fleet gate: Tower2 runs the local NVIDIA canary and remains the orchestrator. Add one representative host for each other backend family: `strix-halo` (Linux Lemonade), `strixy` (Windows Lemonade), `windows-laptop` (Windows native llama.cpp), and `m5-mbp` (macOS native). Run repeated direct gateway swaps before migrating applications.
+Fleet gate: use a Linux NVIDIA canary plus one representative host for each other backend family: Linux Lemonade, Windows Lemonade, Windows native llama.cpp, and native macOS. Run repeated direct gateway swaps before migrating applications.
 
 ### PR 4A-4C: migrate Open WebUI, Perplexica, and OpenCode
 
@@ -615,7 +613,7 @@ Exit criteria:
 - A failed new collection proof leaves the previous ODS and Lemonade routes active.
 - Windows and Linux AMD produce equivalent route evidence despite different installation mechanisms.
 
-Fleet gate: Strixy/Windows AMD first, then Strix-Halo/Linux AMD. Six sequential models, restart between repetition cycles, and registry inventory before/after deletion.
+Fleet gate: Windows AMD first, then Linux AMD. Six sequential models, restart between repetition cycles, and registry inventory before/after deletion.
 
 ### PR 7: `refactor(models): make every mutation use the reconciler`
 
@@ -841,37 +839,36 @@ Per release-required host:
 9. Exercise one load failure, verified rollback, delete-active block, interrupted download/resume, and queue timeout path per runtime family.
 10. Run the full ordinary fleet test after the model campaign.
 
-Current canonical release-required hosts from `targets.json` at this audit:
+Define release-required targets by platform class in the release harness:
 
-- `tower2`: Linux x86_64 NVIDIA llama.cpp and fleet orchestrator
-- `strix-halo`: Linux x86_64 AMD Lemonade
-- `spark`: Linux aarch64 NVIDIA unified llama.cpp
-- `dgx-gpu01`: Linux aarch64 DGX/GB300 llama.cpp, currently blocked: Launchpad closes SSH pre-auth (observed 2026-07-19)
-- `m5-mbp`: macOS arm64 native Metal
-- `windows-laptop`: Windows x86_64 NVIDIA native llama.cpp
-- `strixy`: Windows x86_64 AMD Lemonade, currently blocked for browser phases: no interactive console session (observed 2026-07-19)
-- `mac-mini`: macOS, currently blocked because its access/key repair is still outstanding
+- Linux x86_64 NVIDIA llama.cpp;
+- Linux x86_64 AMD Lemonade;
+- Linux aarch64 NVIDIA unified-memory and discrete-GPU variants;
+- macOS arm64 native Metal;
+- Windows x86_64 NVIDIA native llama.cpp;
+- Windows x86_64 AMD Lemonade.
 
-`enabled: false` is an execution state, not a release-scope waiver. Harness PR B adds optional `release_required` to each `targets.json` host, defaulting to `true`; `release_required: false` requires non-empty `scope_owner`, `scope_reason`, and `scope_decided_at` fields. At freeze time, generate the expected set where `release_required != false`. A disabled or unreachable release-required host remains red/blocked and prevents the stamp. Removing a host requires an explicit owner-approved retirement/scope decision recorded in those fields, the coverage ledger, and the PR 9 release note; do not maintain a second hardcoded release list in the harness.
+Generate the expected target set from the selected harness revision. A disabled
+or unreachable required target remains blocked, never passed. Scope exclusions
+require a recorded owner, reason, and date in the release receipt. Do not infer
+current host availability or access from a historical design document.
 
-Unavailable hosts are explicitly blocked with owner and reason; they are never counted as pass. On the audited fleet, three hosts are currently blocked, so restoring `mac-mini` access, `dgx-gpu01` SSH (external Launchpad pre-auth failure), and an interactive `strixy` console session are all release-stamp preconditions rather than optional extra coverage.
-
-Catalog readiness is a fourth precondition: before the stamp campaign is scheduled, the product viability API must list at least six viable models for every release-required host, including the aarch64 lanes (`spark`, `dgx-gpu01`). If it does not, catalog metadata work is on the stamp's critical path and must be finished and tested first.
+Catalog readiness is a precondition: before the stamp campaign is scheduled, the product viability API must list at least six viable models for every release-required host, including all required aarch64 configurations. If it does not, catalog metadata work is on the stamp's critical path and must be finished and tested first.
 
 Release model plan shape:
 
 ```json
 {
   "hosts": {
-    "tower2": ["model-1", "model-2", "model-3", "model-4", "model-5", "model-6", "model-1", "model-2"],
-    "strix-halo": ["model-7", "model-8", "model-9", "model-10", "model-11", "model-12", "model-7", "model-8"]
+    "linux-nvidia-example": ["model-1", "model-2", "model-3", "model-4", "model-5", "model-6", "model-1", "model-2"],
+    "linux-amd-example": ["model-7", "model-8", "model-9", "model-10", "model-11", "model-12", "model-7", "model-8"]
   }
 }
 ```
 
 Harness PR B validates exactly eight entries per expected host, six distinct viable entries in positions 1-6, a baseline repeat in position 7, and a non-Phi repeat in position 8. The real plan contains every expected host and is committed with the harness or stored in immutable run metadata.
 
-Canonical release invocation on Tower2 after the normal identity/lock preflight:
+Illustrative release invocation from the selected harness after its identity/lock preflight:
 
 ```bash
 cd "$FLEET_HARNESS_DIR"
@@ -880,7 +877,7 @@ export MODEL_UI_MODEL_PLAN_FILE=/absolute/path/to/switchboard-release-model-plan
 export FLEET_MODEL_UI_TIER=release   # harness tier variable; exact name in the harness repo docs
 export FLEET_MODEL_UI_CYCLES=8       # harness cycle variable; exact name in the harness repo docs
 ./run.sh --phase release \
-  --hosts tower2,strix-halo,spark,dgx-gpu01,m5-mbp,mac-mini,windows-laptop,strixy \
+  --hosts "$RELEASE_REQUIRED_HOSTS" \
   --skip-smoke
 ```
 

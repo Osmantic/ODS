@@ -190,6 +190,7 @@ canonical source and treat older recipes as context.
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Contributors | How to contribute |
 | [MAINTAINER_RUNBOOK.md](MAINTAINER_RUNBOOK.md) | Maintainers / fork operators | Release, rollback, validation, and operator continuity runbook |
 | [AI_WORKFLOW_GUARDRAILS.md](AI_WORKFLOW_GUARDRAILS.md) | Maintainers / reviewers | Safety model for AI-assisted GitHub workflows, protected paths, and human review boundaries |
+| [EXTERNAL_DOC_LINKS.md](EXTERNAL_DOC_LINKS.md) | Maintainers / reviewers | Anonymous HTTP checks, bounded runs, and public-access limits |
 | [BRANCH_HYGIENE.md](BRANCH_HYGIENE.md) | Maintainers | Branch naming, stale branch dry-run audits, and cleanup policy |
 | [../SECURITY.md](../SECURITY.md) | Everyone | Security guide and disclosure |
 | [../../SECURITY_AUDIT.md](../../SECURITY_AUDIT.md) | Maintainers / reviewers | Historical security audit with current remediation status and receipts |

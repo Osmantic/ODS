@@ -54,7 +54,10 @@ test('real Unix transport sends one bounded frame and accepts fragmented control
   }));
   await new Promise(resolve=>server.listen(socketPath,resolve));
   t.after(async()=>{await new Promise(resolve=>server.close(resolve));fs.rmSync(dir,{recursive:true,force:true});});
-  assert.deepEqual(await requestAccessController({operation:'status'},{socketPath,timeout:1000}),{status:200,body:{surface:'wsl-systemd'}});
+  // This case verifies frame delivery, not a one-second scheduling guarantee
+  // while CI runs the entire agent suite in parallel. Timeout behavior has its
+  // own short-deadline case below; the production default is unchanged.
+  assert.deepEqual(await requestAccessController({operation:'status'},{socketPath,timeout:5000}),{status:200,body:{surface:'wsl-systemd'}});
   assert.equal(captured,'{"operation":"status"}\n');
 });
 
@@ -66,7 +69,7 @@ test('controller timeout and oversized response fail without retry', async t => 
   const server=net.createServer(socket=>{sockets.add(socket);connections++;if(connections===2)socket.end('x'.repeat(65537));});
   await new Promise(resolve=>server.listen(socketPath,resolve));
   t.after(async()=>{for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));fs.rmSync(dir,{recursive:true,force:true});});
-  await assert.rejects(requestAccessController({operation:'status'},{socketPath,timeout:20}));
-  await assert.rejects(requestAccessController({operation:'status'},{socketPath,timeout:1000}));
+  await assert.rejects(requestAccessController({operation:'status'},{socketPath,timeout:20}), /access-service-unavailable/);
+  await assert.rejects(requestAccessController({operation:'status'},{socketPath,timeout:5000}), /invalid-access-response/);
   assert.equal(connections,2);
 });

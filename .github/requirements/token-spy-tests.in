@@ -1,0 +1,2 @@
+-r ../../ods/extensions/services/token-spy/requirements.txt
+pytest>=8,<9

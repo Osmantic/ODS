@@ -145,6 +145,8 @@ echo "curl: (7) Failed to connect" >&2
 exit 7
 SH
 chmod +x "$FIXTURE/bin/docker" "$FIXTURE/bin/curl"
+source "$SCRIPT_DIR/fixtures/mock-update-agent.sh"
+install_mock_update_agent "$FIXTURE/bin" "$FIXTURE"
 
 reset_env() {
     cat > "$FIXTURE/.env" <<'EOF'
@@ -226,6 +228,18 @@ if grep -q "ghcr.io/example/upstream:1.2.3" "$FIXTURE/pull.log" 2>/dev/null && !
     pass "update pulls registry images without pulling local build tags"
 else
     fail "external-only pull not exercised: $(cat "$FIXTURE/pull.log" 2>/dev/null)"
+fi
+
+# Agent activation is part of completion, even after container work succeeds.
+reset_env
+export TEST_HOST_AGENT_FAIL=true
+output=$(run_update)
+unset TEST_HOST_AGENT_FAIL
+if [[ "$output" == *'host-agent activation failed'* && "$output" != *'Update complete'* ]] \
+    && grep -qx 'ODS_VERSION=2.0.0' "$FIXTURE/.env"; then
+    pass "agent failure preserves the prior version and does not claim completion"
+else
+    fail "agent failure was not reflected in update outcome: $(echo "$output" | tail -5)"
 fi
 
 echo ""

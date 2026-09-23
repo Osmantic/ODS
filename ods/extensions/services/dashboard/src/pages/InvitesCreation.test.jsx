@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
-import Invites from './Invites' // eslint-disable-line no-unused-vars
+import Invites from './Invites'
 
 const response = (body, status = 200) => ({
   ok: status >= 200 && status < 300, status, json: async () => body,

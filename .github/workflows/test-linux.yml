@@ -8,6 +8,20 @@ on:
       - master
 
 jobs:
+  installer-log-boundaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Isolated diagnostic path and ownership tests
+        run: bash ods/tests/test-installer-log-safety.sh
+      - name: Derived build log and failure contracts
+        run: bash ods/tests/test-phase11-local-build-failure.sh
+
   backup-space:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
@@ -62,7 +76,8 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Install isolated inference test dependencies
-        run: python -m pip install -r extensions/services/pixel-inference/requirements.txt -r extensions/services/model-router/requirements.txt 'pytest>=8,<9'
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all: -r ../.github/requirements/inference-tests.txt
       - name: mDNS publication recovery contracts
         run: python -m pytest tests/test_mdns_refresh_recovery.py tests/test_mdns_subdomains.py -q
       - name: Compressed backup extraction safety and recovery
@@ -118,7 +133,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test dependencies
-        run: python -m pip install -r requirements.txt "pytest>=8,<9"
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all: -r ../../../../.github/requirements/token-spy-tests.txt
       - name: Test proxy pricing receipts
         run: python -m pytest -q tests/test_local_upstream_pricing.py tests/test_anthropic_cumulative_usage.py tests/test_usage_report.py
 
@@ -126,7 +142,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
         env:
           POSTGRES_DB: tokenspy
           POSTGRES_USER: tokenspy
@@ -157,7 +173,8 @@ jobs:
           python-version: "3.12"
 
       - name: Install test dependencies
-        run: python -m pip install "psycopg2-binary>=2.9.9,<3.0.0" "pytest>=8,<9"
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all: -r ../../../../.github/requirements/postgres-tests.txt
 
       - name: Test Postgres SSE cursor
         run: python -m pytest tests/test_recent_events_cursor_postgres.py -v
@@ -177,10 +194,16 @@ jobs:
           python-version: "3.12"
 
       - name: Install manifest validator dependencies
-        run: python3 -m pip install "PyYAML>=6.0,<7.0" "jsonschema>=4.21,<5.0" "pytest>=8,<9"
+        run: >-
+          python3 -m pip install --require-hashes --only-binary=:all: -r ../.github/requirements/test-tools.txt
 
       - name: Branch cleanup release exclusions
         run: python3 tests/test-stale-branch-release-refs.py
+
+      - name: Set up Node for documentation link validation
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
 
       - name: Docs Link Checks
         run: bash tests/test-doc-links.sh
@@ -385,7 +408,7 @@ jobs:
 
       - name: Runtime Renderer Environment Modes
         run: |
-          python3 -m pip install pytest==8.4.2
+          python3 -m pip install --require-hashes --only-binary=:all: -r ../.github/requirements/test-tools.txt
           python3 -m pytest -q tests/test_renderer_environment_modes.py
 
       - name: Runtime Config Wiring Tests
@@ -401,7 +424,7 @@ jobs:
         run: sudo env COMFYUI_REQUIRE_NAMESPACE=1 "$(command -v python3)" tests/test_comfyui_template_seeding.py -v
       - name: Perplexica Repair Interpreter Tests
         run: |
-          python3 -m pip install pytest==8.4.2
+          python3 -m pip install --require-hashes --only-binary=:all: -r ../.github/requirements/test-tools.txt
           python3 -m pytest -q tests/test_perplexica_repair_python.py
 
       - name: CPU-Only Path Tests
@@ -415,8 +438,11 @@ jobs:
       - name: Installer Contract Checks
         run: |
           bash tests/contracts/test-installer-contracts.sh
+          bash tests/test-docker-image-pull-retry.sh
+          bash tests/test-compose-image-discovery.sh
           bash tests/test-linux-ollama-port-override.sh
           bash tests/test-external-services.sh
+          bash tests/test-package-retry.sh
           bash tests/test-resolve-compose-resilient.sh
           bash tests/test-phase03-multigpu-tty.sh
           bash tests/test-pixel-support-services.sh
@@ -434,6 +460,8 @@ jobs:
           python3 scripts/verify-pixel-bundle.py
           bash vendor/pixel/scripts/check-no-secrets.sh vendor/pixel
           bash tests/test-pixel-bundled-source.sh
+          bash tests/test-pixel-bundle-upgrade.sh
+          node --test vendor/pixel/tests/docs-inventory.test.mjs vendor/pixel/tests/public-export.test.mjs
 
       - name: Pixel Default Agent Contract Tests
         run: |
@@ -443,6 +471,7 @@ jobs:
           python3 -m unittest -v tests/test_pixel_native_search.py
           bash tests/test-pixel-compose-wiring.sh
           bash tests/test-pixel-wsl-runtime-bridge.sh
+          sudo -n bash tests/test-pixel-wsl-bootstrap-mounts.sh
           python3 tests/test_pixel_timeout_contract.py
           python3 -m unittest -v tests/test_pixel_edge_buffered_content.py
           python3 -m unittest -v extensions/services/pixel-agent/tests/test_artifact_promoter.py
@@ -470,6 +499,12 @@ jobs:
       - name: Update Rollback Contract
         run: bash tests/test-update-rollback-contract.sh
 
+      - name: Source Update Activation and Agent Lifecycle
+        run: |
+          bash tests/test-update-compose-restart-contract.sh
+          bash tests/test-agent-restart-nonfatal.sh
+          bash tests/test-agent-lifecycle-failures.sh
+
       - name: Update Backup Retention By Creation Time
         run: bash tests/test-update-backup-retention-labels.sh
 
@@ -496,7 +531,7 @@ jobs:
 
       - name: Test support bundle command deadlines
         run: |
-          python3 -m pip install pytest==8.4.2
+          python3 -m pip install --require-hashes --only-binary=:all: -r ../.github/requirements/test-tools.txt
           python3 -m pytest -q tests/test_support_bundle_timeouts.py tests/test_support_bundle_log_scope.py tests/test_support_bundle_uri_credentials.py
 
       - name: Linux Node runtime path tests

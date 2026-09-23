@@ -23,6 +23,10 @@ config.yaml.bak
 *.tmp
 *.swp
 
+# Local audit logs and discarded generated assets can include workstation paths.
+# Publish reviewed, sanitized evidence under ods/docs instead.
+/output/
+
 # Secrets and credentials (global)
 .env
 .env.*

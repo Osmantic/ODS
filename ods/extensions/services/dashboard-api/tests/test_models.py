@@ -694,6 +694,24 @@ def _hf_import_details() -> dict:
     }
 
 
+def _reviewed_hf_import_request(details: dict) -> dict:
+    import routers.models as models_router
+    from model_terms import project_terms
+
+    artifact = details["artifacts"][0]
+    record = models_router._hf_import_record(details, artifact)
+    preview = project_terms(record)
+    assert preview["recordValid"], preview["errors"]
+    acknowledgement = {"acknowledged": True, "termsDigest": preview["termsDigest"]}
+    if details.get("gated"):
+        acknowledgement["upstreamAccepted"] = True
+    return {
+        "repoId": details["id"],
+        "artifactId": artifact["id"],
+        "termsAcknowledgement": acknowledgement,
+    }
+
+
 def test_huggingface_import_retains_retry_state_after_agent_failure(
     test_client, monkeypatch, tmp_path,
 ):
@@ -708,6 +726,7 @@ def test_huggingface_import_retains_retry_state_after_agent_failure(
         nonlocal attempts
         attempts += 1
         assert payload["gguf_sha256"] == "e" * 64
+        assert payload["termsAcknowledgement"] == request["termsAcknowledgement"]
         if attempts == 1:
             raise models_router.HTTPException(status_code=503, detail="agent unavailable")
         return {"status": "started"}
@@ -717,10 +736,7 @@ def test_huggingface_import_retains_retry_state_after_agent_failure(
     monkeypatch.setattr(models_router, "_call_agent_model", flaky_agent)
     monkeypatch.setattr(models_router, "_bootstrap_upgrade_download_conflict", lambda: None)
 
-    request = {
-        "repoId": "org/repo",
-        "artifactId": "d" * 20,
-    }
+    request = _reviewed_hf_import_request(_hf_import_details())
     first = test_client.post(
         "/api/models/huggingface/import",
         headers=test_client.auth_headers,
@@ -767,7 +783,7 @@ def test_huggingface_restricted_import_requires_token_before_registry_write(
     response = test_client.post(
         "/api/models/huggingface/import",
         headers=test_client.auth_headers,
-        json={"repoId": "org/repo", "artifactId": "d" * 20},
+        json=_reviewed_hf_import_request(details),
     )
 
     assert response.status_code == 403
@@ -793,7 +809,7 @@ def test_huggingface_import_does_not_overwrite_corrupt_registry(
     response = test_client.post(
         "/api/models/huggingface/import",
         headers=test_client.auth_headers,
-        json={"repoId": "org/repo", "artifactId": "d" * 20},
+        json=_reviewed_hf_import_request(_hf_import_details()),
     )
 
     assert response.status_code == 409

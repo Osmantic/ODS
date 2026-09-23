@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { documentAvailability, evidenceReference } from './public-export.mjs';
 import {
   compareSemver,
   generatedNotice,
@@ -14,7 +15,7 @@ import {
 export function buildReleaseEvidenceIndex(root = repoRoot) {
   const manifest = readJson('RELEASE-MANIFEST.json', root);
   const compatibility = readJson('OPENCLAW-COMPATIBILITY.json', root);
-  const rows = [...(compatibility.combinations ?? [])].sort((left, right) => compareSemver(right.pixel, left.pixel));
+  const rows = [...(compatibility.combinations ?? [])].map((row) => ({ ...row })).sort((left, right) => compareSemver(right.pixel, left.pixel));
   if (rows.length === 0) throw new Error('OPENCLAW-COMPATIBILITY.json has no compatibility rows');
 
   const referencedAudits = new Set();
@@ -23,8 +24,7 @@ export function buildReleaseEvidenceIndex(root = repoRoot) {
       throw new Error(`compatibility row is missing evidence identity: ${JSON.stringify(row)}`);
     }
     if (!/^[0-9a-f]{40}$/u.test(row.evidence.sourceCommit)) throw new Error(`invalid evidence source commit for Pixel ${row.pixel}`);
-    const auditPath = path.join(root, row.evidence.liveAudit);
-    if (!fs.existsSync(auditPath) || !fs.statSync(auditPath).isFile()) throw new Error(`missing live audit for Pixel ${row.pixel}: ${row.evidence.liveAudit}`);
+    row.evidenceAvailable = documentAvailability(row.evidence.liveAudit, root);
     referencedAudits.add(row.evidence.liveAudit);
   }
 
@@ -41,7 +41,7 @@ export function buildReleaseEvidenceIndex(root = repoRoot) {
 export function renderReleaseEvidenceIndex(index) {
   const rows = index.rows.map((row) => {
     const audit = `../../${row.evidence.liveAudit}`;
-    return `| \`${markdownEscape(row.pixel)}\` | **${markdownEscape(row.status)}** | ${markdownEscape(row.qualifiedAt)} | [${markdownEscape(row.evidence.liveAudit)}](${audit}) | \`${markdownEscape(row.evidence.sourceCommit)}\` |`;
+    return `| \`${markdownEscape(row.pixel)}\` | **${markdownEscape(row.status)}** | ${markdownEscape(row.qualifiedAt)} | ${evidenceReference(row.evidence.liveAudit, audit, row.evidenceAvailable)} | \`${markdownEscape(row.evidence.sourceCommit)}\` |`;
   }).join('\n');
   const unreferenced = index.unreferencedAudits.length === 0
     ? '- None.'
@@ -62,7 +62,7 @@ ${generatedNotice}
 
 # Release evidence index
 
-This is a repository index, not a live-host report. Each row reproduces the compatibility status and evidence identity recorded in [OPENCLAW-COMPATIBILITY.json](../../OPENCLAW-COMPATIBILITY.json). The linked audit must be read at its exact source commit; a retained file, date, or compatibility label does not by itself prove current installation, activation, recovery, publication, or owner acceptance.
+This is a repository index, not a live-host report. Each row reproduces the compatibility status and evidence identity recorded in [OPENCLAW-COMPATIBILITY.json](../../OPENCLAW-COMPATIBILITY.json). The linked audit must be read at its exact source commit; a retained file, date, or compatibility label does not by itself prove current installation, activation, recovery, publication, or owner acceptance. An audit marked as omitted is unavailable in the public export: its recorded status is historical metadata, not independently verified public evidence.
 
 | Pixel | Recorded status | Qualified at | Retained audit | Evidence source commit |
 |---|---|---|---|---|

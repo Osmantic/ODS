@@ -1,0 +1,163 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/daswer123/xtts-api-server",
+  "source_ref": "main",
+  "source_revision": "5e8bc93d674fed0f5849e03db28f5e5216320d99",
+  "source_revision_scope": "reviewed_current_source_only",
+  "source_url": "https://github.com/daswer123/xtts-api-server/tree/5e8bc93d674fed0f5849e03db28f5e5216320d99",
+  "license": "MIT",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/daswer123/xtts-api-server/blob/5e8bc93d674fed0f5849e03db28f5e5216320d99/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/daswer123/xtts-api-server/blob/5e8bc93d674fed0f5849e03db28f5e5216320d99/LICENSE",
+      "sha256": "75489168a998d0d953257ad7ec3909cbcafd260cba13da8170ba3190a996dc54"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "The xtts-api-server source is MIT, Coqui TTS runtime source is MPL-2.0, and XTTS-v2 weights use the non-commercial Coqui Public Model License. The recipe now requires an explicit COQUI_TOS_AGREED=1 and overrides the image command that automatically answered yes.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.amd.yaml",
+        "sha256": "c585f696afb28f9ec8bed838e0d33da6f85511161532debadf7e3e7f70638e49"
+      },
+      {
+        "path": "compose.nvidia.yaml",
+        "sha256": "0c8832c90a868474d70510c2ea9e5fb06f51b3a2ee843ee4e4e9268504887604"
+      },
+      {
+        "path": "compose.yaml",
+        "sha256": "44cd33f0555cbda9b8192e931bdf37f6c92a3cd939a57916ef8ca6a5935f47a4"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "97bd29293800f8136691f6d674b76ff74b2f4ba85be7be925d0a810559937841"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "xtts",
+        "image": "daswer123/xtts-api-server@sha256:491e0a198fc56c46d3dbb300ab993d29cc699813ea8fd1c6ee77aa80ab133e3e",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [
+    {
+      "repository": "https://github.com/coqui-ai/TTS",
+      "source_ref": "dev",
+      "source_revision": "dbf1a08a0d4e47fdad6172e433eeb34bc6b13b4e",
+      "source_revision_scope": "reviewed_current_source_only",
+      "license_url": "https://github.com/coqui-ai/TTS/blob/dbf1a08a0d4e47fdad6172e433eeb34bc6b13b4e/LICENSE.txt",
+      "license": "MPL-2.0",
+      "scope": "Coqui TTS current source only; installed dependency revision unverified",
+      "documents": [
+        {
+          "path": "LICENSE.txt",
+          "url": "https://github.com/coqui-ai/TTS/blob/dbf1a08a0d4e47fdad6172e433eeb34bc6b13b4e/LICENSE.txt",
+          "sha256": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85"
+        }
+      ]
+    }
+  ],
+  "model_terms": {
+    "status": "separate_review_required",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": [
+      {
+        "repository": "https://huggingface.co/coqui/XTTS-v2",
+        "reviewed_revision": "6c2b0d75eae4b7047358e3b6bd9325f857d43f77",
+        "revision_scope": "public_metadata_observation_not_runtime_pin",
+        "license_metadata": "other",
+        "gated": false,
+        "scope": "Official model LICENSE.txt is Coqui Public Model License 1.0.0, non-commercial; not MIT or MPL",
+        "documents": [
+          {
+            "url": "https://huggingface.co/coqui/XTTS-v2/resolve/6c2b0d75eae4b7047358e3b6bd9325f857d43f77/LICENSE.txt",
+            "sha256": "190f6d7c19b8984f91b97712b94ce92d2b2e640fc677dacab966e955ece9d043",
+            "path": "LICENSE.txt"
+          },
+          {
+            "url": "https://huggingface.co/coqui/XTTS-v2/resolve/6c2b0d75eae4b7047358e3b6bd9325f857d43f77/README.md",
+            "sha256": "1cfa85b3293f685b3a6537f8da3d94820fd111270e553589073885dea3facfb7",
+            "path": "README.md"
+          }
+        ],
+        "api_evidence": [
+          {
+            "url": "https://huggingface.co/api/models/coqui/XTTS-v2",
+            "sha256": "2b1f452a2749a3d4b6ffe0c4842701ae1f602adc7c29fa111bd887be6d95a7fb"
+          }
+        ]
+      }
+    ],
+    "acceptance_contract": "Operator must explicitly set COQUI_TOS_AGREED=1 after reviewing applicable terms. Missing/empty values fail Compose configuration before container creation; other values fail the command guard before server execution. ODS writes no consent value. The image default echo-y pipeline is overridden and stdin is closed."
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/daswer123/xtts-api-server",
+      "retrieved_at": "2026-09-23T07:53:58.628576+00:00",
+      "success": true,
+      "response_sha256": "5bda223837a56b6af1e3fd6c19fac5f013669375387ce90b4acceb3b6acdd882"
+    },
+    {
+      "url": "https://api.github.com/repos/daswer123/xtts-api-server/commits/main",
+      "retrieved_at": "2026-09-23T07:53:59.241556+00:00",
+      "success": true,
+      "response_sha256": "cdb3a3cd32755cfcd55cc0b47ad40d10fe97ee626430f552f461d1c31a722eb6"
+    },
+    {
+      "url": "https://api.github.com/repos/daswer123/xtts-api-server/license?ref=5e8bc93d674fed0f5849e03db28f5e5216320d99",
+      "retrieved_at": "2026-09-23T07:54:00.063400+00:00",
+      "success": true,
+      "response_sha256": "953be95629924b1e81a183735e77847a68f6ff6146b95b4641ea5d410bbb56f4"
+    },
+    {
+      "url": "https://api.github.com/repos/daswer123/xtts-api-server/contents?ref=5e8bc93d674fed0f5849e03db28f5e5216320d99",
+      "retrieved_at": "2026-09-23T07:54:00.561136+00:00",
+      "success": true,
+      "response_sha256": "673a51dff09538932fab57a4ce7aacb3c322c0c9a71ac31629f74c52cec74f81"
+    }
+  ],
+  "gaps": [
+    "No source revision is exposed by the pinned API image; current server/runtime source records are reference-only.",
+    "Exact model revision chosen by apiManual and commercial licensing eligibility remain unresolved; explicit operator acceptance does not establish eligibility.",
+    "The model-card coqui.ai/cpml link returned 404; the immutable LICENSE.txt in the official model repository was retrieved successfully.",
+    "Reviewed current source is not proven to be the source revision of the deployed package/image.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "daswer123/xtts-api-server@sha256:491e0a198fc56c46d3dbb300ab993d29cc699813ea8fd1c6ee77aa80ab133e3e",
+  "image_observation": {
+    "id": "xtts",
+    "image": "daswer123/xtts-api-server@sha256:491e0a198fc56c46d3dbb300ab993d29cc699813ea8fd1c6ee77aa80ab133e3e",
+    "checked_at": "2026-09-23T07:54:19.627091+00:00",
+    "success": true,
+    "response_sha256": "b24a1330276c466c3872a3d6526df6dbee0c467b998c587d864ba295afef4e1d",
+    "variants": [
+      {
+        "architecture": "amd64",
+        "os": "linux",
+        "created": "2024-02-20T20:39:34.489778888Z",
+        "labels": {
+          "description": "Docker image for xtts-api-server",
+          "maintainer": "NVIDIA CORPORATION <cudatools@nvidia.com>",
+          "org.opencontainers.image.ref.name": "ubuntu",
+          "org.opencontainers.image.version": "22.04"
+        },
+        "upstream_urls_in_build_history": [
+          "http://localhost:8020",
+          "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/${NVARCH}/cuda-keyring_1.0-1_all.deb",
+          "https://download.pytorch.org/whl/cu121"
+        ]
+      }
+    ]
+  }
+}

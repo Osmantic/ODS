@@ -11,7 +11,6 @@ import {
   Download,
   Gauge,
   HardDrive,
-  Network,
   Palette,
   RefreshCw,
   Route,

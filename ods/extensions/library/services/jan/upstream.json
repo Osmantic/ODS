@@ -1,0 +1,84 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/janhq/jan",
+  "source_ref": "v0.7.7",
+  "source_revision": "f892648b0143a0894b1c303807fb44451d8b8235",
+  "source_revision_scope": "configured_version_reference",
+  "source_url": "https://github.com/janhq/jan/tree/f892648b0143a0894b1c303807fb44451d8b8235",
+  "license": "Apache-2.0",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/janhq/jan/blob/f892648b0143a0894b1c303807fb44451d8b8235/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/janhq/jan/blob/f892648b0143a0894b1c303807fb44451d8b8235/LICENSE",
+      "sha256": "240e79d4976dbf1d4c76e0ac1da223df97935a75497eaf8dd045771c3e92de16"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "The checked Jan v0.7.7 source license is Apache-2.0. The Docker recipe is disabled and describes native desktop installation outside ODS; the configured jan-server image is not established as a supported runtime.",
+  "deployment": {
+    "kind": "disabled_recipe",
+    "recipe_files": [
+      {
+        "path": "compose.yaml.disabled",
+        "sha256": "cdce9df0e2daf314d45682fb79934f4fa2235bc8b6f5f1c10f38003a6d120261"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "f546171f8e8e12ac410898060fb5d10beee84a17cb6216790df52a4f91490dcb"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml.disabled",
+        "service": "jan",
+        "image": "ghcr.io/janhq/jan-server:v0.7.7",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_selected_by_recipe",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/janhq/jan",
+      "retrieved_at": "2026-09-23T07:53:41.347943+00:00",
+      "success": true,
+      "response_sha256": "ca109b8b1a97e90d508b0d9463e8233c9842257c599147ef85a431995fc1541e"
+    },
+    {
+      "url": "https://api.github.com/repos/janhq/jan/commits/v0.7.7",
+      "retrieved_at": "2026-09-23T07:53:42.298838+00:00",
+      "success": true,
+      "response_sha256": "725086fc08e6b94b5d9f19776ff3582db096990caa7cb0b0c208990c9fecb338"
+    },
+    {
+      "url": "https://api.github.com/repos/janhq/jan/license?ref=f892648b0143a0894b1c303807fb44451d8b8235",
+      "retrieved_at": "2026-09-23T07:53:43.185715+00:00",
+      "success": true,
+      "response_sha256": "f37d00a2d01cbdf5a541c3f6b461e90d0bd409ec11e38962b531944dac87d5dc"
+    },
+    {
+      "url": "https://api.github.com/repos/janhq/jan/contents?ref=f892648b0143a0894b1c303807fb44451d8b8235",
+      "retrieved_at": "2026-09-23T07:53:43.890668+00:00",
+      "success": true,
+      "response_sha256": "2ce0071708cf1ff299f9690d9c599ccf9ab8fdfc75bd6a5ce5ae4071d6130c0b"
+    }
+  ],
+  "gaps": [
+    "Disabled jan-server image source binding is unverified; native Jan is not installed by this recipe.",
+    "Source release reference matches the configured version; an image digest does not by itself prove the image was built from this commit.",
+    "One or more configured image/base references are mutable tags; registry digest and full component inventory remain pending.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "ghcr.io/janhq/jan-server:v0.7.7"
+}

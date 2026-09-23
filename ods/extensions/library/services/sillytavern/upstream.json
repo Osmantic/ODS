@@ -1,0 +1,139 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/SillyTavern/SillyTavern",
+  "source_ref": "e41bcf0cced493ecaec3a33a414eb7a3c8411d25",
+  "source_revision": "e41bcf0cced493ecaec3a33a414eb7a3c8411d25",
+  "source_revision_scope": "image_declared_revision",
+  "source_url": "https://github.com/SillyTavern/SillyTavern/tree/e41bcf0cced493ecaec3a33a414eb7a3c8411d25",
+  "license": "AGPL-3.0",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/SillyTavern/SillyTavern/blob/e41bcf0cced493ecaec3a33a414eb7a3c8411d25/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/SillyTavern/SillyTavern/blob/e41bcf0cced493ecaec3a33a414eb7a3c8411d25/LICENSE",
+      "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "The pinned image declares source revision e41bcf0cced493ecaec3a33a414eb7a3c8411d25. That source license is AGPL-3.0. Remote APIs and any chosen models retain separate terms.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.yaml",
+        "sha256": "6e62d3af36982b4861e4ba14ab6eae7a9e5d05826c1a688fe0bc6dd2093019af"
+      },
+      {
+        "path": "config/sillytavern/config.yaml",
+        "sha256": "82781f6262756462b5961a4f3b04a24bfac054e13bca0985c6253091265e2909"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "0693195e6a1f08322ed3325b305fda1d969c0b61abaf32bb57eda554bd6e6757"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "sillytavern",
+        "image": "ghcr.io/sillytavern/sillytavern@sha256:6d645d1ea23c2bafbe2186449f61f6a16a4485df50fd6b22b3deb7e77888610f",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_selected_by_recipe",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/SillyTavern/SillyTavern",
+      "retrieved_at": "2026-09-23T07:53:54.816826+00:00",
+      "success": true,
+      "response_sha256": "3bdf96fdbf896d67c24ca70101e8d1cb01cc5dd67d04bbaca4108e698fee569d"
+    },
+    {
+      "url": "https://api.github.com/repos/SillyTavern/SillyTavern/commits/e41bcf0cced493ecaec3a33a414eb7a3c8411d25",
+      "retrieved_at": "2026-09-23T07:59:03.237996+00:00",
+      "success": true,
+      "response_sha256": "42bf765ede5a3c8d6afbb03e2aea8ef210f99fd9a8c46219ba4f449f05b32dd2"
+    },
+    {
+      "url": "https://api.github.com/repos/SillyTavern/SillyTavern/license?ref=e41bcf0cced493ecaec3a33a414eb7a3c8411d25",
+      "retrieved_at": "2026-09-23T07:59:03.945677+00:00",
+      "success": true,
+      "response_sha256": "cb36cfeb6d91dd2cbe239f534a64a3e40260b24a067282599d48de0b38f8d16a"
+    },
+    {
+      "url": "https://api.github.com/repos/SillyTavern/SillyTavern/contents?ref=e41bcf0cced493ecaec3a33a414eb7a3c8411d25",
+      "retrieved_at": "2026-09-23T07:59:04.560455+00:00",
+      "success": true,
+      "response_sha256": "61057ba2645de2fa3f2b147a55f020a9e5fc62aea06214b2aaf1ada84755800f"
+    }
+  ],
+  "gaps": [
+    "OCI source labels are publisher claims; no signature, attestation or reproducible build was verified.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "ghcr.io/sillytavern/sillytavern@sha256:6d645d1ea23c2bafbe2186449f61f6a16a4485df50fd6b22b3deb7e77888610f",
+  "image_observation": {
+    "id": "sillytavern",
+    "image": "ghcr.io/sillytavern/sillytavern@sha256:6d645d1ea23c2bafbe2186449f61f6a16a4485df50fd6b22b3deb7e77888610f",
+    "checked_at": "2026-09-23T07:54:20.281969+00:00",
+    "success": true,
+    "response_sha256": "dbd709cd4ed39adc52eda36842216818ed1a89ef45638b2357eec7c18a0480af",
+    "variants": [
+      {
+        "architecture": "amd64",
+        "os": "linux",
+        "created": "2026-03-03T21:58:40.648384727Z",
+        "labels": {
+          "org.opencontainers.image.created": "2026-03-03T21:58:04.605Z",
+          "org.opencontainers.image.description": "LLM Frontend for Power Users.",
+          "org.opencontainers.image.licenses": "AGPL-3.0",
+          "org.opencontainers.image.revision": "e41bcf0cced493ecaec3a33a414eb7a3c8411d25",
+          "org.opencontainers.image.source": "https://github.com/SillyTavern/SillyTavern",
+          "org.opencontainers.image.title": "SillyTavern",
+          "org.opencontainers.image.url": "https://github.com/SillyTavern/SillyTavern",
+          "org.opencontainers.image.version": "release"
+        },
+        "upstream_urls_in_build_history": [
+          "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt.asc",
+          "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION.tar.xz",
+          "https://unofficial-builds.nodejs.org/download/release/v$NODE_VERSION/node-v$NODE_VERSION-linux-$ARCH-musl.tar.xz",
+          "https://yarnpkg.com/downloads/$YARN_VERSION/yarn-v$YARN_VERSION.tar.gz",
+          "https://yarnpkg.com/downloads/$YARN_VERSION/yarn-v$YARN_VERSION.tar.gz.asc"
+        ]
+      },
+      {
+        "architecture": "arm64",
+        "os": "linux",
+        "created": "2026-03-03T22:02:34.064178129Z",
+        "labels": {
+          "org.opencontainers.image.created": "2026-03-03T21:58:04.605Z",
+          "org.opencontainers.image.description": "LLM Frontend for Power Users.",
+          "org.opencontainers.image.licenses": "AGPL-3.0",
+          "org.opencontainers.image.revision": "e41bcf0cced493ecaec3a33a414eb7a3c8411d25",
+          "org.opencontainers.image.source": "https://github.com/SillyTavern/SillyTavern",
+          "org.opencontainers.image.title": "SillyTavern",
+          "org.opencontainers.image.url": "https://github.com/SillyTavern/SillyTavern",
+          "org.opencontainers.image.version": "release"
+        },
+        "upstream_urls_in_build_history": [
+          "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt.asc",
+          "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION.tar.xz",
+          "https://unofficial-builds.nodejs.org/download/release/v$NODE_VERSION/node-v$NODE_VERSION-linux-$ARCH-musl.tar.xz",
+          "https://yarnpkg.com/downloads/$YARN_VERSION/yarn-v$YARN_VERSION.tar.gz",
+          "https://yarnpkg.com/downloads/$YARN_VERSION/yarn-v$YARN_VERSION.tar.gz.asc"
+        ]
+      }
+    ]
+  }
+}

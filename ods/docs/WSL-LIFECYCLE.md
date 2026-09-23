@@ -59,7 +59,13 @@ the initiating terminal or SSH session; this is not a promise of service across
 Windows logout/reboot. After logout/reboot, use an explicit `start`.
 
 Each owner/distribution/Linux-root tuple has private state under
-`%LOCALAPPDATA%\ODS\wsl\<identity hash>`. `instance.json` binds that tuple and the
+`%USERPROFILE%\.ods\wsl\<identity hash>`. This location is shared with the
+owner's Scheduled Task even when an MSIX desktop application virtualizes
+`%LOCALAPPDATA%`. Existing private state under `%LOCALAPPDATA%\ODS\wsl` remains
+in use only when its file handle resolves to that same physical path.
+Redirected package state is never presented as accessible to the scheduler;
+an existing task whose path differs is rejected rather than silently adopted.
+`instance.json` binds that tuple and the
 exact task; `runtime.json` records the controller and attached client PID, UTC
 start ticks, executable and command line. A changed identity is an error, not
 permission to kill a reused PID. Commands serialize through a private file lock.
@@ -75,7 +81,11 @@ distribution after its final Windows client exits; keeping unrelated work alive
 remains the responsibility of that work's owner.
 
 Qualification: the repository includes controlled Windows identity/ACL/lock and
-Linux-adapter ownership/ordering tests. An isolated holder-only roundtrip has
+Linux-adapter ownership/ordering tests. `test-wsl-lifecycle-scheduler.ps1`
+also checks controller and private metadata access from a real Limited task,
+without starting WSL or any service. Its optional CI flag only permits an
+explicit skip for `ERROR_NO_SUCH_LOGON_SESSION`; other task failures still fail.
+An isolated holder-only roundtrip has
 also been verified with Windows PowerShell 5.1 and Ubuntu-24.04: real Scheduler
 start, survival across initiating SSH disconnect, separate-session observation,
 and release while an unrelated existing holder remained unchanged. Real Pixel

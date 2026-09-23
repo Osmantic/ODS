@@ -1,0 +1,39 @@
+# Anonymous public-document checks. Local paths are checked separately by
+# ods/tests/test-doc-links.sh. Do not pass GITHUB_TOKEN or cookies to this scan.
+scheme = ["http", "https"]
+# Git already chose the public input inventory, including tracked hidden files.
+hidden = true
+no_ignore = true
+exclude_all_private = true
+include_mail = false
+include_verbatim = false
+include_fragments = "none"
+max_concurrency = 6
+host_concurrency = 2
+host_request_interval = "500ms"
+timeout = 15
+max_retries = 1
+max_redirects = 5
+accept = ["200..=299"]
+cache = false
+no_progress = true
+verbose = "info"
+mode = "plain"
+user_agent = "ODS-public-doc-links/1.0 (lychee/0.24.2)"
+
+# These are operator examples, not publicly resolvable documentation targets.
+# Single-label Docker/service names, reserved example domains and local names
+# are the only URL-pattern exclusions; public hosts are never blanket-excluded.
+exclude = [
+  '^https?://[^./:?#]+(?::[0-9]+)?(?:[/?#]|$)',
+  '^https?://(?:[^/]+\.)?(?:localhost|local|invalid|test|example)(?::[0-9]+)?(?:[/?#]|$)',
+  '^https?://(?:[^/]+\.)?example\.(?:com|net|org)(?::[0-9]+)?(?:[/?#]|$)',
+]
+
+# Model-term evidence contains many distinct Hugging Face URLs. Give that host
+# a slower, single-request lane: anonymous pages allow 100 requests/5 minutes.
+# 3.5s leaves headroom below that quota; retries also use this lane. Exhausted
+# retries remain failures, and 429 is never an accepted code.
+[hosts."huggingface.co"]
+concurrency = 1
+request_interval = "3.5s"

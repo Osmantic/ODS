@@ -20,7 +20,8 @@ service:
   description: |
     Meta's AudioCraft is a generative AI for audio. Features MusicGen for
     text-to-music generation and AudioGen for text-to-sound effects.
-    Create royalty-free music and sound effects from text descriptions.
+    Model weights are licensed under CC BY-NC 4.0 for noncommercial use.
+    This extension does not grant commercial clearance for generated audio.
 
 features:
   - id: music-generation

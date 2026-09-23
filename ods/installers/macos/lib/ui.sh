@@ -146,8 +146,10 @@ download_hf_artifact_with_python() {
     [[ -n "$python_cmd" ]] || return 2
 
     if ! "$python_cmd" -c "import huggingface_hub, hf_xet" >/dev/null 2>&1; then
-        "$python_cmd" -m pip install --user -q "huggingface_hub[hf_xet]>=0.27" \
-            >> "$log_file" 2>&1 || true
+        local dependency_lock="${helper%/scripts/download-hf-artifact.py}/installers/python-deps/host-agent.txt"
+        [[ -f "$dependency_lock" ]] || return 2
+        "$python_cmd" -m pip install --user -q --require-hashes --only-binary=:all: \
+            -r "$dependency_lock" >> "$log_file" 2>&1 || return 1
     fi
 
     ai "Retrying with Hugging Face client..."

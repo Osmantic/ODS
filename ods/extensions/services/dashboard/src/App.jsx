@@ -62,7 +62,7 @@ function App() {
 
   // Play the current brand animation on each document load, including refresh.
   const [splashDone, setSplashDone] = useState(false)
-  const { status, loading, error } = useSystemStatus()
+  const { status, loading } = useSystemStatus()
   const { version, showUpdate, dismissUpdate } = useVersion()
   // Server-side first-run flag (sourced from /api/setup/status). localStorage
   // was per-browser and gave the wrong answer on re-imaged devices or fresh

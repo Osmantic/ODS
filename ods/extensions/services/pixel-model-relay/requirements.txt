@@ -1,1 +1,3 @@
-aiohttp==3.11.12
+aiohttp==3.14.3
+# Keep the resolved IDNA dependency beyond GHSA-65pc-fj4g-8rjx.
+idna==3.20

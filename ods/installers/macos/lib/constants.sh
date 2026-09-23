@@ -38,7 +38,7 @@ fi
 unset _constants_dir _path_utils _candidate
 
 # Logging
-ODS_LOG_FILE="/tmp/ods-install-macos.log"
+ODS_LOG_FILE="${ODS_LOG_FILE:-}"
 
 # Native llama-server paths (Metal acceleration on Apple Silicon)
 LLAMA_SERVER_DIR="${ODS_INSTALL_DIR}/bin"

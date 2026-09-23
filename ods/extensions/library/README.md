@@ -2,7 +2,7 @@
 
 Installable recipes and reference integrations for ODS. The generated catalog combines this library with native services, giving native definitions precedence when IDs match. A catalog entry does not by itself mean that an application has been tested or has a deployable recipe.
 
-The expansion toward 200 entries is tracked in [EXTENSION-EXPANSION.md](../../docs/EXTENSION-EXPANSION.md). The [200-project research list](../../docs/EXTENSION-CANDIDATES-200-2026-09-20.md) records candidate projects separately from implemented recipes.
+The [generated catalog](../CATALOG.md) lists available entries. [Extension readiness criteria](../../docs/EXTENSION-READINESS.md) distinguish source definitions, deployable recipes, and verified application behavior.
 
 New recipes include `upstream.json` with the source repository, code license, pinned image, available architectures and runtime validation status. Audit library recipes with `python scripts/audit-extensions.py --include-library <service-id> ...` from the ODS directory.
 
@@ -37,7 +37,7 @@ Each extension is a self-contained directory with a `manifest.yaml` (service met
 | Service | Description | GPU |
 |---------|------------|-----|
 | [`comfyui/`](../services/comfyui/) | ComfyUI — node-based Stable Diffusion workflows | AMD, NVIDIA |
-| [`fooocus/`](services/fooocus/) | Fooocus — simplified Stable Diffusion (Midjourney-like UX) | NVIDIA |
+| [`fooocus/`](../services/fooocus/) | Fooocus — simplified Stable Diffusion (Midjourney-like UX) | NVIDIA |
 | [`invokeai/`](services/invokeai/) | InvokeAI — professional Stable Diffusion with canvas | AMD, NVIDIA |
 | [`forge/`](services/forge/) | Forge / A1111 — Stable Diffusion WebUI with optimizations | NVIDIA |
 
@@ -207,6 +207,4 @@ python3 -c "import yaml; yaml.safe_load(open('my-service/manifest.yaml'))"
 
 ## Status
 
-These extensions are actively tested on ODS development builds. Some are battle-tested (Ollama, ChromaDB, Bark), others are newer. All follow the v1 manifest schema and integrate with the ODS service registry, dashboard, and CLI.
-
-**17 services have already graduated to production** — these 32 are being prepared for the next wave.
+Recipe availability is not runtime qualification. Read each recipe's declared validation status, upstream terms, requirements, and known limitations. Newer recipes carry `upstream.json`; older recipes still need complete structured provenance. Check the generated catalog and the selected release's evidence before treating a service as supported on your platform.

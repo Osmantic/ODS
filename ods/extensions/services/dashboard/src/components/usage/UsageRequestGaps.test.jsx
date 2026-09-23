@@ -1,5 +1,5 @@
 import {fireEvent, render, screen, within} from '@testing-library/react'
-import UsageView from './UsageView' // eslint-disable-line no-unused-vars
+import UsageView from './UsageView'
 
 function show(middle, available) {
   render(<UsageView report={{

@@ -261,7 +261,7 @@ def test_base_reinstall_stops_before_changing_a_native_installation(tmp_path, st
     script = (ROOT / 'installers/macos/install-macos.sh').read_text()
     start = script.index('if ! $ENABLE_PIXEL && [[ -e "${INSTALL_DIR}/data/pixel-native"')
     stop = script.index('\nif $ENABLE_PIXEL; then', start)
-    assert stop < script.index('ods_prepare_install_log "$ODS_LOG_FILE" || exit 1')
+    assert stop < script.index('ods_prepare_install_log_var ODS_LOG_FILE /tmp/ods-install-macos.log || exit 1')
     shell = 'set -euo pipefail\nai_err() { echo "$*" >&2; }\nai() { echo "$*"; }\n' + script[start:stop] + '\nprintf reached-base-install\n'
     result = subprocess.run(['bash'], input=shell, text=True, capture_output=True,
         env={**os.environ, 'ENABLE_PIXEL': 'false', 'INSTALL_DIR': str(tmp_path)})

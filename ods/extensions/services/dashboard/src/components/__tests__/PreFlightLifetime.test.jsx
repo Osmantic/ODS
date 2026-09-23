@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { PreFlightChecks } from '../PreFlightChecks' // eslint-disable-line no-unused-vars
+import { PreFlightChecks } from '../PreFlightChecks'
 
 const ports = '/api/preflight/required-ports'
 const docker = '/api/preflight/docker'

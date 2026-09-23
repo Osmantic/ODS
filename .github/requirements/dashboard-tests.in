@@ -1,0 +1,2 @@
+-r ../../ods/extensions/services/dashboard-api/requirements.txt
+-r ../../ods/extensions/services/dashboard-api/tests/requirements-test.txt

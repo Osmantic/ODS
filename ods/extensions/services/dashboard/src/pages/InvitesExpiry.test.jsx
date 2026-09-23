@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import Invites from './Invites' // eslint-disable-line no-unused-vars
+import Invites from './Invites'
 
 const epoch = new Date('2026-09-15T00:00:00Z')
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })

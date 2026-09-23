@@ -72,10 +72,10 @@ test('the complete documentation contract is green', () => {
   assert.ok(Array.isArray(compatibility.combinations));
   assert.equal(result.generated.releaseEvidenceRows, compatibility.combinations.length);
   assert.ok(result.generated.releaseEvidenceRows >= 25);
-  assert.equal(result.generated.unreferencedReleaseAudits, 1);
+  assert.equal(result.generated.unreferencedReleaseAudits, 0);
   assert.equal(result.generated.servicePathEntries, 48);
   assert.equal(result.generated.hostLanes, 4);
-  assert.ok(result.generated.indexedMarkdownDocuments > 160);
+  assert.equal(result.generated.indexedMarkdownDocuments, 144);
   assert.equal(result.navigation.files, result.navigation.reachable);
 });
 

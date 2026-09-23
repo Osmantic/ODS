@@ -48,6 +48,7 @@ from host_agent_client import (
     request_json as request_agent_json,
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
+from model_terms import download_review_error, hub_source_observation, project_terms
 from pixel_runtime_state import pixel_stream_active
 from performance_oracle import (
     build_models_payload,
@@ -1049,7 +1050,7 @@ async def _hf_repo_details(repo_id: str) -> dict[str, Any]:
             artifact["installed"] = False
     context_length, context_source = _hf_context_length(payload)
     runtime_compatible, runtime_reason = _hf_llm_runtime_compatibility(payload)
-    return {
+    details = {
         "id": repo_id,
         "sha": str(payload.get("sha") or ""),
         "downloads": _hf_nonnegative_int(payload.get("downloads")),
@@ -1067,6 +1068,14 @@ async def _hf_repo_details(repo_id: str) -> dict[str, Any]:
         "authenticated": bool(_hf_token()),
         "url": f"{_HF_API_BASE}/{repo_id}",
     }
+    card = payload.get("cardData") if isinstance(payload.get("cardData"), dict) else {}
+    details["licenseUrl"] = card.get("license_link")
+    bases = card.get("base_model")
+    details["declaredBases"] = ([bases] if isinstance(bases, str) else
+                                [item for item in bases if isinstance(item, str)] if isinstance(bases, list) else [])
+    for artifact in artifacts:
+        artifact["termsPreview"] = project_terms(_hf_import_record(details, artifact))
+    return details
 
 
 def _hf_local_filename(repo_id: str, remote_filename: str, revision: str) -> str:
@@ -1176,6 +1185,10 @@ def _hf_import_record(details: dict[str, Any], artifact: dict[str, Any]) -> dict
         record["gguf_parts"] = parts
     else:
         record["size_bytes"] = parts[0]["size_bytes"]
+    record["terms"] = hub_source_observation(
+        record, license_id=details.get("license"), license_url=details.get("licenseUrl"),
+        gated=details.get("gated"), declared_bases=details.get("declaredBases"),
+    )
     return record
 
 
@@ -1280,6 +1293,11 @@ async def import_huggingface_model(
             detail={**bootstrap_conflict, "requestedModelId": record["id"]},
         )
 
+    acknowledgement = body.get("termsAcknowledgement")
+    review_error = download_review_error(record, acknowledgement)
+    if review_error:
+        raise HTTPException(status_code=review_error.pop("status"), detail=review_error)
+
     with _IMPORTED_MODELS_LOCK:
         records = _read_model_records(
             _imported_library_path(),
@@ -1310,6 +1328,7 @@ async def import_huggingface_model(
         "gguf_file": record["gguf_file"],
         "gguf_url": record["gguf_url"],
         "gguf_sha256": record["gguf_sha256"],
+        "termsAcknowledgement": acknowledgement,
     }
     if record.get("gguf_parts"):
         payload["gguf_parts"] = record["gguf_parts"]
@@ -1957,8 +1976,18 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
     }
 
 
+@router.get("/api/models/{model_id}/terms")
+def model_terms(model_id: str, api_key: str = Depends(verify_api_key)):
+    """Inspect publisher/base declarations without downloading or accepting terms."""
+    model = _find_model_in_library(model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Unknown model")
+    return project_terms(model)
+
+
 @router.post("/api/models/{model_id}/download")
-def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
+def download_model(model_id: str, body: dict[str, Any] | None = Body(default=None),
+                   api_key: str = Depends(verify_api_key)):
     """Start downloading a model from HuggingFace."""
     model = _find_model_in_library(model_id)
     if model is None:
@@ -1971,10 +2000,16 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
             detail={**bootstrap_conflict, "requestedModelId": model_id},
         )
 
+    acknowledgement = body.get("termsAcknowledgement") if isinstance(body, dict) else None
+    review_error = download_review_error(model, acknowledgement)
+    if review_error:
+        raise HTTPException(status_code=review_error.pop("status"), detail=review_error)
+
     payload = {
         "gguf_file": model["gguf_file"],
         "gguf_url": model.get("gguf_url", ""),
         "gguf_sha256": model.get("gguf_sha256", ""),
+        "termsAcknowledgement": acknowledgement,
     }
     # Split-file models provide gguf_parts array
     if model.get("gguf_parts"):

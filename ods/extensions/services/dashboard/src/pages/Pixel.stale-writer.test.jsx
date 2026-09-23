@@ -1,7 +1,7 @@
 import {act, fireEvent, screen, waitFor} from '@testing-library/react'
 import {render} from '../test/test-utils'
 import {CHAT_KEY, readConversations, saveConversation, SELECT_EVENT} from '../lib/pixelConversations'
-// eslint-disable-next-line no-unused-vars
+
 import Pixel from './Pixel'
 
 const original = {schema:1, chatId:'shared-chat', messages:[{role:'user',content:'Original turn'}], draft:'Initial draft'}

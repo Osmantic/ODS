@@ -18,6 +18,7 @@
 
 # shellcheck source=installers/lib/podman-registries.sh
 source "$SCRIPT_DIR/installers/lib/podman-registries.sh"
+source "$SCRIPT_DIR/installers/lib/verified-download.sh"
 
 ods_progress 30 "docker" "Setting up Docker"
 show_phase 3 6 "Docker Setup" "~2 minutes"
@@ -49,7 +50,10 @@ docker_compose_run() {
 _docker_install_from_script() {
     local tmpfile
     tmpfile=$(mktemp /tmp/install-docker.XXXXXX.sh)
-    if ! curl -fsSL --max-time 300 https://get.docker.com -o "$tmpfile" || ! sh "$tmpfile"; then
+    if ! ods_download_verified \
+        'https://raw.githubusercontent.com/docker/docker-install/2b32480025b223ebfddae9a3a8bef09027680f53/install.sh' \
+        'fefa50ccd50efb42f438b506fc3a88574118f314aaf2a7cd5b6e1ffb1bffcf26' "$tmpfile" \
+        || ! sh "$tmpfile"; then
         rm -f "$tmpfile"
         return 1
     fi
