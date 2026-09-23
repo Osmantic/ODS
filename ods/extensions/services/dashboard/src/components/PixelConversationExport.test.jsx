@@ -31,7 +31,7 @@ test('exports complete retained history and metadata without selecting or trunca
     expect(exported.conversation).toEqual(chat)
     expect(exported.conversation.messages).toHaveLength(80)
     const anchor=window.HTMLAnchorElement.prototype.click.mock.instances[0]
-    expect(anchor.download).toBe('ods-pixel-export-test.json')
+    expect(anchor.download).toBe('ods-portal-export-test.json')
     expect(anchor.href).toBe('blob:local-export')
     expect(anchor.isConnected).toBe(false)
     expect(select).not.toHaveBeenCalled()

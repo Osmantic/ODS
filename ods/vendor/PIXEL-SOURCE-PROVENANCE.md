@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`817214d5ec3d8aa583fe50c1dc7561f3c1a16dff`, and its SHA-256 is
-`8fea465b1b42d82da0a286936d0e029b038321fd39793f5a849843ef11aee865`.
+`078cf9de3e7779b1dcee1fb352748706566a867d`, and its SHA-256 is
+`42f6e1f5563a082b97461d856d8983656d987466d146f3748bd6fba6cd7e771d`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source and those pins.
 

@@ -1,9 +1,10 @@
-# Pixel in ODS
+# Portal in ODS
 
-Pixel is the heart of ODS's conversational experience and a core feature under
-active development. On the qualified host path described here, it is the
-default `pixel/default` model in Open WebUI and has a dedicated **Pixel** app
-in the ODS Dashboard. The full goal is to create projects, use host tools,
+# Portal is the public-facing name of ODS's conversational assistant and a core
+feature under active development. Its internal runtime and compatibility route
+retain the Pixel identifier; on qualified hosts the `pixel/default` model in
+Open WebUI and the dedicated **Portal** app in the ODS Dashboard use the same
+assistant. The full goal is to create projects, use host tools,
 manage ODS, and carry out sustained work through conversation.
 
 See the [enhancement priorities](pixel/ENHANCEMENT-PRIORITIES.md) for the

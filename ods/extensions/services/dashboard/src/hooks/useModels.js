@@ -177,7 +177,7 @@ function modelActivationModeError(effectiveMode, configuredMode, llmBackend, ext
     return 'ODS is using an external Ollama or LM Studio backend. Re-run the installer with --no-external-llm before activating a downloaded local model.'
   }
   if (externalLemonade) {
-    return 'Lemonade is managed outside ODS. Change the loaded model in Lemonade, then use Adopt loaded model here to update ODS and Pixel.'
+    return 'Lemonade is managed outside ODS. Change the loaded model in Lemonade, then use Adopt loaded model here to update ODS and Portal.'
   }
   if (effectiveMode === 'unknown' || configuredMode === 'unknown') {
     return 'ODS could not verify the active runtime mode. Repair or restart ODS before running a local model.'
@@ -443,7 +443,7 @@ export function useModels() {
           if (body?.detail?.code === 'pixel_chat_active') {
             activationError = errorMessageFromPayload(
               body,
-              'Pixel is working. Stop the active response before changing models.'
+              'Portal is working. Stop the active response before changing models.'
             )
             return
           }

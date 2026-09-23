@@ -284,7 +284,7 @@ def test_edge_abort_ack_survives_empty_done_during_cancel_round_trip(store, monk
         assert await stop == {"aborted": ack}
         assert store.get(IDENTITY)["state"] == ("cancelled" if ack else "unresolved")
         assert store.has_pending(IDENTITY[:2]) is not ack
-        assert b"Pixel returned no answer" in b"".join(
+        assert b"Portal returned no answer" in b"".join(
             row["data"] for row in store.chunks(IDENTITY))
 
     asyncio.run(run())
@@ -313,7 +313,7 @@ def test_done_without_user_answer_is_never_a_complete_receipt(store, monkeypatch
         result = await pixel.pixel_chat_result(
             pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one"), OWNER)
         assert result["state"] == "interrupted"
-        assert "Pixel returned no answer" in result["events"]
+        assert "Portal returned no answer" in result["events"]
         assert result["events"].count("[DONE]") == 1
         assert not store.has_pending(IDENTITY[:2])
         assert await pixel.pixel_chat_cancel(
@@ -341,7 +341,7 @@ def test_done_with_tool_call_delta_is_a_complete_receipt(store, monkeypatch):
             pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one"), OWNER)
         assert result["state"] == "complete"
         assert "call_1" in result["events"]
-        assert "Pixel returned no answer" not in result["events"]
+        assert "Portal returned no answer" not in result["events"]
         assert not store.has_pending(IDENTITY[:2])
         assert not cancels
     asyncio.run(run())

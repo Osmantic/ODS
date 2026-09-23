@@ -80,8 +80,8 @@ test('pending adoption tells the user Pixel remains held', async () => {
   view()
   await clickAdopt()
   expect(await screen.findByRole('alert')).toHaveTextContent('Adoption is incomplete')
-  expect(screen.getByText(/Pixel stays held until recovery/)).toBeVisible()
-  expect(screen.getByRole('link', { name: 'Open Pixel recovery' })).toHaveAttribute('href', '/pixel')
+  expect(screen.getByText(/Portal stays held until recovery/)).toBeVisible()
+  expect(screen.getByRole('link', { name: 'Open Portal recovery' })).toHaveAttribute('href', '/pixel')
 })
 
 test('insufficient context cannot be adopted for managed Pixel', async () => {
@@ -89,5 +89,5 @@ test('insufficient context cannot be adopted for managed Pixel', async () => {
   view()
   const button = await screen.findByRole('button', { name: 'Adopt loaded model in ODS' })
   expect(button).toBeDisabled()
-  expect(screen.getByText(/Pixel needs at least/)).toBeVisible()
+  expect(screen.getByText(/Portal needs at least/)).toBeVisible()
 })

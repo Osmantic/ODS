@@ -4627,7 +4627,7 @@ test("binds an exact compound owner command across shell separators", () => {
   );
   assert.equal(
     reply(guard)?.payload?.text,
-    `Pixel prepared a protected ODS host command plan, but external approval is required. No command was executed. Job: ${jobId}. Plan SHA-256: ${planHash}.`
+    `Portal prepared a protected ODS host command plan, but external approval is required. No command was executed. Job: ${jobId}. Plan SHA-256: ${planHash}.`
   );
 });
 
@@ -5678,7 +5678,7 @@ test("routes one local host command to a canonical immutable approval proposal",
   assert.equal(persisted.message.content.length, 1);
   assert.equal(
     persisted.message.content[0].text.startsWith(
-      "Pixel prepared a protected ODS host command plan"
+      "Portal prepared a protected ODS host command plan"
     ),
     true
   );
@@ -5686,7 +5686,7 @@ test("routes one local host command to a canonical immutable approval proposal",
   assert.equal(call(guard, "pixel_ops_inventory").blockReason, OPERATIONS_HOST_COMMAND_COMPLETE_REASON);
   assert.equal(
     reply(guard)?.payload?.text,
-    `Pixel prepared a protected ODS host command plan, but external approval is required. No command was executed. Job: ${jobId}. Plan SHA-256: ${planHash}.`
+    `Portal prepared a protected ODS host command plan, but external approval is required. No command was executed. Job: ${jobId}. Plan SHA-256: ${planHash}.`
   );
   assert.equal(
     guard.beforeAgentFinalize(
@@ -6279,7 +6279,7 @@ test("reports an immutable lifecycle approval without claiming completion", () =
     },
   });
   const text = reply(guard)?.payload?.text;
-  assert.match(text, /^Pixel prepared the exact ods\.extensions\.enable plan/);
+  assert.match(text, /^Portal prepared the exact ods\.extensions\.enable plan/);
   assert.match(text, /external approval is required/);
   assert.match(text, new RegExp(enableJob));
   assert.match(text, new RegExp(planHash));
@@ -12018,7 +12018,7 @@ test("preview receipt recovery uses existing-file evidence and canonical sandbox
     const verified = guard.verificationForRun("run-1");
     assert.equal(verified.status, "passed");
     assert.equal(verified.preview.relativeDirectory, "study-cards-2571");
-    assert.doesNotMatch(verified.text, /Created by Pixel\./, "an existing-file edit is not full-snapshot authorship");
+    assert.doesNotMatch(verified.text, /Created by Portal\./, "an existing-file edit is not full-snapshot authorship");
     for (const args of [
       { directory: "missing" }, { directory: "../escape" },
       { relativeDirectory: "study-cards-2571", directory: "study-cards-2571-backup" },
@@ -12066,7 +12066,7 @@ test("preview receipt recovery retains strict authorship hashes after readback",
   const verification = guard.verificationForRun("run-1");
   assert.equal(verification.status, "passed");
   assert.match(verification.text, /Published from your workspace\./);
-  assert.doesNotMatch(verification.text, /Created by Pixel\./);
+  assert.doesNotMatch(verification.text, /Created by Portal\./);
   assert.equal(verification.preview.sha256, wrong.sha256);
   const prose = "Click Export SVG to download the current scene.";
   assert.equal(guard.deliveryVerificationForRun("run-1").deliveryMode, "append");
@@ -12295,7 +12295,7 @@ test("accepts only a readback-verified dedicated preview receipt", () => {
   assert.match(verification.text, new RegExp(WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX));
   assert.match(
     verification.text,
-    /Created by Pixel\./
+    /Created by Portal\./
   );
   assert.equal(verification.preview.sha256, snapshot.sha256);
   assert.equal(verification.preview.bytes, snapshot.bytes);
@@ -12403,7 +12403,7 @@ test("publishes repaired multi-file websites without demanding whole-project rew
     });
     const verification = guard.verificationForRun("run-1");
     assert.equal(verification.status, "passed", prompt);
-    assert.doesNotMatch(verification.text, /Created by Pixel\./);
+    assert.doesNotMatch(verification.text, /Created by Portal\./);
     assert.match(verification.text, /Published from your workspace\./);
   }
 });
@@ -12459,7 +12459,7 @@ test("a renamed model-written page can publish after exact entry inspection", ()
       assert.equal(verification.status, "passed");
       assert.equal(verification.preview.sha256, snapshot.sha256);
       assert.match(verification.text, /Published from your workspace\./);
-      assert.doesNotMatch(verification.text, /Created by Pixel\./);
+      assert.doesNotMatch(verification.text, /Created by Portal\./);
     }
   }
 });
@@ -12502,7 +12502,7 @@ test("new artwork requests may publish inspected files without claiming model au
     const verification = guard.verificationForRun("run-1");
     assert.equal(verification.status, "passed");
     assert.match(verification.text, /Published from your workspace\./);
-    assert.doesNotMatch(verification.text, /Created by Pixel\./);
+    assert.doesNotMatch(verification.text, /Created by Portal\./);
   }
 });
 
@@ -12556,7 +12556,7 @@ test("does not claim full authorship when a verified snapshot differs from curre
     const verification = guard.verificationForRun("run-1");
     assert.equal(verification.status, "passed");
     assert.match(verification.text, /Published from your workspace\./);
-    assert.doesNotMatch(verification.text, /Created by Pixel\./);
+    assert.doesNotMatch(verification.text, /Created by Portal\./);
     assert.equal(verification.preview.sha256, details.sha256);
   }
 });
@@ -12604,7 +12604,7 @@ test("publishes new HTML beside preserved files through direct and Tool Search r
         assert.equal(verification.preview.files, 3);
         assert.equal(verification.preview.sha256, snapshot.sha256);
         assert.match(verification.text, /Published from your workspace\./);
-        assert.doesNotMatch(verification.text, /Created by Pixel\./);
+        assert.doesNotMatch(verification.text, /Created by Portal\./);
       }
     }
   }
@@ -12669,7 +12669,7 @@ test("attributes a complete multi-file visual when every published file matches 
   });
   const verification = guard.verificationForRun("run-1");
   assert.equal(verification.status, "passed");
-  assert.match(verification.text, /Created by Pixel\./);
+  assert.match(verification.text, /Created by Portal\./);
 });
 
 test("binds a successful focused model edit to the final preview bytes", () => {
@@ -12784,7 +12784,7 @@ test("publishes host-verified edits without claiming authorship when model repla
   const verification = guard.verificationForRun("run-1");
   assert.equal(verification.status, "passed");
   assert.match(verification.text, /Published from your workspace\./);
-  assert.doesNotMatch(verification.text, /Created by Pixel\./);
+  assert.doesNotMatch(verification.text, /Created by Portal\./);
   assert.equal(verification.preview.sha256, snapshot.sha256);
 });
 

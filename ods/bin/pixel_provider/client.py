@@ -24,8 +24,8 @@ from .connection import normalize_connection
 from .connection_transport import probe_connection
 from .store import MAX_BYTES, StoreError, decode_document
 
-PIXEL_COMMIT = '817214d5ec3d8aa583fe50c1dc7561f3c1a16dff'
-PIXEL_BUNDLE_SHA256 = '8fea465b1b42d82da0a286936d0e029b038321fd39793f5a849843ef11aee865'
+PIXEL_COMMIT = '078cf9de3e7779b1dcee1fb352748706566a867d'
+PIXEL_BUNDLE_SHA256 = '42f6e1f5563a082b97461d856d8983656d987466d146f3748bd6fba6cd7e771d'
 PIXEL_BUNDLE = Path(__file__).resolve().parents[2]/'vendor/pixel.bundle'
 # Preparation follows the current paired installer. Loading must not rewrite or
 # invalidate clients prepared with an earlier supported renderer. These exact
@@ -210,7 +210,7 @@ def prepare_client(connection, directory, *, confirmed_endpoint,
     agent_id = 'pixel-client-'+uuid.uuid4().hex[:16]
     answers = dict(deploymentProfile='prepared',capabilityProfile='minimal',
         ownerName='ODS Owner',organization='Local ODS',deploymentName=agent_id,timeZone='UTC',
-        agentId=agent_id,agentName='Pixel',openclawBin=str(executable),openclawHome=str(directory/'state'),
+        agentId=agent_id,agentName='Portal',openclawBin=str(executable),openclawHome=str(directory/'state'),
         installDir=str(directory/'installation'),workspace=str(directory/'state/workspace'),
         modelProvider='ods-peer',modelId='ods/shared',modelName='ODS '+connection['label'],
         modelBaseUrl=connection['baseUrl'],modelApiKey=connection['credential']['apiKey'],

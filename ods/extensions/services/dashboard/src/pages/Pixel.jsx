@@ -108,15 +108,15 @@ const MAX_STORED_MESSAGE_BYTES = 4 * 1024 * 1024
 const CHAT_STORAGE_KEY = 'ods.pixel.chat.v1'
 const SAFE_CHAT_ID = /^[A-Za-z0-9_-]{1,128}$/
 const STOPPED_NOTICE = 'Stopped by you. Workspace changes completed before cancellation were preserved.'
-const MODEL_SWITCH_DETAIL = 'Model switch in progress; Pixel will be ready when activation completes'
+const MODEL_SWITCH_DETAIL = 'Model switch in progress; Portal will be ready when activation completes'
 const CLEAN_CONTEXT_RECOVERY_REASON = 'operations-unavailable-zero-submissions'
 const CLEAN_CONTEXT_RECOVERY_NOTICE = 'The first attempt did not reach the Operations Broker, and the host verified that no work was submitted. Retrying once with a clean context…'
-const CLEAN_CONTEXT_RECOVERY_FAILED = 'Automatic recovery was attempted once, but Pixel again did not reach the Operations Broker. The host verified that no Operations work was submitted. Check any other work before continuing; this does not confirm that other tools had no effects.'
+const CLEAN_CONTEXT_RECOVERY_FAILED = 'Automatic recovery was attempted once, but Portal again did not reach the Operations Broker. The host verified that no Operations work was submitted. Check any other work before continuing; this does not confirm that other tools had no effects.'
 const STATUS_POLL_MS = 3000
 const OPS_STATUS_POLL_MS = 3000
 const OPS_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'rejected'])
-const OPS_APPROVAL_RECEIPT = /^Pixel prepared the exact (ods\.extensions\.(?:install|enable|disable|remove)) plan for extension ([a-z0-9](?:[a-z0-9_-]|\.(?=[a-z0-9])){0,63}), but external approval is required\. No lifecycle change was executed\. Job: (ops-[0-9]{13}-[a-f0-9]{12})\. Plan SHA-256: ([a-f0-9]{64})\.$/
-const OPS_HOST_COMMAND_APPROVAL_RECEIPT = /^Pixel prepared a protected ODS host command plan, but external approval is required\. No command was executed\. Job: (ops-[0-9]{13}-[a-f0-9]{12})\. Plan SHA-256: ([a-f0-9]{64})\.$/
+const OPS_APPROVAL_RECEIPT = /^(?:Portal|Pixel) prepared the exact (ods\.extensions\.(?:install|enable|disable|remove)) plan for extension ([a-z0-9](?:[a-z0-9_-]|\.(?=[a-z0-9])){0,63}), but external approval is required\. No lifecycle change was executed\. Job: (ops-[0-9]{13}-[a-f0-9]{12})\. Plan SHA-256: ([a-f0-9]{64})\.$/
+const OPS_HOST_COMMAND_APPROVAL_RECEIPT = /^(?:Portal|Pixel) prepared a protected ODS host command plan, but external approval is required\. No command was executed\. Job: (ops-[0-9]{13}-[a-f0-9]{12})\. Plan SHA-256: ([a-f0-9]{64})\.$/
 let fallbackChatSequence = 0
 
 function formatContext(value) {
@@ -357,7 +357,7 @@ export function OperationsApprovalCard({ content }) {
             {succeeded ? 'Protected operation completed' : awaiting ? 'Owner approval required' : `Broker status: ${projection.status}`}
           </p>
           <p className="mt-1 text-xs leading-5 text-theme-text-muted">
-            The host independently matched this job and plan hash. Approval cannot happen through Pixel or model text.
+            The host independently matched this job and plan hash. Approval cannot happen through Portal or model text.
           </p>
           <dl className="mt-2 grid gap-x-3 gap-y-1 font-mono text-[10px] text-theme-text-muted sm:grid-cols-[auto_1fr]">
             <dt>Requested</dt><dd className="truncate text-theme-text-secondary">{receipt.action} · {receipt.extensionId}</dd>
@@ -370,7 +370,7 @@ export function OperationsApprovalCard({ content }) {
               <ApprovalCommand key={projection.approvalCommand} command={projection.approvalCommand} />
               <p className="mt-2 flex items-start gap-1.5 text-[10px] leading-4 text-theme-text-muted">
                 <Terminal className="mt-0.5 h-3 w-3 shrink-0" />
-                Run it in a real terminal. Pixel will require fresh password-backed administrator authentication, show the complete protected plan, and ask for a one-time challenge.
+                Run it in a real terminal. Portal will require fresh password-backed administrator authentication, show the complete protected plan, and ask for a one-time challenge.
               </p>
             </>
           )}
@@ -440,7 +440,7 @@ function retainedResult(events) {
       if (frame?.error) { failed = true; continue }
       if (failed) continue
       if (isCleanContextRecoveryFrame(frame)) {
-        content = 'Pixel did not start this attempt. Send your message again to continue.'
+        content = 'Portal did not start this attempt. Send your message again to continue.'
         failed = true
         continue
       }
@@ -480,9 +480,9 @@ function loadStoredChat(selected) {
         || !['user', 'assistant'].includes(message.role)
         || typeof message.content !== 'string'
         || (message.role === 'user' && message.content.length > MAX_INPUT_LEN)
-      ) throw new Error('invalid stored Pixel message')
+      ) throw new Error('invalid stored Portal message')
       totalBytes += new TextEncoder().encode(message.content).byteLength
-      if (totalBytes > MAX_STORED_MESSAGE_BYTES) throw new Error('stored Pixel chat is too large')
+      if (totalBytes > MAX_STORED_MESSAGE_BYTES) throw new Error('stored Portal chat is too large')
       const task = message.role === 'assistant' && parseTaskActivity(message.task, message.task?.runId)
       return { role: message.role, content: message.content, ...messageOutcome(message), ...(task ? {task} : {}), ...messagePublication(message), ...questionMetadata(message), ...teamMetadata(message) }
     })
@@ -700,7 +700,7 @@ export default function Pixel({ systemStatus = null }) {
                 const before = [...previous].reverse().find(message => message.publication?.relativeDirectory === publication?.relativeDirectory)?.publication || null
                 return replaceLastAssistant(previous, {
                 content: result.state === 'cancelled' ? stoppedContent(recovered.content)
-                  : recovered.content || (successful ? 'Completed without a text response.' : 'Pixel could not complete the response. Check saved work before continuing.'),
+                  : recovered.content || (successful ? 'Completed without a text response.' : 'Portal could not complete the response. Check saved work before continuing.'),
                 status: result.state === 'cancelled' ? 'stopped' : successful ? 'done' : 'error',
                 ...(recovered.task ? {task:recovered.task} : {}),
                 ...(successful && recovered.questions ? {questions:recovered.questions} : {}),
@@ -821,7 +821,7 @@ export default function Pixel({ systemStatus = null }) {
           setRuntimeIdentity(null)
           setRuntimeReadiness(null)
           setStatus('unavailable')
-          setStatusDetail('Could not reach Pixel backend')
+          setStatusDetail('Could not reach Portal backend')
         }
       } finally {
         if (!stopped) poll = globalThis.setTimeout(fetchStatus, STATUS_POLL_MS)
@@ -869,7 +869,7 @@ export default function Pixel({ systemStatus = null }) {
         return {role: message.role, content: message.content, ...messageOutcome(message), ...(task ? {task} : {}), ...messagePublication(message), ...questionMetadata(message), ...teamMetadata(message)}
       })
       // Report storage limits without silently trimming previous turns.
-      if (storedMessages.length > MAX_STORED_MESSAGES || storedMessages.reduce((total, message) => total + new TextEncoder().encode(message.content).byteLength, 0) > MAX_STORED_MESSAGE_BYTES) throw new Error('stored Pixel chat is too large')
+      if (storedMessages.length > MAX_STORED_MESSAGES || storedMessages.reduce((total, message) => total + new TextEncoder().encode(message.content).byteLength, 0) > MAX_STORED_MESSAGE_BYTES) throw new Error('stored Portal chat is too large')
       conversationWriter.current({
         schema: 1,
         chatId: chatIdRef.current,
@@ -1000,7 +1000,7 @@ export default function Pixel({ systemStatus = null }) {
         }
         if (response.status === 412) {
           requestIdRef.current = null
-          let detail = 'Pixel can use this model, but the current runtime still has an older model gate.'
+          let detail = 'Portal can use this model, but the current runtime still has an older model gate.'
           if (typeof response.json === 'function') {
             try {
               const payload = await response.json()
@@ -1049,7 +1049,7 @@ export default function Pixel({ systemStatus = null }) {
               if (frame?.error) {
                 receivedError = true
                 setMessages(previous => replaceLastAssistant(previous, {
-                  content: assistantText ? `${assistantText}\n\n_Pixel could not complete the response._` : 'Pixel could not complete the response.',
+                  content: assistantText ? `${assistantText}\n\n_Portal could not complete the response._` : 'Portal could not complete the response.',
                   status: 'error',
                 }))
                 continue
@@ -1270,7 +1270,7 @@ export default function Pixel({ systemStatus = null }) {
       if (stopRequestRef.current === stopRequest && chatIdRef.current === chatId && abortRef.current === controller) {
         setStopError(restored
           ? 'Stop was not confirmed. This chat may still have work in progress; check its activity or retry the stop request.'
-          : 'Stop was not confirmed. Pixel is still connected; retry Stop.')
+          : 'Stop was not confirmed. Portal is still connected; retry Stop.')
         if (restored) setActivityRefresh(value => value + 1)
       }
     } finally {
@@ -1419,7 +1419,7 @@ export default function Pixel({ systemStatus = null }) {
         </div>
 
         <div className="pixel-chat-header-actions">
-          <button type="button" aria-label="Search Pixel" title="Search conversations · Ctrl+K" className="pixel-metal-control p-2" onClick={() => window.dispatchEvent(new Event(OPEN_PIXEL_SEARCH))}><Search size={16}/></button>
+          <button type="button" aria-label="Search Portal" title="Search conversations · Ctrl+K" className="pixel-metal-control p-2" onClick={() => window.dispatchEvent(new Event(OPEN_PIXEL_SEARCH))}><Search size={16}/></button>
           <details className="pixel-chat-options"><summary aria-label="Chat options">•••</summary><div className="pixel-chat-options-menu">
             <PixelConversationImport key={chatIdRef.current} disabled={sending || restoredActive || restoredChecking || stopping || contextControl.busy} onImport={record => {
               if (sending || restoredActive || restoredChecking || stopping || contextControl.busy) throw new Error('Active task')

@@ -3869,7 +3869,7 @@ function extensionLifecycleEvidenceText(requiredActions, terminalJobs) {
     ].join("\n");
   }
   if (mutationOutcome.status === "awaiting-approval") {
-    return `Pixel prepared the exact ${mutationAction} plan for extension ${inspection.result.extensionId}, but external approval is required. No lifecycle change was executed. Job: ${mutationOutcome.jobId}. Plan SHA-256: ${mutationOutcome.planHash}.`;
+    return `Portal prepared the exact ${mutationAction} plan for extension ${inspection.result.extensionId}, but external approval is required. No lifecycle change was executed. Job: ${mutationOutcome.jobId}. Plan SHA-256: ${mutationOutcome.planHash}.`;
   }
   if (mutationOutcome.status !== "succeeded") {
     return `Pixel's ODS extension lifecycle job reached terminal status ${mutationOutcome.status}. No successful lifecycle result was accepted. Job: ${mutationOutcome.jobId}.`;
@@ -3931,7 +3931,7 @@ function operationsEvidenceText(
     if (outcome.status === "awaiting-approval") {
       return outcome.approvalRequired === true &&
         typeof outcome.planHash === "string" && SHA256.test(outcome.planHash)
-        ? `Pixel prepared a protected ODS host command plan, but external approval is required. No command was executed. Job: ${outcome.jobId}. Plan SHA-256: ${outcome.planHash}.`
+        ? `Portal prepared a protected ODS host command plan, but external approval is required. No command was executed. Job: ${outcome.jobId}. Plan SHA-256: ${outcome.planHash}.`
         : undefined;
     }
     if (outcome.status !== "succeeded") {
@@ -10290,7 +10290,7 @@ export function createToolLoopGuard({
           `${WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX}\n\n` +
           `[Open preview](${state.workspacePreview.url})\n\n` +
           (state.workspacePreviewModelAuthored
-            ? "Created by Pixel."
+            ? "Created by Portal."
             : "Published from your workspace."),
         preview: {
           schemaVersion: 1,
@@ -10440,7 +10440,7 @@ export function createToolLoopGuard({
         // hash is not that plan, and an unexpectedly executed mutation cannot
         // satisfy an explicit "do not execute" owner request.
         const lifecyclePlanPrepared = state.operationsPlanOnly &&
-          /^Pixel prepared the exact ods\.extensions\.(?:install|enable|disable|remove) plan for extension /.test(evidenceText);
+          /^(?:Portal|Pixel) prepared the exact ods\.extensions\.(?:install|enable|disable|remove) plan for extension /.test(evidenceText);
         return {
           status:
             state.operationsPlanOnly ? (lifecyclePlanPrepared ? "passed" : "failed") :

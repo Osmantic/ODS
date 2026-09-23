@@ -675,7 +675,7 @@ function renderChat(value) {
   $("#chat-message").disabled = !ready;
   setText("#chat-message-status", !privateWorkspaceAuthorized() ? "Open the exact private URL printed by ./pixel ui or sign in through the authenticated portal to use owner-private chat." :
     runningTurn ? `Task ${runningTurn.taskHandle.slice(-8)} is running. Progress is durable; this page can reconnect while the local agent continues.` :
-    value?.state === "ready" ? "Connected to the configured Pixel agent. Consequential boundaries still require their exact policy path." :
+    value?.state === "ready" ? "Connected to the configured Portal agent. Consequential boundaries still require their exact policy path." :
     value?.state === "unavailable" ? "Conversation custody could not be verified safely. No partial history is shown." :
     "Pixel chat is not connected to an exact configured local agent yet.");
   if (chatRunning) {

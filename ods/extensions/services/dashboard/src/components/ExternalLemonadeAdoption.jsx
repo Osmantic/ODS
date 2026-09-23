@@ -106,10 +106,10 @@ export default function ExternalLemonadeAdoption({ enabled, minimumContext, onSe
             <p className="font-semibold">Model managed in Lemonade</p>
             {observation && <p className="mt-1 break-all">Loaded: <strong>{observation.modelId}</strong> · {context.toLocaleString()} context tokens</p>}
             <p className="mt-1 text-amber-100/75">{compact
-              ? 'After switching in Lemonade, adopt here for Pixel and ODS. ODS leaves the native model loaded.'
-              : 'After switching models in Lemonade, adopt the loaded model so Pixel and ODS apps use the same route. ODS will not load or restore the native model.'}</p>
-            {tooSmall && <p className="mt-1">Pixel needs at least {minimumContext.toLocaleString()} context tokens; this model cannot be adopted.</p>}
-            {pending && <p className="mt-1">Adoption is pending. Pixel stays held until recovery proves the route. <Link className="underline" to="/pixel">Open Pixel recovery</Link>.</p>}
+              ? 'After switching in Lemonade, adopt here for Portal and ODS. ODS leaves the native model loaded.'
+              : 'After switching models in Lemonade, adopt the loaded model so Portal and ODS apps use the same route. ODS will not load or restore the native model.'}</p>
+            {tooSmall && <p className="mt-1">Portal needs at least {minimumContext.toLocaleString()} context tokens; this model cannot be adopted.</p>}
+            {pending && <p className="mt-1">Adoption is pending. Portal stays held until recovery proves the route. <Link className="underline" to="/pixel">Open Portal recovery</Link>.</p>}
             {error && <p role="alert" className="mt-2 text-red-300">{error}</p>}
           </div>
         </div>

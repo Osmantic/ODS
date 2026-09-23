@@ -81,9 +81,9 @@ macOS Host
 
 llama-server runs natively for full Metal GPU utilization. Docker containers reach it via `host.docker.internal:8080`.
 
-Pixel is enabled by default and disables Hermes while selected. A fresh install
+Portal is enabled by default and disables Hermes while selected. A fresh install
 can opt out with `--no-pixel`; this is not a way to disable an existing native
-Pixel installation. Pixel needs neither a separate Lima VM nor access to a
+Portal installation. Portal needs neither a separate Lima VM nor access to a
 private GitHub repository. Its source and verified install bundle are included
 in ODS. See [PIXEL.md](PIXEL.md) for eligibility and authority boundaries.
 

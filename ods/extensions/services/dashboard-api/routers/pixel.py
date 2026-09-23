@@ -66,10 +66,10 @@ _OPS_STATUSES = frozenset(
     }
 )
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-_MODEL_SWITCH_DETAIL = "Model switch in progress; Pixel will be ready when activation completes"
+_MODEL_SWITCH_DETAIL = "Model switch in progress; Portal will be ready when activation completes"
 _MODEL_IDENTITY_DETAIL = (
-    "Pixel cannot verify its recorded model against the loaded Lemonade model. "
-    "Re-select the model in Models before using Pixel."
+    "Portal cannot verify its recorded model against the loaded Lemonade model. "
+    "Re-select the model in Models before using Portal."
 )
 _MODEL_CAPABILITY_DETAIL = (
     "The active model is recorded as not agent-qualified. Tool-driven tasks "
@@ -304,7 +304,7 @@ def _access_projection(value):
             raise ValueError("inconsistent runtime proof")
         return status.model_dump()
     except (ValueError, TypeError):
-        raise HTTPException(status_code=502, detail="Pixel access status could not be verified") from None
+        raise HTTPException(status_code=502, detail="Portal access status could not be verified") from None
 
 
 @router.get("/access-mode", dependencies=[Depends(verify_api_key)])
@@ -312,7 +312,7 @@ async def pixel_access_status():
     try:
         return _access_projection(await request_agent_json("GET", "/v1/pixel/access-mode", timeout=30.0))
     except AgentClientError:
-        raise HTTPException(status_code=503, detail="Pixel access service is unavailable") from None
+        raise HTTPException(status_code=503, detail="Portal access service is unavailable") from None
 
 
 @router.post("/access-mode", dependencies=[Depends(verify_api_key)])
@@ -573,7 +573,7 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         http_response.headers["Cache-Control"] = "no-store"
     config = _pixel_config()
     if config is None:
-        return {"available": False, "model": None, "detail": "Pixel is not enabled"}
+        return {"available": False, "model": None, "detail": "Portal is not enabled"}
     host_status = await _host_model_status()
     readiness_issue = await _model_readiness_issue_for_status(host_status)
     if readiness_issue is not None:
@@ -594,9 +594,9 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
                 headers=_edge_headers(key, accept="application/json"),
             ) as response:
                 if response.status_code != 200:
-                    return {"available": False, "model": None, "detail": "Pixel edge is unavailable"}
+                    return {"available": False, "model": None, "detail": "Portal service is unavailable"}
                 if not response.headers.get("content-type", "").lower().startswith("application/json"):
-                    return {"available": False, "model": None, "detail": "Pixel edge returned an invalid response"}
+                    return {"available": False, "model": None, "detail": "Portal service returned an invalid response"}
                 raw = await _bounded_response_bytes(response, _MAX_STATUS_BYTES)
         payload = json.loads(raw)
         models = payload.get("data") if isinstance(payload, dict) else None
@@ -606,7 +606,7 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         result: dict[str, object] = {
             "available": available,
             "model": _MODEL if available else None,
-            "detail": "Owner agent ready" if available else "pixel/default is unavailable",
+            "detail": "Owner agent ready" if available else "Portal model is unavailable",
         }
         if available:
             inference_issue = await _local_inference_issue(host_status)
@@ -642,16 +642,16 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         # Exception text and request objects can contain upstream credentials.
         # Retain the failure phase/type without logging those sensitive values.
         logger.warning("Pixel edge status request failed (%s)", type(exc).__name__)
-        return {"available": False, "model": None, "detail": "Pixel edge is unavailable"}
+        return {"available": False, "model": None, "detail": "Portal service is unavailable"}
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError):
-        return {"available": False, "model": None, "detail": "Pixel edge returned an invalid response"}
+        return {"available": False, "model": None, "detail": "Portal service returned an invalid response"}
 
 
 @router.get("/ops/{job_id}", dependencies=[Depends(verify_api_key)])
 async def pixel_operations_status(job_id: str, plan_hash: str) -> dict[str, object]:
     """Return only a host-verified, nonsecret Operations status receipt."""
     if _OPS_JOB_ID.fullmatch(job_id) is None or _OPS_PLAN_HASH.fullmatch(plan_hash) is None:
-        raise HTTPException(status_code=400, detail="Invalid Pixel Operations receipt")
+        raise HTTPException(status_code=400, detail="Invalid Portal Operations receipt")
     try:
         value = await request_agent_json(
             "GET",
@@ -660,7 +660,7 @@ async def pixel_operations_status(job_id: str, plan_hash: str) -> dict[str, obje
             timeout=7.0,
         )
     except AgentClientError as exc:
-        raise HTTPException(status_code=503, detail="Pixel Operations status is unavailable") from exc
+        raise HTTPException(status_code=503, detail="Portal Operations status is unavailable") from exc
     expected = {
         "schemaVersion",
         "kind",
@@ -687,7 +687,7 @@ async def pixel_operations_status(job_id: str, plan_hash: str) -> dict[str, obje
         or not 1 <= len(value["updatedAt"]) <= 64
         or (command is not None and (not isinstance(command, str) or not 1 <= len(command) <= 4096))
     ):
-        raise HTTPException(status_code=502, detail="Pixel Operations returned an invalid status")
+        raise HTTPException(status_code=502, detail="Portal Operations returned an invalid status")
     return {key: value[key] for key in expected}
 
 
@@ -745,7 +745,7 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
     """
     config = _pixel_config()
     if config is None:
-        raise HTTPException(status_code=503, detail="Pixel is not enabled")
+        raise HTTPException(status_code=503, detail="Portal is not enabled")
     edge_url, key = config
     if body.request_id is not None:
         store = _chat_results()
@@ -821,7 +821,7 @@ async def _retained_chat_stream(request, body, owner):
     if existing is None:
         config = _pixel_config()
         if config is None:
-            raise HTTPException(status_code=503, detail="Pixel is not enabled")
+            raise HTTPException(status_code=503, detail="Portal is not enabled")
         issue = await _model_readiness_issue()
         if issue is not None:
             raise HTTPException(status_code=409, detail=issue[1])
@@ -943,7 +943,7 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                                     terminal_error_seen = True
                                     empty_done_seen = True
                                     failed = True
-                                    store.append(identity, _error_event("Pixel returned no answer. Try again.")
+                                    store.append(identity, _error_event("Portal returned no answer. Try again.")
                                                  + b"data: [DONE]\n\n", terminal=True)
                                 else:
                                     # The upstream blank separator remains in the
@@ -976,9 +976,9 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                 pass
         try:
             if not done_seen:
-                text = ("Pixel was stopped." if cancelled else
+                text = ("Portal was stopped." if cancelled else
                         "Portal did not accept this turn. Check the conversation's context status before continuing." if rejected else
-                        "Pixel could not complete the response. Check saved work before continuing.")
+                        "Portal could not complete the response. Check saved work before continuing.")
                 store.append(identity, _error_event(text) + b"data: [DONE]\n\n", terminal=True)
         finally:
             state = (
@@ -1062,7 +1062,7 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
         raise HTTPException(status_code=423, detail="Recover or stop the retained attempt before starting another turn")
     config = _pixel_config()
     if config is None:
-        raise HTTPException(status_code=503, detail="Pixel is not enabled")
+        raise HTTPException(status_code=503, detail="Portal is not enabled")
     readiness_issue = await _model_readiness_issue()
     if readiness_issue is not None:
         _state, detail = readiness_issue
@@ -1108,7 +1108,7 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
             end_pixel_stream()
 
     if not try_begin_pixel_stream():
-        raise HTTPException(status_code=429, detail="Pixel stream capacity is busy; retry shortly")
+        raise HTTPException(status_code=429, detail="Portal stream capacity is busy; retry shortly")
 
     try:
         client = httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False)
@@ -1123,16 +1123,16 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
             entered = True
         except (httpx.HTTPError, asyncio.TimeoutError) as exc:
             logger.warning("Pixel edge stream connection failed (%s)", type(exc).__name__)
-            raise HTTPException(status_code=503, detail="Pixel stream is unavailable") from exc
+            raise HTTPException(status_code=503, detail="Portal stream is unavailable") from exc
         if upstream.status_code == 409:
             # Pixel Edge uses 409 while its managed runtime is transitioning.
             # Preserve the actionable retry class without reflecting any
             # upstream response body into the owner-facing dashboard.
             raise HTTPException(status_code=409, detail=_MODEL_SWITCH_DETAIL)
         if upstream.status_code != 200:
-            raise HTTPException(status_code=502, detail="Pixel request was rejected")
+            raise HTTPException(status_code=502, detail="Portal request was rejected")
         if not upstream.headers.get("content-type", "").lower().startswith("text/event-stream"):
-            raise HTTPException(status_code=502, detail="Pixel returned an invalid stream")
+            raise HTTPException(status_code=502, detail="Portal returned an invalid stream")
     except BaseException:
         await release_stream()
         raise
@@ -1151,7 +1151,7 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
                         line = bytes(buffered[: newline + 1])
                         del buffered[: newline + 1]
                         if len(line.rstrip(b"\r\n")) > _MAX_SSE_LINE_BYTES:
-                            yield _error_event("Pixel stream exceeded its safety limit")
+                            yield _error_event("Portal stream exceeded its safety limit")
                             if not done_seen:
                                 yield b"data: [DONE]\n\n"
                             return
@@ -1159,7 +1159,7 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
                         if line.rstrip(b"\r\n") == b"data: [DONE]":
                             done_seen = True
                     if len(buffered) > _MAX_SSE_LINE_BYTES:
-                        yield _error_event("Pixel stream exceeded its safety limit")
+                        yield _error_event("Portal stream exceeded its safety limit")
                         if not done_seen:
                             yield b"data: [DONE]\n\n"
                         return
@@ -1175,9 +1175,9 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
         except (GeneratorExit, asyncio.CancelledError):
             raise
         except (httpx.HTTPError, asyncio.TimeoutError):
-            yield _error_event("Pixel stream is unavailable")
+            yield _error_event("Portal stream is unavailable")
         except Exception:
-            yield _error_event("Pixel stream failed")
+            yield _error_event("Portal stream failed")
         finally:
             await release_stream()
         if not done_seen:

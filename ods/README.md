@@ -169,7 +169,7 @@ source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 | **LiteLLM** | Multi-model API gateway | 4000 | Recommended |
 | **Token Spy** | Token usage monitor | 3005 | Recommended |
 | **SearXNG** | Self-hosted web search | 8888 | Recommended |
-| **Pixel** | Core conversational agent in Dashboard; default Open WebUI model on qualified Linux hosts | Private Unix socket; no host TCP port | Core feature on qualified hosts |
+| **Portal** | Core conversational assistant in Dashboard; default Open WebUI agent route on qualified Linux hosts | Private Unix socket; no host TCP port | Core feature on qualified hosts |
 | **Hermes Agent** | Independent general-purpose agent | 9120 via auth proxy; 9119 internal | Default |
 | **OpenClaw** | Deprecated legacy autonomous agent, opt-in during migration | 7860 | Deprecated optional |
 | **APE** | Agent Policy Engine for policy/audit controls | 7890 | Optional |
@@ -441,7 +441,7 @@ ods mode                               # Show current mode
 | Hardware auto-detect + model selection | **NVIDIA + AMD Strix Halo + Apple Silicon + Intel Arc + CPU/cloud fallback** | No | No |
 | AMD APU / unified memory support | **Platform-specific accelerated backend selected by installer** | Partial (Vulkan) | No |
 | Inference engine | **llama-server** (all GPUs) | llama.cpp | llama.cpp |
-| Autonomous AI agent | **Pixel at the heart of ODS on qualified Linux; Hermes alongside it; OpenClaw legacy opt-in** | No | No |
+| Autonomous AI agent | **Portal on qualified hosts; Hermes alongside it; OpenClaw legacy opt-in** | No | No |
 | Workflow automation | **n8n (400+ integrations)** | No | No |
 | LLM usage monitoring | **Open WebUI built-in** | No | No |
 | Multi-GPU | **Yes** (NVIDIA) | Partial | Partial |

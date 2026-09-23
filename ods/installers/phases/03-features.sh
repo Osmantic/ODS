@@ -125,7 +125,7 @@ if [[ "$PIXEL_AGENT_MODE" == "pixel" ]]; then
     if [[ "${PIXEL_AGENT_MODEL_READY:-unknown}" == "false" \
         && "$_pixel_model_route_class" == "local" ]]; then
         ENABLE_PIXEL_RUNTIME=true
-        ai_warn "Pixel adaptive mode will use this best-fit local model."
+        ai_warn "Portal adaptive mode will use this best-fit local model."
         ai_warn "Every callable model remains selectable; catalog testing is performance guidance, not an access gate."
         log "Pixel selected in adaptive mode on an untested local model; Hermes remains available as rollback when enabled"
     else

@@ -6,7 +6,7 @@
   "deploymentName": "primary",
   "timeZone": "America/New_York",
   "agentId": "pixel",
-  "agentName": "Pixel",
+  "agentName": "Portal",
   "openclawBin": "/home/agent/.npm-global/bin/openclaw",
   "openclawHome": "/home/agent/.openclaw",
   "installDir": "/home/agent/.local/share/pixel",

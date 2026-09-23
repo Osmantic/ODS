@@ -21,8 +21,10 @@ describe('publication display text', () => {
 
   it('removes duplicate trailing receipts including the authored variant and CRLF delivery', () => {
     const authored = receipt.replace('Published from your workspace.', 'Created by Pixel.')
+    const current = receipt.replace('Published from your workspace.', 'Created by Portal.')
     expect(publicationDisplayText(`Changes documented.\n\n${authored}\n\n${receipt}`.replaceAll('\n', '\r\n'), publication)).toBe('Changes documented.')
     expect(publicationDisplayText(`${link}\n\nCreated by Pixel.`, publication)).toBe('')
+    expect(publicationDisplayText(current, publication)).toBe('')
   })
 
   it('accepts the same publication relay and current origin relay, while preserving unrelated links', () => {

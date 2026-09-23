@@ -83,7 +83,7 @@ const timeZone = text(await answer("timeZone", "Timezone", "America/New_York"), 
 try { new Intl.DateTimeFormat("en-US", { timeZone }).format(); } catch { throw new Error(`Invalid IANA timezone: ${timeZone}`); }
 const agentId = text(await answer("agentId", "Agent ID", "pixel"), "agentId");
 if (!/^[a-z][a-z0-9-]{1,62}$/.test(agentId)) throw new Error("agentId must match ^[a-z][a-z0-9-]{1,62}$");
-const agentName = text(await answer("agentName", "Agent name", "Pixel"), "agentName");
+const agentName = text(await answer("agentName", "Agent name", "Portal"), "agentName");
 const openclawBin = absolute(await answer("openclawBin", "OpenClaw executable", join(home, ".npm-global", "bin", "openclaw")), "openclawBin");
 const openclawHome = absolute(await answer("openclawHome", "OpenClaw home", join(home, ".openclaw")), "openclawHome");
 const installDir = absolute(await answer("installDir", "Stable Pixel install directory", join(home, ".local", "share", "pixel")), "installDir");

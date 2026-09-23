@@ -5,7 +5,7 @@ export default function PortalRuntimeIdentity({identity, runtime}) {
   const mismatch = value?.runtimeMatchesRelease === false
   const rows = [
     ['ODS release commit', null],
-    ['Pixel source revision', null],
+    ['Assistant source revision', null],
     ['Plugin initialization SHA-256', value?.identities.pluginSha256],
     ['OpenClaw tool-search initialization SHA-256', value?.identities.openclawModuleSha256],
     ['OpenClaw reported version', value?.identities.openclawVersion],
@@ -19,7 +19,7 @@ export default function PortalRuntimeIdentity({identity, runtime}) {
   return <details className="p-2 text-xs" data-testid="pixel-runtime-identity">
     <summary>Runtime identity · {mismatch ? 'Files changed' : 'Unverified'}</summary>
     <p className="mt-2">{mismatch ? 'Installed files changed after this process initialized. ' : ''}Chat availability does not verify the installed release. Initialization file hashes do not prove the JavaScript evaluated by the running process.</p>
-    <p className="mt-2">Release, Pixel source, preview image and final model-facing schema bindings are not yet available. Created plugin schemas are observations before native tool filtering.</p>
+    <p className="mt-2">Release, assistant source, preview image and final model-facing schema bindings are not yet available. Created plugin schemas are observations before native tool filtering.</p>
     <dl className="mt-2 space-y-2">{rows.map(([label, item]) => <div key={label}>
       <dt className="text-theme-text-secondary">{label}</dt>
       <dd className="break-all font-mono">{item ?? 'Unknown'}</dd>

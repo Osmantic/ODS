@@ -158,7 +158,7 @@ Windows recovery note: if the runtime folder is partial and `.\ods.ps1` is missi
 >
 > **Windows:** Requires Docker Desktop with WSL2 backend. NVIDIA GPUs use Docker GPU passthrough; AMD Strix Halo runs through the platform-specific accelerated path documented in the Windows installer and support matrix.
 >
-> **macOS:** Requires Apple Silicon (M1+) and Docker Desktop. llama-server uses native Metal acceleration; Pixel's gateway and managed host helpers also run natively. The UI, ingress, sandbox and supporting services run in Docker. See the [macOS Quickstart](ods/docs/MACOS-QUICKSTART.md).
+> **macOS:** Requires Apple Silicon (M1+) and Docker Desktop. llama-server uses native Metal acceleration; Portal's gateway and managed host helpers also run natively. The UI, ingress, sandbox and supporting services run in Docker. See the [macOS Quickstart](ods/docs/MACOS-QUICKSTART.md).
 >
 > See the [Support Matrix](ods/docs/SUPPORT-MATRIX.md) for supported
 > platform claims and the [Validation Matrix](ods/docs/VALIDATION-MATRIX.md)
@@ -252,8 +252,8 @@ See the [macOS Quickstart](ods/docs/MACOS-QUICKSTART.md) for details.
 - **Kokoro** — text-to-speech
 
 ### Agents & Automation
-- **Pixel** — bundled core conversational agent on Apple Silicon macOS and qualified Ubuntu 24.04/26.04 or Debian 12 systemd hosts, including qualified WSL2 installations through the Linux installer. No private repository access or separate license flag is required; appears as `pixel/default` in Open WebUI and as a Dashboard toolbar app. The native PowerShell installer does not install the Pixel host runtime.
-- **Hermes Agent** — independent general-purpose agent, available alongside Pixel; includes memory, skills, and a magic-link-gated proxy
+- **Portal** — bundled core conversational assistant on Apple Silicon macOS and qualified Ubuntu 24.04/26.04 or Debian 12 systemd hosts, including qualified WSL2 installations through the Linux installer. No private repository access or separate license flag is required; available in the Dashboard and through a compatible Open WebUI model route. The native PowerShell installer does not install the Portal host runtime.
+- **Hermes Agent** — independent general-purpose agent, available alongside Portal; includes memory, skills, and a magic-link-gated proxy
 - **OpenClaw** — deprecated legacy autonomous agent, still opt-in during the migration window
 - **n8n** — workflow automation with 400+ integrations (Slack, email, databases, APIs)
 - **APE** — Agent Policy Engine for auditing and governing autonomous tool calls
@@ -440,7 +440,7 @@ Other tools get you part of the way. ODS gets you the whole way.
 | One-command install | Everything, auto-configured | LLM + chat only | LLM only |
 | Hardware auto-detect + model selection | NVIDIA + AMD Strix Halo + Apple Silicon + Intel Arc + CPU/cloud fallback | No | No |
 | AMD APU unified memory support | Platform-specific accelerated backend, selected by installer | Partial (Vulkan) | No |
-| Autonomous AI agents | Bundled Pixel at the heart of ODS on qualified Linux hosts; Hermes available alongside it; OpenClaw legacy opt-in | No | No |
+| Autonomous AI agents | Bundled Portal on qualified hosts; Hermes available alongside it; OpenClaw legacy opt-in | No | No |
 | Workflow automation | n8n (400+ integrations) | No | No |
 | Voice (STT + TTS) | Whisper + Kokoro | No | No |
 | Image generation | ComfyUI | No | No |
@@ -456,7 +456,7 @@ Other tools get you part of the way. ODS gets you the whole way.
 |---|---|
 | [Quickstart](ods/QUICKSTART.md) | Step-by-step install guide with troubleshooting |
 | [Docs Index](ods/docs/README.md) | Maintained map for operators, contributors, and reviewers |
-| [Pixel Integration](ods/docs/PIXEL.md) | Eligibility, licensing boundary, architecture, install, security, tools, rollback, and qualification |
+| [Portal runtime](ods/docs/PIXEL.md) | Eligibility, licensing boundary, architecture, install, security, tools, rollback, and qualification |
 | [Licensing](ods/LICENSING.md) | Apache-2.0 ODS code, Pixel's ODS-only grant, and third-party notices |
 | [Build On ODS](ods/docs/BUILD-ON-ODS-SERVER.md) | Forking, custom editions, extension templates, and downstream validation |
 | [Forkability](ods/docs/FORKABILITY.md) | How to fork, audit, customize, and independently operate ODS |

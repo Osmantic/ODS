@@ -26,7 +26,7 @@ const PixelSettings = lazy(() => import('../pages/PixelSettings'))
 
 export const coreRoutes = [
   { id: 'home', path: '/', label: 'Home', icon: Cloud, component: Pixel, getProps: ({ status }) => ({ systemStatus: status }), sidebar: false },
-  { id: 'pixel-settings', path: '/pixel/settings', label: 'Pixel settings', icon: Settings, component: PixelSettings, getProps: () => ({}), sidebar: false },
+  { id: 'pixel-settings', path: '/pixel/settings', label: 'Portal settings', icon: Settings, component: PixelSettings, getProps: () => ({}), sidebar: false },
   {
     id: 'dashboard',
     path: '/dashboard',

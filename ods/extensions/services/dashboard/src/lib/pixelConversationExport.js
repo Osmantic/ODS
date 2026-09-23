@@ -17,7 +17,7 @@ export function downloadConversation(conversation) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(archive, null, 2)], {type:'application/json'}))
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = 'ods-pixel-' + conversation.chatId + '.json'
+  anchor.download = 'ods-portal-' + conversation.chatId + '.json'
   try {
     document.body.append(anchor)
     anchor.click()

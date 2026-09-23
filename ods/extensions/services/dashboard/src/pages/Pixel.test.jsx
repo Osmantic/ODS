@@ -343,7 +343,7 @@ describe('Pixel', () => {
     expect(column.parentElement).toBe(panel.parentElement)
     expect(column).toContainElement(screen.getByRole('button',{name:'Workspace',exact:true}))
     expect(column).toContainElement(screen.getByRole('button',{name:/Choose model:/}))
-    expect(column).toContainElement(screen.getByRole('button',{name:'Search Pixel'}))
+    expect(column).toContainElement(screen.getByRole('button',{name:'Search Portal'}))
     expect(panel).not.toContainElement(screen.getByRole('heading',{name:'Portal',exact:true}))
     fireEvent.click(screen.getByTitle('Collapse preview'))
     expect(panel).toHaveClass('is-collapsed')
@@ -1596,7 +1596,7 @@ describe('Pixel', () => {
       throw new Error(`Unexpected request ${url}`)
     })
     render(<Pixel />)
-    expect(await screen.findByText('Pixel did not start this attempt. Send your message again to continue.')).toBeVisible()
+    expect(await screen.findByText('Portal did not start this attempt. Send your message again to continue.')).toBeVisible()
     expect(screen.queryByText('Completed without a text response.')).toBeNull()
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
   })
@@ -2009,7 +2009,7 @@ describe('Pixel', () => {
     fireEvent.click(screen.getByTitle('Stop'))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Stop was not confirmed. Pixel is still connected; retry Stop.'
+      'Stop was not confirmed. Portal is still connected; retry Stop.'
     )
     expect(screen.queryByText('Response stopped')).not.toBeInTheDocument()
     fireEvent.click(screen.getByTitle('Stop'))
@@ -2054,7 +2054,7 @@ describe('Pixel', () => {
     fireEvent.click(screen.getByTitle('Send'))
 
     await waitFor(() => {
-      expect(screen.getByText('Pixel could not complete the response.')).toBeInTheDocument()
+      expect(screen.getByText('Portal could not complete the response.')).toBeInTheDocument()
     })
     expect(screen.queryByText(/upstream-secret-value/)).not.toBeInTheDocument()
   })
@@ -2088,7 +2088,7 @@ describe('Pixel', () => {
     await screen.findByText('Available')
     fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'test'}})
     fireEvent.click(screen.getByTitle('Send'))
-    await screen.findByText('Pixel could not complete the response.')
+    await screen.findByText('Portal could not complete the response.')
     expect(screen.getByText('Work already explained')).toBeInTheDocument()
     expect(screen.queryByText(/False late success|private-upstream-error/)).toBeNull()
     await waitFor(()=>{

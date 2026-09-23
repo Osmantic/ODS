@@ -35,7 +35,7 @@ export function publicationDisplayText(content, publication) {
   const newline = '\\r?\\n'
   const paragraph = `${newline}(?:[ \\t]*${newline})+`
   const link = `\\[Open preview\\]\\((?:${urls.map(escapePattern).join('|')})\\)`
-  const receipt = new RegExp(`(?:^|${paragraph})(?:${escapePattern(READY)}${paragraph})?${link}(?:${paragraph}(?:Created by Pixel\\.|Published from your workspace\\.))?(?:${newline}${escapePattern(SCOPE)})?[ \\t\\r\\n]*$`)
+  const receipt = new RegExp(`(?:^|${paragraph})(?:${escapePattern(READY)}${paragraph})?${link}(?:${paragraph}(?:Created by (?:Portal|Pixel)\\.|Published from your workspace\\.))?(?:${newline}${escapePattern(SCOPE)})?[ \\t\\r\\n]*$`)
   let display = content
   while (true) {
     const match = receipt.exec(display)

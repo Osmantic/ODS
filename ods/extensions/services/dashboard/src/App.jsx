@@ -141,7 +141,7 @@ function App() {
         <div className="portal-chat">
           {showUpdate && <PortalUpdateNotice version={version} onDismiss={dismissUpdate} onReview={() => navigate('/settings?section=updates')} />}
           {status?.bootstrap?.active && <BootstrapBanner bootstrap={status.bootstrap} />}
-          <Suspense fallback={<p className="p-6 text-theme-text-muted">Opening Pixel…</p>}><Pixel systemStatus={status} /></Suspense>
+          <Suspense fallback={<p className="p-6 text-theme-text-muted">Opening Portal…</p>}><Pixel systemStatus={status} /></Suspense>
         </div>
         {panelOpen && <aside style={{'--portal-panel-width':`${panelWidth}px`}} className={`portal-side-panel ${panelCollapsed ? 'is-collapsed' : ''}`} aria-label="Workspace panel">
           {!panelCollapsed && <PanelResizeHandle width={panelWidth} onResize={setPanelWidth} />}

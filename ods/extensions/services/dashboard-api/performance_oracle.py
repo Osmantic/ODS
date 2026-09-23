@@ -499,7 +499,7 @@ def model_app_compatibility(
         "openaiChat": _app_compatibility_entry(raw.get("openai_chat"), "Direct chat untested", runtime_context),
         "hermesTalk": hermes_talk,
         "agentViability": _agent_viability_entry(raw.get("agent_viability"), hermes_talk, runtime_context),
-        "pixelAgent": _app_compatibility_entry(raw.get("pixel_agent"), "Pixel agent untested", runtime_context),
+        "pixelAgent": _app_compatibility_entry(raw.get("pixel_agent"), "Portal agent untested", runtime_context),
     }
     for raw_key, raw_value in raw.items():
         payload_key = _app_compatibility_payload_key(raw_key)
@@ -524,7 +524,7 @@ def model_app_compatibility(
         }
         compatibility["pixelAgent"] = {
             "status": "not_agent_viable",
-            "label": "Too slow for Pixel",
+            "label": "Too slow for Portal",
             "reason": exact_speed_block["reason"],
         }
     return compatibility

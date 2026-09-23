@@ -704,7 +704,7 @@ test('allows low-context downloaded models to run with an agent-readiness warnin
   fireEvent.click(runButton)
   confirmModelRun()
   expect(loadModel).toHaveBeenCalledWith('qwen3.5-9b-q4', { contextLength: 8192 })
-  expect(screen.getByText('Pixel compact')).toBeInTheDocument()
+  expect(screen.getByText('Portal compact')).toBeInTheDocument()
   expect(screen.getByText('8K context')).toBeInTheDocument()
 
   const deleteButton = screen.getByRole('button', { name: /delete qwen 3\.5 9b$/i })
@@ -745,7 +745,7 @@ test('allows explicit Talk-incompatible models to run with an agent-readiness wa
   fireEvent.click(runButton)
   confirmModelRun()
   expect(loadModel).toHaveBeenCalledWith('qwen3.5-9b-q4', { contextLength: 128000 })
-  expect(screen.getByText('Pixel adaptive')).toBeInTheDocument()
+  expect(screen.getByText('Portal adaptive')).toBeInTheDocument()
   expect(screen.getByText('Capability varies')).toBeInTheDocument()
 
   const deleteButton = screen.getByRole('button', { name: /delete phi-4 mini$/i })
@@ -784,9 +784,9 @@ test('distinguishes verified and adaptive Pixel capability without excluding mod
 
   renderModels()
 
-  expect(screen.getAllByText('Pixel adaptive')).toHaveLength(2)
+  expect(screen.getAllByText('Portal adaptive')).toHaveLength(2)
   expect(screen.getAllByText('Available to use')).toHaveLength(2)
-  expect(screen.getByText('Pixel verified', { selector: 'span' })).toBeInTheDocument()
+  expect(screen.getByText('Portal verified', { selector: 'span' })).toBeInTheDocument()
 })
 
 test('shows adaptive Pixel capability in the activation dialog without blocking Run', () => {
@@ -804,7 +804,7 @@ test('shows adaptive Pixel capability in the activation dialog without blocking 
   renderModels()
   fireEvent.click(screen.getByRole('button', { name: 'Run' }))
 
-  expect(screen.getAllByText('Pixel adaptive')).toHaveLength(2)
+  expect(screen.getAllByText('Portal adaptive')).toHaveLength(2)
   expect(screen.queryByText('Hermes ready')).not.toBeInTheDocument()
 })
 
@@ -834,7 +834,7 @@ test('allows models with failed direct-chat qualification to run adaptively', ()
   expect(runButton).toBeEnabled()
   expect(runButton).toHaveAttribute('title', 'Run Phi-3.5 Mini')
   fireEvent.click(runButton)
-  expect(screen.getAllByText('Pixel adaptive')).toHaveLength(2)
+  expect(screen.getAllByText('Portal adaptive')).toHaveLength(2)
   expect(screen.getByText('Capability varies')).toBeInTheDocument()
   expect(loadModel).not.toHaveBeenCalled()
   confirmModelRun()

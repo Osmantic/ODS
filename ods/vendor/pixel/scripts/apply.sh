@@ -97,7 +97,7 @@ had_unit=0; [[ -f "$unit_path" ]] && had_unit=1
 had_legacy_unit=0; [[ -f "$legacy_unit_path" ]] && had_legacy_unit=1
 had_courier_env=0; [[ -f "$agent_env_dir/web-courier.env" ]] && had_courier_env=1
 had_courier_unit=0; [[ -f "$courier_unit_path" ]] && had_courier_unit=1
-managed_workspace_files=("AGENTS.md" "TOOLS.md" "WEB-NAVIGATION.md" "scripts/browse.sh" "scripts/research-ledger.py" "scripts/xfeed.sh")
+managed_workspace_files=("AGENTS.md" "SOUL.md" "IDENTITY.md" "TOOLS.md" "WEB-NAVIGATION.md" "scripts/browse.sh" "scripts/research-ledger.py" "scripts/xfeed.sh")
 
 restore_managed_workspace() {
   local relative destination saved mode
@@ -297,6 +297,7 @@ shared_sandbox_image_id=$(pixel_validate_sandbox_image "$PIXEL_SANDBOX_IMAGE" "$
 pixel_atomic_symlink "$release" "$PIXEL_INSTALL_DIR/current"
 
 cp -a -n -- "$ROOT/.generated/workspace/." "$PIXEL_WORKSPACE/"
+node "$ROOT/scripts/migrate-portal-identity.mjs" "$PIXEL_WORKSPACE" "$ROOT/.generated/workspace"
 node "$ROOT/scripts/migrate-workspace-source-boundary.mjs" "$PIXEL_WORKSPACE" >/dev/null
 rm -f -- "$PIXEL_WORKSPACE/scripts/xfeed.sh"
 # Existing workspace data belongs to the owner and may include read-only sandbox mounts.
