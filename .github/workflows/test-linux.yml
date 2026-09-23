@@ -470,6 +470,12 @@ jobs:
       - name: Update Rollback Contract
         run: bash tests/test-update-rollback-contract.sh
 
+      - name: Source Update and Native Recovery Boundaries
+        run: |
+          bash tests/test-update-quoted-compose.sh
+          python3 tests/test_source_update_preflight.py
+          python3 tests/test_native_backup_guard.py
+
       - name: Update Backup Retention By Creation Time
         run: bash tests/test-update-backup-retention-labels.sh
 

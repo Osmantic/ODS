@@ -22,6 +22,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   use its separate agent installation path without the Portal host runtime.
 
 ### Fixed
+- Native Windows verifies private `.env` access before writing credentials in
+  both Windows PowerShell and PowerShell 7; protection failures stop the install.
+- Source update and rollback preserve quoted Compose paths. The source updater
+  refuses native Pixel and source-built stacks whose runtime artifacts it cannot
+  safely coordinate; ordinary image maintenance remains a separate operation.
+- Generic backup and restore refuse unsupported native Pixel state instead of
+  silently omitting it. Configuration-only archives explicitly record the
+  exclusion. This restriction does not add native backup/recovery support.
+- Installer failure guidance preserves source and recovery receipts instead of
+  recommending manual directory deletion or promising every retry is safe.
 - Pixel retry and compaction handling preserves the current request, task
   activity, and goal plan, and avoids waiting for an impossible terminal retry.
 - Workspace operations retain canonical project paths, reject mistaken host
