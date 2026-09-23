@@ -240,6 +240,7 @@ describe('Settings', () => {
     expect(screen.queryByText('Test route 5')).not.toBeInTheDocument()
     fireEvent.click(within(filters).getByRole('button', { name: 'inactive', exact: true }))
     expect(screen.getByText('No routes match this filter.')).toBeInTheDocument()
+    expect(screen.getByText('0 routes shown for inactive routes.')).toBeInTheDocument()
     expect(within(filters).getByRole('button', { name: 'inactive', exact: true })).toHaveAttribute('aria-pressed', 'true')
   })
 

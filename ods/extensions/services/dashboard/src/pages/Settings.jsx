@@ -653,6 +653,10 @@ function RoutingTableCard({ services, counts, routeFilter, onRouteFilterChange, 
           <RouteStatusCard tone="inactive" label="Inactive" count={counts.inactive.length} description="Down, unhealthy, or unknown services" />
         </div>
 
+        <p role="status" aria-live="polite" className="sr-only">
+          {filteredRoutes.length} {filteredRoutes.length === 1 ? 'route' : 'routes'} shown for {routeFilter === 'all' ? 'all routes' : `${routeFilter} routes`}.
+        </p>
+
         <div className="mt-5">
           <p className="mb-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted">
             <span className={`h-2 w-2 rounded-full ${routeFilter === 'all' ? 'bg-theme-accent' : routeFilterDotClass[routeFilter]}`} />
