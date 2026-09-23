@@ -653,6 +653,10 @@ main() {
                 shift 2
                 ;;
             -t|--type)
+                if [[ ! "$2" =~ ^(user-data|config|full)$ ]]; then
+                    echo "Error: Invalid backup type '$2'. Allowed: user-data, config, full" >&2
+                    exit 1
+                fi
                 backup_type="$2"
                 shift 2
                 ;;
