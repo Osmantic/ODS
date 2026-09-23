@@ -245,29 +245,42 @@ function FeatureCard({ feature, onClick }) {
 
 function EnableInstructions({ featureId, onClose }) {
   const [data, setData] = useState(null)
+  const [error, setError] = useState(null)
 
-  useEffect(() => {
+  const loadInstructions = () => {
+    setError(null)
+    setData(null)
     fetch(`/api/features/${featureId}/enable`)
-      .then(r => r.ok ? r.json() : null)
+      .then(async response => {
+        if (!response.ok) throw new Error(`Unable to load feature instructions (${response.status})`)
+        return response.json()
+      })
       .then(setData)
-      .catch(console.error)
-  }, [featureId])
+      .catch(failure => setError(failure.message))
+  }
 
-  if (!data) return null
+  useEffect(() => { loadInstructions() }, [featureId])
+
+  if (!data && !error) return null
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div className="bg-theme-card border border-theme-border rounded-xl max-w-md w-full shadow-2xl">
         <div className="p-6 border-b border-theme-border">
           <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold text-theme-text">Enable {data.name}</h2>
+            <h2 className="text-xl font-bold text-theme-text">Enable {data?.name || featureId}</h2>
             <button onClick={onClose} className="text-theme-text-muted hover:text-theme-text">
               <X size={20} />
             </button>
           </div>
         </div>
 
-        <div className="p-6 space-y-4">
+        {error ? (
+          <div className="p-6 space-y-4">
+            <p role="alert" className="text-theme-text">{error}</p>
+            <button type="button" onClick={loadInstructions} className="liquid-metal-button px-4 py-2 text-white rounded-lg text-sm font-medium">Retry</button>
+          </div>
+        ) : <div className="p-6 space-y-4">
           {data.instructions.steps.map((step, i) => (
             <div key={i} className="flex items-start gap-3">
               <div className="w-6 h-6 rounded-full bg-theme-card flex items-center justify-center text-xs text-theme-text-muted mt-0.5">
@@ -276,9 +289,9 @@ function EnableInstructions({ featureId, onClose }) {
               <p className="text-theme-text">{step}</p>
             </div>
           ))}
-        </div>
+        </div>}
 
-        {data.instructions.links?.length > 0 && (
+        {data?.instructions?.links?.length > 0 && (
           <div className="p-6 border-t border-theme-border flex flex-wrap gap-2">
             {data.instructions.links.map((link, i) => (
               <a
@@ -298,4 +311,3 @@ function EnableInstructions({ featureId, onClose }) {
     </div>
   )
 }
-

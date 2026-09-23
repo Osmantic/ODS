@@ -607,3 +607,18 @@ error surfaces. Gate: `dashboard portal response error untrusted text`.
 - Evidence: `ods/extensions/services/dashboard/src/components/CompactDashboard.jsx:31-43`; live console testing on `http://127.0.0.1:3001/extensions` recorded the error.
 - Duplicate gate: live issue/PR searches for `CompactDashboard ResizeObserver` returned no matching defect; existing compact-row PRs address row identity, not observer lifecycle.
 - Regression coverage: invoke a queued resize callback after unmount and assert that it does not throw.
+
+### 82. Feature enable failures leave an opened dialog blank
+
+- Severity: P2 usability
+- Journey: open an available feature from Feature Discovery while the
+  instructions endpoint returns a failure or invalid response.
+- Expected: the dialog remains visible with an actionable error and retry.
+- Actual: `EnableInstructions` previously converted every non-OK response to
+  `null` and returned no dialog content, so the click appeared to do nothing.
+- Evidence: `ods/extensions/services/dashboard/src/components/FeatureDiscovery.jsx:249-302`.
+- Duplicate gate: live issue/PR searches for dashboard feature-enable retry/error
+  behavior returned no matching defect; broader feature-readiness work was not
+  this dialog failure path.
+- Regression coverage: force a 503, assert a visible alert and Retry control,
+  then resolve the retry and assert the instructions render.
