@@ -229,6 +229,7 @@ export function useModels() {
   const modelsRequestRef = useRef(0)
   const latestSettledModelsRequestRef = useRef(0)
   const pollInFlightRef = useRef(false)
+  const pollControllerRef = useRef(null)
   const loadActiveRef = useRef(false)
   const activationControllerRef = useRef(null)
 
@@ -236,6 +237,7 @@ export function useModels() {
     // Navigation ends this page's observation. The host still owns any
     // accepted activation, and a new page reads its lifecycle on mount.
     activationControllerRef.current?.abort()
+    pollControllerRef.current?.abort()
   }, [])
 
   const updatePendingActions = useCallback((update) => {
@@ -333,9 +335,12 @@ export function useModels() {
   const pollModels = useCallback(async () => {
     if (document.hidden || pollInFlightRef.current) return
     pollInFlightRef.current = true
+    const controller = new AbortController()
+    pollControllerRef.current = controller
     try {
-      await fetchModels()
+      await fetchModels({ signal: controller.signal })
     } finally {
+      if (pollControllerRef.current === controller) pollControllerRef.current = null
       pollInFlightRef.current = false
     }
   }, [fetchModels])
