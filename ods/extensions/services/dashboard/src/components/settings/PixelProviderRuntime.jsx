@@ -42,6 +42,8 @@ export default function PixelProviderRuntime({ savedRevision, saving, blocked, r
   const [confirmation, setConfirmation] = useState(null)
   const [workerReady, setWorkerReady] = useState(false)
   const consent = useRef(null)
+  const refreshRef = useRef(null)
+  const restoreRefreshFocusRef = useRef(false)
   const idle = !running && !saving && !stale
   const matched = runtime?.providerRevision === savedRevision && Number.isSafeInteger(savedRevision)
   const eligible = {
@@ -54,6 +56,12 @@ export default function PixelProviderRuntime({ savedRevision, saving, blocked, r
   useEffect(() => {
     if (confirmation && !valid) { consent.current = null; setConfirmation(null) }
   }, [confirmation, valid])
+  useEffect(() => {
+    if (!running && restoreRefreshFocusRef.current) {
+      restoreRefreshFocusRef.current = false
+      Promise.resolve().then(() => refreshRef.current?.focus())
+    }
+  }, [running])
   const open = (operation, trigger) => {
     if (consent.current || !eligible[operation]) return
     const next = { operation, runtime, savedRevision, allowCloud, trigger }
@@ -96,7 +104,7 @@ export default function PixelProviderRuntime({ savedRevision, saving, blocked, r
       {notice && <p role="status">{notice}</p>}
     </div>
     <div className="flex flex-wrap gap-2">
-      <button type="button" className={button} disabled={Boolean(running) || saving} onClick={inspect}>Refresh provider runtime</button>
+      <button ref={refreshRef} type="button" className={button} disabled={Boolean(running) || saving} onClick={() => { restoreRefreshFocusRef.current = true; inspect() }}>Refresh provider runtime</button>
       {Object.entries(labels).map(([operation, label]) => <button type="button" key={operation} className={button}
         disabled={!eligible[operation]} onClick={event => open(operation, event.currentTarget)}>{label}</button>)}
     </div>
