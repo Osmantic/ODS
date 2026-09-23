@@ -196,6 +196,12 @@ if [[ -f "$PREFLIGHT_REPORT_FILE" ]]; then
     echo ""
 fi
 
+# The original shell may predate Phase 05's docker-group addition. Refresh its
+# group only for validation subprocesses; do not let stale permissions make a
+# healthy Docker daemon/NVIDIA runtime look broken after a successful install.
+# shellcheck source=../lib/postflight-docker-context.sh
+source "$SCRIPT_DIR/installers/lib/postflight-docker-context.sh"
+
 # Run preflight only for a real installation. A dry run has no services to
 # validate and must never print missing-service noise as if it were live proof.
 if $DRY_RUN; then
@@ -211,7 +217,7 @@ elif [[ -f "$SCRIPT_DIR/ods-preflight.sh" ]]; then
     # Retry up to 3 times with 10s backoff before reporting failures.
     _preflight_passed=false
     for _pf_attempt in 1 2 3; do
-        if bash "$SCRIPT_DIR/ods-preflight.sh" 2>>"$LOG_FILE"; then
+        if ods_postflight_run_docker_check "$SCRIPT_DIR/ods-preflight.sh" 2>>"$LOG_FILE"; then
             _preflight_passed=true
             break
         fi
@@ -260,7 +266,7 @@ if ! $DRY_RUN; then
     bootline
     echo ""
     if [[ -f "$SCRIPT_DIR/scripts/extension-runtime-check.sh" ]]; then
-        bash "$SCRIPT_DIR/scripts/extension-runtime-check.sh" "$INSTALL_DIR" || true
+        ods_postflight_run_docker_check "$SCRIPT_DIR/scripts/extension-runtime-check.sh" "$INSTALL_DIR" || true
     else
         log "extension-runtime-check.sh not found — skipping"
     fi

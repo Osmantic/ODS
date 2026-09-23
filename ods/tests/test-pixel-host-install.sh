@@ -27,6 +27,52 @@ ai_bad() { :; }
 ai_ok() { :; }
 ai() { :; }
 
+if (
+    ods_sudo_available() { return 0; }
+    ods_sudo() { printf '%s\n' 'unexpected redundant sudo' >&2; return 99; }
+    [[ "$(ods_pixel_run_as_owner "$owner" "$TEST_ROOT" id -un)" == "$owner" ]]
+); then
+    pass "current Pixel owner runs directly even when sudo is available"
+else
+    fail "current Pixel owner redundantly enters sudo pseudo-terminal"
+fi
+if (
+    ods_sudo_available() { return 0; }
+    ods_sudo() {
+        [[ "$1" == -u && "$2" == ods_other_owner && "$3" == -- ]]
+    }
+    ods_pixel_run_as_owner ods_other_owner "$TEST_ROOT" true
+); then
+    pass "different Pixel owner still requires sudo identity switch"
+else
+    fail "different Pixel owner bypassed the sudo identity switch"
+fi
+if (
+    id() {
+        if [[ "$1" == -un ]]; then
+            command id -un
+        elif [[ "$1" == -nG && "$#" == 1 ]]; then
+            printf '%s\n' 'users'
+        elif [[ "$1" == -nG && "$2" == "$owner" ]]; then
+            printf '%s\n' 'users docker'
+        else
+            command id "$@"
+        fi
+    }
+    sg() {
+        [[ "$1" == docker && "$2" == -c ]] || return 1
+        bash -c "$3"
+    }
+    tricky_arg="space ' \" ; touch $TEST_ROOT/UNEXPECTED"
+    actual="$(ods_pixel_run_as_owner "$owner" "$TEST_ROOT" python3 -c \
+        'import os,sys; print(sys.argv[1] + "|" + os.environ["HOME"])' "$tricky_arg")"
+    [[ "$actual" == "$tricky_arg|$TEST_ROOT" && ! -e "$TEST_ROOT/UNEXPECTED" ]]
+); then
+    pass "stale docker group refresh preserves argv without a new sudo tty"
+else
+    fail "stale docker group refresh altered arguments or skipped sg"
+fi
+
 probe_program="$TEST_ROOT/manager-probe.py"
 probe_counter="$TEST_ROOT/manager-probe.count"
 cat > "$probe_program" <<'PY'
