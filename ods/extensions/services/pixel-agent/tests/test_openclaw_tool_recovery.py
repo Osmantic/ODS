@@ -275,6 +275,7 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
     ('OPENCLAW_TOOL_SEARCH_MODULE', 'openclaw-image-envelope.json', repair_module.IMAGE_MODULE),
     ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE),
     ('OPENCLAW_READ_MODULE', 'openclaw-read-range.json', repair_module.READ_RANGE_MODULE),
+    ('OPENCLAW_COMPACTION_RESUME_MODULE', 'openclaw-compaction-resume.json', repair_module.COMPACTION_RESUME_MODULE),
 ])
 def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_name, module_name):
     candidate_path = os.environ.get(environment)
@@ -283,6 +284,14 @@ def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_
     manifest_path = ROOT / 'host' / manifest_name
     manifest = json.loads(manifest_path.read_text())
     candidate = Path(candidate_path).read_bytes()
+    predecessor = manifest.get('previousReplacements', {}).get(hashlib.sha256(candidate).hexdigest())
+    if predecessor is not None:
+        source = candidate.decode()
+        for old, new in reversed(predecessor):
+            assert source.count(new) == 1
+            source = source.replace(new, old)
+        candidate = source.encode()
+        assert hashlib.sha256(candidate).hexdigest() == manifest['sourceSha256']
     if hashlib.sha256(candidate).hexdigest() == manifest['sourceSha256']:
         source = candidate.decode()
         for old, new in manifest['replacements']:
