@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+const SETUP_STATUS_TIMEOUT = 15000
 
 // Auth: nginx injects the Authorization header for /api/ requests
 // (see nginx.conf). The fetch below is a plain relative URL.
@@ -26,8 +27,10 @@ export function useFirstRun() {
 
   const refresh = useCallback(async () => {
     setLoading(true)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), SETUP_STATUS_TIMEOUT)
     try {
-      const resp = await fetch('/api/setup/status')
+      const resp = await fetch('/api/setup/status', { signal: controller.signal })
       if (!resp.ok) throw new Error(`setup-status returned ${resp.status}`)
       const data = await resp.json()
       setFirstRun(!!data.first_run)
@@ -36,8 +39,9 @@ export function useFirstRun() {
       // See the failure-mode comment above. We mark loading=false so the
       // UI proceeds normally; the wizard is hidden until the next refresh.
       setFirstRun(false)
-      setError(err.message)
+      setError(err.name === 'AbortError' ? 'Setup status request timed out.' : err.message)
     } finally {
+      clearTimeout(timeout)
       setLoading(false)
     }
   }, [])
