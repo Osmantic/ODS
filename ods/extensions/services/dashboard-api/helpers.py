@@ -569,6 +569,24 @@ async def get_loaded_model() -> Optional[str]:
             loaded = resp.json().get("model_loaded")
             return loaded if loaded else None
 
+        # A host Lemonade server may have been installed as a generic
+        # OpenAI-compatible external backend. Its /v1/models lists every
+        # available model, with no loaded status; the first entry is not the
+        # active model. Prefer its explicit health identity when present.
+        if (LLM_BACKEND == "external"
+                and os.environ.get("EXTERNAL_LLM_PROVIDER", "").lower() == "openai-compatible"):
+            try:
+                health = await client.get(f"http://{host}:{port}/api/v1/health")
+                if health.status_code == 200:
+                    payload = health.json()
+                    if isinstance(payload, dict) and "model_loaded" in payload:
+                        loaded = payload["model_loaded"]
+                        if payload.get("status") == "ok" and isinstance(loaded, str) and loaded.strip():
+                            return loaded
+                        return None
+            except (httpx.HTTPError, ValueError):
+                pass
+
         # llama.cpp: /v1/models returns the loaded model with status info.
         resp = await client.get(f"http://{host}:{port}{_LLM_API_PREFIX}/models")
         models = resp.json().get("data", [])

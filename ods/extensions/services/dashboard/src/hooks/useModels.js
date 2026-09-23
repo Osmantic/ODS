@@ -174,7 +174,7 @@ function normalizeOdsMode(value) {
 
 function modelActivationModeError(effectiveMode, configuredMode, llmBackend, externalLemonade) {
   if (llmBackend === 'external') {
-    return 'ODS is using an external Ollama or LM Studio backend. Re-run the installer with --no-external-llm before activating a downloaded local model.'
+    return 'This install routes to a model service outside ODS. Downloading a model here does not switch the active model; reconnect ODS to its supported runtime integration to manage model changes.'
   }
   if (externalLemonade) {
     return 'Lemonade is managed outside ODS. Change the loaded model in Lemonade, then use Adopt loaded model here to update ODS and Portal.'

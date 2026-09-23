@@ -801,6 +801,54 @@ def test_huggingface_import_does_not_overwrite_corrupt_registry(
     assert registry_path.read_text(encoding="utf-8") == original
 
 
+def test_generic_external_lemonade_fallback_uses_health_not_available_first(monkeypatch):
+    import routers.models as models_router
+
+    seen_urls = []
+
+    class _Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class _Client:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            seen_urls.append(url)
+            if url.endswith("/api/v1/health"):
+                return _Response({"status": "ok", "model_loaded": "Qwen3.6-35B-A3B-GGUF"})
+            return _Response({"data": [{"id": "Gemma-4-E2B-it-GGUF"}]})
+
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "external")
+    monkeypatch.setenv("EXTERNAL_LLM_PROVIDER", "openai-compatible")
+    monkeypatch.setenv("LLM_URL", "http://host.docker.internal:8000/v1")
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", _Client)
+
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(
+            models_router._fetch_llama_loaded_model("llama-server", 8080, "/v1")
+        )
+    finally:
+        loop.close()
+
+    assert result == "Qwen3.6-35B-A3B-GGUF"
+    assert seen_urls == ["http://host.docker.internal:8000/api/v1/health"]
+
+
 def test_fetch_loaded_model_uses_configured_llm_url(monkeypatch):
     """Windows Lemonade exposes the runtime through LLM_URL, not llama-server DNS."""
     import routers.models as models_router
@@ -2077,6 +2125,20 @@ def test_lemonade_model_probe_uses_physical_backend_not_litellm_alias(monkeypatc
 
     monkeypatch.setattr(models_router, "LLM_BACKEND", "llama-server")
     assert models_router._configured_llm_base_url("llama-server", 8080) == "http://litellm:4000"
+
+
+def test_external_model_probe_uses_physical_backend_not_litellm_alias(monkeypatch, tmp_path):
+    import routers.models as models_router
+
+    values = {
+        "LLM_API_URL": "http://litellm:4000/v1",
+        "EXTERNAL_LLM_CONTAINER_URL": "http://host.docker.internal:8000",
+    }
+    monkeypatch.setattr(models_router, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.setattr(models_router, "read_env_value", lambda key, _root: values.get(key))
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "external")
+
+    assert models_router._configured_llm_base_url("llama-server", 8080) == "http://host.docker.internal:8000"
 
 
 def test_api_models_marks_installer_configured_model(test_client, monkeypatch, tmp_path):

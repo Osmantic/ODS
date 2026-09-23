@@ -68,6 +68,7 @@ export default function Models({ compact = false }) {
     configuredModel,
     odsMode,
     configuredMode,
+    llmBackend,
     externalLemonade,
     canActivateModels,
     activationModeError,
@@ -97,7 +98,7 @@ export default function Models({ compact = false }) {
   const [contextFloor, setContextFloor] = useState(0)
   const [deleteConfirmModel, setDeleteConfirmModel] = useState(null)
   const [activationConfigModel, setActivationConfigModel] = useState(null)
-  const [libraryScope, setLibraryScope] = useState(compact ? 'installed' : 'recommended')
+  const [libraryScope, setLibraryScope] = useState('recommended')
   const libraryRef = useRef(null)
 
   useEffect(() => {
@@ -277,7 +278,7 @@ export default function Models({ compact = false }) {
 
   return (
     <div className={compact ? 'models-refined' : 'p-3 sm:p-6 lg:p-8'}>
-      {compact ? <header className="models-toolbar"><h2>Your models</h2><span>Runtime: {formatModeLabel(odsMode)}{configuredMode !== odsMode ? ` / configured ${formatModeLabel(configuredMode)}` : ''}</span><button className="pixel-metal-control" title="Refresh models" onClick={refresh}><MetalMetricIcon icon={RefreshCw} size={14}/></button></header> : <header className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      {compact ? <header className="models-toolbar"><h2>Your models</h2><button type="button" className="models-browse-link" onClick={() => { setLibraryScope('recommended'); libraryRef.current?.scrollIntoView?.({ block: 'start' }) }}>Browse {odsCatalogModels.length} {odsCatalogModels.length === 1 ? 'model' : 'models'} ↓</button><span>Runtime: {formatModeLabel(odsMode)}{configuredMode !== odsMode ? ` / configured ${formatModeLabel(configuredMode)}` : ''}</span><button className="pixel-metal-control" title="Refresh models" onClick={refresh}><MetalMetricIcon icon={RefreshCw} size={14}/></button></header> : <header className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           {!compact && <h1 className="text-2xl font-bold text-theme-text">Models</h1>}
           <p className="mt-1 text-sm text-theme-text-muted">
@@ -316,13 +317,13 @@ export default function Models({ compact = false }) {
       )}
 
       {!canActivateModels && (
-        <section className="mb-5 flex flex-col gap-3 rounded-xl border border-amber-400/25 bg-amber-500/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <section className={compact ? 'models-external-notice' : 'mb-5 flex flex-col gap-3 rounded-xl border border-amber-400/25 bg-amber-500/10 p-4 sm:flex-row sm:items-center sm:justify-between'}>
           <div className="flex min-w-0 items-start gap-3">
             <AlertCircle size={18} className="mt-0.5 shrink-0 text-amber-300" />
             <div>
-              <p className="text-sm font-semibold text-amber-100">Local model runtime unavailable</p>
+              <p className="text-sm font-semibold text-amber-100">{llmBackend === 'external' ? 'Model changes managed externally' : 'Local model runtime unavailable'}</p>
               <p className="mt-1 text-sm text-amber-100/75">{activationModeError}</p>
-              <p className="mt-1 text-xs text-amber-100/60">Model downloads and deletion remain available.</p>
+              {!compact && <p className="mt-1 text-xs text-amber-100/60">Model downloads and deletion remain available.</p>}
             </div>
           </div>
           <Link
@@ -374,6 +375,7 @@ export default function Models({ compact = false }) {
         </section>
       )}
 
+      <div ref={libraryRef}>
       <ModelSourceTabs
         compact={compact}
         value={libraryScope}
@@ -381,10 +383,10 @@ export default function Models({ compact = false }) {
         installedCount={installedModels.length}
         recommendedCount={odsCatalogModels.length}
       />
+      </div>
 
       {libraryScope === 'huggingface' ? (
         <section
-          ref={libraryRef}
           className={compact ? 'models-hub' : 'rounded-lg border p-4 sm:p-5'}
           style={compact ? undefined : TECH_PANEL_STYLE}
         >
@@ -425,7 +427,6 @@ export default function Models({ compact = false }) {
           <div className="models-results"><span>{libraryScope === 'installed' ? 'On this device' : 'ODS recommended'}</span><span>{filteredModels.length} {filteredModels.length === 1 ? 'model' : 'models'}</span></div>
           {filteredModels.length ? <FittedLibraryPage key={`${libraryScope}:${query}:${categoryFilter}:${compatibilityFilter}:${speedFilter}:${contextFloor}`} items={filteredModels} label="Model library" minimumItems={6}>{items => <div className="models-list">{items.map(renderModel)}</div>}</FittedLibraryPage> : <p className="models-empty">No models match the current filters.</p>}
         </> : <section
-          ref={libraryRef}
           className="overflow-hidden rounded-xl border"
           style={TECH_PANEL_STYLE}
         >

@@ -792,6 +792,49 @@ class TestGetLlamaMetrics:
 class TestGetLoadedModel:
 
     @pytest.mark.asyncio
+    async def test_generic_external_lemonade_uses_loaded_health_not_first_available(self, monkeypatch):
+        monkeypatch.setattr("helpers.SERVICES", {
+            "llama-server": {"host": "host.docker.internal", "port": 8000},
+        })
+        monkeypatch.setattr("helpers.LLM_BACKEND", "external")
+        monkeypatch.setattr("helpers._LLM_API_PREFIX", "/v1")
+        monkeypatch.setenv("EXTERNAL_LLM_PROVIDER", "openai-compatible")
+        seen = []
+
+        async def get(url):
+            seen.append(url)
+            response = MagicMock(status_code=200)
+            response.json.return_value = {
+                "status": "ok", "model_loaded": "Qwen3.6-35B-A3B-GGUF",
+            }
+            return response
+
+        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=MagicMock(get=get)))
+
+        assert await get_loaded_model() == "Qwen3.6-35B-A3B-GGUF"
+        assert seen == ["http://host.docker.internal:8000/api/v1/health"]
+
+    @pytest.mark.asyncio
+    async def test_generic_external_lemonade_unloaded_is_not_available_first(self, monkeypatch):
+        monkeypatch.setattr("helpers.SERVICES", {
+            "llama-server": {"host": "host.docker.internal", "port": 8000},
+        })
+        monkeypatch.setattr("helpers.LLM_BACKEND", "external")
+        monkeypatch.setenv("EXTERNAL_LLM_PROVIDER", "openai-compatible")
+        seen = []
+
+        async def get(url):
+            seen.append(url)
+            response = MagicMock(status_code=200)
+            response.json.return_value = {"status": "ok", "model_loaded": None}
+            return response
+
+        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=MagicMock(get=get)))
+
+        assert await get_loaded_model() is None
+        assert seen == ["http://host.docker.internal:8000/api/v1/health"]
+
+    @pytest.mark.asyncio
     async def test_returns_none_when_llama_server_not_in_services(self, monkeypatch):
         monkeypatch.setattr("helpers.SERVICES", {})
         result = await get_loaded_model()

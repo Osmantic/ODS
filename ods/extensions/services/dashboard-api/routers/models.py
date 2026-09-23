@@ -386,6 +386,10 @@ def _configured_llm_base_url(host: str, port: int) -> str:
             value = read_env_value(key, INSTALL_DIR)
             if value:
                 return _strip_llm_api_suffix(value)
+    if LLM_BACKEND == "external":
+        value = read_env_value("EXTERNAL_LLM_CONTAINER_URL", INSTALL_DIR)
+        if value:
+            return _strip_llm_api_suffix(value)
     for key in ("LLM_URL", "LLM_API_URL", "OLLAMA_URL"):
         value = read_env_value(key, INSTALL_DIR)
         if value:
@@ -1788,6 +1792,19 @@ async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> st
     base_url = _configured_llm_base_url(host, port)
     lemonade_api = api_prefix == "/api/v1"
     async with httpx.AsyncClient(timeout=10.0) as client:
+        if (LLM_BACKEND == "external"
+                and os.environ.get("EXTERNAL_LLM_PROVIDER", "").lower() == "openai-compatible"):
+            try:
+                resp = await client.get(f"{base_url}/api/v1/health")
+                resp.raise_for_status()
+                health = resp.json()
+                if isinstance(health, dict) and "model_loaded" in health:
+                    loaded = health["model_loaded"]
+                    if health.get("status") == "ok" and isinstance(loaded, str) and loaded.strip():
+                        return loaded
+                    return None
+            except (httpx.HTTPError, ValueError):
+                pass
         if lemonade_api:
             try:
                 resp = await client.get(f"{base_url}{api_prefix}/health")

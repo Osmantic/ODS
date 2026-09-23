@@ -187,7 +187,7 @@ describe('useModels', () => {
 
     const activationPosts = fetch.mock.calls.filter(([, options]) => options?.method === 'POST')
     expect(activationPosts).toHaveLength(0)
-    expect(result.current.error).toContain('external Ollama or LM Studio backend')
+    expect(result.current.error).toContain('model service outside ODS')
   })
 
   test('externally managed Lemonade keeps browsing but routes switching through adoption', async () => {

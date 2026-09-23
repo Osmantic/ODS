@@ -107,6 +107,8 @@ test('uses compact source tabs and collapsible filters in the portal panel', () 
   useModelsMock.mockReturnValue(baseState({models:[model({status:'downloaded'})]}))
   const {container} = render(createElement(MemoryRouter, null, createElement(Models, {compact:true})))
   expect(screen.getByRole('tablist',{name:'Model sources'})).toHaveClass('portal-model-tabs')
+  expect(screen.getByRole('tab',{name:/ODS Recommended/})).toHaveAttribute('aria-selected','true')
+  expect(screen.getByRole('button',{name:'Browse 1 model ↓'})).toBeVisible()
   expect(container.querySelector('.model-filter-disclosure')).not.toHaveAttribute('open')
   expect(container.querySelector('[class*="min-w-[1074px]"]')).toBeNull()
   fireEvent.click(screen.getByRole('tab',{name:/Installed/}))
@@ -117,7 +119,7 @@ test('compact Models highlights the running model and keeps configuration behind
   const state = baseState({currentModel:'qwen3.5-9b-q4',models:[model({status:'loaded'})]})
   useModelsMock.mockReturnValue(state)
   render(createElement(MemoryRouter, null, createElement(Models, {compact:true})))
-  expect(screen.getByRole('tab',{name:/Installed/})).toHaveAttribute('aria-selected','true')
+  expect(screen.getByRole('tab',{name:/ODS Recommended/})).toHaveAttribute('aria-selected','true')
   expect(within(screen.getByRole('region',{name:'Model runtime'})).getByText('Qwen 3.5 9B')).toBeVisible()
   expect(screen.getByRole('textbox',{name:'Search models'})).toBeVisible()
   expect(screen.getByRole('article',{name:'Qwen 3.5 9B'})).toHaveClass('model-entry')
@@ -125,6 +127,20 @@ test('compact Models highlights the running model and keeps configuration behind
   fireEvent.click(screen.getByRole('button',{name:'Configure context for Qwen 3.5 9B'}))
   expect(screen.getByRole('dialog')).toBeVisible()
   expect(state.loadModel).not.toHaveBeenCalled()
+})
+
+test('compact external mode keeps the catalog visible without promising local activation', () => {
+  useModelsMock.mockReturnValue(baseState({
+    models: [model()], llmBackend: 'external', canActivateModels: false,
+    activationModeError: 'This install routes to a model service outside ODS.',
+  }))
+  render(createElement(MemoryRouter, null, createElement(Models, {compact:true})))
+
+  expect(screen.getByText('Model changes managed externally')).toBeVisible()
+  expect(screen.getByRole('button',{name:'Browse 1 model ↓'})).toBeVisible()
+  expect(screen.getByRole('tab',{name:/ODS Recommended/})).toHaveAttribute('aria-selected','true')
+  expect(screen.getByRole('button',{name:'Download'})).toBeVisible()
+  expect(screen.queryByText(/--no-external-llm/)).not.toBeInTheDocument()
 })
 
 test('compact catalog uses fitted pages and preserves filter reset behavior', () => {
