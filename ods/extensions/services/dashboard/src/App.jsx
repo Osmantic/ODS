@@ -68,7 +68,7 @@ function App() {
   // was per-browser and gave the wrong answer on re-imaged devices or fresh
   // browsers. The hook returns firstRun=false while it's loading or if the
   // API call fails, so the normal app shell is the safe default.
-  const { firstRun, refresh: refreshFirstRun } = useFirstRun()
+  const { firstRun, loading: firstRunLoading, error: firstRunError, refresh: refreshFirstRun } = useFirstRun()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     return getStorageValue('localStorage', 'ods-sidebar-collapsed') === 'true'
   })
@@ -96,6 +96,25 @@ function App() {
         }>
           <ODSTalk />
         </Suspense>
+      </div>
+    )
+  }
+
+  if (firstRunLoading || firstRun === null) {
+    return (
+      <div className="min-h-screen bg-theme-bg text-theme-text flex items-center justify-center" role="status" aria-live="polite">
+        <span className="font-mono text-sm text-theme-accent tracking-widest animate-pulse">Checking setup status…</span>
+      </div>
+    )
+  }
+
+  if (firstRunError) {
+    return (
+      <div className="min-h-screen bg-theme-bg text-theme-text flex items-center justify-center p-6">
+        <div role="alert" className="max-w-md text-center">
+          <p className="text-sm text-theme-text-muted">Unable to verify setup status.</p>
+          <button type="button" className="mt-4 pixel-metal-control" onClick={refreshFirstRun}>Retry</button>
+        </div>
       </div>
     )
   }
