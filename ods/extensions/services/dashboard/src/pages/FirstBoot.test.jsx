@@ -177,6 +177,33 @@ describe('FirstBoot', () => {
     )
   })
 
+  test('does not reapply a successful stack when a later Finish phase is retried', async () => {
+    let generateAttempts = 0
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/owner-card/status') return response(ownerCardReady)
+      if (url === '/api/templates/onboarding-agents/apply' && options.method === 'POST') {
+        return response({ enabled_count: 4, started_count: 4, failed_services: [], skipped_services: [], warnings: [], restart_required: false })
+      }
+      if (url === '/api/auth/magic-link/generate' && options.method === 'POST') {
+        generateAttempts += 1
+        return generateAttempts === 1
+          ? response({ detail: 'temporary generator failure' }, 503)
+          : response({ url: 'http://auth.spark.local/magic-link/retry-token', target_username: 'sam' })
+      }
+      if (url === '/api/setup/complete' && options.method === 'POST') return response({ success: true })
+      if (String(url).startsWith('/api/auth/magic-link/qr?url=')) return response({ data_url: 'data:image/png;base64,qrpayload' })
+      if (url === '/api/auth/admin-session') return response({ success: true })
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<FirstBoot onComplete={vi.fn()} />)
+    await finishWizard('Chat \\+ Agents')
+    expect(await screen.findByText(/temporary generator failure/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^finish$/i }))
+    expect(await screen.findByRole('heading', { name: /you're set/i })).toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/templates/onboarding-agents/apply')).toHaveLength(1)
+  })
+
   test('keeps first-run active when a selected stack is only partially applied', async () => {
     const fetchMock = vi.fn(async (url, options = {}) => {
       if (url === '/api/auth/magic-link/owner-card/status') {

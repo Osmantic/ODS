@@ -15,7 +15,7 @@
 // lose state mid-wizard. The server-side flip happens only on the
 // final "Finish" tap, via /api/setup/complete.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Sparkles, User, Layers, Check, ChevronRight, ChevronLeft,
   MessageSquare, Workflow, Boxes, Loader2, AlertCircle, Copy,
@@ -85,6 +85,7 @@ export default function FirstBoot({ onComplete }) {
   const [finishError, setFinishError] = useState(null)
   const [invite, setInvite] = useState(null)
   const [ownerCardStatus, setOwnerCardStatus] = useState(null)
+  const finishReceipt = useRef({ templateId: null, inviteData: null })
 
   // Persist progress whenever the user moves forward.
   useEffect(() => {
@@ -139,7 +140,7 @@ export default function FirstBoot({ onComplete }) {
         throw new Error('The selected stack is no longer available. Go back and choose another option.')
       }
 
-      if (selectedStack.templateId) {
+      if (selectedStack.templateId && finishReceipt.current.templateId !== selectedStack.templateId) {
         const applyResp = await fetch(`/api/templates/${selectedStack.templateId}/apply`, {
           method: 'POST',
         })
@@ -173,10 +174,11 @@ export default function FirstBoot({ onComplete }) {
             : ' Go back and choose another stack, or resolve the listed services and retry.'
           throw new Error(`${selectedStack.title} was only partially configured (${details}).${recovery}`)
         }
+        finishReceipt.current.templateId = selectedStack.templateId
       }
 
-      let inviteData = null
-      if (!ownerCardUnavailable) {
+      let inviteData = finishReceipt.current.inviteData
+      if (!ownerCardUnavailable && !inviteData) {
         // Generate the owner magic-link for the named user. Reuses the same
         // backend the Setup / Owner page consumes.
         const genResp = await fetch('/api/auth/magic-link/generate', {
@@ -195,6 +197,7 @@ export default function FirstBoot({ onComplete }) {
           throw new Error(body.detail || `generate failed: ${genResp.status}`)
         }
         inviteData = await genResp.json()
+        finishReceipt.current.inviteData = inviteData
       }
 
       // Flip the server-side sentinel so this device is "configured".
