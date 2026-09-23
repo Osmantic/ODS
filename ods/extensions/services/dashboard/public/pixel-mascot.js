@@ -165,21 +165,10 @@
     record.sleepMark.setAttribute('transform', `translate(${rounded(p.sleepX)} ${rounded(p.sleepY)})`);
     record.sparkles.setAttribute('opacity', rounded(p.sparkle));
     record.sparkles.setAttribute('transform', `translate(0 ${rounded(-4 * p.sparkle)})`);
-    record.question.setAttribute('opacity', rounded(p.question));
-    record.question.setAttribute('transform', `translate(0 ${rounded(-3 * p.question)}) rotate(${rounded(8 * p.question)} 84 18)`);
-    record.lens.setAttribute('opacity', rounded(p.lens));
-    record.lens.setAttribute('transform', `translate(${rounded(87 + p.propX)} ${rounded(43 + p.propY)}) rotate(${rounded(p.propRotate)})`);
-    record.gear.setAttribute('opacity', rounded(p.gear));
-    record.gear.setAttribute('transform', `translate(87 65) rotate(${rounded(p.gearRotate)})`);
-    record.hourglass.setAttribute('opacity', rounded(p.hourglass));
-    record.hourglass.setAttribute('transform', `translate(88 36) rotate(${rounded(p.waitRotate)})`);
-    record.grain.setAttribute('cy', rounded(p.grainY));
-    record.attention.setAttribute('opacity', rounded(p.attention));
     record.body.setAttribute("d", "M25 75C14 75 8 68 8 59C8 49 15 42 25 41C26 28 36 20 48 22C58 23 64 30 66 38C77 34 88 41 89 51C97 55 97 67 90 72C86 75 81 75 76 75Z");
     record.body.setAttribute("fill", `rgb(${Math.round(p.red)}, ${Math.round(p.green)}, ${Math.round(p.blue)})`);
     record.motion.setAttribute("transform", `translate(${rounded(50 + p.x + p.lookX*.22)} ${rounded(51 + p.y + p.lookY*.12)}) rotate(${rounded(p.rotate*.5)}) scale(${rounded(p.sx)} ${rounded(p.sy)}) translate(-50 -50)`);
     // Clouds communicate through drift, volume and atmosphere, never a face.
-    for (const prop of ['question','lens','gear','hourglass','attention','sleepMark']) record[prop].setAttribute('opacity','0');
     record.sparkles.setAttribute('opacity', rounded(Math.max(p.sparkle, record.state==='done' ? .65 : 0)));
     record.wind.setAttribute('opacity', ['thinking','working','waiting','sleeping'].includes(record.state) ? '.55' : '0');
     record.wind.setAttribute('transform', `translate(${rounded(p.x*1.5)} ${rounded(p.y*.5)})`);
@@ -192,7 +181,7 @@
       settled: record.settled || expired,
     });
     if (record.brand) {
-      // A stationary logo with open eyes, even while a completed chat is selected.
+      // Keep the brand cloud stationary while a completed chat is selected.
       Object.assign(p, { x: 0, y: 0, rotate: -3, sx: 1, sy: 1, round: 19, eyeOpen: 1, happy: 0 });
       p.lookX = reducedMotion?.matches ? 0 : record.gazeX;
       p.lookY = reducedMotion?.matches ? 0 : record.gazeY;
@@ -394,27 +383,15 @@
     wind.append(svg('path',{d:'M24 83H48M39 89H65M64 82H76'}));
     const sparkles = svg('g', {class:'portal-sparkles',opacity:0, fill:'none',stroke:'#d7e3e8','stroke-width':1.8,'stroke-linecap':'round'});
     [[13,24,3],[85,19,4],[85,65,2.5]].forEach(([x,y,r]) => sparkles.append(svg('path',{d:`M ${x} ${y-r} Q ${x} ${y} ${x+r} ${y} Q ${x} ${y} ${x} ${y+r} Q ${x} ${y} ${x-r} ${y} Q ${x} ${y} ${x} ${y-r} Z`})));
-    const sleepMark = svg('text', {x:73, y:18, fill:'currentColor', 'font-size':16, opacity:0});
+    const sleepMark = svg('text', {class:'portal-cloud-sleep', x:66, y:22, fill:'currentColor', 'font-size':16, 'font-family':'system-ui, sans-serif', 'font-weight':500, opacity:0});
     sleepMark.textContent = 'zzz';
-    const question = svg('text', {class:'portal-thinking-question',x:82,y:24,fill:'#d7e3e8','font-size':30,'font-weight':600,'font-family':'system-ui, sans-serif',opacity:0});
-    question.textContent = '?';
-    const lens = svg('g',{class:'portal-thinking-lens',opacity:0,stroke:'#c0d0dc','stroke-width':3.5,'stroke-linecap':'round',fill:'none'});
-    lens.append(svg('path',{d:'M 6 6 L 15 15'}),svg('circle',{cx:0,cy:0,r:10,fill:'#151c22','fill-opacity':.8}),svg('path',{d:'M -5 -1 Q -5 -5 -1 -5','stroke-width':1.5,opacity:.65}));
-    const gear = svg('g',{class:'portal-working-gear',opacity:0,stroke:'#c0d0dc','stroke-width':3,'stroke-linecap':'round',fill:'none'});
-    gear.append(svg('circle',{r:8,fill:'#151c22','fill-opacity':.85}),svg('circle',{r:2.5,'stroke-width':2}));
-    for (let tooth=0;tooth<8;tooth++) gear.append(svg('path',{d:'M 0 -8 L 0 -12',transform:`rotate(${tooth*45})`}));
-    const hourglass = svg('g',{class:'portal-waiting-hourglass',opacity:0,stroke:'#dbcbad','stroke-width':2.5,'stroke-linecap':'round','stroke-linejoin':'round',fill:'none'});
-    const grain=svg('circle',{r:1.2,cy:0,fill:'#dbcbad',stroke:'none'});
-    hourglass.append(svg('path',{d:'M -8 -12 H 8 M -8 12 H 8 M -6 -12 V -7 L 4 5 V 12 M 6 -12 V -7 L -4 5 V 12',fill:'#1d1b18','fill-opacity':.65}),svg('path',{d:'M -4 -8 H 4 L 0 -3 Z M -3 9 H 3 L 0 5 Z',fill:'#dbcbad',stroke:'none'}),grain);
-    const attention=svg('g',{class:'portal-attention-mark',opacity:0,transform:'translate(86 23)',stroke:'#d7bcae','stroke-width':2.3,'stroke-linecap':'round',fill:'none'});
-    attention.append(svg('circle',{r:10,fill:'#28231f','fill-opacity':.9,'stroke-width':1.5}),svg('path',{d:'M 0 -5 V 1'}),svg('circle',{cy:5,r:1.1,fill:'#d7bcae',stroke:'none'}));
-    motion.append(body, sheen); canvas.append(defs, motion, wind, sparkles);
+    motion.append(body, sheen); canvas.append(defs, motion, wind, sparkles, sleepMark);
     element.replaceChildren(canvas);
     element.classList.add("pixel-mascot");
     element.setAttribute("aria-hidden", "true");
     element.dataset.mascotState = next;
     element.title = `${element.dataset.pixelName || 'Portal'} · ${next}`;
-    const record = { element, motion, body, wind, sleepMark, sparkles, question, lens, gear, hourglass, grain, attention, key, state: next, static: isStatic, settled,
+    const record = { element, motion, body, wind, sleepMark, sparkles, key, state: next, static: isStatic, settled,
       interactive: element.hasAttribute('data-pixel-interactive'), gesture:null, gestureStarted:0, playDirection:1, playCount:0, clickTimes:[], lastPlay:-Infinity, lastGaze:-Infinity,
       brand: element.hasAttribute("data-pixel-brand"), gazeX: 0, gazeY: 0,
       hovered: false, hoverStarted: 0, interactionUntil: 0, started: clock(), visible: !intersection };

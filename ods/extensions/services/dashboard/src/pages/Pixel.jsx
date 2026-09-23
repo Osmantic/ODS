@@ -48,7 +48,6 @@ import { usePortalIdentity } from '../contexts/PortalIdentityContext'
 import {usePixelSendKey, shouldSendMessage} from '../lib/usePixelSendKey'
 import {
   AlertCircle,
-  Bot,
   CheckCircle2,
   Code2,
   Copy,

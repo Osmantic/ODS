@@ -1,10 +1,10 @@
 import { useState } from 'react'
-import { BookOpen, Bot, Terminal, Pencil, Globe, PanelRight, ArrowRight, Wrench, Activity } from 'lucide-react'
+import { BookOpen, Cloud, Terminal, Pencil, Globe, PanelRight, ArrowRight, Wrench, Activity } from 'lucide-react'
 import { parseTaskActivity } from '../lib/pixelTaskActivity'
 
 const kinds = {
   read: ['Read', BookOpen, 'Read-only context or source access'],
-  agent: ['Agent', Bot, 'Agent or subtask coordination'],
+  agent: ['Agent', Cloud, 'Agent or subtask coordination'],
   run: ['Run', Terminal, 'Local commands, checks, or validation'],
   edit: ['Edit', Pencil, 'Local edit operations'],
   browser: ['Browser', Globe, 'Browser or web-source operations'],

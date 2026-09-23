@@ -10,7 +10,7 @@ import {
   UserPlus,
   CreditCard,
   Code,
-  Bot,
+  Cloud,
 } from 'lucide-react'
 
 const Dashboard = lazy(() => import('../pages/Dashboard'))
@@ -26,7 +26,7 @@ const Pixel = lazy(() => import('../pages/Pixel'))
 const PixelSettings = lazy(() => import('../pages/PixelSettings'))
 
 export const coreRoutes = [
-  { id: 'home', path: '/', label: 'Home', icon: Bot, component: Pixel, getProps: ({ status }) => ({ systemStatus: status }), sidebar: false },
+  { id: 'home', path: '/', label: 'Home', icon: Cloud, component: Pixel, getProps: ({ status }) => ({ systemStatus: status }), sidebar: false },
   { id: 'pixel-settings', path: '/pixel/settings', label: 'Pixel settings', icon: Settings, component: PixelSettings, getProps: () => ({}), sidebar: false },
   {
     id: 'dashboard',
@@ -107,7 +107,7 @@ export const coreRoutes = [
     id: 'pixel',
     path: '/pixel',
     label: 'Portal',
-    icon: Bot,
+    icon: Cloud,
     component: Pixel,
     getProps: ({ status }) => ({ systemStatus: status }),
     sidebar: false,

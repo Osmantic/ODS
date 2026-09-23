@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Search, Settings as Gear, Palette, Activity, Network, HardDrive, RefreshCw, Terminal, Bot, ShieldCheck, Share2, UserRound } from 'lucide-react'
+import { Search, Settings as Gear, Palette, Activity, Network, HardDrive, RefreshCw, Terminal, Cloud, ShieldCheck, Share2, UserRound } from 'lucide-react'
 import Settings from '../pages/Settings'
 import MetalMetricIcon from './MetalMetricIcon'
 import ProfileSettings from './settings/ProfileSettings'
@@ -14,9 +14,9 @@ const PixelDiagnostics = lazy(() => import('./settings/PixelDiagnostics'))
 
 const sections = [
   ['general', 'General', Gear], ['profile', 'Profile', UserRound], ['appearance', 'Appearance', Palette],
-  ['portal-mascot', 'Portal mascot', Bot],
+  ['portal-mascot', 'Portal mascot', Cloud],
   ['usage', 'Usage', Activity], ['owner', 'Owner access', UserRound],
-  ['connections', 'Portal connections', Bot], ['access', 'Portal access', ShieldCheck],
+  ['connections', 'Portal connections', Cloud], ['access', 'Portal access', ShieldCheck],
   ['sharing', 'Model sharing', Share2], ['services', 'Services', Network],
   ['pixel-diagnostics', 'Portal diagnostics', Activity],
   ['storage', 'Storage', HardDrive], ['updates', 'Updates', RefreshCw],
