@@ -93,6 +93,20 @@ afterEach(() => {
 })
 
 describe('Extensions page — unhealthy + install derivations', () => {
+  it('restores focus to the originating details control after Escape closes the dialog', async () => {
+    installFetchMock({
+      extensions: [{ id: 'aider', name: 'Aider', status: 'not_installed', features: [], description: 'Pair programming' }],
+      summary: baseSummary({ total: 1, not_installed: 1 }),
+      agent_available: true,
+    })
+    render(<Extensions compact />)
+    const details = await screen.findByRole('button', { name: 'Details for Aider' })
+    fireEvent.click(details)
+    await screen.findByRole('dialog', { name: 'Aider' })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(details).toHaveFocus())
+  })
+
   it('shows starter collections as a matching paginated library with an explicit preview', async () => {
     vi.stubGlobal('fetch', vi.fn(async url => String(url).includes('/api/templates')
       ? makeJsonResponse({templates:Array.from({length:8}, (_,index) => ({id:`collection-${index}`,name:`Collection ${index}`,description:'A useful collection',services:['a','b']}))})
