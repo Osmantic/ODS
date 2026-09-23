@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Bundled Portal assistant, powered by Pixel, with dashboard conversations,
+  streamed activity, managed workspace previews, research tools, and explicit
+  extension and host-action approval flows on eligible platforms.
+- Public, pinned Pixel source and installation artifacts, with bundle/source
+  integrity checks and documentation of the separate ODS-only Pixel license.
+
+### Changed
+- Portal shows the advertised runtime model and distinguishes route availability
+  from agent qualification. The non-actionable readiness banner was removed
+  from chat; removal does not certify the agent or its model.
+- Native macOS and qualifying Linux/WSL installations have additional ownership,
+  lifecycle, sandbox, and artifact-binding checks. Native Windows continues to
+  use its separate agent installation path without the Portal host runtime.
+
+### Fixed
+- Pixel retry and compaction handling preserves the current request, task
+  activity, and goal plan, and avoids waiting for an impossible terminal retry.
+- Workspace operations retain canonical project paths, reject mistaken host
+  paths before file access, and verify published preview bytes independently
+  from whether the overall user task succeeded.
+- Reinstallation and update handling better recognizes owned Compose stacks,
+  retires owned native macOS sandboxes, and preserves retired sandbox archives.
+- Model streaming closes connections after client disconnects; memory-based
+  context limits cover additional native and WSL installation paths.
+
+### Validation boundaries
+- This accumulated public-beta promotion is a development candidate, not a new
+  stable tag. Pixel/Portal task quality, full model-switchboard qualification,
+  and installed update/rollback/reboot acceptance remain incomplete. See the
+  [promotion record](docs/PUBLIC_BETA_PROMOTION_2026-09.md) for evidence and
+  known limitations; source and CI passes do not imply full fleet acceptance.
+
 ## [2.6.0] - 2026-07-28
 
 ### Added

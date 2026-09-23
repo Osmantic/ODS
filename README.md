@@ -41,6 +41,11 @@ full-model capabilities, lifecycle recovery, and the final User Green gate. See
 [Release Validation](ods/docs/RELEASE_VALIDATION.md) for what a green
 run proves.
 
+**September public-beta candidate:** The accumulated Portal and platform changes
+are being prepared for `main`. Full fleet qualification is incomplete; see the
+[promotion record](ods/docs/PUBLIC_BETA_PROMOTION_2026-09.md) for known task
+limitations, available evidence, and remaining release gates.
+
 **Repo layout:** the repository root holds the public README, installers,
 security policy, GitHub workflows, and project coordination docs. The
 `ods/` directory is the product runtime: services, installer phases,
