@@ -96,6 +96,20 @@ def check_native(install_dir):
             "--ods-source REVIEWED_ODS_SOURCE; retain its preparation and recovery journals.")
 
 
+def check_rollback(install_dir, snapshot):
+    """Generic configuration rollback cannot safely replace native selection."""
+    if managed_pixel_identity(install_dir) is not None:
+        raise ValueError("Generic rollback cannot restore this managed native Pixel deployment. Keep its data and journals intact; use deployment-specific recovery.")
+    snapshot = Path(snapshot).resolve(strict=True)
+    if not snapshot.is_dir():
+        raise ValueError("Rollback snapshot must be a directory.")
+    native = snapshot / "data/pixel-native"
+    linux = snapshot / "data/pixel"
+    if (locally_selected_native(snapshot) or os.path.lexists(native)
+            or (os.path.lexists(linux) and (linux.is_symlink() or not linux.is_dir() or any(linux.iterdir())))):
+        raise ValueError("Rollback snapshot selects native Pixel without its protected deployment transaction. Keep the current installation intact; use deployment-specific recovery.")
+
+
 def check_compose(document):
     if not isinstance(document, dict) or not isinstance(document.get("services"), dict) or not document["services"]:
         raise ValueError("Cannot verify the source update's Compose services; no files were changed.")
@@ -111,18 +125,23 @@ def check_compose(document):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("native", "compose"))
+    parser.add_argument("mode", choices=("native", "compose", "rollback"))
     parser.add_argument("--install-dir", type=Path)
+    parser.add_argument("--snapshot", type=Path)
     args = parser.parse_args()
     try:
-        if args.mode == "native":
+        if args.mode == "rollback":
+            if args.install_dir is None or args.snapshot is None:
+                raise ValueError("install-dir-and-snapshot-required")
+            check_rollback(args.install_dir, args.snapshot)
+        elif args.mode == "native":
             if args.install_dir is None:
                 raise ValueError("install-dir-required")
             check_native(args.install_dir)
         else:
             check_compose(json.load(sys.stdin))
     except (OSError, ValueError, RuntimeError, ImportError) as exc:
-        print(f"Source update preflight refused: {exc}", file=sys.stderr)
+        print(f"{'Rollback' if args.mode == 'rollback' else 'Source update'} preflight refused: {exc}", file=sys.stderr)
         return 1
     return 0
 

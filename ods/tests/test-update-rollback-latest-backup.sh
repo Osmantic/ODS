@@ -45,6 +45,9 @@ make_install() {
     local dir="$1"
     mkdir -p "$dir/data"
     cp "$UPDATE_SCRIPT" "$dir/ods-update.sh"
+    # Use the reviewed real guard; synthetic target remains separate from helper code.
+    mkdir -p "$dir/scripts"
+    ln -s "$ROOT_DIR/scripts/source-update-preflight.py" "$dir/scripts/source-update-preflight.py"
     echo 'services: {dashboard-api: {image: example/dashboard-api:test}}' > "$dir/docker-compose.base.yml"
     printf '%s\n' '-f docker-compose.base.yml' > "$dir/.compose-flags"
     printf 'GPU_BACKEND=cpu\nMARKER=broken-by-update\n' > "$dir/.env"

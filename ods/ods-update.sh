@@ -493,6 +493,17 @@ wait_for_healthy() {
     return 1
 }
 
+# Shared native identity check also covers the prospective snapshot selection.
+# This is a refusal boundary, not a source/image/runtime rollback transaction.
+_native_rollback_preflight() {
+    local snapshot="$1" helper="${INSTALL_DIR}/scripts/source-update-preflight.py"
+    if [[ ! -f "$helper" ]] || ! command -v python3 >/dev/null 2>&1; then
+        log_error "Rollback safety helper or Python 3 is unavailable; no configuration or services were changed."
+        return 1
+    fi
+    python3 "$helper" rollback --install-dir "$INSTALL_DIR" --snapshot "$snapshot"
+}
+
 # _update_rollback <reason> <snap_dir> [compose_flags]
 #   Restores the given snapshot and restarts services.
 #   Called when cmd_update encounters a non-zero exit at any step.
@@ -502,6 +513,10 @@ _update_rollback() {
     local compose_flags_arg="${3:-}"
 
     log_error "${reason}"
+    if ! _native_rollback_preflight "$snap_dir_arg"; then
+        log_error "Automatic rollback refused before configuration or service changes; keep the retained snapshot for reviewed recovery."
+        return 1
+    fi
     log_warn "Auto-restoring rollback snapshot and restarting services..."
 
     if ! _restore_snapshot "$snap_dir_arg"; then
@@ -976,6 +991,9 @@ cmd_rollback() {
         return 1
     fi
 
+    if ! _native_rollback_preflight "$backup_path"; then
+        return 1
+    fi
     log_info "Rolling back from: $(basename "$backup_path")"
 
     # Show metadata (snapshot.json or legacy metadata.json)

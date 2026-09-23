@@ -47,6 +47,9 @@ class RollbackAtomicity(unittest.TestCase):
         self.root = Path(self.temp.name) / 'install with spaces'
         self.root.mkdir()
         shutil.copy2(TARGET, self.root / 'ods-update.sh')
+        # Real reviewed native guard, without importing code from the fixture target.
+        (self.root / 'scripts').mkdir()
+        (self.root / 'scripts/source-update-preflight.py').symlink_to(ROOT / 'scripts/source-update-preflight.py')
         shutil.copytree(ROOT / 'lib', self.root / 'lib')
         self.config = self.root / 'config/litellm'
         self.config.mkdir(parents=True)

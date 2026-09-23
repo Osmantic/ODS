@@ -27,3 +27,11 @@ source; merging this change cannot retrofit its preflight. Main-to-candidate
 installed migration remains unqualified. Release notifications compare version
 tags, not branch commits or image digests; a main merge with unchanged `2.6.0`
 does not announce a new stable release.
+
+`ods rollback` delegates to the same configuration rollback path. Manual and
+automatic rollback now check both the current native identity and the selected
+snapshot's prospective native state before stopping Compose or restoring files.
+Managed, selected, incomplete, or ambiguous native state requires deployment-
+specific recovery; configuration-only rollback cannot substitute for it. Ordinary
+non-native rollback remains available, with the same source/image transaction
+limitations described above.

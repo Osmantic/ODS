@@ -26,6 +26,9 @@ build_fixture() {
     local install="$1" mode="${2:-}"
     mkdir -p "$install"/{config/litellm,data/backups,bin}
     cp "$TARGET" "$install/ods-update.sh"
+    # Use the reviewed real guard; synthetic target remains separate from helper code.
+    mkdir -p "$install/scripts"
+    ln -s "$ROOT_DIR/scripts/source-update-preflight.py" "$install/scripts/source-update-preflight.py"
     chmod +x "$install/ods-update.sh"
     [[ -d "$ROOT_DIR/lib" ]] && cp -r "$ROOT_DIR/lib" "$install/"
     printf 'LIVE-CONFIG\n' > "$install/config/litellm/config.yaml"
