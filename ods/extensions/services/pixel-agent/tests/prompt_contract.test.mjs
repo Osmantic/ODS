@@ -469,9 +469,9 @@ test("adds a sequential approval-aware contract for extension lifecycle requests
   const result = promptContractForAgent({ agentId: "pixel" }, "pixel", event);
   assert.equal(
     result.appendSystemContext,
-    `${ODS_CONVERSATION_CONTRACT} ${ODS_EXTENSION_LIFECYCLE_CONTRACT}`
+    `${ODS_EXTENSION_LIFECYCLE_CONTRACT} ${ODS_CONVERSATION_CONTRACT}`
   );
-  assert.match(result.appendSystemContext, /action ods\.extensions\.inspect/);
+  assert.match(result.appendSystemContext, /action: "ods\.extensions\.inspect"/);
   assert.match(result.appendSystemContext, /Do not combine inspection and mutation/);
   assert.match(result.appendSystemContext, /missing required configuration/);
   assert.match(result.appendSystemContext, /never approve it yourself/);
@@ -484,7 +484,7 @@ test("natural and plan-only managed-extension directives receive lifecycle guida
     "Prepare exactly one immutable Operations Broker approval plan for cataloged ODS extension action ods.extensions.install with serviceId go-httpbin; do not execute.",
   ]) {
     const result = promptContractForAgent({ agentId: "pixel" }, "pixel", { prompt });
-    assert.match(result.appendSystemContext, /First call only pixel_ops_inventory/);
+    assert.match(result.appendSystemContext, /First call only tool_call with id pixel_ops_inventory/);
     assert.match(result.appendSystemContext, /Do not call apps, status, exec, web, memory/);
     assert.match(result.appendSystemContext, /never approve it yourself/);
   }
@@ -492,7 +492,24 @@ test("natural and plan-only managed-extension directives receive lifecycle guida
     { agentId: "pixel" }, "pixel",
     { prompt: "What does ods.extensions.install with serviceId go-httpbin do?" }
   );
-  assert.doesNotMatch(question.appendSystemContext, /First call only pixel_ops_inventory/);
+  assert.doesNotMatch(question.appendSystemContext, /First call only tool_call with id pixel_ops_inventory/);
+});
+
+test("live plan-only extension wording frontloads the exact broker first tool", () => {
+  const prompt =
+    "Prepare exactly one immutable Operations Broker approval plan for cataloged ODS extension action ods.extensions.install with serviceId go-httpbin; do not execute.";
+  const result = promptContractForAgent(
+    { agentId: "pixel" }, "pixel", { prompt }
+  );
+  assert.ok(result.appendSystemContext.startsWith(
+    `${ODS_EXTENSION_LIFECYCLE_CONTRACT} ${ODS_CONVERSATION_CONTRACT}`
+  ));
+  assert.match(ODS_EXTENSION_LIFECYCLE_CONTRACT,
+    /First call only tool_call with id pixel_ops_inventory and args \{\}/);
+  assert.match(ODS_EXTENSION_LIFECYCLE_CONTRACT,
+    /Broker tools handle authentication themselves; do not use exec, curl, or read local Operations tokens/);
+  assert.match(ODS_EXTENSION_LIFECYCLE_CONTRACT,
+    /Do not call apps, status, exec, web, memory/);
 });
 
 test("adds a read-only exact-job continuation contract after external approval", () => {
@@ -522,7 +539,7 @@ test("adds a read-only exact-job continuation contract after external approval",
     }
   );
   assert.match(mutationWording.appendSystemContext, /read-only lookup key/);
-  assert.doesNotMatch(mutationWording.appendSystemContext, /First call only pixel_ops_inventory/);
+  assert.doesNotMatch(mutationWording.appendSystemContext, /First call only tool_call with id pixel_ops_inventory/);
 });
 
 test("adds a single-tool read-only Operations capability inventory contract", () => {
