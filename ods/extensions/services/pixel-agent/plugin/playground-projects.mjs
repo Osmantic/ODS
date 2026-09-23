@@ -11,7 +11,7 @@ const COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const RESERVED = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const GENERIC = /^(?:playground|project|projeto|app|application|site|website|web|game|jogo|public|src|source|build|dist|assets|static|css|js|test|tests|folder|new-project)$/i;
 const LOCAL_FOLDERS = /^(?:src|source|public|assets|static|styles?|css|js|scripts?|tests?|docs?|lib|components|build|dist)$/i;
-const CORRECTION = 'For a new project, choose a short descriptive folder such as Playground/snake-game/index.html or Playground/weather-tool/main.py. Use that same folder for every project file and for preview publication. Do not use a bare filename or a generic src/public/project folder as the project name.';
+const CORRECTION = 'For a new project, use a workspace-relative path such as Playground/snake-game/index.html or Playground/weather-tool/main.py. Omit host home/workspace directory prefixes. Use that same descriptive folder for every project file and for preview publication. Do not use a bare filename or a generic src/public/project folder as the project name.';
 
 function parts(value) {
   if (typeof value !== 'string' || value.length > 512) return null;
