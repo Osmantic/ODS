@@ -39,6 +39,14 @@ observed_checkout="$(GIT_CONFIG_GLOBAL=/untrusted/host-gitconfig GIT_ALLOW_PROTO
 [[ "$observed_checkout" == "$source_root" ]]
 [[ "$(git -C "$source_root" rev-parse HEAD)" == "$PIXEL_SOURCE_REF" ]]
 [[ -z "$(git -C "$source_root" status --porcelain --untracked-files=all)" ]]
+[[ "$(git -C "$source_root" ls-tree HEAD pixel | cut -d ' ' -f 1)" == 100755 ]] || {
+    echo 'Bundled Pixel launcher lost its executable mode' >&2
+    exit 1
+}
+[[ -x "$source_root/pixel" ]] || {
+    echo 'Bundled Pixel launcher is not executable after checkout' >&2
+    exit 1
+}
 
 # A second verification must not rewrite the already-clean source.
 observed_checkout="$(_ods_pixel_source_checkout "$(id -un)" "$HOME" "$source_root")" || {

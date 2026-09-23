@@ -12,8 +12,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "vendor/pixel"
 BUNDLE = ROOT / "vendor/pixel.bundle"
-REF = "078cf9de3e7779b1dcee1fb352748706566a867d"
-SHA256 = "42f6e1f5563a082b97461d856d8983656d987466d146f3748bd6fba6cd7e771d"
+REF = "55837c2d1231a7d0a36f82975d3069e754cc413f"
+SHA256 = "bea663dc7a3788d737912dc28e1b7768a2403f9f19bc58d26580f40ec04af1b4"
 
 
 def command(*args):
@@ -40,6 +40,41 @@ def files(root):
     return result
 
 
+def source_index_modes():
+    entries = subprocess.check_output(
+        ["git", "-C", str(ROOT), "ls-files", "--stage", "-z", "--", "vendor/pixel"],
+        stderr=subprocess.DEVNULL,
+    )
+    result = {}
+    for entry in entries.split(b"\0"):
+        if not entry:
+            continue
+        metadata, path = entry.split(b"\t", 1)
+        mode, _object_id, stage = metadata.decode("ascii").split()
+        if stage != "0":
+            raise ValueError("Pixel source index has an unresolved entry")
+        relative = path.decode("utf-8", "surrogateescape").removeprefix("vendor/pixel/")
+        result[relative] = mode
+    return result
+
+
+def bundle_tree_modes(checkout):
+    entries = subprocess.check_output(
+        ["git", "-C", str(checkout), "ls-tree", "-r", "-z", "HEAD"],
+        stderr=subprocess.DEVNULL,
+    )
+    result = {}
+    for entry in entries.split(b"\0"):
+        if not entry:
+            continue
+        metadata, path = entry.split(b"\t", 1)
+        mode, kind, _object_id = metadata.decode("ascii").split()
+        if kind != "blob":
+            raise ValueError("Pixel bundle has a non-file entry")
+        result[path.decode("utf-8", "surrogateescape")] = mode
+    return result
+
+
 def main():
     if not SOURCE.is_dir() or SOURCE.is_symlink() or not BUNDLE.is_file() or BUNDLE.is_symlink():
         raise ValueError("Pixel source or bundle missing")
@@ -63,6 +98,13 @@ def main():
             raise ValueError("Pixel bundle has unexpected refs")
         if files(SOURCE) != files(checkout):
             raise ValueError("Pixel source differs from its install bundle")
+        source_modes = source_index_modes()
+        bundle_modes = bundle_tree_modes(checkout)
+        if source_modes != bundle_modes:
+            raise ValueError("Pixel source and bundle executable modes differ")
+        for launcher in ("pixel", "scripts/bootstrap.sh", "scripts/install.sh"):
+            if bundle_modes.get(launcher) != "100755":
+                raise ValueError(f"Pixel launcher is not executable: {launcher}")
     print("Pixel source and single-commit install bundle verified")
 
 
