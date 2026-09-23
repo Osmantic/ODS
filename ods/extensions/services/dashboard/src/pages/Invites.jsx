@@ -84,6 +84,7 @@ export default function Invites() {
   const [error, setError] = useState(null)
   const [showOwnerCreate, setShowOwnerCreate] = useState(false)
   const [showGuestCreate, setShowGuestCreate] = useState(false)
+  const guestCreateTriggerRef = useRef(null)
   const [generated, setGenerated] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const refreshButtonRef = useRef(null)
@@ -149,6 +150,12 @@ export default function Invites() {
       refreshButtonRef.current?.focus()
     }
   }, [refreshing])
+  useEffect(() => {
+    if (!showGuestCreate && guestCreateTriggerRef.current) {
+      guestCreateTriggerRef.current.focus()
+      guestCreateTriggerRef.current = null
+    }
+  }, [showGuestCreate])
 
   useEffect(() => { refresh() }, [refresh])
 
@@ -264,7 +271,7 @@ export default function Invites() {
             </p>
           </div>
           <button
-            onClick={() => setShowGuestCreate(true)}
+            onClick={(event) => { guestCreateTriggerRef.current = event.currentTarget; setShowGuestCreate(true) }}
             className="owner-access-action"
           >
             <UserPlus size={18} />
