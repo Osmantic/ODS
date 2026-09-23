@@ -649,7 +649,7 @@ main() {
                 exit 0
                 ;;
             -o|--output)
-                BACKUP_ROOT="$2"
+                BACKUP_ROOT="${2%/}"
                 shift 2
                 ;;
             -t|--type)
