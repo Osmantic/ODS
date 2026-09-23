@@ -266,6 +266,7 @@ snapshot_pre_update() {
     local snap_dir="${ROLLBACK_DIR}/pre-update-${timestamp}"
     log_info "Creating rollback snapshot: pre-update-${timestamp}" >&2
     mkdir -p "${snap_dir}"
+    chmod 700 "${snap_dir}"
 
     local files_saved=0
 
@@ -680,6 +681,7 @@ cmd_backup() {
     log_info "Creating backup: ${backup_id}"
     
     mkdir -p "$backup_path"
+    chmod 700 "$backup_path"
     
     # Backup compose files
     # NB: x=$((x + 1)) not ((x++)) — the post-increment form evaluates to 0
