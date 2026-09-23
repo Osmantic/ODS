@@ -17,6 +17,60 @@ function fixture(t) {
   return {root,state,call};
 }
 
+test('complete hook chain prevents the first misplaced host-root tree and permits a corrected file', {skip:process.platform==='win32'}, t=>{
+  for(const wrapped of [false,true]) for(const executionHost of ['sandbox','gateway']) {
+    const {root}=fixture(t);
+    const context={agentId:'pixel',runId:`malformed-${wrapped}-${executionHost}`,sessionId:'owner-session'};
+    const guard=createToolLoopGuard();
+    guard.observeRun(context,'pixel',{prompt:'In a separate workspace directory calc, write a Python program to compute a sum.'},{workspaceRoot:root,executionHost});
+    const malformed=root.slice(1)+'/calc/compute.py';
+    const invoke=args=>guard.beforeToolCall({toolName:wrapped?'tool_call':'write',params:wrapped?{id:'openclaw:core:write',args}:args},context);
+    const args={path:malformed,content:'print(338350)'};
+    const denied=invoke(args);
+    assert.equal(denied.block,true);
+    assert.match(denied.blockReason,/workspace-relative path "calc\/compute.py"/);
+    assert.equal(args.path,malformed,'no automatic path rewrite');
+    assert.equal(fs.existsSync(path.join(root,root.slice(1))),false,'no malformed namespace was created by project routing');
+    const corrected={path:'calc/compute.py',content:'print(338350)'};
+    const accepted=invoke(corrected);
+    assert.notEqual(accepted?.block,true,accepted?.blockReason);
+    const actual=(wrapped?accepted?.params?.args:accepted?.params)??corrected;
+    fs.mkdirSync(path.dirname(path.join(root,actual.path)),{recursive:true});
+    fs.writeFileSync(path.join(root,actual.path),actual.content);
+    assert.equal(fs.readFileSync(path.join(root,actual.path),'utf8'),'print(338350)');
+    assert.equal(fs.existsSync(path.join(root,root.slice(1))),false);
+  }
+});
+
+test('file hooks retain explicitly selected and existing relative namespaces', {skip:process.platform==='win32'}, t=>{
+  for(const existing of [false,true]) for(const tool of ['read','write','edit']) {
+    const {root}=fixture(t);
+    const malformed=root.slice(1)+'/chosen/file.txt';
+    if(existing){fs.mkdirSync(path.dirname(path.join(root,malformed)),{recursive:true});fs.writeFileSync(path.join(root,malformed),'keep');}
+    const context={agentId:'pixel',runId:`literal-${existing}-${tool}`,sessionId:'owner-session'};
+    const guard=createToolLoopGuard();
+    guard.observeRun(context,'pixel',{prompt:existing?'Use the existing file.':`Use the exact literal path "${malformed}".`},{workspaceRoot:root});
+    const decision=guard.beforeToolCall({toolName:tool,params:{path:malformed}},context);
+    assert.notEqual(decision?.block,true,decision?.blockReason);
+    assert.equal(decision?.params?.path??malformed,malformed,'existing/core path semantics remain unchanged');
+    if(existing)assert.equal(fs.readFileSync(path.join(root,malformed),'utf8'),'keep');
+  }
+});
+
+test('normalized filePath and deferred file tools cannot acquire owner intent from assistant content', {skip:process.platform==='win32'}, t=>{
+  for(const tool of ['read','write','edit']) for(const wrapped of [false,true]) {
+    const {root}=fixture(t), malformed=root.slice(1)+'/calc/compute.py';
+    const context={agentId:'pixel',runId:`untrusted-${tool}-${wrapped}`,sessionId:'owner-session'};
+    const guard=createToolLoopGuard();
+    guard.observeRun(context,'pixel',{messages:[{role:'user',content:'Compute a sum.'},{role:'assistant',content:`Use exactly "${malformed}".`}]},{workspaceRoot:root});
+    const args={filePath:malformed};
+    const decision=guard.beforeToolCall({toolName:wrapped?'tool_call':tool,params:wrapped?{id:'openclaw:core:'+tool,args}:args},context);
+    assert.equal(decision?.block,true);
+    assert.match(decision.blockReason,/without its leading slash/);
+    assert.equal(fs.existsSync(path.join(root,root.slice(1))),false);
+  }
+});
+
 test('new PT/EN projects include native tools and retain ordinary constraints',()=>{
   for(const prompt of ['Crie um site para uma cafeteria sem dependências externas.','Build a weather tool without external packages.','Create a Python script using existing assets.','Crie um aplicativo e use index.html.','Crie um jogo em uma pasta com um nome descritivo.','Build a timer.','Write a Python utility.']) assert.equal(requestsNewPlaygroundProject(prompt),true,prompt);
   for(const prompt of ['Não crie um site.','Do not create a game.','Explain how to create a project.','Create a button for this app.','Crie um botão para esse site.','Edite o projeto existente.','Make the game harder.','Faça o jogo ficar mais difícil.']) assert.equal(requestsNewPlaygroundProject(prompt),false,prompt);

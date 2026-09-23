@@ -4,10 +4,48 @@ import {readFileSync,mkdtempSync,mkdirSync,writeFileSync,rmSync,realpathSync} fr
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
-import {canonicalWorkspaceParams,extensionlessHtmlWrite,workspaceFileParent,nativeExecWorkdir} from '../plugin/workspace-path-contract.mjs';
+import {canonicalWorkspaceParams,extensionlessHtmlWrite,workspaceFileParent,nativeExecWorkdir,malformedRelativeWorkspacePath} from '../plugin/workspace-path-contract.mjs';
 import {createToolLoopGuard,createExecCancellationControl} from '../plugin/tool-loop-guard.mjs';
 const root='/home/owner/.openclaw/workspace-pixel';
 const context={agentId:'pixel',runId:'path-contract',sessionId:'session-path'};
+
+test('missing-one-leading-slash workspace paths are rejected only for selected core file tools',()=>{
+  const missing=()=>{throw Object.assign(new Error('missing'),{code:'ENOENT'});};
+  const malformed=root.slice(1)+'/calc/compute.py';
+  for(const tool of ['read','write','edit']) for(const wrapped of [false,true]) {
+    const args={path:malformed};
+    const reason=malformedRelativeWorkspacePath(wrapped?'tool_call':tool,wrapped?{id:'openclaw:core:'+tool,args}:args,root,'Compute a sum',missing);
+    assert.match(reason,/without its leading slash/);
+    assert.match(reason,/workspace-relative path "calc\/compute.py"/);
+    assert.equal(args.path,malformed);
+  }
+  for(const tool of ['exec','apply_patch','pixel_ods_workspace_preview']) assert.equal(malformedRelativeWorkspacePath(tool,{path:malformed},root,'',missing),undefined);
+  assert.equal(malformedRelativeWorkspacePath('tool_call',{id:'other:plugin:write',args:{path:malformed}},root,'',missing),undefined);
+  for(const value of [root+'/calc/compute.py','/workspace/calc/compute.py','calc/compute.py','home/other/.openclaw/workspace-pixel/calc/compute.py',root.slice(1)+'-other/calc/compute.py','./'+malformed,malformed.replace('/calc/','/../calc/'),malformed+'\0']) {
+    assert.equal(malformedRelativeWorkspacePath('write',{path:value},root,'',missing),undefined,value);
+  }
+});
+
+test('owner-selected literal paths and existing namespaces retain ordinary core behavior',()=>{
+  const missing=()=>{throw Object.assign(new Error('missing'),{code:'ENOENT'});};
+  const malformed=root.slice(1)+'/calc/compute.py';
+  for(const selected of [malformed,root.slice(1)+'/calc',root.slice(1)]) {
+    assert.equal(malformedRelativeWorkspacePath('write',{path:malformed},root,`Write exactly in \`${selected}\`.`,missing),undefined);
+  }
+  // Naming the correct absolute path does not authorize its malformed relative lookalike.
+  assert.match(malformedRelativeWorkspacePath('write',{path:malformed},root,`Write ${root}/calc/compute.py.`,missing),/without its leading slash/);
+  assert.match(malformedRelativeWorkspacePath('write',{path:malformed},root,`Write ${malformed}-other.`,missing),/without its leading slash/);
+  const directory=()=>({isSymbolicLink:()=>false,isDirectory:()=>true});
+  assert.equal(malformedRelativeWorkspacePath('write',{path:malformed},root,'',directory),undefined);
+  let calls=0;
+  assert.equal(malformedRelativeWorkspacePath('edit',{path:malformed},root,'',()=>{calls++;return{isSymbolicLink:()=>true};}),undefined);
+  assert.equal(calls,1,'never traverse an existing symbolic link');
+  assert.equal(malformedRelativeWorkspacePath('read',{path:malformed},root,'',()=>{throw Object.assign(new Error('denied'),{code:'EACCES'});}),undefined);
+  const long=root.slice(1)+'/'+ 'x'.repeat(300);
+  const reason=malformedRelativeWorkspacePath('write',{path:long},root,'private unrelated prompt',missing);
+  assert.ok(reason.length<300);
+  assert.doesNotMatch(reason,/xxx|private unrelated prompt/);
+});
 
 test('native exec selects the configured workspace without altering command text',t=>{
   const actual=mkdtempSync(path.join(tmpdir(),'pixel native cwd '));

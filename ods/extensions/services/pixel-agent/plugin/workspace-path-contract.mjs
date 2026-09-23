@@ -6,6 +6,54 @@ import path from 'node:path';
 const selectedTool = id => typeof id === 'string' && /^(?:openclaw:core:)?(?:read|write|edit|exec)$/.test(id)
   ? id.split(':').at(-1) : id === 'pixel_ods_workspace_preview' ? id : undefined;
 
+// A missing leading slash is not an alias: accepting it would create a second
+// host-looking tree inside the workspace. Existing or owner-named trees remain
+// ordinary core-tool paths; never reinterpret or move their files.
+export function malformedRelativeWorkspacePath(tool, params, root, ownerIntent, stat = lstatSync) {
+  if (tool === 'tool_call') return malformedRelativeWorkspacePath(selectedTool(params?.id), params?.args, root, ownerIntent, stat);
+  if (!['read','write','edit'].includes(tool) || typeof params?.path !== 'string' || typeof root !== 'string') return undefined;
+  const configured = root.replace(/\/+$/, '');
+  const value = params.path;
+  if (!configured.startsWith('/') || configured === '/' || configured === '/workspace'
+      || configured.length > 4096 || path.posix.normalize(configured) !== configured
+      || /[\x00-\x1f\\]/.test(configured) || value.length > 4096
+      || /[\x00-\x1f\\]/.test(value) || value.split('/').some(part=>part === '.' || part === '..' || !part)) return undefined;
+  const relativeRoot = configured.slice(1);
+  if (!value.startsWith(relativeRoot + '/')) return undefined;
+  const parts = value.split('/');
+  const rootParts = relativeRoot.split('/');
+  // This is a conservative exception, not an authorization grant: any exact
+  // literal owner-selected path/namespace still passes normal core policy.
+  if (typeof ownerIntent === 'string') {
+    const pathCharacter = /[\p{L}\p{N}_./\\-]/u;
+    for (let count=rootParts.length;count<=parts.length;count++) {
+      const literal=parts.slice(0,count).join('/');
+      for (let at=ownerIntent.indexOf(literal);at!==-1;at=ownerIntent.indexOf(literal,at+literal.length)) {
+        if ((!at || !pathCharacter.test(ownerIntent[at-1]))
+            && (at+literal.length===ownerIntent.length || !pathCharacter.test(ownerIntent[at+literal.length]))) return undefined;
+      }
+    }
+  }
+  let cursor=configured;
+  let missing=false;
+  for (const component of rootParts) {
+    cursor=path.posix.join(cursor,component);
+    try {
+      const entry=stat(cursor);
+      // Never follow a link to decide whether an existing namespace is real.
+      if (entry.isSymbolicLink() || !entry.isDirectory()) return undefined;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return undefined;
+      missing=true;break;
+    }
+  }
+  if (!missing) return undefined;
+  const suffix=value.slice(relativeRoot.length+1);
+  const correction=suffix.length<=240 ? `Use the workspace-relative path ${JSON.stringify(suffix)}.`
+    : 'Use a workspace-relative file path without that host-root prefix.';
+  return `Nothing was ${tool === 'read' ? 'read' : 'written or edited'}: this relative path repeats the configured absolute workspace root without its leading slash. ${correction} No path was rewritten.`;
+}
+
 // Diagnose a terminal path lookup failure, never rewrite shell source or infer
 // a host root from model arguments. The exec cwd receipt is host-side metadata;
 // it does not establish that the same absolute path exists inside the sandbox.

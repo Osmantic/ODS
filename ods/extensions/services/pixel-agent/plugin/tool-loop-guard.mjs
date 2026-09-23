@@ -20,7 +20,7 @@ import { createCompletionAssurance } from "./completion-assurance.mjs";
 import { createExtensionCompletionGate } from "./extension-completion-gate.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
 import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLaneStopReason, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
-import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure } from "./workspace-path-contract.mjs";
+import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 
@@ -6891,6 +6891,9 @@ export function createToolLoopGuard({
     // policy and deterministic routing active from runId alone; operations
     // that truly need a session still fail closed on the optional sessionId.
     const state = runId ? stateFor(runId) : undefined;
+    const malformedPath = malformedRelativeWorkspacePath(toolName, normalizedParams ?? event?.params,
+      state?.configuredWorkspaceRoot, state?.playgroundOwnerIntent);
+    if (malformedPath) return {block:true, blockReason:malformedPath};
     const delegatedName=typeof toolName==='string' && toolName==='tool_call' ? String((normalizedParams ?? event?.params)?.id ?? '').split(':').at(-1) : toolName;
     const requestedRestriction = workspacePreviewRestrictionReason(state, delegatedName,
       toolName === 'tool_call' ? (normalizedParams ?? event?.params)?.args : normalizedParams ?? event?.params);
