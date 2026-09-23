@@ -49,7 +49,8 @@ def validate_request(payload):
     if (not isinstance(payload,dict) or set(payload)-FIELDS or payload.get('model') != MODEL
             or not isinstance(payload.get('messages'),list) or not payload['messages']
             or type(payload.get('stream',False)) is not bool or type(payload.get('n',1)) is not int
-            or payload.get('n',1) != 1 or 'max_tokens' in payload and 'max_completion_tokens' in payload):
+            or payload.get('n',1) != 1 or 'max_tokens' in payload and 'max_completion_tokens' in payload
+            or ('top_p' in payload and (type(payload['top_p']) not in (int, float) or not 0.0 <= float(payload['top_p']) <= 1.0))):
         raise RuntimeErrorCode('invalid-inference-request')
     for message in payload['messages']:
         if (not isinstance(message,dict) or set(message)-{'role','content','name','tool_call_id','tool_calls','function_call'}
