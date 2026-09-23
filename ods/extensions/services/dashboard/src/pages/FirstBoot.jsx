@@ -319,7 +319,14 @@ export default function FirstBoot({ onComplete }) {
 
 function StepDots({ step, total }) {
   return (
-    <div className="flex items-center gap-2">
+    <div
+      className="flex items-center gap-2"
+      role="progressbar"
+      aria-label={`Setup progress: step ${step} of ${total}`}
+      aria-valuemin={1}
+      aria-valuemax={total}
+      aria-valuenow={step}
+    >
       {Array.from({ length: total }).map((_, i) => {
         const n = i + 1
         const active = n === step
