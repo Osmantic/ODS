@@ -247,8 +247,10 @@ export default function Usage({ compact = false }) {
     setActionState({status:'running',kind})
     try {
       const response = await fetch(action.url, {method:action.method || 'POST'})
-      const payload = await response.json().catch(()=>({}))
-      if (!response.ok) throw new Error(payload.detail || payload.message || 'Action could not be completed.')
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) {
+        throw new Error(payload?.detail || payload?.message || `Usage action failed (HTTP ${response.status}).`)
+      }
       setActionState({status:'success',kind,message:payload.message || 'Action accepted'})
       setReloadToken(value=>value+1)
     } catch (err) {
