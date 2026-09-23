@@ -343,6 +343,14 @@ if [[ "${GPU_COUNT:-0}" -eq 0 ]]; then
     return
 fi
 
+# An external model is already served outside this install. Reserving VRAM
+# for the tier's ODS-managed llama model can fail on a fully utilized host,
+# even though this install will not launch that model at all.
+if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
+    log "External LLM selected — skipping ODS-managed model GPU assignment."
+    return
+fi
+
 # Single GPU — generate a trivial assignment so the dashboard API can map
 # the GPU UUID to services (without this, /api/gpu/detailed shows empty
 # assigned_services).  Multi-GPU systems fall through to the full TUI below.

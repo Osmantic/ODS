@@ -39,10 +39,11 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 run_phase() {
-    # $1 = GPU_COUNT, $2 = GPU_BACKEND. Prints the phase's log lines.
-    local gpu_count="$1" gpu_backend="$2"
+    # $1 = GPU_COUNT, $2 = GPU_BACKEND, $3 = external URL (optional).
+    local gpu_count="$1" gpu_backend="$2" external_url="${3:-}"
     mkdir -p "$tmp_dir/install" "$tmp_dir/scripts"
     HARNESS_TMP="$tmp_dir" HARNESS_GPU_COUNT="$gpu_count" HARNESS_GPU_BACKEND="$gpu_backend" \
+        HARNESS_EXTERNAL_URL="$external_url" \
         bash -c '
 set -euo pipefail
 INTERACTIVE=false
@@ -64,6 +65,7 @@ ENABLE_LANGFUSE=false
 ENABLE_BRAVE_SEARCH=false
 GPU_COUNT="$HARNESS_GPU_COUNT"
 GPU_BACKEND="$HARNESS_GPU_BACKEND"
+EXTERNAL_LLM_URL="$HARNESS_EXTERNAL_URL"
 HOST_ARCH=amd64
 HOST_PAGE_SIZE=4096
 INSTALL_DIR="$HARNESS_TMP/install"
@@ -117,3 +119,15 @@ grep -q 'Single GPU detected — non-NVIDIA backend, skipping GPU assignment' <<
 grep -q 'No GPU detected — skipping' <<<"$out" \
     && fail "GPU_COUNT=1 must not log the no-GPU skip message"
 pass "single non-NVIDIA GPU keeps the single-GPU skip message"
+
+# A busy multi-GPU host reusing a LAN model must not try to reserve VRAM for
+# an ODS-managed llama model it will never launch.
+out="$(run_phase 2 nvidia http://192.0.2.1:8080/v1)" \
+    || fail "phase 03 failed with an external LLM on a multi-GPU host"
+grep -q 'PHASE03_COMPLETED' <<<"$out" \
+    || fail "phase 03 did not complete with external LLM selected"
+grep -q 'External LLM selected — skipping ODS-managed model GPU assignment' <<<"$out" \
+    || fail "multi-GPU external LLM must skip local model assignment"
+grep -q 'AUTOMATIC GPU ASSIGNMENT' <<<"$out" \
+    && fail "multi-GPU external LLM must not invoke automatic assignment"
+pass "multi-GPU external LLM skips unnecessary local model GPU reservation"
