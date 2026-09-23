@@ -38,13 +38,21 @@ docker() {
 }
 
 MOCK_CONTAINER_MISSING=1
-ODS_HERMES_READY_TIMEOUT=1 ODS_HERMES_READY_INTERVAL=1 \
-    _ods_cli_wait_for_hermes_ready
+# The function is intentionally redefined with mocks further below, so call it
+# through `if` here: bare invocations trip SC2218 under shellcheck.
+if ! ODS_HERMES_READY_TIMEOUT=1 ODS_HERMES_READY_INTERVAL=1 \
+    _ods_cli_wait_for_hermes_ready; then
+    echo "Hermes readiness rejected a missing container path" >&2
+    exit 1
+fi
 
 MOCK_CONTAINER_MISSING=0
 printf '%s\n' starting healthy > "$sequence_file"
-ODS_HERMES_READY_TIMEOUT=2 ODS_HERMES_READY_INTERVAL=1 \
-    _ods_cli_wait_for_hermes_ready
+if ! ODS_HERMES_READY_TIMEOUT=2 ODS_HERMES_READY_INTERVAL=1 \
+    _ods_cli_wait_for_hermes_ready; then
+    echo "Hermes readiness rejected a starting-then-healthy container" >&2
+    exit 1
+fi
 
 printf '%s\n' unhealthy healthy > "$sequence_file"
 ODS_HERMES_READY_TIMEOUT=2 ODS_HERMES_READY_INTERVAL=1 \
