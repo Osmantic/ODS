@@ -45,6 +45,7 @@ export default function PixelHandoffApproval({ label = 'Review handoffs' }) {
   const panel = useRef(null)
   const trigger = useRef(null)
   const previousDigest = useRef(null)
+  const mounted = useRef(true)
 
   const clearConsent = useCallback(() => { setReviewed(false); setCloud(false); setCost(false) }, [])
   useEffect(() => {
@@ -72,7 +73,8 @@ export default function PixelHandoffApproval({ label = 'Review handoffs' }) {
 
   useEffect(() => {
     const pending = controllers.current
-    return () => { generation.current++; for (const controller of pending) controller.abort() }
+    mounted.current = true
+    return () => { mounted.current = false; generation.current++; for (const controller of pending) controller.abort() }
   }, [])
 
   const selectRun = useCallback(id => {
@@ -133,7 +135,7 @@ export default function PixelHandoffApproval({ label = 'Review handoffs' }) {
       if (current === generation.current) {
         setError('Decision outcome uncertain. Reload this request; do not submit it again.'); setUncertain(true)
       }
-    } finally { inFlight.current = false; setBusy(false); clearConsent() }
+    } finally { inFlight.current = false; if (mounted.current) { setBusy(false); clearConsent() } }
   }
 
   const close = () => { generation.current++; setOpen(false); setPreview(null); clearConsent(); trigger.current?.focus() }
