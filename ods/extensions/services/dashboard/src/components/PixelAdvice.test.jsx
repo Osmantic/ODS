@@ -62,6 +62,16 @@ it('ignores a provider inspection failure from a closed advice panel', async () 
   expect(screen.queryByText('Provider settings unavailable. Reload before submitting.')).toBeNull()
 })
 
+it('does not surface an aborted job inspection after unmount', async () => {
+  const {fetchMock, unmount} = await setup()
+  let rejectInspection
+  fetchMock.mockImplementationOnce(() => new Promise((_, reject) => { rejectInspection = reject }))
+  fireEvent.click(screen.getByRole('button', {name:'Reload saved providers'}))
+  unmount()
+  await act(async () => rejectInspection(new Error('unmounted')))
+  expect(rejectInspection).toBeTypeOf('function')
+})
+
 it('creates a trackable advisory request on an HTTP LAN origin', async () => {
   const {fetchMock} = await setup()
   mockHttpCrypto(id)
