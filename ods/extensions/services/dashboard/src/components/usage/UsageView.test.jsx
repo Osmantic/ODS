@@ -6,6 +6,11 @@ function show(report) {
   return render(<UsageView report={{source:{status:'ok'},summary:{},...report}} readiness={{status:'ready'}} range={{start:'2026-05-01'}} />)
 }
 
+test('places focus on the Usage heading when the page mounts',()=>{
+  show({})
+  expect(screen.getByRole('heading',{name:'Usage'})).toHaveFocus()
+})
+
 test.each(['All Providers','All Services','All Sources'])('keeps missing metadata rows when filtering %s as unknown',label=>{
   show({models:[{model:'Missing metadata',input_tokens:10}]})
   fireEvent.click(screen.getByRole('button',{name:'Models',exact:true}))
