@@ -10,6 +10,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ODS_DIR="${ODS_DIR:-$SCRIPT_DIR}"
 BACKUP_ROOT="${ODS_DIR}/.backups"
 RETENTION_COUNT="${RETENTION_COUNT:-5}"
+if ! [[ "$RETENTION_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: RETENTION_COUNT must be a positive integer" >&2
+    exit 1
+fi
 
 # Colors for output
 RED='\033[0;31m'
