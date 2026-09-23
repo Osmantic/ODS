@@ -16,7 +16,9 @@ async function openConsole(readLogs) {
   render(<Extensions compact />)
   await screen.findByText('Gitea')
   vi.useFakeTimers()
-  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Logs' })))
+  const logsTrigger = screen.getByRole('button', { name: 'Logs' })
+  logsTrigger.focus()
+  await act(async () => fireEvent.click(logsTrigger))
   return within(screen.getByRole('dialog', { name: 'Gitea logs' }))
 }
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -67,4 +69,12 @@ test('releases the read gate after both automatic and manual failures', async ()
   expect(readLogs).toHaveBeenCalledTimes(3)
   expect(consoleView.getByText('Recovered logs')).toBeInTheDocument()
   expect(consoleView.queryByText('Host agent unavailable')).not.toBeInTheDocument()
+})
+
+test('restores focus to the Logs trigger when Escape closes the console', async () => {
+  await openConsole(vi.fn().mockResolvedValue(json({ logs: 'Initial snapshot' })))
+  const logsTrigger = screen.getByRole('button', { name: 'Logs' })
+  await act(async () => fireEvent.keyDown(document, { key: 'Escape' }))
+  expect(screen.queryByRole('dialog', { name: 'Gitea logs' })).not.toBeInTheDocument()
+  expect(logsTrigger).toHaveFocus()
 })

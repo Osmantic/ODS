@@ -107,6 +107,7 @@ export default function Extensions({ compact = false }) {
   const [confirm, setConfirm] = useState(null)
   const [toast, setToast] = useState(null)
   const [consoleExt, setConsoleExt] = useState(null)
+  const consoleTriggerRef = useRef(null)
   const [refreshing, setRefreshing] = useState(false)
   const [progressMap, setProgressMap] = useState({})
   const [depConfirm, setDepConfirm] = useState(null)
@@ -118,6 +119,13 @@ export default function Extensions({ compact = false }) {
   // fires onThresholdReached/onRecovered to drive the polling-lost banner.
   // Keyed by serviceId because multiple installs can be polling concurrently.
   const recoveryTrackers = useRef({})
+
+  useEffect(() => {
+    if (!consoleExt && consoleTriggerRef.current) {
+      consoleTriggerRef.current.focus()
+      consoleTriggerRef.current = null
+    }
+  }, [consoleExt])
 
   const pollProgress = (serviceId) => {
     if (activePollers.current[serviceId]) return
@@ -510,7 +518,7 @@ export default function Extensions({ compact = false }) {
               gpuBackend={catalog?.gpu_backend}
               agentAvailable={catalog?.agent_available}
               onDetails={() => setExpanded(ext.id)}
-              onConsole={() => setConsoleExt(ext)}
+              onConsole={() => { consoleTriggerRef.current = document.activeElement; setConsoleExt(ext) }}
               onAction={requestAction}
               mutating={mutating}
               progressData={progressMap[ext.id]}
