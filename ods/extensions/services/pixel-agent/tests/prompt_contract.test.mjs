@@ -80,7 +80,7 @@ test('ordinary coding guidance requires real CLI entry points and owner-derived 
   assert.match(contract, /import-only tests are insufficient/);
   assert.match(contract, /exact requested keys\/paths and follow-up corrections/);
   assert.match(contract, /Preserve protected inputs\/tests/);
-  assert.match(AGENT_SKILLS.workspace, /imports or calls to main do not verify the entry point/);
+  assert.match(AGENT_SKILLS.workspace, /imports or calls to main do not verify its entry point/);
   assert.doesNotMatch(contract, /call write once/);
 });
 
