@@ -52,6 +52,8 @@ bash scripts/simulate-installers.sh
 "$PYTHON_CMD" scripts/validate-sim-summary.py artifacts/installer-sim/summary.json
 
 echo "[gate] update rollback"
+"$PYTHON_CMD" tests/test-cli-legacy-update-backup.py
+"$PYTHON_CMD" tests/test-generated-config-backups.py
 bash tests/test-update-rollback-contract.sh
 bash tests/test-update-quoted-compose.sh
 "$PYTHON_CMD" -m pytest -q tests/test_source_update_preflight.py tests/test_native_backup_guard.py tests/test_native_rollback_preflight.py

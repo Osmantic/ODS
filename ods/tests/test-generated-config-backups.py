@@ -32,6 +32,10 @@ class GeneratedConfigBackupTests(unittest.TestCase):
             target = self.root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / relative, target)
+        # Keep the real native-state checks and their trusted dependencies;
+        # the copied installation remains an isolated configuration fixture.
+        for helper in ("backup-native-preflight.py", "source-update-preflight.py"):
+            (self.root / "scripts" / helper).symlink_to(ROOT / "scripts" / helper)
         (self.root / "data").mkdir()
         (self.root / ".version").write_text('{"version": "test"}\n')
 
