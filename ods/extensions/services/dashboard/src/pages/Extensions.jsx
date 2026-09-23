@@ -1080,7 +1080,16 @@ function ConsoleModal({ ext, onClose }) {
   const [atBottom, setAtBottom] = useState(true)
   const [installInfo, setInstallInfo] = useState(null)
   const logRef = useRef(null)
+  const refreshButtonRef = useRef(null)
+  const restoreRefreshFocus = useRef(false)
   const isNearBottom = useRef(true)
+
+  useEffect(() => {
+    if (!fetchingLogs && restoreRefreshFocus.current) {
+      restoreRefreshFocus.current = false
+      refreshButtonRef.current?.focus()
+    }
+  }, [fetchingLogs])
 
   useEffect(() => {
     const handler = (e) => { if (e.key === 'Escape') onClose() }
@@ -1183,6 +1192,7 @@ function ConsoleModal({ ext, onClose }) {
 
   const fetchLogsOnce = async () => {
     if (logRequestInFlight.current) return
+    restoreRefreshFocus.current = true
     logRequestInFlight.current = true
     setFetchingLogs(true)
     try {
@@ -1285,7 +1295,7 @@ function ConsoleModal({ ext, onClose }) {
           <span className={`text-[10px] ${disconnected ? 'text-red-400' : 'text-theme-text-muted'}`}>
             {disconnected ? 'Reconnecting...' : 'Auto-refreshing every 2s'}
           </span>
-          <button onClick={fetchLogsOnce} disabled={fetchingLogs} className="text-xs text-theme-text-muted hover:text-theme-text-secondary transition-colors disabled:opacity-50" title="Refresh now">
+          <button ref={refreshButtonRef} onClick={fetchLogsOnce} disabled={fetchingLogs} className="text-xs text-theme-text-muted hover:text-theme-text-secondary transition-colors disabled:opacity-50" title="Refresh now">
             <RefreshCw size={12} />
           </button>
         </div>
