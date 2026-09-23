@@ -850,8 +850,12 @@ grep -q 'brew --prefix' installers/macos/install-macos.sh \
   || { echo "[FAIL] macOS installer must check the Homebrew prefix for OpenCode"; exit 1; }
 grep -q '_opencode_candidate_is_file' installers/macos/install-macos.sh \
   || { echo "[FAIL] macOS installer must validate resolved OpenCode as an absolute executable file"; exit 1; }
-grep -q 'brew install opencode' installers/macos/install-macos.sh \
-  || { echo "[FAIL] macOS installer should prefer Homebrew OpenCode when brew is available"; exit 1; }
+grep -q 'ods_install_verified_opencode' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must use the reviewed hash-verified OpenCode download"; exit 1; }
+if grep -q 'brew install opencode' installers/macos/install-macos.sh; then
+  echo "[FAIL] macOS installer must not bypass the pinned OpenCode artifact through an unversioned install"
+  exit 1
+fi
 grep -q '<string>${OPENCODE_BIN}</string>' installers/macos/install-macos.sh \
   || { echo "[FAIL] macOS OpenCode LaunchAgent must use resolved OPENCODE_BIN"; exit 1; }
 grep -q '_compute_launchd_path "$(dirname "$OPENCODE_BIN")"' installers/macos/install-macos.sh \
