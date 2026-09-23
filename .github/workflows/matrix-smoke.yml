@@ -186,14 +186,15 @@ jobs:
       - name: Test pkg_install (install jq + rsync)
         shell: bash
         run: |
-          export LOG_FILE=/dev/null
+          export LOG_FILE="$RUNNER_TEMP/ods-packaging.log"
+          trap 'cat "$LOG_FILE" >&2' EXIT
           log() { echo "[INFO] $1"; }
           warn() { echo "[WARN] $1"; }
           error() { echo "[ERROR] $1"; exit 1; }
           source installers/lib/packaging.sh
           detect_pkg_manager
           pkg_update
-          pkg_install curl jq rsync || echo "WARN: jq/rsync install failed (may not be in repos)"
+          pkg_install curl jq rsync
 
           # Verify the core tools used by installer phases.
           if command -v curl &>/dev/null; then
