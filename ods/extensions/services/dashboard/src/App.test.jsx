@@ -93,6 +93,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', {name:'Close workspace panel'}))
     expect(screen.queryByLabelText('Settings draft')).toBeNull()
     expect(chat).toHaveValue('Chat draft')
+    expect(screen.getByRole('link', {name:'Edit your profile'})).toHaveFocus()
   })
   test('keeps the portal draft mounted while a panel collapses and closes', async () => {
     getInternalRoutes.mockReturnValue([{id:'dashboard',path:'/dashboard',label:'Dashboard',component:() => <p>Panel readings</p>}])
