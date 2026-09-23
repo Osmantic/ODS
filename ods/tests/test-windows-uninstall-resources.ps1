@@ -235,3 +235,7 @@ try {
         (Split-Path -Leaf $resolved) -notlike 'ods-uninstall-mock-*') { throw 'Unsafe fixture cleanup path' }
     Remove-Item -LiteralPath $resolved -Recurse -Force
 }
+# Negative Docker fixtures deliberately set LASTEXITCODE. Reaching this point
+# means every assertion and cleanup passed; do not leak a simulated failure to
+# the GitHub Actions PowerShell wrapper's final native-exit-code check.
+$global:LASTEXITCODE = 0
