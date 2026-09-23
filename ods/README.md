@@ -537,7 +537,9 @@ If we missed anyone, [open an issue](https://github.com/Osmantic/ODS/issues). We
 
 ## License
 
-Apache 2.0 — Use it, modify it, sell it. Just don't blame us.
+ODS code is Apache-2.0 except the bundled Pixel source, which has a separate
+ODS-only use and distribution grant. See [Licensing](LICENSING.md),
+[LICENSE](LICENSE), and [Pixel's license](vendor/pixel/LICENSE.md).
 
 ---
 

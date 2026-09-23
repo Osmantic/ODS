@@ -1893,6 +1893,17 @@ pathlib.Path(marker).write_text(json.dumps(payload, indent=2, sort_keys=True) + 
 PY
 chmod 0600 "$reconcile_marker"
 check test "$(_ods_pixel_managed_source_ref "$owner" "$reconcile_home")" = "$reconcile_ref"
+if (
+    unset PIXEL_SOURCE_URL
+    [[ "$(_ods_pixel_reconciliation_source_url 817214d5ec3d8aa583fe50c1dc7561f3c1a16dff)" == bundled ]]
+    [[ "$(_ods_pixel_reconciliation_source_url b33730436baf5d98bf58f7d57c090318fe19f433)" == 'https://github.com/Osmantic/Pixel.git' ]]
+    PIXEL_SOURCE_URL=/safe/developer-checkout
+    [[ "$(_ods_pixel_reconciliation_source_url 817214d5ec3d8aa583fe50c1dc7561f3c1a16dff)" == /safe/developer-checkout ]]
+); then
+    pass "model reconciliation chooses bundled source for the public ref and preserves developer overrides"
+else
+    fail "model reconciliation chooses bundled source for the public ref and preserves developer overrides"
+fi
 mkdir -p "$reconcile_home/.config/pixel-deployment"
 chmod 0700 "$reconcile_home/.config/pixel-deployment"
 cp "$reconcile_answers" "$reconcile_home/.config/pixel-deployment/onboarding.json"

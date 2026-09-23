@@ -4475,6 +4475,56 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     assert "UNRELATED_SECRET" not in captured["kwargs"]["env"]
 
 
+@pytest.mark.parametrize("explicit_source", [True, False])
+def test_managed_pixel_reconcile_accepts_bundled_source(
+    tmp_path, monkeypatch, explicit_source,
+):
+    install_dir = tmp_path / "install"
+    home = tmp_path / "owner-home"
+    install_dir.mkdir()
+    home.mkdir()
+    source_ref = "817214d5ec3d8aa583fe50c1dc7561f3c1a16dff"
+    source_setting = "PIXEL_SOURCE_URL=bundled\n" if explicit_source else ""
+    (install_dir / ".env").write_text(
+        f"{source_setting}PIXEL_SOURCE_REF={source_ref}\n",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(argv, 0, stdout="reconciled\n", stderr="")
+
+    monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+    monkeypatch.setattr(
+        _mod, "_ods_managed_pixel_identity", lambda: ("pixel-owner", home),
+    )
+    monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+    assert _mod._reconcile_ods_managed_pixel_model("safe-model", 65536) == "reconciled"
+    assert captured["env"]["PIXEL_SOURCE_URL"] == "bundled"
+
+
+def test_managed_pixel_reconcile_rejects_relative_source(tmp_path, monkeypatch):
+    install_dir = tmp_path / "install"
+    home = tmp_path / "owner-home"
+    install_dir.mkdir()
+    home.mkdir()
+    (install_dir / ".env").write_text("PIXEL_SOURCE_URL=../pixel\n", encoding="utf-8")
+    monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+    monkeypatch.setattr(
+        _mod, "_ods_managed_pixel_identity", lambda: ("pixel-owner", home),
+    )
+    monkeypatch.setattr(
+        _mod.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("an invalid source must fail before subprocess"),
+    )
+
+    with pytest.raises(RuntimeError, match="configured Pixel source"):
+        _mod._reconcile_ods_managed_pixel_model("safe-model", 65536)
+
+
 @pytest.mark.parametrize(
     "gateway_port",
     ["", "   ", "0", "01", "65536", "123456", "abc", "-1"],
