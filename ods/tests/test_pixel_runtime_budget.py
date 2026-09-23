@@ -60,7 +60,7 @@ def test_shared_overlay_is_staged_idempotent_and_uses_selected_home(tmp_path, co
     assert 'pixel_ods_extension_proposal' in value['tools']['alsoAllow']
     assert 'pixel_ods_extension_proposal' in value['tools']['sandbox']['tools']['allow']
     assert 'pixel_ods_extension_proposal' not in agent['tools']['deny']
-    for tool in ('pixel_ods_skill', 'pixel_ods_python_library_proposal', 'pixel_ods_extension_request_status', 'pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance'):
+    for tool in ('pixel_ods_workspace_export_plan', 'pixel_ods_skill', 'pixel_ods_python_library_proposal', 'pixel_ods_extension_request_status', 'pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance'):
         assert tool in value['tools']['alsoAllow']
         assert tool in value['tools']['sandbox']['tools']['allow']
         assert tool not in agent['tools']['deny']
@@ -93,3 +93,19 @@ def test_overlay_rejects_unsafe_input_without_modifying_config(tmp_path, fault):
     assert result.returncode != 0
     assert path.read_bytes() == before
     assert not list(tmp_path.glob('.ods-pixel-runtime-budget.*'))
+
+def test_export_planner_does_not_grant_denied_exec_permission(tmp_path):
+    path = tmp_path / 'openclaw.json'
+    value = configuration()
+    value['tools']['deny'] = ['exec']
+    value['agents']['list'][0]['tools'] = {'deny': ['exec']}
+    value['tools']['sandbox']['tools']['deny'] = ['exec']
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    result = invoke(path, tmp_path, tmp_path / '.openclaw')
+    assert result.returncode == 0, result.stderr
+    actual = json.loads(Path(result.stdout.strip()).read_text())
+    assert 'pixel_ods_workspace_export_plan' in actual['tools']['alsoAllow']
+    assert 'exec' in actual['tools']['deny']
+    assert 'exec' in actual['agents']['list'][0]['tools']['deny']
+    assert 'exec' in actual['tools']['sandbox']['tools']['deny']

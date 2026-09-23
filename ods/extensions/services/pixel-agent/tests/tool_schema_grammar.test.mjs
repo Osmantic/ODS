@@ -30,8 +30,8 @@ function compileSchema(schema) {
 }
 
 test('grammar inventory captures every actual Pixel registration', () => {
-  assert.equal(registered.length, 23);
-  for (const name of ['pixel_ods_workspace_preview', 'pixel_ods_source_proposal',
+  assert.equal(registered.length, 24);
+  for (const name of ['pixel_ods_workspace_preview', 'pixel_ods_workspace_export_plan', 'pixel_ods_source_proposal',
     'pixel_ods_python_library_proposal', 'pixel_ods_extension_request_retry']) {
     assert.ok(registered.some(tool => tool.name === name), name);
   }
