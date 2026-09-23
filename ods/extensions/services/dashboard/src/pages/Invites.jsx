@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import './invites.css'
 import {
   UserPlus, Copy, Check, Trash2, RefreshCw, QrCode, Share2, X,
@@ -84,8 +84,11 @@ export default function Invites() {
   const [error, setError] = useState(null)
   const [showOwnerCreate, setShowOwnerCreate] = useState(false)
   const [showGuestCreate, setShowGuestCreate] = useState(false)
+  const guestCreateTriggerRef = useRef(null)
   const [generated, setGenerated] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
+  const refreshButtonRef = useRef(null)
+  const restoreRefreshFocus = useRef(false)
   const [ownerCardStatus, setOwnerCardStatus] = useState(null)
 
   useEffect(() => {
@@ -108,7 +111,8 @@ export default function Invites() {
     }
   }, [tokens, now])
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (restoreFocus = false) => {
+    if (restoreFocus) restoreRefreshFocus.current = true
     setRefreshing(true)
     try {
       const [resp, ownerStatusResp] = await Promise.all([
@@ -136,8 +140,22 @@ export default function Invites() {
     } finally {
       setLoading(false)
       setRefreshing(false)
+      if (restoreFocus) Promise.resolve().then(() => refreshButtonRef.current?.focus())
     }
   }, [])
+
+  useEffect(() => {
+    if (!refreshing && restoreRefreshFocus.current) {
+      restoreRefreshFocus.current = false
+      refreshButtonRef.current?.focus()
+    }
+  }, [refreshing])
+  useEffect(() => {
+    if (!showGuestCreate && guestCreateTriggerRef.current) {
+      guestCreateTriggerRef.current.focus()
+      guestCreateTriggerRef.current = null
+    }
+  }, [showGuestCreate])
 
   useEffect(() => { refresh() }, [refresh])
 
@@ -180,7 +198,8 @@ export default function Invites() {
           <p>Manage device keys and temporary guest links.</p>
         </div>
         <button
-          onClick={refresh}
+          ref={refreshButtonRef}
+          onClick={() => refresh(true)}
           disabled={refreshing}
           className="p-2 text-theme-text-muted hover:text-theme-text hover:bg-theme-surface-hover rounded-lg transition-colors disabled:opacity-50"
           title="Refresh"
@@ -252,7 +271,7 @@ export default function Invites() {
             </p>
           </div>
           <button
-            onClick={() => setShowGuestCreate(true)}
+            onClick={(event) => { guestCreateTriggerRef.current = event.currentTarget; setShowGuestCreate(true) }}
             className="owner-access-action"
           >
             <UserPlus size={18} />
