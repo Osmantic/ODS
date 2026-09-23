@@ -403,7 +403,7 @@ def publish_snapshot(
         "relativeDirectory": relative_directory,
         "siteId": site_id,
         "files": len(captured),
-        **_published_path_feedback(observed),
+        **(_published_path_feedback(observed) if PROFILE_ID is None else {}),
         "bytes": total,
         "sha256": full_digest,
         "entryFile": "index.html",

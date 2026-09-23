@@ -610,3 +610,24 @@ def test_published_path_feedback_caps_count_and_total_characters():
     assert result["publishedPaths"] == sorted(names)[:len(result["publishedPaths"])]
     assert len(result["publishedPaths"]) + result["publishedPathsOmitted"] == len(names)
     assert len(json.dumps(result).encode()) < 4096
+
+
+def test_configured_portal_profile_keeps_its_existing_receipt_schema(tmp_path):
+    spec = importlib.util.spec_from_file_location("profile_preview_feedback_test", MODULE_PATH)
+    profile = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profile)
+    profile.configure_portal("profile-a")
+    workspace, previews = tmp_path / "workspace", tmp_path / "previews"
+    workspace.mkdir(mode=0o700)
+    previews.mkdir(mode=0o700)
+    site = workspace / "site"
+    site.mkdir(mode=0o700)
+    (site / "index.html").write_text("<h1>Profile-owned artifact</h1>")
+    (site / "index.html").chmod(0o600)
+    result = profile.publish_snapshot(workspace, previews, "site", os.getuid())
+    assert result["kind"] == "ods-portal-workspace-preview"
+    assert result["profileId"] == "profile-a"
+    assert set(result) == {"schemaVersion", "kind", "status", "profileId",
+                           "relativeDirectory", "siteId", "files", "bytes",
+                           "sha256", "entryFile", "entrySha256", "executable",
+                           "overwritten", "boundary"}
