@@ -85,6 +85,19 @@ describe('useModels', () => {
     expect(result.current.error).toBeNull()
   })
 
+  test('translates an interrupted models request into actionable retry guidance', async () => {
+    const error = new Error('signal is aborted without reason')
+    error.name = 'AbortError'
+    fetch.mockRejectedValue(error)
+
+    const { result } = renderHook(() => useModels())
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false)
+    })
+    expect(result.current.error).toBe('The model service request was interrupted. Refresh and retry.')
+  })
+
   test('keeps observed runtime identity separate from catalog activation identity and clears it on unload', async () => {
     fetch.mockResolvedValue(modelsResponse([], { loadedModel: 'owner-native-35b' }))
     const { result } = renderHook(() => useModels())
