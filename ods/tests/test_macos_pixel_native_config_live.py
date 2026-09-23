@@ -162,6 +162,10 @@ def test_real_native_candidate_preserves_shared_ods_policy(tmp_path, qualificati
         workspace = Path(managed_agent.get('workspace') or value['agents']['defaults']['workspace'])
         workspace.mkdir(parents=True, exist_ok=True)
         before = (candidate / 'openclaw.json').read_bytes()
+        existing_home_config = Path(module.private_answers(answers)['openclawHome']) / 'openclaw.json'
+        existing_home_config.parent.mkdir(parents=True, exist_ok=True)
+        existing_home_config.write_bytes(before)
+        existing_home_config.chmod(0o600)
         updated = module.prepare(source=source, ref=ref, answers=answers, node=node,
             sandbox_image=image, destination=tmp_path / 'managed-update', runtime=runtime,
             research_port=3099, previous_config=candidate / 'openclaw.json', previous_state_dir=state)
@@ -170,6 +174,7 @@ def test_real_native_candidate_preserves_shared_ods_policy(tmp_path, qualificati
         assert preserved['gateway']['auth'] == value['gateway']['auth']
         assert preserved['models']['providers'] == value['models']['providers']
         assert (candidate / 'openclaw.json').read_bytes() == before
+        assert existing_home_config.read_bytes() == before
         assert module.private_json(updated / 'migration.json')['stateDir'] == str(state)
     if migrating:
         if value['models']['providers']['ods-gateway'] != previous['models']['providers']['ods-gateway']:
@@ -196,7 +201,8 @@ def test_real_native_candidate_preserves_shared_ods_policy(tmp_path, qualificati
     assert agent['contextLimits']['toolResultMaxChars'] == max(4000, min(16000, expected_context // 4))
     assert agent['model'] == 'ods-gateway/ods/current'
     assert (candidate / 'workspace/AGENTS.md').is_file()
-    assert not (home / '.openclaw/openclaw.json').exists()
+    if qualification != 'config':
+        assert not (home / '.openclaw/openclaw.json').exists()
     assert json.loads((candidate / 'candidate.json').read_text())['requiresServiceQualification'] is True
     services = tmp_path / 'Native Service Bundle'
     service_digest = module.stage_services(source=source, ref=ref, ods_source=ROOT,

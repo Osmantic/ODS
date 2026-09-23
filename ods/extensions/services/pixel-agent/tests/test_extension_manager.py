@@ -1140,7 +1140,7 @@ class RecipeValidationTests(unittest.TestCase):
         for mode in ('validate', 'draft-save'):
             with mock.patch.object(manager, 'repository_client', return_value=0) as client:
                 self.assertEqual(manager.main(['manager', 'repository-' + mode + '-parts',
-                                              '/run/ods-pixel-manager/extension-manager.sock', *parts]), 0)
+                                              str(manager.SOCKET_PATH), *parts]), 0)
             client.assert_called_once_with(manager.SOCKET_PATH,
                                            recipe=recipe, save_draft=mode == 'draft-save')
 
@@ -1566,7 +1566,7 @@ class CredentialProjectionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        root = pathlib.Path(self.temporary.name)
+        root = pathlib.Path(self.temporary.name).resolve()
         (root / 'source').mkdir()
         (root / 'private').mkdir(mode=0o700)
         self.source = root / 'source/.env'

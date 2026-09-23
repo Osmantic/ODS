@@ -125,6 +125,37 @@ def test_candidate_uses_upstream_policy_without_activating_services(tmp_path, mo
     if fault in ('root', 'existing-config'): assert not calls
 
 
+@pytest.mark.parametrize('migrating', [False, True])
+def test_existing_home_is_preserved_and_allowed_only_for_explicit_migration(tmp_path, monkeypatch, migrating):
+    monkeypatch.setattr(config.sys, 'platform', 'darwin')
+    monkeypatch.setattr(config.os, 'geteuid', lambda: 501)
+    monkeypatch.setattr(config.bootstrap, 'selected_release', lambda *args: {})
+    monkeypatch.setattr(config, 'runtime_plugins', lambda *args: {})
+    home = tmp_path / 'existing-home'
+    home.mkdir()
+    existing = home / 'openclaw.json'
+    existing.write_text('{"existing":true}')
+    existing.chmod(0o600)
+    monkeypatch.setattr(config, 'private_answers', lambda path: {'openclawHome': str(home)})
+    calls = []
+
+    def stop_before_renderer(args, **kwargs):
+        calls.append(args)
+        raise RuntimeError('isolated-rendering-reached')
+
+    monkeypatch.setattr(config.bootstrap, 'command', stop_before_renderer)
+    migration = {'previous_config': existing, 'previous_state_dir': home} if migrating else {}
+    expected = 'isolated-rendering-reached' if migrating else 'initial-native-config-requires-unconfigured-home'
+    with pytest.raises((RuntimeError, ValueError), match=expected):
+        config.prepare(source=tmp_path, ref='a' * 40, answers=tmp_path / 'answers.json', node=existing,
+            sandbox_image='sha256:' + 'b' * 64, destination=tmp_path / 'candidate', runtime=tmp_path,
+            **migration)
+    assert bool(calls) == migrating
+    assert existing.read_text() == '{"existing":true}'
+    assert existing.stat().st_mode & 0o777 == 0o600
+    assert not (tmp_path / 'candidate').exists()
+
+
 @pytest.mark.parametrize('result_kind', ['valid', 'unchanged', 'outside', 'symlink', 'public'])
 def test_overlay_accepts_only_private_sibling_and_passes_explicit_home(tmp_path, monkeypatch, result_kind):
     path = tmp_path / 'openclaw.json'

@@ -406,7 +406,9 @@ def prepare(*, source, ref, answers, node, sandbox_image, destination, runtime,
             or not re.fullmatch(r'sha256:[a-f0-9]{64}', sandbox_image)):
         raise ValueError('new-native-candidate-and-qualified-image-required')
     home = Path(contract['openclawHome'])
-    if not home.is_absolute() or os.path.lexists(home / 'openclaw.json'):
+    # Migration renders in isolation and preserves the selected existing state.
+    # Only an initial installation requires an unconfigured home.
+    if not home.is_absolute() or (previous is None and os.path.lexists(home / 'openclaw.json')):
         raise ValueError('initial-native-config-requires-unconfigured-home')
     destination = destination.parent.resolve(strict=True) / destination.name
     with tempfile.TemporaryDirectory(prefix='.pixel-config-', dir=destination.parent) as temporary:
