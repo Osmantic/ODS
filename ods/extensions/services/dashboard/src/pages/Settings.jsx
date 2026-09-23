@@ -351,7 +351,12 @@ export default function Settings({ activeSection = 'all' }) {
 
   const handleExportConfig = async () => {
     try {
-      const data = statusCache || (await (await fetchJson('/api/status')).json())
+      let data = statusCache
+      if (!data) {
+        const response = await fetchJson('/api/status')
+        if (!response.ok) throw new Error(`Status request failed (${response.status})`)
+        data = await response.json()
+      }
       const config = {
         exported_at: new Date().toISOString(),
         version: data.version,
