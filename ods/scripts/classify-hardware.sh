@@ -24,6 +24,11 @@ RAM_MB="0"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --platform-id|--gpu-vendor|--memory-type|--vram-mb|--device-id|--gpu-name|--cpu-name|--ram-mb|--db)
+            [[ $# -ge 2 ]] || { echo "ERROR: $1 requires an argument" >&2; exit 1; }
+            ;;
+    esac
+    case "$1" in
         --platform-id) PLATFORM_ID="${2:-$PLATFORM_ID}"; shift 2 ;;
         --gpu-vendor)  GPU_VENDOR="${2:-$GPU_VENDOR}"; shift 2 ;;
         --memory-type) MEMORY_TYPE="${2:-$MEMORY_TYPE}"; shift 2 ;;
