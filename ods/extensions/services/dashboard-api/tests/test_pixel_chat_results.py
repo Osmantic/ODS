@@ -116,6 +116,7 @@ def test_disconnect_keeps_one_producer_and_replay_is_repeatable(store, monkeypat
         assert store.get(IDENTITY)["state"] == "active"
         duplicate = await pixel.pixel_chat_stream(ConnectedRequest(), body(), OWNER)
         assert len(calls) == 1
+        assert calls[0][1]["json"]["model"] == "portal/default"
         with pytest.raises(HTTPException) as changed:
             await pixel.pixel_chat_stream(ConnectedRequest(), body(text="different"), OWNER)
         assert changed.value.status_code == 423

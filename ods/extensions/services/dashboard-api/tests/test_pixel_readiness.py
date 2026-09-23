@@ -38,7 +38,7 @@ async def status_for(monkeypatch, access=ACCESS, identity=None):
 
     class Client(FakeClient):
         def stream(self, method, url, **kwargs):
-            self.response = FakeResponse(chunks=[json.dumps({"data": [{"id": "pixel/default"}]} if url.endswith("/v1/models") else value).encode()])
+            self.response = FakeResponse(chunks=[json.dumps({"data": [{"id": "portal/default"}]} if url.endswith("/v1/models") else value).encode()])
             return super().stream(method, url, **kwargs)
 
     with patch.object(pixel.httpx, "AsyncClient", side_effect=lambda **_kwargs: Client(None)):

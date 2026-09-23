@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 _DEFAULT_EDGE_URL = "http://pixel-edge:9595"
-_MODEL = "pixel/default"
+_MODEL = "portal/default"
 _CHAT_STREAM_TIMEOUT_SECONDS = 2040.0
 _CLIENT_DISCONNECT_POLL_SECONDS = 0.25
 _STREAM_KEEPALIVE_SECONDS = 15.0

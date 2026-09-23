@@ -156,7 +156,7 @@ def test_native_compose_services_start_and_reach_host(tmp_path, monkeypatch):
             'import json,urllib.request; request=urllib.request.Request("http://127.0.0.1:9595/v1/models",'
             'headers={"Authorization":"Bearer ' + 'a' * 64 + '"}); '
             'value=json.load(urllib.request.urlopen(request,timeout=10)); '
-            'assert any(item["id"]=="pixel/default" for item in value["data"]); print("models-ok")')
+            'assert any(item["id"]=="portal/default" for item in value["data"]); print("models-ok")')
         assert result.returncode == 0, result.stdout + result.stderr
         assert (workspace / 'index.html').read_text().startswith('<!doctype html>')
         result = run('exec', '-T', 'pixel-workspace-preview', 'python3', '/source/workspace_preview.py', 'request',

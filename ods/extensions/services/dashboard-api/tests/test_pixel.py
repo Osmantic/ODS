@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import pathlib
@@ -336,14 +337,36 @@ async def test_transport_diagnostics_log_type_without_sensitive_exception_text(
 @pytest.mark.asyncio
 async def test_status_returns_only_fixed_projection():
     secret = "upstream-secret-must-not-appear"
-    body = json.dumps({"data": [{"id": "pixel/default", "owned_by": secret}]}).encode()
+    body = json.dumps({"data": [{"id": "portal/default", "owned_by": secret}]}).encode()
     response = FakeResponse(chunks=[body])
     with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(response)):
         result = await pixel.pixel_status()
-    assert result == {"available": True, "model": "pixel/default", "detail": "Owner agent available; release identity is not fully verified",
+    assert result == {"available": True, "model": "portal/default", "detail": "Owner agent available; release identity is not fully verified",
                       "runtimeIdentity": pixel.unknown_runtime_identity(), "runtimeMatchesRelease": None,
                       "readiness": UNVERIFIED_READINESS}
     assert secret not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_status_accepts_real_edge_advertised_model(monkeypatch):
+    # Exercise the production edge listing rather than repeating the dashboard
+    # constant in a mock: these services previously disagreed after a rename.
+    edge_dir = pathlib.Path(__file__).resolve().parents[2] / "pixel-edge"
+    monkeypatch.syspath_prepend(str(edge_dir))
+    monkeypatch.setenv("PIXEL_PREVIEW_PROXY_KEY", "p" * 64)
+    spec = importlib.util.spec_from_file_location("portal_edge_contract", edge_dir / "pixel_edge.py")
+    edge = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(edge)
+    monkeypatch.setattr(edge, "_check_auth", lambda _request: None)
+    async def ingress_ready():
+        return True
+    monkeypatch.setattr(edge, "_ingress_ready", ingress_ready)
+    listing = await edge.handle_models(None)
+    response = FakeResponse(chunks=[listing.body])
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(response)):
+        result = await pixel.pixel_status()
+    assert result["available"] is True
+    assert result["model"] == json.loads(listing.body)["data"][0]["id"] == "portal/default"
 
 
 @pytest.mark.asyncio
@@ -366,7 +389,7 @@ async def test_status_projects_live_fixed_external_host_without_private_origin(m
 
     monkeypatch.setattr(pixel, "get_loaded_model", loaded)
     monkeypatch.setattr(pixel, "get_llama_context_size", context)
-    body = json.dumps({"data": [{"id": "pixel/default"}]}).encode()
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
     with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(chunks=[body]))):
         result = await pixel.pixel_status()
 
@@ -393,7 +416,7 @@ async def test_status_does_not_invent_external_host_identity_from_env(monkeypatc
         return loaded_model
 
     monkeypatch.setattr(pixel, "get_loaded_model", loaded)
-    body = json.dumps({"data": [{"id": "pixel/default"}]}).encode()
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
     with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(chunks=[body]))):
         result = await pixel.pixel_status()
     assert "runtime" not in result
@@ -439,7 +462,7 @@ async def test_status_projects_only_validated_active_remote_runtime(monkeypatch)
         }
 
     monkeypatch.setattr(pixel, "request_agent_json", active_remote_runtime)
-    body = json.dumps({"data": [{"id": "pixel/default"}]}).encode()
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
     with patch.object(
         pixel.httpx,
         "AsyncClient",
@@ -449,7 +472,7 @@ async def test_status_projects_only_validated_active_remote_runtime(monkeypatch)
 
     assert result == {
         "available": True,
-        "model": "pixel/default",
+        "model": "portal/default",
         "detail": "Owner agent available; release identity is not fully verified",
         "runtimeIdentity": pixel.unknown_runtime_identity(), "runtimeMatchesRelease": None,
         "readiness": UNVERIFIED_READINESS,
@@ -513,7 +536,7 @@ async def test_status_projects_local_identity_even_for_adaptive_model(monkeypatc
         return {"status": "idle", "activeAgentViable": False, "activeRuntime": runtime}
 
     monkeypatch.setattr(pixel, "request_agent_json", local_status)
-    body = json.dumps({"data": [{"id": "pixel/default"}]}).encode()
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
     with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(chunks=[body]))):
         result = await pixel.pixel_status()
     assert result["available"] is True
@@ -568,7 +591,7 @@ async def test_matching_lemonade_model_keeps_pixel_available(monkeypatch, loaded
     monkeypatch.setattr(pixel, "read_live_env_value",
                         lambda key: "lemonade" if key == "LLM_BACKEND" else "")
     monkeypatch.setattr(pixel, "get_loaded_model", physical_model)
-    body = json.dumps({"data": [{"id": "pixel/default"}]}).encode()
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
     with patch.object(pixel.httpx, "AsyncClient",
                       return_value=FakeClient(FakeResponse(chunks=[body]))):
         status = await pixel.pixel_status()
@@ -611,7 +634,7 @@ async def test_non_lemonade_runtime_does_not_probe_lemonade_identity(monkeypatch
     monkeypatch.setattr(pixel, "request_agent_json", recorded_status)
     monkeypatch.setattr(pixel, "read_live_env_value", lambda _key: "llama.cpp")
     monkeypatch.setattr(pixel, "get_loaded_model", forbidden_probe)
-    body = json.dumps({"data": [{"id": "pixel/default"}]}).encode()
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
     with patch.object(pixel.httpx, "AsyncClient",
                       return_value=FakeClient(FakeResponse(chunks=[body]))):
         status = await pixel.pixel_status()
@@ -698,7 +721,7 @@ async def test_status_keeps_adaptive_model_available_with_fixed_advisory(monkeyp
         }
 
     monkeypatch.setattr(pixel, "request_agent_json", adaptive_model)
-    body = json.dumps({"data": [{"id": "pixel/default"}]}).encode()
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
     with patch.object(
         pixel.httpx,
         "AsyncClient",
@@ -708,7 +731,7 @@ async def test_status_keeps_adaptive_model_available_with_fixed_advisory(monkeyp
 
     assert result == {
         "available": True,
-        "model": "pixel/default",
+        "model": "portal/default",
         "detail": "Owner agent available; release identity is not fully verified",
         "runtimeIdentity": pixel.unknown_runtime_identity(), "runtimeMatchesRelease": None,
         "readiness": UNVERIFIED_READINESS,
@@ -731,7 +754,7 @@ async def test_status_does_not_infer_failed_qualification_from_unknown_or_qualif
         return {"status": "idle", "activeAgentViable": viability}
 
     monkeypatch.setattr(pixel, "request_agent_json", model_status)
-    body = json.dumps({"data": [{"id": "pixel/default"}]}).encode()
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
     with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(chunks=[body]))):
         result = await pixel.pixel_status()
     assert result["available"] is True
@@ -785,7 +808,7 @@ async def test_chat_forwards_exact_body_and_narrow_edge_key_only():
     assert '"Portal"' in capture["json"]["messages"][0]["content"]
     assert capture["json"]["messages"][1:] == [{"role": "user", "content": "hello"}]
     assert {key: value for key, value in capture["json"].items() if key != "messages"} == {
-        "model": "pixel/default",
+        "model": "portal/default",
         "stream": True,
         "user": "conversation_1",
     }

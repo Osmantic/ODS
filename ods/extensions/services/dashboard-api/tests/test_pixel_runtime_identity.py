@@ -64,7 +64,7 @@ async def test_status_keeps_chat_available_without_promoting_partial_identity(mo
         def stream(self, method, url, **kwargs):
             calls.append((method, url, kwargs))
             if url.endswith("/v1/models"):
-                self.response = FakeResponse(chunks=[b'{"data":[{"id":"pixel/default"}]}'])
+                self.response = FakeResponse(chunks=[b'{"data":[{"id":"portal/default"}]}'])
             elif kind == "timeout":
                 raise pixel.httpx.ReadTimeout("private upstream token")
             elif kind == "nested":
@@ -98,7 +98,7 @@ def test_authenticated_status_never_caches_live_or_unknown_identity(monkeypatch,
     monkeypatch.setattr(pixel, "request_agent_json", host)
     app = FastAPI()
     app.include_router(pixel.router)
-    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(chunks=[b'{"data":[{"id":"pixel/default"}]}']))):
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(chunks=[b'{"data":[{"id":"portal/default"}]}']))):
         result = TestClient(app).get("/api/pixel/status", headers={"Authorization": "Bearer identity-test-owner-key"})
     assert result.status_code == 200
     assert result.headers["Cache-Control"] == "no-store"
