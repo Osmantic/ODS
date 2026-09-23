@@ -92,3 +92,14 @@ test.each(['ctrlKey','metaKey'])('repeated %s search shortcuts preserve the quer
   fireEvent.click(screen.getByRole('button',{name:'Close search'}))
   expect(trigger).toHaveFocus()
 })
+
+test('restores the opener focus when native Escape cancellation is requested', () => {
+  render(<MemoryRouter><button>Original trigger</button><PixelCommandSearch onInsert={() => {}} onNewTask={() => {}}/></MemoryRouter>)
+  const trigger = screen.getByRole('button',{name:'Original trigger'})
+  trigger.focus()
+  fireEvent(window, new Event(OPEN_PIXEL_SEARCH))
+  const dialog = document.querySelector('dialog')
+  fireEvent(dialog, new Event('cancel', {cancelable:true}))
+  expect(dialog.open).toBe(false)
+  expect(trigger).toHaveFocus()
+})

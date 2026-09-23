@@ -50,7 +50,8 @@ export default function PixelCommandSearch({ onInsert, onNewTask }) {
   }, [index, query, chats])
   function close() { dialog.current.close(); trigger.current?.focus?.() }
   function choose(entry) { if (entry) { close(); entry.run() } }
-  return <dialog ref={dialog} className="pixel-command-dialog" aria-label="Search Pixel" onClick={event => { if (event.target === event.currentTarget) close() }} onCancel={() => trigger.current?.focus?.()}>
+  function cancel(event) { event.preventDefault(); close() }
+  return <dialog ref={dialog} className="pixel-command-dialog" aria-label="Search Pixel" onClick={event => { if (event.target === event.currentTarget) close() }} onCancel={cancel}>
     <div className="pixel-command-input"><Search size={17}/><input ref={field} aria-label="Search conversations and actions" placeholder="Search conversations and actions…" value={query} onChange={event => { setQuery(event.target.value); setIndex(0) }} onKeyDown={event => {
       if (event.nativeEvent.isComposing) return
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setIndex(value => entries.length ? (value + (event.key === 'ArrowDown' ? 1 : -1) + entries.length) % entries.length : 0) }
