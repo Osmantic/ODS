@@ -42,6 +42,8 @@ mkdir -p "$FIXTURE/lib" "$FIXTURE/extensions/services/bsvc" "$FIXTURE/extensions
 cp "$ROOT_DIR/ods-cli" "$FIXTURE/ods-cli"
 cp "$ROOT_DIR"/lib/*.sh "$FIXTURE/lib/"
 : > "$FIXTURE/docker-compose.base.yml"
+echo '{"services":{"bsvc":{"image":"example/bsvc:v1"},"oneshot":{"image":"example/oneshot:v1"}}}' \
+    > "$FIXTURE/compose-plan.json"
 
 cat > "$FIXTURE/extensions/services/bsvc/manifest.yaml" <<'EOF'
 schema_version: ods.services.v1
@@ -92,8 +94,12 @@ if [[ "${1:-}" == "compose" ]]; then
     for a in "$@"; do case "$a" in config|ps|pull|up|down|version) sub=$a; break;; esac; done
     case "$sub" in
         config)
-            echo "bsvc"
-            echo "oneshot"
+            if [[ " $* " == *" --services "* ]]; then
+                echo "bsvc"
+                echo "oneshot"
+            else
+                cat "${FAKE_COMPOSE_PLAN:?}"
+            fi
             ;;
         pull)
             seen=0
@@ -122,6 +128,10 @@ case "${1:-}" in
         ;;
     inspect)
         for last in "$@"; do :; done
+        if [[ " $* " == *".Id"* ]]; then
+            echo "container-${FAKE_CONTAINER_GENERATION:-1}-${last}|image-${last}|${last#id-}"
+            exit 0
+        fi
         case "$last" in
             id-bsvc)
                 if [[ "${FAKE_DOCKER_PS_EMPTY:-}" == "1" ]]; then echo "exited 1"; else echo "running 0"; fi
@@ -144,7 +154,20 @@ cat > "$FIXTURE/bin/curl" <<'SH'
 echo "curl: (7) Failed to connect" >&2
 exit 7
 SH
-chmod +x "$FIXTURE/bin/docker" "$FIXTURE/bin/curl"
+cat > "$FIXTURE/bin/systemctl" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+cat > "$FIXTURE/bin/sudo" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+cat > "$FIXTURE/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$FIXTURE/bin/docker" "$FIXTURE/bin/curl" "$FIXTURE/bin/systemctl" \
+    "$FIXTURE/bin/sudo" "$FIXTURE/bin/sleep"
 
 reset_env() {
     cat > "$FIXTURE/.env" <<'EOF'
@@ -156,8 +179,21 @@ EOF
 
 run_update() {
     # Never let a non-zero CLI exit kill the test; callers assert on output/state
-    PATH="$FIXTURE/bin:$PATH" ODS_HOME="$FIXTURE" \
+    FAKE_COMPOSE_PLAN="$FIXTURE/compose-plan.json" \
+        PATH="$FIXTURE/bin:$PATH" ODS_HOME="$FIXTURE" \
         bash "$FIXTURE/ods-cli" update 2>&1 || true
+}
+
+run_status_json() {
+    FAKE_COMPOSE_PLAN="$FIXTURE/compose-plan.json" \
+        PATH="$FIXTURE/bin:$PATH" ODS_HOME="$FIXTURE" \
+        bash "$FIXTURE/ods-cli" status --json 2>&1 || true
+}
+
+run_cli() {
+    FAKE_COMPOSE_PLAN="$FIXTURE/compose-plan.json" \
+        PATH="$FIXTURE/bin:$PATH" ODS_HOME="$FIXTURE" \
+        bash "$FIXTURE/ods-cli" "$@" 2>&1 || true
 }
 
 echo ""
@@ -186,6 +222,19 @@ if echo "$output" | grep -q "Update verification failed"; then
     fail "update reported a false verification failure"
 else
     pass "update reported no verification failure"
+fi
+receipt="$FIXTURE/data/deployment-receipt.json"
+if [[ -f "$receipt" ]] && [[ "$(jq -r '.action' "$receipt")" == "update" ]]; then
+    pass "successful update publishes a deployment receipt"
+else
+    fail "successful update did not publish its deployment receipt"
+fi
+status_output=$(run_status_json)
+status_json=$(echo "$status_output" | awk '/^[[:space:]]*\{/{found=1} found')
+if [[ "$(jq -r '.deployment.state' <<< "$status_json")" == "in_sync" ]]; then
+    pass "public JSON status attests the reconciled deployment"
+else
+    fail "public JSON status did not report in_sync: $status_output"
 fi
 
 # ---------------------------------------------------------------------------
@@ -226,6 +275,50 @@ if grep -q "ghcr.io/example/upstream:1.2.3" "$FIXTURE/pull.log" 2>/dev/null && !
     pass "update pulls registry images without pulling local build tags"
 else
     fail "external-only pull not exercised: $(cat "$FIXTURE/pull.log" 2>/dev/null)"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. changing the desired canonical plan is visible even while containers run
+# ---------------------------------------------------------------------------
+echo '{"services":{"bsvc":{"image":"example/bsvc:v2"},"oneshot":{"image":"example/oneshot:v1"}}}' \
+    > "$FIXTURE/compose-plan.json"
+status_output=$(run_status_json)
+status_json=$(echo "$status_output" | awk '/^[[:space:]]*\{/{found=1} found')
+if [[ "$(jq -r '.deployment.state' <<< "$status_json")" == "desired_config_changed" ]]; then
+    pass "status detects desired Compose plan drift"
+else
+    fail "status missed desired Compose plan drift: $status_output"
+fi
+
+# Restore the receipted plan, then replace container identities without
+# changing health or service membership.
+echo '{"services":{"bsvc":{"image":"example/bsvc:v1"},"oneshot":{"image":"example/oneshot:v1"}}}' \
+    > "$FIXTURE/compose-plan.json"
+export FAKE_CONTAINER_GENERATION=2
+status_output=$(run_status_json)
+unset FAKE_CONTAINER_GENERATION
+status_json=$(echo "$status_output" | awk '/^[[:space:]]*\{/{found=1} found')
+if [[ "$(jq -r '.deployment.state' <<< "$status_json")" == "runtime_changed" ]]; then
+    pass "status detects container identity drift"
+else
+    fail "status missed container identity drift: $status_output"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. other public full-stack reconciliation commands refresh the receipt
+# ---------------------------------------------------------------------------
+rm -f "$receipt"
+run_cli start >/dev/null
+if [[ "$(jq -r '.action' "$receipt")" == "start" ]]; then
+    pass "full-stack start publishes a deployment receipt"
+else
+    fail "full-stack start did not publish its receipt"
+fi
+run_cli restart >/dev/null
+if [[ "$(jq -r '.action' "$receipt")" == "restart" ]]; then
+    pass "full-stack restart refreshes the deployment receipt"
+else
+    fail "full-stack restart did not refresh its receipt"
 fi
 
 echo ""

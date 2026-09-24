@@ -748,9 +748,30 @@ _check_version_compat() {
 # Safe .env loading (no eval; use lib/safe-env.sh)
 #=============================================================================
 [[ -f "$SCRIPT_DIR/lib/safe-env.sh" ]] && . "$SCRIPT_DIR/lib/safe-env.sh"
+[[ -f "$SCRIPT_DIR/lib/deployment-receipt.sh" ]] && . "$SCRIPT_DIR/lib/deployment-receipt.sh"
 load_env() {
     [[ -f "$INSTALL_DIR/.env" ]] || { warn ".env not found at $INSTALL_DIR — run installer first"; return 1; }
     load_env_file "$INSTALL_DIR/.env"
+}
+
+_ods_cli_record_full_deployment() {
+    local action="$1"
+    shift
+    if ! declare -F ods_deployment_receipt_write >/dev/null 2>&1; then
+        warn "Deployment receipt helper is unavailable; status cannot attest runtime drift."
+        return 0
+    fi
+    if ! ods_deployment_receipt_write "$INSTALL_DIR" "$action" "$@"; then
+        warn "Deployment succeeded, but its receipt could not be recorded."
+    fi
+}
+
+_ods_cli_deployment_attestation_json() {
+    if ! declare -F ods_deployment_attestation_json >/dev/null 2>&1; then
+        jq -n '{state:"unavailable", message:"Deployment receipt helper is unavailable."}'
+        return
+    fi
+    ods_deployment_attestation_json "$INSTALL_DIR" "$@"
 }
 
 #=============================================================================
@@ -1353,6 +1374,16 @@ cmd_status() {
     docker compose "${flags[@]}" ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" \
         || warn "Could not list containers (see the docker error above); continuing with health checks."
 
+    local deployment_json deployment_state deployment_message
+    deployment_json=$(_ods_cli_deployment_attestation_json "${flags[@]}")
+    deployment_state=$(jq -r '.state' <<< "$deployment_json")
+    deployment_message=$(jq -r '.message' <<< "$deployment_json")
+    if [[ "$deployment_state" == "in_sync" ]]; then
+        success "Deployment receipt: in sync"
+    else
+        warn "Deployment receipt: ${deployment_state} — ${deployment_message}"
+    fi
+
     echo ""
 
     # Registry-driven health checks (parallel)
@@ -1558,6 +1589,8 @@ cmd_status_json() {
     fi
 
     # Aggregate into a single document
+    local deployment_json
+    deployment_json=$(_ods_cli_deployment_attestation_json "${flags[@]}")
     jq -s \
         --arg installDir "$INSTALL_DIR" \
         --arg composeFlags "$flags_str" \
@@ -1565,12 +1598,14 @@ cmd_status_json() {
         --arg tier "${TIER:-}" \
         --arg currentModel "${LLM_MODEL:-}" \
         --argjson gpu "$gpu_summary_json" \
+        --argjson deployment "$deployment_json" \
         '{installDir: $installDir,
           composeFlags: $composeFlags,
           mode: $mode,
           tier: $tier,
           currentModel: $currentModel,
           gpu: $gpu,
+          deployment: $deployment,
           services: .}' "$tmp"
 }
 
@@ -1736,6 +1771,10 @@ cmd_restart() {
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
         _ods_cli_maybe_resume_bootstrap_upgrade || true
+    fi
+
+    if [[ -z "$resolved_service" ]]; then
+        _ods_cli_record_full_deployment "restart" "${flags[@]}"
     fi
 }
 
@@ -1938,6 +1977,10 @@ cmd_start() {
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
         _ods_cli_maybe_resume_bootstrap_upgrade || true
+    fi
+
+    if [[ -z "$resolved_service" ]]; then
+        _ods_cli_record_full_deployment "start" "${flags[@]}"
     fi
 }
 
@@ -2246,6 +2289,8 @@ cmd_update() {
     # Restart host agent so new endpoints / code changes take effect
     log "Restarting host agent..."
     cmd_agent restart || warn "Host agent restart failed (non-fatal)"
+
+    _ods_cli_record_full_deployment "update" "${flags[@]}"
 
     success "Update complete"
 
