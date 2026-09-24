@@ -733,6 +733,7 @@ show_success_card() {
     local webui_url=$1
     local dashboard_url=$2
     local ip_addr=$3
+    local dashboard_port="${dashboard_url##*:}"
 
     if ods_ui_cinematic; then
         printf '\a'  # terminal bell only for a human terminal
@@ -753,7 +754,7 @@ show_success_card() {
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
     if [[ -n "$ip_addr" ]]; then
         echo -e "${GRN}|${NC}   ${AMB}Access from other devices:${NC}                               ${GRN}|${NC}"
-        printf "${GRN}|${NC}   ${WHT}http://%-51s${NC} ${GRN}|${NC}\n" "${ip_addr}:3001"
+        printf "${GRN}|${NC}   ${WHT}http://%-51s${NC} ${GRN}|${NC}\n" "${ip_addr}:${dashboard_port}"
         echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
     fi
     echo -e "${GRN}+--------------------------------------------------------------+${NC}"

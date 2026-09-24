@@ -54,7 +54,10 @@ if $DRY_RUN; then
     bootline
     echo ""
 else
-    show_success_card "http://localhost:3000" "http://localhost:3001" "$LOCAL_IP"
+    show_success_card \
+        "http://localhost:${SERVICE_PORTS[open-webui]:-3000}" \
+        "http://localhost:${SERVICE_PORTS[dashboard]:-3001}" \
+        "$LOCAL_IP"
 fi
 
 # Mark the setup wizard as already completed for fresh installs. The
