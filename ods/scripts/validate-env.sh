@@ -4,8 +4,8 @@
 # Senior-grade validation goals:
 #  - Correctly parse .env files including quotes and "export KEY=..." lines
 #  - Report line numbers and actionable messages
-#  - Validate required keys, unknown keys, types, enums, numeric ranges, and
-#    cross-service runtime contracts
+#  - Validate required keys, unknown keys, types, enums, numeric ranges,
+#    string lengths, patterns, and cross-service runtime contracts
 #  - Fail deterministically with a single exit code for CI
 
 # Require Bash 4+ (associative arrays used below).
@@ -193,6 +193,7 @@ type_errors=()
 enum_errors=()
 range_errors=()
 length_errors=()
+pattern_errors=()
 contract_errors=()
 duplicate_errors=()
 
@@ -285,13 +286,35 @@ for key in "${schema_keys[@]}"; do
       fi
     fi
 
-    # Minimum-length validation for strings. Rejects unset placeholders such as
-    # CHANGEME so secrets must be replaced with real values before the stack runs.
+    # Length validation for strings. minLength rejects unset placeholders such
+    # as CHANGEME; maxLength bounds fixed-size values like 64-char hex keys.
     if [[ "$expected_type" == "string" ]]; then
       if jq -e --arg k "$key" '.properties[$k].minLength? != null' "$SCHEMA_FILE" >/dev/null 2>&1; then
         minlen="$(jq_raw --arg k "$key" '.properties[$k].minLength' "$SCHEMA_FILE")"
         if (( ${#val} < minlen )); then
           length_errors+=("$key: value length ${#val} is < minLength $minlen (line ${ENV_LINE[$key]:-?})")
+        fi
+      fi
+      if jq -e --arg k "$key" '.properties[$k].maxLength? != null' "$SCHEMA_FILE" >/dev/null 2>&1; then
+        maxlen="$(jq_raw --arg k "$key" '.properties[$k].maxLength' "$SCHEMA_FILE")"
+        if (( ${#val} > maxlen )); then
+          length_errors+=("$key: value length ${#val} is > maxLength $maxlen (line ${ENV_LINE[$key]:-?})")
+        fi
+      fi
+    fi
+
+    # Pattern validation. The schema already declares patterns for hex keys,
+    # hostnames, and similar fields; enforce them with jq/Oniguruma so values
+    # like a malformed PIXEL relay key cannot pass validation silently.
+    if [[ "$expected_type" == "string" ]]; then
+      if jq -e --arg k "$key" '.properties[$k].pattern? != null' "$SCHEMA_FILE" >/dev/null 2>&1; then
+        pattern="$(jq_raw --arg k "$key" '.properties[$k].pattern' "$SCHEMA_FILE")"
+        pattern_rc=0
+        jq -e -n --arg v "$val" --arg p "$pattern" '$v | test($p)' >/dev/null 2>&1 || pattern_rc=$?
+        if (( pattern_rc == 1 )); then
+          pattern_errors+=("$key: value does not match pattern $pattern (line ${ENV_LINE[$key]:-?})")
+        elif (( pattern_rc != 0 )); then
+          contract_errors+=("$key: schema pattern is not a valid regex: $pattern")
         fi
       fi
     fi
@@ -566,6 +589,14 @@ if (( ${#length_errors[@]} > 0 )); then
     had_errors=true
     log_error "Length validation errors (replace placeholder/default values):"
     for err in "${length_errors[@]}"; do
+        echo "  - $err"
+    done
+fi
+
+if (( ${#pattern_errors[@]} > 0 )); then
+    had_errors=true
+    log_error "Pattern validation errors:"
+    for err in "${pattern_errors[@]}"; do
         echo "  - $err"
     done
 fi

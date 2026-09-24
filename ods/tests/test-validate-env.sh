@@ -622,5 +622,64 @@ else
     fail "Library port was rejected for the wrong reason: $out"
 fi
 
+# 25. Schema `pattern` constraints must be enforced. N_GPU_LAYERS and
+# EMBEDDINGS_MEMORY_LIMIT also carry hand-written contract checks, but the
+# remaining pattern keys previously passed any value silently.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/pattern.env"
+cat >> "$TMP_DIR/pattern.env" <<'EOF'
+PIXEL_SOURCE_REF=nothex
+PIXEL_MODEL_RELAY_KEY=ZZZ-not-hex
+PIXEL_OPENWEBUI_KEY=way-too-short
+GGUF_SHA256=deadbeef-not-64-hex
+ODS_ACTIVE_MODEL_STORE=UPPER
+ODS_DEVICE_NAME=-bad-name
+TS_HOSTNAME=BAD_HOST
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/pattern.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -ne 0 ]] && echo "$out" | grep -q "pattern"; then
+    pass "Schema pattern violations are rejected"
+else
+    fail "Pattern-violating values should be rejected, got exit $r: $(echo "$out" | tail -8)"
+fi
+for key in PIXEL_SOURCE_REF PIXEL_MODEL_RELAY_KEY PIXEL_OPENWEBUI_KEY GGUF_SHA256 ODS_ACTIVE_MODEL_STORE ODS_DEVICE_NAME TS_HOSTNAME; do
+    echo "$out" | grep -q "$key" || fail "Pattern error missing for $key"
+done
+pass "Every pattern-constrained key reports its own violation"
+
+# Valid pattern values still pass.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/pattern-ok.env"
+hex40="$(printf 'ab%.0s' $(seq 20))"
+hex64="$(printf 'ab%.0s' $(seq 32))"
+cat >> "$TMP_DIR/pattern-ok.env" <<EOF
+PIXEL_SOURCE_REF=$hex40
+PIXEL_MODEL_RELAY_KEY=$hex64
+PIXEL_OPENWEBUI_KEY=$hex64
+GGUF_SHA256=$hex64
+ODS_ACTIVE_MODEL_STORE=main-store
+ODS_DEVICE_NAME=workstation-1
+TS_HOSTNAME=ods-node-1
+EOF
+if "$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/pattern-ok.env" "$ROOT_DIR/.env.schema.json" >/dev/null 2>&1; then
+    pass "Valid pattern values pass validation"
+else
+    fail "Valid pattern values should validate"
+fi
+
+# 26. Schema `maxLength` must be enforced (PIXEL_* keys are fixed 64-char hex).
+cp "$TMP_DIR/valid.env" "$TMP_DIR/maxlen.env"
+printf 'PIXEL_MODEL_RELAY_KEY=%065d\n' 0 >> "$TMP_DIR/maxlen.env"
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/maxlen.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -ne 0 ]] && echo "$out" | grep -q "maxLength"; then
+    pass "Schema maxLength violations are rejected"
+else
+    fail "A value longer than maxLength should be rejected, got exit $r: $(echo "$out" | tail -5)"
+fi
+
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]
