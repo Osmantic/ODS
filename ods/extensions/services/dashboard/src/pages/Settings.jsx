@@ -32,6 +32,7 @@ import { WALLPAPERS } from '../lib/wallpapers'
 import CustomWallpaperPicker from '../components/CustomWallpaperPicker'
 import '../wallpaper-themes.css'
 import { dashboardHost, serviceUrl } from '../lib/serviceUrls'
+import { formatUptime } from '../utils/formatUptime'
 import {
   clearSettingsFollowUp,
   loadSettingsFollowUp,
@@ -64,12 +65,6 @@ const fetchPayload = async (url, ms = 8000, options = {}) => {
   const response = await fetchJson(url, ms, options)
   if (!response.ok) throw await buildErrorFromResponse(response)
   return response.json()
-}
-
-const formatUptime = (secs = 0) => {
-  const hours = Math.floor(secs / 3600)
-  const mins = Math.floor((secs % 3600) / 60)
-  return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`
 }
 
 const formatInstallDate = (value) => {
