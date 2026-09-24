@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
-import {PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, boundVisibilityInspection} from '../plugin/preview-interaction-assurance.mjs';
+import {PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection} from '../plugin/preview-interaction-assurance.mjs';
 import {INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash, normalizeWorkspacePreviewInspectionParams, createWorkspacePreviewInspectTool} from '../plugin/workspace-preview-inspect.mjs';
 
 const owner='Create and publish a website in a new workspace directory site. Add a button that toggles hidden details.';
 const context={agentId:'pixel',runId:'run',sessionId:'session',sessionKey:'opaque-key'};
-function call(guard,name,params,id,result) {
-  const ctx={...context,toolName:name,toolCallId:id};
-  const event={toolName:name,runId:context.runId,toolCallId:id,params};
+function call(guard,name,params,id,result,runContext=context) {
+  const ctx={...runContext,toolName:name,toolCallId:id};
+  const event={toolName:name,runId:runContext.runId,toolCallId:id,params};
   const prepared=guard.beforeToolCall(event,ctx);
   assert.notEqual(prepared?.block,true,prepared?.blockReason);
   event.params=prepared?.params??params;
@@ -47,10 +47,10 @@ function receipt(params) {
       before:state(s.action!=='assert-hidden'),...(s.action==='click'?{after:state(true)}:{}),stable:true,status:'passed'})),
     diagnostics:{renderedHiddenAttributeCount:0,hiddenUntilFoundCount:0},blockedRequests:[],scope:INSPECTION_SCOPE};
 }
-function inspection(guard,params,{wrapped=false,id='inspect'}={}) {
+function inspection(guard,params,{wrapped=false,id='inspect',runContext=context}={}) {
   const name=wrapped?'tool_call':PREVIEW_INSPECTION_TOOL;
   const args=wrapped?{id:'openclaw:pixel-ods:'+PREVIEW_INSPECTION_TOOL,args:params}:params;
-  const started=call(guard,name,args,id);
+  const started=call(guard,name,args,id,undefined,runContext);
   const inner={details:receipt(params)};
   const result=wrapped?{details:{tool:{id:args.id,name:PREVIEW_INSPECTION_TOOL,source:'openclaw',sourceName:'pixel-ods'},result:inner}}:inner;
   return {...started,result};
@@ -149,4 +149,97 @@ test('automatic preview delivery preserves the interaction gate until exact evid
   assert.equal(guard.beforeAgentFinalize({},context)?.retry?.idempotencyKey,'pixel-ods-workspace-preview-interaction');
   const a=inspection(guard,plan(preview));guard.afterToolCall({...a.event,result:a.result},a.ctx);
   assert.equal(guard.verificationForRun('run').status,'passed');
+});
+
+function revisePublishedSite(guard,preview,{prompt='Update that same website: change its accent. Preserve the existing behavior and publish the updated preview.',
+    sessionKey=context.sessionKey,runId='followup'}={}) {
+  const ctx={...context,runId,sessionKey};
+  guard.observeRun(ctx,'pixel',{prompt});
+  const path=preview.relativeDirectory+'/index.html';
+  call(guard,'read',{path},'followup-read',{content:[{type:'text',text:'<!doctype html><button>Show details</button><p hidden>Details</p>'}]},ctx);
+  const content='<!doctype html><title>New accent</title><button>Show details</button><p id="details" hidden>Details</p>';
+  call(guard,'write',{path,content},'followup-write',{content:[{type:'text',text:'Successfully wrote file.'}]},ctx);
+  const name=Buffer.from('index.html'),data=Buffer.from(content),a=Buffer.alloc(4),b=Buffer.alloc(8);
+  a.writeUInt32BE(name.length);b.writeBigUInt64BE(BigInt(data.length));
+  const sha256=createHash('sha256').update(a).update(name).update(b).update(data).digest('hex');
+  const siteId='site-'+sha256.slice(0,24);
+  const next={...preview,sha256,siteId,entrySha256:createHash('sha256').update(data).digest('hex'),bytes:data.length,
+    url:`http://${siteId}.localhost:9437/${siteId}/`};
+  call(guard,'pixel_ods_workspace_preview',{relativeDirectory:preview.relativeDirectory},'followup-publish',{details:next},ctx);
+  return {ctx,preview:next};
+}
+
+test('explicit preservation inherits an owner-bound interaction duty but never its previous passing proof',()=>{
+  const {guard,preview}=setup();
+  const first=inspection(guard,plan(preview));guard.afterToolCall({...first.event,result:first.result},first.ctx);
+  assert.equal(guard.verificationForRun(context.runId).status,'passed');
+  const next=revisePublishedSite(guard,preview);
+  assert.equal(guard.verificationForRun(next.ctx.runId).status,'failed');
+  assert.match(guard.verificationForRun(next.ctx.runId).text,/show\/hide interaction/);
+  assert.equal(guard.beforeAgentFinalize({},next.ctx)?.retry.idempotencyKey,'pixel-ods-workspace-preview-interaction');
+  const check=inspection(guard,plan(next.preview),{runContext:next.ctx,id:'fresh-inspection'});
+  guard.afterToolCall({...check.event,result:check.result},check.ctx);
+  assert.equal(guard.verificationForRun(next.ctx.runId).status,'passed');
+});
+
+test('an unverified original interaction remains an obligation during explicit preservation',()=>{
+  const {guard,preview}=setup();
+  const next=revisePublishedSite(guard,preview);
+  assert.equal(guard.verificationForRun(next.ctx.runId).status,'failed');
+  assert.match(guard.verificationForRun(next.ctx.runId).text,/show\/hide interaction/);
+});
+
+test('preservation does not invent an interaction for a previously static publication',()=>{
+  const {guard,preview}=setup({prompt:'Create and publish a static website in a new workspace directory site.'});
+  const next=revisePublishedSite(guard,preview);
+  assert.equal(guard.verificationForRun(next.ctx.runId).status,'passed');
+});
+
+test('preservation cannot inherit across owner session keys or quoted and negated requests',()=>{
+  for(const change of [
+    {sessionKey:'different-owner'},
+    {prompt:'Update that same website: change its accent. Do not preserve the previous behavior. Publish the updated preview.'},
+    {prompt:'Update that same website: change its accent.\n> Preserve the previous behavior.\nPublish the updated preview.'},
+    {prompt:'Update that same website: change its accent. Display the words "Preserve the previous behavior". Publish the updated preview.'},
+    {prompt:'Update that same website: change its accent and publish the updated preview.'},
+  ]) {
+    const {guard,preview}=setup();
+    const next=revisePublishedSite(guard,preview,change);
+    assert.doesNotMatch(guard.verificationForRun(next.ctx.runId).text,/show\/hide interaction/,JSON.stringify(change));
+  }
+});
+
+test('behavior preservation recognition is generic and does not name a particular interaction',()=>{
+  for(const text of ['Preserve the existing behavior.','Keep all interactions working.','Maintain its functionality.','Retain the previous behaviour.']) {
+    assert.equal(requestsBehaviorPreservation(text),true,text);
+  }
+  for(const text of ['Explain how to preserve behavior.','Do not preserve its behavior.','Keep the same colors.','Its behavior works.']) {
+    assert.equal(requestsBehaviorPreservation(text),false,text);
+  }
+});
+
+test('a different new project cannot inherit the previous preview obligation',()=>{
+  const {guard,preview}=setup();
+  const ctx={...context,runId:'different-project'};
+  guard.observeRun(ctx,'pixel',{prompt:'Create and publish a new static website in a new workspace directory other. Preserve its behavior.'});
+  const written=call(guard,'write',{path:'other/index.html',content:'<!doctype html><h1>Static</h1>'},'other-write',
+    {content:[{type:'text',text:'Successfully wrote file.'}]},ctx);
+  // No receipt has been produced for this project, so there is no inherited
+  // obligation or passing proof just because another site existed previously.
+  assert.doesNotMatch(guard.beforeAgentFinalize({},ctx)?.retry?.instruction??'',/show\/hide interaction/);
+  assert.notEqual(written.event.params.path,preview.relativeDirectory+'/index.html');
+});
+
+test('bounded session preview eviction also evicts the associated obligation',()=>{
+  const {guard,preview}=setup();
+  for(let i=0;i<256;i++) {
+    const ctx={...context,runId:'eviction-run-'+i,sessionId:'eviction-session-'+i,sessionKey:'eviction-key-'+i};
+    guard.observeRun(ctx,'pixel',{prompt:owner});
+    const written=call(guard,'write',{path:'site/index.html',content:'<!doctype html><button>Show details</button><p hidden>Details</p>'},
+      'write-'+i,{content:[{type:'text',text:'Successfully wrote file.'}]},ctx);
+    call(guard,'pixel_ods_workspace_preview',{relativeDirectory:written.event.params.path.replace(/\/index.html$/,'')},
+      'publish-'+i,{details:preview},ctx);
+  }
+  const next=revisePublishedSite(guard,preview);
+  assert.doesNotMatch(guard.verificationForRun(next.ctx.runId).text,/show\/hide interaction/);
 });

@@ -15,6 +15,15 @@ export function requestsVisibilityInteraction(text) {
     /\b(?:shows?|hides?|hidden|reveals?|toggles?|expands?|collapses?|visible)\b/i.test(clause));
 }
 
+// This does not identify an interaction or establish that one works. It only
+// recognizes an owner's explicit request to preserve a previously bound duty.
+// Callers must supply current owner prose, not assistant text or quoted examples.
+export function requestsBehaviorPreservation(text) {
+  return String(text ?? '').split(/[.!?;\n]+/).some(clause =>
+    !/\b(?:do\s+not|don['’]t|never|avoid|skip|explain|describe|example)\b/i.test(clause) &&
+    /\b(?:preserve|retain|keep|maintain)\b[^.!?;\n]{0,160}\b(?:behaviou?r|functionality|interactions?)\b/i.test(clause));
+}
+
 export function hasVisibilityTransitionPlan(request) {
   // A click dispatch or an unchanged button does not prove its effect.
   return request.steps.some((step, index) => step.action === 'click' &&

@@ -24,7 +24,7 @@ import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLane
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
-import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, boundVisibilityInspection,
+import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection,
   visibilityInspectionMatches, visibilityInspectionInstruction } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
@@ -6588,6 +6588,9 @@ export function createToolLoopGuard({
   const sessionRuns = new Map();
   const pendingToolRuns = new Map();
   const sessionPreviews = new Map();
+  // A prior owner requirement is not a passing inspection. Bind it to the
+  // session's real publication and carry no proof across changed snapshots.
+  const sessionPreviewVisibilityObligations = new Map();
   const sessionDownloadJobs = new Map();
 
   function workspaceVisibilityInspectionPassed(state) {
@@ -6621,13 +6624,22 @@ export function createToolLoopGuard({
     }
   }
 
-  function rememberSessionPreview(sessionId, preview) {
+  function rememberSessionPreview(sessionId, preview, state) {
     if (typeof sessionId !== "string" || !sessionId || !preview) return;
     if (sessionPreviews.has(sessionId)) sessionPreviews.delete(sessionId);
     while (sessionPreviews.size >= MAX_TRACKED_RUNS) {
-      sessionPreviews.delete(sessionPreviews.keys().next().value);
+      const oldest = sessionPreviews.keys().next().value;
+      sessionPreviews.delete(oldest);
+      sessionPreviewVisibilityObligations.delete(oldest);
     }
     sessionPreviews.set(sessionId, Object.freeze({ ...preview }));
+    sessionPreviewVisibilityObligations.delete(sessionId);
+    if (state?.workspaceVisibilityInteractionRequired && typeof state.currentSessionKey === 'string' && state.currentSessionKey) {
+      sessionPreviewVisibilityObligations.set(sessionId, Object.freeze({
+        sessionKey:state.currentSessionKey, siteId:preview.siteId, sha256:preview.sha256,
+        relativeDirectory:preview.relativeDirectory,
+      }));
+    }
   }
 
   function rememberToolRun(
@@ -8786,8 +8798,23 @@ export function createToolLoopGuard({
           Boolean(trustedSessionPreview) || state.workspaceVisualArtifactProduced ||
           ((!visualContinuationRequested || explicitDelivery) && previewRequested)
         );
+        const visibilityObligation = sessionPreviewVisibilityObligations.get(sessionId);
+        const explicitDirectory = userMessageWorkspaceDirectoryPath(event?.messages, event?.prompt);
+        const preservesBoundBehavior = requestsBehaviorPreservation(ownerLaneText(ownerIntent)) &&
+          trustedSessionPreview && visibilityObligation &&
+          (!explicitDirectory || explicitDirectory === trustedSessionPreview.relativeDirectory) &&
+          visibilityObligation.sessionKey === state.currentSessionKey &&
+          visibilityObligation.siteId === trustedSessionPreview.siteId &&
+          visibilityObligation.sha256 === trustedSessionPreview.sha256 &&
+          visibilityObligation.relativeDirectory === trustedSessionPreview.relativeDirectory;
+        if (preservesBoundBehavior) state.workspaceInheritedVisibilityObligation = Object.freeze({
+          sessionId, sessionKey:state.currentSessionKey, ownerIntent,
+        });
+        const inheritedVisibility = state.workspaceInheritedVisibilityObligation;
         state.workspaceVisibilityInteractionRequired = workspacePreviewInspectionAvailable &&
-          state.workspacePreviewRequired && requestsVisibilityInteraction(ownerLaneText(ownerIntent));
+          state.workspacePreviewRequired && (requestsVisibilityInteraction(ownerLaneText(ownerIntent)) ||
+            (inheritedVisibility?.sessionId === sessionId && inheritedVisibility.sessionKey === state.currentSessionKey &&
+              inheritedVisibility.ownerIntent === ownerIntent));
         state.workspacePreviewMode = state.workspacePreviewRequired
           ? (trustedSessionPreview ? "continuation" : workspacePreviewMode(event?.messages, event?.prompt))
           : undefined;
@@ -9310,6 +9337,7 @@ export function createToolLoopGuard({
       state.workspacePreviewVerifiedDirectory = state.workspacePreview.relativeDirectory;
       state.workspacePreview = undefined;
       sessionPreviews.delete(state.currentSessionId);
+      sessionPreviewVisibilityObligations.delete(state.currentSessionId);
     }
     const completedWritePath = successfulMutation?.name === "write"
       ? normalizeWorkspaceFilePath(successfulMutation.event?.params?.path)
@@ -9483,7 +9511,7 @@ export function createToolLoopGuard({
         state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;
         state.workspaceLastVerifiedPreview = Object.freeze({ ...preview });
         state.successfulWriteContentByPath.clear();
-        rememberSessionPreview(state.currentSessionId, preview);
+        rememberSessionPreview(state.currentSessionId, preview, state);
       }
     }
     if (state.operationsRequired || state.hostObservationUsed) {
@@ -10591,7 +10619,7 @@ export function createToolLoopGuard({
     state.previewRevalidationAttemptedGeneration = generation;
     if (!await boundedPreviewVerification(verifyWorkspacePreview, candidate.preview, valid) || !valid()) return false;
     state.workspacePreview = candidate.preview;
-    rememberSessionPreview(candidate.sessionId, candidate.preview);
+    rememberSessionPreview(candidate.sessionId, candidate.preview, state);
     return true;
   }
 
