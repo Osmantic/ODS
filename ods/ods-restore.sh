@@ -591,6 +591,31 @@ verify_restore() {
     fi
 }
 
+# Remove only a newly extracted backup directory after validation fails.
+# Resolve both paths physically so a crafted id or symlink cannot turn cleanup
+# into a recursive delete outside BACKUP_ROOT.
+cleanup_failed_archive_extraction() {
+    local backup_dir="$1" backup_root_real backup_dir_real
+
+    if ! backup_root_real=$(cd "$BACKUP_ROOT" && pwd -P); then
+        log_error "Could not resolve backup root for failed extraction cleanup"
+        return 1
+    fi
+    if ! backup_dir_real=$(cd "$backup_dir" && pwd -P); then
+        log_error "Could not resolve extracted backup for cleanup: $backup_dir"
+        return 1
+    fi
+    if [[ "$backup_dir_real" != "$backup_root_real/"* ]]; then
+        log_error "Refusing to clean extracted backup outside backup root: $backup_dir_real"
+        return 1
+    fi
+    if ! rm -rf -- "$backup_dir_real"; then
+        log_error "Could not remove failed archive extraction: $backup_dir_real"
+        return 1
+    fi
+    log_info "Removed failed archive extraction: $backup_dir_real"
+}
+
 # Main restore function
 do_restore() {
     local backup_id="$1"
@@ -620,14 +645,23 @@ do_restore() {
         return 1
     fi
 
-    # Extract if compressed
-    local backup_dir
+    # Extract if compressed. Track only directories created by this invocation;
+    # an operator-managed uncompressed backup must survive validation failure.
+    local backup_dir extracted_for_restore="false"
+    if [[ ! -d "$BACKUP_ROOT/$backup_id" && -f "$BACKUP_ROOT/$backup_id.tar.gz" ]]; then
+        extracted_for_restore="true"
+    fi
     if ! backup_dir=$(extract_backup "$backup_id"); then
         return 1
     fi
 
     # Validate backup (with optional checksum verification)
     if ! validate_backup "$backup_dir" "$skip_verify"; then
+        if [[ "$extracted_for_restore" == "true" ]]; then
+            if ! cleanup_failed_archive_extraction "$backup_dir"; then
+                log_error "Failed archive extraction requires manual cleanup"
+            fi
+        fi
         log_error "Backup validation failed"
         return 1
     fi

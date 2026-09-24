@@ -234,6 +234,43 @@ ODS_DIR="$DST2" bash "$ODS_RESTORE" -f "$CBACKUP_ID" >/dev/null 2>&1 || fail "Co
 [[ "$(cat "$DST2/data/whisper/hub/snapshots/revision/model.bin")" == "linked-model-cache" ]] || fail "Compressed backup broke cache links"
 pass "Compressed backup restores correctly"
 
+info "Rejecting a corrupt archive without retaining its extracted copy"
+CORRUPT_BUILD="$TMP/corrupt-build"
+mkdir -p "$CORRUPT_BUILD"
+tar xzf "$TARBALL" -C "$CORRUPT_BUILD"
+echo "tampered" >> "$CORRUPT_BUILD/$CBACKUP_ID/.env"
+
+DST3="$TMP/dst3"
+mkdir -p "$DST3/data" "$DST3/.backups" "$DST3/lib"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$DST3/lib/"
+echo "compose-content" > "$DST3/docker-compose.yml"
+tar czf "$DST3/.backups/$CBACKUP_ID.tar.gz" -C "$CORRUPT_BUILD" "$CBACKUP_ID"
+
+set +e
+ODS_DIR="$DST3" bash "$ODS_RESTORE" -f "$CBACKUP_ID" >/dev/null 2>&1
+restore_rc=$?
+set -e
+[[ $restore_rc -ne 0 ]] || fail "Restore unexpectedly accepted a checksum-mismatched archive"
+[[ ! -e "$DST3/.backups/$CBACKUP_ID" ]] \
+    || fail "Failed restore retained the extracted corrupt backup"
+[[ -f "$DST3/.backups/$CBACKUP_ID.tar.gz" ]] \
+    || fail "Failed restore removed the source archive"
+
+cp "$TARBALL" "$DST3/.backups/$CBACKUP_ID.tar.gz"
+ODS_DIR="$DST3" bash "$ODS_RESTORE" -f "$CBACKUP_ID" >/dev/null 2>&1 \
+    || fail "A valid replacement archive could not be restored after cleanup"
+pass "Checksum failure cleans extraction and a corrected archive can be retried"
+
+echo "tampered-again" >> "$DST3/.backups/$CBACKUP_ID/.env"
+set +e
+ODS_DIR="$DST3" bash "$ODS_RESTORE" -f "$CBACKUP_ID" >/dev/null 2>&1
+restore_rc=$?
+set -e
+[[ $restore_rc -ne 0 ]] || fail "Restore accepted a corrupt pre-existing backup directory"
+[[ -d "$DST3/.backups/$CBACKUP_ID" ]] \
+    || fail "Validation failure deleted a pre-existing backup directory"
+pass "Validation failure preserves pre-existing uncompressed backups"
+
 # ── Interactive selection ─────────────────────────────────────────────
 # select_backup's stdout is command-substituted into backup_id, so the list
 # and prompt must print to stderr or the selection table is swallowed and
