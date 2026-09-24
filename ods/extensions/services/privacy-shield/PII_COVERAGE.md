@@ -8,6 +8,15 @@ Privacy Shield provides PII (Personally Identifiable Information) detection and 
 
 **Status:** The current implementation uses regex-based pattern matching for PII detection.
 
+### JSON request bodies
+
+For application/json and application/*+json requests, detection runs on quoted
+string values. Object keys, numbers, booleans and null remain protocol data.
+For example, a numeric inference seed stays numeric while a phone number in a
+message string is replaced. Put personal text in string values; numeric JSON
+fields and object keys are outside this text filter's coverage. Non-JSON text
+bodies continue to use whole-text detection.
+
 ### Detected PII Types
 
 | Type | Pattern | Example |
