@@ -12,4 +12,3 @@ useDefault = true
   description = "Langfuse project secret key"
   regex = '''sk-lf-[0-9a-f]+\b'''
   keywords = ["sk-lf-"]
-

@@ -108,5 +108,5 @@ dd97e51445ea4d01fd6f291ce384e46988d1d584:resources/dev/extensions-library/servic
 5c5151fe050ac570fb022ccb99d86bda93dfedb2:dream-server/installers/windows/lib/env-generator.ps1:generic-api-key:115
 9539512e06bef98b9276e339ef3cb2d6273e8f1f:dream-server/installers/macos/lib/env-generator.sh:generic-api-key:80
 
-# Previously published SearXNG default at this historical commit only; never reuse it. See docs/SECRET-SCANNING.md.
+# Previously published SearXNG default at this historical commit only; never reuse it. See ods/docs/SECRET-SCANNING.md.
 48a1d87d3d155359fb23d7a65d1db55b036b7508:dream-server/config/searxng/settings.yml:generic-api-key:3
