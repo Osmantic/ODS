@@ -238,7 +238,7 @@ _DANGEROUS_SECURITY_OPTS = {
 # so a hand-dropped or backup-restored extension under the user-extensions dir
 # can't override e.g. dashboard-api or llama-server. Loaded best-effort: if
 # config/core-service-ids.json is missing or unparseable, fall back to a
-# hardcoded list matching helpers.py CORE_SERVICE_IDS_FALLBACK.
+# hardcoded list matching dashboard-api config.py's fallback set.
 import json as _json_mod
 try:
     _CORE_SERVICE_IDS = set(
@@ -247,8 +247,9 @@ try:
 except (OSError, ValueError):
     _CORE_SERVICE_IDS = {
         "ape", "comfyui", "dashboard", "dashboard-api",
-        "embeddings", "langfuse", "litellm", "llama-server", "n8n",
-        "open-webui", "openclaw", "perplexica", "privacy-shield", "qdrant",
+        "embeddings", "langfuse", "hermes", "hermes-proxy", "litellm",
+        "llama-server", "model-router", "n8n",
+        "open-webui", "openclaw", "opencode", "perplexica", "privacy-shield", "qdrant",
         "remote-provider-egress", "remote-provider-ssh-tunnel",
         "searxng", "token-spy", "tts", "whisper",
     }
