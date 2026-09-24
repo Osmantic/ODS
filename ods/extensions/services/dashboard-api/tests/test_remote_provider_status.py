@@ -602,10 +602,16 @@ def test_remote_provider_peer_models_proxies_with_redacted_peer_token(
 
     class FakeResponse:
         status_code = 200
-        content = b'{"models":[{"id":"remote-qwen"}],"echo":"unit-test-peer-token"}'
+        headers = {}
 
-        def json(self):
-            return {"models": [{"id": "remote-qwen"}], "echo": "unit-test-peer-token"}
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def aiter_bytes(self):
+            yield b'{"models":[{"id":"remote-qwen"}],"echo":"unit-test-peer-token"}'
 
     class FakeAsyncClient:
         def __init__(self, *args, **kwargs):
@@ -617,7 +623,7 @@ def test_remote_provider_peer_models_proxies_with_redacted_peer_token(
         async def __aexit__(self, *_args):
             return False
 
-        async def request(self, method, url, headers):
+        def stream(self, method, url, headers):
             captured.update({"method": method, "url": url, "headers": headers})
             return FakeResponse()
 
@@ -666,10 +672,16 @@ def test_remote_provider_peer_model_load_uses_long_timeout_and_encoded_model_id(
 
     class FakeResponse:
         status_code = 200
-        content = b'{"status":"activated"}'
+        headers = {}
 
-        def json(self):
-            return {"status": "activated"}
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def aiter_bytes(self):
+            yield b'{"status":"activated"}'
 
     class FakeAsyncClient:
         def __init__(self, *args, **kwargs):
@@ -681,7 +693,7 @@ def test_remote_provider_peer_model_load_uses_long_timeout_and_encoded_model_id(
         async def __aexit__(self, *_args):
             return False
 
-        async def request(self, method, url, headers):
+        def stream(self, method, url, headers):
             captured.update({"method": method, "url": url, "headers": headers})
             return FakeResponse()
 
@@ -697,6 +709,135 @@ def test_remote_provider_peer_model_load_uses_long_timeout_and_encoded_model_id(
     assert captured["method"] == "POST"
     assert captured["url"] == "https://peer.example.test/api/models/Qwen%203.5-9B/load"
     assert captured["timeout"] == rps.PEER_PROXY_LOAD_TIMEOUT_SECONDS
+
+
+def test_remote_provider_peer_models_stop_streaming_at_response_limit(
+    test_client,
+    monkeypatch,
+    tmp_path,
+):
+    state_root = tmp_path / "remote-provider"
+    secret_dir = state_root / "secrets"
+    secret_dir.mkdir(parents=True)
+    (secret_dir / "peer-token").write_bytes(b"unit-test-peer-token\n")
+    state_path = state_root / "routing-state.json"
+    state_path.write_text(
+        json.dumps(
+            _route_state(
+                peer={
+                    "controlBaseUrl": "https://peer.example.test",
+                    "transport": "direct",
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+    rps = _patch_state_path(monkeypatch, state_path)
+    monkeypatch.setattr(rps, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(rps, "PEER_PROXY_RESPONSE_MAX_BYTES", 10)
+    chunks_read = []
+
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def aiter_bytes(self):
+            for chunk in (b"123456", b"78901", b"must-not-be-read"):
+                chunks_read.append(chunk)
+                yield chunk
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def stream(self, method, url, headers):
+            return FakeResponse()
+
+    monkeypatch.setattr(rps.httpx, "AsyncClient", FakeAsyncClient)
+
+    resp = test_client.get(
+        "/api/remote-provider/peer/models",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["error"] == "remote_peer_response_too_large"
+    assert chunks_read == [b"123456", b"78901"]
+
+
+def test_remote_provider_peer_models_reject_declared_oversize_without_reading(
+    test_client,
+    monkeypatch,
+    tmp_path,
+):
+    state_root = tmp_path / "remote-provider"
+    secret_dir = state_root / "secrets"
+    secret_dir.mkdir(parents=True)
+    (secret_dir / "peer-token").write_bytes(b"unit-test-peer-token\n")
+    state_path = state_root / "routing-state.json"
+    state_path.write_text(
+        json.dumps(
+            _route_state(
+                peer={
+                    "controlBaseUrl": "https://peer.example.test",
+                    "transport": "direct",
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+    rps = _patch_state_path(monkeypatch, state_path)
+    monkeypatch.setattr(rps, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(rps, "PEER_PROXY_RESPONSE_MAX_BYTES", 10)
+
+    class FakeResponse:
+        status_code = 500
+        headers = {"content-length": "11"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def aiter_bytes(self):
+            raise AssertionError("declared oversize response must not be read")
+            yield b""
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def stream(self, method, url, headers):
+            return FakeResponse()
+
+    monkeypatch.setattr(rps.httpx, "AsyncClient", FakeAsyncClient)
+
+    resp = test_client.get(
+        "/api/remote-provider/peer/models",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["error"] == "remote_peer_response_too_large"
 
 
 def test_remote_provider_peer_models_fail_closed_without_peer_token(

@@ -992,18 +992,36 @@ def _peer_model_action_path(model_id: str, action: str = "") -> str:
     return f"/api/models/{encoded}{suffix}"
 
 
-def _peer_response_json(response: httpx.Response, token: str) -> Any:
-    content = response.content
-    if len(content) > PEER_PROXY_RESPONSE_MAX_BYTES:
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error": "remote_peer_response_too_large",
-                "message": "Remote ODS peer response exceeded the safety limit.",
-            },
-        )
+def _peer_response_too_large() -> HTTPException:
+    return HTTPException(
+        status_code=502,
+        detail={
+            "error": "remote_peer_response_too_large",
+            "message": "Remote ODS peer response exceeded the safety limit.",
+        },
+    )
+
+
+async def _read_peer_response(response: httpx.Response) -> bytes:
+    declared_length = response.headers.get("content-length")
+    if declared_length:
+        try:
+            if int(declared_length) > PEER_PROXY_RESPONSE_MAX_BYTES:
+                raise _peer_response_too_large()
+        except ValueError:
+            pass
+
+    content = bytearray()
+    async for chunk in response.aiter_bytes():
+        if len(content) + len(chunk) > PEER_PROXY_RESPONSE_MAX_BYTES:
+            raise _peer_response_too_large()
+        content.extend(chunk)
+    return bytes(content)
+
+
+def _peer_response_json(content: bytes, token: str) -> Any:
     try:
-        payload = response.json()
+        payload = json.loads(content)
     except ValueError as exc:
         raise HTTPException(
             status_code=502,
@@ -1015,15 +1033,15 @@ def _peer_response_json(response: httpx.Response, token: str) -> Any:
     return _redact_peer_secret(payload, token)
 
 
-def _peer_http_error(response: httpx.Response, token: str) -> HTTPException:
+def _peer_http_error(status_code: int, content: bytes, token: str) -> HTTPException:
     try:
-        detail = _redact_peer_secret(response.json(), token)
+        detail = _redact_peer_secret(json.loads(content), token)
     except ValueError:
         detail = {
             "error": "remote_peer_http_error",
-            "message": f"Remote ODS peer returned HTTP {response.status_code}.",
+            "message": f"Remote ODS peer returned HTTP {status_code}.",
         }
-    return HTTPException(status_code=response.status_code, detail=detail)
+    return HTTPException(status_code=status_code, detail=detail)
 
 
 async def _peer_model_json_request(
@@ -1046,14 +1064,25 @@ async def _peer_model_json_request(
     url = f"{base_url}{path}"
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.request(
+            async with client.stream(
                 method,
                 url,
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Accept": "application/json",
                 },
-            )
+            ) as response:
+                status_code = response.status_code
+                if status_code in {401, 403}:
+                    raise HTTPException(
+                        status_code=502,
+                        detail={
+                            "error": "remote_peer_auth_rejected",
+                            "message": "Remote ODS peer rejected the configured peer token.",
+                            "status": status_code,
+                        },
+                    )
+                content = await _read_peer_response(response)
     except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as exc:
         raise HTTPException(
             status_code=503,
@@ -1071,18 +1100,9 @@ async def _peer_model_json_request(
             },
         ) from exc
 
-    if response.status_code in {401, 403}:
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error": "remote_peer_auth_rejected",
-                "message": "Remote ODS peer rejected the configured peer token.",
-                "status": response.status_code,
-            },
-        )
-    if response.status_code >= 400:
-        raise _peer_http_error(response, token)
-    return _peer_response_json(response, token)
+    if status_code >= 400:
+        raise _peer_http_error(status_code, content, token)
+    return _peer_response_json(content, token)
 
 
 def _overall_status(
