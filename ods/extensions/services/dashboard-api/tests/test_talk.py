@@ -1,6 +1,10 @@
 """Tests for the ODS Talk mobile portal API."""
 
+from unittest.mock import AsyncMock, MagicMock
+
+import httpx
 import pytest
+from fastapi import HTTPException
 
 
 @pytest.fixture()
@@ -231,11 +235,14 @@ def test_talk_speak_streams_audio(talk_client, monkeypatch):
     headers are set so reverse proxies don't re-buffer the stream."""
     async def fake_stream(text):
         assert text == "read this"
-        # Simulate Kokoro emitting two chunks as the audio synthesises.
-        yield b"mp3 chunk 1 "
-        yield b"mp3 chunk 2"
 
-    monkeypatch.setattr("routers.talk._stream_speech", fake_stream)
+        async def chunks():
+            yield b"mp3 chunk 1 "
+            yield b"mp3 chunk 2"
+
+        return chunks()
+
+    monkeypatch.setattr("routers.talk._open_speech_stream", fake_stream)
 
     resp = talk_client.post("/api/talk/speak", data={"text": "read this"})
     assert resp.status_code == 200, resp.text
@@ -246,21 +253,66 @@ def test_talk_speak_streams_audio(talk_client, monkeypatch):
     assert resp.headers.get("X-Accel-Buffering") == "no"
 
 
-def test_talk_speak_handles_empty_stream(talk_client, monkeypatch):
-    """If Kokoro errors before any audio is produced, the streaming
-    response should close cleanly with empty body — the SPA's `if (!resp.ok
-    || !resp.body)` short-circuit then suppresses playback without
-    interrupting the text chat."""
+def test_talk_speak_rejects_upstream_error_before_committing_200(talk_client, monkeypatch):
+    """A Kokoro rejection must remain an HTTP error at the public boundary."""
     async def fake_stream(text):
-        # Kokoro upstream failure: nothing to yield.
-        if False:
-            yield b""  # pragma: no cover
+        raise HTTPException(
+            status_code=503,
+            detail="Speech synthesis is not available right now.",
+        )
 
-    monkeypatch.setattr("routers.talk._stream_speech", fake_stream)
+    monkeypatch.setattr("routers.talk._open_speech_stream", fake_stream)
 
     resp = talk_client.post("/api/talk/speak", data={"text": "silent"})
-    assert resp.status_code == 200
-    assert resp.content == b""
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Speech synthesis is not available right now."
+
+
+@pytest.mark.asyncio
+async def test_open_speech_stream_closes_rejected_upstream(monkeypatch):
+    """Exercise the Kokoro HTTP handoff, not only the route exception map."""
+    from routers import talk
+
+    request = httpx.Request("POST", "http://tts:8880/v1/audio/speech")
+    response = httpx.Response(422, request=request, content=b"bad voice")
+    client = MagicMock()
+    client.send = AsyncMock()
+    client.aclose = AsyncMock()
+    client.build_request.return_value = request
+    client.send.return_value = response
+    monkeypatch.setattr(talk.httpx, "AsyncClient", lambda **_kwargs: client)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await talk._open_speech_stream("hello")
+
+    assert exc_info.value.status_code == 503
+    client.send.assert_awaited_once_with(request, stream=True)
+    client.aclose.assert_awaited_once()
+    assert response.is_closed
+
+
+@pytest.mark.asyncio
+async def test_open_speech_stream_relays_and_closes_accepted_upstream(monkeypatch):
+    from routers import talk
+
+    request = httpx.Request("POST", "http://tts:8880/v1/audio/speech")
+    response = httpx.Response(
+        200,
+        request=request,
+        stream=httpx.ByteStream(b"streamed mp3"),
+    )
+    client = MagicMock()
+    client.send = AsyncMock(return_value=response)
+    client.aclose = AsyncMock()
+    client.build_request.return_value = request
+    monkeypatch.setattr(talk.httpx, "AsyncClient", lambda **_kwargs: client)
+
+    stream = await talk._open_speech_stream("hello")
+    audio = b"".join([chunk async for chunk in stream])
+
+    assert audio == b"streamed mp3"
+    assert response.is_closed
+    client.aclose.assert_awaited_once()
 
 
 # ----------------------------------------------------------------------

@@ -337,7 +337,35 @@ async def _transcribe_bytes(data: bytes, filename: str, content_type: str) -> st
     return text.strip()
 
 
-async def _stream_speech(text: str) -> AsyncIterator[bytes]:
+def _speech_payload(text: str) -> dict[str, Any]:
+    return {
+        "model": _tts_model(),
+        "voice": _tts_voice(),
+        "input": text,
+        "response_format": "mp3",
+        "stream": True,
+    }
+
+
+async def _relay_speech(
+    client: httpx.AsyncClient,
+    response: httpx.Response,
+) -> AsyncIterator[bytes]:
+    """Relay an accepted Kokoro response and release both HTTP resources."""
+    try:
+        async for chunk in response.aiter_bytes():
+            if chunk:
+                yield chunk
+    except (httpx.HTTPError, httpx.StreamError) as exc:
+        # The public status is committed once the first chunk is requested.
+        # Preserve already-delivered audio and close a broken stream cleanly.
+        logger.warning("kokoro stream ended early: %s", exc)
+    finally:
+        await response.aclose()
+        await client.aclose()
+
+
+async def _open_speech_stream(text: str) -> AsyncIterator[bytes]:
     """Stream MP3 bytes from Kokoro as they arrive instead of buffering the
     whole reply before sending anything back to the SPA.
 
@@ -354,39 +382,44 @@ async def _stream_speech(text: str) -> AsyncIterator[bytes]:
     silence — strictly better UX than the previous buffer-then-503
     failure mode, which the SPA had to silently swallow.
     """
-    payload = {
-        "model": _tts_model(),
-        "voice": _tts_voice(),
-        "input": text,
-        "response_format": "mp3",
-        # Explicitly request streaming. Kokoro's default is true but the
-        # request schema lets clients override; pinning makes the
-        # contract obvious to anyone tracing the call.
-        "stream": True,
-    }
     timeout = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
+    client = httpx.AsyncClient(timeout=timeout)
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream(
-                "POST",
-                f"{_tts_url()}/v1/audio/speech",
-                json=payload,
-            ) as resp:
-                if resp.status_code >= 400:
-                    body = await resp.aread()
-                    logger.warning(
-                        "kokoro returned %s for /v1/audio/speech: %s",
-                        resp.status_code, body.decode("utf-8", errors="replace")[:200],
-                    )
-                    return
-                async for chunk in resp.aiter_bytes():
-                    if chunk:
-                        yield chunk
-    except (httpx.HTTPError, httpx.StreamError) as exc:
-        # Mid-stream errors: log + return. The browser sees the response
-        # close early and plays whatever audio it already buffered.
-        logger.warning("kokoro stream ended early: %s", exc)
-        return
+        request = client.build_request(
+            "POST",
+            f"{_tts_url()}/v1/audio/speech",
+            json=_speech_payload(text),
+        )
+        response = await client.send(request, stream=True)
+    except asyncio.CancelledError:
+        await client.aclose()
+        raise
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(
+            status_code=503,
+            detail="Speech synthesis is not available right now.",
+        ) from exc
+
+    if response.status_code >= 400:
+        try:
+            body = await response.aread()
+        except httpx.HTTPError:
+            body = b"<response body unavailable>"
+        finally:
+            await response.aclose()
+            await client.aclose()
+        logger.warning(
+            "kokoro returned %s for /v1/audio/speech: %s",
+            response.status_code,
+            body.decode("utf-8", errors="replace")[:200],
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Speech synthesis is not available right now.",
+        )
+
+    return _relay_speech(client, response)
 
 
 async def _send_to_hermes(session_key: str, text: str) -> dict[str, Any]:
@@ -937,8 +970,9 @@ async def talk_speak(request: Request, text: str = Form(...)) -> StreamingRespon
         raise HTTPException(status_code=422, detail="Text is required.")
     if len(clean) > MAX_MESSAGE_CHARS:
         raise HTTPException(status_code=413, detail="Text is too long.")
+    audio_stream = await _open_speech_stream(clean)
     return StreamingResponse(
-        _stream_speech(clean),
+        audio_stream,
         media_type="audio/mpeg",
         # X-Accel-Buffering: no tells nginx (and similar reverse proxies)
         # NOT to buffer the audio stream — otherwise our streaming work
