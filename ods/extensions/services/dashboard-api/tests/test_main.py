@@ -409,6 +409,29 @@ class TestReadinessPayload:
         assert result["canChat"] is False
         assert "ods restart llama-server" in result["repairHints"]
 
+    def test_host_agent_readiness_requires_a_boolean_receipt(self):
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status="healthy"),
+        ]
+
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": "false"},
+            stt_model_cached=None,
+            stt_model_name="Systran/faster-whisper-base",
+        )
+
+        host_check = next(check for check in result["checks"] if check["id"] == "host-agent")
+        assert host_check["ready"] is False
+        assert host_check["status"] == "needs_repair"
+        assert host_check["repair"] == "ods agent restart"
+
     def test_voice_ready_requires_services_and_cached_stt_model(self):
         from models import BootstrapStatus, ServiceStatus
 

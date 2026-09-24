@@ -330,7 +330,7 @@ def _build_readiness_payload(
         detail="Dashboard API is serving this readiness response",
     ))
 
-    host_agent_ready = bool(host_agent.get("available"))
+    host_agent_ready = host_agent.get("available") is True
     checks.append(_readiness_check(
         check_id="host-agent",
         name="Host Agent",
