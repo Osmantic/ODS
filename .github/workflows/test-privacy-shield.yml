@@ -1,0 +1,28 @@
+name: Privacy Shield contracts
+
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/services/privacy-shield/**'
+      - '.github/workflows/test-privacy-shield.yml'
+  push:
+    branches: [main, public-beta]
+    paths:
+      - 'ods/extensions/services/privacy-shield/**'
+      - '.github/workflows/test-privacy-shield.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Install service test dependencies
+        run: python -m pip install -r ods/extensions/services/privacy-shield/requirements.txt 'pytest>=8,<9'
+      - name: Verify scrubbing, restoration, and HTTP contracts
+        run: python -m pytest -q ods/extensions/services/privacy-shield/tests
