@@ -168,9 +168,9 @@ async def _check_tailscale_health(service_id: str, config: dict) -> ServiceStatu
     except AgentClientError:
         return _service_status_from_config(service_id, config, "not_deployed")
 
-    if not payload.get("running"):
+    if payload.get("running") is not True:
         return _service_status_from_config(service_id, config, "not_deployed")
-    if payload.get("authenticated"):
+    if payload.get("authenticated") is True:
         return _service_status_from_config(service_id, config, "healthy")
     return _service_status_from_config(service_id, config, "unhealthy")
 
@@ -198,7 +198,7 @@ async def _check_host_systemd_health(service_id: str, config: dict) -> ServiceSt
     except AgentClientError:
         return _service_status_from_config(service_id, config, "down")
 
-    status = "healthy" if payload.get("reachable") else "not_deployed"
+    status = "healthy" if payload.get("reachable") is True else "not_deployed"
     return ServiceStatus(
         id=service_id,
         name=config["name"],

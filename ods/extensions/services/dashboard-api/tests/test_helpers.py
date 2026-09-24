@@ -638,6 +638,34 @@ class TestCheckServiceHealth:
         result = await check_service_health("tailscale", config)
         assert result.status == "healthy"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            ({"running": "false", "authenticated": True}, "not_deployed"),
+            ({"running": True, "authenticated": "false"}, "unhealthy"),
+        ],
+    )
+    async def test_tailscale_flags_require_json_booleans(
+        self, monkeypatch, payload, expected
+    ):
+        config = {
+            "name": "Tailscale",
+            "port": 0,
+            "external_port": 0,
+            "health": "/health",
+            "host": "localhost",
+            "host_network": True,
+        }
+        monkeypatch.setattr(
+            "helpers.request_agent_json",
+            AsyncMock(return_value=payload),
+        )
+
+        result = await check_service_health("tailscale", config)
+
+        assert result.status == expected
+
 
 # --- get_all_services ---
 
@@ -1188,6 +1216,22 @@ class TestCheckServiceHealthSystemd:
             "health": "/health", "host": "localhost", "type": "host-systemd",
         }
         result = await check_service_health("opencode", config)
+        assert result.status == "not_deployed"
+        assert result.response_time_ms == 2.0
+
+    @pytest.mark.asyncio
+    async def test_host_systemd_reachability_requires_a_json_boolean(self, monkeypatch):
+        monkeypatch.setattr(
+            "helpers.request_agent_json",
+            AsyncMock(return_value={"reachable": "false", "response_time_ms": 2.0}),
+        )
+        config = {
+            "name": "opencode", "port": 3003, "external_port": 3003,
+            "health": "/health", "host": "localhost", "type": "host-systemd",
+        }
+
+        result = await check_service_health("opencode", config)
+
         assert result.status == "not_deployed"
         assert result.response_time_ms == 2.0
 
