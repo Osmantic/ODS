@@ -208,6 +208,9 @@ test: ## Run unit and contract tests
 	@echo "=== token-spy session manager active-id extraction ==="
 	@bash tests/test-token-spy-session-manager.sh
 	@echo ""
+	@echo "=== token-spy remote session cleanup argv safety ==="
+	@bash tests/test-token-spy-remote-rm.sh
+	@echo ""
 	@echo "=== fleet-multi-distro keep-going on docker pull failure ==="
 	@bash tests/test-fleet-multi-distro-keep-going.sh
 	@echo ""

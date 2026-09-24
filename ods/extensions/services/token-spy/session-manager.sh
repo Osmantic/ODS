@@ -286,12 +286,30 @@ REMOTESCRIPT
   log "  Sessions: $session_count total, ${#to_remove[@]} to remove"
 
   if [ "${#to_remove[@]}" -gt 0 ]; then
-    local rm_args=""
+    # Session ids come from remote gateway output. Interpolating them into the
+    # remote command line lets shell metacharacters re-parse over there, so send
+    # them NUL-delimited on stdin and let xargs build rm's argv directly — the
+    # remote shell never sees them. The directory stays on the command line
+    # (unquoted, as before) so a leading '~' still expands remotely, and the
+    # chdir keeps the ids themselves free of any path of their own.
+    local rm_names=()
+    local sid
     for sid in "${to_remove[@]}"; do
-      rm_args="${rm_args} ${remote_dir}/${sid}.jsonl"
+      case "$sid" in
+        */*)
+          log "  [SKIP] Refusing path-like session id: $sid"
+          continue
+          ;;
+      esac
+      rm_names+=("${sid}.jsonl")
     done
-    ssh -o ConnectTimeout=5 -o BatchMode=yes "${host}" "rm -f ${rm_args}" 2>/dev/null || true
-    log "  [DONE] Removed ${#to_remove[@]} sessions on $host"
+
+    if [ "${#rm_names[@]}" -gt 0 ]; then
+      printf '%s\0' "${rm_names[@]}" |
+        ssh -o ConnectTimeout=5 -o BatchMode=yes "${host}" "cd ${remote_dir} && exec xargs -0 rm -f" ||
+        log "  [WARN] Remote cleanup failed on $host (non-fatal)"
+      log "  [DONE] Removed ${#rm_names[@]} sessions on $host"
+    fi
   else
     log "  [OK] No cleanup needed"
   fi
