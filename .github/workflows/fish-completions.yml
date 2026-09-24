@@ -1,0 +1,17 @@
+name: Fish completions
+on:
+  pull_request:
+    paths: ['ods/completions/**', 'ods/tests/test-fish-completions.py', '.github/workflows/fish-completions.yml']
+  push:
+    branches: [main]
+    paths: ['ods/completions/**', 'ods/tests/test-fish-completions.py', '.github/workflows/fish-completions.yml']
+permissions:
+  contents: read
+jobs:
+  fish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - run: sudo apt-get update && sudo apt-get install -y fish
+      - run: fish --no-execute ods/completions/ods.fish ods/completions/ods-cli.fish
+      - run: python3 ods/tests/test-fish-completions.py
