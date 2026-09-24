@@ -50,10 +50,23 @@ const STACK_OPTIONS = [
 
 const TOTAL_STEPS = 4
 
+const validDeviceName = value => typeof value === 'string' && value.length <= 32 && /^[a-z0-9-]{1,32}$/i.test(value.trim())
+const validUsername = value => typeof value === 'string' && value.length <= 64 && /^[A-Za-z0-9._-]{1,64}$/.test(value.trim())
+
 function readProgress() {
   try {
     const raw = globalThis.localStorage?.getItem(PROGRESS_KEY)
-    return raw ? JSON.parse(raw) : null
+    const saved = raw ? JSON.parse(raw) : null
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return null
+    const step = Number.isInteger(saved.step) && saved.step >= 1 && saved.step <= TOTAL_STEPS ? saved.step : 1
+    const deviceName = typeof saved.deviceName === 'string' && saved.deviceName.length <= 32 ? saved.deviceName : 'ods'
+    const username = typeof saved.username === 'string' && saved.username.length <= 64 ? saved.username : ''
+    const validStack = STACK_OPTIONS.some(option => option.id === saved.stack)
+    // Never restore past a field the interactive wizard would require review.
+    const restoredStep = !validDeviceName(saved.deviceName) ? 1
+      : !validUsername(saved.username) ? Math.min(step, 2)
+        : !validStack ? Math.min(step, 3) : step
+    return {step:restoredStep, deviceName, username, stack:validStack ? saved.stack : 'chat'}
   } catch {
     return null
   }
@@ -342,7 +355,7 @@ function StepDots({ step, total }) {
 // ---------------------------------------------------------------------------
 
 function WelcomeStep({ deviceName, setDeviceName, onNext }) {
-  const valid = /^[a-z0-9-]{1,32}$/i.test(deviceName.trim())
+  const valid = validDeviceName(deviceName)
   return (
     <div>
       <div className="w-16 h-16 rounded-2xl bg-theme-accent/15 text-theme-accent flex items-center justify-center mb-6">
@@ -391,8 +404,7 @@ function WelcomeStep({ deviceName, setDeviceName, onNext }) {
 // ---------------------------------------------------------------------------
 
 function UserStep({ username, setUsername, onNext, onBack }) {
-  const trimmed = username.trim()
-  const valid = /^[A-Za-z0-9._-]{1,64}$/.test(trimmed)
+  const valid = validUsername(username)
   return (
     <div>
       <div className="w-16 h-16 rounded-2xl bg-theme-accent/15 text-theme-accent flex items-center justify-center mb-6">
