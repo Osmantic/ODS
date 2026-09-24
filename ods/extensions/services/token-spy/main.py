@@ -1695,6 +1695,51 @@ def api_get_settings():
     return settings
 
 
+def _validate_settings_update(body: object) -> None:
+    """Validate the scalar/container contract before mutating settings."""
+    if not isinstance(body, dict):
+        raise ValueError("settings payload must be a JSON object")
+
+    def validate_integer(name: str, value: object, *, allow_none: bool, minimum: int, maximum: int | None = None):
+        if value is None and allow_none:
+            return
+        if type(value) is not int:
+            raise ValueError(f"{name} must be an integer")
+        if value < minimum:
+            raise ValueError(f"{name} must be >= {minimum}")
+        if maximum is not None and value > maximum:
+            raise ValueError(f"{name} must be {minimum}-{maximum}")
+
+    if "session_char_limit" in body:
+        validate_integer("session_char_limit", body["session_char_limit"], allow_none=False, minimum=10000)
+    if "poll_interval_minutes" in body:
+        validate_integer(
+            "poll_interval_minutes", body["poll_interval_minutes"],
+            allow_none=False, minimum=1, maximum=60,
+        )
+    if "filters" in body and not isinstance(body["filters"], dict):
+        raise ValueError("filters must be a JSON object")
+
+    agents = body.get("agents", {})
+    if not isinstance(agents, dict):
+        raise ValueError("agents must be a JSON object")
+    for agent_name, updates in agents.items():
+        if not isinstance(updates, dict):
+            raise ValueError(f"agents.{agent_name} must be a JSON object")
+        if "session_char_limit" in updates:
+            validate_integer(
+                f"agents.{agent_name}.session_char_limit", updates["session_char_limit"],
+                allow_none=True, minimum=10000,
+            )
+        if "poll_interval_minutes" in updates:
+            validate_integer(
+                f"agents.{agent_name}.poll_interval_minutes", updates["poll_interval_minutes"],
+                allow_none=True, minimum=1, maximum=60,
+            )
+        if "filters" in updates and not isinstance(updates["filters"], dict):
+            raise ValueError(f"agents.{agent_name}.filters must be a JSON object")
+
+
 @app.post("/api/settings", dependencies=[Depends(verify_api_key)])
 async def api_update_settings(request: Request):
     """Update settings. Accepts partial updates (only provided keys are changed).
@@ -1704,23 +1749,22 @@ async def api_update_settings(request: Request):
       {"agents": {"my-agent": {"session_char_limit": 100000}}}
       {"poll_interval_minutes": 3}
     """
-    body = await request.json()
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "settings payload must be valid JSON"}, status_code=400)
+    try:
+        _validate_settings_update(body)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     settings = load_settings()
 
     if "session_char_limit" in body:
         val = body["session_char_limit"]
-        if val is not None:
-            val = int(val)
-            if val < 10000:
-                return JSONResponse({"error": "session_char_limit must be >= 10000"}, status_code=400)
         settings["session_char_limit"] = val
 
     if "poll_interval_minutes" in body:
         val = body["poll_interval_minutes"]
-        if val is not None:
-            val = int(val)
-            if val < 1 or val > 60:
-                return JSONResponse({"error": "poll_interval_minutes must be 1-60"}, status_code=400)
         settings["poll_interval_minutes"] = val
 
     # Deep-merge filter settings (hot-reloadable)
@@ -1741,8 +1785,6 @@ async def api_update_settings(request: Request):
             for key in ("session_char_limit", "poll_interval_minutes"):
                 if key in agent_updates:
                     val = agent_updates[key]
-                    if val is not None:
-                        val = int(val)
                     settings["agents"][agent_name][key] = val
             # Per-agent filter overrides
             if "filters" in agent_updates:
