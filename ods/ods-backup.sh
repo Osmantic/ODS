@@ -663,10 +663,12 @@ main() {
                 exit 0
                 ;;
             -o|--output)
+                [[ $# -ge 2 && -n "$2" ]] || { log_error "--output requires a value"; usage; exit 1; }
                 BACKUP_ROOT="$2"
                 shift 2
                 ;;
             -t|--type)
+                [[ $# -ge 2 && -n "$2" ]] || { log_error "--type requires a value"; usage; exit 1; }
                 backup_type="$2"
                 shift 2
                 ;;
@@ -679,10 +681,12 @@ main() {
                 shift
                 ;;
             -d|--delete)
+                [[ $# -ge 2 && -n "$2" ]] || { log_error "--delete requires a value"; usage; exit 1; }
                 delete_id="$2"
                 shift 2
                 ;;
             --description)
+                [[ $# -ge 2 && -n "$2" ]] || { log_error "--description requires a value"; usage; exit 1; }
                 description="$2"
                 shift 2
                 ;;

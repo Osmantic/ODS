@@ -239,14 +239,14 @@ while [[ $# -gt 0 ]]; do
         --dry-run) DRY_RUN=true; shift ;;
         --skip-docker) SKIP_DOCKER=true; shift ;;
         --force) FORCE=true; shift ;;
-        --tier) TIER="$2"; shift 2 ;;
+        --tier) [[ $# -ge 2 && -n "$2" ]] || error "--tier requires a value"; TIER="$2"; shift 2 ;;
         --cloud) ODS_MODE="cloud"; ODS_MODE_EXPLICIT=true; shift ;;
         --use-existing-lemonade) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; shift ;;
-        --lemonade-url) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; LEMONADE_BASE_URL="$2"; shift 2 ;;
-        --lemonade-api-key) LEMONADE_API_KEY="$2"; shift 2 ;;
-        --external-llm-url) EXTERNAL_LLM_URL="$2"; shift 2 ;;
-        --external-llm-provider) EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
-        --external-llm-model) EXTERNAL_LLM_MODEL="$2"; shift 2 ;;
+        --lemonade-url) [[ $# -ge 2 && -n "$2" ]] || error "--lemonade-url requires a value"; LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; LEMONADE_BASE_URL="$2"; shift 2 ;;
+        --lemonade-api-key) [[ $# -ge 2 && -n "$2" ]] || error "--lemonade-api-key requires a value"; LEMONADE_API_KEY="$2"; shift 2 ;;
+        --external-llm-url) [[ $# -ge 2 && -n "$2" ]] || error "--external-llm-url requires a value"; EXTERNAL_LLM_URL="$2"; shift 2 ;;
+        --external-llm-provider) [[ $# -ge 2 && -n "$2" ]] || error "--external-llm-provider requires a value"; EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
+        --external-llm-model) [[ $# -ge 2 && -n "$2" ]] || error "--external-llm-model requires a value"; EXTERNAL_LLM_MODEL="$2"; shift 2 ;;
         --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
         --no-external-llm) EXTERNAL_LLM_DISABLE=true; shift ;;
         --reselect-model) ODS_RESELECT_MODEL=true; shift ;;
@@ -288,7 +288,7 @@ while [[ $# -gt 0 ]]; do
         --offline) OFFLINE_MODE=true; shift ;;
         --lan) BIND_ADDRESS="0.0.0.0"; BIND_ADDRESS_EXPLICIT=true; shift ;;
         --no-bootstrap) NO_BOOTSTRAP=true; shift ;;
-        --summary-json) SUMMARY_JSON_FILE="$2"; shift 2 ;;
+        --summary-json) [[ $# -ge 2 && -n "$2" ]] || error "--summary-json requires a value"; SUMMARY_JSON_FILE="$2"; shift 2 ;;
         -h|--help) usage ;;
         *) printf '[ERROR] Unknown option: %s\n' "$1" >&2; exit 1 ;;
     esac

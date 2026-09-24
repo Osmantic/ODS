@@ -733,6 +733,7 @@ main() {
                 shift
                 ;;
             --service|-s)
+                [[ $# -ge 2 && -n "$2" ]] || { echo "--service requires a service name" >&2; exit 2; }
                 SPECIFIC_SERVICE="$2"
                 shift 2
                 ;;

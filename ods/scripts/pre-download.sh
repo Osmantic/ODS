@@ -378,6 +378,7 @@ main() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --tier)
+                [[ $# -ge 2 && -n "$2" ]] || { error "--tier requires a value"; show_help; exit 1; }
                 tier="$2"
                 action="download"
                 shift 2
