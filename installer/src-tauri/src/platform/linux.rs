@@ -1,4 +1,5 @@
 use super::SystemInfo;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn check_system() -> SystemInfo {
@@ -57,17 +58,51 @@ fn get_ram_gb() -> f64 {
 }
 
 fn get_disk_free_gb() -> f64 {
+    let probe_path =
+        install_filesystem_probe_path(std::env::var_os("HOME").map(PathBuf::from));
+    get_disk_free_gb_at(&probe_path)
+}
+
+fn install_filesystem_probe_path(home: Option<PathBuf>) -> PathBuf {
+    home.filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+fn get_disk_free_gb_at(path: &Path) -> f64 {
     let out = Command::new("df")
-        .args(["--output=avail", "-BG", "/"])
+        .args(["--output=avail", "-BG", "--"])
+        .arg(path)
         .output();
     match out {
-        Ok(o) if o.status.success() => {
-            let text = String::from_utf8_lossy(&o.stdout);
-            if let Some(line) = text.lines().nth(1) {
-                return line.trim().trim_end_matches('G').parse().unwrap_or(0.0);
-            }
-            0.0
-        }
+        Ok(o) if o.status.success() => parse_available_gb(&String::from_utf8_lossy(&o.stdout)),
         _ => 0.0,
+    }
+}
+
+fn parse_available_gb(output: &str) -> f64 {
+    output
+        .lines()
+        .nth(1)
+        .and_then(|line| line.trim().trim_end_matches('G').parse().ok())
+        .unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disk_check_targets_the_default_install_filesystem() {
+        assert_eq!(
+            install_filesystem_probe_path(Some(PathBuf::from("/mnt/home/alice"))),
+            PathBuf::from("/mnt/home/alice")
+        );
+        assert_eq!(install_filesystem_probe_path(None), PathBuf::from("/"));
+    }
+
+    #[test]
+    fn parses_gnu_df_available_gigabytes() {
+        assert_eq!(parse_available_gb("Avail\n42G\n"), 42.0);
+        assert_eq!(parse_available_gb("unexpected"), 0.0);
     }
 }
