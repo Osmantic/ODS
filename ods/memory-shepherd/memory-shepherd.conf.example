@@ -24,6 +24,11 @@ archive_retention_days=30
 # The separator line between baseline and scratch notes
 separator=---
 
+# Maximum seconds a single remote SCP transfer may take (remote agents only).
+# SCP runs in BatchMode (no interactive prompts) so unattended timers cannot
+# hang on auth or host-key confirmation; this timeout bounds stalled transfers.
+remote_scp_timeout=60
+
 # ─── Local Agent Example ──────────────────────────────────────────────
 # Each agent section defines one managed MEMORY.md file.
 #

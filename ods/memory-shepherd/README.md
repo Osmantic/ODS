@@ -89,6 +89,7 @@ Memory Shepherd uses an INI-style config file. The search order is:
 | `max_memory_size` | `16384` | Max memory file size (bytes) before warning |
 | `archive_retention_days` | `30` | Delete archives older than this |
 | `separator` | `---` | The line that separates baseline from scratch notes |
+| `remote_scp_timeout` | `60` | Max seconds per remote SCP transfer |
 
 ### Agent Sections
 
@@ -110,6 +111,12 @@ baseline. A failed read stops the run without requesting a remote write; it
 cannot distinguish a missing file from a permission or connection failure. For
 a new remote agent, verify the destination and initialize its memory explicitly
 before enabling the reset timer.
+
+SCP runs non-interactively (`BatchMode`) with `ConnectTimeout=15`, and each
+transfer is capped by `remote_scp_timeout` (default 60 seconds) so an
+unattended timer can never hang on an auth prompt or a stalled connection.
+Remote authentication must therefore be key-based or agent-based. A failed or
+timed-out write fails the reset instead of reporting success.
 
 ### Example Config
 

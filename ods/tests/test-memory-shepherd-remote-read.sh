@@ -21,18 +21,24 @@ cat > "$test_root/bin/scp" <<'SCP'
 set -euo pipefail
 [[ "$1" == -q ]]
 shift
-if [[ "$1" == fixture@fixture.invalid:/fixture/MEMORY.md ]]; then
+while [[ "${1:-}" == -o ]]; do printf '%s\n' "$2" >> "$ODS_TEST_OPTS"; shift 2; done
+if [[ "${1:-}" == fixture@fixture.invalid:/fixture/MEMORY.md ]]; then
     printf 'read\n' >> "$ODS_TEST_CALLS"
     case "$ODS_TEST_READ" in
         fail) printf 'fixture: read unavailable\n' >&2; exit 73 ;;
         partial) printf 'incomplete copy' > "$2"; exit 74 ;;
         missing) printf 'fixture: no such file\n' >&2; exit 75 ;;
+        hang) sleep 300 ;;
         success) cp "$ODS_TEST_MEMORY" "$2" ;;
         *) exit 91 ;;
     esac
-elif [[ "$2" == fixture@fixture.invalid:/fixture/MEMORY.md ]]; then
+elif [[ "${2:-}" == fixture@fixture.invalid:/fixture/MEMORY.md ]]; then
     printf 'write\n' >> "$ODS_TEST_CALLS"
-    cp "$1" "$ODS_TEST_MEMORY"
+    case "${ODS_TEST_WRITE:-success}" in
+        write-fail) printf 'fixture: write refused\n' >&2; exit 76 ;;
+        write-hang) sleep 300 ;;
+        *) cp "$1" "$ODS_TEST_MEMORY" ;;
+    esac
 else
     exit 92
 fi
@@ -40,7 +46,7 @@ SCP
 chmod +x "$test_root/bin/scp"
 
 failures=0
-for scenario in fail partial missing success full-backup local-missing; do
+for scenario in fail partial missing success full-backup local-missing write-fail hang write-hang; do
     fixture="$test_root/$scenario"
     mkdir -p "$fixture/baselines" "$fixture/archives"
     for _ in {1..40}; do printf 'Durable baseline instruction.\n'; done > "$fixture/baselines/agent.md"
@@ -49,8 +55,9 @@ for scenario in fail partial missing success full-backup local-missing; do
     cp "$fixture/MEMORY.md" "$fixture/original.md"
     if [[ "$scenario" == missing || "$scenario" == local-missing ]]; then rm "$fixture/MEMORY.md"; fi
     : > "$fixture/calls"
+    : > "$fixture/opts"
     {
-        printf '[general]\nbaseline_dir=%s/baselines\narchive_dir=%s/archives\n[fixture]\nbaseline=agent.md\n' "$fixture" "$fixture"
+        printf '[general]\nbaseline_dir=%s/baselines\narchive_dir=%s/archives\nremote_scp_timeout=3\n[fixture]\nbaseline=agent.md\n' "$fixture" "$fixture"
         if [[ "$scenario" == local-missing ]]; then
             printf 'memory_file=%s/MEMORY.md\n' "$fixture"
         else
@@ -58,12 +65,17 @@ for scenario in fail partial missing success full-backup local-missing; do
         fi
     } > "$fixture/config"
     read_mode="$scenario"
+    write_mode=success
+    [[ "$scenario" == write-fail || "$scenario" == write-hang ]] && { read_mode=success; write_mode="$scenario"; }
     [[ "$scenario" == full-backup || "$scenario" == local-missing ]] && read_mode=success
     code=0
+    start=$SECONDS
     PATH="$test_root/bin:$PATH" MEMORY_SHEPHERD_CONF="$fixture/config" \
-        ODS_TEST_MEMORY="$fixture/MEMORY.md" ODS_TEST_CALLS="$fixture/calls" ODS_TEST_READ="$read_mode" \
+        ODS_TEST_MEMORY="$fixture/MEMORY.md" ODS_TEST_CALLS="$fixture/calls" \
+        ODS_TEST_OPTS="$fixture/opts" ODS_TEST_READ="$read_mode" ODS_TEST_WRITE="$write_mode" \
         bash "$project/memory-shepherd/memory-shepherd.sh" fixture > "$fixture/output" 2>&1 || code=$?
-    if [[ "$scenario" == fail || "$scenario" == partial || "$scenario" == missing ]]; then
+    elapsed=$((SECONDS - start))
+    if [[ "$scenario" == fail || "$scenario" == partial || "$scenario" == missing || "$scenario" == hang ]]; then
         if [[ "$code" == 0 ]] || [[ "$(cat "$fixture/calls")" != read ]]; then
             printf 'FAIL %s: unsuccessful fetch must not upload or report success\n' "$scenario" >&2
             cat "$fixture/output" >&2
@@ -76,6 +88,24 @@ for scenario in fail partial missing success full-backup local-missing; do
             cmp "$fixture/MEMORY.md" "$fixture/original.md"
         fi
         [[ -z "$(find "$fixture/archives" -type f -print)" ]]
+        if [[ "$scenario" == hang ]] && (( elapsed >= 60 )); then
+            printf 'FAIL %s: stalled fetch must be bounded by remote_scp_timeout (took %ss)\n' "$scenario" "$elapsed" >&2
+            failures=$((failures + 1))
+            continue
+        fi
+    elif [[ "$scenario" == write-fail || "$scenario" == write-hang ]]; then
+        if [[ "$code" == 0 ]] || [[ "$(cat "$fixture/calls")" != $'read\nwrite' ]]; then
+            printf 'FAIL %s: unsuccessful push must fail the reset, not report success\n' "$scenario" >&2
+            cat "$fixture/output" >&2
+            failures=$((failures + 1))
+            continue
+        fi
+        cmp "$fixture/MEMORY.md" "$fixture/original.md"
+        if [[ "$scenario" == write-hang ]] && (( elapsed >= 60 )); then
+            printf 'FAIL %s: stalled push must be bounded by remote_scp_timeout (took %ss)\n' "$scenario" "$elapsed" >&2
+            failures=$((failures + 1))
+            continue
+        fi
     else
         [[ "$code" == 0 ]]
         cmp "$fixture/MEMORY.md" "$fixture/baselines/agent.md"
@@ -85,6 +115,8 @@ for scenario in fail partial missing success full-backup local-missing; do
             [[ -n "$archive" ]]
             if [[ "$scenario" == full-backup ]]; then cmp "$archive" "$fixture/original.md"
             else grep -Fq 'Do not lose these notes.' "$archive"; fi
+            grep -qx 'BatchMode=yes' "$fixture/opts"
+            grep -qx 'ConnectTimeout=15' "$fixture/opts"
         else
             [[ ! -s "$fixture/calls" ]]
         fi

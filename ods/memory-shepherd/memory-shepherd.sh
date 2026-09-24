@@ -111,6 +111,7 @@ MAX_MEMORY_SIZE=$(cfg general max_memory_size 16384)
 ARCHIVE_RETENTION_DAYS=$(cfg general archive_retention_days 30)
 SEPARATOR=$(cfg general separator "---")
 MIN_BASELINE_SIZE=$(cfg general min_baseline_size 500)
+REMOTE_SCP_TIMEOUT=$(cfg general remote_scp_timeout 60)
 
 # Resolve relative paths against script directory
 [[ "$BASELINE_DIR" != /* ]] && BASELINE_DIR="$SCRIPT_DIR/$BASELINE_DIR"
@@ -202,6 +203,14 @@ reset_agent() {
     log "Reset $agent MEMORY.md to baseline (${baseline_size} bytes)"
 }
 
+# Remote resets run under a systemd oneshot timer with no execution timeout.
+# scp must never block on an interactive auth or host-key prompt, and a dead
+# connection must not stall the timer forever. BatchMode disables prompts,
+# ConnectTimeout bounds the handshake, and timeout caps the whole transfer.
+shepherd_scp() {
+    timeout "${REMOTE_SCP_TIMEOUT}s" scp -q -o BatchMode=yes -o ConnectTimeout=15 "$@"
+}
+
 reset_remote_agent() {
     local agent="$1"
     local remote_host="$2"
@@ -224,7 +233,7 @@ reset_remote_agent() {
 
     # Fetch current memory from remote
     local tmpfile="/tmp/memory-shepherd-${agent}-current.md"
-    if ! scp -q "${remote_user}@${remote_host}:${remote_memory}" "$tmpfile"; then
+    if ! shepherd_scp "${remote_user}@${remote_host}:${remote_memory}" "$tmpfile"; then
         # SCP failure does not establish that the remote file is missing.
         # A failed or partial read must never authorize overwriting memory
         # whose current notes have not been archived.
@@ -265,7 +274,11 @@ reset_remote_agent() {
     fi
 
     # Push baseline to remote
-    scp -q "$baseline" "${remote_user}@${remote_host}:${remote_memory}"
+    if ! shepherd_scp "$baseline" "${remote_user}@${remote_host}:${remote_memory}"; then
+        log "ERROR: Could not push baseline for $agent to $remote_host — reset failed" >&2
+        rm -f "$tmpfile"
+        return 1
+    fi
     log "Reset $agent MEMORY.md on $remote_host to baseline (${baseline_size} bytes)"
     rm -f "$tmpfile"
 }
