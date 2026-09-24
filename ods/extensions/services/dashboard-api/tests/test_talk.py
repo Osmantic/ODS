@@ -224,6 +224,21 @@ def test_talk_audio_message_transcribes_and_routes(talk_client, monkeypatch):
     assert data["text"] == "answer to what is running locally"
 
 
+def test_talk_audio_message_rejects_empty_upload(talk_client, monkeypatch):
+    async def unexpected_transcribe(*_args):
+        pytest.fail("empty audio must not reach transcription")
+
+    monkeypatch.setattr("routers.talk._transcribe_bytes", unexpected_transcribe)
+
+    resp = talk_client.post(
+        "/api/talk/audio-message",
+        files={"file": ("voice.webm", b"", "audio/webm")},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "Uploaded file is empty."
+
+
 def test_talk_speak_streams_audio(talk_client, monkeypatch):
     """The /api/talk/speak endpoint streams MP3 bytes from Kokoro as they
     arrive (instead of buffering the whole reply into a single Response).
@@ -1195,6 +1210,21 @@ def test_talk_attachment_unknown_filetype_returns_415(talk_client):
         data={"text": ""},
     )
     assert resp.status_code == 415
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type"),
+    [("empty.md", "text/markdown"), ("empty.png", "image/png")],
+)
+def test_talk_attachment_rejects_empty_upload(talk_client, filename, content_type):
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": (filename, b"", content_type)},
+        data={"text": "inspect this"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "Uploaded file is empty."
 
 
 def test_talk_attachment_image_routes_to_vision_endpoint_bypassing_hermes(talk_client, monkeypatch):

@@ -831,6 +831,12 @@ def _image_content_type(file: UploadFile) -> str:
     return _IMAGE_EXTENSION_MIMES.get(ext, "image/png")
 
 
+def _require_upload_content(data: bytes) -> bytes:
+    if not data:
+        raise HTTPException(status_code=422, detail="Uploaded file is empty.")
+    return data
+
+
 @router.post("/api/talk/attachment")
 async def talk_attachment(
     request: Request,
@@ -861,7 +867,7 @@ async def talk_attachment(
         raise HTTPException(status_code=413, detail="Caption is too long.")
 
     if kind == "image":
-        data = await file.read(MAX_IMAGE_BYTES + 1)
+        data = _require_upload_content(await file.read(MAX_IMAGE_BYTES + 1))
         if len(data) > MAX_IMAGE_BYTES:
             raise HTTPException(status_code=413, detail=f"Image is too large (max {MAX_IMAGE_BYTES // (1024 * 1024)} MB).")
         prompt_text = caption or "Describe what you see in this image."
@@ -877,7 +883,7 @@ async def talk_attachment(
 
     # text-like
     await _require_hermes_talk_compatible()
-    data = await file.read(MAX_DOC_BYTES + 1)
+    data = _require_upload_content(await file.read(MAX_DOC_BYTES + 1))
     if len(data) > MAX_DOC_BYTES:
         raise HTTPException(status_code=413, detail=f"File is too large (max {MAX_DOC_BYTES // (1024 * 1024)} MB).")
     try:
@@ -908,7 +914,7 @@ async def talk_attachment(
 async def talk_audio_message(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     session_key, _expires_at = _require_session(request)
     await _require_hermes_talk_compatible()
-    data = await file.read(MAX_AUDIO_BYTES + 1)
+    data = _require_upload_content(await file.read(MAX_AUDIO_BYTES + 1))
     if len(data) > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail="Audio message is too large.")
     transcript = await _transcribe_bytes(
