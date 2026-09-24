@@ -2579,10 +2579,14 @@ async def proxy_other(request: Request, path: str):
         headers = _build_anthropic_upstream_headers(request)
 
     body = await request.body()
+    upstream_url = f"/{path}"
+    query_string = request.scope.get("query_string", b"")
+    if query_string:
+        upstream_url = f"{upstream_url}?{query_string.decode('ascii')}"
     try:
         resp = await client.request(
             method=request.method,
-            url=f"/{path}",
+            url=upstream_url,
             content=body if body else None,
             headers=headers,
         )
