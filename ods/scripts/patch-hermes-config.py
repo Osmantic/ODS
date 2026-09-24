@@ -294,15 +294,22 @@ def patch_config(
     return True
 
 
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Patch ODS Hermes config defaults.")
     parser.add_argument("path", type=Path)
     parser.add_argument("--model")
     parser.add_argument("--base-url")
     parser.add_argument("--api-key", help="Bearer token Hermes uses to call the LLM (needed when routing through litellm)")
-    parser.add_argument("--context-length", type=int)
-    parser.add_argument("--request-timeout-seconds", type=int, default=180)
-    parser.add_argument("--max-tokens", type=int, default=1024)
+    parser.add_argument("--context-length", type=positive_int)
+    parser.add_argument("--request-timeout-seconds", type=positive_int, default=180)
+    parser.add_argument("--max-tokens", type=positive_int, default=1024)
     args = parser.parse_args()
 
     if not args.path.exists():
