@@ -44,6 +44,17 @@ curl -X POST http://localhost:9200/tts/stream \
 curl http://localhost:9200/voices
 ```
 
+### Concurrent requests
+
+Both synthesis routes share one generation slot because Bark reuses model state,
+including CPU/GPU placement. While a generation is running, another synthesis
+request receives HTTP **503** immediately; requests are not queued in memory.
+Wait for the active job to finish before submitting another. `/health` and
+`/voices` remain available. The slot is released after computation succeeds or
+fails, not merely when an HTTP caller stops waiting. Run the shipped single
+Uvicorn worker; adding workers duplicates the models and bypasses this
+process-local admission limit.
+
 ### Special Text Tokens
 
 Bark understands non-verbal cues in brackets: `[laughter]`, `[sighs]`, `[music]`, `[gasps]`, `[clears throat]`, `...` (pauses), `♪` (singing mode).
