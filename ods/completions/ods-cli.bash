@@ -7,7 +7,7 @@ _ods_completion() {
     _init_completion || return
 
     # Main commands and their aliases
-    local main_commands="gpu status status-json list enable disable preset mode model backup restore logs restart start stop update shell config chat benchmark doctor help version"
+    local main_commands="gpu status status-json list enable disable preset mode model tts backup restore logs restart start stop update shell config chat benchmark doctor help version"
     local aliases="g s ls p m l r u sh cfg c bench b diag d h v"
 
     # Service names (from ods-cli aliases section)
@@ -35,6 +35,10 @@ _ods_completion() {
                     ;;
                 model)
                     COMPREPLY=($(compgen -W "current list swap" -- "$cur"))
+                    return 0
+                    ;;
+                tts)
+                    COMPREPLY=($(compgen -W "voices speak" -- "$cur"))
                     return 0
                     ;;
                 config|cfg)

@@ -1,0 +1,35 @@
+name: CLI local speech contract
+
+on:
+  pull_request:
+    paths:
+      - 'ods/ods-cli'
+      - 'ods/scripts/tts-client.py'
+      - 'ods/completions/ods-cli.bash'
+      - 'ods/extensions/services/tts/**'
+      - 'ods/tests/test-cli-tts.py'
+      - 'ods/tests/test_tts_cli_live.py'
+      - '.github/workflows/tts-cli.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  speech:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest==8.3.5
+      - name: Verify CLI HTTP and file publication boundaries
+        run: python ods/tests/test-cli-tts.py
+      - name: Pull the exact shipped Kokoro CPU image
+        run: docker pull ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.4@sha256:c8812546d358cbfd6a5c4087a28795b2b001d8e32d7a322eedd246e6bc13cb55
+      - name: Synthesize a complete local WAV through the CLI
+        env:
+          ODS_TEST_TTS_DOCKER: '1'
+        run: python -m pytest -q ods/tests/test_tts_cli_live.py
