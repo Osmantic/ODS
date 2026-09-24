@@ -52,6 +52,8 @@ check "retrying \$_svc with user's Docker config" "$INSTALL_PS1" "Windows instal
 check '$enableComfyui -and $currentBackend -eq "nvidia"' "$INSTALL_PS1" "Windows installer only locally builds ComfyUI on NVIDIA"
 check 'ComfyUI disabled on Windows AMD' "$ROOT_DIR/installers/windows/phases/03-features.ps1" "Windows AMD disables Dockerized ComfyUI"
 check '/dev/dri and /dev/kfd' "$ROOT_DIR/installers/windows/phases/03-features.ps1" "Windows AMD ComfyUI warning names unsupported ROCm devices"
+check '$plan["langfuse"]' "$PLAN_LIB" "service plan carries an explicit Langfuse entry"
+check '-EnableLangfuse $enableLangfuse' "$INSTALL_PS1" "Windows installer forwards the resolved Langfuse flag to the service plan"
 
 if command -v pwsh >/dev/null 2>&1; then
     OUTPUT="$(PLAN_LIB="$PLAN_LIB" pwsh -NoProfile -Command '
@@ -149,6 +151,20 @@ if command -v pwsh >/dev/null 2>&1; then
             -EnableDeepResearch $false `
             -EnablePrivacyShield $false
         Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $hermesOnly) "Hermes without recommended still enables SearXNG"
+
+        $langfuseOn = New-ODSWindowsServicePlan `
+            -EnableRecommended $false `
+            -EnableVoice $false `
+            -EnableWorkflows $false `
+            -EnableRag $false `
+            -EnableHermes $false `
+            -EnableOpenClaw $false `
+            -EnableComfyui $false `
+            -EnableDeepResearch $false `
+            -EnablePrivacyShield $false `
+            -EnableLangfuse $true
+        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "langfuse" -Plan $langfuseOn) "Explicit Langfuse flag enables observability stack"
+        Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "langfuse" -Plan $core)) "Core plan keeps Langfuse off"
 
         Assert-Plan (-not $unknownOptional.Enabled) "Unknown optional is disabled"
         Assert-Plan ($unknownRecommended.Enabled) "Unknown recommended follows recommended flag"

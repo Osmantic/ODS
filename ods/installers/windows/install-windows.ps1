@@ -972,7 +972,8 @@ litellm_settings:
             -EnablePrivacyShield $enablePrivacyShield `
             -EnableBraveSearch $enableBraveSearch `
             -EnableODSProxy $enableODSProxy `
-            -EnableRemoteAccess $enableRemoteAccess
+            -EnableRemoteAccess $enableRemoteAccess `
+            -EnableLangfuse $enableLangfuse
         $enabledExtensionServices = @()
         $skippedExtensionServices = @()
 
@@ -2083,7 +2084,8 @@ if ($dryRun) {
         -EnablePrivacyShield $enablePrivacyShield `
         -EnableBraveSearch $enableBraveSearch `
         -EnableODSProxy $enableODSProxy `
-        -EnableRemoteAccess $enableRemoteAccess
+        -EnableRemoteAccess $enableRemoteAccess `
+        -EnableLangfuse $enableLangfuse
     Write-AI "[DRY RUN] Would health-check selected services"
     if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $_dryRunServicePlan) {
         Write-AI "[DRY RUN] Would auto-configure Perplexica for $($tierConfig.LlmModel)"

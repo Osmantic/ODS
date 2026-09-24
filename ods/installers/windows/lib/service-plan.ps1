@@ -37,7 +37,8 @@ function New-ODSWindowsServicePlan {
         [bool]$EnablePrivacyShield,
         [bool]$EnableBraveSearch = $false,
         [bool]$EnableODSProxy = $false,
-        [bool]$EnableRemoteAccess = $false
+        [bool]$EnableRemoteAccess = $false,
+        [bool]$EnableLangfuse = $false
     )
 
     $plan = @{}
@@ -76,6 +77,10 @@ function New-ODSWindowsServicePlan {
     $plan["comfyui"] = New-ODSWindowsServicePlanEntry "comfyui" $EnableComfyui "image" "image generation not enabled"
     $plan["perplexica"] = New-ODSWindowsServicePlanEntry "perplexica" $EnableDeepResearch "research" "deep research not enabled"
     $plan["privacy-shield"] = New-ODSWindowsServicePlanEntry "privacy-shield" $EnablePrivacyShield "privacy" "privacy shield not enabled"
+    # Langfuse's manifest category is "optional", so without an explicit plan
+    # entry the generic fallback disables it even when the user opted in via
+    # -Langfuse or -All — phase 03 already resolved the intent, honor it here.
+    $plan["langfuse"] = New-ODSWindowsServicePlanEntry "langfuse" $EnableLangfuse "observability" "Langfuse observability not enabled"
 
     $plan["brave-search"] = New-ODSWindowsServicePlanEntry "brave-search" $EnableBraveSearch "search" "Brave Search API not configured"
     $plan["ods-proxy"] = New-ODSWindowsServicePlanEntry "ods-proxy" $EnableODSProxy "networking" "LAN web proxy not enabled"
