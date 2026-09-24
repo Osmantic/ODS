@@ -86,6 +86,7 @@ test: ## Run unit and contract tests
 	@echo "=== safe .env loading (quote/CRLF handling) ==="
 	@bash tests/test-safe-env.sh
 	@bash tests/test-env-example-inline-comments.sh
+	@bash tests/test-env-example-required.sh
 	@bash tests/test-phase06-secret-generation.sh
 	@bash tests/test-phase06-env-rerun-quoting.sh
 	@echo ""

@@ -283,6 +283,9 @@ jobs:
       - name: Post-install Inference Validation Tests
         run: python3 tests/test_validate_chat_response.py
 
+      - name: Env Example Schema Sync
+        run: bash tests/test-env-example-required.sh
+
       - name: QR Code Helper Tests
         run: bash tests/test-qrcode-helper.sh
 
