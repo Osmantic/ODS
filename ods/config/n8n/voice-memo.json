@@ -2,27 +2,287 @@
   "name": "Voice Memo",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## Voice Memo\n\nUpload an audio memo to the production webhook:\n```bash\ncurl -X POST http://localhost:5678/webhook/ods-voice-memo \\\n  -F 'data=@memo.webm' \\\n  -F 'title=Release notes'\n```\n\nThe multipart field must be named `data`. The workflow validates the upload, discovers the model already exposed by the bundled Whisper service, transcribes the audio, and returns bounded JSON. Optionally send a `model` field to select one of the IDs returned by Whisper. No audio or transcript is persisted by this workflow.",
+        "height": 520,
+        "width": 560
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [-220, 20]
     },
     {
       "parameters": {
-        "content": "## Voice Memo\n\nThis is a template workflow for recording and transcribing voice memos.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "httpMethod": "POST",
+        "path": "ods-voice-memo",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "webhook-upload",
+      "name": "Upload Voice Memo",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [420, 260],
+      "webhookId": "1c35a68b-0b4f-4b9a-bf5e-35302e714db9"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first();\nconst body = input.json.body || {};\nconst audio = input.binary?.data;\nconst title = String(body.title || audio?.fileName || 'Voice memo').trim().slice(0, 120) || 'Voice memo';\n\nif (!audio) {\n  return [{ json: {\n    ok: false,\n    statusCode: 400,\n    error: \"Multipart form field 'data' must contain an audio file.\",\n  } }];\n}\n\nconst mimeType = String(audio.mimeType || '');\nif (mimeType && !mimeType.startsWith('audio/') && mimeType !== 'application/octet-stream') {\n  return [{ json: {\n    ok: false,\n    statusCode: 415,\n    error: `Unsupported audio content type: ${mimeType}`,\n  } }];\n}\n\nconst requestedModel = String(body.model || '').trim();\nif (requestedModel.length > 200) {\n  return [{ json: {\n    ok: false,\n    statusCode: 400,\n    error: 'The requested model ID exceeds 200 characters.',\n  } }];\n}\n\nreturn [{\n  json: { ok: true, statusCode: 200, title, requestedModel },\n  binary: input.binary,\n}];"
+      },
+      "id": "code-validate",
+      "name": "Validate Audio Upload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 260]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "upload-valid",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-upload-valid",
+      "name": "Upload Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [900, 260]
+    },
+    {
+      "parameters": {
+        "url": "http://whisper:8000/v1/models",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "http-models",
+      "name": "List Whisper Models",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 140],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "merge-upload-models",
+      "name": "Merge Upload and Models",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [1380, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first();\nconst upload = $('Validate Audio Upload').first();\nconst models = Array.isArray(input.json.data)\n  ? input.json.data.map((entry) => entry?.id).filter((id) => typeof id === 'string' && id)\n  : [];\nconst requested = upload.json.requestedModel;\n\nif (models.length === 0) {\n  return [{\n    json: { ok: false, statusCode: 503, error: 'Whisper reports no available transcription model.' },\n    binary: upload.binary,\n  }];\n}\nif (requested && !models.includes(requested)) {\n  return [{\n    json: { ok: false, statusCode: 400, error: `Requested model is not available: ${requested}` },\n    binary: upload.binary,\n  }];\n}\n\nreturn [{\n  json: {\n    ok: true,\n    statusCode: 200,\n    title: upload.json.title,\n    model: requested || models[0],\n  },\n  binary: upload.binary,\n}];"
+      },
+      "id": "code-select-model",
+      "name": "Select Available Model",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1620, 260]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "model-available",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-model-available",
+      "name": "Model Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1860, 260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://whisper:8000/v1/audio/transcriptions",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "model",
+              "value": "={{ $json.model }}"
+            },
+            {
+              "name": "response_format",
+              "value": "json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "http-transcribe",
+      "name": "Transcribe With Whisper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2100, 180],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json || {};\nconst selected = $('Select Available Model').first().json;\nconst text = typeof response.text === 'string' ? response.text.trim() : '';\nif (!text) {\n  return [{ json: {\n    ok: false,\n    statusCode: 502,\n    error: 'Whisper returned an empty transcription.',\n  } }];\n}\n\nreturn [{ json: {\n  ok: true,\n  statusCode: 200,\n  title: selected.title,\n  model: selected.model,\n  text,\n  language: typeof response.language === 'string' ? response.language : null,\n  duration: Number.isFinite(response.duration) ? response.duration : null,\n} }];"
+      },
+      "id": "code-normalize",
+      "name": "Normalize Transcript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2340, 180]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "transcript-ready",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-transcript-ready",
+      "name": "Transcript Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2580, 180]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-success",
+      "name": "Return Transcript",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2820, 100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode || 500 }}"
+        }
+      },
+      "id": "respond-error",
+      "name": "Return Voice Memo Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2340, 420]
     }
   ],
-  "connections": {},
+  "connections": {
+    "Upload Voice Memo": {
+      "main": [[{"node": "Validate Audio Upload", "type": "main", "index": 0}]]
+    },
+    "Validate Audio Upload": {
+      "main": [[{"node": "Upload Valid?", "type": "main", "index": 0}]]
+    },
+    "Upload Valid?": {
+      "main": [
+        [
+          {"node": "List Whisper Models", "type": "main", "index": 0},
+          {"node": "Merge Upload and Models", "type": "main", "index": 0}
+        ],
+        [{"node": "Return Voice Memo Error", "type": "main", "index": 0}]
+      ]
+    },
+    "List Whisper Models": {
+      "main": [[{"node": "Merge Upload and Models", "type": "main", "index": 1}]]
+    },
+    "Merge Upload and Models": {
+      "main": [[{"node": "Select Available Model", "type": "main", "index": 0}]]
+    },
+    "Select Available Model": {
+      "main": [[{"node": "Model Available?", "type": "main", "index": 0}]]
+    },
+    "Model Available?": {
+      "main": [
+        [{"node": "Transcribe With Whisper", "type": "main", "index": 0}],
+        [{"node": "Return Voice Memo Error", "type": "main", "index": 0}]
+      ]
+    },
+    "Transcribe With Whisper": {
+      "main": [[{"node": "Normalize Transcript", "type": "main", "index": 0}]]
+    },
+    "Normalize Transcript": {
+      "main": [[{"node": "Transcript Ready?", "type": "main", "index": 0}]]
+    },
+    "Transcript Ready?": {
+      "main": [
+        [{"node": "Return Transcript", "type": "main", "index": 0}],
+        [{"node": "Return Voice Memo Error", "type": "main", "index": 0}]
+      ]
+    }
+  },
   "settings": {
     "executionOrder": "v1"
   },
