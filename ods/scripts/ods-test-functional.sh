@@ -240,7 +240,6 @@ test_whisper_functional() {
     local response
     response=$(curl -s --max-time 30 \
         -X POST "$WHISPER_URL/v1/audio/transcriptions" \
-        -H "Content-Type: multipart/form-data" \
         -F "file=@$test_audio" \
         -F "model=whisper-1" 2>/dev/null || echo "")
     
