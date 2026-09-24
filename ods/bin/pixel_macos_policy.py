@@ -157,7 +157,9 @@ def system_python_readable_paths():
     if (selected.name == 'Developer' and selected.parent.name == 'Contents'
             and selected.parent.parent.parent == Path('/Applications')
             and selected.parent.parent.name.endswith('.app')):
-        return (str(selected.parent),)
+        # xcrun reads the system acceptance receipt before dispatching Python.
+        # Reading this receipt does not accept or change any license.
+        return (str(selected.parent), '/Library/Preferences/com.apple.dt.Xcode.plist')
     raise PolicyError('unsupported-system-python-developer-runtime')
 
 

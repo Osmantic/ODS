@@ -249,8 +249,8 @@ def test_sandboxed_system_python_can_import_stdlib_without_owner_site(tmp_path):
 
 @pytest.mark.parametrize('selected,expected', [
     ('/Library/Developer/CommandLineTools', ('/Library/Developer/CommandLineTools',)),
-    ('/Applications/Xcode_26.6.app/Contents/Developer', ('/Applications/Xcode_26.6.app/Contents',)),
-    ('/Applications/Xcode.app/Contents/Developer', ('/Applications/Xcode.app/Contents',)),
+    ('/Applications/Xcode_26.6.app/Contents/Developer', ('/Applications/Xcode_26.6.app/Contents', '/Library/Preferences/com.apple.dt.Xcode.plist')),
+    ('/Applications/Xcode.app/Contents/Developer', ('/Applications/Xcode.app/Contents', '/Library/Preferences/com.apple.dt.Xcode.plist')),
     ('/Applications', None), ('/Users/owner/Developer', None),
     ('/Applications/Xcode.app/Contents/Developer/../../..', None),
 ])
