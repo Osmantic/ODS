@@ -6,13 +6,15 @@ Compatible with the ODS extensions ecosystem.
 
 import io
 import base64
+import hmac
 import logging
+import os
 import threading
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
 import soundfile as sf
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 
@@ -120,6 +122,16 @@ class TTSResponse(BaseModel):
     format: str
 
 
+def _require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
+    """Enforce the optional API key advertised by the extension manifest."""
+    expected_key = os.environ.get("BARK_API_KEY", "")
+    if not expected_key:
+        return
+
+    if x_api_key is None or not hmac.compare_digest(x_api_key, expected_key):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
 def _generate_audio_sync(text: str, voice_preset: str, output_format: str) -> dict:
     """Synchronous audio generation — runs in thread pool."""
     from bark import generate_audio, SAMPLE_RATE
@@ -144,7 +156,11 @@ def health():
     return {"status": "ok", "models_loaded": _models_loaded}
 
 
-@app.post("/tts", response_model=TTSResponse)
+@app.post(
+    "/tts",
+    response_model=TTSResponse,
+    dependencies=[Depends(_require_api_key)],
+)
 def text_to_speech(req: TTSRequest):
     """
     Generate speech audio from text using Bark.
@@ -178,7 +194,7 @@ def text_to_speech(req: TTSRequest):
         raise HTTPException(status_code=500, detail="TTS generation failed. Please try again.")
 
 
-@app.post("/tts/stream")
+@app.post("/tts/stream", dependencies=[Depends(_require_api_key)])
 def text_to_speech_stream(req: TTSRequest):
     """
     Generate speech and return raw audio bytes (wav).

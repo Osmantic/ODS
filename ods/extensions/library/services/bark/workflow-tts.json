@@ -105,6 +105,14 @@
       "parameters": {
         "url": "={{ ($env.BARK_HOST || 'http://bark:9200').replace(/\\/$/, '') }}/tts",
         "method": "POST",
+        "headers": {
+          "list": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BARK_API_KEY || '' }}"
+            }
+          ]
+        },
         "body": {
           "mimeType": "application/json",
           "raw": "={{ JSON.stringify({ text: $('Check Valid').item.json.text, voice_preset: $('Check Valid').item.json.voice_preset, output_format: $('Check Valid').item.json.output_format }) }}"

@@ -23,6 +23,7 @@ services:
       - ODS_BIND_ADDRESS=${BIND_ADDRESS:-127.0.0.1}
       - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-auto}
       - GENERIC_TIMEZONE=${TIMEZONE:-UTC}
+      - BARK_API_KEY=${BARK_API_KEY:-}
     volumes:
       - ./extensions/services/n8n/n8n-cookie-policy.sh:/opt/ods/n8n-cookie-policy.sh:ro,z
       - ./extensions/services/n8n/n8n-entrypoint.sh:/opt/ods/n8n-entrypoint.sh:ro,z

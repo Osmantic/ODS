@@ -32,11 +32,13 @@ Your data is preserved when disabling. To re-enable later: `ods enable bark`
 # Generate speech (Base64 response)
 curl -X POST http://localhost:9200/tts \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $BARK_API_KEY" \
   -d '{"text": "Hello! [laughs] This is Bark TTS.", "voice_preset": "v2/en_speaker_6"}'
 
 # Get raw audio (WAV)
 curl -X POST http://localhost:9200/tts/stream \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $BARK_API_KEY" \
   -d '{"text": "Hello from Bark!", "voice_preset": "v2/en_speaker_3"}' \
   --output output.wav
 
@@ -55,3 +57,6 @@ Bark understands non-verbal cues in brackets: `[laughter]`, `[sighs]`, `[music]`
 | `BARK_USE_SMALL_MODELS` | Use smaller/faster models (less VRAM) | `false` |
 | `BARK_OFFLOAD_CPU` | Offload to CPU between requests | `false` |
 | `BARK_API_KEY` | API key for authentication (optional) | _(empty)_ |
+
+When `BARK_API_KEY` is set, `/tts` and `/tts/stream` require the same value in
+the `X-API-Key` header. Health and voice discovery remain available without a key.

@@ -24,6 +24,10 @@
             {
               "name": "Content-Type",
               "value": "application/json"
+            },
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BARK_API_KEY || '' }}"
             }
           ]
         },

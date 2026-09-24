@@ -2,8 +2,10 @@
 
 import pytest
 import base64
+import json
 import threading
 import numpy as np
+from pathlib import Path
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 
@@ -15,8 +17,9 @@ client = TestClient(server.app)
 
 # Fixtures
 @pytest.fixture(autouse=True)
-def reset_globals():
+def reset_globals(monkeypatch):
     """Reset global state before each test."""
+    monkeypatch.delenv("BARK_API_KEY", raising=False)
     # Use setattr to modify the module's attribute, not a local variable
     original = server._models_loaded
     server._models_loaded = False
@@ -81,6 +84,65 @@ def test_health_after_load(mock_bark_preload_models):
     data = response.json()
     assert data["status"] == "ok"
     assert data["models_loaded"] is True
+
+
+@pytest.mark.parametrize("path", ["/tts", "/tts/stream"])
+def test_tts_requires_configured_api_key(monkeypatch, path):
+    """Configured synthesis endpoints reject missing and incorrect keys."""
+    monkeypatch.setenv("BARK_API_KEY", "configured-secret")
+
+    missing = client.post(path, json={"text": "Hello"})
+    incorrect = client.post(
+        path,
+        headers={"X-API-Key": "wrong-secret"},
+        json={"text": "Hello"},
+    )
+
+    assert missing.status_code == 401
+    assert incorrect.status_code == 401
+
+
+def test_tts_accepts_configured_api_key(
+    monkeypatch,
+    mock_bark_generate_audio,
+    mock_soundfile_write,
+):
+    """The documented X-API-Key header reaches the synthesis boundary."""
+    monkeypatch.setenv("BARK_API_KEY", "configured-secret")
+
+    with patch("server._models_loaded", True):
+        response = client.post(
+            "/tts",
+            headers={"X-API-Key": "configured-secret"},
+            json={"text": "Hello"},
+        )
+
+    assert response.status_code == 200
+
+
+def test_bundled_workflows_forward_bark_api_key():
+    """Bundled n8n callers keep working when Bark authentication is enabled."""
+    service_dir = Path(__file__).resolve().parent
+    repo_dir = service_dir.parents[3]
+    workflow_paths = [
+        service_dir / "workflow-tts.json",
+        repo_dir / "extensions/library/workflows/bark/tts-synthesize.json",
+    ]
+
+    for workflow_path in workflow_paths:
+        workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+        bark_request = next(
+            node for node in workflow["nodes"]
+            if node["type"] == "n8n-nodes-base.httpRequest"
+        )
+        headers = bark_request["parameters"]["headers"]["list"]
+        assert {
+            "name": "X-API-Key",
+            "value": "={{ $env.BARK_API_KEY || '' }}",
+        } in headers
+
+    n8n_compose = repo_dir / "extensions/services/n8n/compose.yaml"
+    assert "BARK_API_KEY=${BARK_API_KEY:-}" in n8n_compose.read_text(encoding="utf-8")
 
 
 # Tests for /tts endpoint
