@@ -406,7 +406,7 @@ def prepare(*, source=None, ref, answers=None, node, runtime=None, sandbox_image
         inspection = config.inspection_install.build_config(
             source=Path(ods_source) / 'extensions/services/pixel-agent/host',
             owner_uid=os.getuid(), transport='docker-desktop', docker_binary=str(docker),
-            docker_host=os.environ.get('DOCKER_HOST'))
+            docker_host='unix://' + str(docker_socket))
         record['serviceDigest'] = config.stage_services(source=source, ref=ref, ods_source=ods_source,
             candidate=candidate, destination=destination / 'services', inspection_config=inspection)
         record['phase'] = 'runtime'

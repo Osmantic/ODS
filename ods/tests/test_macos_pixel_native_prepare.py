@@ -147,9 +147,15 @@ def test_storage_preparation_records_existing_data_without_docker_mutations(tmp_
 @pytest.mark.parametrize('fault', [None, 'configuration', 'services', 'runtime', 'layout', 'existing-home',
     'acquire', 'runtime-acquisition', 'sandbox-qualification', 'npm',
     'source', 'source-acquisition', 'auto', 'credentials', 'onboarding'])
-def test_initial_preparation_orders_stages_and_records_failures(tmp_path, monkeypatch, fault):
+@pytest.mark.parametrize('ambient_host', [None, 'unix:///unselected/docker.sock', 'tcp://unselected:2375'])
+def test_initial_preparation_orders_stages_and_records_failures(tmp_path, monkeypatch, fault, ambient_host):
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
+    if ambient_host is None:
+        monkeypatch.delenv('DOCKER_HOST', raising=False)
+    else:
+        monkeypatch.setenv('DOCKER_HOST', ambient_host)
+    monkeypatch.setenv('DOCKER_CONTEXT', 'unselected-context')
     calls = []
     automatic = fault in ('auto', 'credentials', 'onboarding')
     acquiring = fault in ('acquire', 'runtime-acquisition', 'sandbox-qualification', 'npm')
@@ -170,8 +176,13 @@ def test_initial_preparation_orders_stages_and_records_failures(tmp_path, monkey
         if name == 'source-acquisition': return kwargs['destination']
         if name == 'sandbox-qualification': return {'imageId': 'sha256:' + 'b' * 64}
         return kwargs['destination'] if name in ('configuration', 'onboarding') else name + '-digest'
+    def inspection_config(**kwargs):
+        assert kwargs['docker_host'] == 'unix:///socket'
+        assert kwargs['docker_binary'] == '/docker'
+        assert kwargs['transport'] == 'docker-desktop'
+        return {'imageId': 'sha256:' + 'c' * 64}
     config = SimpleNamespace(private_answers=lambda path: {'openclawHome': str(home / '.openclaw')},
-        inspection_install=SimpleNamespace(build_config=lambda **kw: {'imageId': 'sha256:' + 'c' * 64}),
+        inspection_install=SimpleNamespace(build_config=inspection_config),
         prepare=lambda **kw: stage('configuration', **kw),
         stage_services=lambda **kw: stage('services', **kw),
         stage_bundle=lambda **kw: stage('runtime', **kw))
