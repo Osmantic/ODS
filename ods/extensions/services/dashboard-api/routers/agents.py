@@ -1,8 +1,9 @@
 """Agent monitoring endpoints."""
 
 import html as html_mod
+from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse
 
 from agent_monitor import get_full_agent_metrics, cluster_status, throughput
@@ -72,6 +73,9 @@ async def get_cluster_status(api_key: str = Depends(verify_api_key)):
 
 
 @router.get("/api/agents/throughput")
-async def get_throughput(api_key: str = Depends(verify_api_key)):
-    """Get throughput metrics (tokens/sec)."""
-    return throughput.get_stats()
+async def get_throughput(
+    limit: Annotated[int, Query(ge=1, le=180)] = 30,
+    api_key: str = Depends(verify_api_key),
+):
+    """Get throughput statistics and up to 180 retained observations."""
+    return throughput.get_stats(history_limit=limit)

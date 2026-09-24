@@ -125,7 +125,7 @@ class ThroughputMetrics:
             if datetime.fromisoformat(p["timestamp"]) > cutoff
         ]
 
-    def get_stats(self) -> dict:
+    def get_stats(self, history_limit: int = 30) -> dict:
         """Get throughput statistics"""
         if not self.data_points:
             return {"current": 0, "average": 0, "peak": 0, "history": []}
@@ -138,7 +138,7 @@ class ThroughputMetrics:
             "current": values[-1] if values else 0,
             "average": average,
             "peak": max(values) if values else 0,
-            "history": self.data_points[-30:]  # Last 30 points
+            "history": self.data_points[-history_limit:]
         }
 
 
