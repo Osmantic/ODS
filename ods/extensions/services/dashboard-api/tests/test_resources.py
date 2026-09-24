@@ -210,6 +210,35 @@ class TestServiceResources:
         assert data["totals"]["cpu_percent"] == 0
         assert data["totals"]["memory_used_mb"] == 0
 
+    def test_malformed_host_agent_entries_do_not_break_resources_endpoint(self, test_client, monkeypatch):
+        """A partial host-agent protocol violation is isolated at the HTTP boundary."""
+        self._clear_resource_cache()
+        monkeypatch.setattr(
+            "routers.resources.SERVICES",
+            {"llama-server": {"name": "Llama Server", "container_name": "ods-llama"}},
+        )
+        monkeypatch.setattr("routers.resources.GPU_BACKEND", "nvidia")
+        stats_payload = {
+            "containers": [
+                {"container_name": "ods-llama", "cpu_percent": 12.5, "memory_used_mb": 256},
+                None,
+                "not-an-object",
+            ]
+        }
+
+        with patch("routers.resources.request_agent_json", return_value=stats_payload), \
+             patch("routers.resources._scan_service_disk", return_value={}):
+            resp = test_client.get(
+                "/api/services/resources",
+                headers=test_client.auth_headers,
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["totals"]["cpu_percent"] == 12.5
+        assert data["totals"]["memory_used_mb"] == 256
+        assert data["services"][0]["container"]["container_name"] == "ods-llama"
+
     def test_apple_backend_sets_caveat(self, test_client, monkeypatch):
         """GPU_BACKEND=apple sets docker_desktop_memory caveat to True."""
         self._clear_resource_cache()

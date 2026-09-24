@@ -78,7 +78,17 @@ def _fetch_container_stats() -> list[dict]:
     """Fetch container stats from host agent."""
     try:
         data = request_agent_json("GET", "/v1/service/stats", timeout=10)
-        return data.get("containers", [])
+        containers = data.get("containers", [])
+        if not isinstance(containers, list):
+            logger.warning("Host agent container stats must be a list")
+            return []
+        valid = [stat for stat in containers if isinstance(stat, dict)]
+        if len(valid) != len(containers):
+            logger.warning(
+                "Ignored %d malformed host-agent container stats",
+                len(containers) - len(valid),
+            )
+        return valid
     except (AgentClientError, OSError):
         logger.debug("Could not fetch container stats from host agent")
         return []
