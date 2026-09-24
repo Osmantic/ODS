@@ -1,7 +1,27 @@
+import { useRef, useState } from "react";
 import Button from "../components/Button";
 import { openODSserver } from "../hooks/useTauri";
 
 export default function Complete() {
+  const launching = useRef(false);
+  const [opening, setOpening] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleOpen = async () => {
+    if (launching.current) return;
+    launching.current = true;
+    setOpening(true);
+    setError(null);
+    try {
+      await openODSserver();
+    } catch (reason) {
+      setError(`Could not open your browser: ${String(reason)}. You can open the Chat UI address above manually.`);
+    } finally {
+      launching.current = false;
+      setOpening(false);
+    }
+  };
+
   return (
     <div className="flex flex-col items-center justify-center h-full px-8 text-center">
       <div className="text-6xl mb-6">&#10024;</div>
@@ -36,8 +56,14 @@ export default function Complete() {
         <Button variant="secondary" onClick={() => window.close()}>
           Close Installer
         </Button>
-        <Button onClick={() => openODSserver()}>Open ODS</Button>
+        <Button onClick={handleOpen} disabled={opening}>
+          {opening ? "Opening..." : "Open ODS"}
+        </Button>
       </div>
+
+      {error && (
+        <p role="alert" className="mt-4 text-sm text-yellow-400 max-w-md">{error}</p>
+      )}
 
       <p className="mt-8 text-xs text-gray-600 max-w-sm">
         To manage ODS later, use the Dashboard at localhost:3001 or run
