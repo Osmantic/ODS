@@ -3,6 +3,22 @@ import PixelTextFileInput from './PixelTextFileInput'
 
 const upload = file => fireEvent.change(screen.getByLabelText('Choose text file'), {target:{files:[file]}})
 const props = {input:'Analyze this', limit:16384, disabled:false}
+it('shows exact file contents as inert text before explicit insertion and clears discarded content', async () => {
+  const insert = vi.fn()
+  const {container} = render(<PixelTextFileInput {...props} onInsert={insert}/>)
+  const text = '<script>doNotRun()</script>\r\nUnicode: Việt\r\n'
+  upload(new File([text], 'review.html', {type:'text/html'}))
+  const review = await screen.findByLabelText('Local file contents')
+  expect(review.textContent).toBe(text)
+  expect(container.querySelector('script')).toBeNull()
+  expect(screen.getByText(/Lines: 2/)).toBeVisible()
+  expect(insert).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button',{name:'Discard file'}))
+  expect(screen.queryByLabelText('Local file contents')).toBeNull()
+  upload(new File(['Replacement'], 'replacement.txt'))
+  expect((await screen.findByLabelText('Local file contents')).textContent).toBe('Replacement')
+  expect(screen.queryByText(/doNotRun/)).toBeNull()
+})
 it('stages exact Unicode/CRLF text without sending and inserts only on confirmation', async () => {
   const insert = vi.fn()
   render(<PixelTextFileInput {...props} onInsert={insert}/>)
@@ -33,7 +49,7 @@ it('rechecks the current draft budget and working state before insertion', async
   const insert = vi.fn()
   const {rerender} = render(<PixelTextFileInput {...props} onInsert={insert}/>)
   upload(new File(['hello'], 'a.txt'))
-  await screen.findByRole('group')
+  await screen.findByRole('group', {name:'Review text file'})
   rerender(<PixelTextFileInput {...props} input={'x'.repeat(16380)} onInsert={insert}/>)
   expect(screen.getByRole('button', {name:'Insert file text'})).toBeDisabled()
   rerender(<PixelTextFileInput {...props} disabled onInsert={insert}/>)
