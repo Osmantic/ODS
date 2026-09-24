@@ -1,5 +1,7 @@
 """Tests for privacy router endpoints."""
 
+import json
+
 import aiohttp
 from unittest.mock import patch, AsyncMock, MagicMock
 
@@ -193,7 +195,13 @@ def test_privacy_shield_stats_success(test_client):
     """
     resp_mock = AsyncMock()
     resp_mock.status = 200
-    resp_mock.json = AsyncMock(return_value={"requests": 42, "pii_detected": 3})
+    stats = {
+        "cache_enabled": True,
+        "cache_size": 1000,
+        "active_sessions": 2,
+        "total_pii_scrubbed": 42,
+    }
+    resp_mock.json = AsyncMock(return_value=stats)
 
     ctx = AsyncMock()
     ctx.__aenter__ = AsyncMock(return_value=resp_mock)
@@ -210,12 +218,61 @@ def test_privacy_shield_stats_success(test_client):
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["requests"] == 42
+    assert data == stats
 
     # The upstream call must forward a Bearer token built from SHIELD_API_KEY.
     session_mock.get.assert_called_once()
     forwarded_headers = session_mock.get.call_args.kwargs.get("headers", {})
     assert forwarded_headers.get("Authorization") == "Bearer test-shield-key-fixture"
+
+
+def test_privacy_shield_stats_rejects_malformed_payload(test_client):
+    """A successful response with the wrong schema is reported without a 500."""
+    resp_mock = AsyncMock()
+    resp_mock.status = 200
+    resp_mock.json = AsyncMock(return_value={"active_sessions": "two"})
+
+    response_context = AsyncMock()
+    response_context.__aenter__ = AsyncMock(return_value=resp_mock)
+    response_context.__aexit__ = AsyncMock(return_value=False)
+    session_mock = MagicMock()
+    session_mock.get = MagicMock(return_value=response_context)
+    session_context = AsyncMock()
+    session_context.__aenter__ = AsyncMock(return_value=session_mock)
+    session_context.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.privacy.aiohttp.ClientSession", return_value=session_context):
+        resp = test_client.get("/api/privacy-shield/stats", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "error": "Privacy Shield returned invalid statistics",
+        "enabled": False,
+    }
+
+
+def test_privacy_shield_stats_handles_invalid_json(test_client):
+    """Invalid JSON from the service follows the existing unavailable contract."""
+    resp_mock = AsyncMock()
+    resp_mock.status = 200
+    resp_mock.json = AsyncMock(
+        side_effect=json.JSONDecodeError("invalid stats", "not-json", 0)
+    )
+
+    response_context = AsyncMock()
+    response_context.__aenter__ = AsyncMock(return_value=resp_mock)
+    response_context.__aexit__ = AsyncMock(return_value=False)
+    session_mock = MagicMock()
+    session_mock.get = MagicMock(return_value=response_context)
+    session_context = AsyncMock()
+    session_context.__aenter__ = AsyncMock(return_value=session_mock)
+    session_context.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.privacy.aiohttp.ClientSession", return_value=session_context):
+        resp = test_client.get("/api/privacy-shield/stats", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"error": "Cannot reach Privacy Shield", "enabled": False}
 
 
 def test_privacy_shield_stats_missing_shield_key(test_client, monkeypatch):
