@@ -286,8 +286,10 @@ $_usesNativeLemonade = ($gpuInfo.Backend -eq "amd" -and -not $cloudMode)
 $_portsToCheck = [ordered]@{
     "Open WebUI (chat)"   = Resolve-WindowsODSPort `
         -Name "WEBUI_PORT" -DefaultPort 3000 -InstallDir $installDir
-    "Dashboard"           = 3001
-    "Dashboard API"       = 3002
+    "Dashboard"           = Resolve-WindowsODSPort `
+        -Name "DASHBOARD_PORT" -DefaultPort 3001 -InstallDir $installDir
+    "Dashboard API"       = Resolve-WindowsODSPort `
+        -Name "DASHBOARD_API_PORT" -DefaultPort 3002 -InstallDir $installDir
 }
 $_llmPortToCheck = Resolve-WindowsLlmPreflightPort `
     -GpuBackend ([string]$gpuInfo.Backend) `
@@ -299,39 +301,53 @@ if ($_llmPortToCheck -gt 0) {
     $_portsToCheck[$_llmServiceLabel] = $_llmPortToCheck
 }
 if ($enableRecommended) {
-    $_portsToCheck["LiteLLM (API gateway)"] = 4000
-    $_portsToCheck["SearXNG (search)"] = 8888
-    $_portsToCheck["Token Spy (usage monitor)"] = 3005
+    $_portsToCheck["LiteLLM (API gateway)"] = Resolve-WindowsODSPort `
+        -Name "LITELLM_PORT" -DefaultPort 4000 -InstallDir $installDir
+    $_portsToCheck["SearXNG (search)"] = Resolve-WindowsODSPort `
+        -Name "SEARXNG_PORT" -DefaultPort 8888 -InstallDir $installDir
+    $_portsToCheck["Token Spy (usage monitor)"] = Resolve-WindowsODSPort `
+        -Name "TOKEN_SPY_PORT" -DefaultPort 3005 -InstallDir $installDir
 }
 if ($enableVoice) {
     $_whisperPortToCheck = $(if ($gpuInfo.Backend -eq "amd" -and -not $cloudMode) { 9100 } else { 9000 })
-    $_portsToCheck["Whisper (STT)"] = $_whisperPortToCheck
-    $_portsToCheck["Kokoro (TTS)"]  = 8880
+    $_portsToCheck["Whisper (STT)"] = Resolve-WindowsODSPort `
+        -Name "WHISPER_PORT" -DefaultPort $_whisperPortToCheck -InstallDir $installDir
+    $_portsToCheck["Kokoro (TTS)"]  = Resolve-WindowsODSPort `
+        -Name "TTS_PORT" -DefaultPort 8880 -InstallDir $installDir
 }
 if ($enableWorkflows) {
-    $_portsToCheck["n8n (workflows)"] = 5678
+    $_portsToCheck["n8n (workflows)"] = Resolve-WindowsODSPort `
+        -Name "N8N_PORT" -DefaultPort 5678 -InstallDir $installDir
 }
 if ($enableRag) {
-    $_portsToCheck["Qdrant (vector DB)"] = 6333
-    $_portsToCheck["TEI (embeddings)"] = 8090
+    $_portsToCheck["Qdrant (vector DB)"] = Resolve-WindowsODSPort `
+        -Name "QDRANT_PORT" -DefaultPort 6333 -InstallDir $installDir
+    $_portsToCheck["TEI (embeddings)"] = Resolve-WindowsODSPort `
+        -Name "EMBEDDINGS_PORT" -DefaultPort 8090 -InstallDir $installDir
 }
 if ($enableHermes) {
-    $_portsToCheck["Hermes auth proxy"] = 9120
+    $_portsToCheck["Hermes auth proxy"] = Resolve-WindowsODSPort `
+        -Name "HERMES_PROXY_PORT" -DefaultPort 9120 -InstallDir $installDir
 }
 if ($enableOpenClaw) {
-    $_portsToCheck["OpenClaw (agents)"] = 7860
+    $_portsToCheck["OpenClaw (agents)"] = Resolve-WindowsODSPort `
+        -Name "OPENCLAW_PORT" -DefaultPort 7860 -InstallDir $installDir
 }
 if ($enableHermes -or $enableOpenClaw) {
-    $_portsToCheck["APE (agent policy engine)"] = 7890
+    $_portsToCheck["APE (agent policy engine)"] = Resolve-WindowsODSPort `
+        -Name "APE_PORT" -DefaultPort 7890 -InstallDir $installDir
 }
 if ($enableComfyui) {
-    $_portsToCheck["ComfyUI (image generation)"] = 8188
+    $_portsToCheck["ComfyUI (image generation)"] = Resolve-WindowsODSPort `
+        -Name "COMFYUI_PORT" -DefaultPort 8188 -InstallDir $installDir
 }
 if ($enableDeepResearch) {
-    $_portsToCheck["Perplexica (deep research)"] = 3004
+    $_portsToCheck["Perplexica (deep research)"] = Resolve-WindowsODSPort `
+        -Name "PERPLEXICA_PORT" -DefaultPort 3004 -InstallDir $installDir
 }
 if ($enablePrivacyShield) {
-    $_portsToCheck["Privacy Shield"] = 8085
+    $_portsToCheck["Privacy Shield"] = Resolve-WindowsODSPort `
+        -Name "SHIELD_PORT" -DefaultPort 8085 -InstallDir $installDir
 }
 
 $_portConflicts = @(Get-WindowsODSSelectedPortConflicts `

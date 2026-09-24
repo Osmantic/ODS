@@ -2142,7 +2142,11 @@ if ($enableVoice)     {
     $healthWhisperPort = if ($windowsEnvMap.ContainsKey("WHISPER_PORT") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["WHISPER_PORT"])) { $windowsEnvMap["WHISPER_PORT"] } else { "9000" }
     $healthChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$healthWhisperPort/health" }
 }
-if ($enableWorkflows) { $healthChecks += @{ Name = "n8n (Workflows)";   Url = "http://localhost:5678/healthz" } }
+if ($enableWorkflows) {
+    $healthN8nPort = Get-WindowsODSEnvPort -EnvMap $windowsEnvMap `
+        -Name "N8N_PORT" -DefaultPort 5678
+    $healthChecks += @{ Name = "n8n (Workflows)";   Url = "http://localhost:$healthN8nPort/healthz" }
+}
 
 Write-AI "Running health checks..."
 $maxAttempts = 60; $allHealthy = $true
@@ -2396,11 +2400,13 @@ if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $servicePlan) {
     if (($useLemonade -or $cloudMode -or $switchboardMode -eq "enabled") -and $windowsEnvMap.ContainsKey("LITELLM_KEY") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["LITELLM_KEY"])) {
         $perplexicaApiKey = $windowsEnvMap["LITELLM_KEY"]
     }
-    $perplexicaOk = Set-PerplexicaConfig -PerplexicaPort 3004 -LlmModel $perplexicaModel -LlmBaseUrl $perplexicaBaseUrl -ApiKey $perplexicaApiKey
+    $perplexicaPort = Get-WindowsODSEnvPort -EnvMap $windowsEnvMap `
+        -Name "PERPLEXICA_PORT" -DefaultPort 3004
+    $perplexicaOk = Set-PerplexicaConfig -PerplexicaPort $perplexicaPort -LlmModel $perplexicaModel -LlmBaseUrl $perplexicaBaseUrl -ApiKey $perplexicaApiKey
     if ($perplexicaOk) {
         Write-AISuccess "Perplexica configured (model: $perplexicaModel)"
     } else {
-        Write-AIWarn "Perplexica auto-config skipped -- complete setup at http://localhost:3004"
+        Write-AIWarn "Perplexica auto-config skipped -- complete setup at http://localhost:$perplexicaPort"
     }
 }
 
@@ -2493,7 +2499,9 @@ if ($installReadiness -and $installReadiness.AllReady -and $llmModelReady -and $
 
 # ── Desktop & Start Menu shortcuts ───────────────────────────────────────────
 try {
-    $dashboardUrl  = "http://localhost:3001"
+    $shortcutPort  = Get-WindowsODSEnvPort -EnvMap $readinessEnv `
+        -Name "DASHBOARD_PORT" -DefaultPort 3001
+    $dashboardUrl  = "http://localhost:$shortcutPort"
     $shortcutName  = "ODS"
     $iconPath      = Join-Path $installDir "extensions\services\dashboard\public\osmantic-os.ico"
     $iconContent   = if (Test-Path -LiteralPath $iconPath) { "IconFile=$iconPath`nIconIndex=0" } else { "IconIndex=0" }
