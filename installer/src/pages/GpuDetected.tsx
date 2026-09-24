@@ -30,7 +30,7 @@ export default function GpuDetected({ onNext }: Props) {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center h-full">
+      <div className="flex flex-col items-center justify-center min-h-full py-8">
         <StatusIcon status="loading" />
         <p className="mt-4 text-gray-400">Detecting GPU hardware...</p>
       </div>
@@ -49,7 +49,7 @@ export default function GpuDetected({ onNext }: Props) {
       : null;
 
   return (
-    <div className="flex flex-col items-center justify-center h-full px-8">
+    <div className="flex flex-col items-center justify-center min-h-full py-8 px-8">
       <h2 className="text-2xl font-bold mb-2">GPU Detected</h2>
 
       {/* GPU Card */}

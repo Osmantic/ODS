@@ -63,7 +63,7 @@ export default function App() {
       )}
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div key={step} className="flex-1 overflow-y-auto">
         {step === "welcome" && <Welcome onNext={() => goTo("system_check")} />}
         {step === "system_check" && (
           <SystemCheck

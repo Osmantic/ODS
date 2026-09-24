@@ -6,7 +6,7 @@ interface Props {
 
 export default function Welcome({ onNext }: Props) {
   return (
-    <div className="flex flex-col items-center justify-center h-full px-8 text-center">
+    <div className="flex flex-col items-center justify-center min-h-full py-8 px-8 text-center">
       <div className="mb-8">
         <div className="text-6xl mb-4">&#9729;</div>
         <h1 className="text-4xl font-bold text-white mb-3">ODS</h1>

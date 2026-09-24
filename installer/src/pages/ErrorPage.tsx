@@ -17,7 +17,7 @@ export default function ErrorPage({ message, onRetry }: Props) {
   };
 
   return (
-    <div className="flex flex-col items-center justify-center h-full px-8 text-center">
+    <div className="flex flex-col items-center justify-center min-h-full py-8 px-8 text-center">
       <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center mb-6">
         <span className="text-3xl text-red-400">!</span>
       </div>
