@@ -1,5 +1,5 @@
 import UsageView from '../components/usage/UsageView'
-import {useEffect, useMemo, useState} from 'react'
+import {useEffect, useMemo, useRef, useState} from 'react'
 
 const EMPTY_SUMMARY = {
   spend_usd: 0,
@@ -238,12 +238,14 @@ export default function Usage({ compact = false }) {
   const [rangeAnchor, setRangeAnchor] = useState(() => monthRange().anchor)
   const [reloadToken, setReloadToken] = useState(0)
   const [actionState, setActionState] = useState(null)
+  const actionInFlightRef = useRef(false)
   const range = useMemo(() => monthRange(rangeAnchor), [rangeAnchor])
   const {report, readiness, loading, error} = useUsageReport(range, reloadToken)
 
   async function runUsageAction(kind) {
     const action = readiness.actions?.[kind]
-    if (!action?.url || actionState?.status === 'running') return
+    if (!action?.url || actionInFlightRef.current) return
+    actionInFlightRef.current = true
     setActionState({status:'running',kind})
     try {
       const response = await fetch(action.url, {method:action.method || 'POST'})
@@ -253,6 +255,8 @@ export default function Usage({ compact = false }) {
       setReloadToken(value=>value+1)
     } catch (err) {
       setActionState({status:'error',kind,message:err.message})
+    } finally {
+      actionInFlightRef.current = false
     }
   }
   return <UsageView compact={compact} report={report} readiness={readiness} loading={loading} error={error}
