@@ -185,6 +185,11 @@ jobs:
       - name: Docs Link Checks
         run: bash tests/test-doc-links.sh
 
+      - name: Product Version Consistency
+        run: |
+          python3 scripts/check-version-consistency.py
+          python3 tests/test-version-consistency.py
+
       - name: Install Documentation Contract
         run: |
           bash tests/test-install-docs.sh
@@ -406,6 +411,13 @@ jobs:
 
       - name: CPU-Only Path Tests
         run: bash tests/test-cpu-only-path.sh
+
+      - name: Hermes Default and Opt-in Owner-card Access
+        run: |
+          bash tests/test-hermes-proxy-caddyfile.sh
+          docker run --rm --network none --entrypoint cat caddy:2.11.3-alpine /usr/bin/caddy > "$RUNNER_TEMP/ods-test-caddy"
+          chmod 700 "$RUNNER_TEMP/ods-test-caddy"
+          python3 tests/test-hermes-proxy-access.py --caddy-bin "$RUNNER_TEMP/ods-test-caddy" -v
 
       - name: Hermes Slash Worker Prune Tests
         run: |

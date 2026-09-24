@@ -138,7 +138,7 @@ const ROUTE_DESCRIPTIONS = {
   dashboard: 'Main dashboard and control center',
   'dashboard-api': 'System status and metrics API',
   hermes: 'Advanced agent console',
-  'hermes-proxy': 'Auth-gated Hermes LAN entry',
+  'hermes-proxy': 'Hermes entry with optional owner-card access',
   litellm: 'OpenAI-compatible model gateway',
   'llama-server': 'Local inference backend',
   'open-webui': 'Primary chat interface',

@@ -2,7 +2,9 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import py_compile
 import stat
 import subprocess
 from types import SimpleNamespace
@@ -267,6 +269,11 @@ def test_publisher_stays_without_docker_and_broker_is_narrow():
     assert "CapabilityBoundingSet=CAP_DAC_READ_SEARCH" in broker
     assert "RestrictAddressFamilies=AF_UNIX" in broker
     assert "ProtectSystem=strict" in broker
+    installer = (ROOT / "installers/lib/pixel-host-install.sh").read_text()
+    assert (
+        "python3 -B /usr/local/libexec/ods-pixel-inspection/preview_inspection.py health"
+        in installer
+    )
     capsule = (host / "Dockerfile.inspection").read_text()
     assert (
         "@sha256:" in capsule
@@ -278,7 +285,24 @@ def test_publisher_stays_without_docker_and_broker_is_narrow():
 
 @pytest.mark.parametrize(
     "fault",
-    [None, "active", "foreign-file", "changed-source", "wrong-owner", "incomplete"],
+    [
+        None,
+        "cache",
+        "empty-cache",
+        "active",
+        "foreign-file",
+        "changed-source",
+        "wrong-owner",
+        "incomplete",
+        "changed-cache",
+        "foreign-cache",
+        "old-python-cache",
+        "stale-cache",
+        "cache-symlink",
+        "cache-hardlink",
+        "cache-writable",
+        "cache-directory-symlink",
+    ],
 )
 def test_linux_uninstall_validates_all_artifacts_before_deleting_any(
     tmp_path, monkeypatch, fault
@@ -299,11 +323,24 @@ def test_linux_uninstall_validates_all_artifacts_before_deleting_any(
     def parents(path, create=False):
         if create:
             path.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink():
+            raise ValueError("unsafe-inspection-install-directory")
 
     monkeypatch.setattr(module, "protected_parent", parents)
-    monkeypatch.setattr(module, "protected_file", lambda path: path.read_bytes())
+
+    def protected(path):
+        info = path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_IMODE(info.st_mode) != 0o644
+            or info.st_nlink != 1
+        ):
+            raise ValueError("unsafe-inspection-installed-file")
+        return path.read_bytes()
+
+    monkeypatch.setattr(module, "protected_file", protected)
     for name in (*module.RUNTIME_FILES, unit.name):
-        (source / name).write_bytes(b"reviewed " + name.encode())
+        (source / name).write_bytes(b"# reviewed " + name.encode() + b"\nVALUE = 1\n")
         (source / name).chmod(0o644)
     module.install_linux(source=source, config=config())
     if fault == "foreign-file":
@@ -316,6 +353,41 @@ def test_linux_uninstall_validates_all_artifacts_before_deleting_any(
         config_path.write_text(json.dumps(value))
     if fault == "incomplete":
         (program / module.RUNTIME_FILES[0]).unlink()
+    cache_root = program / "__pycache__"
+    if fault and "cache" in fault:
+        if fault == "empty-cache":
+            cache_root.mkdir()
+        else:
+            installed = program / module.RUNTIME_FILES[1]
+            cache = Path(
+                py_compile.compile(
+                    str(installed),
+                    doraise=True,
+                    optimize=0,
+                    invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP,
+                )
+            )
+            cache.chmod(0o644)
+            if fault == "changed-cache":
+                cache.write_bytes(cache.read_bytes()[:-1] + b"x")
+            if fault == "foreign-cache":
+                (cache_root / "operator-file").write_bytes(b"not ours")
+            if fault == "old-python-cache":
+                cache.rename(cache_root / "preview_inspection_protocol.cpython-999.pyc")
+            if fault == "stale-cache":
+                body = cache.read_bytes()
+                cache.write_bytes(body[:8] + b"\x00" * 4 + body[12:])
+            if fault == "cache-symlink":
+                cache.unlink()
+                cache.symlink_to(installed)
+            if fault == "cache-hardlink":
+                os.link(cache, tmp_path / "outside-cache")
+            if fault == "cache-writable":
+                cache.chmod(0o666)
+            if fault == "cache-directory-symlink":
+                moved = tmp_path / "outside-directory"
+                cache_root.rename(moved)
+                cache_root.symlink_to(moved, target_is_directory=True)
     before = {
         str(path): path.read_bytes()
         for path in (tmp_path / "installed").rglob("*")
@@ -328,7 +400,7 @@ def test_linux_uninstall_validates_all_artifacts_before_deleting_any(
         return subprocess.CompletedProcess(argv, 0 if fault == "active" else 3)
 
     monkeypatch.setattr(module.subprocess, "run", run)
-    if fault:
+    if fault not in (None, "cache", "empty-cache"):
         with pytest.raises(ValueError):
             module.linux_cleanup(source=source, owner_uid=1000, remove=True)
         after = {
@@ -340,6 +412,13 @@ def test_linux_uninstall_validates_all_artifacts_before_deleting_any(
         if fault != "active":
             assert not calls
     else:
+        assert module.linux_cleanup(source=source, owner_uid=1000) == "validated"
+        assert not calls
+        assert {
+            str(path): path.read_bytes()
+            for path in (tmp_path / "installed").rglob("*")
+            if path.is_file()
+        } == before
         assert (
             module.linux_cleanup(source=source, owner_uid=1000, remove=True)
             == "removed"

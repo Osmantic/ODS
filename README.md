@@ -1,6 +1,6 @@
 <div align="center">
 
-# ODS
+# ODS V3
 
 **Osmantic Deployment System**
 
@@ -17,6 +17,7 @@ It should feel that way for everyone.
 
 [![License: Apache 2.0 + Pixel ODS-only](https://img.shields.io/badge/License-Apache%202.0%20%2B%20Pixel%20ODS--only-blue.svg)](ods/LICENSING.md)
 [![GitHub Stars](https://img.shields.io/github/stars/Osmantic/ODS)](https://github.com/Osmantic/ODS/stargazers)
+[![ODS V3](https://img.shields.io/badge/ODS-V3%20candidate-blue)](ods/docs/RELEASE_NOTES_3.0.0.md)
 [![Release](https://img.shields.io/github/v/release/Osmantic/ODS)](https://github.com/Osmantic/ODS/releases)
 
 [![Watch the demo](https://img.shields.io/badge/Demo-Watch%20on%20YouTube-red?logo=youtube)](https://youtu.be/nO8xFNHX-HA)
@@ -41,8 +42,9 @@ full-model capabilities, lifecycle recovery, and the final User Green gate. See
 [Release Validation](ods/docs/RELEASE_VALIDATION.md) for what a green
 run proves.
 
-**September public-beta candidate:** The accumulated Portal and platform changes
-are being prepared for `main`. Full fleet qualification is incomplete; see the
+**ODS V3 candidate:** `main` now identifies as `3.0.0`, including the accumulated
+Portal and platform changes. Full fleet qualification is incomplete; see the
+[V3 notes](ods/docs/RELEASE_NOTES_3.0.0.md) and the
 [promotion record](ods/docs/PUBLIC_BETA_PROMOTION_2026-09.md) for known task
 limitations, available evidence, and remaining release gates.
 
@@ -478,6 +480,7 @@ Other tools get you part of the way. ODS gets you the whole way.
 | [Headless Setup](ods/docs/HEADLESS-SETUP.md) | QR onboarding, first-boot setup, AP mode, mDNS, and local agent access |
 | [Support Matrix](ods/docs/SUPPORT-MATRIX.md) | Current platform and GPU support status |
 | [Release Validation](ods/docs/RELEASE_VALIDATION.md) | User Green gates and the release-grade fleet/distro validation policy |
+| [V3 Candidate Notes](ods/docs/RELEASE_NOTES_3.0.0.md) | Current V3 version identity and qualification boundaries |
 | [2.6.0 Release Notes](ods/docs/RELEASE_NOTES_2.6.0.md) | Current stable release notes, validation receipt, and known validation boundaries |
 | [Validation Matrix](ods/docs/VALIDATION-MATRIX.md) | Sanitized CI, distro lab, and real-hardware fleet release-readiness evidence |
 | [Validation Reproducibility](ods/docs/VALIDATION_REPRODUCIBILITY.md) | How forks and operators can reproduce the validation story on their own hardware |

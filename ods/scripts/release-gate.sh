@@ -23,6 +23,7 @@ echo "[gate] compatibility + claims"
 bash tests/test-pixel-bundled-source.sh
 bash scripts/check-compatibility.sh
 "$PYTHON_CMD" scripts/check-version-consistency.py
+"$PYTHON_CMD" tests/test-version-consistency.py
 bash scripts/check-release-claims.sh
 "$PYTHON_CMD" scripts/validate-golden-paths.py
 "$PYTHON_CMD" scripts/validate-generated-configs.py

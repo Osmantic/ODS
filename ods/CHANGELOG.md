@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-24
+
+ODS V3 development candidate. This version stamp does not publish a stable tag
+or establish fleet qualification. See [V3 notes](docs/RELEASE_NOTES_3.0.0.md).
+
 ### Added
 - Bundled Portal assistant, powered by Pixel, with dashboard conversations,
   streamed activity, managed workspace previews, research tools, and explicit
@@ -14,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   integrity checks and documentation of the separate ODS-only Pixel license.
 
 ### Changed
+- ODS runtime, installers, dashboard package, and desktop installer package now
+  identify as 3.0.0. Dependency and separately versioned Pixel versions are unchanged.
 - Portal shows the advertised runtime model and distinguishes route availability
   from agent qualification. The non-actionable readiness banner was removed
   from chat; removal does not certify the agent or its model.

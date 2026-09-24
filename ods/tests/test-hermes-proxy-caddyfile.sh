@@ -40,6 +40,11 @@ grep -Eq '^[[:space:]]*@health[[:space:]]+path([[:space:]]+/[A-Za-z]+)*[[:space:
 grep -Eq '^[[:space:]]*@health[[:space:]]+path([[:space:]]+/[A-Za-z]+)*[[:space:]]+/health([[:space:]]|$)' "$CADDYFILE" \
     || fail "Hermes proxy @health matcher must include /health (Docker healthcheck path)"
 
+grep -Fq '@owner_card_required expression {$HERMES_REQUIRE_OWNER_CARD:false}' "$CADDYFILE" \
+    || fail "Owner-card gating must default off"
+grep -Fq 'route @owner_card_required {' "$CADDYFILE" \
+    || fail "Session verification must be inside the optional gate"
+echo "[PASS] Hermes owner-card gate is optional and defaults off"
 echo "[PASS] Hermes proxy auth redirect uses explicit wildcard matcher"
 echo "[PASS] Hermes proxy /health and /healthz both anonymous"
 

@@ -6,11 +6,13 @@ the separately installed broker and the image ID in its protected configuration.
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import platform
 import pwd
+import py_compile
 import re
 import stat
 import subprocess
@@ -376,10 +378,42 @@ def linux_cleanup(*, source, owner_uid, remove=False):
             elif body != expected[path]:
                 raise ValueError("inspection-cleanup-source-mismatch")
             present.append(path)
+    cache_root = PROGRAM_ROOT / "__pycache__"
+    caches = []
     if os.path.lexists(PROGRAM_ROOT):
         protected_parent(PROGRAM_ROOT)
-        if set(PROGRAM_ROOT.iterdir()) - set(expected):
+        if set(PROGRAM_ROOT.iterdir()) - set(expected) - {cache_root}:
             raise ValueError("unexpected-inspection-installed-file")
+        if os.path.lexists(cache_root):
+            protected_parent(cache_root)
+            known_caches = {
+                Path(importlib.util.cache_from_source(str(path), optimization="")): path
+                for path in present
+                if path.parent == PROGRAM_ROOT
+            }
+            for path in cache_root.iterdir():
+                if path not in known_caches:
+                    # Never guess at caches from another Python version or
+                    # remove arbitrary operator files under a familiar name.
+                    raise ValueError("unexpected-inspection-bytecode")
+                body = protected_file(path)
+                # Recompile validated, installed source without executing it or
+                # deserializing cache bytes. Older health checks created these
+                # timestamp caches despite the service disabling bytecode.
+                with tempfile.TemporaryDirectory(
+                    prefix="ods-inspection-cache-"
+                ) as temporary:
+                    candidate = Path(temporary) / "expected.pyc"
+                    py_compile.compile(
+                        str(known_caches[path]),
+                        cfile=str(candidate),
+                        doraise=True,
+                        optimize=0,
+                        invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP,
+                    )
+                    if body != candidate.read_bytes():
+                        raise ValueError("inspection-bytecode-source-mismatch")
+                caches.append(path)
     if UNIT in present and len(present) != len(expected) + 1:
         raise ValueError("incomplete-inspection-service")
     if remove:
@@ -388,8 +422,10 @@ def linux_cleanup(*, source, owner_uid, remove=False):
         )
         if result.returncode not in (3, 4):
             raise ValueError("inspection-service-not-stopped")
-        for path in present:
+        for path in (*caches, *present):
             path.unlink()
+        if os.path.lexists(cache_root):
+            cache_root.rmdir()
         if PROGRAM_ROOT.exists():
             PROGRAM_ROOT.rmdir()
     return "removed" if remove else "validated"

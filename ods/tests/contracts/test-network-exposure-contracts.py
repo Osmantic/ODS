@@ -78,7 +78,7 @@ def test_exposed_services_are_policy_labeled() -> None:
         assert_true(entry.get("notes"), f"{service_id} missing notes")
 
 
-def test_hermes_is_internal_only_and_proxy_gated() -> None:
+def test_hermes_is_internal_only_with_optional_proxy_gate() -> None:
     hermes_compose = read(SERVICES / "hermes" / "compose.yaml")
     hermes_manifest = read(SERVICES / "hermes" / "manifest.yaml")
     proxy_caddyfile = read(SERVICES / "hermes-proxy" / "Caddyfile")
@@ -88,7 +88,10 @@ def test_hermes_is_internal_only_and_proxy_gated() -> None:
     assert_true(re.search(r"(?m)^\s{4}expose:\s*$", hermes_compose) is not None, "hermes compose should expose only internally")
     assert_true(manifest_value(hermes_manifest, "external_port_default") == "0", "hermes manifest external port must be 0")
     assert_true(policy["hermes"]["lan_exposure"] == "none", "hermes policy must mark no LAN exposure")
-    assert_true("forward_auth" in proxy_caddyfile, "hermes-proxy must verify sessions with forward_auth")
+    assert_true("@owner_card_required expression {$HERMES_REQUIRE_OWNER_CARD:false}" in proxy_caddyfile, "Hermes owner-card gate must default off")
+    assert_true("route @owner_card_required" in proxy_caddyfile, "session verification must be conditional")
+    assert_true(policy["hermes-proxy"]["auth_required"] is False, "default proxy policy must reflect direct access")
+    assert_true("forward_auth" in proxy_caddyfile, "opt-in Hermes gate must retain forward_auth")
     assert_true("/api/auth/verify-session" in proxy_caddyfile, "hermes-proxy must call dashboard auth verification")
     assert_true("reverse_proxy {$HERMES_PROXY_UPSTREAM:ods-hermes:9119}" in proxy_caddyfile, "hermes-proxy must forward to internal Hermes")
 
@@ -317,7 +320,7 @@ def test_litellm_gateway_auth_is_enforced() -> None:
 def main() -> int:
     tests = [
         test_exposed_services_are_policy_labeled,
-        test_hermes_is_internal_only_and_proxy_gated,
+        test_hermes_is_internal_only_with_optional_proxy_gate,
         test_pixel_edge_is_internal_only_and_token_gated,
         test_model_router_is_internal_only,
         test_hermes_whatsapp_bridge_avoids_open_webui_port,

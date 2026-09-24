@@ -3,6 +3,13 @@
 ODS moves quickly because installer, hardware, model, and service
 ecosystems move quickly. Treat each ref intentionally.
 
+## ODS V3 development candidate
+
+`main` identifies as `3.0.0` (ODS V3). The version stamp is separate from
+publication: `v3.0.0` is reserved for the exact commit that completes release
+qualification. Do not infer fleet acceptance from a displayed version or CI pass.
+See [V3 candidate notes](RELEASE_NOTES_3.0.0.md).
+
 ## Current Stable
 
 The current stable release is `v2.6.0`.

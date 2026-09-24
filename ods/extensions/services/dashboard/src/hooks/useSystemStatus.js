@@ -31,7 +31,7 @@ function getMockStatus() {
     },
     bootstrap: null, // null means no bootstrap in progress
     uptime: 7200, // seconds
-    version: '1.0.0',
+    version: '3.0.0',
     tier: 'Professional'
   }
 }

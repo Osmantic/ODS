@@ -22,15 +22,16 @@ service:
   depends_on: [hermes, dashboard-api]
   description: >
     Caddy-based reverse proxy that fronts the Hermes Agent extension.
-    Verifies the `ods-session` cookie against dashboard-api's
-    /api/auth/verify-session endpoint (Caddy forward_auth) — which
-    HMAC-validates the cookie's signature against ODS_SESSION_SECRET.
-    Without a valid cookie, requests are bounced to a static "you need
-    an invite" page. With one, traffic is forwarded to ods-hermes:9119
-    and Hermes's own session-token model handles per-request auth.
+    Opens Hermes directly by default. Set HERMES_REQUIRE_OWNER_CARD=true
+    to verify the signed `ods-session` cookie via dashboard-api before
+    forwarding. Hermes's own session-token model handles per-request auth
+    in both modes.
     Native streaming + WebSocket support via Caddy's `reverse_proxy`.
 
   env_vars:
+    - key: HERMES_REQUIRE_OWNER_CARD
+      default: "false"
+      description: Require a signed ODS owner-card or guest session before opening Hermes
     - key: HERMES_PROXY_PORT
       default: "9120"
       description: External port for the Hermes auth-proxy (LAN-facing entry)
@@ -52,7 +53,7 @@ service:
 features:
   - id: hermes-sso
     name: Hermes Single Sign-On
-    description: Manage owner cards and support magic links for authenticated Hermes access
+    description: Manage optional owner cards and support magic links for Hermes and ODS Talk
     icon: Shield
     category: privacy
     requirements:

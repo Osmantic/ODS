@@ -29,7 +29,7 @@ const fetchJson = async (url, init = {}, ms = 8000) => {
 
 const SCOPES = [
   { value: 'chat', label: 'Chat', help: 'Guest lands in Open WebUI chat.' },
-  { value: 'hermes', label: 'Advanced Hermes', help: 'Guest lands in the full Hermes Agent behind the same session gate.' },
+  { value: 'hermes', label: 'Advanced Hermes', help: 'Guest lands in the full Hermes Agent; owner-card gating is optional.' },
 ]
 
 const EXPIRY_PRESETS = [
