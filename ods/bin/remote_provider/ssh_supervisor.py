@@ -7,6 +7,7 @@ spawn ssh or open sockets.
 
 from __future__ import annotations
 
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -25,12 +26,14 @@ DEFAULT_SSH_SECRET_DIR = Path("/state/remote-provider/secrets")
 
 def _file_status(path: Path) -> dict[str, Any]:
     try:
-        stat = path.stat()
+        stat_result = path.stat()
     except FileNotFoundError:
         return {"configured": False, "bytes": 0}
     except OSError:
         return {"configured": False, "bytes": None}
-    return {"configured": stat.st_size > 0, "bytes": stat.st_size}
+    if not stat.S_ISREG(stat_result.st_mode):
+        return {"configured": False, "bytes": None}
+    return {"configured": stat_result.st_size > 0, "bytes": stat_result.st_size}
 
 
 def ssh_secret_status(secret_dir: str | Path = DEFAULT_SSH_SECRET_DIR) -> dict[str, Any]:

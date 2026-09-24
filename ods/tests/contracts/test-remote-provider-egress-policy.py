@@ -490,6 +490,23 @@ def test_ssh_secret_status_is_support_bundle_safe() -> None:
     assert_true("AAAATEST" not in dumped, "known_hosts contents leaked into secret status")
 
 
+def test_ssh_secret_status_rejects_directories_as_secret_files() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        secret_dir = Path(tmp)
+        (secret_dir / "ssh-identity").mkdir()
+        (secret_dir / "known_hosts").mkdir()
+        status = ssh_secret_status(secret_dir)
+
+    assert_true(
+        status["sshIdentity"] == {"configured": False, "bytes": None},
+        "identity directory must not satisfy secret custody",
+    )
+    assert_true(
+        status["sshKnownHosts"] == {"configured": False, "bytes": None},
+        "known_hosts directory must not satisfy secret custody",
+    )
+
+
 def test_public_env_forbids_remote_secrets() -> None:
     validate_public_env_keys(
         {
@@ -934,6 +951,7 @@ def main() -> int:
         test_ssh_supervisor_plan_is_redacted_and_start_gated,
         test_ssh_supervisor_plan_blocks_missing_secret_custody,
         test_ssh_secret_status_is_support_bundle_safe,
+        test_ssh_secret_status_rejects_directories_as_secret_files,
         test_public_env_forbids_remote_secrets,
         test_activation_receipt_redacts_secret_references,
         test_activation_transaction_orders_phases,
