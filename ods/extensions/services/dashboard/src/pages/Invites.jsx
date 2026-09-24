@@ -271,7 +271,12 @@ export default function Invites() {
         )}
       </section>
 
-      <details className="owner-access-help"><summary>Voice readiness & access safety</summary>
+      <details className="owner-access-help"><summary onKeyDown={event => {
+        if (event.key !== 'Escape') return
+        event.preventDefault()
+        event.currentTarget.parentElement.open = false
+        event.currentTarget.focus()
+      }}>Voice readiness & access safety</summary>
         <VoiceReadiness />
         <p>Cards and invite links are credentials. Share them privately and revoke a lost card or an unwanted invite.</p>
       </details>

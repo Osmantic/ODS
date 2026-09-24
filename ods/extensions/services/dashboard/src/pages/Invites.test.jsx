@@ -23,6 +23,23 @@ describe('Invites', () => {
     vi.restoreAllMocks()
   })
 
+  test('closes voice readiness details with Escape', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url === '/api/auth/magic-link/list') return response({ tokens: [] })
+      if (url === '/api/auth/magic-link/owner-card/status') return response(ownerCardReady)
+      throw new Error(`unexpected request: ${url}`)
+    }))
+
+    render(<Invites />)
+    const summary = await screen.findByText('Voice readiness & access safety', { exact: true })
+    fireEvent.click(summary)
+    expect(summary.parentElement).toHaveAttribute('open')
+
+    fireEvent.keyDown(summary, { key: 'Escape' })
+    expect(summary.parentElement).not.toHaveAttribute('open')
+    expect(summary).toHaveFocus()
+  })
+
   test('renders Owner access and revokes active owner cards', async () => {
     let listCount = 0
     const fetchMock = vi.fn(async (url, options = {}) => {
