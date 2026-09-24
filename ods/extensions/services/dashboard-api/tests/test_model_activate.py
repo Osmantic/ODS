@@ -7735,6 +7735,62 @@ class TestModelActivateRollback:
         assert primary_config["provider"]["llama-server"]["options"]["timeout"] == 900
         assert compat_config["compat_only"] is True
 
+    def test_activation_preserves_user_owned_opencode_defaults(
+        self, tmp_path, monkeypatch,
+    ):
+        """A native CLI keeps its selected cloud models across ODS swaps."""
+        install_dir, _env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        config_dir = tmp_path / "home" / ".config" / "opencode"
+        config_dir.mkdir(parents=True)
+        primary = config_dir / "opencode.json"
+        compat = config_dir / "config.json"
+        user_config = {
+            "model": "anthropic/claude-opus",
+            "small_model": "openai/gpt-mini",
+            "theme": "system",
+            "provider": {
+                "anthropic": {"npm": "@ai-sdk/anthropic"},
+                "llama-server": {
+                    "options": {"baseURL": "http://127.0.0.1:9999/v1"},
+                    "models": {"user-kept-model": {"name": "Keep me"}},
+                },
+            },
+        }
+        primary.write_text(json.dumps(user_config), encoding="utf-8")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_opencode_config_paths", lambda: (primary, compat))
+        monkeypatch.setattr(_mod, "_restart_managed_opencode", lambda _state=None: False)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        for path in (primary, compat):
+            config = json.loads(path.read_text(encoding="utf-8"))
+            assert config["model"] == "anthropic/claude-opus"
+            assert config["small_model"] == "openai/gpt-mini"
+            assert config["theme"] == "system"
+            assert config["provider"]["anthropic"] == {
+                "npm": "@ai-sdk/anthropic"
+            }
+            ods_provider = config["provider"]["llama-server"]
+            assert ods_provider["options"] == {
+                "baseURL": "http://127.0.0.1:8080/v1",
+                "apiKey": "no-key",
+            }
+            assert ods_provider["models"]["new-model"]["limit"] == {
+                "context": 4096,
+                "output": 4096,
+            }
+            assert ods_provider["models"]["user-kept-model"] == {
+                "name": "Keep me"
+            }
+
     def test_switchboard_activation_routes_opencode_through_stable_alias(
         self, tmp_path, monkeypatch,
     ):
