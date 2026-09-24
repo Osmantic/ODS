@@ -27,7 +27,7 @@ import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection,
   visibilityInspectionMatches, visibilityInspectionInstruction } from './preview-interaction-assurance.mjs';
-import { workspaceRevalidationCandidate, boundedPreviewVerification } from "./preview-revalidation.mjs";
+import { workspaceRevalidationCandidate, completedPreviewInspection, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
@@ -6942,7 +6942,9 @@ export function createToolLoopGuard({
       state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
       const selected = toolName === 'tool_call'
         ? /^(?:openclaw:core:)?(?:exec|read|write|edit|apply_patch)$/.test(event?.params?.id ?? '')
-          ? {name:event.params.id.split(':').at(-1),params:event.params.args} : undefined
+          ? {name:event.params.id.split(':').at(-1),params:event.params.args}
+          : event?.params?.id === `openclaw:pixel-ods:${PREVIEW_INSPECTION_TOOL}`
+            ? {name:PREVIEW_INSPECTION_TOOL,params:event.params.args} : undefined
         : {name:toolName,params:event?.params};
       if (!workspaceRevalidationCandidate(selected?.name, selected?.params)) {
         state.previewRevalidationCandidate = undefined;
@@ -9331,7 +9333,9 @@ export function createToolLoopGuard({
     if (state.previewRevalidationCandidate && revalidationParents.length !== 1) {
       const selectedName = pendingToolRun?.selectedToolName;
       const completed = toolName === 'tool_call'
-        ? toolSearchSelectedToolEvent(event, selectedName, 'core') : event;
+        ? selectedName === PREVIEW_INSPECTION_TOOL
+          ? toolSearchEventEnvelope(event, selectedName, 'pixel-ods')
+          : toolSearchSelectedToolEvent(event, selectedName, 'core') : event;
       const candidate = state.previewRevalidationCandidate;
       const paired = pendingToolRun?.runId === runId && pendingToolRun.transport === toolName &&
         (event?.runId === undefined || event.runId === runId) &&
@@ -9343,6 +9347,8 @@ export function createToolLoopGuard({
         isDeepStrictEqual(completed?.params,pendingToolRun.selectedParams) &&
         workspaceRevalidationCandidate(selectedName, pendingToolRun.selectedParams);
       const terminal = paired && !failedToolOutcome(event) && completed?.result && !toolCallFailed(completed) &&
+        (selectedName !== PREVIEW_INSPECTION_TOOL ||
+          workspacePreviewInspectionAvailable && completedPreviewInspection(completed.params,completed.result,candidate.preview)) &&
         (selectedName !== 'exec' || (completed.result.details?.status === 'completed' &&
           completed.result.details.exitCode === 0 && !runningExecSessionId(completed)));
       if (terminal) state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;

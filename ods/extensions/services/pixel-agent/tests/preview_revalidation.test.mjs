@@ -24,6 +24,7 @@ test('bounded grep inspections admit literal patterns and status echo, not shell
     "grep -c 'import\\|require\\|cdn\\|https://' Playground/site/index.html Playground/site/styles.css; echo \"exit=$?\"",
     'grep -F "sold out" site/index.html',
     "grep -n '$(touch injected)' site/index.html",
+    "grep -o '<h1>[^<]*</h1>' site/index.html",
   ]) assert.equal(inspectionRevalidationCandidate({command}),true,command);
   for (const command of [
     'grep word site/index.html; touch changed',

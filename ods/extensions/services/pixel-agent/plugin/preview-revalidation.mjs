@@ -1,5 +1,6 @@
 // Syntax opts a completed call into host byte revalidation. It never proves
 // that shell/PATH/profile execution was read-only.
+import {normalizeWorkspacePreviewInspectionParams, validateWorkspacePreviewInspectionReceipt} from './workspace-preview-inspect.mjs';
 function boundedGrepInspection(command) {
   // An optional status-only echo reports grep's no-match exit without changing
   // files. No arbitrary shell suffix, expansion, redirect or pipeline is admitted.
@@ -27,7 +28,7 @@ function boundedGrepInspection(command) {
     tokens.push(token);
   }
   if (tokens.shift() !== 'grep') return false;
-  while (tokens.length && /^-[nciIlqvFEsHh]+$/.test(tokens[0])) tokens.shift();
+  while (tokens.length && /^-[nciIlqvFEsHho]+$/.test(tokens[0])) tokens.shift();
   if (tokens[0] === '--') tokens.shift();
   if (tokens.length < 2 || !tokens[0] || tokens[0].startsWith('-')) return false;
   return tokens.slice(1).every(path => /^[A-Za-z0-9_./][A-Za-z0-9_./-]*$/.test(path));
@@ -54,7 +55,22 @@ export function inspectionRevalidationCandidate(params) {
 export function workspaceRevalidationCandidate(tool, params) {
   if (!params || typeof params !== 'object' || Array.isArray(params)) return false;
   if (['read','write','edit','apply_patch'].includes(tool)) return true;
+  if (tool === 'pixel_ods_workspace_preview_inspect') {
+    try { normalizeWorkspacePreviewInspectionParams(params); return true; }
+    catch { return false; }
+  }
   return tool === 'exec' && inspectionRevalidationCandidate(params);
+}
+
+// Inspection success preserves eligibility only for this exact published
+// snapshot. Fresh host byte verification remains mandatory before restoration.
+export function completedPreviewInspection(params, result, preview) {
+  try {
+    if (result?.isError || !preview) return false;
+    const request=normalizeWorkspacePreviewInspectionParams(params);
+    if(request.siteId!==preview.siteId || request.sha256!==preview.sha256) return false;
+    return validateWorkspacePreviewInspectionReceipt(result?.details,request).status==='passed';
+  } catch { return false; }
 }
 
 export async function boundedPreviewVerification(verify, receipt, valid, {timeoutMs=4000}={}) {

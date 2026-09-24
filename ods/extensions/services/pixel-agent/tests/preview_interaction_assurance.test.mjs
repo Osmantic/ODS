@@ -16,8 +16,9 @@ function call(guard,name,params,id,result,runContext=context) {
   if(result)guard.afterToolCall({...event,result},ctx);
   return {event,ctx};
 }
-function setup({enabled=true,prompt=owner,automatic=false}={}) {
+function setup({enabled=true,prompt=owner,automatic=false,verifyWorkspacePreview}={}) {
   const guard=createToolLoopGuard({workspacePreviewInspectionAvailable:enabled,
+    verifyWorkspacePreview,
     ...(automatic ? {publishWorkspacePreview:async()=>({details:preview})} : {})});
   guard.observeRun(context,'pixel',{prompt});
   const content='<!doctype html><button>Show details</button><p hidden>Details</p>';
@@ -55,6 +56,41 @@ function inspection(guard,params,{wrapped=false,id='inspect',runContext=context}
   const result=wrapped?{details:{tool:{id:args.id,name:PREVIEW_INSPECTION_TOOL,source:'openclaw',sourceName:'pixel-ods'},result:inner}}:inner;
   return {...started,result};
 }
+
+for(const wrapped of [false,true]) for(const fault of ['none','host-bytes','receipt-sha','receipt-failed','outer-error','params','session','pending'])
+test(`published inspections then grep -o require bound receipts and host bytes: wrapped=${wrapped}, fault=${fault}`,async()=>{
+  let probes=0;
+  const {guard,preview}=setup({verifyWorkspacePreview:async()=>{probes++;return fault!=='host-bytes';}});
+  const persist=(event,result,ctx)=>guard.toolResultPersist({toolName:event.toolName,toolCallId:event.toolCallId,
+    message:{role:'toolResult',toolName:event.toolName,toolCallId:event.toolCallId,...result}},ctx);
+  persist({toolName:'pixel_ods_workspace_preview',toolCallId:'publish'},{details:preview},{...context,toolName:'pixel_ods_workspace_preview',toolCallId:'publish'});
+  // The fleet first checked static visibility, then the actual visibility
+  // transition. Static inspection is valid without satisfying interaction duty.
+  const staticPlan={...plan(preview),steps:[{action:'assert-visible',locator:{selector:'button'}}]};
+  const first=inspection(guard,staticPlan,{wrapped,id:'static-inspection'});
+  guard.afterToolCall({...first.event,result:first.result},first.ctx);
+  persist(first.event,first.result,first.ctx);
+  const second=inspection(guard,plan(preview),{wrapped,id:'interaction-inspection'});
+  const result=structuredClone(second.result),event={...second.event},ctx={...second.ctx};
+  const inner=wrapped?result.details.result:result;
+  if(fault==='receipt-sha')inner.details.sha256='b'.repeat(64);
+  if(fault==='receipt-failed')inner.isError=true;
+  if(fault==='outer-error')result.isError=true;
+  if(fault==='params')event.params=wrapped?{...event.params,args:{...event.params.args,viewport:{width:801,height:600}}}:{...event.params,viewport:{width:801,height:600}};
+  if(fault==='session')ctx.sessionId='foreign-session';
+  if(fault!=='pending'){guard.afterToolCall({...event,result},ctx);persist(event,result,ctx);}
+  if(fault==='pending'){
+    assert.equal(await guard.revalidateWorkspacePreview({},context),false);
+    assert.equal(probes,0);return;
+  }
+  const grepResult={content:[{type:'text',text:'<h1>Site</h1>'}],details:{status:'completed',exitCode:0}};
+  const grep=call(guard,'exec',{command:"grep -o '<h1>[^<]*</h1>' site/index.html"},'final-grep',grepResult);
+  persist(grep.event,grepResult,grep.ctx);
+  assert.notEqual(guard.verificationForRun(context.runId).status,'passed');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),fault==='none');
+  assert.equal(probes,['none','host-bytes'].includes(fault)?1:0);
+  assert.equal(guard.verificationForRun(context.runId).status,fault==='none'?'passed':'failed');
+});
 
 test('visibility gate only requests checks supported by the installed capability',()=>{
   for(const text of ['A button shows details.','Click to hide the section.','Implement a toggle.']) assert.equal(requestsVisibilityInteraction(text),true,text);
