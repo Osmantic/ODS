@@ -283,6 +283,11 @@ jobs:
       - name: Post-install Inference Validation Tests
         run: python3 tests/test_validate_chat_response.py
 
+      - name: Bootstrap Mode Suite
+        run: |
+          bash tests/test-bootstrap-mode.sh
+          bash tests/test-bootstrap-mode-precheckout.sh
+
       - name: QR Code Helper Tests
         run: bash tests/test-qrcode-helper.sh
 
