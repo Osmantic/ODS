@@ -1005,7 +1005,9 @@ for fragment in resolved:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
-    projected.append(str(overlay.relative_to(script_dir)))
+    # Keep the fragment's own spelling: `path` is resolved, so it may sit
+    # outside script_dir when the install or data/ is reached via a symlink.
+    projected.append(str(pathlib.Path(fragment).with_name(overlay.name)))
 resolved = projected
 
 def to_flags(files):
