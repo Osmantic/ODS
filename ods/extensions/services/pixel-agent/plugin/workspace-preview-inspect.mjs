@@ -73,5 +73,25 @@ export function createWorkspacePreviewInspectTool({request,transport='unix'}={})
   return {name:'pixel_ods_workspace_preview_inspect',
     description:'Inspect an already published owned snapshot using bounded CSS or exact accessible role/name locators. Pass its exact siteId and sha256 from publication. Immediately after publication, check each requested interaction with an initial state assertion, the relevant click, then an explicit postcondition assertion matching the requested behavior. Do not wait until finalization. Each locator must match exactly one element, even for hidden assertions. This tests CSS layout visibility, not pixel paint, occlusion or clipping. A click alone proves no behavioral result. Rendered hidden attributes are diagnostic; intentional CSS overrides are not automatically errors. Unavailable inspection is unverified, never success. No URLs or JavaScript accepted.',
     parameters:{type:'object',additionalProperties:false,required:['siteId','sha256','viewport','steps'],properties:{siteId:{type:'string'},sha256:{type:'string'},viewport:{type:'object',additionalProperties:false,required:['width','height'],properties:{width:{type:'integer',minimum:240,maximum:1920},height:{type:'integer',minimum:240,maximum:1920}}},steps:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['action','locator'],properties:{action:{type:'string',enum:['assert-visible','assert-hidden','click']},locator:{oneOf:[{type:'object',additionalProperties:false,required:['selector'],properties:{selector:{type:'string',maxLength:256}}},{type:'object',additionalProperties:false,required:['role','name','exact'],properties:{role:{type:'string',enum:[...roles]},name:{type:'string',maxLength:120},exact:{const:true}}}]}}}}}},
-    execute:async(_id,params,signal)=>{try{signal?.throwIfAborted();const normalized=normalizeWorkspacePreviewInspectionParams(params);const result=validateWorkspacePreviewInspectionReceipt(await request(normalized,{signal}),normalized);signal?.throwIfAborted();return {content:[{type:'text',text:`Preview inspection ${result.status}. ${INSPECTION_SCOPE} Evidence: ${JSON.stringify(result)}`}],details:result,...(result.status==='failed'?{isError:true}:{})};}catch{return {content:[{type:'text',text:'Preview inspection unavailable or invalid. Requested behavior remains unverified; retain the published artifact and do not claim these checks passed.'}],details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:signal?.aborted?'cancelled':'unavailable',scope:INSPECTION_SCOPE},isError:true};}}};
+    execute:async(_id,params,signal)=>{
+      let normalized;
+      // Bad model arguments are not evidence that the installed broker is down.
+      // Keep this outside the transport catch so the ordinary bounded correction
+      // path remains available, without invoking the broker on invalid input.
+      if (!signal?.aborted) {
+        try { normalized=normalizeWorkspacePreviewInspectionParams(params); }
+        catch { return {
+          content:[{type:'text',text:'Preview inspection request rejected before execution: invalid arguments. The inspector was not contacted; this does not establish service unavailability. Call tool_describe with id "pixel_ods_workspace_preview_inspect", then retry through tool_call with the exact published siteId and full sha256, viewport {width,height}, and valid steps. Use a CSS selector for elements whose role is not supported. Do not guess snapshot identifiers. Requested behavior remains unverified.'}],
+          details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'invalid_request',scope:INSPECTION_SCOPE},isError:true,
+        }; }
+      }
+      try {
+        signal?.throwIfAborted();
+        const result=validateWorkspacePreviewInspectionReceipt(await request(normalized,{signal}),normalized);
+        signal?.throwIfAborted();
+        return {content:[{type:'text',text:`Preview inspection ${result.status}. ${INSPECTION_SCOPE} Evidence: ${JSON.stringify(result)}`}],details:result,...(result.status==='failed'?{isError:true}:{})};
+      } catch {
+        return {content:[{type:'text',text:'Preview inspection unavailable or invalid. Requested behavior remains unverified; retain the published artifact and do not claim these checks passed.'}],details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:signal?.aborted?'cancelled':'unavailable',scope:INSPECTION_SCOPE},isError:true};
+      }
+    }};
 }
