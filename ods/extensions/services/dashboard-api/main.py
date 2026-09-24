@@ -490,7 +490,7 @@ def _infer_gpu_count(gpu_info) -> int:
     if observed_count > 1:
         return observed_count
     gpu_count_env = os.environ.get("GPU_COUNT", "")
-    if gpu_count_env.isdigit():
+    if gpu_count_env.isdigit() and int(gpu_count_env) > 0:
         return int(gpu_count_env)
     if " × " in gpu_info.name:
         try:
@@ -520,7 +520,10 @@ def _serialize_gpu(gpu_info) -> Optional[dict]:
         "memoryType": gpu_info.memory_type,
         "backend": gpu_info.gpu_backend,
         "gpu_count": gpu_count,
-        "memoryLabel": "VRAM Partition" if gpu_info.memory_type == "unified" else "VRAM",
+        "memoryLabel": (
+            "Unified Memory" if gpu_info.gpu_backend == "apple"
+            else "VRAM Partition" if gpu_info.memory_type == "unified" else "VRAM"
+        ),
     }
     if gpu_info.power_w is not None:
         gpu_data["powerDraw"] = gpu_info.power_w

@@ -313,6 +313,29 @@ class TestBuildApiStatus:
 
         assert _serialize_gpu(gpu)["gpu_count"] == 2
 
+    @pytest.mark.parametrize("backend,memory_type,label", [
+        ("apple", "unified", "Unified Memory"),
+        ("amd", "unified", "VRAM Partition"),
+        ("nvidia", "discrete", "VRAM"),
+    ])
+    def test_live_adapter_survives_zero_install_count(self, monkeypatch, backend, memory_type, label):
+        from main import _serialize_gpu
+        from models import GPUInfo
+
+        # A WSL install can begin with GPU_COUNT=0 and later discover its native
+        # adapter. Its live memory/utilization must not accompany a zero count.
+        monkeypatch.setenv("GPU_COUNT", "0")
+        info = GPUInfo(name="Native adapter", memory_used_mb=8192,
+                       memory_total_mb=16384, memory_percent=50,
+                       utilization_percent=22, temperature_c=0,
+                       gpu_backend=backend, memory_type=memory_type,
+                       temperature_available=False)
+        result = _serialize_gpu(info)
+        assert result["gpu_count"] == 1
+        assert result["memoryLabel"] == label
+        assert result["vramUsed"] == 8 and result["utilization"] == 22
+        assert result["temperature"] is None
+
     @pytest.mark.asyncio
     async def test_tier_professional(self, monkeypatch):
         from models import GPUInfo, BootstrapStatus
