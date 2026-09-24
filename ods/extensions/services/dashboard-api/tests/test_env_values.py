@@ -20,6 +20,11 @@ from env_values import parse_env_value, quote_env_value, strip_matching_quotes
         ('"value\'', '"value\''),
         ("''value''", "'value'"),
         ('""value""', '"value"'),
+        ('"path=C:\\\\models"', "path=C:\\models"),
+        ('"token=abc\\$123"', "token=abc$123"),
+        ('"say \\"hello\\""', 'say "hello"'),
+        ('"keep\\ntext"', r"keep\ntext"),
+        (r"'keep\\literal'", r"keep\\literal"),
     ],
 )
 def test_strip_matching_quotes_removes_exactly_one_complete_pair(raw, expected):
