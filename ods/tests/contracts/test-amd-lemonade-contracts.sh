@@ -342,7 +342,17 @@ elif command -v powershell.exe >/dev/null 2>&1; then
 fi
 if ((${#_lemonade_ps_cmd[@]} > 0)); then
     _ps_tmp="${TMPDIR:-/tmp}"
-    if ROOT_DIR="$ROOT_DIR" AMD_LEMONADE_IMAGE="$AMD_LEMONADE_IMAGE" TEMP="$_ps_tmp" ProgramFiles="$_ps_tmp" USERPROFILE="$_ps_tmp" "${_lemonade_ps_cmd[@]}" -Command '
+    if (
+        # WSL only forwards Linux environment variables named in WSLENV to a
+        # native powershell.exe process. Export the fixture environment from
+        # a subshell so Windows PowerShell receives the same contract as pwsh
+        # without leaking the overrides into later tests.
+        export ROOT_DIR AMD_LEMONADE_IMAGE
+        export TEMP="$_ps_tmp" ProgramFiles="$_ps_tmp" USERPROFILE="$_ps_tmp"
+        if [[ "${_lemonade_ps_cmd[0]}" == "powershell.exe" ]]; then
+            export WSLENV="${WSLENV:+${WSLENV}:}ROOT_DIR/p:AMD_LEMONADE_IMAGE:TEMP/p:ProgramFiles/p:USERPROFILE/p"
+        fi
+        "${_lemonade_ps_cmd[@]}" -Command '
         $ErrorActionPreference = "Stop"
         . (Join-Path $env:ROOT_DIR "installers/windows/lib/backend-contract.ps1")
         $runtime = Get-ODSAmdLemonadeRuntime -RootPath $env:ROOT_DIR
@@ -547,7 +557,8 @@ if ((${#_lemonade_ps_cmd[@]} > 0)); then
             $principal.RunLevel -ne "Limited") {
             throw "Interactive scheduled task principal did not preserve the resolved user and limited token"
         }
-    '; then
+        '
+    ); then
         pass "backend-contract.ps1: resolves Lemonade and enforces versioned secure launch/config contracts"
     else
         fail "backend-contract.ps1: PowerShell contract failed"
