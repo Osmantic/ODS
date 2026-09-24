@@ -49,13 +49,17 @@ RESTORE_MAX_BYTES = int(os.getenv("SHIELD_RESTORE_MAX_BYTES", str(8 * 1024 * 102
 
 
 def _parse_content_type(content_type: str) -> tuple[str, str]:
-    """Return (lowercased mime, charset) from a Content-Type header value."""
+    """Return (lowercased mime, charset), or an empty charset if unsupported."""
     mime = content_type.split(";", 1)[0].strip().lower()
     charset = "utf-8"
     for part in content_type.split(";")[1:]:
         part = part.strip()
         if part.lower().startswith("charset="):
             charset = part.split("=", 1)[1].strip().strip('"').lower() or "utf-8"
+    try:
+        codecs.lookup(charset)
+    except LookupError:
+        charset = ""
     return mime, charset
 
 
@@ -339,6 +343,7 @@ async def proxy(request: Request, path: str):
     do_restore = (
         body_str is not None
         and _is_textual(mime)
+        and bool(charset)
         and not content_encoding
         and not (0 <= declared_len > RESTORE_MAX_BYTES)
     )

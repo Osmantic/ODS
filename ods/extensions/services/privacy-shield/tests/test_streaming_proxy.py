@@ -267,6 +267,25 @@ class TestBinaryPassthrough:
         assert resp.status_code == 200, "non-utf8 body raised instead of passthrough"
         assert resp.content == blob
 
+    def test_unknown_text_charset_passthrough_is_complete(self, client, install_upstream):
+        payload = b'{"prefix":"kept","raw":"\xff\xfe","suffix":"also-kept"}'
+        install_upstream(
+            lambda r: _resp(
+                200,
+                {
+                    "content-type": "application/json; charset=not-a-real-codec",
+                    "content-length": str(len(payload)),
+                },
+                [payload[:13], payload[13:31], payload[31:]],
+            )
+        )
+
+        resp = client.post("/v1/chat/completions", headers=AUTH, json={"messages": []})
+
+        assert resp.status_code == 200
+        assert resp.content == payload
+        assert resp.headers["content-length"] == str(len(payload))
+
     def test_non_utf8_request_body_forwarded(self, client, install_upstream):
         seen = {}
 
