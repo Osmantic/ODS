@@ -183,6 +183,7 @@ export ENABLE_OPENCLAW=true
     export RAG_OPENAI_API_KEY=replacement-secret
     export EMBEDDINGS_MEMORY_LIMIT=8GB
     export HERMES_DASHBOARD_SESSION_TOKEN=replacement-must-not-win
+    export ODS_ROUTER_INTERNAL_KEY=replacement-must-not-win
     source installers/phases/06-directories.sh
     grep -qx 'TTS_WORKERS=1' \"\$INSTALL_DIR/.env\" || exit 1
 
@@ -274,6 +275,16 @@ if [[ "$ENV_GENERATED" == true && -f "$INSTALL_DIR/.env" ]]; then
         pass "Hermes dashboard token is generated once and survives a Linux installer rerun"
     else
         fail "Hermes dashboard token is missing, malformed, or replaced on rerun"
+    fi
+
+    ROUTER_INTERNAL_KEY="$(sed -n 's/^ODS_ROUTER_INTERNAL_KEY=//p' "$INSTALL_DIR/.env")"
+    DASHBOARD_KEY="$(sed -n 's/^DASHBOARD_API_KEY=//p' "$INSTALL_DIR/.env")"
+    if [[ "$ROUTER_INTERNAL_KEY" =~ ^[0-9a-f]{64}$ ]] \
+        && [[ "$ROUTER_INTERNAL_KEY" != "replacement-must-not-win" ]] \
+        && [[ "$ROUTER_INTERNAL_KEY" != "$DASHBOARD_KEY" ]]; then
+        pass "Router internal key is a dedicated secret that survives a Linux installer rerun"
+    else
+        fail "Router internal key is missing, malformed, replaced on rerun, or aliases the dashboard key"
     fi
 fi
 
