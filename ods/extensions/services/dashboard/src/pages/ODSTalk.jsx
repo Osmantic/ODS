@@ -823,9 +823,9 @@ export default function ODSTalk() {
               value={input}
               onChange={event => setInput(event.target.value)}
               onKeyDown={event => {
-                if (event.key === 'Enter' && !event.shiftKey) {
+                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault()
-                  if (canSend) sendText(input)
+                  if (canSend) submit(event)
                 }
               }}
               rows={1}
