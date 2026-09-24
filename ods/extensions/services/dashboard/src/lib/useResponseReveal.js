@@ -18,13 +18,15 @@ export function useResponseReveal(source, {animate=false, instant=false}={}) {
     return ()=>query.removeEventListener?.('change',change)
   },[])
   useEffect(()=>{
-    let frame, last=0, credit=0
+    let frame, last=performance.now(), credit=0
     const flush=()=>{text.current=target.current;setVisible(target.current)}
     if(immediate || document.visibilityState==='hidden' || text.current.startsWith(source)){flush();return}
     if(!source.startsWith(text.current))text.current=''
     const tick=now=>{
       if(document.visibilityState==='hidden'){flush();return}
-      const elapsed=last ? Math.min(80,now-last) : 16
+      // Delayed foreground frames must catch up to elapsed time instead of
+      // leaving a completed answer queued behind the reveal animation.
+      const elapsed=Math.max(0,now-last)
       last=now
       credit+=elapsed*Math.max(120,source.length/1.2)/1000
       const count=Math.floor(credit)
