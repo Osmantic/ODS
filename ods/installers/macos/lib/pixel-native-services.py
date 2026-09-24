@@ -332,6 +332,10 @@ def readiness_checks(*, owner, identity, python,
         raise ValueError('native-' + name + '-readiness-failed')
 
     def operations():
+        # The inspector is a fixed helper, not a fourth launchd service. Keep
+        # the exact three-service activation contract and gate its final probe
+        # on inspection health before admitting the gateway.
+        inspection()
         job = 'ops-' + str(int(time.time() * 1000)) + '-' + uuid.uuid4().hex[:12]
         body = json.dumps({'schemaVersion': 1, 'jobId': job,
             'createdAt': datetime.now(timezone.utc).isoformat(), 'kind': 'action',
@@ -413,7 +417,6 @@ def readiness_checks(*, owner, identity, python,
         'promoter': lambda: client('promoter', owner_entry,
             ['health', '/private/var/lib/ods-pixel-artifact-promoter/promoter.sock']),
         'operations': operations,
-        'inspection': inspection,
     }
 
 
