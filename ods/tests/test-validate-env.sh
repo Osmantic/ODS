@@ -622,5 +622,35 @@ else
     fail "Library port was rejected for the wrong reason: $out"
 fi
 
+# Every CHANGEME placeholder shipped in .env.example must be rejected by a
+# schema minLength, or validate-env lets the placeholder sail through
+# install-time (phase 06) and `ods config validate` checks.
+changeme_violations=0
+while read -r key; do
+    minlen="$(jq -r --arg k "$key" '.properties[$k].minLength // 0' "$ROOT_DIR/.env.schema.json")"
+    if [[ ! "$minlen" =~ ^[0-9]+$ ]] || (( minlen <= 8 )); then
+        echo "    $key ships as CHANGEME but schema minLength does not reject it (minLength: $minlen)"
+        changeme_violations=$((changeme_violations + 1))
+    fi
+done < <(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=CHANGEME' "$ROOT_DIR/.env.example" | cut -d= -f1)
+if [[ $changeme_violations -eq 0 ]]; then
+    pass "Every .env.example CHANGEME placeholder is rejected by schema minLength"
+else
+    fail "$changeme_violations CHANGEME placeholder(s) pass schema validation"
+fi
+
+# Functional check: a shipped placeholder value must fail end to end.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/changeme.env"
+echo "DIFY_SECRET_KEY=CHANGEME" >> "$TMP_DIR/changeme.env"
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/changeme.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 2 ]] && echo "$out" | grep -q "minLength"; then
+    pass "DIFY_SECRET_KEY=CHANGEME is rejected with a minLength violation"
+else
+    fail "DIFY_SECRET_KEY=CHANGEME should yield exit 2 with a minLength violation (got $r): $out"
+fi
+
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

@@ -92,8 +92,8 @@ jobs:
           PRIVACY_SHIELD_PORT=8085
           TOKEN_SPY_PORT=3005
           LIVEKIT_PORT=7880
-          LIVEKIT_API_KEY=devkey
-          LIVEKIT_API_SECRET=devsecret
+          LIVEKIT_API_KEY=devkey-12345
+          LIVEKIT_API_SECRET=devsecret-12345
           LANGFUSE_PORT=3006
           LANGFUSE_POSTGRES_PORT=5433
           LANGFUSE_CLICKHOUSE_PORT=9005
