@@ -2119,8 +2119,19 @@ cmd_update() {
     # Without it the dashboard Privacy Shield stats panel fails after
     # update because dashboard-api can no longer authenticate its
     # proxied /stats call. Mirrors the env-generator.sh upsert pattern.
-    if [[ -z "$(_env_get_raw "SHIELD_API_KEY")" ]]; then
-        _env_set "SHIELD_API_KEY" "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')"
+    # Any nonempty key line wins: _env_get_raw only reads the last match, so
+    # an empty trailing duplicate must not trigger regeneration (which would
+    # rewrite every line and clobber an earlier real key).
+    if ! grep -qE '^SHIELD_API_KEY=[^[:space:]]' "$INSTALL_DIR/.env" 2>/dev/null; then
+        local shield_key
+        if command -v openssl >/dev/null 2>&1; then
+            shield_key="$(openssl rand -hex 32)"
+        else
+            shield_key="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+        fi
+        [[ "$shield_key" =~ ^[0-9a-f]{64}$ ]] \
+            || error "Could not generate SHIELD_API_KEY"
+        _env_set "SHIELD_API_KEY" "$shield_key"
     fi
 
     local flags_str
