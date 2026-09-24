@@ -29,7 +29,7 @@ Environment variables (set in `.env`):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DASHBOARD_API_PORT` | `3002` | External + internal port |
-| `DASHBOARD_API_KEY` | *(auto-generated)* | API key for all protected endpoints. If unset, a random key is generated and written to `/data/dashboard-api-key.txt` |
+| `DASHBOARD_API_KEY` | *(auto-generated)* | API key for all protected endpoints. If unset, a random key is generated once in `/data/dashboard-api-key.txt` and reused across restarts |
 | `GPU_BACKEND` | `nvidia` | GPU backend: `nvidia` or `amd` |
 | `OLLAMA_URL` | `http://llama-server:8080` | LLM backend URL |
 | `LLM_MODEL` | `qwen3:30b-a3b` | Active model name shown in dashboard |
@@ -148,7 +148,7 @@ curl http://localhost:3002/api/status \
   -H "Authorization: Bearer YOUR_KEY"
 ```
 
-When `DASHBOARD_API_KEY` is empty, dashboard-api generates a random key at startup, writes it to `/data/dashboard-api-key.txt` with mode `0600`, and still requires Bearer authentication for protected endpoints.
+When `DASHBOARD_API_KEY` is empty, dashboard-api reuses `/data/dashboard-api-key.txt` or generates it once with mode `0600`, and still requires Bearer authentication for protected endpoints.
 
 ## Architecture
 
