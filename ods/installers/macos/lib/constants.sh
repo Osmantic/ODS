@@ -58,7 +58,7 @@ LLAMA_CPP_MACOS_ASSET="llama-${LLAMA_CPP_RELEASE_TAG}-bin-macos-arm64.tar.gz"
 LLAMA_CPP_MACOS_URL="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_RELEASE_TAG}/${LLAMA_CPP_MACOS_ASSET}"
 
 # OpenCode (host-level AI coding IDE, not a Docker service)
-OPENCODE_VERSION="1.2.18"
+OPENCODE_VERSION="1.18.32"
 OPENCODE_DIR="$HOME/.opencode"
 OPENCODE_BIN="$HOME/.opencode/bin/opencode"
 OPENCODE_CONFIG_DIR="$HOME/.config/opencode"

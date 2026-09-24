@@ -13,6 +13,10 @@ RestartSec=5
 # Environment
 Environment=HOME=__HOME__
 Environment=PATH=__OPENCODE_BIN_DIR__:/usr/local/bin:/usr/bin:/bin
+# Upstream requires this flag to expose websearch for local model providers.
+# Search uses Exa's public MCP endpoint; normal OpenCode permission checks apply.
+Environment=OPENCODE_ENABLE_EXA=1
+Environment=OPENCODE_WEBSEARCH_PROVIDER=exa
 # Do not import ODS's full .env here. OpenCode treats
 # OPENCODE_SERVER_PASSWORD as a Basic Auth password when present, but this
 # localhost-only web UI should be reachable without a login prompt.

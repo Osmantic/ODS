@@ -130,19 +130,13 @@ else
 
     # ── OpenCode (local agentic coding platform) ──
     OPENCODE_BIN="$(_find_opencode_bin || true)"
-    if [[ -z "$OPENCODE_BIN" ]]; then
-        ai "Installing OpenCode..."
-        tmpfile=$(mktemp /tmp/opencode-install.XXXXXX.sh)
-        if curl -fsSL --max-time 300 https://opencode.ai/install -o "$tmpfile" 2>/dev/null && bash "$tmpfile" >> "$LOG_FILE" 2>&1; then
-            OPENCODE_BIN="$(_find_opencode_bin || true)"
-            ai_ok "OpenCode installer completed"
-        else
-            ai_warn "OpenCode install failed — install later with: curl -fsSL https://opencode.ai/install | bash"
-        fi
-        rm -f "$tmpfile"
-        [[ -n "$OPENCODE_BIN" ]] && ai_ok "OpenCode installed ($OPENCODE_BIN)" || ai_warn "OpenCode installer completed but opencode was not found"
+    # shellcheck source=../lib/opencode-runtime.sh
+    . "$SCRIPT_DIR/installers/lib/opencode-runtime.sh"
+    if OPENCODE_BIN="$(ods_install_opencode "$OPENCODE_BIN")"; then
+        ai_ok "Reviewed OpenCode release installed ($OPENCODE_BIN)"
     else
-        ai_ok "OpenCode already installed ($OPENCODE_BIN)"
+        OPENCODE_BIN=""
+        ai_warn "OpenCode upgrade failed; existing binary/configuration preserved. Re-run after resolving the download or binary error."
     fi
 
     # Configure OpenCode to use local llama-server

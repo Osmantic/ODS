@@ -1031,40 +1031,15 @@ _find_opencode_bin() {
 
 _install_opencode() {
     OPENCODE_BIN="$(_find_opencode_bin 2>/dev/null || true)"
-    if [[ -n "$OPENCODE_BIN" ]]; then
-        ai_ok "OpenCode already installed ($OPENCODE_BIN)"
-        return 0
-    fi
-
-    if command -v brew >/dev/null 2>&1; then
-        ai "Installing OpenCode with Homebrew..."
-        if brew install opencode >> "$ODS_LOG_FILE" 2>&1; then
-            OPENCODE_BIN="$(_find_opencode_bin 2>/dev/null || true)"
-            if [[ -n "$OPENCODE_BIN" ]]; then
-                ai_ok "OpenCode installed with Homebrew ($OPENCODE_BIN)"
-                return 0
-            fi
-            ai_warn "Homebrew reported success but opencode was not found on PATH"
-        else
-            ai_warn "Homebrew OpenCode install failed — falling back to upstream installer"
-        fi
-    fi
-
-    ai "Installing OpenCode with upstream installer..."
-    local tmpfile
-    tmpfile=$(mktemp /tmp/opencode-install.XXXXXX.sh)
-    if curl -fsSL --max-time 300 https://opencode.ai/install -o "$tmpfile" 2>/dev/null \
-       && bash "$tmpfile" >> "$ODS_LOG_FILE" 2>&1; then
-        OPENCODE_BIN="$(_find_opencode_bin 2>/dev/null || true)"
-        if [[ -n "$OPENCODE_BIN" ]]; then
-            ai_ok "OpenCode installed ($OPENCODE_BIN)"
-        else
-            ai_warn "OpenCode installer completed but opencode was not found"
-        fi
+    # shellcheck source=../lib/opencode-runtime.sh
+    . "$SCRIPT_DIR/../lib/opencode-runtime.sh"
+    if OPENCODE_BIN="$(ods_install_opencode "$OPENCODE_BIN")"; then
+        ai_ok "Reviewed OpenCode release installed ($OPENCODE_BIN)"
     else
-        ai_warn "OpenCode install failed — install later with: brew install opencode"
+        OPENCODE_BIN=""
+        ai_warn "OpenCode upgrade failed; existing binary/configuration preserved. Re-run after resolving the download or binary error."
+        return 1
     fi
-    rm -f "$tmpfile"
 }
 
 _require_docker_cpu_budget() {
@@ -2942,7 +2917,7 @@ for service in (data.get("services") or {}).values():
     # ── Install & start OpenCode (native host binary) ──
     chapter "OPENCODE (AI CODING IDE)"
 
-    _install_opencode
+    _install_opencode || true  # Optional IDE failure is reported; do not start an old/unverified version.
 
     # OpenCode is native, so cloud mode uses LiteLLM's published host port while
     # local mode follows the actual native llama bind and port.
@@ -3018,6 +2993,10 @@ for service in (data.get("services") or {}).values():
         <string>${HOME}</string>
         <key>PATH</key>
         <string>${OPENCODE_LAUNCHD_PATH}</string>
+        <key>OPENCODE_ENABLE_EXA</key>
+        <string>1</string>
+        <key>OPENCODE_WEBSEARCH_PROVIDER</key>
+        <string>exa</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

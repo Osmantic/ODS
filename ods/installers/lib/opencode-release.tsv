@@ -1,0 +1,9 @@
+version	platform	arch	asset	sha256
+1.18.32	Linux	x86_64	opencode-linux-x64-baseline.tar.gz	763af386ef88a8cab18df00fcf055690e5a55e31a7088beabe02307142a6adce
+1.18.32	Linux	aarch64	opencode-linux-arm64.tar.gz	568461b7d4d8c19865c97e9a1102e613049c6039d01fe772154de873c1865840
+1.18.32	Linux-musl	x86_64	opencode-linux-x64-baseline-musl.tar.gz	7e871317fe5c7281838007fd7b1d0198b6ddd898ebe1c3631676db34be2eaed8
+1.18.32	Linux-musl	aarch64	opencode-linux-arm64-musl.tar.gz	abf302edbc996548e28417dcdf7f67109fd95c7344f813a312633a818986204d
+1.18.32	Darwin	arm64	opencode-darwin-arm64.zip	fa643f93401c13508d8d513780e54ce9cc01203d501114be9b88d62408b8101f
+1.18.32	Darwin	x86_64	opencode-darwin-x64-baseline.zip	3888d74f1478b94ab1682a7c30942ab53e1266329f3786cf05e499381572dea8
+1.18.32	Windows	AMD64	opencode-windows-x64-baseline.zip	cd852831bd094c2df2eb379eb98bed7a63db7f823a7caf277c732cdac33cbdb6
+1.18.32	Windows	ARM64	opencode-windows-arm64.zip	5c1c21e85b694ac3fedccff22f934484c29273d5b5780eff006960304108e124

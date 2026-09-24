@@ -55,9 +55,8 @@ $script:MIN_NVIDIA_DRIVER = 570
 $script:MIN_WINDOWS_WHISPER_CUDA_DRIVER = 575
 
 # OpenCode (host-level AI coding IDE, not a Docker service)
-$script:OPENCODE_VERSION = "1.2.18"
-$script:OPENCODE_ZIP = "opencode-windows-x64.zip"
-$script:OPENCODE_URL = "https://github.com/anomalyco/opencode/releases/download/v$($script:OPENCODE_VERSION)/$($script:OPENCODE_ZIP)"
+$script:OPENCODE_VERSION = "1.18.32"
+# Architecture-specific archives and SHA256 values: ../../lib/opencode-release.tsv
 $script:OPENCODE_DIR = Join-Path $env:USERPROFILE ".opencode"
 $script:OPENCODE_BIN = Join-Path (Join-Path $env:USERPROFILE ".opencode") "bin"
 $script:OPENCODE_EXE = Join-Path (Join-Path $env:USERPROFILE ".opencode") "bin\opencode.exe"
