@@ -8,6 +8,7 @@ Supports Anthropic, Moonshot, OpenAI, and generic OpenAI-compatible APIs.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 import ipaddress
 import json
 import logging
@@ -324,6 +325,15 @@ _openai_client: httpx.AsyncClient | None = None
 
 _CLIENT_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=30.0)
 _CLIENT_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+
+
+@asynccontextmanager
+async def _close_stream(upstream):
+    """Close an upstream response when downstream streaming ends."""
+    try:
+        yield upstream
+    finally:
+        await upstream.aclose()
 
 
 def get_http_client() -> httpx.AsyncClient:
@@ -712,6 +722,20 @@ async def _handle_streaming(client, raw_body, headers, model, sys_analysis,
                             msg_analysis, tools, start_time):
     """Stream SSE response through while capturing token metrics."""
 
+    upstream_request = client.build_request(
+        "POST", "/v1/messages",
+        content=raw_body,
+        headers=headers,
+    )
+    try:
+        opened_upstream = await client.send(upstream_request, stream=True)
+    except httpx.HTTPError as e:
+        log.error(f"Upstream request error: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"error": {"type": "proxy_error", "message": "Upstream request failed"}},
+        )
+
     # State for capturing usage from SSE events
     usage = {
         "input_tokens": 0,
@@ -725,11 +749,7 @@ async def _handle_streaming(client, raw_body, headers, model, sys_analysis,
         current_event = None
         logged = False
         try:
-            async with client.stream(
-                "POST", "/v1/messages",
-                content=raw_body,
-                headers=headers,
-            ) as upstream:
+            async with _close_stream(opened_upstream) as upstream:
                 async for line in upstream.aiter_lines():
                     # Yield line immediately for transparent passthrough
                     yield line + "\n"
@@ -790,6 +810,7 @@ async def _handle_streaming(client, raw_body, headers, model, sys_analysis,
 
     return StreamingResponse(
         stream_and_capture(),
+        status_code=opened_upstream.status_code,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -944,6 +965,20 @@ async def proxy_chat_completions(request: Request):
 async def _handle_openai_streaming(client, raw_body, headers, model, sys_analysis,
                                    msg_analysis, tools, start_time, filter_result=None):
     """Stream OpenAI SSE response through while capturing token metrics."""
+    upstream_request = client.build_request(
+        "POST", "/v1/chat/completions",
+        content=raw_body,
+        headers=headers,
+    )
+    try:
+        opened_upstream = await client.send(upstream_request, stream=True)
+    except httpx.HTTPError as e:
+        log.error(f"Upstream request error: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"error": {"message": "Upstream request failed", "type": "proxy_error"}},
+        )
+
     usage = {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -955,11 +990,7 @@ async def _handle_openai_streaming(client, raw_body, headers, model, sys_analysi
     async def stream_and_capture():
         logged = False
         try:
-            async with client.stream(
-                "POST", "/v1/chat/completions",
-                content=raw_body,
-                headers=headers,
-            ) as upstream:
+            async with _close_stream(opened_upstream) as upstream:
                 if upstream.status_code >= 400:
                     err_body = b""
                     async for chunk in upstream.aiter_bytes():
@@ -1015,6 +1046,7 @@ async def _handle_openai_streaming(client, raw_body, headers, model, sys_analysi
 
     return StreamingResponse(
         stream_and_capture(),
+        status_code=opened_upstream.status_code,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
