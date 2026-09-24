@@ -4,11 +4,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { dirname, join } from 'node:path';
+import { createPublicWebExtractTool } from '../plugin/web-extract.mjs';
 
 const file = process.env.OPENCLAW_TOOL_SEARCH_MODULE;
 const manifest = JSON.parse(readFileSync(new URL('../host/openclaw-image-envelope.json', import.meta.url)));
 assert.equal(createHash('sha256').update(readFileSync(file)).digest('hex'), manifest.patchedSha256);
 const { u: apply, m: createRef, h: createControls, v: resolveExact } = await import(pathToFileURL(file));
+const { t: filterByPolicy } = await import(pathToFileURL(join(dirname(file), 'agent-tools.policy-Dyn4VuLn.js')));
 const tool = name => ({ name, label: name, description: name, parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [] }) });
 const controls = ['tool_search', 'tool_describe', 'tool_call'].map(tool);
 function run(tools, extra = {}) {
@@ -37,14 +40,14 @@ test('working tools are direct while specialist tools remain in the real catalog
 
 test('the ordinary direct surface stays small while every specialist stays catalogued', () => {
   const nativeNames = ['read', 'write', 'edit', 'apply_patch', 'exec', 'process',
-    'web_fetch', 'web_search', 'pixel_ods_skill', 'pixel_ods_ask_user',
+    'web_fetch', 'web_search', 'pixel_ods_web_extract', 'pixel_ods_skill', 'pixel_ods_ask_user',
     'pixel_ods_extensions', 'pixel_ods_extension_request_status', 'pixel_ods_workspace_preview'];
   const specialistNames = ['pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance',
     'pixel_ods_extension_request_retry', 'pixel_ods_source_proposal',
     'pixel_ods_python_library_proposal', 'pixel_ods_extension_proposal'];
   const result = run([...nativeNames, ...specialistNames].map(tool));
   assert.deepEqual(result.tools.map(t => t.name), [...controls.map(t => t.name), ...nativeNames]);
-  assert.equal(result.tools.length, 16); // Thirteen native tools plus the three search controls.
+  assert.equal(result.tools.length, 17); // Fourteen native tools plus the three search controls.
   assert.equal(result.catalogToolCount, nativeNames.length + specialistNames.length);
 });
 
@@ -128,4 +131,43 @@ test('denied and ambiguous preview tools remain unavailable directly', () => {
   const result=run([tool('pixel_ods_workspace_preview'),tool('pixel_ods_workspace_preview')]);
   assert.deepEqual(result.tools,controls); assert.equal(result.catalogToolCount,2);
   assert.deepEqual(run([tool('pixel_ods_workspace_preview')],{agentId:'another-agent'}).tools,controls);
+});
+
+test('targeted public extraction is directly offered with its exact bounded schema', async () => {
+  let calls = 0;
+  const extractor = createPublicWebExtractTool({
+    guardedFetch: async ({url}) => {
+      calls++;
+      return {response: new Response('Navigation\n'.repeat(1000) + '\nBoard power 250 W\n',
+        {headers: {'Content-Type':'text/plain'}}), finalUrl:url, release() {}};
+    },
+    readResponseText: async response => ({text:await response.text(), truncated:false}),
+    extractBasicHtmlContent: async () => {throw new Error('plain-text fixture');},
+  });
+  const direct = run([extractor]).tools.find(t => t.name === extractor.name);
+  assert.equal(direct, extractor, 'retain the policy-filtered implementation object');
+  assert.deepEqual(direct.parameters, {type:'object', additionalProperties:false, required:['url'], properties:{
+    url:{type:'string', minLength:10, maxLength:1024}, query:{type:'string', minLength:2, maxLength:200},
+  }});
+  const result = await direct.execute('extract', {url:'https://docs.example.org/specs', query:'Board power'});
+  assert.equal(calls, 1);
+  assert.equal(result.details.matched, true);
+  assert.equal(result.details.evidence_truncated_before, true);
+  assert.match(result.content[0].text, /Board power 250 W/);
+  assert.match(result.content[0].text, /EXTERNAL_UNTRUSTED_CONTENT/);
+  assert.equal((await direct.execute('private', {url:'http://127.0.0.1/specs'})).isError, true);
+  assert.equal(calls, 1, 'native exposure cannot bypass public URL validation');
+});
+
+test('native extraction preserves actual runtime policy denials and ambiguity deferral', () => {
+  const extractor = tool('pixel_ods_web_extract');
+  const filtered = filterByPolicy([extractor, tool('web_fetch')], {deny:['pixel_ods_web_extract']});
+  assert.deepEqual(filtered.map(t => t.name), ['web_fetch']);
+  const denied = run(filtered);
+  assert.deepEqual(denied.tools.map(t => t.name), [...controls.map(t => t.name), 'web_fetch']);
+  assert.equal(resolveExact({agentId:'pixel', catalogRef:denied.catalogRef}, extractor.name), undefined);
+  const ambiguous = run([extractor, tool(extractor.name)]);
+  assert.deepEqual(ambiguous.tools, controls);
+  assert.equal(ambiguous.catalogToolCount, 2);
+  assert.deepEqual(run([extractor], {agentId:'another-agent'}).tools, controls);
 });
