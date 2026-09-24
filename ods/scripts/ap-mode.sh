@@ -246,28 +246,57 @@ install_iptables_rules() {
 
 remove_iptables_rules() {
   # Drop any PREROUTING rule tagged with our comment. Loop in case there
-  # are multiple (e.g. a previous up didn't fully tear down).
-  while iptables -t nat -C PREROUTING -i "${ODS_AP_INTERFACE}" -p tcp --dport 80 \
-      -j DNAT --to-destination "${ODS_AP_GATEWAY_IP}:80" -m comment --comment "ods-ap-mode" 2>/dev/null; do
-    iptables -t nat -D PREROUTING -i "${ODS_AP_INTERFACE}" -p tcp --dport 80 \
-      -j DNAT --to-destination "${ODS_AP_GATEWAY_IP}:80" -m comment --comment "ods-ap-mode" || true
+  # are multiple (e.g. a previous up didn't fully tear down), but bound the
+  # attempts: a rule that keeps checking present while deletion fails
+  # (xtables contention, an external writer re-adding it) used to spin
+  # forever and hang `down` — which also hangs `up`'s failure rollback.
+  local dport attempts
+  for dport in 80 443; do
+    attempts=0
+    while iptables -t nat -C PREROUTING -i "${ODS_AP_INTERFACE}" -p tcp --dport "$dport" \
+        -j DNAT --to-destination "${ODS_AP_GATEWAY_IP}:$dport" -m comment --comment "ods-ap-mode" 2>/dev/null; do
+      iptables -t nat -D PREROUTING -i "${ODS_AP_INTERFACE}" -p tcp --dport "$dport" \
+        -j DNAT --to-destination "${ODS_AP_GATEWAY_IP}:$dport" -m comment --comment "ods-ap-mode" || true
+      attempts=$((attempts + 1))
+      if (( attempts >= 10 )); then
+        log "WARNING: iptables rule for port $dport still present after 10 delete attempts; leaving it"
+        break
+      fi
+    done
   done
-  while iptables -t nat -C PREROUTING -i "${ODS_AP_INTERFACE}" -p tcp --dport 443 \
-      -j DNAT --to-destination "${ODS_AP_GATEWAY_IP}:443" -m comment --comment "ods-ap-mode" 2>/dev/null; do
-    iptables -t nat -D PREROUTING -i "${ODS_AP_INTERFACE}" -p tcp --dport 443 \
-      -j DNAT --to-destination "${ODS_AP_GATEWAY_IP}:443" -m comment --comment "ods-ap-mode" || true
-  done
+}
+
+nm_device_is_managed() {
+  # GENERAL.STATE reports "N (state)" for a device NetworkManager manages.
+  # Empty output — NM down, iface gone, nmcli error — means nothing is
+  # managing it for our purposes.
+  local state
+  state=$(nmcli -t -f GENERAL.STATE device show "$1" 2>/dev/null | cut -d: -f2-)
+  [[ -n "$state" && "$state" != *unmanaged* ]]
 }
 
 release_interface_from_nm() {
-  # Tell NetworkManager to stop managing the AP interface. Otherwise it
-  # fights hostapd over wlan0. nmcli returns non-zero if NM doesn't
-  # currently manage the iface — that's fine.
+  # Tell NetworkManager to stop managing the AP interface, then verify the
+  # result: `nmcli device set` returns non-zero both when NM never managed
+  # the iface (fine) and on a real release failure (not fine — NM will keep
+  # fighting hostapd over wlan0). Trust the resulting state, not the exit
+  # code.
   nmcli device set "${ODS_AP_INTERFACE}" managed no 2>/dev/null || true
+  if nm_device_is_managed "${ODS_AP_INTERFACE}"; then
+    err "NetworkManager still manages ${ODS_AP_INTERFACE} — hostapd will conflict"
+    err "release it manually: nmcli device set ${ODS_AP_INTERFACE} managed no"
+    return 1
+  fi
 }
 
 reclaim_interface_for_nm() {
+  # Best-effort per cmd_down's contract — but never silent: a failed
+  # reclaim leaves the iface unmanaged and the operator's normal
+  # networking dead.
   nmcli device set "${ODS_AP_INTERFACE}" managed yes 2>/dev/null || true
+  if ! nm_device_is_managed "${ODS_AP_INTERFACE}"; then
+    log "WARNING: NetworkManager did not reclaim ${ODS_AP_INTERFACE}; reconnect it manually: nmcli device set ${ODS_AP_INTERFACE} managed yes"
+  fi
 }
 
 bring_up_interface() {
