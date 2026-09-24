@@ -111,3 +111,42 @@ test('real Python distinguishes escaped source bytes from valid string escapes',
     assert.equal(Boolean(pythonSyntaxGuidance({command:'python3 -'},receipt)),expected);
   }
 });
+
+for(const deferred of [false,true]) for(const wrap of [false,true]) test(`literal cd plus Python gains bound syntax advice (deferred=${deferred},wrap=${wrap})`,()=>{
+  const command='cd fleet-qualification-e07f54d9a825-coding && python3 -c "with open(\'totals.py\', \'w\') as f:\\n    f.write(code)\\nprint(\'Written\')\\n"';
+  const text=failure.replace('/workspace/project/script.py','<string>');
+  const {persisted,execution}=run({deferred,wrap,command,text});
+  assert.match(JSON.stringify(persisted),/ODS Pixel Python syntax/);
+  const kept=deferred?persisted.details.result:persisted;
+  assert.equal(kept.details.exitCode,1);
+  assert.equal(kept.isError,true);
+  assert.equal(kept.content[0].text,execution.content[0].text);
+});
+
+test('literal relative cd variants preserve Python diagnostic attribution',()=>{
+  for(const command of [
+    'cd ./project && python3 script.py',
+    'cd "my project" && /usr/bin/python3.12 -m unittest',
+    "cd 'my project' && python3 -c 'x = 1\\ny = 2'",
+    'cd nested/project && python3 -c "import sys\nvalue = \\"quoted\\"\n"',
+  ]) assert.match(pythonSyntaxGuidance({command},result()),/ODS Pixel Python syntax/,command);
+});
+
+test('ambiguous or unrelated cd chains never gain Python diagnostic advice',()=>{
+  for(const command of [
+    'cd project && node script.js','cd project && echo python3 script.py',
+    'cd project && env python3 script.py','cd project && bash -c "python3 script.py"',
+    'echo fake && cd project && python3 script.py','cd project; python3 script.py',
+    'cd project || python3 script.py','cd project && python3 script.py; echo fake',
+    'cd project && python3 script.py && cat fake','cd project && python3 script.py | cat',
+    'cd project && python3 script.py\necho fake','cd project && python3 script.py # extra',
+    'cd project && python3 script.py > result.txt','cd project && python3 - <<\'PY\'\npass\nPY',
+    'cd ../other && python3 script.py','cd nested/../other && python3 script.py',
+    'cd /tmp && python3 script.py','cd - && python3 script.py',
+    'cd $PROJECT && python3 script.py','cd "$(pwd)" && python3 script.py',
+    'cd project && python3 -c "$(cat fake)"','cd project && python3 -c "`cat fake`"',
+    'cd project && python3 "$SCRIPT"','cd project && python3 -c "unclosed',
+    'cd project && python3 script.py\\\necho fake',
+  ]) assert.equal(pythonSyntaxGuidance({command},result()),undefined,command);
+  assert.equal(pythonSyntaxGuidance({command:'cd project && python3 script.py'},result('SyntaxError: unexpected character after line continuation character')),undefined);
+});

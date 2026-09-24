@@ -1,7 +1,37 @@
 // This is diagnostic advice only. Never change source bytes or execution truth.
+function pythonCommand(command) {
+  const python = /^\s*(?:\/[^\s'";|&]+\/)?python(?:3(?:\.\d+)?)?(?=\s|$)/;
+  if (python.test(command)) return true;
+  // Recognize one literal relative workspace directory and one Python command.
+  // This is not a shell executor: expansions, traversal, redirection, heredocs,
+  // and additional commands cannot establish this diagnostic's provenance.
+  const wrapped = /^[ \t]*cd[ \t]+(?:'([A-Za-z0-9_./ -]+)'|"([A-Za-z0-9_./ -]+)"|([A-Za-z0-9_./-]+))[ \t]+&&[ \t]+([\s\S]+)$/.exec(command);
+  if (!wrapped) return false;
+  const directory = wrapped[1] ?? wrapped[2] ?? wrapped[3];
+  if (directory.startsWith('/') || directory.startsWith('-') || directory.split('/').includes('..')) return false;
+  const invocation = wrapped[4];
+  if (!python.test(invocation)) return false;
+  let quote;
+  for (let index = 0; index < invocation.length; index++) {
+    const char = invocation[index];
+    if (char === '\0' || char === '\r') return false;
+    if (quote === "'") { if (char === "'") quote = undefined; continue; }
+    if (char === '$' || char === '`') return false;
+    if (quote === '"') {
+      if (char === '\\') {
+        if (++index >= invocation.length || /[\r\n\0]/.test(invocation[index])) return false;
+      } else if (char === '"') quote = undefined;
+      continue;
+    }
+    if (char === "'" || char === '"') quote = char;
+    else if (/[;&|<>\n\\#(){}*?\[]/.test(char)) return false;
+  }
+  return quote === undefined;
+}
+
 export function pythonSyntaxGuidance(params, result) {
   if (typeof params?.command !== 'string' ||
-      !/^\s*(?:\/[^\s'";|&]+\/)?python(?:3(?:\.\d+)?)?(?=\s|$)/.test(params.command) ||
+      !pythonCommand(params.command) ||
       result?.details?.status !== 'completed' ||
       !Number.isInteger(result.details.exitCode) || result.details.exitCode === 0) return undefined;
   const text = typeof result.details.aggregated === 'string' ? result.details.aggregated
