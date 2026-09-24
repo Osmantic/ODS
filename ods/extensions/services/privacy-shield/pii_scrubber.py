@@ -32,16 +32,20 @@ class PIIDetector:
         'email': re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'),
         'phone': re.compile(r'\b(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}\b'),
         'ssn': re.compile(r'\b(?!(?:19|20)\d{2}[-.\s]?\d{2}[-.\s]?\d{4}\b)\d{3}[-.\s]?\d{2}[-.\s]?\d{4}\b'),
+        # Alternation is first-match-wins, not longest-match, so the branches
+        # that consume a compressed address *and its tail* must come before the
+        # bare "ends in ::" branch. Otherwise fe80::1ff:fe23:4567:890a matches
+        # only "fe80::" and the whole interface identifier is emitted in clear.
         'ip_address': re.compile(
             r'\b(?:\d{1,3}\.){3}\d{1,3}\b'  # IPv4
             r'|'
             r'(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}'  # Full IPv6
             r'|'
-            r'(?:[0-9a-fA-F]{1,4}:){1,7}:'  # Trailing ::
+            r'(?:[0-9a-fA-F]{1,4}:){1,7}(?::[0-9a-fA-F]{1,4}){1,7}'  # head::tail
             r'|'
             r'::(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}'  # Leading ::
             r'|'
-            r'(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}'  # Middle ::
+            r'(?:[0-9a-fA-F]{1,4}:){1,7}:'  # Trailing ::
         ),
         'api_key': re.compile(r'\b(?:api[_-]?key|apikey|token)[\s]*[=:]\s*["\']?[a-zA-Z0-9_\-]{16,}["\']?\b', re.IGNORECASE),
         'credit_card': re.compile(r'\b(?:\d{4}[-\s]?){3}\d{4}\b'),
