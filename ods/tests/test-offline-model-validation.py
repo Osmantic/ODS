@@ -173,17 +173,33 @@ def main() -> int:
 
     with temp_root() as root:
         (root / ".env").write_text(
-            'AUDIO_STT_MODEL="org/quoted-model"\r\nEMPTY=\r\n',
+            'AUDIO_STT_MODEL=org/old-model\r\n'
+            'AUDIO_STT_MODEL="org/quoted-model"\r\n'
+            'EMPTY=old-value\r\nEMPTY=\r\n',
             encoding="utf-8",
         )
         check(
-            "matched quotes and CRLF are normalized",
+            "last duplicate value wins with normalized quotes and CRLF",
             validator.env_value(root, "AUDIO_STT_MODEL", "fallback")
             == "org/quoted-model",
         )
         check(
-            "empty values use the caller default",
+            "last empty duplicate uses the caller default",
             validator.env_value(root, "EMPTY", "fallback") == "fallback",
+        )
+
+    with temp_root() as root:
+        (root / ".env").write_text(
+            "ENABLE_VOICE=true\nENABLE_VOICE=false\n",
+            encoding="utf-8",
+        )
+        check(
+            "last duplicate feature flag controls service activation",
+            not validator.service_enabled(
+                root,
+                validator.WHISPER_COMPOSE,
+                ("ENABLE_VOICE",),
+            ),
         )
 
     for layout, stt, label in (
