@@ -1,7 +1,12 @@
+# Default: every text file checks out LF. Windows Git's core.autocrlf converts
+# LF→CRLF on checkout, which breaks shell shebangs inside Linux Docker
+# containers (kernel reads #!/bin/sh\r and fails with "no such file or
+# directory"), systemd unit parsing contracts (^Key=Value$ greps), bats, and
+# *.*.template assets that no per-extension rule covers. Auto detection keeps
+# real binaries (png/ico/woff2) untouched.
+* text=auto eol=lf
+
 # Force LF line endings for all shell scripts and Docker-mounted files.
-# Windows Git's core.autocrlf converts LF→CRLF on checkout, which breaks
-# shell shebangs inside Linux Docker containers (kernel reads #!/bin/sh\r
-# and fails with "no such file or directory").
 *.sh text eol=lf
 *.bash text eol=lf
 ods/ods-cli text eol=lf
