@@ -37,9 +37,34 @@ function nativeSearchText(text) {
   return `${text.slice(0, end)}\n…(truncated)…`;
 }
 
+const OMITTED_SEARCH_SNIPPETS_GUIDANCE = "ODS search projection (not source evidence): Some descriptions or excerpts were omitted to fit the native result limit while preserving complete source titles, URLs and metadata. Search hits remain leads; read the selected pages within the existing research allowance before making claims. Omitted snippets do not establish that a fact is absent.";
+
+function boundedNativeSearchContent(payload, text) {
+  if (text.length <= NATIVE_SEARCH_TEXT_CHARS) return { text, omitted: false };
+  // Compact JSON first. Never cut a URL, title, trust wrapper or JSON string.
+  const compact = JSON.stringify(payload);
+  if (compact.length <= NATIVE_SEARCH_TEXT_CHARS) return { text: compact, omitted: false };
+  const results = payload.results.map(row => ({ ...row }));
+  const snippets = results.flatMap((row, index) => ['description', 'excerpts']
+    .filter(key => Object.hasOwn(row, key))
+    .map(key => ({ index, key, size: JSON.stringify(row[key]).length })));
+  // Omit whole fields, longest first, rather than letting one large page
+  // description hide later leads. Preserve every other field byte-for-byte.
+  snippets.sort((a, b) => b.size - a.size);
+  for (const { index, key } of snippets) {
+    delete results[index][key];
+    const projected = JSON.stringify({ ...payload, results });
+    if (projected.length <= NATIVE_SEARCH_TEXT_CHARS) return { text: projected, omitted: true };
+  }
+  // Unusually large metadata/identities cannot fit without changing evidence.
+  // Retain the existing bounded native fallback, not a made-up shorter URL.
+  return { text: nativeSearchText(text), omitted: false };
+}
+
 // The native web tool serializes its structured payload as one JSON block.
-// Remove only excerpts that are already present byte-for-byte as that same
-// result's description. Keep every unique excerpt and the original receipt.
+// First remove excerpts already present byte-for-byte as that same result's
+// description. Native projection may then omit whole snippets to retain leads
+// within the existing text cap; the original structured receipt stays intact.
 function deduplicatedSearchContent(result, native = false) {
   if (!record(result) || !record(result.details) ||
       !Array.isArray(result.content) || result.content.length !== 1 ||
@@ -78,12 +103,17 @@ function deduplicatedSearchContent(result, native = false) {
     results.push(projected);
   }
   if (!changed && result.isError === true) return undefined;
-  const text = changed ? JSON.stringify({ ...payload, results }, null, 2) : result.content[0].text;
+  const projectedPayload = changed ? { ...payload, results } : payload;
+  const text = changed ? JSON.stringify(projectedPayload, null, 2) : result.content[0].text;
+  const bounded = native && result.isError !== true
+    ? boundedNativeSearchContent(projectedPayload, text)
+    : { text: native ? nativeSearchText(text) : text, omitted: false };
   // Fixed ODS guidance is separate from the unchanged evidence/receipt. It
   // grants no calls or authority and does not expand the source-text cap.
   const guidance = result.isError === true ? [] : [{ type: "text", text:
     payload.results.length === 0 ? EMPTY_SEARCH_RECOVERY_GUIDANCE : SEARCH_SOURCE_EVIDENCE_GUIDANCE }];
-  return [{ ...result.content[0], text: native ? nativeSearchText(text) : text }, ...guidance];
+  return [{ ...result.content[0], text: bounded.text }, ...guidance,
+    ...(bounded.omitted ? [{type: 'text', text: OMITTED_SEARCH_SNIPPETS_GUIDANCE}] : [])];
 }
 
 // Called only after exact native call/run/params binding by the guard. Snapshot
