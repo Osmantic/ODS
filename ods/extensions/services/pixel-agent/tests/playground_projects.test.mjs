@@ -354,3 +354,89 @@ test('guard routes actual write params and preserves canonical evidence for prev
   assert.notEqual(read?.block,true,read?.blockReason);
   assert.equal(read.params.path,'Playground/cafeteria-site/index.html');
 });
+
+
+test('explicit natural workspace directory names retain the owner-selected operand',t=>{
+  for(const intent of [
+    'Create a polished responsive static event website in a new workspace directory fleet-events.',
+    'Build a website inside a separate workspace folder "night-garden".',
+    "Please make a website in the workspace directory named 'site'.",
+    'Create a website under an empty workspace directory `scratch`.',
+  ]) {
+    const {root,state,call}=fixture(t);
+    const name=intent.includes('fleet-events')?'fleet-events':intent.includes('night-garden')?'night-garden':intent.includes("'site'")?'site':'scratch';
+    assert.equal(call('write',{path:`${name}/index.html`,content:'<html>kept</html>'},{intent}),undefined,intent);
+    assert.equal(fs.existsSync(path.join(root,'Playground')),false,intent);
+    assert.equal(state.binding,null,intent);
+  }
+});
+
+test('workspace directory prose does not turn examples or prohibitions into path intent',t=>{
+  for(const intent of [
+    'Build a website. Documentation discusses a new workspace directory archive.',
+    'Create a website. Example: "Create a website in a new workspace directory archive."',
+    'Create a website.\n> Create a website in a new workspace directory archive.',
+    'Create a website, but do not put it in a new workspace directory archive.',
+    'Create a website. Never build it in a new workspace directory archive.',
+    'Create a website.\n```text\nCreate a website in a new workspace directory archive.\n```',
+  ]) {
+    const {call}=fixture(t);
+    assert.equal(call('write',{path:'night-garden/index.html',content:'<html>new</html>'},{intent}).params.path,'Playground/night-garden/index.html',intent);
+  }
+});
+
+test('workspace directory operand recognition does not authorize traversal or absolute writes',t=>{
+  for(const operand of ['../escape','/tmp/escape','safe/../../escape']) {
+    const {call}=fixture(t);
+    // Even owner-selected unsafe operands stay subject to the existing core
+    // path guard. The parser must not fabricate a safe rewritten destination.
+    const intent=`Create a website in a new workspace directory ${operand}.`;
+    const result=call('write',{path:`${operand}/index.html`,content:'<html>unsafe</html>'},{intent});
+    assert.equal(result?.params,undefined);
+  }
+});
+
+
+test('full hook chain keeps a named website entry and publication in its explicit directory',t=>{
+  for(const wrapped of [false,true]) for(const executionHost of ['sandbox','gateway']) {
+    const {root}=fixture(t),guard=createToolLoopGuard();
+    const context={agentId:'pixel',runId:`named-${wrapped}-${executionHost}`,sessionId:'named-website-session'};
+    const event={prompt:'Create a polished responsive static event website in a new workspace directory fleet-events. Actually write files and publish a verified Pixel workspace preview.'};
+    guard.observeRun(context,'pixel',event,{workspaceRoot:root,executionHost});
+    const params={path:'fleet-events/index.html',content:'<!doctype html><html><body>Kept here</body></html>'};
+    const input={toolName:wrapped?'tool_call':'write',toolCallId:'named-entry',params:wrapped?{id:'openclaw:core:write',args:params}:params};
+    const decision=guard.beforeToolCall(input,context);
+    assert.notEqual(decision?.block,true,decision?.blockReason);
+    const actual=(wrapped?decision?.params?.args:decision?.params)??params;
+    assert.equal(actual.path,params.path);
+    fs.mkdirSync(path.join(root,'fleet-events'));fs.writeFileSync(path.join(root,actual.path),actual.content);
+    const written={content:[{type:'text',text:'Successfully wrote file'}]};
+    guard.afterToolCall({...input,params:wrapped?{id:'openclaw:core:write',args:actual}:actual,result:wrapped?{details:{tool:{id:'openclaw:core:write',source:'openclaw',sourceName:'core',name:'write'},result:written}}:written},context);
+    const preview=guard.beforeToolCall({toolName:'pixel_ods_workspace_preview',toolCallId:'named-preview',params:{relativeDirectory:'fleet-events'}},context);
+    assert.notEqual(preview?.block,true,preview?.blockReason);
+    assert.equal(preview?.params?.relativeDirectory??'fleet-events','fleet-events');
+    assert.equal(fs.existsSync(path.join(root,'Playground')),false);
+  }
+});
+
+
+test('explicit workspace intent cannot authorize traversal at the full publication and native cwd guards',t=>{
+  for(const wrapped of [false,true]) for(const operand of ['../outside','safe/../../outside']) {
+    const {root}=fixture(t),guard=createToolLoopGuard();
+    const context={agentId:'pixel',runId:`traversal-${wrapped}-${operand}`,sessionId:'traversal-session'};
+    guard.observeRun(context,'pixel',{prompt:`Create a website in a new workspace directory ${operand}. Publish a verified Pixel workspace preview.`},{workspaceRoot:root,executionHost:'gateway'});
+    const args={path:`${operand}/index.html`,content:'<html>unsafe</html>'};
+    const call={toolName:wrapped?'tool_call':'write',params:wrapped?{id:'openclaw:core:write',args}:args};
+    const decision=guard.beforeToolCall(call,context);
+    // Core workspaceOnly owns file rejection: this layer must never turn an
+    // escaping operand into an accepted, rewritten in-workspace destination.
+    const forwarded=(wrapped?decision?.params?.args:decision?.params)??args;
+    assert.equal(forwarded.path,args.path);
+    assert.equal(nativeExecWorkdir(operand,root).block,true);
+    const previewArgs={relativeDirectory:operand};
+    const preview=guard.beforeToolCall({toolName:wrapped?'tool_call':'pixel_ods_workspace_preview',params:wrapped?{id:'pixel_ods_workspace_preview',args:previewArgs}:previewArgs},context);
+    assert.equal(preview.block,true);
+    assert.match(preview.blockReason,/cannot publish|workspace directory/);
+    assert.equal(fs.existsSync(path.join(root,'Playground')),false);
+  }
+});

@@ -124,3 +124,13 @@ def test_unsafe_root_is_not_revalidated(published):
     workspace.chmod(0o777)
     with pytest.raises(preview.PreviewError):
         preview.verify_current_snapshot(workspace, snapshots, request, os.getuid())
+
+
+def test_completed_work_outside_published_directory_does_not_change_snapshot(published):
+    workspace, snapshots, site, request = published
+    (workspace / "test-data.csv").write_text("category,amount\nfood,10.50\n")
+    (workspace / "test-results.txt").write_text("completed owner checks")
+    result = preview.verify_current_snapshot(workspace, snapshots, request, os.getuid())
+    assert result["status"] == "matched"
+    assert result["files"] == 2
+    assert result["sha256"] == request["sha256"]

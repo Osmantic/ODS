@@ -44,9 +44,22 @@ export function requestsNewPlaygroundProject(intent) {
 // Explicit owner operands win over this default. This intentionally errs on
 // preserving a path: changing an explicitly requested location is worse than
 // leaving one new project outside Playground.
+// A bare directory name after "workspace directory" is still an explicit
+// owner operand. Match an affirmative creation clause, not an example, quoted
+// instruction, or prohibition. This preserves the path; it grants no access.
+function namesWorkspaceDirectory(text) {
+  return text.split(/[;!?\n]|\.(?=\s|$)/).some(clause => {
+    if (!/^\s*(?:please\s+)?(?:create|build|make|develop|design|implement|generate|write)\b/i.test(clause)) return false;
+    const match = /\b(?:in|inside|under)\s+(?:(?:a|an|the)\s+)?(?:(?:new|separate|empty)\s+)?workspace\s+(?:directory|folder)\s+(?:(?:called|named)\s+)?(?:"([A-Za-z0-9][A-Za-z0-9._-]{0,63})"|'([A-Za-z0-9][A-Za-z0-9._-]{0,63})'|`([A-Za-z0-9][A-Za-z0-9._-]{0,63})`|([A-Za-z0-9][A-Za-z0-9._-]{0,63}))(?=$|[\s,;.!?])/i.exec(clause);
+    if (!match || /\b(?:not|never|avoid|don't|don’t|example|e\.g\.)\b/i.test(clause.slice(0,match.index))) return false;
+    const name = match.slice(1).find(Boolean);
+    return Boolean(parts(name));
+  });
+}
+
 function ownerNamesPath(intent) {
   const text = plainIntent(intent).replace(/https?:\/\/\S+/g, ' ');
-  return /(?:^|[\s`"'(])(?:\/?[A-Za-z0-9_.-]+[\/\\][A-Za-z0-9_./\\-]+|[A-Za-z]:[\/\\]\S+)(?=$|[\s`"'),;.!?])/i.test(text)
+  return namesWorkspaceDirectory(text) || /(?:^|[\s`"'(])(?:\/?[A-Za-z0-9_.-]+[\/\\][A-Za-z0-9_./\\-]+|[A-Za-z]:[\/\\]\S+)(?=$|[\s`"'),;.!?])/i.test(text)
     || /\b(?:folder|directory|pasta|diretorio)\s+(?:called|named|chamad[ao])\s+[`"']?[A-Za-z0-9_.-]+/i.test(text)
     || /\b(?:in|inside|under|em|na|no)\s+(?:the\s+)?(?:folder|directory|pasta|diretorio)\s+(?!with\b|for\b|com\b|para\b)[`"']?[A-Za-z0-9_.-]+/i.test(text);
 }

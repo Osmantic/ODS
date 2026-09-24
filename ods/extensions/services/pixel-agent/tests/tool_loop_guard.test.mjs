@@ -15920,14 +15920,15 @@ for (const deferred of [false,true]) test(`trusted final host revalidation resto
   invoke(deferred?'tool_call':'exec',deferred?{id:'openclaw:core:exec',args:{command:'pwd'}}:{command:'pwd'},deferred?wrappedCoreResult('exec',result):result,'second-inspection');
   assert.equal(await guard.revalidateWorkspacePreview({},context),true);
   assert.equal(probes,2);assert.equal(guard.verificationForRun('run-1').status,'passed');
+  matched=false;
   invoke('write',{path:'signal-garden/README.txt',content:'changed'},{content:[{type:'text',text:'written'}],details:{status:'completed'}},'changed');
   assert.equal(await guard.revalidateWorkspacePreview({},context),false);
-  assert.equal(probes,2,'write can never recover through host equality');
+  assert.equal(probes,3,'changed publication bytes cannot recover despite completed write');
 });
 
-function revalidationGuardFixture(verify) {
-  const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',sessionKey:'agent:pixel:test'};
-  const guard=createToolLoopGuard({verifyWorkspacePreview:verify});
+function revalidationGuardFixture(verify,options={}) {
+  const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',sessionKey:'agent:pixel:test',...options.context};
+  const guard=createToolLoopGuard({verifyWorkspacePreview:verify,...options.guard});
   guard.observeRun(context,'pixel',{prompt:'Build and publish a website in existing signal-garden.'});
   const invoke=(name,params,result,id)=>{
     const ctx={...context,toolName:name,toolCallId:id};
@@ -16142,4 +16143,103 @@ for(const change of ['end','write']) test(`final restore rejects ${change} in th
   assert.equal(changed,true);
   assert.equal(result,false);
   assert.notEqual(guard.verificationForRun('run-1').status,'passed');
+});
+
+
+for(const deferred of [false,true]) for(const matched of [false,true]) test(`completed core reads and scratch writes require host equality, deferred=${deferred}, matched=${matched}`,async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return matched;});
+  const act=(name,args,result,id)=>invoke(deferred?'tool_call':name,deferred?{id:`openclaw:core:${name}`,args}:args,deferred?wrappedCoreResult(name,result):result,id);
+  act('write',{path:'scratch/test-data.csv',content:'category,amount\nfood,10.50\n'},{content:[{type:'text',text:'written'}],details:{status:'completed'}},'scratch');
+  act('read',{path:'signal-garden/index.html'},{content:[{type:'text',text:'observed'}],details:{status:'completed'}},'readback');
+  assert.equal(guard.verificationForRun(context.runId).status,'failed','completed actions alone never establish byte equality');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),matched);
+  assert.equal(probes,1);
+  assert.equal(guard.verificationForRun(context.runId).status,matched?'passed':'failed');
+});
+
+for(const fault of ['failed-write','failed-check','pending-check','missing-result','foreign-completion','changed-root','cancelled']) test(`post-effect revalidation keeps independent rejection: ${fault}`,async()=>{
+  let probes=0;const user='ods-'+'c'.repeat(64);
+  const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;},{context:{sessionKey:`agent:pixel:openai-user:${user}`},guard:{abortRunAndDrain:async()=>({aborted:true,drained:true,forceCleared:false})}});
+  const result={content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}};
+  if(fault==='failed-write')invoke('write',{path:'scratch/test.txt',content:'x'},{isError:true,content:[{type:'text',text:'write failed'}]},'failed');
+  else if(fault==='failed-check')invoke('exec',{command:'python3 -m unittest'},{isError:true,content:[{type:'text',text:'FAILED (failures=1)'}],details:{status:'completed',exitCode:1}},'failed');
+  else if(fault==='pending-check')invoke('exec',{command:'python3 -m unittest'},{content:[{type:'text',text:'running'}],details:{status:'running',sessionId:'pending-owned-check'}},'running');
+  else {
+    invoke('exec',{command:'ls -la signal-garden/'},['missing-result','foreign-completion'].includes(fault)?null:result,'completed');
+    if(fault==='foreign-completion')guard.afterToolCall({toolName:'exec',toolCallId:'different-call',params:{command:'ls -la signal-garden/'},result},context);
+    if(fault==='changed-root')guard.observeRun(context,'pixel',{prompt:'Build and publish a website in existing signal-garden.'},{workspaceRoot:'/different-owner-workspace'});
+    if(fault==='cancelled')assert.equal(await guard.abortUserRun(user),true);
+  }
+  const before=guard.verificationForRun(context.runId).status;
+  assert.equal(await guard.revalidateWorkspacePreview({},context),false);
+  assert.equal(probes,0,'ineligible state cannot even probe the host');
+  assert.equal(guard.verificationForRun(context.runId).status,before,'failed revalidation cannot alter independent verification state');
+  if(['failed-check','pending-check'].includes(fault))assert.notEqual(before,'passed');
+});
+
+
+for(const name of ['write','read','exec']) test(`nested core ${name} waits for its bound outer receipt before revalidation`,async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
+  invoke('exec',{command:'ls -la signal-garden/'},{content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}},'prior-check');
+  const args=name==='exec'?{command:'ls -la signal-garden/'}:name==='read'?{path:'signal-garden/index.html'}:{path:'scratch/data.csv',content:'category,amount\n'},params={id:`openclaw:core:${name}`,args};
+  const parent={...context,toolName:'tool_call',toolCallId:'outer-write'};
+  guard.beforeToolCall({toolName:'tool_call',toolCallId:'outer-write',params},parent);
+  const result={content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}};
+  const child=`tool_search_code:outer-write:${name}:1`;
+  const childContext={...context,toolName:name,toolCallId:child};
+  const childPrepared=guard.beforeToolCall({toolName:name,toolCallId:child,params:args},childContext);
+  assert.notEqual(childPrepared?.block,true,childPrepared?.blockReason);
+  guard.afterToolCall({toolName:name,toolCallId:child,params:childPrepared?.params??args,result},childContext);
+  guard.toolResultPersist({toolName:name,toolCallId:child,message:{role:'toolResult',toolName:name,toolCallId:child,...result}},childContext);
+  assert.equal(await guard.revalidateWorkspacePreview({},context),false);
+  assert.equal(probes,0);
+  const outerResult=wrappedCoreResult(name,result);
+  guard.afterToolCall({toolName:'tool_call',toolCallId:'outer-write',params,result:outerResult},parent);
+  guard.toolResultPersist({toolName:'tool_call',toolCallId:'outer-write',message:{role:'toolResult',toolName:'tool_call',toolCallId:'outer-write',...outerResult}},parent);
+  assert.equal(await guard.revalidateWorkspacePreview({},context),true);
+  assert.equal(probes,1);
+});
+
+
+for(const wrapped of [false,true]) for(const fault of ['changed-params','outer-error','outer-result-error','event-run','event-call','event-tool','context-session','context-key']) test(`revalidation completion binding rejects ${fault}, wrapped=${wrapped}`,async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
+  invoke('exec',{command:'ls -la signal-garden/'},{content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}},'prior');
+  const args={command:'ls -la signal-garden/'},name=wrapped?'tool_call':'exec';
+  const params=wrapped?{id:'openclaw:core:exec',args}:args;
+  const ctx={...context,toolName:name,toolCallId:'bound-call'};
+  guard.beforeToolCall({toolName:name,toolCallId:'bound-call',params},ctx);
+  const result={content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}};
+  const event={toolName:name,toolCallId:'bound-call',params:structuredClone(params),result:wrapped?wrappedCoreResult('exec',result):result};
+  if(fault==='changed-params')(wrapped?event.params.args:event.params).command='python3 different.py';
+  if(fault==='outer-error')event.error='wrapper failed after inner completion';
+  if(fault==='outer-result-error')event.result.isError=true;
+  if(fault==='event-run')event.runId='foreign-run';
+  if(fault==='event-call')event.toolCallId='foreign-call';
+  if(fault==='event-tool')event.toolName='foreign-tool';
+  if(fault==='context-session')ctx.sessionId='foreign-session';
+  if(fault==='context-key')ctx.sessionKey='agent:pixel:foreign';
+  guard.afterToolCall(event,ctx);
+  guard.toolResultPersist({toolName:name,toolCallId:'bound-call',message:{role:'toolResult',toolName:name,toolCallId:'bound-call',...event.result}},ctx);
+  assert.equal(await guard.revalidateWorkspacePreview({},context),false);
+  assert.equal(probes,0);
+});
+
+
+for(const command of ['python3 report.py test-data.csv','sh -c "sleep 1; touch site/index.html" >/dev/null 2>&1 &','setsid sh -c "sleep 1; touch site/index.html" >/dev/null 2>&1 &']) test(`arbitrary exec cannot regain publication currency: ${command}`,async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
+  invoke('exec',{command},{content:[{type:'text',text:'shell exited'}],details:{status:'completed',exitCode:0}},'unsafe-exec');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),false);
+  assert.equal(probes,0,'shell success does not attest descendant quiescence');
+  assert.notEqual(guard.verificationForRun(context.runId).status,'passed');
+});
+
+for(const wrapped of [false,true]) for(const name of ['edit','apply_patch']) for(const matched of [false,true]) test(`completed ${name} outside publication requires host equality, wrapped=${wrapped}, matched=${matched}`,async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return matched;});
+  const args=name==='edit'?{path:'scratch/notes.txt',oldText:'before',newText:'after'}:{input:'*** Begin Patch\n*** Add File: scratch/notes.txt\n+after\n*** End Patch'};
+  const result={content:[{type:'text',text:'updated'}],details:{status:'completed'}};
+  invoke(wrapped?'tool_call':name,wrapped?{id:`openclaw:core:${name}`,args}:args,wrapped?wrappedCoreResult(name,result):result,`scratch-${name}`);
+  assert.notEqual(guard.verificationForRun(context.runId).status,'passed');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),matched);
+  assert.equal(probes,1);
+  assert.equal(guard.verificationForRun(context.runId).status,matched?'passed':'failed');
 });
