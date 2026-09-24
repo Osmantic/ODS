@@ -7,6 +7,20 @@ python3 -m py_compile "$ROOT_DIR/scripts/validate-generated-configs.py"
 python3 "$ROOT_DIR/tests/test-generated-config-backups.py"
 python3 "$ROOT_DIR/scripts/validate-generated-configs.py" "$ROOT_DIR/config/generated-config-contracts.json"
 
+json_output="$(python3 "$ROOT_DIR/scripts/validate-generated-configs.py" --json "$ROOT_DIR/config/generated-config-contracts.json")"
+GENERATED_JSON="$json_output" python3 - "$ROOT_DIR/config/generated-config-contracts.json" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+payload = json.loads(os.environ["GENERATED_JSON"])
+contract = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert payload["ok"] is True
+assert payload["surface_count"] == len(contract["surfaces"])
+assert payload["issues"] == []
+PY
+
 missing_writer_contract="$(mktemp)"
 missing_lemonade_writer_contract="$(mktemp)"
 trap 'rm -f "$missing_writer_contract" "$missing_lemonade_writer_contract"' EXIT
@@ -30,6 +44,23 @@ if python3 "$ROOT_DIR/scripts/validate-generated-configs.py" "$missing_writer_co
     echo "[FAIL] writer marker validation accepted an incomplete ownership inventory" >&2
     exit 1
 fi
+
+missing_output=""
+missing_rc=0
+missing_output=$(python3 "$ROOT_DIR/scripts/validate-generated-configs.py" --json "$ROOT_DIR/config/missing-generated-contract.json") \
+    || missing_rc=$?
+[[ "$missing_rc" -eq 1 ]]
+GENERATED_JSON="$missing_output" python3 - <<'PY'
+import json
+import os
+
+payload = json.loads(os.environ["GENERATED_JSON"])
+assert payload["ok"] is False
+assert payload["surface_count"] == 0
+assert payload["issues"] == [
+    {"path": "$file", "message": "generated config contract file not found"}
+]
+PY
 
 python3 - "$ROOT_DIR/config/generated-config-contracts.json" "$missing_lemonade_writer_contract" <<'PY'
 import json
