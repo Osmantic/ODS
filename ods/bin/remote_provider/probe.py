@@ -167,13 +167,20 @@ def _probe_models_endpoint(
             "provider_http_error",
             f"remote provider probe returned HTTP {status}",
         )
+    model_count = _model_count(body)
+    if model_count is None:
+        raise ProbeError(
+            502,
+            "provider_probe_invalid_response",
+            "remote provider probe did not return an OpenAI-compatible model list",
+        )
     return {
         "ok": True,
         "status": status,
         "endpoint": "/v1/models",
         "transport": transport,
         "contentType": content_type,
-        "modelCount": _model_count(body),
+        "modelCount": model_count,
         "resolution": dict(resolution),
     }
 

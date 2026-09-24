@@ -827,6 +827,32 @@ def test_direct_provider_probe_is_bounded_and_redacted() -> None:
     )
 
 
+def test_provider_probe_rejects_non_model_success_payloads() -> None:
+    route = plan_route(cloud_direct_env())
+
+    for body in (
+        b"<html><body>proxy login</body></html>",
+        b'{"object":"list","data":"not-a-list"}',
+    ):
+        error = assert_raises_probe_error(
+            lambda body=body: probe_direct_provider(
+                route,
+                provider_secret="unit-test-provider-token",
+                resolver=_public_resolver,
+                opener=lambda *_args, **_kwargs: _ProbeResponse(body),
+            ),
+            "a successful non-model response must not prove the provider route",
+        )
+        assert_true(
+            error.status == 502,
+            "invalid provider payload should report a bad gateway",
+        )
+        assert_true(
+            error.code == "provider_probe_invalid_response",
+            "invalid provider payload error code drifted",
+        )
+
+
 def test_public_probe_receipt_is_redacted_and_typed() -> None:
     receipt = public_probe_receipt(
         {
@@ -944,6 +970,7 @@ def main() -> int:
         test_lifecycle_ssh_operation_tracks_secret_custody_without_leaks,
         test_lifecycle_rejects_unsafe_or_secret_public_inputs,
         test_direct_provider_probe_is_bounded_and_redacted,
+        test_provider_probe_rejects_non_model_success_payloads,
         test_public_probe_receipt_is_redacted_and_typed,
         test_direct_provider_probe_fails_closed_before_unsafe_dns_request,
         test_generic_ssh_provider_probe_uses_tunnel_boundary,
