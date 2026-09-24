@@ -177,6 +177,11 @@ if echo "$output" | grep -q "Update complete"; then
 else
     fail "update aborted during verification: $(echo "$output" | tail -5)"
 fi
+if echo "$output" | grep -q "Host agent restart failed (non-fatal)"; then
+    pass "update contains an unavailable host-agent restart"
+else
+    fail "update fixture did not exercise the non-fatal host-agent boundary"
+fi
 if grep -q "^ODS_VERSION=2.0.1" "$FIXTURE/.env"; then
     pass "update persisted the new ODS_VERSION"
 else

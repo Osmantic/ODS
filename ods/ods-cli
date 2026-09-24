@@ -2245,7 +2245,10 @@ cmd_update() {
 
     # Restart host agent so new endpoints / code changes take effect
     log "Restarting host agent..."
-    cmd_agent restart || warn "Host agent restart failed (non-fatal)"
+    # cmd_agent uses error(), which exits the current shell at hard lifecycle
+    # boundaries. Keep this optional post-update refresh in a subshell so an
+    # absent or unhealthy agent cannot abort an otherwise verified update.
+    (cmd_agent restart) || warn "Host agent restart failed (non-fatal)"
 
     success "Update complete"
 
