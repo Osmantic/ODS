@@ -5,6 +5,7 @@ the separately installed broker and the image ID in its protected configuration.
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -115,9 +116,18 @@ def validate_image(image, image_id):
 
 
 def validate_config(config):
+    native = isinstance(config, dict) and config.get("transport") == "docker-desktop"
     if (
         type(config) is not dict
-        or set(config) != {"imageId", "docker", "snapshotRoot", "ownerUid", "transport"}
+        or set(config)
+        != {
+            "imageId",
+            "docker",
+            "snapshotRoot",
+            "ownerUid",
+            "transport",
+            *(("dockerSocket", "dockerSha256") if native else ()),
+        }
         or not isinstance(config["imageId"], str)
         or not re.fullmatch(IMAGE_PATTERN, config["imageId"])
         or type(config["ownerUid"]) is not int
@@ -126,31 +136,114 @@ def validate_config(config):
     ):
         raise ValueError("invalid-inspection-config")
     native = config["transport"] == "docker-desktop"
-    if config["docker"] != (
-        "/Applications/Docker.app/Contents/Resources/bin/docker"
-        if native
-        else "/usr/bin/docker"
-    ) or config["snapshotRoot"] != (
-        "/previews" if native else "/var/lib/ods-pixel-preview"
-    ):
+    if (not native and config["docker"] != "/usr/bin/docker") or config[
+        "snapshotRoot"
+    ] != ("/previews" if native else "/var/lib/ods-pixel-preview"):
         raise ValueError("invalid-inspection-config-paths")
+    if native and (
+        not isinstance(config["docker"], str)
+        or not re.fullmatch(
+            r"(?:/Applications/Docker\.app/Contents/Resources/bin/docker|/(?:opt/homebrew|usr/local)/Cellar/docker/(?!\.{1,2}/)[A-Za-z0-9._+-]+/bin/docker)",
+            config["docker"],
+        )
+        or not isinstance(config["dockerSocket"], str)
+        or not re.fullmatch(
+            r"/Users/(?!\.{1,2}/)[A-Za-z0-9._-]+/(?:\.docker/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
+            config["dockerSocket"],
+        )
+        or not isinstance(config["dockerSha256"], str)
+        or not re.fullmatch("[a-f0-9]{64}", config["dockerSha256"])
+    ):
+        raise ValueError("invalid-inspection-native-binding")
     return config
 
 
-def build_config(*, source, owner_uid, transport):
+def native_binding(*, docker_binary, docker_host, owner_uid):
+    if (
+        not isinstance(docker_binary, str)
+        or not isinstance(docker_host, str)
+        or not docker_host.startswith("unix://")
+    ):
+        raise ValueError("explicit-native-inspection-transport-required")
+    docker = str(Path(docker_binary).resolve(strict=True))
+    endpoint = docker_host
+    home = Path(pwd.getpwuid(owner_uid).pw_dir)
+    if not re.fullmatch(
+        re.escape(str(home))
+        + r"/(?:\.docker/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
+        endpoint[7:],
+    ):
+        raise ValueError("native-inspection-socket-owner-mismatch")
+    fd = os.open(docker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid not in (0, owner_uid)
+            or info.st_nlink != 1
+            or info.st_mode & 0o022
+            or not info.st_mode & 0o111
+            or not 0 < info.st_size <= 128 * 1024 * 1024
+        ):
+            raise ValueError("unsafe-inspection-docker")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            body = stream.read(128 * 1024 * 1024 + 1)
+        after = os.fstat(fd)
+
+        def signature(value):
+            return (
+                value.st_dev,
+                value.st_ino,
+                value.st_size,
+                value.st_mtime_ns,
+                value.st_ctime_ns,
+            )
+
+        if (
+            len(body) != info.st_size
+            or signature(info) != signature(after)
+            or signature(after) != signature(Path(docker).lstat())
+        ):
+            raise ValueError("inspection-docker-changed")
+    finally:
+        os.close(fd)
+    socket_info = Path(endpoint[7:]).stat()
+    if not stat.S_ISSOCK(socket_info.st_mode) or socket_info.st_uid != owner_uid:
+        raise ValueError("unsafe-native-inspection-socket")
+    binding = {
+        "dockerSocket": endpoint[7:],
+        "dockerSha256": hashlib.sha256(body).hexdigest(),
+    }
+    validate_config(
+        dict(
+            imageId="sha256:" + "0" * 64,
+            docker=docker,
+            ownerUid=owner_uid,
+            transport="docker-desktop",
+            snapshotRoot="/previews",
+            **binding,
+        )
+    )
+    return docker, endpoint, binding
+
+
+def build_config(*, source, owner_uid, transport, docker_binary=None, docker_host=None):
     if (
         type(owner_uid) is not int
         or owner_uid <= 0
         or transport not in ("local", "docker-desktop")
     ):
         raise ValueError("inspection-owner-and-transport-required")
-    docker = docker_path(transport)
-    endpoint = (
-        "unix://"
-        + str(Path(pwd.getpwuid(owner_uid).pw_dir) / ".docker/run/docker.sock")
-        if transport == "docker-desktop"
-        else "unix:///var/run/docker.sock"
-    )
+    native = transport == "docker-desktop"
+    binding = {}
+    if native:
+        docker, endpoint, binding = native_binding(
+            docker_binary=docker_binary, docker_host=docker_host, owner_uid=owner_uid
+        )
+    else:
+        if docker_binary is not None or docker_host is not None:
+            raise ValueError("local-inspection-transport-is-fixed")
+        docker, endpoint = docker_path(transport), "unix:///var/run/docker.sock"
     argv = [docker, "--host", endpoint]
     environment = {"PATH": "/usr/bin:/bin", "HOME": pwd.getpwuid(owner_uid).pw_dir}
     snapshots = {name: source_bytes(Path(source) / name) for name in BUILD_FILES}
@@ -195,6 +288,7 @@ def build_config(*, source, owner_uid, transport):
             "docker": docker,
             "ownerUid": owner_uid,
             "transport": transport,
+            **binding,
             "snapshotRoot": "/previews"
             if transport == "docker-desktop"
             else "/var/lib/ods-pixel-preview",

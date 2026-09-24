@@ -228,3 +228,19 @@ def test_selected_profile_only_applies_to_new_process(policy_fixture, monkeypatc
         if process.poll() is None:
             process.kill()
         process.communicate(timeout=5)
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='requires macOS Seatbelt')
+def test_sandboxed_system_python_can_import_stdlib_without_owner_site(tmp_path):
+    root = tmp_path.resolve()
+    runtime, state, outside = (root / name for name in ('runtime', 'state', 'outside'))
+    for path in (runtime, state, outside): path.mkdir()
+    profile = root / 'python.sb'
+    profile.write_bytes(render_policy(mode='sandboxed', writable=[state], protected=[runtime], probe=root / 'probe'))
+    target = outside / 'must-not-write'
+    program = "import json,hashlib,pathlib; print(json.dumps({'stdlib':True})); pathlib.Path(" + repr(str(target)) + ").write_text('denied')"
+    result = subprocess.run(['/usr/bin/sandbox-exec', '-f', str(profile), '/usr/bin/python3',
+                             '-E', '-s', '-B', '-c', program], cwd='/',
+                            env={'PATH':'/usr/bin:/bin', 'HOME':'/var/empty'}, capture_output=True, text=True, timeout=30)
+    assert result.stdout.strip() == '{"stdlib": true}'
+    assert result.returncode != 0 and not target.exists()

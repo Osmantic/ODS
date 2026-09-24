@@ -207,7 +207,9 @@ def test_real_native_candidate_preserves_shared_ods_policy(tmp_path, qualificati
     services = tmp_path / 'Native Service Bundle'
     service_digest = module.stage_services(source=source, ref=ref, ods_source=ROOT,
         candidate=candidate, destination=services, inspection_config=module.inspection_install.build_config(
-            source=ROOT / 'extensions/services/pixel-agent/host', owner_uid=os.getuid(), transport='docker-desktop'))
+            source=ROOT / 'extensions/services/pixel-agent/host', owner_uid=os.getuid(), transport='docker-desktop',
+            docker_binary=os.environ['ODS_TEST_PIXEL_DOCKER'],
+            docker_host='unix://' + os.environ['ODS_TEST_PIXEL_DOCKER_SOCKET']))
     import hashlib
     service_manifest = json.loads((services / 'services.json').read_bytes())
     assert hashlib.sha256((services / 'services.json').read_bytes()).hexdigest() == service_digest
@@ -294,7 +296,9 @@ def test_real_native_candidate_preserves_shared_ods_policy(tmp_path, qualificati
             service_bundle = tmp_path / 'services-for-initial-install'
             service_digest = module.stage_services(source=source, ref=ref, ods_source=ROOT,
                 candidate=candidate, destination=service_bundle, inspection_config=module.inspection_install.build_config(
-                    source=ROOT / 'extensions/services/pixel-agent/host', owner_uid=os.getuid(), transport='docker-desktop'))
+                    source=ROOT / 'extensions/services/pixel-agent/host', owner_uid=os.getuid(), transport='docker-desktop',
+            docker_binary=os.environ['ODS_TEST_PIXEL_DOCKER'],
+            docker_host='unix://' + os.environ['ODS_TEST_PIXEL_DOCKER_SOCKET']))
             installer.bind_initial_services(cold, bundle=service_bundle, digest=service_digest, source_ref=ref)
             assert cold['native_services']['expected_digest'] == service_digest
             assert cold['runtime_bundle']['digest'] == digest

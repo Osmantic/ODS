@@ -150,8 +150,24 @@ def test_build_captures_only_fixed_inputs_and_immutable_id(
 def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch):
     monkeypatch.setattr(
         module,
-        "docker_path",
-        lambda transport: "/Applications/Docker.app/Contents/Resources/bin/docker",
+        "native_binding",
+        lambda **kw: (
+            (
+                "/opt/homebrew/Cellar/docker/29.4.3/bin/docker",
+                "unix:///Users/approved-owner/.colima/ods-fleet/docker.sock",
+                {
+                    "dockerSocket": "/Users/approved-owner/.colima/ods-fleet/docker.sock",
+                    "dockerSha256": "b" * 64,
+                },
+            )
+            if kw
+            == {
+                "docker_binary": "/opt/homebrew/bin/docker",
+                "docker_host": "unix:///Users/approved-owner/.colima/ods-fleet/docker.sock",
+                "owner_uid": 501,
+            }
+            else pytest.fail("wrong approved transport")
+        ),
     )
     monkeypatch.setattr(
         module.pwd,
@@ -168,7 +184,7 @@ def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch):
     def run(argv, **kw):
         assert argv[1:3] == [
             "--host",
-            "unix:///Users/approved-owner/.docker/run/docker.sock",
+            "unix:///Users/approved-owner/.colima/ods-fleet/docker.sock",
         ]
         if argv[3] == "build":
             Path(argv[argv.index("--iidfile") + 1]).write_text(IMAGE)
@@ -179,11 +195,49 @@ def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch):
 
     monkeypatch.setattr(module.subprocess, "run", run)
     assert (
-        module.build_config(source=tmp_path, owner_uid=501, transport="docker-desktop")[
-            "snapshotRoot"
-        ]
+        module.build_config(
+            source=tmp_path,
+            owner_uid=501,
+            transport="docker-desktop",
+            docker_binary="/opt/homebrew/bin/docker",
+            docker_host="unix:///Users/approved-owner/.colima/ods-fleet/docker.sock",
+        )["snapshotRoot"]
         == "/previews"
     )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("docker", "/tmp/docker"),
+        ("docker", "/opt/homebrew/Cellar/docker/../bin/docker"),
+        ("dockerSocket", "tcp://remote:2375"),
+        ("dockerSocket", "/Users/owner/.colima/../docker.sock"),
+        ("dockerSocket", "/tmp/docker.sock"),
+        ("dockerSha256", "mutable"),
+        ("dockerSha256", "a" * 63),
+    ],
+)
+def test_native_configuration_binds_only_reviewable_local_transport(field, value):
+    document = dict(
+        imageId=IMAGE,
+        docker="/opt/homebrew/Cellar/docker/29.4.3/bin/docker",
+        dockerSocket="/Users/owner/.colima/ods-fleet/docker.sock",
+        dockerSha256="b" * 64,
+        ownerUid=501,
+        transport="docker-desktop",
+        snapshotRoot="/previews",
+    )
+    assert module.validate_config(document) == document
+    document[field] = value
+    with pytest.raises(ValueError):
+        module.validate_config(document)
+
+
+def test_native_transport_requires_explicit_arguments(monkeypatch, tmp_path):
+    monkeypatch.setenv("DOCKER_HOST", "unix:///Users/owner/.docker/run/docker.sock")
+    with pytest.raises(ValueError, match="explicit-native"):
+        module.build_config(source=tmp_path, owner_uid=501, transport="docker-desktop")
 
 
 @pytest.mark.parametrize("fault", ["symlink", "owner", "mode", "hardlink"])

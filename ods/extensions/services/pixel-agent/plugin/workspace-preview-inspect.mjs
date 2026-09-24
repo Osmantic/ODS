@@ -63,7 +63,7 @@ function unixRequest(payload,{signal}={}) {
 function nativeRequest(payload,{signal}={}) {
   if(process.platform!=='darwin') return Promise.reject(Error('native inspection requires macOS'));
   return new Promise((resolve,reject)=>{
-    const child=execFile('/usr/bin/python3',[HELPER,'request'],{signal,timeout:55000,maxBuffer:MAX_RESULT,encoding:'utf8',killSignal:'SIGTERM'},(error,stdout)=>{if(error)return reject(Error('inspection unavailable'));try{if(!stdout.endsWith('\n')||stdout.slice(0,-1).includes('\n'))throw Error();resolve(JSON.parse(stdout));}catch{reject(Error('invalid response'));}});
+    const child=execFile('/usr/bin/python3',['-E','-s','-B',HELPER,'request'],{cwd:'/',env:{PATH:'/usr/bin:/bin',HOME:'/var/empty'},signal,timeout:55000,maxBuffer:MAX_RESULT,encoding:'utf8',killSignal:'SIGTERM'},(error,stdout)=>{if(error)return reject(Error('inspection unavailable'));try{if(!stdout.endsWith('\n')||stdout.slice(0,-1).includes('\n'))throw Error();resolve(JSON.parse(stdout));}catch{reject(Error('invalid response'));}});
     child.stdin.on('error',()=>{}); child.stdin.end(JSON.stringify(payload));
   });
 }

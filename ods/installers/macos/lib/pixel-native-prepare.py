@@ -306,7 +306,8 @@ def prepare_migration(*, source, ref, node, runtime, docker, ods_source, install
         checkpoint('services')
         inspection = config.inspection_install.build_config(
             source=Path(ods_source) / 'extensions/services/pixel-agent/host',
-            owner_uid=os.getuid(), transport='docker-desktop')
+            owner_uid=os.getuid(), transport='docker-desktop', docker_binary=str(docker),
+            docker_host=env.get('DOCKER_HOST'))
         record['serviceDigest'] = config.stage_services(source=source, ref=ref, ods_source=ods_source,
             candidate=candidate, destination=destination / 'services', inspection_config=inspection)
         checkpoint('runtime')
@@ -404,7 +405,8 @@ def prepare(*, source=None, ref, answers=None, node, runtime=None, sandbox_image
         checkpoint()
         inspection = config.inspection_install.build_config(
             source=Path(ods_source) / 'extensions/services/pixel-agent/host',
-            owner_uid=os.getuid(), transport='docker-desktop')
+            owner_uid=os.getuid(), transport='docker-desktop', docker_binary=str(docker),
+            docker_host=os.environ.get('DOCKER_HOST'))
         record['serviceDigest'] = config.stage_services(source=source, ref=ref, ods_source=ods_source,
             candidate=candidate, destination=destination / 'services', inspection_config=inspection)
         record['phase'] = 'runtime'

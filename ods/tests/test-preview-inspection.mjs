@@ -24,3 +24,24 @@ test('unavailable inspection never turns publication into behavior proof',async(
 test('only exact valid evidence returned by tool',async()=>{
  const tool=createWorkspacePreviewInspectTool({request:async r=>receipt(r)});const result=await tool.execute('test',params());assert.equal(result.details.status,'passed');assert.equal(result.details.steps.length,3);assert.match(result.content[0].text,/not pixel paint/);
 });
+
+
+test('native inspection fixes Python environment and cwd while retaining exact request binding', async () => {
+ const {default: childProcess} = await import('node:child_process');
+ const {syncBuiltinESMExports} = await import('node:module');
+ const originalExec = childProcess.execFile, platform = Object.getOwnPropertyDescriptor(process, 'platform');
+ let called = false;
+ try {
+  Object.defineProperty(process, 'platform', {...platform, value:'darwin'});
+  childProcess.execFile = (file,args,options,callback) => {
+   called=true;
+   assert.equal(file,'/usr/bin/python3');
+   assert.deepEqual(args,['-E','-s','-B','/usr/local/libexec/ods-pixel-services/helpers/preview_inspection.py','request']);
+   assert.equal(options.cwd,'/'); assert.deepEqual(options.env,{PATH:'/usr/bin:/bin',HOME:'/var/empty'});
+   return {stdin:{on(){},end(body){queueMicrotask(()=>callback(null,JSON.stringify(receipt(JSON.parse(body)))+'\n'));}}};
+  };
+  syncBuiltinESMExports();
+  const result=await createWorkspacePreviewInspectTool({transport:'native'}).execute('native-test',params());
+  assert.equal(called,true); assert.equal(result.details.status,'passed');
+ } finally {childProcess.execFile=originalExec;syncBuiltinESMExports();Object.defineProperty(process,'platform',platform);}
+});

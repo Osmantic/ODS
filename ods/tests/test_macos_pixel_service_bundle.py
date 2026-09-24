@@ -57,7 +57,8 @@ def test_service_bundle_is_private_version_bound_and_nonactivating(tmp_path, mon
         return config.stage_services(source=source, ref='a' * 40, ods_source=ods,
             candidate=candidate, destination=destination, inspection_config={
                 'imageId': 'sha256:' + 'a' * 64, 'docker': '/Applications/Docker.app/Contents/Resources/bin/docker',
-                'snapshotRoot': '/previews', 'ownerUid': os.getuid(), 'transport': 'docker-desktop'})
+                'snapshotRoot': '/previews', 'ownerUid': os.getuid(), 'transport': 'docker-desktop',
+                'dockerSocket': '/Users/fixture/.docker/run/docker.sock', 'dockerSha256': 'b' * 64})
     if fault:
         with pytest.raises((ValueError, OSError, SyntaxError)): run()
         assert not destination.exists() or fault == 'existing' and not list(destination.iterdir())

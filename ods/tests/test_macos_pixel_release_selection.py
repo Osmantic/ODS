@@ -471,7 +471,8 @@ def test_actual_service_stage_selects_before_copy_and_embeds_provenance(source, 
     digest = config.stage_services(source=source.repository, ref=ref, ods_source=source.ods,
         candidate=candidate, destination=destination, inspection_config={
             'imageId': 'sha256:' + 'a' * 64, 'docker': '/Applications/Docker.app/Contents/Resources/bin/docker',
-            'snapshotRoot': '/previews', 'ownerUid': os.getuid(), 'transport': 'docker-desktop'})
+            'snapshotRoot': '/previews', 'ownerUid': os.getuid(), 'transport': 'docker-desktop',
+                'dockerSocket': '/Users/fixture/.docker/run/docker.sock', 'dockerSha256': 'b' * 64})
     body = (destination / 'services.json').read_bytes()
     manifest = json.loads(body)
     assert digest == sha(body)

@@ -566,13 +566,13 @@ def bundle_main(argv):
 
 def services_main(argv):
     parser = argparse.ArgumentParser(description='Prepare a coherent native broker/manager/promoter source set')
-    for name in ('source', 'source-ref', 'ods-source', 'candidate', 'destination'):
+    for name in ('source', 'source-ref', 'ods-source', 'candidate', 'destination', 'docker', 'docker-host'):
         parser.add_argument('--' + name, required=True)
     args = parser.parse_args(argv)
     try:
         inspection = inspection_install.build_config(
             source=Path(args.ods_source) / 'extensions/services/pixel-agent/host',
-            owner_uid=os.getuid(), transport='docker-desktop')
+            owner_uid=os.getuid(), transport='docker-desktop', docker_binary=args.docker, docker_host=args.docker_host)
         digest = stage_services(source=args.source, ref=args.source_ref, ods_source=args.ods_source,
                                 candidate=args.candidate, destination=args.destination, inspection_config=inspection)
     except (OSError, ValueError, KeyError, TypeError, SyntaxError, subprocess.SubprocessError):

@@ -2,6 +2,7 @@
 """Trusted fixed-purpose preview inspection broker. Never executes site bytes here."""
 
 import base64
+import hashlib
 import os
 import pathlib
 import pwd
@@ -47,10 +48,22 @@ def load_config():
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
         raise Invalid("unsafe configuration")
     config = strict_json(CONFIG.read_bytes())
-    exact(config, ("imageId", "docker", "snapshotRoot", "ownerUid", "transport"))
+    native = isinstance(config, dict) and config.get("transport") == "docker-desktop"
+    exact(
+        config,
+        (
+            "imageId",
+            "docker",
+            "snapshotRoot",
+            "ownerUid",
+            "transport",
+            *(("dockerSocket", "dockerSha256") if native else ()),
+        ),
+    )
     if (
         not re.fullmatch(r"sha256:[a-f0-9]{64}", config["imageId"])
-        or config["docker"] not in DOCKER_PATHS
+        or not isinstance(config["docker"], str)
+        or (not native and config["docker"] != "/usr/bin/docker")
         or type(config["ownerUid"]) is not int
         or config["ownerUid"] <= 0
         or config["transport"] not in ("local", "docker-desktop")
@@ -62,8 +75,63 @@ def load_config():
     # Installation controls these binaries, never caller data or environment.
     binary = pathlib.Path(config["docker"]).resolve(strict=True)
     info = binary.stat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_uid not in ((0, config["ownerUid"]) if native else (0,))
+        or info.st_mode & 0o022
+        or not info.st_mode & 0o111
+    ):
         raise Invalid("unsafe Docker binary")
+    if native:
+        home = pathlib.Path(pwd.getpwuid(config["ownerUid"]).pw_dir)
+        endpoint = config["dockerSocket"]
+        if (
+            str(binary) != config["docker"]
+            or not re.fullmatch(
+                r"(?:/Applications/Docker\.app/Contents/Resources/bin/docker|/(?:opt/homebrew|usr/local)/Cellar/docker/(?!\.{1,2}/)[A-Za-z0-9._+-]+/bin/docker)",
+                str(binary),
+            )
+            or not isinstance(endpoint, str)
+            or not re.fullmatch(
+                re.escape(str(home))
+                + r"/(?:\.docker/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
+                endpoint,
+            )
+            or not isinstance(config["dockerSha256"], str)
+            or not re.fullmatch(r"[a-f0-9]{64}", config["dockerSha256"])
+            or not 0 < info.st_size <= 128 * 1024 * 1024
+        ):
+            raise Invalid("invalid native Docker binding")
+        fd = os.open(binary, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                digest = hashlib.sha256(stream.read(128 * 1024 * 1024 + 1)).hexdigest()
+            after = os.fstat(fd)
+        finally:
+            os.close(fd)
+
+        def signature(value):
+            return (
+                value.st_dev,
+                value.st_ino,
+                value.st_size,
+                value.st_mtime_ns,
+                value.st_ctime_ns,
+            )
+
+        if (
+            digest != config["dockerSha256"]
+            or signature(info) != signature(after)
+            or signature(after) != signature(binary.lstat())
+        ):
+            raise Invalid("native Docker binary changed")
+        socket_info = pathlib.Path(endpoint).stat()
+        if (
+            not stat.S_ISSOCK(socket_info.st_mode)
+            or socket_info.st_uid != config["ownerUid"]
+        ):
+            raise Invalid("unsafe native Docker socket")
     return config
 
 
@@ -152,10 +220,7 @@ def bounded_process(argv, body, *, timeout, limit, cancelled=None):
 def docker_prefix(config):
     endpoint = "/var/run/docker.sock"
     if config["transport"] == "docker-desktop":
-        home = pathlib.Path(pwd.getpwuid(config["ownerUid"]).pw_dir)
-        if not home.is_absolute() or ".." in home.parts:
-            raise Invalid("invalid owner home")
-        endpoint = str(home / ".docker/run/docker.sock")
+        endpoint = config["dockerSocket"]
     return [config["docker"], "--host", "unix://" + endpoint]
 
 

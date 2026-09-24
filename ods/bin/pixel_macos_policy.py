@@ -157,6 +157,7 @@ def render_policy(*, mode, writable, protected, readable=(), sockets=(), probe):
              '(allow process-exec process-fork signal sysctl-read)',
              '(allow network*)', '(allow file-read-metadata)']
     read_paths = sorted(set(('/System', '/usr', '/bin', '/sbin', '/private/etc',
+                             '/Library/Developer/CommandLineTools',
                              *readable, *protected)))
     if mode == 'full-access':
         lines.append('(allow file-read* file-write*)')
