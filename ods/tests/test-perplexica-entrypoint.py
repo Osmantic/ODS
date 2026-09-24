@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -487,6 +488,51 @@ def test_sync_script_normalizes_base_url_without_v1_suffix() -> None:
         "baseURL": "http://custom-litellm:4000/v1",
         "apiKey": "custom-key",
     }
+
+
+def test_model_sync_aborts_an_unresponsive_config_api() -> None:
+    node = _node_cmd_or_skip()
+    if node is None:
+        return
+
+    release_request = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            release_request.wait(timeout=10)
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    started_at = time.monotonic()
+    try:
+        env = os.environ.copy()
+        env.update({
+            "PERPLEXICA_CONFIG_URL": f"http://127.0.0.1:{server.server_port}/api/config",
+            "ODS_MODE": "local",
+            "LLM_MODEL": "test-model",
+            "OPENAI_BASE_URL": "http://llama-server:8080/v1",
+        })
+        result = subprocess.run(
+            [node, str(SYNC_SCRIPT)],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            env=env,
+        )
+    finally:
+        release_request.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert result.returncode == 1
+    assert "model-route sync failed" in result.stderr
+    assert time.monotonic() - started_at < 8
 
 
 def _run_search_route_sync(
