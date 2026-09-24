@@ -1,9 +1,19 @@
 # Forkability And Independent Operation
 
-ODS is Apache-licensed infrastructure. The upstream repository is a
-coordination point, not a hosted control plane. Operators should be able to
-inspect the rules, run their own node, validate their own hardware, and maintain
-their own fork.
+ODS is mixed-license infrastructure. Original ODS code uses Apache-2.0;
+bundled Pixel is source-available under the
+[Pixel License for ODS](../vendor/pixel/LICENSE.md). That grant permits modified
+and forked ODS distributions, including commercial ODS use, but does not permit
+extracting Pixel into a standalone or different product. Third-party services,
+models and artwork retain their own terms. ODS's Apache license cannot authorize
+their redistribution, rebranding or commercial use.
+
+Read [Licensing](../LICENSING.md) and the
+[third-party restrictions and evidence gaps](THIRD-PARTY-LICENSING.md) before
+publishing an appliance, paid bundle, hosted service or rebranded edition.
+The upstream repository is a coordination point, not a hosted control plane.
+Operators can inspect the rules, validate their own hardware and maintain their
+own fork within the applicable component licenses.
 
 This document describes the project posture for downstream maintainers,
 hardware builders, labs, schools, companies, and individuals who want to fork,
@@ -13,7 +23,7 @@ mirror, audit, customize, or run ODS independently.
 
 ODS should be:
 
-- forkable without asking upstream for permission;
+- forkable within the applicable ODS, Pixel and third-party license grants;
 - auditable from a cold clone;
 - customizable through documented extension points;
 - reproducible from pinned refs and mirrored artifacts;

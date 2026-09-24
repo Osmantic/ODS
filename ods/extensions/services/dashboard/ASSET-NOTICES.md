@@ -3,14 +3,19 @@
 - Inter and JetBrains Mono are bundled locally under the SIL Open Font License
   1.1. Copyright notices and the license are in `public/fonts/OFL.txt`.
 - The ODS mark (`public/osmantic-isolated-os.png`), its favicon and the wallpaper
-  collection in `src/assets/wallpapers/` were supplied for this contribution by
-  Gabriel. The contributor confirmed permission to redistribute them with the
-  public ODS project. This records the contributor's authorization; it does not
-  declare the artwork public domain or override any applicable copyright.
+  collection in `src/assets/wallpapers/` were supplied by Gabriel. The existing
+  contribution records permission asserted by that contributor; it does not
+  establish each third-party rights holder's grant. The
+  [per-file artwork evidence ledger](../../../docs/ASSET-PROVENANCE.md) records
+  the remaining source/rights gaps. No open-source or public-domain status is
+  asserted for these images. Resolve each gap before relying on redistribution
+  rights; changing this notice does not clear the artwork.
 - Pixel's mascot renderer and workbench adaptation come from the Osmantic Pixel
-  project. Retain the upstream attribution and license notices in
-  `../../../docs/pixel/upstream/`. Pixel's terms remain distinct from the ODS
-  license; this contribution does not relicense upstream material.
+  project. Read the current [Pixel License for ODS](../../../vendor/pixel/LICENSE.md)
+  and [third-party notices](../../../vendor/pixel/THIRD_PARTY_NOTICES.md).
+  Retain those notices with Pixel-derived material. The older notices in
+  `../../../docs/pixel/upstream/` are a historical snapshot, not the current
+  distribution grant. This contribution does not relicense upstream material.
 - Third-party JavaScript packages retain their own licenses. Dependency versions
   and integrity hashes are recorded in `package-lock.json`.
 

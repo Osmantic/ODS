@@ -120,4 +120,9 @@ docker compose logs n8n
 
 ## License
 
-Part of ODS — Local AI Infrastructure
+The ODS integration does not relicense n8n. The pinned n8n 2.6.4 release uses
+the [Sustainable Use License and enterprise exceptions](https://github.com/n8n-io/n8n/blob/n8n%402.6.4/LICENSE.md).
+Its internal-business/personal-use permissions differ from its restrictions on
+providing or distributing the software to others. Review those terms before
+selling an appliance, offering a hosted service, or redistributing n8n; do not
+treat ODS's Apache license as permission for those uses.

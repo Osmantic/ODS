@@ -153,4 +153,10 @@ We're not precious about style, but we have standards:
 
 ## License
 
-[Apache 2.0](LICENSE). Your code stays open. That's the whole point.
+Original ODS code uses [Apache 2.0](LICENSE), subject to the exceptions in
+[LICENSING.md](LICENSING.md). Pixel is source-available under its separate
+[ODS-specific license](vendor/pixel/LICENSE.md); third-party code and assets keep
+their own terms. The Apache contribution promise does not extend to those files.
+Pixel contributions require agreement with maintainers on inbound terms before
+acceptance. Follow the [root contribution policy](../CONTRIBUTING.md#license)
+and include provenance for copied code, artwork, fonts and model artifacts.

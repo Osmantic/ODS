@@ -1,6 +1,8 @@
 # AudioCraft
 
-Meta's generative AI for audio. Features MusicGen for text-to-music generation and AudioGen for text-to-sound effects — create royalty-free music and sound effects from text descriptions.
+Meta's generative AI for audio, including MusicGen for music and AudioGen for
+sound effects from text. The code and model weights have different licenses;
+this integration does not promise commercial clearance for generated audio.
 
 ## Requirements
 
@@ -35,4 +37,12 @@ Models are downloaded automatically on first use.
 
 ## Known Issues
 
-The AudioCraft models are released under CC BY-NC 4.0 (non-commercial use only). Review the license terms before using generated content commercially.
+Upstream distinguishes [MIT-licensed code](https://github.com/facebookresearch/audiocraft/blob/main/LICENSE)
+from [CC BY-NC 4.0 model weights](https://github.com/facebookresearch/audiocraft/blob/main/LICENSE_weights).
+Review the exact model terms before downloading or using it. A label such as
+"royalty-free" is not commercial permission. These model terms also do not
+establish ownership or clearance of every generated output.
+
+The manifest and generated catalog still contain the older "royalty-free"
+description; their runtime metadata correction is tracked separately in
+[the licensing review](../../../../docs/THIRD-PARTY-LICENSING.md).

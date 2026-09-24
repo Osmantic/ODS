@@ -1,7 +1,16 @@
 # Pixel attribution snapshot
 
-These two notices are retained verbatim from the default Pixel source selected
-by `installers/phases/06-directories.sh`:
+**Historical snapshot only.** These notices describe an earlier private Pixel
+revision. They are retained verbatim for attribution and do not describe the
+current installer selection or override the current
+[Pixel License for ODS](../../../vendor/pixel/LICENSE.md).
+
+For the current export and bundle, use
+[Pixel source provenance](../../../vendor/PIXEL-SOURCE-PROVENANCE.md),
+[current third-party notices](../../../vendor/pixel/THIRD_PARTY_NOTICES.md), and
+[ODS licensing](../../../LICENSING.md).
+
+Historical source:
 
 - Repository: https://github.com/Osmantic/Pixel
 - Revision: `70f44c90ac40b8409ebc965becc5b085a053e270` (Pixel 4.3.24)
@@ -9,16 +18,14 @@ by `installers/phases/06-directories.sh`:
 - [Third-party notices](THIRD_PARTY_NOTICES.md), including OpenClaw's MIT notice
   and the pinned OpenClaw runtime/plugin versions
 
-Pixel's proprietary terms and third-party terms remain distinct from ODS's
-license. These copies do not grant additional rights or change those terms.
-The installer also retains the pinned Pixel source checkout, including these
-notices and `RELEASE-MANIFEST.json`; the upstream runtime packages retain their
-own notices. This directory is a source attribution snapshot, not a claim that
-every production Pixel capability has been qualified inside ODS.
+These historical copies do not grant rights or change the terms for that old
+revision. Current ODS distributions use the separate grant linked above.
+Third-party runtime packages retain their own notices. Neither this snapshot
+nor the current grant proves that every Pixel capability is qualified in ODS.
 
-When changing the default Pixel source revision, refresh these files from that
-exact revision and review its release manifest and runtime notices together.
-Do not edit the upstream notices independently or replace them with a summary.
+Do not edit the historical notice text or silently replace its revision.
+Current source changes belong in the current provenance and generated notice
+workflow, with matching source and installation-bundle verification.
 
 SHA-256 of the upstream UTF-8 files with LF line endings:
 
