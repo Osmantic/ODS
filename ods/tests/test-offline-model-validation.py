@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -100,10 +101,10 @@ def build_ready_root(
     return root
 
 
-def run_validator(root: Path) -> subprocess.CompletedProcess[str]:
+def run_validator(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ, ODS_ROOT=str(root), PYTHONIOENCODING="utf-8")
     return subprocess.run(
-        [sys.executable, str(VALIDATE_PY)],
+        [sys.executable, str(VALIDATE_PY), *args],
         capture_output=True,
         text=True,
         env=env,
@@ -213,6 +214,15 @@ def main() -> int:
             "Kokoro host voice file is not required",
             not (root / "data" / "kokoro" / "voices" / "af_heart.pt").exists()
             and run_validator(root).returncode == 0,
+        )
+        json_result = run_validator(root, "--json")
+        json_report = json.loads(json_result.stdout)
+        check(
+            "JSON readiness report describes every model check",
+            json_result.returncode == 0
+            and json_report["ready"] is True
+            and len(json_report["models"]) == 4,
+            output(json_result),
         )
 
     with temp_root() as root:
