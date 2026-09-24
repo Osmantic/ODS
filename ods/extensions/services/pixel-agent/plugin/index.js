@@ -64,6 +64,7 @@ import {
 } from "./host-observe.mjs";
 import { createEvidenceArtifactWriter } from "./evidence-artifact.mjs";
 import { createWorkspacePreviewTool, createWorkspacePreviewVerifier } from "./workspace-preview.mjs";
+import { createWorkspacePreviewInspectTool } from "./workspace-preview-inspect.mjs";
 import { createTaskActivity } from "./task-activity.mjs";
 import { createWorkspaceProjects } from "./workspace-projects.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
@@ -299,6 +300,7 @@ export default definePluginEntry({
       evidenceArtifactWriter,
       onWorkspaceMutation:mutation=>workspaceProjects.record(mutation),
       verifyWorkspacePreview:createWorkspacePreviewVerifier({transport:api.pluginConfig?.workspacePreviewTransport}),
+      workspacePreviewInspectionAvailable: ["unix", "native"].includes(api.pluginConfig?.workspacePreviewInspectionTransport),
       warn: (message) => api.logger.warn(message),
     });
 
@@ -677,6 +679,12 @@ export default definePluginEntry({
     registerTool(api, createWorkspacePreviewTool({ transport: api.pluginConfig?.workspacePreviewTransport }), {
       names: ["pixel_ods_workspace_preview"],
     });
+
+    if (["unix", "native"].includes(api.pluginConfig?.workspacePreviewInspectionTransport)) {
+      registerTool(api, createWorkspacePreviewInspectTool({
+        transport: api.pluginConfig.workspacePreviewInspectionTransport,
+      }), { names: ["pixel_ods_workspace_preview_inspect"] });
+    }
 
   },
 });
