@@ -24,6 +24,7 @@ const PROBE_TIMEOUT_MS = 1805000
 const LIFECYCLE_TIMEOUT_MS = 1805000
 const PEER_MODELS_TIMEOUT_MS = 30000
 const PEER_MODEL_LOAD_TIMEOUT_MS = 2705000
+const PEER_DOWNLOAD_POLL_MS = 2000
 const INITIAL_FORM = {
   baseUrl: '',
   model: '',
@@ -397,6 +398,25 @@ export default function RemoteProvider({ compact = false }) {
     }
     void loadPeerModels()
   }, [loadPeerModels, statusData?.capabilities?.odsPeerLifecycle, statusData])
+
+  useEffect(() => {
+    if (
+      !statusData?.capabilities?.odsPeerLifecycle
+      || !peerDownloadActive(peerDownloadStatus)
+    ) return undefined
+
+    let polling = false
+    const interval = window.setInterval(async () => {
+      if (polling) return
+      polling = true
+      try {
+        await loadPeerModels({ quiet: true })
+      } finally {
+        polling = false
+      }
+    }, PEER_DOWNLOAD_POLL_MS)
+    return () => window.clearInterval(interval)
+  }, [loadPeerModels, peerDownloadStatus, statusData?.capabilities?.odsPeerLifecycle])
 
 
   const updateForm = (key, value) => {
