@@ -12,7 +12,7 @@ services:
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${INVOKEAI_PORT:-9090}:9090"
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9090/health')"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9090/api/v1/app/version')"]
       interval: 30s
       timeout: 10s
       retries: 3

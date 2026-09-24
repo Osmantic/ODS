@@ -20,6 +20,12 @@ Your data is preserved when disabling. To re-enable later: `ods enable invokeai`
 
 - **URL:** `http://localhost:9090`
 
+The container and Dashboard check `/api/v1/app/version`, the version endpoint
+provided by InvokeAI `6.11.1`. That release has no `/health` route. A successful
+probe confirms the HTTP API is available; it does not verify that a model is
+installed or that image generation succeeds. Recreate the service after updating
+the recipe to apply a changed container healthcheck.
+
 ## First-Time Setup
 
 1. Enable the service: `ods enable invokeai`

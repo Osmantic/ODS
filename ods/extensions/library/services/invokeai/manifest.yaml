@@ -10,7 +10,7 @@ service:
   port: 9090
   external_port_env: INVOKEAI_PORT
   external_port_default: 9090
-  health: /health
+  health: /api/v1/app/version
   type: docker
   gpu_backends: [amd, nvidia]
   compose_file: compose.yaml
