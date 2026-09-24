@@ -2,27 +2,234 @@
   "name": "Daily Digest",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## Daily Digest\n\nCapture short events throughout the day, then summarize them every morning with the local llama-server.\n\nAdd an event:\n```bash\ncurl -X POST http://localhost:5678/webhook/ods-daily-digest-event \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"text\":\"Finished the release checklist\",\"source\":\"work\"}'\n```\n\nThe workflow retains at most 100 events in n8n workflow static data. At 07:00 in GENERIC_TIMEZONE it snapshots pending events, writes daily-digest-YYYY-MM-DD.md under the persistent n8n data directory, and removes only the events in that successfully written snapshot. A failed model call or file write leaves the source events queued for the next run.\n\nWorkflow static data is committed only by active production executions; use the webhook rather than Test Workflow when adding events.",
+        "height": 640,
+        "width": 560
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [-180, 20]
     },
     {
       "parameters": {
-        "content": "## Daily Digest\n\nThis is a template workflow for summarizing your day every morning.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "httpMethod": "POST",
+        "path": "ods-daily-digest-event",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "webhook-event",
+      "name": "Capture Event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [460, 180],
+      "webhookId": "c53bc0ac-f6e5-4e55-92fb-31824d3b89bd"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || {};\nconst text = String(body.text || body.event || '').trim();\nconst source = String(body.source || 'manual')\n  .trim()\n  .replace(/[^a-zA-Z0-9 _.-]/g, '')\n  .slice(0, 100) || 'manual';\n\nif (!text) {\n  return [{ json: {\n    ok: false,\n    statusCode: 400,\n    error: \"Body must include a non-empty 'text' field.\",\n  } }];\n}\nif (text.length > 1000) {\n  return [{ json: {\n    ok: false,\n    statusCode: 400,\n    error: \"Event text exceeds the 1000-character limit.\",\n  } }];\n}\n\nconst state = $getWorkflowStaticData('global');\nconst events = Array.isArray(state.events) ? state.events : [];\nif (events.length >= 100) {\n  return [{ json: {\n    ok: false,\n    statusCode: 429,\n    error: 'The digest queue is full; run the digest before adding more events.',\n  } }];\n}\n\nconst now = new Date();\nconst event = {\n  id: now.toISOString() + '-' + Math.random().toString(16).slice(2, 10),\n  captured_at: now.toISOString(),\n  source,\n  text,\n};\nevents.push(event);\nstate.events = events;\n\nreturn [{ json: {\n  ok: true,\n  statusCode: 202,\n  accepted: event,\n  pending_events: state.events.length,\n} }];"
+      },
+      "id": "code-store-event",
+      "name": "Validate and Store Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 180]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}"
+        }
+      },
+      "id": "respond-event",
+      "name": "Return Event Receipt",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [940, 180]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 7,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "schedule-morning",
+      "name": "Every Morning",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [460, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "const state = $getWorkflowStaticData('global');\nconst events = Array.isArray(state.events) ? state.events : [];\nconst snapshot = events.slice(0, 100);\n\nreturn [{ json: {\n  has_events: snapshot.length > 0,\n  event_count: snapshot.length,\n  event_ids: snapshot.map((event) => event.id),\n  events: snapshot,\n  digest_input: snapshot\n    .map((event, index) =>\n      `[${index + 1}] ${event.captured_at} (${event.source}) ${event.text}`\n    )\n    .join('\\n'),\n} }];"
+      },
+      "id": "code-load-events",
+      "name": "Load Pending Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-events",
+              "leftValue": "={{ $json.has_events }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-events",
+      "name": "Events Pending?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [940, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'local-model', messages: [ { role: 'system', content: 'Write a concise daily digest from the supplied event log. Group related events under Progress, Decisions, Blockers, and Next actions. Omit empty sections. Preserve concrete facts, names, dates, and numbers; do not invent details.' }, { role: 'user', content: 'Event log:\\n' + $json.digest_input } ], temperature: 0.2, max_tokens: 1200, stream: false }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "http-summarize",
+      "name": "Summarize With llama-server",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json || {};\nconst snapshot = $('Load Pending Events').first().json;\nconst summary = response.choices?.[0]?.message?.content;\nif (typeof summary !== 'string' || !summary.trim()) {\n  throw new Error('llama-server returned no digest text');\n}\n\nconst date = new Date().toISOString().slice(0, 10);\nconst path = `/home/node/.n8n/daily-digest-${date}.md`;\nconst markdown = [\n  `# Daily Digest - ${date}`,\n  '',\n  `_Generated from ${snapshot.event_count} captured events._`,\n  '',\n  summary.trim(),\n  '',\n  '## Source events',\n  ...snapshot.events.map((event) =>\n    `- ${event.captured_at} [${event.source}] ${event.text}`\n  ),\n  '',\n].join('\\n');\n\nreturn [{ json: {\n  path,\n  filename: path.split('/').pop(),\n  markdown,\n  event_ids: snapshot.event_ids,\n  event_count: snapshot.event_count,\n} }];"
+      },
+      "id": "code-compose",
+      "name": "Compose Digest File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1420, 420]
+    },
+    {
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "markdown",
+        "binaryPropertyName": "digest",
+        "options": {
+          "fileName": "={{ $json.filename }}"
+        }
+      },
+      "id": "convert-file",
+      "name": "Digest To File",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [1660, 420]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $('Compose Digest File').item.json.path }}",
+        "dataPropertyName": "digest",
+        "options": {
+          "append": false
+        }
+      },
+      "id": "write-file",
+      "name": "Save Digest",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [1900, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "const digest = $('Compose Digest File').first().json;\nconst included = new Set(digest.event_ids);\nconst state = $getWorkflowStaticData('global');\nconst current = Array.isArray(state.events) ? state.events : [];\nstate.events = current.filter((event) => !included.has(event.id));\n\nreturn [{ json: {\n  status: 'saved',\n  path: digest.path,\n  events_included: digest.event_count,\n  pending_events: state.events.length,\n} }];"
+      },
+      "id": "code-acknowledge",
+      "name": "Acknowledge Saved Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2140, 420]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "empty-status",
+              "name": "status",
+              "value": "no pending events",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-empty",
+      "name": "Nothing To Summarize",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1180, 620]
     }
   ],
-  "connections": {},
+  "connections": {
+    "Capture Event": {
+      "main": [[{"node": "Validate and Store Event", "type": "main", "index": 0}]]
+    },
+    "Validate and Store Event": {
+      "main": [[{"node": "Return Event Receipt", "type": "main", "index": 0}]]
+    },
+    "Every Morning": {
+      "main": [[{"node": "Load Pending Events", "type": "main", "index": 0}]]
+    },
+    "Load Pending Events": {
+      "main": [[{"node": "Events Pending?", "type": "main", "index": 0}]]
+    },
+    "Events Pending?": {
+      "main": [
+        [{"node": "Summarize With llama-server", "type": "main", "index": 0}],
+        [{"node": "Nothing To Summarize", "type": "main", "index": 0}]
+      ]
+    },
+    "Summarize With llama-server": {
+      "main": [[{"node": "Compose Digest File", "type": "main", "index": 0}]]
+    },
+    "Compose Digest File": {
+      "main": [[{"node": "Digest To File", "type": "main", "index": 0}]]
+    },
+    "Digest To File": {
+      "main": [[{"node": "Save Digest", "type": "main", "index": 0}]]
+    },
+    "Save Digest": {
+      "main": [[{"node": "Acknowledge Saved Events", "type": "main", "index": 0}]]
+    }
+  },
   "settings": {
     "executionOrder": "v1"
   },
