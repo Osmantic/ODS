@@ -190,21 +190,82 @@ fn try_nvidia_smi() -> Option<GpuInfo> {
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
-    let line = text.lines().next()?;
-    let parts: Vec<&str> = line.split(", ").collect();
+    parse_nvidia_smi_output(&text)
+}
 
-    if parts.len() >= 3 {
-        let name = parts[0].trim().to_string();
-        let vram_mb: u64 = parts[1].trim().parse().unwrap_or(0);
-        let driver = parts[2].trim().to_string();
-        Some(GpuInfo {
-            vendor: GpuVendor::Nvidia,
-            name,
-            vram_mb,
-            driver_version: Some(driver),
+fn parse_nvidia_smi_output(text: &str) -> Option<GpuInfo> {
+    let cards = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let mut fields = line.split(',').map(str::trim);
+            let name = fields.next()?.to_string();
+            let vram_mb = fields.next()?.parse::<u64>().ok()?;
+            let driver = fields.next()?.to_string();
+            if name.is_empty() || driver.is_empty() || fields.next().is_some() {
+                return None;
+            }
+            Some((name, vram_mb, driver))
         })
+        .collect::<Option<Vec<_>>>()?;
+
+    let first = cards.first()?;
+    let vram_mb = cards
+        .iter()
+        .try_fold(0_u64, |total, card| total.checked_add(card.1))?;
+    let name = if cards.len() == 1 {
+        first.0.clone()
+    } else if cards.iter().all(|card| card.0 == first.0) {
+        format!("{} x {}", first.0, cards.len())
+    } else if cards.len() == 2 {
+        format!("{} + {}", cards[0].0, cards[1].0)
     } else {
-        None
+        format!(
+            "{} + {} + {} more",
+            cards[0].0,
+            cards[1].0,
+            cards.len() - 2
+        )
+    };
+
+    Some(GpuInfo {
+        vendor: GpuVendor::Nvidia,
+        name,
+        vram_mb,
+        driver_version: Some(first.2.clone()),
+    })
+}
+
+#[cfg(test)]
+mod nvidia_tests {
+    use super::*;
+
+    #[test]
+    fn aggregates_multi_gpu_vram_for_tier_recommendation() {
+        let output = "NVIDIA RTX 4090, 24576, 555.42\nNVIDIA RTX 4090, 24576, 555.42\n";
+
+        let gpu = parse_nvidia_smi_output(output).unwrap();
+
+        assert_eq!(gpu.name, "NVIDIA RTX 4090 x 2");
+        assert_eq!(gpu.vram_mb, 49_152);
+        assert_eq!(recommend_tier(&gpu), 4);
+    }
+
+    #[test]
+    fn preserves_single_gpu_detection() {
+        let gpu = parse_nvidia_smi_output("NVIDIA RTX 4070,12282,555.42\n").unwrap();
+
+        assert_eq!(gpu.name, "NVIDIA RTX 4070");
+        assert_eq!(gpu.vram_mb, 12_282);
+        assert_eq!(gpu.driver_version.as_deref(), Some("555.42"));
+    }
+
+    #[test]
+    fn rejects_partial_multi_gpu_results_instead_of_undercounting() {
+        assert!(parse_nvidia_smi_output(
+            "NVIDIA RTX 4090, 24576, 555.42\nmalformed second row\n"
+        )
+        .is_none());
     }
 }
 
