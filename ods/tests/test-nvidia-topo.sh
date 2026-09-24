@@ -284,8 +284,55 @@ test_8gpus_nv1_nv2_partial_mesh() {
     fi
 }
 
+# Unit test: link_rank() must rank every NV<n> connection above PCIe.
+# nvidia-smi keeps introducing link counts (NV5, NV9, NV10, NV16, NV24, ...);
+# an enumerated list scores the ones it never heard of at 0, below cross-NUMA
+# PCIe, which inverts GPU pairing for real NVLink hardware.
+test_link_rank_covers_all_nvlink_counts() {
+    echo -e "${BLU}Testing: link_rank()/link_label() NVLink coverage${NC}"
+    TESTS_RUN=$((TESTS_RUN + 1))
+
+    source "$TOPO_SCRIPT"
+
+    local failures=""
+    local sys_rank pix_rank nv link rank label
+    sys_rank=$(link_rank SYS)
+    pix_rank=$(link_rank PIX)
+
+    for nv in NV1 NV2 NV3 NV4 NV5 NV6 NV7 NV8 NV9 NV10 NV12 NV16 NV18 NV24; do
+        rank=$(link_rank "$nv")
+        label=$(link_label "$nv")
+        [[ "$rank" -gt "$sys_rank" ]] || failures+=" ${nv}:rank=${rank}<=SYS"
+        [[ "$rank" -gt "$pix_rank" ]] || failures+=" ${nv}:rank=${rank}<=PIX"
+        [[ "$label" == "NVLink" ]] || failures+=" ${nv}:label=${label}"
+    done
+
+    # Higher link counts must not rank below lower ones.
+    [[ "$(link_rank NV18)" -ge "$(link_rank NV1)" ]] || failures+=" NV18<NV1"
+    [[ "$(link_rank NV24)" -ge "$(link_rank NV3)" ]] || failures+=" NV24<NV3"
+
+    # Existing ranks are unchanged.
+    for link in "NV1 80" "NV2 80" "NV3 80" "NV4 100" "NV6 100" "NV8 100" \
+                "NV12 100" "NV18 100" "XGMI 90" "MIG 70" "PIX 50" "PXB 40" \
+                "PHB 30" "NODE 20" "SYS 10" "SOC 10" "X 0" "" ; do
+        [[ -n "$link" ]] || continue
+        rank=$(link_rank "${link%% *}")
+        [[ "$rank" == "${link##* }" ]] || failures+=" ${link%% *}:rank=${rank}!=${link##* }"
+    done
+
+    if [[ -z "$failures" ]]; then
+        echo -e "${GRN}✓ PASS: every NV<n> outranks PCIe and known ranks are stable${NC}"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+    else
+        echo -e "${RED}✗ FAIL: link_rank regressions:${failures}${NC}"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+    fi
+}
+
 # Main test runner
 echo -e "${MAG}=== NVIDIA Topology Detection Tests ===${NC}\n"
+
+test_link_rank_covers_all_nvlink_counts
 
 test_1gpu_pcie
 test_4gpus_soc
