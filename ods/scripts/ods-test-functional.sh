@@ -45,7 +45,7 @@ declare -A SERVICE_PORTS
 LLM_URL="${LLM_URL:-http://localhost:${SERVICE_PORTS[llama-server]:-11434}}"
 WHISPER_URL="${WHISPER_URL:-http://localhost:${SERVICE_PORTS[whisper]:-9000}}"
 TTS_URL="${TTS_URL:-http://localhost:${SERVICE_PORTS[tts]:-8880}}"
-EMBEDDING_URL="${EMBEDDING_URL:-http://localhost:${SERVICE_PORTS[embeddings]:-9103}}"
+EMBEDDING_URL="${EMBEDDING_URL:-http://localhost:${SERVICE_PORTS[embeddings]:-8090}}"
 
 # Test tracking
 TESTS_PASSED=0
