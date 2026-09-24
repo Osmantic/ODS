@@ -84,7 +84,15 @@ compare_versions() {
     for i in {0..2}; do
         local p1="${V1_PARTS[$i]:-0}"
         local p2="${V2_PARTS[$i]:-0}"
-        
+
+        # Migration filenames target major.minor.patch. Compare that numeric
+        # core even when a release version carries a prerelease/build suffix,
+        # and force base 10 so zero-padded components such as 08 stay valid.
+        p1="${p1%%[!0-9]*}"
+        p2="${p2%%[!0-9]*}"
+        p1=$((10#${p1:-0}))
+        p2=$((10#${p2:-0}))
+
         if [[ "$p1" -gt "$p2" ]]; then
             return 1
         elif [[ "$p1" -lt "$p2" ]]; then
