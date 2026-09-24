@@ -131,6 +131,20 @@ $noBootstrapFlag = $NoBootstrap.IsPresent
 $installDir     = $script:ODS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
 
+# A flagless rerun must keep a prior -Cloud install in cloud mode. Every
+# downstream decision -- tier selection, .env regeneration, LiteLLM wiring,
+# endpoint resolution -- keys off $cloudMode, so letting it default to false
+# would silently convert the install to a misconfigured "local" stack.
+if (-not $cloudMode) {
+    $_persistedMode = Get-WindowsODSEnvValue `
+        -EnvMap (Get-WindowsODSEnvMap -InstallDir $installDir) `
+        -Keys @("ODS_MODE") -Default ""
+    if ($_persistedMode -eq "cloud") {
+        $cloudMode = $true
+        Write-AI "Existing cloud-mode install detected; preserving cloud mode"
+    }
+}
+
 # ── Phase dispatcher ──────────────────────────────────────────────────────────
 function Get-UsableWindowsBash {
     <#
