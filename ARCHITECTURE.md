@@ -167,7 +167,7 @@ The LLM inference engine (`llama-server`) is the foundation. GPU overlays select
 
 ## Installer Architecture
 
-The installer is a 13-phase pipeline orchestrated by `install-core.sh`.
+The installer is a 14-phase pipeline orchestrated by `install-core.sh`.
 Installer libraries in `installers/lib/` are pure functions (no side effects);
 `lib/service-registry.sh` loads service manifests and port metadata; phases in
 `installers/phases/` execute sequentially.
@@ -189,7 +189,8 @@ graph LR
 
     subgraph Phases["installers/phases/ (sequential)"]
         P01["01 Preflight"] --> P02["02 Detection"]
-        P02 --> P03["03 Features"]
+        P02 --> P02B["02b External Services"]
+        P02B --> P03["03 Features"]
         P03 --> P04["04 Requirements"]
         P04 --> P05["05 Docker"]
         P05 --> P06["06 Directories"]
@@ -209,6 +210,7 @@ graph LR
 |-------|---------|
 | 01 Preflight | Root/OS/tools checks, existing install detection |
 | 02 Detection | GPU hardware detection, tier assignment, compose config selection |
+| 02b External Services | Validate and optionally reuse host Ollama or LM Studio |
 | 03 Features | Interactive feature selection (voice, workflows, RAG, images, etc.) |
 | 04 Requirements | RAM, disk, GPU, port availability checks |
 | 05 Docker | Install Docker, Compose, NVIDIA Container Toolkit |
@@ -251,7 +253,7 @@ graph TB
 
 ### 1. Installation Flow
 
-`install.sh` → `install-core.sh` → sources `installers/lib/*.sh` → sources `installers/phases/01..13.sh` sequentially. Each phase reads state set by prior phases via exported variables. Hardware detection (phase 02) drives all downstream decisions: tier assignment selects the model GGUF, context window, batch size, and compose overlays.
+`install.sh` → `install-core.sh` → sources `installers/lib/*.sh` → sources all 14 files under `installers/phases/` sequentially. Each phase reads state set by prior phases via exported variables. Hardware detection (phase 02) drives all downstream decisions: tier assignment selects the model GGUF, context window, batch size, and compose overlays.
 
 ### 2. Service Startup Flow
 

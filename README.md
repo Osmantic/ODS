@@ -411,7 +411,7 @@ ods disable my-service    # Disable it
 ods list                  # See everything
 ```
 
-The installer itself is modular — 19 library modules, a shared service registry, and 13 ordered phases. Want to add a hardware tier, swap a default model, or skip a phase? Start with the installer architecture map so you update the Linux, macOS, Windows, upgrade, and host-agent writers together.
+The installer itself is modular — 24 library modules, a shared service registry, and 14 ordered phases. Want to add a hardware tier, swap a default model, or skip a phase? Start with the installer architecture map so you update the Linux, macOS, Windows, upgrade, and host-agent writers together.
 
 [Full extension guide](ods/docs/EXTENSIONS.md) | [Installer architecture](ods/docs/INSTALLER-ARCHITECTURE.md)
 

@@ -334,8 +334,8 @@ Full guide: [docs/EXTENSIONS.md](docs/EXTENSIONS.md)
 
 ### Installer Architecture
 
-The installer is modular — 19 library modules, a shared service registry, and
-13 ordered phases. The architecture doc also maps the generated config writers
+The installer is modular — 24 library modules, a shared service registry, and
+14 ordered phases. The architecture doc also maps the generated config writers
 that have to stay in sync across Linux, macOS, Windows, bootstrap upgrades, and
 host-agent model activation.
 Want to add a hardware tier, swap the theme, or skip a phase? Start with the

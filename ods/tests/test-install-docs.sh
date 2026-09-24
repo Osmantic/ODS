@@ -33,6 +33,17 @@ require_literal() {
         || fail "$description missing from ${file#"$REPO_ROOT"/}"
 }
 
+installer_lib_count="$(find "$ROOT_DIR/installers/lib" -maxdepth 1 -type f -name '*.sh' | wc -l | tr -d ' ')"
+installer_phase_count="$(find "$ROOT_DIR/installers/phases" -maxdepth 1 -type f -name '*.sh' | wc -l | tr -d ' ')"
+
+require_literal "$REPO_ROOT/README.md" "$installer_lib_count library modules" "Root README installer library count"
+require_literal "$REPO_ROOT/README.md" "$installer_phase_count ordered phases" "Root README installer phase count"
+require_literal "$ROOT_DIR/README.md" "$installer_lib_count library modules" "ODS README installer library count"
+require_literal "$ROOT_DIR/README.md" "$installer_phase_count ordered phases" "ODS README installer phase count"
+require_literal "$ROOT_DIR/docs/INSTALLER-ARCHITECTURE.md" "$installer_lib_count installer library modules" "Installer architecture library count"
+require_literal "$ROOT_DIR/docs/INSTALLER-ARCHITECTURE.md" "$installer_phase_count ordered phases" "Installer architecture phase count"
+require_literal "$REPO_ROOT/ARCHITECTURE.md" "02b External Services" "Root architecture external-services phase"
+
 assert_no_retired_names() {
     python3 - "$REPO_ROOT" <<'PY'
 import base64

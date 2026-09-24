@@ -1,7 +1,7 @@
 # Installer Architecture
 
-The ODS installer is modular — 19 installer library modules, the
-shared service registry, and 13 ordered phases. This guide is the map for
+The ODS installer is modular — 24 installer library modules, the
+shared service registry, and 14 ordered phases. This guide is the map for
 understanding, changing, and reviewing install behavior without missing a
 parallel Linux/macOS/Windows or upgrade-time writer.
 
@@ -65,7 +65,7 @@ earlier phases (e.g., phase 04 checks the GPU tier assigned by phase 02).
 
 **The orchestrator is thin.** `install-core.sh` sets up interrupt traps, sources
 the library modules and `lib/service-registry.sh`, parses CLI arguments, then
-sources the 13 phases in order. All files share one global bash namespace —
+sources the 14 phases in order. All files share one global bash namespace —
 everything is sourced, not exec'd.
 
 ## Presentation Contract
