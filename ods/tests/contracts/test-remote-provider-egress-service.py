@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import ast
 import json
 import socket
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -378,6 +381,57 @@ def test_service_source_avoids_public_env_secret_names() -> None:
     assert_true(POLICY.exists(), "policy document must exist for mounted service config")
 
 
+def test_probe_does_not_block_the_event_loop() -> None:
+    def slow_probe(*_args, **_kwargs):
+        time.sleep(0.15)
+        return {"ok": True}
+
+    class StubResponse:
+        def __init__(self, content):
+            self.content = content
+            self.status_code = 200
+
+    tree = ast.parse(read(APP_MAIN), filename=str(APP_MAIN))
+    handler = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "probe"
+    )
+    handler.decorator_list = []
+    handler_module = ast.fix_missing_locations(ast.Module(body=[handler], type_ignores=[]))
+    namespace = {
+        "asyncio": asyncio,
+        "Response": object,
+        "_load_route": lambda: {"transport": "direct"},
+        "_ssh_tunnel_status": lambda: None,
+        "read_provider_secret": lambda _path: "provider-token",
+        "SECRET_PATH": object(),
+        "probe_route_response": slow_probe,
+        "_iso_now": lambda: "2026-08-27T00:00:00+00:00",
+        "PROBE_TIMEOUT_SECONDS": 10.0,
+        "EgressError": EgressError,
+        "ProbeError": Exception,
+        "_error_response": lambda exc: exc,
+        "_probe_error_response": lambda exc: exc,
+        "JSONResponse": StubResponse,
+    }
+    exec(compile(handler_module, str(APP_MAIN), "exec"), namespace)
+    probe_handler = namespace["probe"]
+
+    async def exercise() -> None:
+        task = asyncio.create_task(probe_handler())
+        await asyncio.sleep(0.02)
+        assert_true(
+            not task.done(),
+            "probe must yield to the event loop while synchronous provider I/O runs",
+        )
+        response = await task
+        assert_true(response.status_code == 200, "offloaded probe must preserve response behavior")
+        assert_true(response.content == {"ok": True}, "offloaded probe must preserve payload")
+
+    asyncio.run(exercise())
+
+
 def test_prepare_upstream_request_with_resolved_addresses() -> None:
     route = route_from_state(route_state())
     upstream = prepare_upstream_request(
@@ -474,6 +528,7 @@ def main() -> int:
         test_probe_response_returns_redacted_ssh_receipt_through_tunnel_boundary,
         test_probe_response_fails_closed_when_ssh_tunnel_is_not_ready,
         test_service_source_avoids_public_env_secret_names,
+        test_probe_does_not_block_the_event_loop,
         test_prepare_upstream_request_with_resolved_addresses,
         test_prepare_upstream_request_with_resolved_ipv6_addresses,
         test_pinned_request_preserves_non_default_port_and_separates_tls_origins,

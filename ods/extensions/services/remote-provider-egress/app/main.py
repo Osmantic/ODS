@@ -7,6 +7,7 @@ injects provider credentials from a private file at the final egress boundary.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -314,7 +315,8 @@ async def probe() -> Response:
         if route.get("transport") == "ssh":
             tunnel = await _ssh_tunnel_status()
         secret = read_provider_secret(SECRET_PATH)
-        payload = probe_route_response(
+        payload = await asyncio.to_thread(
+            probe_route_response,
             route,
             provider_secret=secret,
             verified_at=_iso_now(),
