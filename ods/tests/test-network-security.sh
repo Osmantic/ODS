@@ -67,14 +67,22 @@ for compose_file in "${compose_files[@]}"; do
     if [[ -f "$compose_file" ]]; then
         service_name=$(basename "$(dirname "$compose_file")" | sed 's/compose//')
 
-        # Check for 0.0.0.0 bindings (insecure)
-        if grep -q "0\.0\.0\.0:" "$compose_file"; then
-            insecure_bindings+=("$compose_file")
-            fail "Insecure port binding in $compose_file" "Uses 0.0.0.0 (exposes to all interfaces)"
+        # Check for 0.0.0.0 bindings (insecure) — literal or as a
+        # ${VAR:-0.0.0.0} default, which is insecure when the var is unset.
+        if grep -qE '(0\.0\.0\.0:|\$\{[A-Za-z_]+:-0\.0\.0\.0\})' "$compose_file"; then
+            if [[ "$service_name" == "ods-proxy" ]]; then
+                # ods-proxy is the LAN-facing reverse proxy; ODS_PROXY_BIND
+                # intentionally defaults to 0.0.0.0.
+                skip "ods-proxy binds 0.0.0.0 by default" "Intentional: LAN-facing reverse proxy"
+            else
+                insecure_bindings+=("$compose_file")
+                fail "Insecure port binding in $compose_file" "Uses 0.0.0.0 (exposes to all interfaces)"
+            fi
         fi
 
-        # Check for 127.0.0.1 bindings (secure)
-        if grep -q "127\.0\.0\.1:" "$compose_file"; then
+        # Check for loopback bindings (secure): literal 127.0.0.1: or the
+        # project convention ${BIND_ADDRESS:-127.0.0.1}:.
+        if grep -qE '(127\.0\.0\.1:|\$\{[A-Za-z_]+:-127\.0\.0\.1\})' "$compose_file"; then
             secure_bindings=$((secure_bindings + 1))
             pass "Secure port binding in $(basename "$compose_file")"
         fi
@@ -102,18 +110,22 @@ for compose_file in "${compose_files[@]}"; do
     if [[ -f "$compose_file" ]]; then
         service_name=$(basename "$(dirname "$compose_file")")
 
-        # Services with external port mappings
-        if grep -q "ports:" "$compose_file"; then
-            # Check if ports are bound to localhost only
-            if grep -A10 "ports:" "$compose_file" | grep -q "127\.0\.0\.1:"; then
+        # Services with external port mappings. `ports:` must be a real key
+        # (indented, line-initial) — comment prose mentioning "ports:" is not
+        # a mapping.
+        if grep -qE '^[[:space:]]+ports:[[:space:]]*$' "$compose_file"; then
+            # Check if ports are bound to localhost only: literal 127.0.0.1
+            # or the ${BIND_ADDRESS:-127.0.0.1} default-loopback convention.
+            if grep -A10 -E '^[[:space:]]+ports:[[:space:]]*$' "$compose_file" \
+                | grep -qE '(127\.0\.0\.1:|\$\{[A-Za-z_]+:-127\.0\.0\.1\})'; then
                 internal_services=$((internal_services + 1))
                 pass "Service '$service_name' exposed only to localhost"
             else
                 external_services+=("$service_name")
                 # Check if this is intentional (dashboard, API endpoints)
                 case "$service_name" in
-                    dashboard|dashboard-api|open-webui)
-                        skip "Service '$service_name' externally exposed (expected for UI/API)"
+                    dashboard|dashboard-api|open-webui|ods-proxy)
+                        skip "Service '$service_name' externally exposed (expected for UI/API/LAN proxy)"
                         ;;
                     *)
                         fail "Service '$service_name' may be externally exposed" "Review port binding configuration"
@@ -145,13 +157,19 @@ else
     skip "No custom networks defined (using default bridge network)"
 fi
 
-# Check for host networking (insecure)
+# Check for host networking (insecure). tailscale is a host VPN daemon —
+# network_mode: host is its documented requirement, not an isolation bug.
 host_network_count=0
 for compose_file in "${compose_files[@]}"; do
     if [[ -f "$compose_file" ]]; then
-        if grep -q "network_mode.*host" "$compose_file"; then
+        service_dir="$(basename "$(dirname "$compose_file")")"
+        if grep -qE '^[[:space:]]+network_mode:[[:space:]]*host' "$compose_file"; then
             host_network_count=$((host_network_count + 1))
-            fail "Service uses host networking in $(basename "$compose_file")" "Breaks container isolation"
+            if [[ "$service_dir" == "tailscale" ]]; then
+                skip "Service 'tailscale' uses host networking (required for a VPN daemon)"
+            else
+                fail "Service uses host networking in $(basename "$compose_file")" "Breaks container isolation"
+            fi
         fi
     fi
 done
