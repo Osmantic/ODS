@@ -35,6 +35,21 @@ assert_success "generated library schema mirror is current" \
     python3 "$ROOT_DIR/scripts/sync-manifest-schema.py" --check
 assert_success "bundled and library manifests validate together" \
     bash "$VALIDATOR"
+
+json_output="$(bash "$VALIDATOR" --json)"
+MANIFEST_JSON="$json_output" python3 - <<'PY'
+import json
+import os
+
+payload = json.loads(os.environ["MANIFEST_JSON"])
+assert payload["ok"] is True
+assert payload["strict"] is False
+assert payload["total"] == payload["valid"]
+assert payload["total"] > 0
+assert payload["errors"] == 0
+assert payload["warnings"] >= 0
+PY
+pass "schema validator emits a standalone JSON summary"
 assert_success "standalone library validator accepts all library manifests" \
     python3 "$ROOT_DIR/extensions/library/validate-manifests.py"
 

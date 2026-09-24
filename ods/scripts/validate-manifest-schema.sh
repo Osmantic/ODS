@@ -16,6 +16,7 @@ SCHEMA_PATH=""
 
 STRICT_MODE=false
 VERBOSE=false
+JSON_OUTPUT=false
 ERRORS=0
 WARNINGS=0
 
@@ -36,6 +37,7 @@ OPTIONS:
     -h, --help      Show this help message
     -s, --strict    Treat warnings as errors
     -v, --verbose   Show detailed validation output
+        --json      Emit a machine-readable validation summary
 
 DESCRIPTION:
     Validates bundled and library extension manifests against the schema
@@ -50,6 +52,7 @@ EXAMPLES:
     $(basename "$0")              # Validate all manifests
     $(basename "$0") --strict     # Fail on warnings
     $(basename "$0") --verbose    # Show all checks
+    $(basename "$0") --json       # Emit a validation receipt
 EOF
 }
 
@@ -64,11 +67,11 @@ warn() {
 }
 
 info() {
-    [[ "$VERBOSE" == "true" ]] && echo -e "${BLUE}ℹ${NC} $*"
+    [[ "$VERBOSE" == "true" && "$JSON_OUTPUT" == "false" ]] && echo -e "${BLUE}ℹ${NC} $*"
 }
 
 success() {
-    [[ "$VERBOSE" == "true" ]] && echo -e "${GREEN}✓${NC} $*"
+    [[ "$VERBOSE" == "true" && "$JSON_OUTPUT" == "false" ]] && echo -e "${GREEN}✓${NC} $*"
 }
 
 check_python_deps() {
@@ -208,6 +211,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help) usage; exit 0 ;;
         -s|--strict) STRICT_MODE=true; shift ;;
         -v|--verbose) VERBOSE=true; shift ;;
+        --json) JSON_OUTPUT=true; shift ;;
         *) echo "Unknown: $1" >&2; usage; exit 2 ;;
     esac
 done
@@ -216,9 +220,11 @@ check_python_deps
 SCHEMA_PATH="$(resolve_schema_path)"
 
 # Main
-echo "Validating manifests in: $MANIFEST_DIRS"
-echo "Schema: ${SCHEMA_PATH#"$ROOT_DIR/"}"
-echo ""
+if [[ "$JSON_OUTPUT" == "false" ]]; then
+    echo "Validating manifests in: $MANIFEST_DIRS"
+    echo "Schema: ${SCHEMA_PATH#"$ROOT_DIR/"}"
+    echo ""
+fi
 
 TOTAL=0 VALID=0
 IFS=':' read -r -a MANIFEST_DIR_ARRAY <<< "$MANIFEST_DIRS"
@@ -242,17 +248,43 @@ for extensions_dir in "${MANIFEST_DIR_ARRAY[@]}"; do
 done
 
 # Summary
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Summary: $TOTAL total, $VALID valid, $ERRORS errors, $WARNINGS warnings"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+if [[ "$JSON_OUTPUT" == "false" ]]; then
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Summary: $TOTAL total, $VALID valid, $ERRORS errors, $WARNINGS warnings"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+fi
 
 if [[ $ERRORS -gt 0 ]]; then
-    echo -e "${RED}✗ FAILED${NC} ($ERRORS errors)"; exit 1
+    if $JSON_OUTPUT; then
+        printf '{"ok":false,"strict":%s,"total":%d,"valid":%d,"errors":%d,"warnings":%d}\n' \
+            "$STRICT_MODE" "$TOTAL" "$VALID" "$ERRORS" "$WARNINGS"
+    else
+        echo -e "${RED}✗ FAILED${NC} ($ERRORS errors)"
+    fi
+    exit 1
 elif [[ $WARNINGS -gt 0 && "$STRICT_MODE" == "true" ]]; then
-    echo -e "${YELLOW}✗ FAILED${NC} ($WARNINGS warnings in strict mode)"; exit 1
+    if $JSON_OUTPUT; then
+        printf '{"ok":false,"strict":true,"total":%d,"valid":%d,"errors":%d,"warnings":%d}\n' \
+            "$TOTAL" "$VALID" "$ERRORS" "$WARNINGS"
+    else
+        echo -e "${YELLOW}✗ FAILED${NC} ($WARNINGS warnings in strict mode)"
+    fi
+    exit 1
 elif [[ $WARNINGS -gt 0 ]]; then
-    echo -e "${YELLOW}⚠ Passed with warnings${NC}"; exit 0
+    if $JSON_OUTPUT; then
+        printf '{"ok":true,"strict":false,"total":%d,"valid":%d,"errors":%d,"warnings":%d}\n' \
+            "$TOTAL" "$VALID" "$ERRORS" "$WARNINGS"
+    else
+        echo -e "${YELLOW}⚠ Passed with warnings${NC}"
+    fi
+    exit 0
 else
-    echo -e "${GREEN}✓ All valid${NC}"; exit 0
+    if $JSON_OUTPUT; then
+        printf '{"ok":true,"strict":%s,"total":%d,"valid":%d,"errors":0,"warnings":0}\n' \
+            "$STRICT_MODE" "$TOTAL" "$VALID"
+    else
+        echo -e "${GREEN}✓ All valid${NC}"
+    fi
+    exit 0
 fi
