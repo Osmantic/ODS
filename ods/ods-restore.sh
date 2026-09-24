@@ -25,6 +25,18 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 log_step() { echo -e "${CYAN}[STEP]${NC} $*"; }
 
+# Backup IDs identify entries directly below BACKUP_ROOT; they are not paths.
+validate_backup_id() {
+    local backup_id="$1"
+
+    if [[ "$backup_id" == "." || "$backup_id" == ".." ||
+          "$backup_id" == */* || "$backup_id" == *\\* ||
+          "$backup_id" =~ [[:cntrl:]] ]]; then
+        log_error "Invalid backup ID: use a single path segment without slashes or control characters"
+        return 1
+    fi
+}
+
 # Source shared rsync utilities
 . "$ODS_DIR/lib/rsync.sh"
 . "$ODS_DIR/lib/backup-paths.sh"
@@ -755,6 +767,10 @@ main() {
         if ! backup_id=$(select_backup); then
             exit 1
         fi
+    fi
+
+    if ! validate_backup_id "$backup_id"; then
+        exit 1
     fi
 
     # Check if running in ODS directory
