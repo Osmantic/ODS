@@ -354,7 +354,13 @@ _docker_try_with_optional_sudo() {
     # password prompt. Merely finding the binary is not enough here: in a
     # --non-interactive install, raw `sudo docker` would otherwise hang when
     # Docker exists but this user cannot access its socket.
-    if [[ "$DOCKER_CMD" != "sudo docker" ]] && ods_sudo_available && command -v sudo &>/dev/null; then
+    # Respect the explicit result of the up-front sudo probe. The shared
+    # ods_sudo_available helper treats uid 0 as privileged even when that probe
+    # recorded `false`, which would otherwise poison the rest of this phase
+    # with a `sudo docker` command after rootless/no-sudo setup was selected.
+    if [[ "${ODS_SUDO_AVAILABLE:-true}" != "false" ]] && \
+       [[ "$DOCKER_CMD" != "sudo docker" ]] && \
+       ods_sudo_available && command -v sudo &>/dev/null; then
         DOCKER_CMD="sudo docker"
         DOCKER_COMPOSE_CMD="sudo docker compose"
         if docker_run "$@" &>/dev/null; then
