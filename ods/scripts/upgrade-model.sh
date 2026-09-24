@@ -473,7 +473,10 @@ cmd_upgrade() {
 
     # Phase 3: Start llama-server with new model
     echo -e "${CYAN}Phase 3/4:${NC} Starting llama-server with new model..."
-    start_llm "$model_path" || {
+    # LLM_MODEL is a model id/name (e.g. qwen3.5-9b), not a host path — passing
+    # $model_path wrote the absolute models-dir path into .env, which the
+    # llama-server container cannot resolve.
+    start_llm "$new_model" || {
         error "Failed to start llama-server"
         warn "Attempting rollback..."
         cmd_rollback
@@ -516,10 +519,9 @@ cmd_rollback() {
         cp "$BACKUP_FILE" "$STATE_FILE"
     fi
     
-    local model_path="$MODELS_DIR/$previous_model"
-    
     stop_llm || true
-    start_llm "$model_path"
+    # Same as cmd_upgrade: persist the model name, not its host-side path.
+    start_llm "$previous_model"
     
     if wait_for_llm $HEALTH_CHECK_TIMEOUT && test_inference; then
         success "Rollback complete"
