@@ -230,6 +230,33 @@ def _capabilities_block(running: set[str], device: str) -> list[str]:
     return bullets
 
 
+def _configured_llm_port(env: dict[str, str]) -> int:
+    """Resolve the host-side llama-server/Lemonade port from .env.
+
+    ``LLM_PORT``/``LLAMACPP_PORT`` remain honored as explicit overrides, but
+    nothing writes them — the canonical keys are ``OLLAMA_PORT`` (and its
+    deprecated alias ``LLAMA_SERVER_PORT``) on llama-server installs and
+    ``AMD_INFERENCE_PORT`` on Lemonade. 8080 is the container-internal port;
+    the external host default is 11434 (config/ports.json).
+    """
+    mode = (env.get("ODS_MODE") or "local").lower()
+    backend = (env.get("LLM_BACKEND") or "llama-server").lower()
+    lemonade = backend == "lemonade" or mode == "lemonade"
+
+    port_raw = env.get("LLM_PORT") or env.get("LLAMACPP_PORT")
+    if not port_raw:
+        if lemonade:
+            port_raw = (env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT")
+                        or env.get("LLAMA_SERVER_PORT"))
+        else:
+            port_raw = (env.get("OLLAMA_PORT") or env.get("LLAMA_SERVER_PORT")
+                        or env.get("AMD_INFERENCE_PORT"))
+    try:
+        return int(port_raw) if port_raw else (8080 if lemonade else 11434)
+    except ValueError:
+        return 8080 if lemonade else 11434
+
+
 def build_context_block(env_path: Path) -> str:
     """Render the dynamic 'About this installation' Markdown block."""
     env = _read_env(env_path)
@@ -239,11 +266,7 @@ def build_context_block(env_path: Path) -> str:
     device = env.get("ODS_DEVICE_NAME") or socket.gethostname() or "this machine"
     gpu = _humanize_gpu(env)
     model_hint = env.get("LLM_MODEL") or env.get("GGUF_FILE") or "the locally-served model"
-    port_raw = env.get("LLM_PORT") or env.get("LLAMACPP_PORT")
-    try:
-        configured_llm_port = int(port_raw) if port_raw else 8080
-    except ValueError:
-        configured_llm_port = 8080
+    configured_llm_port = _configured_llm_port(env)
     live_model = _loaded_model(llm_port=configured_llm_port)
     if live_model:
         model_hint = live_model
