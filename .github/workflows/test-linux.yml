@@ -318,6 +318,9 @@ jobs:
       - name: Windows Missing Service Hint Tests
         run: bash tests/test-windows-missing-service-hints.sh
 
+      - name: Platform CLI Failure Status Tests
+        run: bash tests/test-platform-cli-failure-status.sh
+
       - name: Install Readiness Summary Tests
         run: bash tests/test-install-readiness-summary.sh
 

@@ -2514,7 +2514,7 @@ function Invoke-Logs {
     if (-not $Service) {
         Write-AI "Usage: .\ods.ps1 logs <service> [lines]"
         Write-AI "Services: llama-server, open-webui, dashboard-api, n8n, whisper, tts, ..."
-        return
+        exit 1
     }
     Test-Install
     Push-Location $InstallDir
@@ -2524,7 +2524,13 @@ function Invoke-Logs {
             Write-ODSMissingComposeServiceHint -ComposeFlags $flags -Service $Service
             exit 1
         }
-        & docker compose @flags logs -f --tail $Lines $Service
+        $logExit = Invoke-ODSDockerCompose -InstallDir $InstallDir -ComposeFlags $flags `
+            -ComposeArgs @("logs", "-f", "--tail", [string]$Lines, $Service)
+        if ($logExit -ne 0) {
+            Write-AIError "docker compose logs failed (exit code: $logExit)"
+            Write-ODSComposeDiagnostics -InstallDir $InstallDir -ComposeFlags $flags -Phase "ods.ps1 logs"
+            exit 1
+        }
     } finally {
         Pop-Location
     }
@@ -3808,5 +3814,6 @@ switch ($Command.ToLower()) {
     default   {
         Write-AIWarn "Unknown command: $Command"
         Show-Help
+        exit 1
     }
 }
