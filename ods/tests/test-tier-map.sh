@@ -522,6 +522,33 @@ else
 fi
 echo ""
 
+if python3 - "$SCRIPT_DIR/FAQ.md" <<'PY'
+from pathlib import Path
+import sys
+
+faq = Path(sys.argv[1]).read_text(encoding="utf-8")
+expected = (
+    "| T0 | Qwen3.5 2B | CPU fallback (8 GB RAM) |",
+    "| T1 | Qwen3.5 9B | 8 GB |",
+    "| T2 | Phi-4 14B | 12 GB |",
+    "| T3 | Qwen3.5 27B | 24 GB |",
+    "| T4 | DeepSeek R1 Distill Llama 70B | 48 GB |",
+    "| SH_COMPACT | Qwen3.6 35B-A3B | 64 GB unified |",
+    "| SH_LARGE | DeepSeek R1 Distill Llama 70B | 96 GB unified |",
+    "| SH_LARGE | Qwen3.6 35B-A3B | 124 GB unified |",
+)
+missing = [row for row in expected if row not in faq]
+if missing:
+    raise SystemExit("FAQ tier table is stale:\n" + "\n".join(missing))
+print("[PASS] FAQ tier table matches current selector examples")
+PY
+then
+    ((PASS++))
+else
+    ((FAIL++))
+fi
+echo ""
+
 # --- Summary ---
 echo "==============================="
 echo "Results: $PASS passed, $FAIL failed"

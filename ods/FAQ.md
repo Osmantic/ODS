@@ -130,12 +130,14 @@ The installer auto-selects based on your GPU, but you can switch between any tie
 
 | Tier | Model | Min VRAM |
 |------|-------|----------|
+| T0 | Qwen3.5 2B | CPU fallback (8 GB RAM) |
 | T1 | Qwen3.5 9B | 8 GB |
-| T2 | Qwen3.5 9B | 12 GB |
-| T3 | Qwen3 30B-A3B | 20 GB |
-| T4 | Qwen3 30B-A3B (MoE) | 40 GB |
-| SH_COMPACT | Qwen3 30B-A3B (MoE) | 64 GB unified |
-| SH_LARGE | Qwen3 Coder Next 80B (MoE) | 90 GB unified |
+| T2 | Phi-4 14B | 12 GB |
+| T3 | Qwen3.5 27B | 24 GB |
+| T4 | DeepSeek R1 Distill Llama 70B | 48 GB |
+| SH_COMPACT | Qwen3.6 35B-A3B | 64 GB unified |
+| SH_LARGE | DeepSeek R1 Distill Llama 70B | 96 GB unified |
+| SH_LARGE | Qwen3.6 35B-A3B | 124 GB unified |
 
 Run `ods model list` for the full list on your system.
 
