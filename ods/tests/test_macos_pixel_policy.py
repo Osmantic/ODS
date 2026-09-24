@@ -242,5 +242,5 @@ def test_sandboxed_system_python_can_import_stdlib_without_owner_site(tmp_path):
     result = subprocess.run(['/usr/bin/sandbox-exec', '-f', str(profile), '/usr/bin/python3',
                              '-E', '-s', '-B', '-c', program], cwd='/',
                             env={'PATH':'/usr/bin:/bin', 'HOME':'/var/empty'}, capture_output=True, text=True, timeout=30)
-    assert result.stdout.strip() == '{"stdlib": true}'
+    assert result.stdout.strip() == '{"stdlib": true}', result.stderr
     assert result.returncode != 0 and not target.exists()
