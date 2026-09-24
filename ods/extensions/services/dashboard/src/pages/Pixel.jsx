@@ -13,6 +13,7 @@ import PortalAgentDock from '../components/PortalAgentDock'
 import {ACTIVE_TEAMS,agentCommand,teamMetadata,teamProjectTasks,teamRequest,teamSummary,usePortalTeams} from '../lib/portalTeams'
 import PixelTextFileInput from '../components/PixelTextFileInput'
 import PixelDraftPreview from '../components/PixelDraftPreview'
+import PixelReplyImage from '../components/PixelReplyImage'
 import PixelDictation from '../components/PixelDictation'
 import PixelCommandSearch, { OPEN_PIXEL_SEARCH } from '../components/PixelCommandSearch'
 import PixelConversationImport from '../components/PixelConversationImport'
@@ -69,6 +70,7 @@ import {
 const MODEL_CAPABILITY_DETAIL = 'The active model is recorded as not agent-qualified. Tool-driven tasks may be unreliable; chat and experiments remain available.'
 
 const MARKDOWN_COMPONENTS = {
+  img: ({src, alt, title}) => <PixelReplyImage key={src} src={src} alt={alt} title={title} />,
   p: ({ children }) => <p className="break-words [&:not(:first-child)]:mt-3">{children}</p>,
   ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
   ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
@@ -84,7 +86,7 @@ const MARKDOWN_COMPONENTS = {
   ),
   th: ({ children, style }) => <th scope="col" style={style} className="border-b border-theme-border bg-theme-bg/70 px-3 py-2 font-semibold">{children}</th>,
   td: ({ children, style }) => <td style={style} className="border-b border-theme-border px-3 py-2 align-top [overflow-wrap:anywhere]">{children}</td>,
-  a: ({ href, children }) => {
+  a: ({ href, children, node }) => {
     const safe = typeof href === 'string' && /^https?:\/\//i.test(href)
     // The viewer may reach ODS through a remote host or SSH forward. A local
     // snapshot URL in a reply must use the same authenticated dashboard relay
@@ -93,6 +95,10 @@ const MARKDOWN_COMPONENTS = {
     const target = snapshot && Number(snapshot[2]) <= 65535
       ? `/pixel-preview/${snapshot[1]}/`
       : href
+    // Keep image load buttons outside a linked image's navigation control.
+    if (safe && node?.children?.some(child => child.tagName === 'img')) {
+      return <span>{children} <a href={target} target="_blank" rel="noopener noreferrer" className="text-theme-accent-light underline">Open image link</a></span>
+    }
     return safe
       ? <a href={target} target="_blank" rel="noopener noreferrer" className="text-theme-accent-light underline">{children}</a>
       : <span>{children}</span>
