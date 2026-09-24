@@ -3031,11 +3031,15 @@ cmd_disable() {
     flags_str=$(get_compose_flags)
     local -a flags
     read -ra flags <<< "$flags_str"
-    if ! docker compose "${flags[@]}" stop "$service_id" 2>/dev/null; then
-        local container="${SERVICE_CONTAINERS[$service_id]:-ods-$service_id}"
-        if docker ps 2>/dev/null --format '{{.Names}}' | grep -qx "$container"; then
-            error "Could not stop $service_id (container $container is still running); not disabling."
-        fi
+      if ! docker compose "${flags[@]}" stop "$service_id" 2>/dev/null; then
+          local container="${SERVICE_CONTAINERS[$service_id]:-ods-$service_id}"
+          local running_containers
+          if ! running_containers=$(docker ps --format '{{.Names}}'); then
+              error "Could not verify whether $service_id stopped; not disabling."
+          fi
+          if grep -Fxq "$container" <<< "$running_containers"; then
+              error "Could not stop $service_id (container $container is still running); not disabling."
+          fi
     fi
     [[ -f "$cf" ]] && mv "$cf" "${cf}.disabled"
     _regenerate_compose_flags

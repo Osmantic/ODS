@@ -8,7 +8,8 @@
 # Strategy: fixture install dir + a `docker` stub on PATH whose
 # `compose ... stop` fails. Scenario A reports the container still running
 # (disable must abort); scenario B reports nothing running (disable must
-# proceed — stop can fail for an already-absent container).
+# proceed — stop can fail for an already-absent container); scenario C makes
+# `docker ps` fail (disable must abort because the state is unknown).
 
 set -euo pipefail
 
@@ -68,6 +69,9 @@ case "${1:-}" in
         exit 1
         ;;
     ps)
+        if [[ "${DOCKER_PS_FAIL:-0}" == "1" ]]; then
+            exit 1
+        fi
         printf '%s\n' "${DOCKER_PS_NAMES:-}"
         ;;
     *)
@@ -107,6 +111,22 @@ if [[ $rc -eq 0 && -f "$inst_b/extensions/services/fakesvc/compose.yaml.disabled
     pass "disable proceeds when the failed stop left nothing running"
 else
     fail "disable refused a safe rename (rc=$rc)"
+fi
+
+# --- Scenario C: stop fails and container listing fails → abort, keep compose
+inst_c="$TMP_DIR/unknown-state"
+make_install "$inst_c"
+make_docker_stub "$inst_c/bin"
+
+rc=0
+DOCKER_PS_FAIL=1 ODS_HOME="$inst_c" PATH="$inst_c/bin:$PATH" \
+    bash "$inst_c/ods-cli" disable fakesvc >/dev/null 2>&1 || rc=$?
+
+if [[ $rc -ne 0 && -f "$inst_c/extensions/services/fakesvc/compose.yaml" \
+   && ! -e "$inst_c/extensions/services/fakesvc/compose.yaml.disabled" ]]; then
+    pass "disable aborts and keeps compose.yaml when container state cannot be checked"
+else
+    fail "disable moved compose after docker ps failed (rc=$rc)"
 fi
 
 echo ""
