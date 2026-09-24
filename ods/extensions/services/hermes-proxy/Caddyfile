@@ -83,6 +83,19 @@
 			file_server
 		}
 
+		# Hermes's bundled updater mutates the writable virtualenv inside the
+		# running container. A normal restart preserves that mutation and can
+		# leave ODS pinned to one image while executing incompatible newer code.
+		# Container lifecycle is owned by `ods update`; reject only the mutating
+		# endpoint before it reaches the upstream and leave all other APIs intact.
+		@hermes_self_update {
+			method POST
+			path /api/hermes/update
+		}
+		handle @hermes_self_update {
+			respond "Hermes self-update is disabled in ODS; use ods update." 409
+		}
+
 		# Real session verification: delegate to dashboard-api's
 		# /api/auth/verify-session. That endpoint reads the ods-session
 		# cookie, verifies the HMAC signature against ODS_SESSION_SECRET,

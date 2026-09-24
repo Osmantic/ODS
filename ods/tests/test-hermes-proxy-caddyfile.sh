@@ -16,13 +16,22 @@ fail() {
 
 route_line=$(grep -nE '^[[:space:]]*route[[:space:]]*\{' "$CADDYFILE" | head -n 1 | cut -d: -f1)
 health_line=$(grep -nE '^[[:space:]]*@health[[:space:]]+path[[:space:]]+/health' "$CADDYFILE" | head -n 1 | cut -d: -f1)
+self_update_line=$(grep -nE '^[[:space:]]*@hermes_self_update[[:space:]]*\{' "$CADDYFILE" | head -n 1 | cut -d: -f1)
 forward_auth_line=$(grep -nE '^[[:space:]]*forward_auth[[:space:]]+' "$CADDYFILE" | head -n 1 | cut -d: -f1)
 
 [[ -n "$route_line" ]] || fail "Hermes proxy Caddyfile must use route to preserve handler order"
 [[ -n "$health_line" ]] || fail "Hermes proxy health matcher not found"
+[[ -n "$self_update_line" ]] || fail "Hermes proxy must block the in-container self-update endpoint"
 [[ -n "$forward_auth_line" ]] || fail "Hermes proxy forward_auth not found"
-[[ "$route_line" -lt "$health_line" && "$health_line" -lt "$forward_auth_line" ]] \
-    || fail "Hermes proxy route block must put anonymous health handling before forward_auth"
+[[ "$route_line" -lt "$health_line" && "$health_line" -lt "$self_update_line" && "$self_update_line" -lt "$forward_auth_line" ]] \
+    || fail "Hermes proxy must reject self-update before authenticated upstream forwarding"
+
+grep -Eq '^[[:space:]]*method[[:space:]]+POST([[:space:]]|$)' "$CADDYFILE" \
+    || fail "Hermes self-update matcher must be limited to POST"
+grep -Eq '^[[:space:]]*path[[:space:]]+/api/hermes/update([[:space:]]|$)' "$CADDYFILE" \
+    || fail "Hermes self-update matcher must cover /api/hermes/update"
+grep -Eq '^[[:space:]]*respond[[:space:]].*[[:space:]]409([[:space:]]|$)' "$CADDYFILE" \
+    || fail "Hermes self-update rejection must return HTTP 409"
 
 grep -Eq '^[[:space:]]*redir[[:space:]]+\*[[:space:]]+/auth/required[[:space:]]+303([[:space:]]*#.*)?$' "$CADDYFILE" \
     || fail "Hermes proxy denied auth response must redirect with an explicit wildcard matcher"
@@ -42,6 +51,7 @@ grep -Eq '^[[:space:]]*@health[[:space:]]+path([[:space:]]+/[A-Za-z]+)*[[:space:
 
 echo "[PASS] Hermes proxy auth redirect uses explicit wildcard matcher"
 echo "[PASS] Hermes proxy /health and /healthz both anonymous"
+echo "[PASS] Hermes proxy blocks the container self-update endpoint"
 
 # Cap request body size so abusive clients can't stream unbounded uploads
 # through the Hermes proxy, while still leaving room for agent attachments.
