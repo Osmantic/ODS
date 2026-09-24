@@ -507,6 +507,29 @@ _native_rollback_preflight() {
 # _update_rollback <reason> <snap_dir> [compose_flags]
 #   Restores the given snapshot and restarts services.
 #   Called when cmd_update encounters a non-zero exit at any step.
+# _compose_restart [compose args...]
+#   Brings the stack down and back up, falling back to compose v1.
+#
+#   A failed `down` is survivable — containers may already be stopped — so it is
+#   only warned about. A failed `up` means the stack is NOT running, which the
+#   caller has to know about: the v1 fallbacks below used to be bare commands,
+#   so under `set -euo pipefail` a failure killed the script on the spot, with
+#   no error and no recovery guidance (#4182).
+_compose_restart() {
+    if ! docker compose "$@" down --remove-orphans; then
+        log_warn "docker compose v2 down failed, trying v1..."
+        docker-compose "$@" down --remove-orphans \
+            || log_warn "docker-compose v1 down also failed (non-fatal); bringing the stack up anyway"
+    fi
+
+    if ! docker compose "$@" up -d; then
+        log_warn "docker compose v2 up failed, trying v1..."
+        docker-compose "$@" up -d || return 1
+    fi
+
+    return 0
+}
+
 _update_rollback() {
     local reason="$1"
     local snap_dir_arg="$2"
@@ -535,25 +558,27 @@ _update_rollback() {
     fi
     rollback_compose_args=("${COMPOSE_PARSED_ARGS[@]}")
     cd "$INSTALL_DIR"
+    # Upstream's two branches are kept so an empty flag list still expands
+    # safely; only the outcome is now captured instead of discarded.
+    local restart_rc=0
     if [[ -n "${compose_flags_arg}" ]]; then
-        if ! docker compose "${rollback_compose_args[@]}" down --remove-orphans; then
-            log_warn "docker compose v2 down failed, trying v1..."
-            docker-compose "${rollback_compose_args[@]}" down --remove-orphans
-        fi
-        if ! docker compose "${rollback_compose_args[@]}" up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose "${rollback_compose_args[@]}" up -d
-        fi
+        _compose_restart "${rollback_compose_args[@]}" || restart_rc=$?
     else
-        if ! docker compose down --remove-orphans; then
-            log_warn "docker compose v2 down failed, trying v1..."
-            docker-compose down --remove-orphans
-        fi
-        if ! docker compose up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose up -d
-        fi
+        _compose_restart || restart_rc=$?
     fi
+
+    if [[ "$restart_rc" -ne 0 ]]; then
+        local up_hint="docker compose up -d"
+        [[ -n "${compose_flags_arg}" ]] && up_hint="docker compose ${compose_flags_arg} up -d"
+        log_error "CRITICAL: Snapshot was restored but the services did not come back up."
+        log_error "  Snapshot : ${snap_dir_arg}"
+        log_error "  Steps    :"
+        log_error "    1. cd \"${INSTALL_DIR}\""
+        log_error "    2. ${up_hint}"
+        log_error "    3. ./ods-update.sh health"
+        return 1
+    fi
+
     log_warn "Rollback complete. Run 'ods-update.sh health' to verify."
 }
 

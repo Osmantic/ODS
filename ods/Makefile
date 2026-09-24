@@ -160,6 +160,9 @@ test: ## Run unit and contract tests
 	@echo "=== ods-update.sh backup command ==="
 	@bash tests/test-update-backup-retention-labels.sh
 	@bash tests/test-update-script-backup.sh
+	@echo ""
+	@echo "=== ods-update.sh rollback restart failure ==="
+	@bash tests/test-update-rollback-restart-failure.sh
 	@bash tests/test-update-backup-retention-spaces.sh
 	@bash tests/test-update-current-version.sh
 	@bash tests/test-update-rollback-restore-failure.sh
