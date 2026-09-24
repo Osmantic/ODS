@@ -195,19 +195,37 @@ ODS currently relies on:
   installs, product behavior, full-model capabilities, and lifecycle recovery.
 
 ODS does not yet publish a complete signed-release or checksum/SBOM chain for
-every installer artifact. Users who need strict provenance should install from
-a reviewed tag or internal fork and record the exact commit or release tag.
+every installer artifact. CI does publish a deterministic CycloneDX inventory
+of the container image references shipped by the source tree; it is an offline
+inventory, not registry-attested build provenance. Users who need strict
+provenance should install from a reviewed tag or internal fork and record the
+exact commit or release tag.
 
 ## Provenance Roadmap
 
 1. Publish checksums for release installer artifacts.
 2. Sign release artifacts and tags with maintainer-controlled signing keys.
-3. Publish SBOMs for release artifacts and core container images.
+3. Expand the source-derived runtime SBOM into signed, registry-attested SBOMs
+   for release artifacts and core container images.
 4. Record build provenance for desktop installer artifacts.
 5. Document the exact validation receipt tied to each release candidate.
 6. Keep inspect-first and manual source install paths available.
 
 These are roadmap items, not current guarantees.
+
+Maintainers and downstream forks can reproduce the current source inventory:
+
+```bash
+cd ods
+python3 scripts/generate-runtime-sbom.py \
+  --source-commit "$(git rev-parse HEAD)" \
+  --output artifacts/ods-runtime.cdx.json
+```
+
+Published CI artifacts include that exact commit in CycloneDX metadata, use the
+commit in the artifact name, and ship a SHA-256 receipt beside the inventory.
+Omit `--source-commit` only for source exports where Git metadata is unavailable;
+the image inventory remains deterministic but no longer claims an exact VCS object.
 
 ## Related Validation
 

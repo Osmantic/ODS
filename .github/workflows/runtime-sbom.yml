@@ -1,0 +1,54 @@
+name: Runtime SBOM
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "ods/docker-compose*.yml"
+      - "ods/docker-compose*.yaml"
+      - "ods/extensions/**/compose.y*ml"
+      - "ods/extensions/**/Dockerfile*"
+      - "ods/installers/**/compose.y*ml"
+      - "ods/installers/**/Dockerfile*"
+      - "ods/config/dependency-lock.json"
+      - "ods/scripts/check-dependency-pins.py"
+      - "ods/scripts/generate-runtime-sbom.py"
+      - "ods/tests/test_runtime_sbom.py"
+      - ".github/workflows/runtime-sbom.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: Generate deterministic CycloneDX inventory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Validate dependency pins
+        working-directory: ods
+        run: python3 scripts/check-dependency-pins.py
+
+      - name: Generate and verify reproducibility
+        working-directory: ods
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          python3 scripts/generate-runtime-sbom.py --source-commit "$GITHUB_SHA" --output artifacts/ods-runtime.cdx.json
+          python3 scripts/generate-runtime-sbom.py --source-commit "$GITHUB_SHA" > artifacts/ods-runtime.second.cdx.json
+          cmp artifacts/ods-runtime.cdx.json artifacts/ods-runtime.second.cdx.json
+          sha256sum artifacts/ods-runtime.cdx.json > artifacts/ods-runtime.cdx.json.sha256
+          python3 tests/test_runtime_sbom.py
+
+      - name: Upload runtime inventory
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ods-runtime-cyclonedx-${{ github.sha }}
+          path: |
+            ods/artifacts/ods-runtime.cdx.json
+            ods/artifacts/ods-runtime.cdx.json.sha256
+          if-no-files-found: error
