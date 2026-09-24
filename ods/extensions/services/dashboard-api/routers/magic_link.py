@@ -288,7 +288,7 @@ def _normalize_record(record: dict) -> dict:
         record["reusable"] = True
         record["expires_at"] = None
     else:
-        record["reusable"] = bool(record.get("reusable", False))
+        record["reusable"] = record.get("reusable") is True
 
     if not isinstance(record.get("redemptions"), list):
         record["redemptions"] = []

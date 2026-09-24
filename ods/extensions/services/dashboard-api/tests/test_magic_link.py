@@ -941,6 +941,27 @@ def test_redeem_marks_token_used(magic_link_client, magic_link_module):
     assert second.json()["detail"] == "Invalid or expired magic link"
 
 
+def test_guest_reusable_flag_requires_a_json_boolean(
+    magic_link_client, magic_link_module
+):
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice"},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+    store = magic_link_module._ensure_store()
+    store["tokens"][0]["reusable"] = "false"
+    magic_link_module._write_store(store)
+
+    first = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+    second = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+
+    assert first.status_code == 302
+    assert second.status_code == 404
+    assert second.json()["detail"] == "Invalid or expired magic link"
+
+
 # ---------------------------------------------------------------------------
 # Redeem failure modes — all must return the same opaque 404
 # ---------------------------------------------------------------------------
