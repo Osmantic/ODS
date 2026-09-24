@@ -35,6 +35,17 @@ function section(text, start, end, replacement = '') {
   return text.slice(0, a) + replacement + text.slice(b);
 }
 
+function reviewedSection(text, digest, replacement) {
+  const boundaries = [...text.matchAll(/^## /gm)].map(match => match.index);
+  boundaries.push(text.length);
+  for (let index = 0; index < boundaries.length - 1; index++) {
+    const start = boundaries[index], end = boundaries[index + 1];
+    if (createHash('sha256').update(text.slice(start, end)).digest('hex') === digest)
+      return text.slice(0, start) + replacement + text.slice(end);
+  }
+  throw new Error('reviewed-bootstrap-section-missing');
+}
+
 export function filterBootstrapCapabilities(event) {
   const context = event?.context, cfg = context?.cfg;
   if (event?.type !== 'agent' || event.action !== 'bootstrap' || context?.agentId !== 'pixel'
@@ -60,7 +71,7 @@ export function filterBootstrapCapabilities(event) {
         || createHash('sha256').update(file.content).digest('hex') !== expected) continue;
     let content = file.content;
     if (file.name === 'AGENTS.md') {
-      content = section(content, '## Dream Fleet Local-First Operating Contract (canonical)\n', '## Memory\n', PRODUCT_EXECUTION);
+      content = reviewedSection(content, 'f4ae5ee982981b26ec0b4130772d4ed6e7519eec0ae77650a777325bfa79b818', PRODUCT_EXECUTION);
       if (frontierDisabled) content = section(content, 'Frontier work follows a narrower boundary.', '## Calendar: bounded direct actions and approval\n', FRONTIER_UNAVAILABLE);
       if (calendarDisabled) content = section(content, '## Calendar: bounded direct actions and approval\n', '## Perception limits\n', CALENDAR_UNAVAILABLE);
     } else if (frontierDisabled) {

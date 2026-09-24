@@ -45,7 +45,7 @@ memory before each Pixel run. Detailed Calendar and Frontier guidance is omitted
 only when their provider is explicitly disabled or every corresponding tool is
 explicitly denied. A tool deferred behind Tool Search remains enabled; Operations
 guidance and general authority, privacy, research and verification rules remain.
-The personal Dream Fleet development contract in the known vendor default is
+The personal development contract in the known vendor default is
 replaced with instructions to use this installation's configured model and tools.
 
 This does not edit workspace files or alter available tools. Owner-customized
