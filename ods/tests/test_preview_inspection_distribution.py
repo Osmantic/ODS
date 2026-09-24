@@ -142,13 +142,6 @@ def test_build_captures_only_fixed_inputs_and_immutable_id(
         with pytest.raises(ValueError):
             module.build_config(source=tmp_path, owner_uid=1000, transport="local")
     else:
-        assert module.linux_cleanup(source=source, owner_uid=1000) == "validated"
-        assert not calls
-        assert {
-            str(path): path.read_bytes()
-            for path in (tmp_path / "installed").rglob("*")
-            if path.is_file()
-        } == before
         assert (
             module.build_config(source=tmp_path, owner_uid=1000, transport="local")
             == config()
@@ -419,6 +412,13 @@ def test_linux_uninstall_validates_all_artifacts_before_deleting_any(
         if fault != "active":
             assert not calls
     else:
+        assert module.linux_cleanup(source=source, owner_uid=1000) == "validated"
+        assert not calls
+        assert {
+            str(path): path.read_bytes()
+            for path in (tmp_path / "installed").rglob("*")
+            if path.is_file()
+        } == before
         assert (
             module.linux_cleanup(source=source, owner_uid=1000, remove=True)
             == "removed"
