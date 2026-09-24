@@ -344,6 +344,13 @@ jobs:
       - name: Dotenv Serializer Tests
         run: bash tests/test-dotenv-serializer.sh
 
+      # Static source checks (grep/awk only), so they run on Linux even though
+      # they protect macOS. `make test` runs them, but no workflow does.
+      - name: Bash 3.2 Guard Placement
+        run: |
+          bash tests/test-bash32-guards.sh
+          bash tests/test-ods-doctor-bash32-guard.sh
+
       - name: Mode Switch Tests
         run: bash tests/test-mode-switch-status.sh
 
