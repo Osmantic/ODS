@@ -171,6 +171,11 @@ def retire_restored_attempt(*, current_digest, candidate_digest, snapshots,
             pass
 
 
+INSPECTION_ADDITIONS = frozenset('/usr/local/libexec/ods-pixel-services/helpers/' + name for name in (
+    'preview_inspection.py', 'preview_inspection_protocol.py', 'workspace_preview.py',
+    'unix_peer.py', 'preview-inspection.json'))
+
+
 def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths):
     """Bounded private rollback image. Paths must come from the verified plan."""
     if (any(not isinstance(value, str) or not re.fullmatch('[a-f0-9]{64}', value)
@@ -192,12 +197,20 @@ def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths)
         record = {key: item[key] for key in ('path', 'mode', 'gid')}
         for key in ('before', 'after'):
             body = item[key]
+            if key == 'before' and body is None and path in INSPECTION_ADDITIONS:
+                if item['mode'] != 0o644 or item['gid'] != 0:
+                    raise UpgradeError('runtime-upgrade-record-invalid')
+                record[key] = record[key + 'Sha256'] = None
+                continue
             if type(body) is not bytes or len(body) > 8 * 1024 * 1024:
                 raise UpgradeError('runtime-upgrade-record-invalid')
             record[key] = base64.b64encode(body).decode('ascii')
             record[key + 'Sha256'] = hashlib.sha256(body).hexdigest()
         encoded.append(record)
-    value = dict(schemaVersion=1, currentDigest=current_digest, candidateDigest=candidate_digest,
+    version = 2 if any(item['before'] is None for item in records) else 1
+    if version == 2 and {item['path'] for item in records if item['before'] is None} != INSPECTION_ADDITIONS:
+        raise UpgradeError('runtime-upgrade-inspection-additions-incomplete')
+    value = dict(schemaVersion=version, currentDigest=current_digest, candidateDigest=candidate_digest,
                  phase='prepared', files=encoded)
     if len(json.dumps(value).encode()) > JOURNAL_LIMIT:
         raise UpgradeError('runtime-upgrade-journal-too-large')
@@ -208,7 +221,7 @@ def decode_recovery(value, *, current_digest, candidate_digest, allowed_paths):
     try:
         if (type(value) is not dict or set(value) != {
                 'schemaVersion', 'currentDigest', 'candidateDigest', 'phase', 'files'}
-                or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+                or type(value['schemaVersion']) is not int or value['schemaVersion'] not in (1, 2)
                 or value['currentDigest'] != current_digest or value['candidateDigest'] != candidate_digest
                 or value['phase'] not in PHASES or type(value['files']) is not list):
             raise ValueError()
@@ -218,6 +231,11 @@ def decode_recovery(value, *, current_digest, candidate_digest, allowed_paths):
                 raise ValueError()
             record = {key: item[key] for key in ('path', 'mode', 'gid')}
             for key in ('before', 'after'):
+                if key == 'before' and value['schemaVersion'] == 2 and item[key] is None:
+                    if item[key + 'Sha256'] is not None:
+                        raise ValueError()
+                    record[key] = None
+                    continue
                 body = base64.b64decode(item[key], validate=True)
                 if hashlib.sha256(body).hexdigest() != item[key + 'Sha256']:
                     raise ValueError()

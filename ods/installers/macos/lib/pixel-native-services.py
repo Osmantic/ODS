@@ -287,7 +287,7 @@ def activate_new(*, services, readiness, checkpoint):
 
 def readiness_checks(*, owner, identity, python,
                      program_root='/usr/local/libexec/ods-pixel-services',
-                     state='/private/var/lib/pixel-ops-broker'):
+                     state='/private/var/lib/pixel-ops-broker', inspection_required=True):
     """Build non-mutating service probes for the approved initial installation.
 
     The Operations probe submits only host.os-release; it never approves a request or
@@ -335,7 +335,8 @@ def readiness_checks(*, owner, identity, python,
         # The inspector is a fixed helper, not a fourth launchd service. Keep
         # the exact three-service activation contract and gate its final probe
         # on inspection health before admitting the gateway.
-        inspection()
+        if inspection_required:
+            inspection()
         job = 'ops-' + str(int(time.time() * 1000)) + '-' + uuid.uuid4().hex[:12]
         body = json.dumps({'schemaVersion': 1, 'jobId': job,
             'createdAt': datetime.now(timezone.utc).isoformat(), 'kind': 'action',

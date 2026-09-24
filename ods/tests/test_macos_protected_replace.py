@@ -99,3 +99,63 @@ def test_directory_fsync_failure_is_reported_after_replacement(target, monkeypat
     with pytest.raises(OSError): replace(target)
     assert target.read_bytes() == b'updated'
     assert list(target.parent.iterdir()) == [target]
+
+
+@pytest.fixture
+def inspection_target(target, monkeypatch):
+    from types import SimpleNamespace
+    target.unlink()
+    monkeypatch.setattr(custody, 'INSPECTION_ADDITIONS', frozenset([str(target)]))
+    verify = custody._verify_fd
+    def root_group(fd, *, directory):
+        value = os.fstat(fd) if directory else verify(fd, directory=False)
+        if directory:
+            assert stat.S_ISDIR(value.st_mode)
+        fields = {key: getattr(value, key) for key in dir(value) if key.startswith('st_')}
+        fields['st_gid'] = 0
+        return SimpleNamespace(**fields)
+    monkeypatch.setattr(custody, '_verify_fd', root_group)
+    return target
+
+
+def test_inspection_addition_roundtrip_uses_real_filesystem(inspection_target):
+    path = inspection_target
+    assert custody.protected_inspection_bytes(path) is None
+    custody.replace_protected_inspection_bytes(path, expected=None, replacement=b'approved', mode=0o644)
+    assert custody.protected_inspection_bytes(path) == b'approved'
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    custody.replace_protected_inspection_bytes(path, expected=b'approved', replacement=None, mode=0o644)
+    assert custody.protected_inspection_bytes(path) is None
+    assert list(path.parent.iterdir()) == []
+
+
+@pytest.mark.parametrize('fault', ['foreign', 'symlink', 'existing', 'mode', 'gid'])
+def test_inspection_creation_never_overwrites_unapproved_state(inspection_target, fault):
+    path = inspection_target
+    options = dict(expected=None, replacement=b'approved', mode=0o644)
+    if fault == 'foreign': path = path.with_name('foreign')
+    if fault == 'existing': path.write_bytes(b'other')
+    if fault == 'symlink': path.symlink_to(path.with_name('missing'))
+    if fault == 'mode': options['mode'] = 0o600
+    if fault == 'gid': options['gid'] = 1
+    with pytest.raises((custody.CustodyError, OSError)):
+        custody.replace_protected_inspection_bytes(path, **options)
+    if fault == 'existing': assert path.read_bytes() == b'other'
+    elif fault == 'symlink': assert path.is_symlink()
+    else: assert not path.exists()
+    assert not list(path.parent.glob('.ods-inspection-add-*'))
+
+
+@pytest.mark.parametrize('after_publication', [False, True])
+def test_inspection_creation_fsync_failure_retains_recoverable_state(inspection_target, monkeypatch, after_publication):
+    path = inspection_target
+    real = os.fsync
+    def fail(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode) == after_publication:
+            raise OSError('synthetic fsync failure')
+        real(fd)
+    monkeypatch.setattr(custody.os, 'fsync', fail)
+    with pytest.raises(OSError):
+        custody.replace_protected_inspection_bytes(path, expected=None, replacement=b'approved', mode=0o644)
+    assert custody.protected_inspection_bytes(path) == (b'approved' if after_publication else None)
+    assert not list(path.parent.glob('.ods-inspection-add-*'))
