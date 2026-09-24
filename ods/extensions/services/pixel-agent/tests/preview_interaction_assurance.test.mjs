@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, boundVisibilityInspection} from '../plugin/preview-interaction-assurance.mjs';
-import {INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash, normalizeWorkspacePreviewInspectionParams} from '../plugin/workspace-preview-inspect.mjs';
+import {INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash, normalizeWorkspacePreviewInspectionParams, createWorkspacePreviewInspectTool} from '../plugin/workspace-preview-inspect.mjs';
 
 const owner='Create and publish a website in a new workspace directory site. Add a button that toggles hidden details.';
 const context={agentId:'pixel',runId:'run',sessionId:'session',sessionKey:'opaque-key'};
@@ -69,6 +69,28 @@ test('published links remain available without falsely passing missing interacti
   const retry=guard.beforeAgentFinalize({},context)?.retry;assert.equal(retry?.idempotencyKey,'pixel-ods-workspace-preview-interaction');assert.equal(retry?.maxAttempts,1);
   const guidance=guard.toolResultPersist({message:{role:'toolResult',toolName:'pixel_ods_workspace_preview',toolCallId:'publish',content:[{type:'text',text:'published'}]}},{...context,toolCallId:'publish'});
   assert.match(JSON.stringify(guidance),/pixel_ods_workspace_preview_inspect/);
+  assert.match(retry.instruction,/tool_describe/);
+  assert.match(retry.instruction,/tool_call/);
+  assert.ok(retry.instruction.includes(preview.sha256));
+  assert.ok(retry.instruction.includes(preview.siteId));
+});
+
+for(const wrapped of [false,true]) test(`bad inspection arguments preserve one bounded correction (${wrapped?'deferred':'direct'})`,async()=>{
+  const {guard,preview}=setup();
+  const params={...plan(preview),sha256:'3341'};
+  const name=wrapped?'tool_call':PREVIEW_INSPECTION_TOOL;
+  const args=wrapped?{id:'openclaw:pixel-ods:'+PREVIEW_INSPECTION_TOOL,args:params}:params;
+  const started=call(guard,name,args,'invalid');
+  const inner=await createWorkspacePreviewInspectTool({request:async()=>{throw Error('must not execute');}}).execute('invalid',params);
+  const result=wrapped?{details:{tool:{id:args.id,name:PREVIEW_INSPECTION_TOOL,source:'openclaw',sourceName:'pixel-ods'},result:inner}}:inner;
+  guard.afterToolCall({...started.event,result},started.ctx);
+  assert.equal(guard.verificationForRun('run').status,'failed');
+  const retry=guard.beforeAgentFinalize({},context)?.retry;
+  assert.equal(retry?.idempotencyKey,'pixel-ods-workspace-preview-interaction');
+  assert.equal(retry?.maxAttempts,1);
+  const corrected=inspection(guard,plan(preview),{wrapped,id:'corrected'});
+  guard.afterToolCall({...corrected.event,result:corrected.result},corrected.ctx);
+  assert.equal(guard.verificationForRun('run').status,'passed');
 });
 for(const wrapped of [false,true]) test(`only current-run exact call receipt passes (${wrapped?'deferred':'direct'})`,()=>{
   const {guard,preview}=setup();const p=plan(preview);const {event,ctx,result}=inspection(guard,p,{wrapped});
