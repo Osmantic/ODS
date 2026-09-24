@@ -1,5 +1,12 @@
 #!/bin/sh
 
+ods_n8n_is_loopback_bind() {
+    case "${1:-}" in
+        127.0.0.1|localhost|::1|\[::1\]|0:0:0:0:0:0:0:1|\[0:0:0:0:0:0:0:1\]) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Resolve n8n's session-cookie policy from the public transport and host bind.
 # The caller remains responsible for exporting the returned value.
 ods_n8n_secure_cookie_policy() {
@@ -21,21 +28,11 @@ ods_n8n_secure_cookie_policy() {
             ;;
     esac
 
-    case "$_ods_protocol:$_ods_bind" in
-        http:127.0.0.1|http:localhost|http:::1|http:\[::1\])
-            printf 'false\n'
-            ;;
-        *)
-            printf 'true\n'
-            ;;
-    esac
-}
-
-ods_n8n_is_loopback_bind() {
-    case "${1:-}" in
-        127.0.0.1|localhost|::1|\[::1\]) return 0 ;;
-        *) return 1 ;;
-    esac
+    if [ "$_ods_protocol" = "http" ] && ods_n8n_is_loopback_bind "$_ods_bind"; then
+        printf 'false\n'
+        return 0
+    fi
+    printf 'true\n'
 }
 
 ods_n8n_public_protocol() {

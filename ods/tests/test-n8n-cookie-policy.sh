@@ -21,11 +21,18 @@ assert_policy false auto http 127.0.0.1
 assert_policy false auto http localhost
 assert_policy false auto http ::1
 assert_policy false auto http '[::1]'
+assert_policy false auto http 0:0:0:0:0:0:0:1
+assert_policy false auto http '[0:0:0:0:0:0:0:1]'
 assert_policy true auto https 127.0.0.1
 assert_policy true auto http 0.0.0.0
 assert_policy true auto http 192.168.1.10
 assert_policy true true http 127.0.0.1
 assert_policy false false https 0.0.0.0
+
+ods_n8n_is_loopback_bind 0:0:0:0:0:0:0:1 || {
+    printf 'FAIL expanded IPv6 loopback was classified as a remote bind\n' >&2
+    failures=$((failures + 1))
+}
 
 [[ "$(ods_n8n_public_protocol http https://n8n.example.com/)" == "https" ]] || {
     printf 'FAIL HTTPS webhook URL did not override the internal protocol\n' >&2
