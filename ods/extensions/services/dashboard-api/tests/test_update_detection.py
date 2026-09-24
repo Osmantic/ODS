@@ -18,6 +18,24 @@ def test_blank_env_falls_back_to_installed_receipt(tmp_path, monkeypatch):
     assert not updates._build_version_result(updates._read_current_version(), {'latest': '2.6.0'})['update_available']
 
 
+def test_post_update_receipt_beats_stale_env_version(tmp_path, monkeypatch):
+    # ods-update.sh records the new version only in .version (JSON); .env's
+    # ODS_VERSION is written once at install and never refreshed. After an
+    # update, the freshest record must win -- reading the stale .env first
+    # would report the install-time version and keep offering the update.
+    (tmp_path / '.env').write_text('ODS_VERSION="2.6.0"\n')
+    (tmp_path / '.version').write_text(json.dumps({'version': '2.7.0'}))
+    monkeypatch.setattr(updates, 'INSTALL_DIR', tmp_path)
+    assert updates._read_current_version() == '2.7.0'
+
+
+def test_post_update_receipt_supports_plain_text(tmp_path, monkeypatch):
+    (tmp_path / '.env').write_text('ODS_VERSION="2.6.0"\n')
+    (tmp_path / '.version').write_text('v2.7.0\n')
+    monkeypatch.setattr(updates, 'INSTALL_DIR', tmp_path)
+    assert updates._read_current_version() == 'v2.7.0'
+
+
 def test_manifest_schema_number_is_not_an_installed_release(tmp_path, monkeypatch):
     (tmp_path / '.env').write_text('ODS_VERSION=\n')
     (tmp_path / 'manifest.json').write_text(json.dumps({'manifestVersion': '99.0.0'}))
