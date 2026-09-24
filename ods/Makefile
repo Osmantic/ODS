@@ -137,6 +137,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== CLI update post-verification ==="
 	@bash tests/test-cli-update-verification.sh
+	@bash tests/test-update-status-json.sh
 	@echo ""
 	@echo "=== ods config show secret-mask matrix ==="
 	@bash tests/test-ods-config-secret-mask.sh

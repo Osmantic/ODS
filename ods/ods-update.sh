@@ -633,49 +633,86 @@ cmd_check() {
 #==============================================================================
 
 cmd_status() {
+    local json_mode="false"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json_mode="true" ;;
+            *) log_error "Unknown status option: $1"; return 1 ;;
+        esac
+        shift
+    done
+
+    local current_version last_check="never" last_update="never"
+    local snap_count=0 last_snap="none" backup_count=0
+    current_version=$(get_current_version)
+
+    if [[ -f "$VERSION_FILE" ]]; then
+        last_check=$(jq -r '.last_check // "never"' "$VERSION_FILE" 2>/dev/null || echo "never")
+        last_update=$(jq -r '.last_update // "never"' "$VERSION_FILE" 2>/dev/null || echo "never")
+        last_snap=$(jq -r '.last_rollback_point // "none"' "$VERSION_FILE" 2>/dev/null || echo "none")
+    fi
+    if [[ -d "$ROLLBACK_DIR" ]]; then
+        snap_count=$(find "$ROLLBACK_DIR" -maxdepth 1 -type d -name "pre-update-*" 2>/dev/null | wc -l)
+    fi
+    if [[ -d "$BACKUP_DIR" ]]; then
+        backup_count=$(find "$BACKUP_DIR" -maxdepth 1 -type d -name "backup-*" 2>/dev/null | wc -l)
+    fi
+
+    if [[ "$json_mode" == "true" ]]; then
+        jq -cn \
+            --arg version "$current_version" \
+            --arg install_path "$INSTALL_DIR" \
+            --arg backup_path "$BACKUP_DIR" \
+            --arg rollback_path "$ROLLBACK_DIR" \
+            --arg update_channel "$UPDATE_CHANNEL" \
+            --arg last_check "$last_check" \
+            --arg last_update "$last_update" \
+            --arg last_snap "$last_snap" \
+            --argjson max_backups "$MAX_BACKUPS" \
+            --argjson rollback_count "$snap_count" \
+            --argjson backup_count "$backup_count" '
+            {
+                schema_version: "ods.update-status.v1",
+                version: $version,
+                install_path: $install_path,
+                update_channel: $update_channel,
+                last_check: (if $last_check == "never" then null else $last_check end),
+                last_update: (if $last_update == "never" then null else $last_update end),
+                retention_limit: $max_backups,
+                rollback: {
+                    path: $rollback_path,
+                    count: $rollback_count,
+                    last_point: (if $last_snap == "none" then null else $last_snap end)
+                },
+                backups: {
+                    path: $backup_path,
+                    count: $backup_count
+                }
+            }'
+        return 0
+    fi
+
     echo "ODS Status"
     echo "==================="
     echo ""
-    echo "Version:        $(get_current_version)"
+    echo "Version:        ${current_version}"
     echo "Install path:   ${INSTALL_DIR}"
     echo "Backup path:    ${BACKUP_DIR}"
     echo "Update channel: ${UPDATE_CHANNEL}"
     echo ""
-    
-    if [[ -f "$VERSION_FILE" ]]; then
-        local last_check
-        last_check=$(jq -r '.last_check // "never"' "$VERSION_FILE" 2>/dev/null || echo "never")
-        local last_update
-        last_update=$(jq -r '.last_update // "never"' "$VERSION_FILE" 2>/dev/null || echo "never")
-        echo "Last check:     ${last_check}"
-        echo "Last update:    ${last_update}"
-    else
-        echo "Last check:     never"
-        echo "Last update:    never"
-    fi
+    echo "Last check:     ${last_check}"
+    echo "Last update:    ${last_update}"
     
     echo ""
-    
-    # Count rollback snapshots
-    local snap_count=0
-    if [[ -d "$ROLLBACK_DIR" ]]; then
-        snap_count=$(find "$ROLLBACK_DIR" -maxdepth 1 -type d -name "pre-update-*" 2>/dev/null | wc -l)
-    fi
     echo "Rollback snaps: ${snap_count} (max: ${MAX_BACKUPS}, path: ${ROLLBACK_DIR})"
 
-    # Show last rollback point recorded in version file
     if [[ -f "$VERSION_FILE" ]]; then
-        local last_snap
-        last_snap=$(jq -r '.last_rollback_point // "none"' "$VERSION_FILE" 2>/dev/null || echo "none")
         echo "Last snap path: ${last_snap}"
     fi
 
     echo ""
 
-    # Count general backups
     if [[ -d "$BACKUP_DIR" ]]; then
-        local backup_count
-        backup_count=$(find "$BACKUP_DIR" -maxdepth 1 -type d -name "backup-*" 2>/dev/null | wc -l)
         echo "General backups: ${backup_count} (max: ${MAX_BACKUPS}, path: ${BACKUP_DIR})"
     else
         echo "General backups: 0 (max: ${MAX_BACKUPS})"
@@ -1237,7 +1274,7 @@ Usage: ods-update.sh <command> [options]
 
 Commands:
   check          Check for available updates
-  status         Show current version, update status, and rollback info
+  status [--json] Show current version, update status, and rollback info
   backup [name]  Create a named general backup of current configuration
   update         Source-checkout only: pull latest source, run migrations,
                  restart, health-check, and auto-restore on failure
@@ -1262,6 +1299,7 @@ Environment Variables:
 Examples:
   ods-update.sh check
   ods-update.sh status
+  ods-update.sh status --json
   ods-update.sh backup pre-experiment
   ods update                    # normal runtime/image update
   ods-update.sh update          # source checkout only
