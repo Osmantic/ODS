@@ -30,6 +30,7 @@ import os
 import re
 import sys
 import threading
+import types
 from pathlib import Path
 
 import httpx
@@ -285,6 +286,29 @@ class TestBinaryPassthrough:
 # ── 4. WebSocket upgrade lane ───────────────────────────────────────────────
 
 class TestWebSocketLane:
+    def test_connector_supports_new_asyncio_header_keyword(self, monkeypatch):
+        sentinel = object()
+        new_client = types.ModuleType("websockets.asyncio.client")
+        new_client.connect = sentinel
+        monkeypatch.setitem(sys.modules, "websockets.asyncio.client", new_client)
+
+        connector, header_argument = proxy._websocket_client_connector()
+
+        assert connector is sentinel
+        assert header_argument == "additional_headers"
+
+    def test_connector_falls_back_to_legacy_header_keyword(self, monkeypatch):
+        sentinel = object()
+        legacy_client = types.ModuleType("websockets.legacy.client")
+        legacy_client.connect = sentinel
+        monkeypatch.setitem(sys.modules, "websockets.asyncio.client", None)
+        monkeypatch.setitem(sys.modules, "websockets.legacy.client", legacy_client)
+
+        connector, header_argument = proxy._websocket_client_connector()
+
+        assert connector is sentinel
+        assert header_argument == "extra_headers"
+
     def test_websocket_route_registered(self):
         ws_routes = [
             r for r in proxy.app.router.routes

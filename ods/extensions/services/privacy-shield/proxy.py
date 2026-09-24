@@ -427,6 +427,20 @@ async def proxy(request: Request, path: str):
     )
 
 
+def _websocket_client_connector():
+    """Return the connector and header keyword supported by websockets.
+
+    The declared 12.x-15.x range spans the legacy-to-new asyncio API rename.
+    Prefer the new client when present, but retain the declared 12.x lane.
+    """
+    try:
+        from websockets.asyncio.client import connect
+        return connect, "additional_headers"
+    except ImportError:
+        from websockets.legacy.client import connect
+        return connect, "extra_headers"
+
+
 @app.websocket("/{path:path}")
 async def proxy_websocket(client_ws: WebSocket, path: str):
     """Transparent WebSocket passthrough for upstreams that upgrade.
@@ -456,7 +470,7 @@ async def proxy_websocket(client_ws: WebSocket, path: str):
     else:
         await client_ws.accept()
     try:
-        import websockets
+        websocket_connect, header_argument = _websocket_client_connector()
     except ModuleNotFoundError:
         logger.error("WebSocket upgrade requested but 'websockets' is not installed")
         await client_ws.close(code=1011, reason="WebSocket passthrough unavailable")
@@ -475,8 +489,8 @@ async def proxy_websocket(client_ws: WebSocket, path: str):
     import anyio
 
     try:
-        async with websockets.connect(
-            upstream_url, additional_headers=extra_headers, open_timeout=5
+        async with websocket_connect(
+            upstream_url, open_timeout=5, **{header_argument: extra_headers}
         ) as upstream_ws:
 
             async def client_to_upstream():
