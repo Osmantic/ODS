@@ -124,7 +124,7 @@ class LemonadeClient:
             self._client = None
 
     def api_url(self, path: str) -> str:
-        return f"{self.settings.api_root}/{path.lstrip('/')}"
+        return f"{self.settings.api_root.rstrip('/')}/{path.lstrip('/')}"
 
     def auth_headers(self) -> dict[str, str]:
         if not self.settings.api_key:
