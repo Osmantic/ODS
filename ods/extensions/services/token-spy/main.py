@@ -8,6 +8,7 @@ Supports Anthropic, Moonshot, OpenAI, and generic OpenAI-compatible APIs.
 """
 
 import asyncio
+import copy
 import ipaddress
 import json
 import logging
@@ -184,11 +185,24 @@ _DEFAULT_SETTINGS = {
 
 def _ensure_agent_in_settings(settings: dict, agent_name: str):
     """Ensure the current agent has an entry in settings."""
-    if "agents" not in settings:
+    if not isinstance(settings.get("agents"), dict):
         settings["agents"] = {}
-    if agent_name not in settings["agents"]:
+    if not isinstance(settings["agents"].get(agent_name), dict):
         settings["agents"][agent_name] = {"session_char_limit": None, "poll_interval_minutes": None}
     return settings
+
+
+def _fresh_default_settings() -> dict:
+    """Return defaults without sharing mutable nested state across loads."""
+    return copy.deepcopy(_DEFAULT_SETTINGS)
+
+
+def _valid_setting_int(value, minimum: int, maximum: int | None = None) -> bool:
+    return (
+        type(value) is int
+        and value >= minimum
+        and (maximum is None or value <= maximum)
+    )
 
 
 def load_settings() -> dict:
@@ -196,15 +210,60 @@ def load_settings() -> dict:
     try:
         with open(SETTINGS_PATH, "r") as f:
             data = json.load(f)
-        # Merge defaults for any missing top-level keys
-        for k, v in _DEFAULT_SETTINGS.items():
+        if not isinstance(data, dict):
+            raise ValueError("settings root must be an object")
+
+        defaults = _fresh_default_settings()
+        # Merge fresh defaults for any missing top-level keys.
+        for k, v in defaults.items():
             if k not in data:
                 data[k] = v
+        if not _valid_setting_int(data.get("session_char_limit"), 10_000):
+            data["session_char_limit"] = defaults["session_char_limit"]
+        if not _valid_setting_int(data.get("poll_interval_minutes"), 1, 60):
+            data["poll_interval_minutes"] = defaults["poll_interval_minutes"]
+        if not isinstance(data.get("agents"), dict):
+            data["agents"] = {}
+        else:
+            data["agents"] = {
+                name: config if isinstance(config, dict) else {}
+                for name, config in data["agents"].items()
+            }
+        if not isinstance(data.get("filters"), dict):
+            data["filters"] = defaults["filters"]
+        else:
+            for name, default in defaults["filters"].items():
+                value = data["filters"].get(name)
+                if name not in data["filters"] or (
+                    isinstance(default, dict) and not isinstance(value, dict)
+                ):
+                    data["filters"][name] = default
+        for config in data["agents"].values():
+            if (
+                config.get("session_char_limit") is not None
+                and not _valid_setting_int(config["session_char_limit"], 10_000)
+            ):
+                config["session_char_limit"] = None
+            if (
+                config.get("poll_interval_minutes") is not None
+                and not _valid_setting_int(config["poll_interval_minutes"], 1, 60)
+            ):
+                config["poll_interval_minutes"] = None
+            if "filters" in config and not isinstance(config["filters"], dict):
+                config["filters"] = {}
+            for name, default in defaults["filters"].items():
+                value = config.get("filters", {}).get(name)
+                if (
+                    isinstance(default, dict)
+                    and value is not None
+                    and not isinstance(value, dict)
+                ):
+                    config["filters"][name] = None
         # Ensure current agent exists in settings
         data = _ensure_agent_in_settings(data, AGENT_NAME)
         return data
-    except (FileNotFoundError, json.JSONDecodeError):
-        data = dict(_DEFAULT_SETTINGS)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        data = _fresh_default_settings()
         data = _ensure_agent_in_settings(data, AGENT_NAME)
         return data
 
