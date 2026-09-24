@@ -3673,6 +3673,14 @@ cmd_mode() {
         error "External LLM routing is installer-managed. Run './install.sh --no-external-llm' first, then retry 'ods mode $mode'."
     fi
 
+    if [[ "$mode" == "hybrid" && "${configured_backend,,}" == "lemonade" ]]; then
+        local switchboard_guard
+        switchboard_guard=$(grep -m1 "^ODS_MODEL_SWITCHBOARD=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+        if [[ "${switchboard_guard,,}" != "enabled" ]]; then
+            error "Hybrid mode on Lemonade requires the model switchboard (ODS_MODEL_SWITCHBOARD=enabled): config/litellm/hybrid.yaml routes local traffic to llama-server:8080/v1, which Lemonade does not serve. Use 'local'/'cloud' or re-enable the switchboard first."
+        fi
+    fi
+
     # Update .env
     _env_set "ODS_MODE" "$mode"
 
