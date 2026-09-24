@@ -122,6 +122,38 @@ test_diff_masks_secrets() {
     fi
 }
 
+# Test 7: Diff treats quoting style as formatting, not a difference
+test_diff_ignores_quoting_style() {
+    local presets_dir="$ODS_DIR/presets"
+    mkdir -p "$presets_dir/test-preset-i" "$presets_dir/test-preset-j"
+    echo 'LLM_MODEL="qwen3-local"' > "$presets_dir/test-preset-i/env"
+    echo 'LLM_MODEL=qwen3-local' > "$presets_dir/test-preset-j/env"
+
+    local output
+    output=$("$ODS_CLI" preset diff test-preset-i test-preset-j 2>&1 || true)
+    if echo "$output" | grep -q "no differences"; then
+        pass "Diff treats quoting style as formatting"
+    else
+        fail "Diff should not flag quoted vs unquoted identical values"
+    fi
+}
+
+# Test 8: Diff ignores CR line endings and preserves = inside values
+test_diff_normalizes_cr_and_equals() {
+    local presets_dir="$ODS_DIR/presets"
+    mkdir -p "$presets_dir/test-preset-k" "$presets_dir/test-preset-l"
+    printf 'JWT_TOKEN=abc.def=ghi\r\nPORT=8080\r\n' > "$presets_dir/test-preset-k/env"
+    printf 'JWT_TOKEN=abc.def=ghi\nPORT=8080\n' > "$presets_dir/test-preset-l/env"
+
+    local output
+    output=$("$ODS_CLI" preset diff test-preset-k test-preset-l 2>&1 || true)
+    if echo "$output" | grep -q "no differences"; then
+        pass "Diff treats CRLF endings as formatting and keeps = in values"
+    else
+        fail "Diff should not flag CRLF endings or truncate values at ="
+    fi
+}
+
 # Run tests
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Preset Diff Tests"
@@ -134,6 +166,8 @@ test_diff_identical
 test_diff_env_changes
 test_diff_service_changes
 test_diff_masks_secrets
+test_diff_ignores_quoting_style
+test_diff_normalizes_cr_and_equals
 cleanup
 
 # Summary
