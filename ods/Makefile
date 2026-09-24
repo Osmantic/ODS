@@ -138,6 +138,9 @@ test: ## Run unit and contract tests
 	@echo "=== CLI update post-verification ==="
 	@bash tests/test-cli-update-verification.sh
 	@echo ""
+	@echo "=== CLI local image rebuild failure ==="
+	@bash tests/test-cli-rebuild-image-failure.sh
+	@echo ""
 	@echo "=== ods config show secret-mask matrix ==="
 	@bash tests/test-ods-config-secret-mask.sh
 	@echo ""

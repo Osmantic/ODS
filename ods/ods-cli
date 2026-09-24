@@ -1195,7 +1195,7 @@ _ods_cli_rebuild_images() {
     _check_docker_access
     log "Rebuilding local-built images (--rebuild-images)..."
     if ! docker compose "${flags[@]}" build --no-cache "${svcs[@]}"; then
-        warn "One or more images failed to rebuild (continuing — see compose output above)"
+        error "Failed to rebuild locally-built images; services were not changed."
     fi
 }
 
