@@ -672,6 +672,17 @@ async def proxy_messages(request: Request):
         body = json.loads(raw_body)
     except json.JSONDecodeError:
         body = {}
+    if not isinstance(body, dict):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Request body must be a JSON object",
+                },
+            },
+        )
 
     model = body.get("model", "unknown")
     system_blocks = body.get("system", [])
@@ -884,6 +895,18 @@ async def proxy_chat_completions(request: Request):
         body = json.loads(raw_body)
     except json.JSONDecodeError:
         body = {}
+    if not isinstance(body, dict):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": "Request body must be a JSON object",
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": None,
+                },
+            },
+        )
 
     model = body.get("model", "unknown")
     messages = body.get("messages", [])
