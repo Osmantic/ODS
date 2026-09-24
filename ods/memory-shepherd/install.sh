@@ -117,10 +117,18 @@ echo ""
 
 # ── Create Directories ─────────────────────────────────────────────────
 
-BASELINE_DIR="${CONFIG[general.baseline_dir]:-./baselines}"
-ARCHIVE_DIR="${CONFIG[general.archive_dir]:-./archives}"
-[[ "$BASELINE_DIR" != /* ]] && BASELINE_DIR="$SCRIPT_DIR/$BASELINE_DIR"
-[[ "$ARCHIVE_DIR" != /* ]] && ARCHIVE_DIR="$SCRIPT_DIR/$ARCHIVE_DIR"
+resolve_local_path() {
+    local path="$1"
+    case "$path" in
+        "~") printf '%s\n' "$HOME" ;;
+        "~/"*) printf '%s/%s\n' "$HOME" "${path#\~/}" ;;
+        /*) printf '%s\n' "$path" ;;
+        *) printf '%s/%s\n' "$SCRIPT_DIR" "$path" ;;
+    esac
+}
+
+BASELINE_DIR=$(resolve_local_path "${CONFIG[general.baseline_dir]:-./baselines}")
+ARCHIVE_DIR=$(resolve_local_path "${CONFIG[general.archive_dir]:-./archives}")
 
 if ! $DRY_RUN; then
     mkdir -p "$PREFIX" "$BASELINE_DIR" "$ARCHIVE_DIR"

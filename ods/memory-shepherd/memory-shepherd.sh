@@ -92,6 +92,16 @@ cfg() {
     echo "${CONFIG[$key]:-$default}"
 }
 
+resolve_local_path() {
+    local path="$1"
+    case "$path" in
+        "~") printf '%s\n' "$HOME" ;;
+        "~/"*) printf '%s/%s\n' "$HOME" "${path#\~/}" ;;
+        /*) printf '%s\n' "$path" ;;
+        *) printf '%s/%s\n' "$SCRIPT_DIR" "$path" ;;
+    esac
+}
+
 # ── Load Config ────────────────────────────────────────────────────────
 
 CONF_FILE=$(find_config) || {
@@ -105,16 +115,12 @@ log "Loaded config from $CONF_FILE (${#AGENTS[@]} agents)"
 
 # ── Global Settings ────────────────────────────────────────────────────
 
-BASELINE_DIR=$(cfg general baseline_dir "$SCRIPT_DIR/baselines")
-ARCHIVE_DIR=$(cfg general archive_dir "$SCRIPT_DIR/archives")
+BASELINE_DIR=$(resolve_local_path "$(cfg general baseline_dir "$SCRIPT_DIR/baselines")")
+ARCHIVE_DIR=$(resolve_local_path "$(cfg general archive_dir "$SCRIPT_DIR/archives")")
 MAX_MEMORY_SIZE=$(cfg general max_memory_size 16384)
 ARCHIVE_RETENTION_DAYS=$(cfg general archive_retention_days 30)
 SEPARATOR=$(cfg general separator "---")
 MIN_BASELINE_SIZE=$(cfg general min_baseline_size 500)
-
-# Resolve relative paths against script directory
-[[ "$BASELINE_DIR" != /* ]] && BASELINE_DIR="$SCRIPT_DIR/$BASELINE_DIR"
-[[ "$ARCHIVE_DIR" != /* ]] && ARCHIVE_DIR="$SCRIPT_DIR/$ARCHIVE_DIR"
 
 # ── Reset Functions ────────────────────────────────────────────────────
 
@@ -277,6 +283,9 @@ process_agent() {
 
     local memory_file
     memory_file=$(cfg "$agent" memory_file "")
+    if [ -n "$memory_file" ]; then
+        memory_file=$(resolve_local_path "$memory_file")
+    fi
     local baseline_name
     baseline_name=$(cfg "$agent" baseline "")
     local archive_subdir
