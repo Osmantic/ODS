@@ -64,13 +64,25 @@ def _rel(path: Path, root: Path = ROOT) -> str:
 
 
 def _resolve_vars(value: str, defaults: dict[str, str]) -> str:
+    """Expand ``${VAR}`` / ``${VAR:-fallback}`` the way the builder does.
+
+    A declared value wins over an inline fallback: with ``ARG TAG=1.2.3``,
+    Docker builds ``base:${TAG:-9.9.9}`` as ``base:1.2.3``. Returning the
+    fallback first made this gate record and enforce an image tag the build
+    never pulls — the exact documented-vs-built drift it exists to catch.
+    """
+
     def replace(match: re.Match[str]) -> str:
         name = match.group("braced") or match.group("plain") or ""
         default = match.group("default")
+        declared = defaults.get(name)
+        # ``:-`` substitutes when unset *or* empty; ``-`` only when unset.
+        if declared is not None and (declared != "" or match.group("op") == "-"):
+            return declared
         if default is not None:
             return default
-        if name in defaults:
-            return defaults[name]
+        if declared is not None:
+            return declared
         return match.group(0)
 
     return VAR_RE.sub(replace, value)
