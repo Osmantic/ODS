@@ -17,7 +17,7 @@ SERVICE="scripts/systemd/ods-host-agent.service"
 UNINSTALL="ods-uninstall.sh"
 AGENT="bin/ods-host-agent.py"
 
-grep -q '^TimeoutStopSec=15$' "$SERVICE" \
+grep -q '^TimeoutStopSec=15[[:space:]]*$' "$SERVICE" \
   || fail "ods-host-agent systemd unit must bound service stop time"
 pass "systemd unit has bounded stop timeout"
 

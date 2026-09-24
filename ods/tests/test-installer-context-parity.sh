@@ -110,9 +110,9 @@ assert_grep "installers/windows/install-windows.ps1" 'CTX_SIZE=\$\(\$tierConfig\
 
 echo ""
 echo "Hermes config patch paths:"
-assert_grep "extensions/services/hermes/cli-config.yaml.template" '^  max_tokens: 1024$' \
+assert_grep "extensions/services/hermes/cli-config.yaml.template" '^  max_tokens: 1024[[:space:]]*$' \
     "Hermes template bounds each model turn"
-assert_grep "scripts/render-runtime-configs.py" '^DEFAULT_HERMES_MAX_TOKENS = 1024$' \
+assert_grep "scripts/render-runtime-configs.py" '^DEFAULT_HERMES_MAX_TOKENS = 1024[[:space:]]*$' \
     "runtime renderer uses the bounded Hermes output default"
 assert_grep "bin/ods-host-agent.py" 'max_tokens: int = 1024' \
     "runtime model switch patcher migrates an uncapped Hermes config"
