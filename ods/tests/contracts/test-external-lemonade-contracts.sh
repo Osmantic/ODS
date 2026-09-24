@@ -60,6 +60,20 @@ grep -q 'BIND_ADDRESS_EXPLICIT' install-core.sh \
 grep -q 'BIND_ADDRESS_EXPLICIT' installers/phases/06-directories.sh \
   || { echo "[FAIL] phase 06 must let explicit BIND_ADDRESS override stale .env"; exit 1; }
 
+echo "[contract] installer reruns preserve the persisted external Lemonade selection"
+grep -q 'LEMONADE_EXTERNAL_EXPLICIT' install-core.sh \
+  || { echo "[FAIL] install-core must distinguish an unset LEMONADE_EXTERNAL from an explicit false"; exit 1; }
+grep -q 'ods_preserve_lemonade_external' install-core.sh \
+  || { echo "[FAIL] install-core must recover LEMONADE_EXTERNAL from the existing .env on rerun"; exit 1; }
+grep -q 'ods_existing_lemonade_external' installers/lib/install-mode.sh \
+  || { echo "[FAIL] install-mode.sh must read the persisted marker with fail-closed rules"; exit 1; }
+grep -q '_env_get_explicit_first AMD_INFERENCE_PORT' installers/phases/06-directories.sh \
+  || { echo "[FAIL] phase 06 must restore the persisted external Lemonade port"; exit 1; }
+grep -q '_env_get_explicit_first AMD_INFERENCE_BACKEND' installers/phases/06-directories.sh \
+  || { echo "[FAIL] phase 06 must restore the persisted Lemonade backend"; exit 1; }
+grep -q '_env_get_explicit_first AMD_INFERENCE_SUPPORTED_BACKENDS' installers/phases/06-directories.sh \
+  || { echo "[FAIL] phase 06 must restore the persisted supported backends"; exit 1; }
+
 echo "[contract] external Lemonade does not pull managed Lemonade image"
 grep -q '_lemonade_external' installers/phases/08-images.sh \
   || { echo "[FAIL] phase 08 must skip managed Lemonade image pulls in external mode"; exit 1; }

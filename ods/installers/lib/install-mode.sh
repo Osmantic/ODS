@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Preserve an existing explicit ODS runtime mode across installer reruns.
 
-ods_existing_install_mode() {
-    local env_file="$1" expected_uid="${2:-${UID:-$(id -u)}}"
+# Reads a single literal key from an existing installation's .env without
+# evaluating any shell content. Fails closed: the file must be a regular,
+# owner-only file owned by the expected uid, contain exactly one entry for the
+# key, and the value must match `states` verbatim (optionally quoted).
+_ods_existing_env_literal() {
+    local env_file="$1" key="$2" states="$3" expected_uid="${4:-${UID:-$(id -u)}}"
     local owner_uid file_mode file_size line value="" found=false
-    local modes='local|cloud|hybrid|lemonade' value_pattern
     # Accept literal dotenv formatting without evaluating any shell content.
-    value_pattern="^[[:space:]]*(($modes)|\"($modes)\"|'($modes)')([[:space:]]+#.*)?[[:space:]]*$"
+    local value_pattern="^[[:space:]]*(($states)|\"($states)\"|'($states)')([[:space:]]+#.*)?[[:space:]]*$"
 
     [[ -f "$env_file" && ! -L "$env_file" ]] || return 1
     read -r owner_uid file_mode file_size < <(
@@ -19,7 +22,7 @@ ods_existing_install_mode() {
 
     while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line%$'\r'}"
-        [[ "$line" =~ ^[[:space:]]*ODS_MODE[[:space:]]*= ]] || continue
+        [[ "$line" =~ ^[[:space:]]*${key}[[:space:]]*= ]] || continue
         [[ "$found" == "false" ]] || return 1
         found=true
         [[ "${line#*=}" =~ $value_pattern ]] || return 1
@@ -28,6 +31,10 @@ ods_existing_install_mode() {
 
     [[ "$found" == "true" ]] || return 1
     printf '%s\n' "$value"
+}
+
+ods_existing_install_mode() {
+    _ods_existing_env_literal "$1" 'ODS_MODE' 'local|cloud|hybrid|lemonade' "${2:-}"
 }
 
 ods_preserve_existing_install_mode() {
@@ -41,5 +48,27 @@ ods_preserve_existing_install_mode() {
         printf '%s\n' "$existing_mode"
     else
         printf '%s\n' "$current_mode"
+    fi
+}
+
+# Same persisted-marker rules for LEMONADE_EXTERNAL: only the literals
+# true/false are accepted, anything else fails closed.
+ods_existing_lemonade_external() {
+    _ods_existing_env_literal "$1" 'LEMONADE_EXTERNAL' 'true|false' "${2:-}"
+}
+
+# An explicit environment value or a flag-chosen selection always wins over
+# the persisted marker; only an untouched rerun inherits it.
+ods_preserve_lemonade_external() {
+    local current="$1" explicit="$2" env_file="$3" existing
+
+    if [[ "$explicit" == "true" || "${current,,}" == "true" ]]; then
+        printf '%s\n' "$current"
+        return 0
+    fi
+    if existing="$(ods_existing_lemonade_external "$env_file")"; then
+        printf '%s\n' "$existing"
+    else
+        printf '%s\n' "$current"
     fi
 }

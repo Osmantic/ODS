@@ -65,4 +65,41 @@ result="$(ods_preserve_existing_install_mode local false "$env_file")"
 [[ "$result" == "local" ]] || fail "symlinked mode file was trusted"
 pass "symlinked mode files fail closed"
 
+printf '\nLemonade external selection preservation:\n'
+
+rm "$env_file"
+printf 'LEMONADE_EXTERNAL=true\n' >"$env_file"
+chmod 0600 "$env_file"
+result="$(ods_preserve_lemonade_external false false "$env_file")"
+[[ "$result" == "true" ]] || fail "implicit rerun did not preserve external Lemonade"
+pass "implicit rerun preserves the persisted external Lemonade selection"
+
+result="$(ods_preserve_lemonade_external true true "$env_file")"
+[[ "$result" == "true" ]] || fail "flag-chosen external selection was overridden"
+pass "flag or environment-chosen selection is not downgraded"
+
+result="$(ods_preserve_lemonade_external false true "$env_file")"
+[[ "$result" == "false" ]] || fail "explicit environment did not disable external Lemonade"
+pass "explicit environment value overrides the persisted selection"
+
+printf 'LEMONADE_EXTERNAL=false\n' >"$env_file"
+result="$(ods_preserve_lemonade_external false false "$env_file")"
+[[ "$result" == "false" ]] || fail "managed install was reclassified as external"
+pass "persisted managed selection stays managed"
+
+printf 'LEMONADE_EXTERNAL=yes\n' >"$env_file"
+result="$(ods_preserve_lemonade_external false false "$env_file")"
+[[ "$result" == "false" ]] || fail "malformed marker was trusted"
+pass "malformed markers fail closed"
+
+printf 'LEMONADE_EXTERNAL=true\nLEMONADE_EXTERNAL=false\n' >"$env_file"
+result="$(ods_preserve_lemonade_external false false "$env_file")"
+[[ "$result" == "false" ]] || fail "duplicate markers were trusted"
+pass "duplicate markers fail closed"
+
+rm "$env_file"
+result="$(ods_preserve_lemonade_external false false "$env_file")"
+[[ "$result" == "false" ]] || fail "missing .env produced an external selection"
+pass "missing .env keeps the managed default"
+
 printf 'Installer mode preservation tests passed.\n'

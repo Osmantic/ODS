@@ -136,6 +136,8 @@ INTERACTIVE=true
 ODS_MODE_EXPLICIT=false
 [[ -n "${ODS_MODE:-}" ]] && ODS_MODE_EXPLICIT=true
 ODS_MODE="${ODS_MODE:-local}"
+LEMONADE_EXTERNAL_EXPLICIT=false
+[[ -n "${LEMONADE_EXTERNAL:-}" ]] && LEMONADE_EXTERNAL_EXPLICIT=true
 LEMONADE_EXTERNAL="${LEMONADE_EXTERNAL:-false}"
 LEMONADE_BASE_URL="${LEMONADE_BASE_URL:-}"
 LEMONADE_API_KEY="${LEMONADE_API_KEY:-}"
@@ -241,8 +243,8 @@ while [[ $# -gt 0 ]]; do
         --force) FORCE=true; shift ;;
         --tier) TIER="$2"; shift 2 ;;
         --cloud) ODS_MODE="cloud"; ODS_MODE_EXPLICIT=true; shift ;;
-        --use-existing-lemonade) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; shift ;;
-        --lemonade-url) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; LEMONADE_BASE_URL="$2"; shift 2 ;;
+        --use-existing-lemonade) LEMONADE_EXTERNAL=true; LEMONADE_EXTERNAL_EXPLICIT=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; shift ;;
+        --lemonade-url) LEMONADE_EXTERNAL=true; LEMONADE_EXTERNAL_EXPLICIT=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; LEMONADE_BASE_URL="$2"; shift 2 ;;
         --lemonade-api-key) LEMONADE_API_KEY="$2"; shift 2 ;;
         --external-llm-url) EXTERNAL_LLM_URL="$2"; shift 2 ;;
         --external-llm-provider) EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
@@ -310,6 +312,13 @@ if [[ "$ODS_MODE_EXPLICIT" != "true" && "$ODS_MODE" != "$_requested_ods_mode" ]]
     log "Existing ODS mode detected; preserving ODS_MODE=$ODS_MODE for this installer rerun"
 fi
 unset _requested_ods_mode
+
+_requested_lemonade_external="$LEMONADE_EXTERNAL"
+LEMONADE_EXTERNAL="$(ods_preserve_lemonade_external "$LEMONADE_EXTERNAL" "$LEMONADE_EXTERNAL_EXPLICIT" "$INSTALL_DIR/.env")"
+if [[ "${LEMONADE_EXTERNAL,,}" != "${_requested_lemonade_external,,}" ]]; then
+    log "Existing external Lemonade selection detected; preserving LEMONADE_EXTERNAL=$LEMONADE_EXTERNAL for this installer rerun"
+fi
+unset _requested_lemonade_external
 
 if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
     ODS_MODE="lemonade"
