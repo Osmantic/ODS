@@ -1,7 +1,9 @@
 services:
   embeddings:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1
-    platform: linux/amd64  # TEI has no arm64 image -- Rosetta 2 on Apple Silicon
+    image: ${EMBEDDINGS_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1}
+    # The bundled TEI pin is amd64-only. ARM hosts can pair an arm64 platform
+    # override with an image that publishes a matching manifest.
+    platform: ${EMBEDDINGS_PLATFORM:-linux/amd64}
     container_name: ods-embeddings
     restart: unless-stopped
     security_opt:
