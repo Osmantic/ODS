@@ -108,6 +108,55 @@ for chunk in interpreter.chat(config["message"], stream=True):
 """
 
 
+def _terminate_process(proc: subprocess.Popen) -> None:
+    """Stop a streaming child, escalating if it ignores termination."""
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        proc.wait()
+        return
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def _stream_interpreter(script_path: str, config: str):
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            ["python", script_path],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        if proc.stdin is None or proc.stdout is None:
+            raise RuntimeError("Interpreter subprocess pipes were not created")
+
+        proc.stdin.write(config)
+        proc.stdin.close()
+
+        for line in proc.stdout:
+            if line.startswith("SSE: "):
+                payload = line[5:].rstrip("\r\n")
+                yield f"data: {payload}\n\n"
+
+        proc.wait()
+    finally:
+        if proc is not None:
+            _terminate_process(proc)
+            if proc.stdin is not None and not proc.stdin.closed:
+                proc.stdin.close()
+            if proc.stdout is not None:
+                proc.stdout.close()
+        os.unlink(script_path)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "llm_url": LLM_API_URL}
@@ -164,29 +213,10 @@ def chat_stream(req: ChatRequest, _auth=Depends(verify_api_key)):
         f.write(_STREAM_RUNNER_SCRIPT)
         script_path = f.name
 
-    def generate():
-        try:
-            proc = subprocess.Popen(
-                ["python", script_path],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-
-            proc.stdin.write(config)
-            proc.stdin.close()
-
-            for line in proc.stdout:
-                if line.startswith("SSE: "):
-                    yield f"data: {line[5:]}\n\n"
-
-            proc.wait()
-        finally:
-            os.unlink(script_path)
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        _stream_interpreter(script_path, config),
+        media_type="text/event-stream",
+    )
 
 
 if __name__ == "__main__":
