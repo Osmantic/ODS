@@ -302,8 +302,14 @@ def _is_expired(token_record: dict, now: Optional[datetime] = None) -> bool:
     if token_record["token_type"] == "owner" or not token_record.get("expires_at"):
         return False
     now = now or datetime.now(timezone.utc)
-    expires_at = datetime.fromisoformat(token_record["expires_at"])
-    return now >= expires_at
+    try:
+        expires_at = datetime.fromisoformat(token_record["expires_at"])
+        return now >= expires_at
+    except (TypeError, ValueError):
+        logger.warning(
+            "Treating magic-link record with invalid expires_at as expired"
+        )
+        return True
 
 
 def _prune(store: dict) -> dict:

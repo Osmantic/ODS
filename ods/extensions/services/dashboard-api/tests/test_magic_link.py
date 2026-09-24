@@ -977,6 +977,28 @@ def test_redeem_expired_token(magic_link_client, magic_link_module):
     assert resp.json()["detail"] == "Invalid or expired magic link"
 
 
+@pytest.mark.parametrize("expires_at", ["not-a-date", 123, "2026-01-01T00:00:00"])
+def test_redeem_treats_invalid_expiry_as_expired(
+    magic_link_client, magic_link_module, expires_at
+):
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice"},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+    store = magic_link_module._ensure_store()
+    store["tokens"][0]["expires_at"] = expires_at
+    magic_link_module._write_store(store)
+
+    resp = magic_link_client.get(
+        f"/auth/magic-link/{token}", follow_redirects=False
+    )
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Invalid or expired magic link"
+
+
 def test_redeem_revoked_token(magic_link_client, magic_link_module):
     gen = magic_link_client.post(
         "/api/auth/magic-link/generate",
