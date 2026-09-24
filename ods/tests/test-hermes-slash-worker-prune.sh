@@ -75,11 +75,17 @@ set -uo pipefail
 
 case "${1:-}" in
     ps)
+        if [[ "${ODS_TEST_PS_FAILURE:-0}" == "1" ]]; then
+            [[ "${ODS_TEST_PARTIAL_NAMES:-0}" == "1" ]] && echo "ods-hermes"
+            echo "Cannot connect to the Docker daemon" >&2
+            exit 1
+        fi
         [[ "${ODS_TEST_CONTAINER_MISSING:-0}" == "1" ]] && exit 0
-        echo "ods-hermes"
+        echo "${ODS_TEST_RUNNING_NAME:-ods-hermes}"
         exit 0
         ;;
     exec)
+        [[ -n "${ODS_TEST_EXEC_LOG:-}" ]] && printf '%s\n' "$*" >> "$ODS_TEST_EXEC_LOG"
         shift
         while [[ "${1:-}" == -* ]]; do shift; done   # drop -i and friends
         shift                                        # container name
@@ -226,6 +232,43 @@ if grep -q "no Hermes slash workers found" "$OUT"; then
 else
     pass "unreadable process table: never claims that no workers exist"
 fi
+
+# A failed Docker inventory is not evidence of a stopped Hermes container.
+for partial in 0 1; do
+    OUT="$WORKDIR/inventory-failed-$partial.txt"
+    KILL_LOG="$WORKDIR/inventory-kills-$partial"; : > "$KILL_LOG"
+    EXEC_LOG="$WORKDIR/inventory-exec-$partial"; : > "$EXEC_LOG"
+    rc="$(ODS_TEST_PS_FAILURE=1 ODS_TEST_PARTIAL_NAMES="$partial" \
+        ODS_TEST_EXEC_LOG="$EXEC_LOG" run_prune procps "$OUT" --force)"
+    check_eq "inventory failure (partial=$partial): exits nonzero" "1" "$rc"
+    check_eq "inventory failure (partial=$partial): no process inspection" "" "$(cat "$EXEC_LOG")"
+    check_eq "inventory failure (partial=$partial): no termination" "" "$(killed_pids)"
+    if grep -q 'could not list running containers' "$OUT" && ! grep -q '\[PASS\]' "$OUT"; then
+        pass "inventory failure (partial=$partial): reports unavailable evidence"
+    else
+        fail "inventory failure (partial=$partial): reports unavailable evidence" "$(cat "$OUT")"
+    fi
+done
+
+# Docker names are literal, including '.'; another matching regex is absent.
+OUT="$WORKDIR/literal-missing.txt"
+KILL_LOG="$WORKDIR/literal-kills"; : > "$KILL_LOG"
+EXEC_LOG="$WORKDIR/literal-exec"; : > "$EXEC_LOG"
+rc="$(ODS_TEST_EXEC_LOG="$EXEC_LOG" run_prune procps "$OUT" --container ods.hermes --force)"
+check_eq "literal absent name: exits 0" "0" "$rc"
+check_eq "literal absent name: no process inspection" "" "$(cat "$EXEC_LOG")"
+check_eq "literal absent name: no termination" "" "$(killed_pids)"
+if grep -q 'ods.hermes is not running' "$OUT"; then
+    pass "literal absent name: reports stopped container"
+else
+    fail "literal absent name: reports stopped container" "$(cat "$OUT")"
+fi
+
+OUT="$WORKDIR/literal-present.txt"
+KILL_LOG="$WORKDIR/literal-present-kills"; : > "$KILL_LOG"
+rc="$(ODS_TEST_RUNNING_NAME=ods.hermes run_prune procps "$OUT" --container ods.hermes --force)"
+check_eq "literal present name: exits 0" "0" "$rc"
+check_eq "literal present name: prunes aged workers" "101,103" "$(killed_pids)"
 
 # ── Summary ───────────────────────────────────────────────────────────────
 

@@ -105,7 +105,12 @@ collect_workers() {
         echo "[FAIL] docker CLI not found" >&2
         return 1
     fi
-    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER"; then
+    local containers
+    if ! containers="$(docker ps --format '{{.Names}}' 2>/dev/null)"; then
+        echo "[FAIL] could not list running containers; worker inspection was not performed" >&2
+        return 1
+    fi
+    if ! grep -Fxq -- "$CONTAINER" <<< "$containers"; then
         # stderr, not stdout: stdout is the normalized worker stream.
         echo "[INFO] $CONTAINER is not running; nothing to prune" >&2
         return 0
