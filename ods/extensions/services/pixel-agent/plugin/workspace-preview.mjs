@@ -254,7 +254,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
         relativeDirectory: {
           type: "string",
           description:
-            "Static-site directory relative to the Pixel workspace; it must already contain model-authored index.html.",
+            "Static-site directory relative to the Pixel workspace; it must already contain model-authored index.html. Each path component must start with a letter or digit, followed by letters, digits, dots, underscores or hyphens; hidden directories are not publishable. Maximum 128 characters per component, 12 components and 512 characters total.",
         },
       },
     },

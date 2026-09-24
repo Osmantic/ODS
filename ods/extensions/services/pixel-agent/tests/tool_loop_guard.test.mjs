@@ -12199,6 +12199,26 @@ test("rejects ODS-authored creative bytes for every visual request", () => {
   }
 });
 
+test("invalid preview directories report the path constraint before missing-file guidance", () => {
+  for (const directory of ['.site', 'public/.site', '../site', 'a'.repeat(129),
+    Array(13).fill('site').join('/'), Array(5).fill('a'.repeat(110)).join('/')]) {
+    for (const wrapped of [false, true]) {
+      const guard = createToolLoopGuard();
+      guard.observeRun({agentId:'pixel', runId:'run-1', sessionId:'session-1'}, 'pixel', {
+        prompt:'Create a new website and publish its preview.',
+      });
+      const params = {relativeDirectory:directory};
+      const result = wrapped
+        ? call(guard, 'tool_call', {event:{params:{id:'pixel_ods_workspace_preview', args:params}}})
+        : call(guard, 'pixel_ods_workspace_preview', {event:{params}});
+      assert.equal(result?.block, true, directory);
+      assert.match(result.blockReason, /Invalid preview relativeDirectory/);
+      assert.match(result.blockReason, /Re-reading or rewriting index.html will not repair/);
+      assert.doesNotMatch(result.blockReason, /has not created or inspected/);
+    }
+  }
+});
+
 test("preview receipt recovery uses existing-file evidence and canonical sandbox aliases", () => {
   for (const [readPath, previewArgs] of [
     ["./study-cards-2571/index.html", { directory: "./study-cards-2571" }],

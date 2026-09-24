@@ -7488,7 +7488,12 @@ export function createToolLoopGuard({
         return {block:true, blockReason:WORKSPACE_VISUAL_CONTINUATION_SCOPE_REASON};
       }
       const validDirectory = typeof directory === "string" && directory.length > 0 &&
+        directory.length <= 512 && directory.split("/").length <= 12 &&
         directory.split("/").every((part) => WORKSPACE_PATH_COMPONENT.test(part));
+      if (!validDirectory) {
+        return {block:true, blockReason:
+          "Invalid preview relativeDirectory. Use a workspace-relative directory with at most 12 components and 512 characters total. Each component must start with a letter or digit and contain only letters, digits, dots, underscores or hyphens (128 characters maximum). Hidden directories such as .site cannot be published. Re-reading or rewriting index.html will not repair an invalid directory name. Preserve existing files; select a valid directory only within the owner's requested scope."};
+      }
       if (state.workspacePreviewRestrictions?.mutation && state.workspacePreviewRestrictions.directory &&
           directory !== state.workspacePreviewRestrictions.directory) {
         return {block:true, blockReason:"The owner requested publication of one exact existing directory. Do not substitute another directory or create a replacement."};
@@ -7504,7 +7509,7 @@ export function createToolLoopGuard({
       // provenance controls authorship attribution, not permission to publish
       // inspected files. Host receipts remain required for publication.
       const requestedExistingPreview = state.workspacePreviewRequired && !requiresAuthoredSnapshot;
-      if (!validDirectory || (!hasObservedIndex && !requestedExistingPreview)) {
+      if (!hasObservedIndex && !requestedExistingPreview) {
         if (validDirectory && !state.workspacePreviewAuthorshipRequired) {
           return { block: true, blockReason: `Read ${directory}/index.html before publishing that exact directory. Preserve existing files; a different directory's readback cannot verify this target.` };
         }
