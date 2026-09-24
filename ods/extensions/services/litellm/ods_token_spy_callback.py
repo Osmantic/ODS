@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
 import time
@@ -70,6 +71,13 @@ def _provider_name(kwargs: dict[str, Any]) -> str:
         hostname = ""
     if hostname in _LOCAL_HOSTS or hostname.endswith(".local"):
         return "local"
+    try:
+        address = ipaddress.ip_address(hostname)
+        address = getattr(address, "ipv4_mapped", None) or address
+        if address.is_loopback:
+            return "local"
+    except ValueError:
+        pass
     provider = str(
         litellm_params.get("custom_llm_provider")
         or kwargs.get("custom_llm_provider")
