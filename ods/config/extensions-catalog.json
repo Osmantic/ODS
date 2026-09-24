@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-21T07:01:49Z",
+  "generated_at": "2026-09-24T01:54:19Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -329,7 +329,7 @@
     {
       "id": "audiocraft",
       "name": "AudioCraft",
-      "description": "Meta's AudioCraft is a generative AI for audio. Features MusicGen for\ntext-to-music generation and AudioGen for text-to-sound effects.\nCreate royalty-free music and sound effects from text descriptions.\n",
+      "description": "Meta's AudioCraft is a generative AI for audio. Features MusicGen for\ntext-to-music generation and AudioGen for text-to-sound effects.\nGenerate music and sound effects; model weights use CC BY-NC 4.0 terms.\n",
       "category": "optional",
       "gpu_backends": [
         "nvidia"
@@ -602,7 +602,7 @@
     {
       "id": "baserow",
       "name": "Baserow",
-      "description": "Open-source no-code database tool and Airtable alternative.\nCreate databases, tables, and views with a spreadsheet-like interface.\nSelf-hosted with no storage restrictions. MIT licensed.\n",
+      "description": "Open-source no-code database tool and Airtable alternative.\nCreate databases, tables, and views with a spreadsheet-like interface.\nSelf-hosted with an MIT-licensed core; premium and enterprise terms differ.\n",
       "category": "optional",
       "gpu_backends": [
         "all"
