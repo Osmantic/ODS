@@ -46,3 +46,17 @@ test('cleans up scheduled clock work when leaving the page', async () => {
   await act(async () => vi.advanceTimersByTimeAsync(60000))
   expect(fetcher).toHaveBeenCalledTimes(2)
 })
+
+test('updates the active filter at expiry while preserving whole-inventory counts', async () => {
+  const { fetcher } = await openInventory()
+  fireEvent.change(screen.getByLabelText('Access link status'), { target: { value: 'active' } })
+  fireEvent.change(screen.getByLabelText('Search access links'), { target: { value: 'alice' } })
+  expect(screen.getByLabelText('Access summary')).toHaveTextContent('Owner cards1 active')
+  expect(screen.getByText('Showing 1 of 2 access links')).toBeInTheDocument()
+  await act(async () => vi.advanceTimersByTimeAsync(5000))
+  expect(screen.getByText('Showing 0 of 2 access links')).toBeInTheDocument()
+  expect(screen.queryByText('alice')).not.toBeInTheDocument()
+  fireEvent.change(screen.getByLabelText('Access link status'), { target: { value: 'expired' } })
+  expect(screen.getByText('alice')).toBeInTheDocument()
+  expect(fetcher).toHaveBeenCalledTimes(2)
+})
