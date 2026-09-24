@@ -29,6 +29,32 @@ elif [[ "$GPU_BACKEND" == "amd" ]] && ! $DRY_RUN; then
         ods_sudo "$@"
     }
 
+    _phase10_rebuild_initramfs() {
+        local rebuild_status=127
+        if command -v update-initramfs >/dev/null 2>&1; then
+            if _phase10_privileged update-initramfs -u; then
+                return 0
+            else
+                rebuild_status=$?
+            fi
+        fi
+        if command -v dracut >/dev/null 2>&1; then
+            if _phase10_privileged dracut --force; then
+                return 0
+            else
+                rebuild_status=$?
+            fi
+        fi
+        if command -v mkinitcpio >/dev/null 2>&1; then
+            if _phase10_privileged mkinitcpio -P; then
+                return 0
+            else
+                rebuild_status=$?
+            fi
+        fi
+        return "$rebuild_status"
+    }
+
     # Ensure user is in render and video groups for ROCm GPU access
     # Without these, containers can't access /dev/kfd and /dev/dri
     if ! groups "$USER" 2>/dev/null | grep -qw render || ! groups "$USER" 2>/dev/null | grep -qw video; then
@@ -176,10 +202,13 @@ options ttm page_pool_size=${page_pool_size}
 GTT_EOF
             if _phase10_privileged cp "$_gtt_tmp" /etc/modprobe.d/amdgpu_llm_optimized.conf 2>/dev/null; then
                 # Rebuild initramfs so the new modprobe config takes effect on next boot.
-                _phase10_privileged update-initramfs -u >> "$LOG_FILE" 2>&1 || \
-                    _phase10_privileged dracut --force >> "$LOG_FILE" 2>&1 || true
-                ai_ok "GTT memory tuning installed (gttsize=${gtt_size}MB of ${total_ram_mb}MB, ${gtt_pct}%)"
-                _amd_needs_reboot=true
+                if _phase10_rebuild_initramfs >> "$LOG_FILE" 2>&1; then
+                    ai_ok "GTT memory tuning installed (gttsize=${gtt_size}MB of ${total_ram_mb}MB, ${gtt_pct}%)"
+                    _amd_needs_reboot=true
+                else
+                    ai_warn "GTT memory config was installed, but initramfs could not be rebuilt."
+                    ai_warn "Rebuild it before rebooting (Arch: sudo mkinitcpio -P; Debian/Ubuntu: sudo update-initramfs -u; Fedora/RHEL: sudo dracut --force)."
+                fi
             else
                 ai_warn "Could not install GTT memory config (needs sudo)."
             fi
