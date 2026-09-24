@@ -134,6 +134,15 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
 
+      - name: Windows Portal Selection Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-portal-selection.ps1
+
+      - name: Windows Portal Selection Contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-portal-selection.ps1
+
       - name: Windows Installer Presentation Contract
         shell: pwsh
         run: ./tests/contracts/test-windows-installer-presentation.ps1

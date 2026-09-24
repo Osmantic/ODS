@@ -100,6 +100,16 @@ local/LAN endpoint, select `--external-llm-provider openai-compatible` together
 with `--external-llm-url` and `--external-llm-model`. This reuse path is for
 credential-free upstreams; credentialed remote providers use the Remote GPU
 provider workflow. Do not put credentials in an endpoint URL.
+
+An installation without a configured Portal connection reports **Not configured**
+in the Dashboard. This is different from an installed agent being temporarily
+unreachable: restarting the model or refreshing the page does not install Portal.
+The native Windows installer reports that it does not provision Portal and rejects
+an explicit `-Pixel` request before changing the installation. Run the Linux
+installer with `--pixel` inside the supported WSL2 distribution instead. When
+moving an existing Windows installation, stop the old ODS services first to avoid
+duplicate containers and port conflicts; do not run two installers against the
+same active stack.
 These are ODS capability gates, not a reduction of the ODS support matrix.
 
 ## Native macOS eligibility

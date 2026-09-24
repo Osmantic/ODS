@@ -302,6 +302,7 @@ async def test_status_is_disabled_without_a_key(monkeypatch):
     assert await pixel.pixel_status() == {
         "available": False,
         "model": None,
+        "state": "not_configured",
         "detail": "Portal is not enabled",
     }
 
