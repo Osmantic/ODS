@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["models"])
 
-MODEL_ROUTER_URL = os.environ.get("MODEL_ROUTER_URL", "http://model-router:4010")
+MODEL_ROUTER_URL = os.environ.get("MODEL_ROUTER_URL", "http://model-router:9099")
 _EVIDENCE_TIMEOUT_SECONDS = 5.0
 _EVIDENCE_ATTEMPTS = 3
 _EVIDENCE_RETRY_DELAY_SECONDS = 0.5
