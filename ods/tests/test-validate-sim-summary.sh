@@ -210,6 +210,32 @@ else
     fail "strict mode missing generated_at should exit 2, got $r"
 fi
 
+python3 - <<'PY' "$TMP_DIR/valid.json" "$TMP_DIR/invalid-calendar-date.json"
+import json
+import sys
+src, dest = sys.argv[1], sys.argv[2]
+with open(src, encoding="utf-8") as f:
+    data = json.load(f)
+data["generated_at"] = "2026-02-30T12:34:56Z"
+with open(dest, "w", encoding="utf-8") as f:
+    json.dump(data, f)
+PY
+
+set +e
+out=$(python3 "$ROOT_DIR/scripts/validate-sim-summary.py" "$TMP_DIR/invalid-calendar-date.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 2 ]]; then
+    pass "invalid calendar timestamp exits 2"
+else
+    fail "invalid calendar timestamp should exit 2, got $r"
+fi
+if echo "$out" | grep -q "valid ISO8601 calendar timestamp"; then
+    pass "invalid calendar timestamp has an actionable error"
+else
+    fail "invalid calendar timestamp should have an actionable error"
+fi
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]
