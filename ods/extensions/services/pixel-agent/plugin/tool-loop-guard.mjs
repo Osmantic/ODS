@@ -7510,6 +7510,14 @@ export function createToolLoopGuard({
       // inspected files. Host receipts remain required for publication.
       const requestedExistingPreview = state.workspacePreviewRequired && !requiresAuthoredSnapshot;
       if (!hasObservedIndex && !requestedExistingPreview) {
+        // Remember only a bounded workspace-relative prerequisite, never a
+        // successful publication or authorship claim. Shell output can name
+        // a generated entry without supplying the core read receipt needed
+        // by this gate; subsequent successful tools must not coach a retry.
+        if (validDirectory && directory.length <= 512 && !hasObservedIndex &&
+            !state.boundPreviewWriteDirectories?.size) {
+          state.workspacePreviewEntryReadRequired = `${directory}/index.html`;
+        }
         if (validDirectory && !state.workspacePreviewAuthorshipRequired) {
           return { block: true, blockReason: `Read ${directory}/index.html before publishing that exact directory. Preserve existing files; a different directory's readback cannot verify this target.` };
         }
@@ -10389,6 +10397,14 @@ export function createToolLoopGuard({
       if (prerequisite) return `[ODS Pixel next step] ${prerequisite.instruction}`;
       if (state?.workspacePreviewRequired && !state.workspacePreview && !state.workspacePreviewVerifiedDirectory &&
           !state.workspacePreviewForbidden && !state.operationsRequired && !state.exactDownloadRequested) {
+        const missingEntry = state.workspacePreviewEntryReadRequired;
+        if (missingEntry && !state.boundPreviewWriteDirectories?.size &&
+            !state.successfulWritePaths.has(missingEntry) &&
+            !state.successfulReadPaths.has(missingEntry)) {
+          return `[ODS Pixel next step] Read ${missingEntry} with the workspace read tool before requesting that preview again. ` +
+            'A successful build, file-existence check or directory listing does not supply the entry readback required for publication. ' +
+            "If the read reports a missing entry, inspect the build output and errors, then repair using the project's real build within the owner's requested scope. Preserve existing files; do not delete the directory or handwrite generated build outputs.";
+        }
         const directory = workspacePreviewDirectoryFromState(state);
         const historicalReadback = !directory && historicalWorkspaceEntryReadback(state);
         if (historicalReadback) return `[ODS Pixel next step] ${historicalReadback.instruction}`;
