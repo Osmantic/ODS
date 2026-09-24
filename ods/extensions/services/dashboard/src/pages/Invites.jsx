@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import './invites.css'
 import {
   UserPlus, Copy, Check, Trash2, RefreshCw, QrCode, Share2, X,
@@ -78,6 +78,7 @@ function tokenCanRevoke(token, now = Date.now()) {
 }
 
 export default function Invites() {
+  const refreshButtonRef = useRef(null)
   const [tokens, setTokens] = useState([])
   const [now, setNow] = useState(Date.now)
   const [loading, setLoading] = useState(true)
@@ -151,6 +152,10 @@ export default function Invites() {
       await refresh()
     } catch (err) {
       setError(err.message)
+    } finally {
+      // Revocation removes the focused row action. Keep keyboard users anchored
+      // on the stable page-level refresh action after the list settles.
+      Promise.resolve().then(() => refreshButtonRef.current?.focus())
     }
   }
 
@@ -180,6 +185,7 @@ export default function Invites() {
           <p>Manage device keys and temporary guest links.</p>
         </div>
         <button
+          ref={refreshButtonRef}
           onClick={refresh}
           disabled={refreshing}
           className="p-2 text-theme-text-muted hover:text-theme-text hover:bg-theme-surface-hover rounded-lg transition-colors disabled:opacity-50"
