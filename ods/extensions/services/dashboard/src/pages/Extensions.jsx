@@ -663,7 +663,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
   const isStopped = status === 'stopped'
   const isUnhealthy = status === 'unhealthy'
   const isCliInstalled = status === 'cli_installed'
-  const isToggleable = isUserExt && (status === 'enabled' || status === 'cli_installed' || status === 'disabled' || status === 'error' || status === 'stopped' || status === 'unhealthy')
+  const isToggleable = isUserExt && (status === 'enabled' || status === 'cli_installed' || status === 'disabled')
   const showRemove = isUserExt && (status === 'disabled' || isError)
   const showInstall = status === 'not_installed' && ext.installable
   const showUpdate = isUserExt && ext.installable && (
@@ -708,9 +708,6 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
                 title={disabledTitle}
                 onClick={() => onAction(ext, status === 'disabled' ? 'enable' : 'disable')}
                 className={`relative inline-flex h-[18px] w-[32px] shrink-0 rounded-full transition-colors disabled:opacity-50 ${
-                  status === 'error' ? 'bg-red-500' :
-                  status === 'stopped' ? 'bg-amber-500' :
-                  status === 'unhealthy' ? 'bg-amber-500' :
                   (status === 'enabled' || isCliInstalled) ? 'bg-green-500' : 'bg-theme-border'
                 }`}
               >
