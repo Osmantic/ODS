@@ -17,7 +17,8 @@ append_if_missing() {
   if [ -f "$ENV_FILE" ] && grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
     return 0
   fi
-  echo "${key}=${value}" >> "$ENV_FILE"
+  # Existing .env files may end without a newline.
+  printf '\n%s=%s\n' "$key" "$value" >> "$ENV_FILE"
 }
 
 append_if_missing "ANYTHINGLLM_JWT_SECRET" "$(generate_secret)"
