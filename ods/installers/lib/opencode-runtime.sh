@@ -4,13 +4,17 @@
 _ODS_OPENCODE_RELEASES="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/opencode-release.tsv"
 
 ods_opencode_release() {
-    local platform="$(uname -s)" arch="$(uname -m)"
+    local platform arch
+    platform="$(uname -s)"; arch="$(uname -m)"
     if [[ "$platform" == Linux ]] && ldd --version 2>&1 | grep -qi musl; then platform=Linux-musl; fi
     awk -F '\t' -v p="$platform" -v a="$arch" 'NR > 1 && $2 == p && $3 == a { print; found=1 } END { if (!found) exit 1 }' "$_ODS_OPENCODE_RELEASES"
 }
 
 ods_opencode_version_matches() {
-    [[ -f "$1" && -x "$1" ]] && [[ "$("$1" --version 2>/dev/null)" == "$2" ]]
+    local actual
+    [[ -f "$1" && -x "$1" ]] || return 1
+    actual="$("$1" --version 2>/dev/null)" || return 1
+    [[ "$actual" == "$2" ]]
 }
 
 # Emits only the selected absolute executable. Existing custom PATH binaries are

@@ -32,6 +32,12 @@ digest="$(sha256sum "$scratch/good.tar.gz")"; digest="${digest%% *}"
 if ods_install_opencode "$result" >/dev/null 2>&1; then exit 1; fi
 [[ "$("$result" --version)" == 1.2.18 ]]
 echo 'PASS wrong staged version preserves old executable'
+printf '#!/bin/sh\necho 1.18.32\nexit 1\n' > "$scratch/package/opencode"
+tar -czf "$scratch/good.tar.gz" -C "$scratch/package" opencode
+digest="$(sha256sum "$scratch/good.tar.gz")"; digest="${digest%% *}"
+if ods_install_opencode "$result" >/dev/null 2>&1; then exit 1; fi
+[[ "$("$result" --version)" == 1.2.18 ]]
+echo 'PASS matching version text with failed process exit rejected'
 [[ "$(cat "$HOME/.config/opencode/opencode.json")" == 'custom config' ]]
 [[ -z "$(find "$HOME/.opencode/bin" -name '.ods-update.*')" ]]
 echo 'PASS config preserved and owned staging cleaned'
