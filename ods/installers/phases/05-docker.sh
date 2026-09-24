@@ -23,6 +23,19 @@ ods_progress 30 "docker" "Setting up Docker"
 show_phase 3 6 "Docker Setup" "~2 minutes"
 ai "Preparing container runtime..."
 
+# The Windows-managed runtime uses Docker Desktop's host gateway. Never start
+# a different Linux daemon when Desktop disappears between preflight and setup.
+if [[ "${AMD_INFERENCE_RUNTIME_MODE:-}" == wsl-windows-lemonade && "${DRY_RUN:-false}" != true ]]; then
+    _windows_docker_os="$(docker info --format '{{.OperatingSystem}}' 2>/dev/null)" || _windows_docker_os=''
+    if [[ -z "$_windows_docker_os" ]]; then
+        _windows_docker_os="$(ods_sudo docker info --format '{{.OperatingSystem}}' 2>/dev/null)" || _windows_docker_os=''
+    fi
+    if [[ "$_windows_docker_os" != *'Docker Desktop'* ]]; then
+        error "Managed Windows inference requires Docker Desktop with this WSL distribution enabled. Start Docker Desktop and retry; no native Linux daemon will be started as a fallback."
+        exit 1
+    fi
+fi
+
 # Ensure package manager is detected
 [[ -z "${PKG_MANAGER:-}" ]] && detect_pkg_manager
 

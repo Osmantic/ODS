@@ -110,3 +110,30 @@ source "$root/installers/phases/02-detection.sh"
 [[ "$GPU_BACKEND" == amd && "$GGUF_FILE" == example.gguf && "$CTX_SIZE" == 65536 ]]
 [[ "$GPU_HAS_NVLINK" == false && "$GPU_TOPOLOGY_JSON" == '{}' && "$LLM_MODEL_SIZE_MB" == 3 ]]
 echo 'PASS: complete Linux detection retains the prepared Windows model and initializes downstream state'
+
+python3 - "$root/installers/phases/05-docker.sh" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+
+phase = Path(sys.argv[1]).read_text()
+guard = phase[phase.index('# The Windows-managed runtime'):phase.index('# Ensure package manager')]
+for mode, dry, daemon, privileged, expected in [
+    ('wsl-windows-lemonade', 'false', 'Docker Desktop', '', 0),
+    ('wsl-windows-lemonade', 'false', '', 'Docker Desktop', 0),
+    ('wsl-windows-lemonade', 'false', 'Ubuntu 24.04', '', 1),
+    ('wsl-windows-lemonade', 'false', '', '', 1),
+    ('wsl-windows-lemonade', 'true', '', '', 0),
+    ('local', 'false', 'Ubuntu 24.04', '', 0),
+]:
+    result = subprocess.run(['bash', '-c', '''
+set -euo pipefail
+AMD_INFERENCE_RUNTIME_MODE=$1; DRY_RUN=$2
+daemon=$3; privileged=$4
+docker() { printf '%s' "$daemon"; }
+ods_sudo() { printf '%s' "$privileged"; }
+error() { echo "$*" >&2; return 1; }
+''' + guard, 'test', mode, dry, daemon, privileged], capture_output=True, text=True)
+    assert result.returncode == expected, (mode, dry, daemon, result.stderr)
+print('PASS: Windows runtime cannot fall back to a different Docker daemon; native Linux and dry-run remain unchanged')
+PY
