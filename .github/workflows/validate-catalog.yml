@@ -5,12 +5,16 @@ on:
     branches: [main]
     paths:
       - 'ods/extensions/library/services/*/manifest.yaml'
+      - 'ods/extensions/library/services/**/compose*.yaml'
+      - 'ods/extensions/library/validate-compose.sh'
       - 'ods/scripts/generate-extensions-catalog.py'
       - 'ods/config/extensions-catalog.json'
   pull_request:
     branches: [main]
     paths:
       - 'ods/extensions/library/services/*/manifest.yaml'
+      - 'ods/extensions/library/services/**/compose*.yaml'
+      - 'ods/extensions/library/validate-compose.sh'
       - 'ods/scripts/generate-extensions-catalog.py'
       - 'ods/config/extensions-catalog.json'
 
@@ -44,3 +48,6 @@ jobs:
             echo "::error::extensions-catalog.json is out of date. Run: python ods/scripts/generate-extensions-catalog.py"
             exit 1
           fi
+
+      - name: Validate installable Compose stacks
+        run: bash ods/extensions/library/validate-compose.sh
