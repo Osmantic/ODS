@@ -132,6 +132,20 @@ def test_python_selection_rejects_invalid_discovery(monkeypatch, output, code):
     with pytest.raises(ValueError): service.select_python()
 
 
+@pytest.mark.skipif(sys.platform != 'darwin', reason='real Apple interpreter qualification')
+def test_selected_python_runs_without_launcher_cache_writes():
+    executable = service.select_python()
+    assert executable != Path('/usr/bin/python3')
+    result = subprocess.run([
+        '/usr/bin/sandbox-exec', '-p', '(version 1)(allow default)(deny file-write*)',
+        str(executable), '-I', '-B', '-c', 'print("native-python-ready")',
+    ], cwd='/', env={'PATH': '/usr/bin:/bin', 'LANG': 'C'},
+        capture_output=True, text=True, timeout=15, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == 'native-python-ready\n'
+    assert result.stderr == ''
+
+
 def test_python_selection_checks_final_executable_custody(monkeypatch):
     monkeypatch.setattr(service.sys, 'platform', 'darwin')
     final = '/Library/Developer/final/Python'
