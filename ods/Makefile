@@ -92,6 +92,9 @@ test: ## Run unit and contract tests
 	@echo "=== health-check.sh --json output contract ==="
 	@bash tests/test-health-check-json-output.sh
 	@echo ""
+	@echo "=== shared Python interpreter resolver ==="
+	@bash tests/test-python-cmd-resolver.sh
+	@echo ""
 	@echo "=== QR code helper LAN detection ==="
 	@bash tests/test-qrcode-helper.sh
 	@echo ""
