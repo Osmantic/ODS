@@ -130,6 +130,18 @@ grep -qx 'unqualified-search-registries = \["registry.example/#team", "quay.io",
     || fail "TOML comments or a quoted hash corrupted the registry list"
 pass "Podman registry parser handles multiline TOML comments and quoted hashes"
 
+bracketed="$TMP_DIR/bracketed.conf"
+cat > "$bracketed" <<'EOF'
+unqualified-search-registries = [
+  "[fd00::1]:5000", # private IPv6 registry; keep this first ]
+  "quay.io",
+]
+EOF
+CONTAINERS_REGISTRIES_CONF="$bracketed" ods_podman_ensure_dockerhub_search
+grep -qx 'unqualified-search-registries = \["\[fd00::1\]:5000", "quay.io", "docker.io"\]' "$bracketed" \
+    || fail "brackets inside TOML strings or comments corrupted the registry list"
+pass "Podman registry parser ignores brackets inside strings and comments"
+
 if grep -Eq 'list\[|\|[[:space:]]*None' "$REGISTRY_LIB"; then
     fail "Podman helper requires a newer Python type-hint syntax"
 fi

@@ -76,6 +76,29 @@ def strip_toml_comments(value):
     return "".join(output)
 
 
+def toml_array_balance(value):
+    """Count array brackets outside TOML comments and quoted strings."""
+    balance = 0
+    quote = None
+    escaped = False
+    for character in strip_toml_comments(value):
+        if quote:
+            if escaped:
+                escaped = False
+            elif character == "\\" and quote == '"':
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in ('"', "'"):
+            quote = character
+        elif character == "[":
+            balance += 1
+        elif character == "]":
+            balance -= 1
+    return balance
+
+
 def search_registries(path):
     try:
         lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -100,10 +123,10 @@ def search_registries(path):
 
     expression = lines[key_line].split("=", 1)[1]
     end_line = key_line + 1
-    balance = expression.count("[") - expression.count("]")
+    balance = toml_array_balance(expression)
     while balance > 0 and end_line < first_table:
         expression += lines[end_line]
-        balance += lines[end_line].count("[") - lines[end_line].count("]")
+        balance = toml_array_balance(expression)
         end_line += 1
     if balance != 0:
         print(f"unterminated unqualified-search-registries array in {path}", file=sys.stderr)
@@ -177,9 +200,11 @@ if key_line is None:
     lines[first_table:first_table] = insertion
 else:
     end_line = key_line + 1
-    balance = lines[key_line].count("[") - lines[key_line].count("]")
+    expression = lines[key_line].split("=", 1)[1]
+    balance = toml_array_balance(expression)
     while balance > 0 and end_line < first_table:
-        balance += lines[end_line].count("[") - lines[end_line].count("]")
+        expression += lines[end_line]
+        balance = toml_array_balance(expression)
         end_line += 1
     if balance != 0:
         print(f"unterminated unqualified-search-registries array in {target}", file=sys.stderr)
