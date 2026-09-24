@@ -291,11 +291,17 @@ Templates are curated presets that enable a group of extensions suited to a spec
 **List available templates:**
 ```bash
 ods template list
+
+# Machine-readable catalog for scripts and integrations
+ods template list --json
 ```
 
 **Preview what a template will change before applying:**
 ```bash
 ods template preview <template-id>
+
+# Machine-readable preview, including already_enabled and to_enable services
+ods template preview <template-id> --json
 ```
 
 **Apply a template (enables the template's services):**

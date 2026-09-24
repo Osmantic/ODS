@@ -6446,10 +6446,40 @@ cmd_repair() {
 # Templates
 #=============================================================================
 _template_list() {
+    local json_mode="${1:-false}"
     local templates_dir="$INSTALL_DIR/templates"
     if [[ ! -d "$templates_dir" ]]; then
+        if [[ "$json_mode" == "true" ]]; then
+            printf '[]\n'
+            return 0
+        fi
         warn "No templates directory found at $templates_dir"
         return 0
+    fi
+
+    if [[ "$json_mode" == "true" ]]; then
+        python3 - "$templates_dir" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+import yaml
+
+templates = []
+templates_dir = Path(sys.argv[1])
+for path in sorted(templates_dir.glob("*.yaml")) + sorted(templates_dir.glob("*.yml")):
+    with path.open(encoding="utf-8") as fh:
+        document = yaml.safe_load(fh)
+    if not isinstance(document, dict) or document.get("schema_version") != "ods.templates.v1":
+        continue
+    template = document.get("template", {})
+    if isinstance(template, dict) and template.get("id"):
+        templates.append(template)
+
+json.dump(templates, sys.stdout, ensure_ascii=False)
+sys.stdout.write("\n")
+PYEOF
+        return
     fi
 
     # First pass: collect template rows and compute max ID width so the
@@ -6503,7 +6533,8 @@ PYEOF
 
 _template_preview() {
     local template_id="${1:-}"
-    [[ -z "$template_id" ]] && { log "Usage: ods template preview <template-id>"; exit 1; }
+    local json_mode="${2:-false}"
+    [[ -z "$template_id" ]] && { log "Usage: ods template preview <template-id> [--json]"; exit 1; }
 
     local templates_dir="$INSTALL_DIR/templates"
     local tmpl_file=""
@@ -6528,20 +6559,18 @@ PYEOF
 
     [[ -z "$tmpl_file" ]] && error "Template not found: $template_id"
 
-    python3 - "$tmpl_file" "$INSTALL_DIR" <<'PYEOF'
-import yaml, sys
+    python3 - "$tmpl_file" "$INSTALL_DIR" "$json_mode" <<'PYEOF'
+import json
+import sys
 from pathlib import Path
+
+import yaml
 
 with open(sys.argv[1]) as fh:
     d = yaml.safe_load(fh)
 t = d.get("template", {})
 install_dir = Path(sys.argv[2])
-
-print(f"Template: {t.get('name', t.get('id', ''))}")
-print(f"Description: {t.get('description', '-')}")
-if t.get("estimated_disk_gb"):
-    print(f"Estimated disk: ~{t['estimated_disk_gb']}GB")
-print()
+json_mode = sys.argv[3] == "true"
 
 services = t.get("services", [])
 ext_dir = install_dir / "extensions" / "services"
@@ -6556,6 +6585,20 @@ for svc in services:
         already.append(svc)
     else:
         to_enable.append(svc)
+
+if json_mode:
+    result = dict(t)
+    result["already_enabled"] = already
+    result["to_enable"] = to_enable
+    json.dump(result, sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
+    raise SystemExit(0)
+
+print(f"Template: {t.get('name', t.get('id', ''))}")
+print(f"Description: {t.get('description', '-')}")
+if t.get("estimated_disk_gb"):
+    print(f"Estimated disk: ~{t['estimated_disk_gb']}GB")
+print()
 
 if already:
     print(f"Already enabled: {', '.join(already)}")
@@ -6623,10 +6666,22 @@ cmd_template() {
     local subcmd="${1:-list}"
     shift || true
     case "$subcmd" in
-        list)    _template_list ;;
-        preview) _template_preview "$@" ;;
+        list)
+            local list_json="false"
+            [[ "${1:-}" == "--json" ]] && { list_json="true"; shift; }
+            [[ $# -eq 0 ]] || error "Usage: ods template list [--json]"
+            _template_list "$list_json"
+            ;;
+        preview)
+            local template_id="${1:-}"
+            shift || true
+            local preview_json="false"
+            [[ "${1:-}" == "--json" ]] && { preview_json="true"; shift; }
+            [[ $# -eq 0 ]] || error "Usage: ods template preview <template-id> [--json]"
+            _template_preview "$template_id" "$preview_json"
+            ;;
         apply)   _template_apply "$@" ;;
-        *)       log "Usage: ods template [list|preview|apply] [template-id]"; exit 1 ;;
+        *)       log "Usage: ods template [list [--json]|preview <template-id> [--json]|apply <template-id>]"; exit 1 ;;
     esac
 }
 
@@ -6774,8 +6829,8 @@ ${CYAN}Examples:${NC}
   ods restart stt               # Restart Whisper (via alias)
   ods chat "What is 2+2?"      # Quick LLM test
   ods config edit               # Edit .env file
-  ods template list              # List available templates
-  ods template preview creative-studio
+  ods template list [--json]     # List available templates
+  ods template preview creative-studio [--json]
                                   # Preview what a template will change
   ods template apply chat-playground
                                   # Apply a template (enables services)

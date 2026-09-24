@@ -228,6 +228,9 @@ test: ## Run unit and contract tests
 	@echo "=== CLI user-extension dependency resolution ==="
 	@bash tests/test-cli-user-extension-deps.sh
 	@echo ""
+	@echo "=== CLI template JSON output ==="
+	@bash tests/test-template-json-output.sh
+	@echo ""
 	@echo "=== session cleanup lifecycle ==="
 	@bash tests/test-session-cleanup.sh
 
