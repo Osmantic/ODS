@@ -54,6 +54,22 @@ def test_parse_huggingface_resolve_url_rejects_non_hf_url():
         helper.parse_huggingface_resolve_url("https://example.com/model.gguf")
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://huggingface.co/org/repo/resolve/main/%2e%2e/secret.gguf",
+        "https://huggingface.co/org/repo/resolve/main/dir%5csecret.gguf",
+        "https://huggingface.co/org%2frepo/name/resolve/main/model.gguf",
+        "https://huggingface.co/org/repo/resolve/%2e%2e/model.gguf",
+    ],
+)
+def test_parse_huggingface_resolve_url_rejects_decoded_traversal(url):
+    helper = _load_helper()
+
+    with pytest.raises(ValueError, match="unsafe path component"):
+        helper.parse_huggingface_resolve_url(url)
+
+
 def test_download_snapshot_passes_cache_revision_and_patterns(monkeypatch, tmp_path):
     helper = _load_snapshot_helper()
     calls = []

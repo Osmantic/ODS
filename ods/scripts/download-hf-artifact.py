@@ -15,6 +15,13 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 
+def _validate_path_parts(parts: list[str], label: str) -> None:
+    """Reject decoded path components that could escape their namespace."""
+    for part in parts:
+        if not part or part in {".", ".."} or "\\" in part or "\x00" in part:
+            raise ValueError(f"Hugging Face {label} contains an unsafe path component")
+
+
 def parse_huggingface_resolve_url(url: str) -> tuple[str, str, str]:
     parsed = urlparse(url)
     host = parsed.netloc.lower()
@@ -25,11 +32,15 @@ def parse_huggingface_resolve_url(url: str) -> tuple[str, str, str]:
     if len(parts) < 5 or parts[2] != "resolve":
         raise ValueError("URL is not a Hugging Face /resolve/ artifact URL")
 
+    _validate_path_parts(parts[:2], "repository")
+    if any("/" in part for part in parts[:2]):
+        raise ValueError("Hugging Face repository contains an unsafe path component")
+
     repo_id = f"{parts[0]}/{parts[1]}"
     revision = parts[3]
     filename = "/".join(parts[4:])
-    if not filename:
-        raise ValueError("Hugging Face artifact filename is empty")
+    _validate_path_parts(revision.split("/"), "revision")
+    _validate_path_parts(filename.split("/"), "artifact filename")
     return repo_id, revision, filename
 
 
