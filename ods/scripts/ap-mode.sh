@@ -355,6 +355,32 @@ cmd_up() {
   log "  HTTP/HTTPS on ${ODS_AP_INTERFACE} redirected to the gateway"
 }
 
+# Signal the daemon named by a pidfile only when the live process still
+# matches the expected identity. Pidfiles outlive their daemons: after a
+# crash or reboot a stale file can name a PID that has since been
+# recycled by an unrelated process, and cmd_down runs as root — a bare
+# `kill $(cat pidfile)` would signal an innocent process. Identity is
+# checked the same way the pkill fallback does: daemon name in
+# /proc/<pid>/comm plus the conf path in cmdline.
+kill_pidfile() {
+  local pidfile="$1" daemon="$2" conf_path="$3"
+  [[ -f "$pidfile" ]] || return 0
+
+  local pid
+  pid="$(cat "$pidfile" 2>/dev/null || true)"
+  if [[ "$pid" =~ ^[0-9]+$ ]] && [[ -d "/proc/$pid" ]]; then
+    local comm cmdline
+    comm="$(cat "/proc/$pid/comm" 2>/dev/null || true)"
+    cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+    if [[ "$comm" == "$daemon" && "$cmdline" == *"$conf_path"* ]]; then
+      kill "$pid" 2>/dev/null || true
+    else
+      log "pidfile $(basename "$pidfile") names pid $pid but is not ${daemon} (${conf_path}) — skipping kill"
+    fi
+  fi
+  rm -f "$pidfile"
+}
+
 cmd_down() {
   # Idempotent. Never errors out — best-effort cleanup so we don't leave
   # the system in a half-configured state.
@@ -363,16 +389,10 @@ cmd_down() {
 
   log "tearing down AP on ${ODS_AP_INTERFACE}"
 
-  if [[ -f "${HOSTAPD_PID}" ]]; then
-    kill "$(cat "${HOSTAPD_PID}")" 2>/dev/null || true
-    rm -f "${HOSTAPD_PID}"
-  fi
+  kill_pidfile "${HOSTAPD_PID}" hostapd "${HOSTAPD_CONF}"
   pkill -f "hostapd .*${HOSTAPD_CONF}" 2>/dev/null || true
 
-  if [[ -f "${DNSMASQ_PID}" ]]; then
-    kill "$(cat "${DNSMASQ_PID}")" 2>/dev/null || true
-    rm -f "${DNSMASQ_PID}"
-  fi
+  kill_pidfile "${DNSMASQ_PID}" dnsmasq "${DNSMASQ_CONF}"
   pkill -f "dnsmasq.*${DNSMASQ_CONF}" 2>/dev/null || true
 
   remove_iptables_rules
