@@ -60,6 +60,13 @@ commit and keep your own validation receipt. Stable patch fixes land on
 [Installer Trust](ods/docs/INSTALLER_TRUST.md), and
 [Forkability](ods/docs/FORKABILITY.md).
 
+**September main update:** the quickstarts below follow development `main`,
+including the [September Portal/platform promotion](ods/docs/PUBLIC_BETA_PROMOTION_2026-09.md).
+That merge is not a new stable release or proof of complete fleet qualification.
+Native Pixel source-update and backup/recovery limits are documented in
+[Source Updates](ods/docs/SOURCE-UPDATES.md). Use a pinned release or audited
+commit when reproducibility is required.
+
 ## Get Started
 
 Choose your system, copy the block, run it in a normal terminal. ODS installs the stack, picks a model for your hardware, starts the services, and gives you the local web UI.
@@ -149,7 +156,8 @@ Windows recovery note: if the runtime folder is partial and `.\ods.ps1` is missi
 >
 > | Platform | Status |
 > |----------|--------|
-> | **Linux** (NVIDIA + AMD + Intel Arc) | **Supported** — install and run today |
+> | **Linux** (NVIDIA + AMD Strix Halo) | **Supported** — see the hardware and distro limits in the support matrix |
+> | **Linux + Intel Arc** (SYCL) | **Experimental / Tier C** — validation is hardware-specific |
 > | **Windows** (NVIDIA + AMD) | **Supported** — install and run today |
 > | **macOS** (Apple Silicon) | **Supported** — install and run today |
 >

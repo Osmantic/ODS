@@ -2,7 +2,10 @@
 
 Installable recipes and reference integrations for ODS. The generated catalog combines this library with native services, giving native definitions precedence when IDs match. A catalog entry does not by itself mean that an application has been tested or has a deployable recipe.
 
-The expansion toward 200 entries is tracked in [EXTENSION-EXPANSION.md](../../docs/EXTENSION-EXPANSION.md). The [200-project research list](../../docs/EXTENSION-CANDIDATES-200-2026-09-20.md) records candidate projects separately from implemented recipes.
+The reviewed main promotion contains 200 generated catalog entries and 203
+audited service definitions. See [extension readiness](../../docs/EXTENSION-READINESS.md)
+for the scope of that source evidence. Candidate research documents that were
+not included in this public tree are not public acceptance receipts.
 
 New recipes include `upstream.json` with the source repository, code license, pinned image, available architectures and runtime validation status. Audit library recipes with `python scripts/audit-extensions.py --include-library <service-id> ...` from the ODS directory.
 
@@ -37,7 +40,7 @@ Each extension is a self-contained directory with a `manifest.yaml` (service met
 | Service | Description | GPU |
 |---------|------------|-----|
 | [`comfyui/`](../services/comfyui/) | ComfyUI — node-based Stable Diffusion workflows | AMD, NVIDIA |
-| [`fooocus/`](services/fooocus/) | Fooocus — simplified Stable Diffusion (Midjourney-like UX) | NVIDIA |
+| [`fooocus/`](../services/fooocus/) | Fooocus — simplified Stable Diffusion (Midjourney-like UX) | NVIDIA |
 | [`invokeai/`](services/invokeai/) | InvokeAI — professional Stable Diffusion with canvas | AMD, NVIDIA |
 | [`forge/`](services/forge/) | Forge / A1111 — Stable Diffusion WebUI with optimizations | NVIDIA |
 

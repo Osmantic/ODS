@@ -1,6 +1,11 @@
 # September 2026 public-beta promotion record
 
-Status: preparation in progress; full release qualification is not established.
+Status: merged into development `main` on 2026-09-24 at 00:47:24 UTC through
+[PR #6515](https://github.com/Osmantic/ODS/pull/6515), merge commit
+[`1bc5e1cbb24864f1c9efd551e0613202af324e3f`](https://github.com/Osmantic/ODS/commit/1bc5e1cbb24864f1c9efd551e0613202af324e3f).
+The final public-beta parent was `99feff29edb453d9bd9db4f99104c7142904aab5`.
+The merge does not establish full release qualification or close the missing
+acceptance below. This record does not assert a new physical-fleet result.
 
 This record accompanies [promotion PR #6515](https://github.com/Osmantic/ODS/pull/6515).
 It describes a move into the development `main` branch, not a stable release,
@@ -80,8 +85,9 @@ release checker does not advertise this branch promotion as a version upgrade.
   `bbc9139863f465d6cff43fe6b201f3310e4ead0afcb3c4178c961576622db70d`.
   The later promotion audit reproduced Windows credential protection,
   quoted Compose path, native backup coverage, and source update limitations.
-  Fixes and their final-head validation must be recorded on PR #6515 before
-  considering promotion; the earlier gate did not cover those defects.
+  Subsequent fixes landed through PRs #6531 and #6535 before promotion.
+  Consult PR #6515 for the final-head CI/review record; the earlier gate did not
+  cover those defects and is not being relabeled as a final-head pass.
 - Prior installed tests span several revisions. They provide useful failure
   evidence but do not establish acceptance of this exact candidate on all six
   target machines.
@@ -115,8 +121,10 @@ tests each prove less than the complete required user journeys.
 
 ## Promotion and recovery requirements
 
-Before merge, record the final source identity, resolve blocking CI and reviewed
-installer defects, and obtain the repository's required maintainer approvals.
+The promotion is merged. Keep the final source identity above and the PR's CI
+and review history together; do not retroactively describe earlier-candidate
+evidence as a final-head pass. Later release claims still require the missing
+acceptance below and any required maintainer approvals.
 Apply [Release Validation](RELEASE_VALIDATION.md) and the
 [High-Risk Change Map](HIGH_RISK_CHANGE_MAP.md): if a scoped alternative is
 accepted, record its exact scope, evidence, and remaining gaps. This document

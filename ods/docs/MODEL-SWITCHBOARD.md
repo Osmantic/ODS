@@ -1,14 +1,20 @@
-# ODS Model Switchboard PR Plan
+# ODS Model Switchboard historical design plan
 
-Date: 2026-07-19
+Design date: 2026-07-19
+
+**Historical plan, not current implementation status.** The September promotion
+includes model-router and switchboard work. Statements below about unimplemented
+PRs and proposed rollout stages describe the July planning snapshot. For current
+operator behavior use [model management](MODEL-MANAGEMENT.md),
+[source updates](SOURCE-UPDATES.md), [Portal eligibility](PIXEL.md), and the
+[September promotion record](PUBLIC_BETA_PROMOTION_2026-09.md). A historical
+rollback proposal is not a supported native Pixel recovery procedure.
 
 Last audited: 2026-07-19; refreshed 2026-07-20 against post-merge `main` `5dd6f72d` (77-PR fix sweep + #1888 + #1766 + #1711 + #1887 + #1724 all merged)
 
 Status: proposed implementation stack. The lifecycle foundation ([#1711](https://github.com/Osmantic/ODS/pull/1711)), swap-safety manifest contract ([#1766](https://github.com/Osmantic/ODS/pull/1766)), transactional swap sync ([#1887](https://github.com/Osmantic/ODS/pull/1887)), and model management UI/actions ([#1724](https://github.com/Osmantic/ODS/pull/1724)) are already merged; the state store, data plane, reconciler, and consumer migrations in this plan are not implemented.
 
-Goal of record (local planning source): `C:\Users\conta\Desktop\ODS-MODEL-SWAP-DESIGN.md`
-
-Portability rule: the absolute paths in this header are evidence pointers for this workstation, not execution dependencies. PR 1 must add the accepted version of this plan at `ods/docs/MODEL-SWITCHBOARD.md`; subsequent PRs reference that repository file and update its decision/status table in place.
+Source of record: this repository document. Local planning files are not public evidence or execution dependencies.
 
 Research inputs:
 
@@ -16,7 +22,6 @@ Research inputs:
 - ODS GitHub `main` at `5dd6f72d` (contains the merged 77-PR fix sweep, #1888, #1766, #1711, #1887 content, and #1724)
 - Fleet harness `main` at `cb84c609fe897c1361967a844521fae7ab830848`
 - Lemonade `main` at `16dc27d2f3e249f2d826c97cde3f742df3b9d593`
-- Local Lemonade audit: `C:\Users\conta\Documents\Codex\2026-07-06\cl\LEMONADE_ROUTER_AUDIT.md`
 - [Lemonade router milestone #2389](https://github.com/lemonade-sdk/lemonade/issues/2389)
 - [Lemonade classifier wiring PR #2727](https://github.com/lemonade-sdk/lemonade/pull/2727)
 - [Lemonade router LRU isolation PR #2729](https://github.com/lemonade-sdk/lemonade/pull/2729)
