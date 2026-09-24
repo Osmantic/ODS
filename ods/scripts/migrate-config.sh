@@ -95,6 +95,19 @@ compare_versions() {
     return 0
 }
 
+# Sort the version itself, not its filename/path: lexical order places
+# 2.4.10 before 2.4.2 and 10.0.0 before 2.0.0. Numeric field sorting works
+# with both GNU and BSD sort, unlike GNU's version-sort extension.
+ordered_migration_versions() {
+    local migration version
+    for migration in "$MIGRATIONS_DIR"/migrate-v*.sh; do
+        [[ -f "$migration" ]] || continue
+        version="${migration##*/}"
+        version="${version#migrate-v}"
+        printf '%s\n' "${version%.sh}"
+    done | LC_ALL=C sort -t . -k1,1n -k2,2n -k3,3n
+}
+
 # Backup current configuration
 cmd_backup() {
     log_info "Backing up current configuration..."
@@ -210,10 +223,12 @@ cmd_check() {
         # List pending migrations
         echo ""
         echo "Pending migrations:"
-        for migration in "$MIGRATIONS_DIR"/migrate-v*.sh; do
+        local migrations migration migration_version
+        migrations=$(ordered_migration_versions) || return 1
+        while IFS= read -r migration_version; do
+            [[ -n "$migration_version" ]] || continue
+            migration="$MIGRATIONS_DIR/migrate-v${migration_version}.sh"
             if [[ -f "$migration" ]]; then
-                local migration_version
-                migration_version=$(basename "$migration" | sed 's/migrate-v//;s/.sh//')
                 
                 local mig_cmp=0
                 compare_versions "$migration_version" "$last_migrated" || mig_cmp=$?
@@ -223,7 +238,7 @@ cmd_check() {
                     echo "  - $migration_version: $(head -5 "$migration" | grep '^# Description:' | sed 's/# Description://')"
                 fi
             fi
-        done
+        done <<< "$migrations"
         
         return 2
     else
@@ -259,18 +274,16 @@ cmd_migrate() {
     
     # Run migrations in order
     local failed=0
-    local ls_exit=0
-    local migrations
-    migrations=$(ls -1 "$MIGRATIONS_DIR"/migrate-v*.sh 2>&1 | sort) || ls_exit=$?
-    if [[ $ls_exit -ne 0 ]]; then
+    local migrations migration migration_version
+    migrations=$(ordered_migration_versions) || return 1
+    if [[ -z "$migrations" ]]; then
         log_success "No migration scripts found"
         return 0
     fi
 
-    for migration in $migrations; do
+    while IFS= read -r migration_version; do
+        migration="$MIGRATIONS_DIR/migrate-v${migration_version}.sh"
         if [[ -f "$migration" ]]; then
-            local migration_version
-            migration_version=$(basename "$migration" | sed 's/migrate-v//;s/.sh//')
             
             # Check if this migration is needed
             local mig_cmp=0
@@ -292,7 +305,7 @@ cmd_migrate() {
                 fi
             fi
         fi
-    done
+    done <<< "$migrations"
     
     if [[ $failed -eq 0 ]]; then
         set_last_migrated_version "$current_version"
