@@ -6443,6 +6443,18 @@ cmd_repair() {
 }
 
 #=============================================================================
+# Workflow catalog
+#=============================================================================
+cmd_workflow() {
+    check_install
+    local catalog="$INSTALL_DIR/config/n8n/catalog.json"
+    local query_script="$INSTALL_DIR/scripts/query-workflow-catalog.py"
+    [[ -f "$catalog" ]] || error "Workflow catalog not found: $catalog"
+    [[ -f "$query_script" ]] || error "Workflow catalog query tool not found: $query_script"
+    python3 "$query_script" "$catalog" "$@"
+}
+
+#=============================================================================
 # Templates
 #=============================================================================
 _template_list() {
@@ -6677,6 +6689,7 @@ ${CYAN}Commands:${NC}
   repair|fix [voice|hermes-workers]
                       Repair voice services or prune leaked Hermes slash workers
   template [action]   Apply pre-built service templates (list|preview|apply)
+  workflow [action]   Discover workflow templates (list|search|show)
   audit [extensions]  Audit extension manifests and compose contracts
   agent [action]      Manage ods host agent (status|start|stop|restart|logs)
   help                Show this help
@@ -6779,6 +6792,7 @@ ${CYAN}Examples:${NC}
                                   # Preview what a template will change
   ods template apply chat-playground
                                   # Apply a template (enables services)
+  ods workflow search rag --json  # Find workflow templates for RAG
   ods audit                     # Audit every extension contract
   ods audit --json whisper      # Audit one service as JSON
   ods agent status              # Check host agent health
@@ -6830,6 +6844,7 @@ case "${1:-help}" in
     benchmark|bench|b) cmd_benchmark ;;
     doctor|diag|d) shift; cmd_doctor "$@" ;;
     audit)        shift; cmd_audit "$@" ;;
+    workflow|wf)  shift; cmd_workflow "$@" ;;
     template|tmpl) shift; cmd_template "$@" ;;
     agent)        shift; cmd_agent "$@" ;;
     help|h|--help|-h) cmd_help ;;

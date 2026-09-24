@@ -47,6 +47,7 @@ COMMANDS = {
     "benchmark": ("cmd_benchmark", "benchmark"),
     "doctor": ("cmd_doctor", "doctor [report|--json]"),
     "audit": ("cmd_audit", "audit [extensions]"),
+    "workflow": ("cmd_workflow", "workflow [action]"),
     "template": ("cmd_template", "template [action]"),
     "agent": ("cmd_agent", "agent [action]"),
 }
