@@ -143,8 +143,14 @@ class AdvisoryJobs:
         finally:
             try:
                 with ProviderStore(path)._locked(True):
-                    if cancelled():
-                        result = dict(status='cancelled',result=None,error=None)
+                    try:
+                        if cancelled():
+                            result = dict(status='cancelled',result=None,error=None)
+                    except StoreError:
+                        # A malformed marker can never confirm cancellation,
+                        # and it must never block the durable result commit:
+                        # without result.json the job loses its receipt.
+                        pass
                     _write_private(path/'result.json',_json(result))
                     _sync_dir(path)
             finally:
