@@ -90,13 +90,13 @@ def write(*, source, ref, ods_source, install_dir, home, runtime, node, destinat
     script = ('source "$1"\n'
         'ods_pixel_run_as_owner() { shift 2; "$@"; }\n'
         'ai_bad() { printf "%s\\n" "$*" >&2; }\n'
-        '_ods_pixel_write_operations_policy unused "$2" "$7" "${11}" || exit $?\n'
+        '_ods_pixel_write_operations_policy unused "$2" "$7" "${11}" "${12}" || exit $?\n'
         '_ods_pixel_write_onboarding unused "$2" "$3" "$4" "$5" "$6" "$8" "$9" "${10}"\n')
     bootstrap.command(['/bin/bash', '-c', script, 'native-onboarding',
         str(ods_source / 'installers/lib/pixel-host-install.sh'), str(home), str(destination),
         str(runtime / 'node_modules/.bin/openclaw'), str(plugin), digest,
         str(destination.parent / 'operations-policy.json'), provider, parallel_path, parallel_digest,
-        str(workspace) if workspace is not None else ''],
+        str(workspace) if workspace is not None else '', str(ods_source)],
         cwd=destination.parent, env=env)
     if environment.snapshot(Path(install_dir) / '.env')[0] != raw:
         raise ValueError('ods-environment-changed-during-onboarding')
