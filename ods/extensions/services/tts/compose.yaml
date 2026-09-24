@@ -24,7 +24,10 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      # Kokoro loads the model and warms its voice pipelines before FastAPI
+      # starts serving. A cached CPU cold start has been measured at ~255s;
+      # first boot and slower storage need additional headroom.
+      start_period: 600s
     logging:
       driver: "json-file"
       options:
