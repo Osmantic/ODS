@@ -59,12 +59,24 @@ class Validator:
     def add(self, path: str, message: str) -> None:
         self.issues.append(ValidationIssue(path=path, message=message))
 
-    def fail_if_any(self) -> None:
+    def fail_if_any(self, *, json_output: bool, source: Path) -> None:
         if not self.issues:
             return
-        print("[FAIL] simulation summary validation")
-        for issue in self.issues:
-            print(issue.format())
+        if json_output:
+            print(json.dumps({
+                "ok": False,
+                "strict": self.strict,
+                "source": str(source),
+                "issue_count": len(self.issues),
+                "issues": [
+                    {"path": issue.path, "message": issue.message}
+                    for issue in self.issues
+                ],
+            }, separators=(",", ":")))
+        else:
+            print("[FAIL] simulation summary validation")
+            for issue in self.issues:
+                print(issue.format())
         raise SystemExit(2)
 
 
@@ -343,6 +355,7 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     p.add_argument("summary_json", help="Path to summary.json")
     p.add_argument("--strict", action="store_true", help="Fail on unknown keys and require generated_at")
+    p.add_argument("--json", action="store_true", help="Emit a machine-readable validation receipt")
     return p.parse_args(argv)
 
 
@@ -351,30 +364,76 @@ def main(argv: Sequence[str]) -> int:
 
     path = Path(args.summary_json)
     if not path.exists():
-        print(f"[FAIL] summary file not found: {path}")
+        if args.json:
+            print(json.dumps({
+                "ok": False,
+                "strict": bool(args.strict),
+                "source": str(path),
+                "issue_count": 1,
+                "issues": [{"path": "$file", "message": "summary file not found"}],
+            }, separators=(",", ":")))
+        else:
+            print(f"[FAIL] summary file not found: {path}")
         return 2
 
     try:
         raw = path.read_text(encoding="utf-8")
     except Exception as exc:
-        print(f"[FAIL] cannot read summary file: {exc}")
+        if args.json:
+            print(json.dumps({
+                "ok": False,
+                "strict": bool(args.strict),
+                "source": str(path),
+                "issue_count": 1,
+                "issues": [{"path": "$file", "message": f"cannot read summary file: {exc}"}],
+            }, separators=(",", ":")))
+        else:
+            print(f"[FAIL] cannot read summary file: {exc}")
         return 3
 
     try:
         data = json.loads(raw)
     except Exception as exc:
-        print(f"[FAIL] invalid JSON: {exc}")
+        if args.json:
+            print(json.dumps({
+                "ok": False,
+                "strict": bool(args.strict),
+                "source": str(path),
+                "issue_count": 1,
+                "issues": [{"path": "$", "message": f"invalid JSON: {exc}"}],
+            }, separators=(",", ":")))
+        else:
+            print(f"[FAIL] invalid JSON: {exc}")
         return 3
 
     if not isinstance(data, Mapping):
-        print(f"[FAIL] root must be an object, got {_type_name(data)}")
+        message = f"root must be an object, got {_type_name(data)}"
+        if args.json:
+            print(json.dumps({
+                "ok": False,
+                "strict": bool(args.strict),
+                "source": str(path),
+                "issue_count": 1,
+                "issues": [{"path": "$", "message": message}],
+            }, separators=(",", ":")))
+        else:
+            print(f"[FAIL] {message}")
         return 2
 
     v = Validator(strict=bool(args.strict))
     validate_summary(v, data)
-    v.fail_if_any()
+    v.fail_if_any(json_output=bool(args.json), source=path)
 
-    print("[PASS] simulation summary structure")
+    if args.json:
+        print(json.dumps({
+            "ok": True,
+            "strict": bool(args.strict),
+            "source": str(path),
+            "issue_count": 0,
+            "issues": [],
+        }, separators=(",", ":")))
+    else:
+        print("[PASS] simulation summary structure")
     return 0
 
 

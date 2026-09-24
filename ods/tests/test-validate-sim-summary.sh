@@ -137,6 +137,19 @@ else
     fail "valid summary should print PASS marker"
 fi
 
+json_out=$(python3 "$ROOT_DIR/scripts/validate-sim-summary.py" --json "$TMP_DIR/valid.json")
+SIM_JSON="$json_out" python3 - <<'PY'
+import json
+import os
+
+payload = json.loads(os.environ["SIM_JSON"])
+assert payload["ok"] is True
+assert payload["strict"] is False
+assert payload["issue_count"] == 0
+assert payload["issues"] == []
+PY
+pass "valid summary emits a JSON receipt"
+
 python3 - <<'PY' "$TMP_DIR/valid.json" "$TMP_DIR/bad-golden-count.json"
 import json
 import sys
@@ -162,6 +175,26 @@ if echo "$out" | grep -q "pass_count"; then
 else
     fail "golden path validation error should mention pass_count"
 fi
+
+set +e
+json_out=$(python3 "$ROOT_DIR/scripts/validate-sim-summary.py" --json "$TMP_DIR/bad-golden-count.json")
+r=$?
+set -e
+if [[ $r -eq 2 ]]; then
+    pass "invalid JSON receipt preserves validation exit 2"
+else
+    fail "invalid JSON receipt should exit 2, got $r"
+fi
+SIM_JSON="$json_out" python3 - <<'PY'
+import json
+import os
+
+payload = json.loads(os.environ["SIM_JSON"])
+assert payload["ok"] is False
+assert payload["issue_count"] == len(payload["issues"])
+assert any(issue["path"] == "$.golden_paths.pass_count" for issue in payload["issues"])
+PY
+pass "invalid summary emits structured JSON issues"
 
 python3 - <<'PY' "$TMP_DIR/valid.json" "$TMP_DIR/missing-signal.json"
 import json
