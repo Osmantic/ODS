@@ -8,6 +8,8 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import tempfile
+import subprocess
+import sys
 
 
 class PolicyError(ValueError):
@@ -137,6 +139,30 @@ def _paths(values):
     return tuple(sorted(set(_path(value) for value in values)))
 
 
+def system_python_readable_paths():
+    """Resolve the system-selected Apple SDK before entering the gateway sandbox."""
+    if sys.platform != 'darwin':
+        return ()
+    try:
+        result = subprocess.run(['/usr/bin/xcode-select', '--print-path'], check=True,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
+            env={'PATH': '/usr/bin:/bin', 'HOME': '/var/empty'})
+        selected = Path(result.stdout.strip()).resolve(strict=True)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise PolicyError('system-python-developer-runtime-unavailable') from None
+    if selected == Path('/Library/Developer/CommandLineTools'):
+        return (str(selected),)
+    # Full Xcode includes shared frameworks beside Developer. Grant this one
+    # system-selected bundle's Contents; never /Applications as a whole.
+    if (selected.name == 'Developer' and selected.parent.name == 'Contents'
+            and selected.parent.parent.parent == Path('/Applications')
+            and selected.parent.parent.name.endswith('.app')):
+        # xcrun reads the system acceptance receipt before dispatching Python.
+        # Reading this receipt does not accept or change any license.
+        return (str(selected.parent), '/Library/Preferences/com.apple.dt.Xcode.plist')
+    raise PolicyError('unsupported-system-python-developer-runtime')
+
+
 def render_policy(*, mode, writable, protected, readable=(), sockets=(), probe):
     """Only filesystem reach changes with mode; no allow-default escape.
 
@@ -157,6 +183,7 @@ def render_policy(*, mode, writable, protected, readable=(), sockets=(), probe):
              '(allow process-exec process-fork signal sysctl-read)',
              '(allow network*)', '(allow file-read-metadata)']
     read_paths = sorted(set(('/System', '/usr', '/bin', '/sbin', '/private/etc',
+                             '/Library/Developer/CommandLineTools',
                              *readable, *protected)))
     if mode == 'full-access':
         lines.append('(allow file-read* file-write*)')

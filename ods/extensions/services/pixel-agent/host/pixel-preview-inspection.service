@@ -1,0 +1,49 @@
+[Unit]
+Description=ODS Pixel isolated immutable preview inspection broker
+After=docker.service pixel-workspace-preview.service
+Requires=docker.service pixel-workspace-preview.service
+
+[Service]
+Type=simple
+User=root
+Group=ods-pixel
+ExecStart=/usr/bin/python3 /usr/local/libexec/ods-pixel-inspection/preview_inspection.py serve
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=45
+RuntimeDirectory=ods-pixel-inspection
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=no
+UMask=0007
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+# This fixed broker alone talks to Docker. The publisher and gateway receive
+# only the peer-authenticated inspection socket, never the Docker socket.
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProcSubset=pid
+ReadOnlyPaths=/etc/ods-pixel-inspection.json /usr/local/libexec/ods-pixel-inspection /var/lib/ods-pixel-preview
+ReadWritePaths=/run/ods-pixel-inspection
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+AmbientCapabilities=
+SystemCallArchitectures=native
+MemoryMax=384M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target openclaw-gateway.service

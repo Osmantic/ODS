@@ -297,10 +297,12 @@ function Assert-ODSWslStackPlan($Identity,[string]$Action,$Plan) {
         $Plan.action -isnot [string] -or $Plan.action -cne $Action -or $Plan.installRoot -isnot [string] -or $Plan.installRoot -cne $Identity.installRoot -or
         ($Plan.ownerUid -isnot [int] -and $Plan.ownerUid -isnot [long]) -or $Plan.ownerUid -le 0 -or $Plan.ownerUid -gt 4294967294 -or
         $Plan.nativeUnits -isnot [Array]) { throw 'Invalid owner-verified WSL lifecycle plan' }
-    $allowed=@('pixel-ingress.service','openclaw-gateway.service','pixel-extension-manager.service','pixel-artifact-promoter.service','pixel-workspace-preview.service')
+    $allowed=@('pixel-ingress.service','openclaw-gateway.service','pixel-extension-manager.service','pixel-artifact-promoter.service','pixel-workspace-preview.service','pixel-preview-inspection.service')
     if ($Plan.nativeUnits.Count -ne 0) {
-        if ($Plan.nativeUnits.Count -ne $allowed.Count) { throw 'Unexpected native service plan' }
-        for ($i=0;$i -lt $allowed.Count;$i++) {
+        # The owner-side verifier accepts only a complete legacy installation
+        # or the complete inspection installation; partial artifacts fail there.
+        if ($Plan.nativeUnits.Count -notin @(($allowed.Count - 1), $allowed.Count)) { throw 'Unexpected native service plan' }
+        for ($i=0;$i -lt $Plan.nativeUnits.Count;$i++) {
             if ($Plan.nativeUnits[$i] -isnot [string] -or $Plan.nativeUnits[$i] -cne $allowed[$i]) { throw 'Unexpected native service in lifecycle plan' }
         }
     }
@@ -309,7 +311,7 @@ function Assert-ODSWslStackPlan($Identity,[string]$Action,$Plan) {
 function Invoke-ODSWslCommand($Identity,[string[]]$Arguments,[switch]$AsRoot) {
     $target=@('--distribution',$Identity.distro)
     if ($AsRoot) {
-        $allowed=@('pixel-ingress.service','openclaw-gateway.service','pixel-extension-manager.service','pixel-artifact-promoter.service','pixel-workspace-preview.service')
+        $allowed=@('pixel-ingress.service','openclaw-gateway.service','pixel-extension-manager.service','pixel-artifact-promoter.service','pixel-workspace-preview.service','pixel-preview-inspection.service')
         if ($Arguments.Count -ne 3 -or $Arguments[0] -cne '/usr/bin/systemctl' -or
             $Arguments[1] -cnotin @('start','stop') -or $Arguments[2] -cnotin $allowed) { throw 'Only exact native systemctl lifecycle commands may run as WSL root' }
         $target+=@('--user','root')
@@ -320,7 +322,7 @@ function Invoke-ODSWslCommand($Identity,[string[]]$Arguments,[switch]$AsRoot) {
 }
 
 function Invoke-ODSWslNativeUnit($Identity,[string]$Action,[string]$Unit) {
-    $allowed=@('pixel-ingress.service','openclaw-gateway.service','pixel-extension-manager.service','pixel-artifact-promoter.service','pixel-workspace-preview.service')
+    $allowed=@('pixel-ingress.service','openclaw-gateway.service','pixel-extension-manager.service','pixel-artifact-promoter.service','pixel-workspace-preview.service','pixel-preview-inspection.service')
     if ($Action -notin @('start','stop') -or $Unit -cnotin $allowed) { throw 'Invalid fixed native lifecycle command' }
     # The signed-in Windows distro owner already has WSL --user root authority.
     # Execute only this fixed system executable/argv; never owner Python/bash.

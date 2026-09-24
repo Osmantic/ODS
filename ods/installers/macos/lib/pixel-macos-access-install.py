@@ -233,6 +233,7 @@ def _policy_deployment(environment, document, node, entrypoint, owner, *, bundle
         protected.append(Path(bundle_plan['destination']))
         writable.append(Path(bundle_plan['config_path']).parent)
     readable = [_path(document['WorkingDirectory']).resolve(strict=True)]
+    readable.extend(_policy.system_python_readable_paths())
     sockets = [socket]
     if native_services:
         state = Path('/private/var/lib/pixel-ops-broker')
@@ -505,8 +506,9 @@ def _verify_new_services(plan):
     recovery = record['recovery']
     adapters = _native_services.recovery_adapters(recovery, owner=plan['owner'].pw_name,
         save_stop=None, load_stop=None)
+    inspection_required = _managed_inspection_required(record['selection'])
     checks = _native_services.readiness_checks(owner=plan['owner'].pw_name,
-        identity=recovery['identity'], python=recovery['python'])
+        identity=recovery['identity'], python=recovery['python'], inspection_required=inspection_required)
     for name, service in adapters.items():
         service.process_identity()
         if checks[name]() is not True:
@@ -997,18 +999,33 @@ def _upgrade_file_snapshots(plan, source):
     return existing, additions
 
 
-def _managed_service_contract():
+def _managed_inspection_required(selection):
+    """Choose the capability only from the approved complete service snapshot."""
+    config = _native_services.helper('config')
+    snapshots = config.verified_services(selection['bundle'], expected_digest=selection['expected_digest'],
+        expected_ref=selection['expected_ref'], expected_config_digest=selection['expected_config_digest'])
+    return 'helpers/preview-inspection.json' in snapshots
+
+
+def _managed_service_contract(selected=None):
     """Fixed native destinations, never derived from a recovery manifest."""
     broker = pwd.getpwnam('_ods_pixel_ops')
     root = Path('/usr/local/libexec/ods-pixel-services')
     names = set(_native_services.helper('config').SERVICE_SOURCES) | {
-        'operations/broker.py', 'operations/policy.json', 'helpers/extension-catalog.json',
+        'operations/broker.py', 'operations/policy.json', 'helpers/extension-catalog.json', 'helpers/preview-inspection.json',
         'operations/broker.sb', 'manager/manager.sb', 'promoter/promoter.sb'}
     result = {str(root / name): (0o640, broker.pw_gid) if name.endswith('.json') else (0o644, 0)
               for name in names}
+    result[str(root / 'helpers/preview-inspection.json')] = (0o644, 0)
     result.update({str(Path('/Library/LaunchDaemons') / ('com.ods.pixel-native-' + role + '.plist')):
         (0o644, 0) for role in ('manager', 'promoter', 'operations')})
     result[str(_launchd.ACCESS_STATE / 'service-installation.json')] = (0o600, 0)
+    if selected is not None:
+        additions = set(selected) & _upgrade.INSPECTION_ADDITIONS
+        if additions and additions != _upgrade.INSPECTION_ADDITIONS:
+            raise InstallError('native-service-inspection-file-set-incomplete')
+        if not additions:
+            result = {path: value for path, value in result.items() if path not in _upgrade.INSPECTION_ADDITIONS}
     return result
 
 
@@ -1024,7 +1041,7 @@ def _managed_service_record(records, version):
 
 def _managed_service_snapshots(plan):
     """Capture a complete existing service set without provisioning its state."""
-    from pixel_macos_custody import protected_bytes
+    from pixel_macos_custody import protected_inspection_bytes as protected_bytes
     journal = _launchd.ACCESS_STATE / 'service-installation.json'
     before = protected_bytes(journal, limit=2 * 1024 * 1024)
     record = json.loads(before)
@@ -1060,10 +1077,16 @@ def _managed_service_snapshots(plan):
     snapshots = []
     for path, after, mode, gid in files:
         old = protected_bytes(path, limit=8 * 1024 * 1024)
-        _check_existing(path, old, mode=mode, gid=gid)
+        if old is not None:
+            _check_existing(path, old, mode=mode, gid=gid)
         if path == journal and old != before:
             raise InstallError('native-service-recovery-journal-changed')
         snapshots.append(dict(path=str(path), before=old, after=after, mode=mode, gid=gid))
+    absent = {item['path'] for item in snapshots if item['before'] is None}
+    if absent and absent != _upgrade.INSPECTION_ADDITIONS:
+        raise InstallError('native-service-inspection-file-set-incomplete')
+    if bool(absent) == _managed_inspection_required(record['selection']):
+        raise InstallError('native-service-inspection-selection-mismatch')
     return snapshots
 
 
@@ -1792,7 +1815,7 @@ def _activate_upgrade(plan, records, journal, *, previous_guard=False):
     Admission stays closed if restoration or final live verification fails.
     """
     sys.path.insert(0, str(HERE.parents[2] / 'bin'))
-    from pixel_macos_custody import protected_bytes, replace_protected_bytes
+    from pixel_macos_custody import protected_inspection_bytes as protected_bytes, replace_protected_inspection_bytes as replace_protected_bytes
     previous, candidate = _upgrade_services(plan, records)
     mode = _upgrade_policy_mode(plan)
 
@@ -1873,7 +1896,7 @@ def _activate_upgrade(plan, records, journal, *, previous_guard=False):
 
 def _recover_unstarted_upgrade(plan, records, journal, previous, candidate, *, verify_snapshots, previous_guard):
     """Finish a staging-only interruption without stopping healthy old jobs."""
-    from pixel_macos_custody import protected_bytes
+    from pixel_macos_custody import protected_inspection_bytes as protected_bytes
     hold_path = _edge_hold_journal(plan)
     if os.path.lexists(hold_path):
         return False
@@ -1911,7 +1934,7 @@ def _recover_upgrade(plan, records, journal, *, verify_snapshots, previous_guard
     The caller must load/authorize records with recovery_upgrade and supply
     immutable bundle/config verification. Unknown stop witnesses stay blocked.
     """
-    from pixel_macos_custody import protected_bytes, replace_protected_bytes
+    from pixel_macos_custody import protected_inspection_bytes as protected_bytes, replace_protected_inspection_bytes as replace_protected_bytes
     previous, candidate = _upgrade_services(plan, records)
     if _recover_unstarted_upgrade(plan, records, journal, previous, candidate,
             verify_snapshots=verify_snapshots, previous_guard=previous_guard):
@@ -2174,7 +2197,7 @@ def _retirement_plan(snapshots, *, current_digest, candidate_digest, owner_name)
         raise InstallError('runtime-upgrade-recovery-file-contract-invalid')
     selected = {item['path'] for item in files}
     if str(_launchd.ACCESS_STATE / 'service-installation.json') in selected:
-        native_contract = _managed_service_contract()
+        native_contract = _managed_service_contract(selected)
         required.update(native_contract)
         contract.update(native_contract)
     if not set(required).issubset(selected) or not selected.issubset(contract):
@@ -2193,7 +2216,7 @@ def _retirement_plan(snapshots, *, current_digest, candidate_digest, owner_name)
 
 def _verify_retirement_live(plan, records):
     """Check the restored deployment without relying on removed journal files."""
-    from pixel_macos_custody import protected_bytes
+    from pixel_macos_custody import protected_inspection_bytes as protected_bytes
     if any(os.path.lexists(_launchd.ACCESS_STATE / name) for name in
            ('transition.json', 'policy-activation.json', 'runtime-upgrade.json')):
         raise InstallError('runtime-upgrade-pending-recovery')
@@ -2265,7 +2288,7 @@ def _load_upgrade_recovery_base(*, current_digest, candidate_digest, owner_name,
         raise InstallError('runtime-upgrade-recovery-file-contract-invalid')
     selected = {item['path'] for item in files}
     if str(_launchd.ACCESS_STATE / 'service-installation.json') in selected:
-        native_contract = _managed_service_contract()
+        native_contract = _managed_service_contract(selected)
         required.update(native_contract)
         contract.update(native_contract)
     if not set(required).issubset(selected) or not selected.issubset(contract):
@@ -2382,7 +2405,7 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise InstallError('macos-root-install-required')
     from pixel_access_bridge import LaunchdAccessBridge
-    from pixel_macos_custody import protected_bytes
+    from pixel_macos_custody import protected_inspection_bytes as protected_bytes
     if not isinstance(bridge, LaunchdAccessBridge) or bridge.state != _launchd.ACCESS_STATE:
         raise InstallError('runtime-upgrade-controller-state-changed')
     if not os.path.lexists(bridge.state / 'runtime-upgrade.json'):
@@ -2410,7 +2433,7 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_
 def _finish_archived_upgrade(bridge, *, current_digest, candidate_digest, owner_name, on_reproved=None):
     """Finish admission, proving repaired controllers before release; no deployment replay."""
     from pixel_access_bridge import private_json
-    from pixel_macos_custody import protected_bytes
+    from pixel_macos_custody import protected_inspection_bytes as protected_bytes
     with bridge.recovery_locked(completed_digest=candidate_digest):
         selection = dict(current_digest=current_digest, candidate_digest=candidate_digest,
                          owner_name=owner_name, completed=True)

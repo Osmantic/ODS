@@ -2124,6 +2124,16 @@ PY
     fi
 
     log_info "Removing the ODS-managed Pixel host deployment..."
+    # Inspection has a separate root-only Docker broker. Validate its fixed
+    # artifacts before stopping anything, and retire it before its publisher.
+    local inspection_present=false
+    if [[ -e /etc/systemd/system/pixel-preview-inspection.service || -L /etc/systemd/system/pixel-preview-inspection.service \
+        || -e /etc/ods-pixel-inspection.json || -L /etc/ods-pixel-inspection.json \
+        || -e /usr/local/libexec/ods-pixel-inspection || -L /usr/local/libexec/ods-pixel-inspection ]]; then
+        inspection_present=true
+        sudo /usr/bin/python3 "$install_dir/installers/lib/pixel-preview-inspection.py" validate-linux \
+            --source "$install_dir/extensions/services/pixel-agent/host" --owner-uid "$owner_uid" || return 1
+    fi
     if [[ -e "$gateway_unit" || -L "$gateway_unit" \
         || -e "$ingress_unit" || -L "$ingress_unit" \
         || -e "$ingress_env" || -L "$ingress_env" \
@@ -2139,7 +2149,7 @@ PY
         || -e "$unix_peer_program" || -L "$unix_peer_program" \
         || -e "$system_observer_program" || -L "$system_observer_program" \
         || -e "$workspace_preview_state" || -L "$workspace_preview_state" \
-        || "$ops_artifacts_present" == true || "$access_artifacts_present" == true ]]; then
+        || "$ops_artifacts_present" == true || "$access_artifacts_present" == true || "$inspection_present" == true ]]; then
         root_artifacts_present=true
         command -v sudo >/dev/null 2>&1 || {
             log_error "sudo is required to remove ODS-managed Pixel system artifacts"
@@ -2150,7 +2160,7 @@ PY
     if [[ -e "$gateway_unit" || -e "$ingress_unit" || -e "$extension_manager_unit" \
         || -e "$artifact_promoter_unit" || -e "$workspace_preview_unit" \
         || -e "$wsl_bridge_unit" \
-        || -e "$ops_unit" || -e "$access_unit" ]]; then
+        || -e "$ops_unit" || -e "$access_unit" || "$inspection_present" == true ]]; then
         # Stop the ingress before the gateway it proxies to. Keep these as
         # separate calls so the shutdown order is an enforced contract rather
         # than an argument-order hint to systemctl. An interrupted first install
@@ -2165,6 +2175,15 @@ PY
             && ! timeout 30s sudo systemctl disable --now ods-pixel-access.service; then
             log_error "Could not stop ODS-managed Pixel system services; no Pixel files were removed"
             return 1
+        fi
+        if "$inspection_present"; then
+            if [[ -e /etc/systemd/system/pixel-preview-inspection.service ]]; then
+                timeout 50s sudo systemctl disable --now pixel-preview-inspection.service || return 1
+            fi
+            if systemctl is-active --quiet pixel-preview-inspection.service; then
+                log_error "Preview inspection is still active; no Pixel files were removed"
+                return 1
+            fi
         fi
         if [[ -e "$ingress_unit" ]] \
             && ! timeout 30s sudo systemctl disable --now pixel-ingress.service; then
@@ -2538,6 +2557,10 @@ PY
     fi
 
     if [[ "$root_artifacts_present" == "true" ]]; then
+        if "$inspection_present"; then
+            sudo /usr/bin/python3 "$install_dir/installers/lib/pixel-preview-inspection.py" remove-linux \
+                --source "$install_dir/extensions/services/pixel-agent/host" --owner-uid "$owner_uid" || return 1
+        fi
         if [[ "$access_artifacts_present" == true ]]; then
             if [[ "$(_ods_pixel_access_validate_or_remove remove \
                 "$install_dir" "$marker_state" "$owner_name" "$owner_uid" "$owner_gid" \

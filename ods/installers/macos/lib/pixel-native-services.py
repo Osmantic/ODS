@@ -55,8 +55,8 @@ def _publication_plan(*, bundle, expected_digest, expected_ref, expected_config_
         state=state, policy=json.loads(snapshots['operations/policy.json']))
     manager.render(**manager_options)
     promoter.render(**promoter_options)
-    helpers = [(root / name, body, 0o640 if name.endswith('.json') else 0o644,
-                identity['gid'] if name.endswith('.json') else 0)
+    helpers = [(root / name, body, 0o640 if name.endswith('.json') and name != 'helpers/preview-inspection.json' else 0o644,
+                identity['gid'] if name.endswith('.json') and name != 'helpers/preview-inspection.json' else 0)
                for name, body in snapshots.items() if name.startswith('helpers/')]
     publishers = []
     for name, module, options in (('manager', manager, manager_options), ('promoter', promoter, promoter_options)):
@@ -287,7 +287,7 @@ def activate_new(*, services, readiness, checkpoint):
 
 def readiness_checks(*, owner, identity, python,
                      program_root='/usr/local/libexec/ods-pixel-services',
-                     state='/private/var/lib/pixel-ops-broker'):
+                     state='/private/var/lib/pixel-ops-broker', inspection_required=True):
     """Build non-mutating service probes for the approved initial installation.
 
     The Operations probe submits only host.os-release; it never approves a request or
@@ -332,6 +332,11 @@ def readiness_checks(*, owner, identity, python,
         raise ValueError('native-' + name + '-readiness-failed')
 
     def operations():
+        # The inspector is a fixed helper, not a fourth launchd service. Keep
+        # the exact three-service activation contract and gate its final probe
+        # on inspection health before admitting the gateway.
+        if inspection_required:
+            inspection()
         job = 'ops-' + str(int(time.time() * 1000)) + '-' + uuid.uuid4().hex[:12]
         body = json.dumps({'schemaVersion': 1, 'jobId': job,
             'createdAt': datetime.now(timezone.utc).isoformat(), 'kind': 'action',
@@ -389,6 +394,23 @@ def readiness_checks(*, owner, identity, python,
                     raise ValueError('native-operations-readiness-failed')
                 time.sleep(0.1)
         raise ValueError('native-operations-readiness-timeout')
+
+    def inspection():
+        script = root / 'helpers/preview_inspection.py'
+        custody.protected_bytes(str(script))
+        config = json.loads(custody.protected_bytes(str(root / 'helpers/preview-inspection.json')))
+        if config.get('ownerUid') != owner_entry.pw_uid:
+            raise ValueError('native-inspection-owner-mismatch')
+        result = subprocess.run(['/usr/bin/python3', '-B', str(script), 'health'],
+            user=owner_entry.pw_uid, group=owner_entry.pw_gid, extra_groups=[], cwd='/',
+            env={'PATH': '/usr/bin:/bin', 'HOME': owner_entry.pw_dir}, stdin=subprocess.DEVNULL,
+            capture_output=True, timeout=35)
+        value = json.loads(result.stdout) if result.returncode == 0 else None
+        if not isinstance(value, dict) or value.get('schemaVersion') != 1 \
+                or value.get('kind') != 'ods-pixel-preview-inspection' or value.get('status') != 'ready' \
+                or value.get('imageId') != config.get('imageId'):
+            raise ValueError('native-inspection-readiness-failed')
+        return True
 
     return {
         'manager': lambda: client('manager', broker,

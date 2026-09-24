@@ -17,6 +17,54 @@ SPEC.loader.exec_module(upgrade)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
 
 
+@pytest.mark.parametrize('fault', [None, 'partial', 'foreign', 'after-absent', 'mode', 'gid', 'v1-null', 'digest'])
+def test_inspection_additions_have_explicit_bounded_recovery_schema(fault):
+    records = [dict(path=path, before=None, after=b'candidate', mode=0o644, gid=0)
+               for path in sorted(upgrade.INSPECTION_ADDITIONS)]
+    if fault == 'partial': records.pop()
+    if fault == 'foreign': records[0]['path'] = '/usr/local/libexec/foreign.py'
+    if fault == 'after-absent': records[0]['after'] = None
+    if fault == 'mode': records[0]['mode'] = 0o755
+    if fault == 'gid': records[0]['gid'] = 20
+    options = dict(current_digest='a' * 64, candidate_digest='b' * 64,
+                   allowed_paths={item['path'] for item in records})
+    if fault in ('partial', 'foreign', 'after-absent', 'mode', 'gid'):
+        with pytest.raises(upgrade.UpgradeError): upgrade.encode_recovery(records, **options)
+        return
+    value = upgrade.encode_recovery(records, **options)
+    assert value['schemaVersion'] == 2
+    if fault == 'v1-null': value['schemaVersion'] = 1
+    if fault == 'digest': value['files'][0]['beforeSha256'] = 'a' * 64
+    if fault:
+        with pytest.raises(upgrade.UpgradeError): upgrade.decode_recovery(value, **options)
+    else:
+        assert upgrade.decode_recovery(json.loads(json.dumps(value)), **options) == records
+
+
+@pytest.mark.parametrize('fail_after', range(6))
+def test_inspection_additions_partial_publication_rolls_back_to_absence_and_retries(fail_after):
+    records = [dict(path=path, before=None, after=path.encode(), mode=0o644, gid=0)
+               for path in sorted(upgrade.INSPECTION_ADDITIONS)]
+    live, mutations = {}, []
+    def replace(path, *, expected, replacement, **kwargs):
+        assert live.get(path) == expected
+        mutations.append(path)
+        if replacement is None: live.pop(path)
+        else: live[path] = replacement
+        if len(mutations) == fail_after: raise OSError('post-publication failure')
+    if fail_after:
+        with pytest.raises(OSError):
+            upgrade.replace_deployment_files(records, read=live.get, replace=replace)
+    else:
+        upgrade.replace_deployment_files(records, read=live.get, replace=replace)
+    mutations.extend(['disable injected fault'] * 6)
+    upgrade.restore_deployment_files(records, read=live.get, replace=replace)
+    assert live == {}
+    upgrade.restore_deployment_files(records, read=live.get, replace=replace)
+    upgrade.replace_deployment_files(records, read=live.get, replace=replace)
+    assert live == {item['path']: item['after'] for item in records}
+
+
 @pytest.mark.parametrize('fault', [None, 'save', 'verify', 'drift', 'unlink'])
 def test_retire_rollback_preserves_authority_before_removal_and_resumes(fault):
     a, b = 'a' * 64, 'b' * 64

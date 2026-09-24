@@ -32,6 +32,42 @@ def invoke(path, home, explicit_home=None):
                           capture_output=True, text=True, timeout=10)
 
 
+@pytest.mark.parametrize('transport', [None, 'unix', 'native', 'unknown'])
+def test_inspection_allowlists_require_explicit_provisioned_transport(tmp_path, transport):
+    tmp_path.chmod(0o700)
+    value = configuration()
+    tool = 'pixel_ods_workspace_preview_inspect'
+    value['tools']['alsoAllow'].append(tool)
+    value['tools']['sandbox']['tools']['allow'].append(tool)
+    value['agents']['list'][0]['tools'] = {'deny': [tool]}
+    plugin = {}
+    if transport is not None: plugin['workspacePreviewInspectionTransport'] = transport
+    value['plugins'] = {'entries': {'pixel-ods': {'config': plugin}}}
+    path = tmp_path / 'openclaw.json'
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    result = invoke(path, tmp_path)
+    assert result.returncode == 0, result.stderr
+    updated = json.loads(Path(result.stdout.strip()).read_text())
+    enabled = transport in ('unix', 'native')
+    assert (tool in updated['tools']['alsoAllow']) is enabled
+    assert (tool in updated['tools']['sandbox']['tools']['allow']) is enabled
+    assert (tool not in updated['agents']['list'][0]['tools']['deny']) is enabled
+
+
+def test_fresh_installer_explicitly_stages_inspection_transport(tmp_path):
+    tmp_path.chmod(0o700)
+    path = tmp_path / 'openclaw.json'
+    path.write_text(json.dumps(configuration()))
+    path.chmod(0o600)
+    result = subprocess.run([sys.executable, str(WRITER), str(path), '3099', '',
+        str(tmp_path / '.openclaw'), 'unix'], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    updated = json.loads(Path(result.stdout.strip()).read_text())
+    assert updated['plugins']['entries']['pixel-ods']['config']['workspacePreviewInspectionTransport'] == 'unix'
+    assert 'pixel_ods_workspace_preview_inspect' in updated['tools']['alsoAllow']
+
+
 @pytest.mark.parametrize('context', [8192, 16384, 32768, 65536])
 def test_shared_overlay_is_staged_idempotent_and_uses_selected_home(tmp_path, context):
     tmp_path.chmod(0o700)

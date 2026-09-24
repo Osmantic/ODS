@@ -30,8 +30,11 @@ class StackContract(unittest.TestCase):
                 data = b'Description=Pixel Agent host ingress\nExecStart=/usr/bin/env node /usr/local/libexec/ods-pixel-ingress.mjs\nEnvironmentFile=/etc/ods/pixel-agent.env\n'
             self.contents[Path('/etc/systemd/system') / name] = data
             self.contents[self.root / 'data/pixel' / name.removeprefix('pixel-')] = data
+            if name == 'pixel-preview-inspection.service':
+                self.contents[self.root / 'extensions/services/pixel-agent/host' / name] = data
         self.patches = [patch.object(module, 'regular', side_effect=lambda p,*a,**kw:self.contents[p]),
                         patch.object(module.os, 'getuid', return_value=1000, create=True),
+                        patch.object(module.os.path, 'lexists', side_effect=lambda p: Path(p) in self.contents),
                         patch.object(Path, 'exists', return_value=True)]
         for item in self.patches:
             item.start()
@@ -42,6 +45,18 @@ class StackContract(unittest.TestCase):
         self.assertEqual(result, list(module.NATIVE_UNITS))
         self.assertNotIn('pixel-ops-broker.service', result)
         self.assertNotIn('docker.service', result)
+
+    def test_legacy_inspection_absence_is_distinct_from_partial_install(self):
+        self.contents.pop(Path('/etc/systemd/system/pixel-preview-inspection.service'))
+        self.assertNotIn('pixel-preview-inspection.service', module.managed_units(self.root, self.home))
+        self.contents[Path('/etc/ods-pixel-inspection.json')] = b'{}'
+        with self.assertRaisesRegex(RuntimeError, 'Incomplete preview inspection'):
+            module.managed_units(self.root, self.home)
+
+    def test_inspection_source_drift_is_rejected(self):
+        self.contents[Path('/etc/systemd/system/pixel-preview-inspection.service')] += b'changed'
+        with self.assertRaisesRegex(RuntimeError, 'Inspection unit differs'):
+            module.managed_units(self.root, self.home)
 
     def test_portal_gateway_keeps_exact_owner_contract(self):
         path = Path('/etc/systemd/system/openclaw-gateway.service')

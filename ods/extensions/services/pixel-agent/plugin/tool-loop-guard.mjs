@@ -24,6 +24,8 @@ import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLane
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
+import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, boundVisibilityInspection,
+  visibilityInspectionMatches, visibilityInspectionInstruction } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 
@@ -3688,7 +3690,7 @@ function toolProgressLane(state, tool, wrappedTarget) {
   const source = ['read','write','edit','apply_patch','exec','process'].includes(tool) ? 'core' : 'pixel-ods';
   if (wrappedTarget !== undefined && ![tool,`openclaw:${source}:${tool}`].includes(wrappedTarget)) return undefined;
   if (EXTENSION_REQUEST_TOOLS.has(tool)) return 'extension';
-  if (['read','write','edit','apply_patch','exec','process',WORKSPACE_PREVIEW_TOOL,
+  if (['read','write','edit','apply_patch','exec','process',WORKSPACE_PREVIEW_TOOL,PREVIEW_INSPECTION_TOOL,
     EVIDENCE_REPORT_TOOL,EVIDENCE_READBACK_TOOL,'pixel_ods_download_promote'].includes(tool)) return 'workspace';
   // Missing hooks, malformed IDs and shared research remain globally bounded.
   return undefined;
@@ -6566,6 +6568,7 @@ export function createToolLoopGuard({
   evidenceArtifactWriter,
   onWorkspaceMutation = () => {},
   verifyWorkspacePreview,
+  workspacePreviewInspectionAvailable = false,
   publishWorkspacePreview,
   execMarkerCleanupDelayMs = 5000,
   limits,
@@ -6581,6 +6584,12 @@ export function createToolLoopGuard({
   const pendingToolRuns = new Map();
   const sessionPreviews = new Map();
   const sessionDownloadJobs = new Map();
+
+  function workspaceVisibilityInspectionPassed(state) {
+    const proof = state.workspaceVisibilityInspection;
+    return visibilityInspectionMatches(proof, state.workspacePreview) &&
+      proof.sessionId === state.currentSessionId && proof.sessionKey === state.currentSessionKey;
+  }
 
   function rememberSessionDownload(sessionId, jobId) {
     if (typeof sessionId !== "string" || !sessionId || !OPS_JOB_ID.test(jobId)) return;
@@ -6633,7 +6642,10 @@ export function createToolLoopGuard({
     pendingToolRuns.set(toolCallId, {
       runId,
       selectedToolName,
-      selectedParams,
+      selectedParams: selectedToolName === PREVIEW_INSPECTION_TOOL
+        ? structuredClone(selectedParams) : selectedParams,
+      inspectionSessionId: runs.get(runId)?.currentSessionId,
+      inspectionSessionKey: runs.get(runId)?.currentSessionKey,
       verificationFingerprint,
       transport,
       selectedToolTarget,
@@ -7579,7 +7591,7 @@ export function createToolLoopGuard({
           .split("/")
           .every((part) => WORKSPACE_PATH_COMPONENT.test(part));
       if (
-        (!["read", "write", "edit", "exec", "process", "tool_search", "tool_describe", WORKSPACE_PREVIEW_TOOL].includes(selectedToolName) &&
+        (!["read", "write", "edit", "exec", "process", "tool_search", "tool_describe", WORKSPACE_PREVIEW_TOOL, PREVIEW_INSPECTION_TOOL].includes(selectedToolName) &&
           !(state.workspaceExtensionIsolated && EXTENSION_METADATA_TOOLS.has(selectedToolName))) ||
         (FILE_PATH_TOOLS.has(selectedToolName) && !insideContinuationDirectory)
       ) {
@@ -8756,6 +8768,8 @@ export function createToolLoopGuard({
           Boolean(trustedSessionPreview) || state.workspaceVisualArtifactProduced ||
           ((!visualContinuationRequested || explicitDelivery) && previewRequested)
         );
+        state.workspaceVisibilityInteractionRequired = workspacePreviewInspectionAvailable &&
+          state.workspacePreviewRequired && requestsVisibilityInteraction(ownerLaneText(ownerIntent));
         state.workspacePreviewMode = state.workspacePreviewRequired
           ? (trustedSessionPreview ? "continuation" : workspacePreviewMode(event?.messages, event?.prompt))
           : undefined;
@@ -9060,6 +9074,27 @@ export function createToolLoopGuard({
     const toolCallId = context?.toolCallId ?? event?.toolCallId;
     event = {...event, params: canonicalWorkspaceParams(toolName, event?.params, state.configuredWorkspaceRoot)};
     const pendingToolRun = pendingToolRuns.get(toolCallId);
+    if (workspacePreviewInspectionAvailable && pendingToolRun?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
+        pendingToolRun.runId === runId && pendingToolRun.transport === toolName &&
+        pendingToolRun.inspectionSessionId === state.currentSessionId &&
+        pendingToolRun.inspectionSessionKey === state.currentSessionKey &&
+        (!context?.sessionId || context.sessionId === state.currentSessionId) &&
+        (!context?.sessionKey || context.sessionKey === state.currentSessionKey) &&
+        (!event?.runId || event.runId === runId) &&
+        (!event?.toolCallId || event.toolCallId === toolCallId) &&
+        (!event?.toolName || event.toolName === toolName)) {
+      const inspected = toolName === PREVIEW_INSPECTION_TOOL ? event
+        : toolSearchEventEnvelope(event, PREVIEW_INSPECTION_TOOL, 'pixel-ods');
+      if (inspected && isDeepStrictEqual(inspected.params, pendingToolRun.selectedParams)) {
+        // Even a later failed inspection replaces prior success for this run.
+        const proof = !failedToolOutcome(event)
+          ? boundVisibilityInspection(inspected.params, inspected.result, state.workspacePreview) : undefined;
+        state.workspaceVisibilityInspection = proof ? Object.freeze({...proof,
+          sessionId: state.currentSessionId, sessionKey: state.currentSessionKey}) : undefined;
+        state.workspaceVisibilityInspectionUnavailable =
+          inspected.result?.details?.errorCode === 'unavailable';
+      }
+    }
     state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
     // Nested Tool Search executions also emit hooks. Count only the outer
     // call (or an ordinary direct call), never both receipts for one action.
@@ -10162,7 +10197,15 @@ export function createToolLoopGuard({
     const prerequisite = visualContinuationPrerequisite(state);
     if (prerequisite) return prerequisite;
     if (state.workspacePreview) {
-      if (workspacePreviewReadbackComplete(state)) return undefined;
+      if (workspacePreviewReadbackComplete(state)) {
+        if (state.workspaceVisibilityInteractionRequired &&
+            !workspaceVisibilityInspectionPassed(state) &&
+            !state.workspaceVisibilityInspectionUnavailable) return {
+          stage: 'workspace-preview-interaction',
+          instruction: visibilityInspectionInstruction(state.workspacePreview),
+        };
+        return undefined;
+      }
       const nextPath = workspacePreviewNextKnownReadPath(state);
       const completed = workspacePreviewReadPaths(state).length;
       return {
@@ -10362,6 +10405,12 @@ export function createToolLoopGuard({
         return undefined;
       }
       if (workspacePreviewReadbackComplete(state)) {
+        if (state.workspaceVisibilityInteractionRequired &&
+            !workspaceVisibilityInspectionPassed(state)) {
+          return '[ODS Pixel next step] ' + (state.workspaceVisibilityInspectionUnavailable
+            ? 'Keep the published preview, but report the requested interaction as unverified because inspection is unavailable. Do not claim the interaction works.'
+            : visibilityInspectionInstruction(state.workspacePreview));
+        }
         return `[ODS Pixel next step] ${WORKSPACE_PREVIEW_COMPLETE_REASON}`;
       }
       const nextPath = workspacePreviewNextKnownReadPath(state);
@@ -10668,14 +10717,19 @@ export function createToolLoopGuard({
       }
       // Publication and verification are independent evidence. A successful
       // snapshot cannot turn a failed or still-running check into completion.
+      const interactionUnverified = state.workspaceVisibilityInteractionRequired &&
+        !workspaceVisibilityInspectionPassed(state);
       const checkStatus = state.latestVerificationStatus;
       const checkIncomplete = checkStatus === "failed" || checkStatus === "pending";
       const checkText = checkStatus === "failed" ? VERIFICATION_FAILED_DELIVERY_PREFIX
         : checkStatus === "pending" ? VERIFICATION_PENDING_DELIVERY_PREFIX : "";
       return {
-        status: checkIncomplete ? checkStatus : "passed",
+        status: checkIncomplete ? checkStatus : interactionUnverified ? "failed" : "passed",
         text:
           (checkText ? `${checkText}\n\n` : "") +
+          (interactionUnverified ? "The requested show/hide interaction has not passed browser inspection. The published preview is available, but that behavior remains unverified.\n\n" : "") +
+          (state.workspaceVisibilityInteractionRequired && !interactionUnverified
+            ? "Browser inspection passed for the submitted show/hide checks only; this does not verify all requested behavior.\n\n" : "") +
           `${WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX}\n\n` +
           `[Open preview](${state.workspacePreview.url})\n\n` +
           (state.workspacePreviewModelAuthored

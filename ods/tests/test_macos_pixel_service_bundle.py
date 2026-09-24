@@ -55,7 +55,10 @@ def test_service_bundle_is_private_version_bound_and_nonactivating(tmp_path, mon
     if fault == 'existing': destination.mkdir()
     def run():
         return config.stage_services(source=source, ref='a' * 40, ods_source=ods,
-            candidate=candidate, destination=destination)
+            candidate=candidate, destination=destination, inspection_config={
+                'imageId': 'sha256:' + 'a' * 64, 'docker': '/Applications/Docker.app/Contents/Resources/bin/docker',
+                'snapshotRoot': '/previews', 'ownerUid': os.getuid(), 'transport': 'docker-desktop',
+                'dockerSocket': '/Users/fixture/.docker/run/docker.sock', 'dockerSha256': 'b' * 64})
     if fault:
         with pytest.raises((ValueError, OSError, SyntaxError)): run()
         assert not destination.exists() or fault == 'existing' and not list(destination.iterdir())
@@ -66,7 +69,7 @@ def test_service_bundle_is_private_version_bound_and_nonactivating(tmp_path, mon
         assert hashlib.sha256(manifest_body).hexdigest() == digest
         assert manifest['requiresServiceQualification'] is True
         assert manifest['candidateConfigSha256'] == hashlib.sha256((candidate / 'openclaw.json').read_bytes()).hexdigest()
-        assert set(manifest['files']) == set(config.SERVICE_SOURCES) | {'operations/broker.py', 'operations/policy.json', 'helpers/extension-catalog.json'}
+        assert set(manifest['files']) == set(config.SERVICE_SOURCES) | config.bundle.GENERATED_SERVICE_ARTIFACTS | {'operations/broker.py'}
         for name, record in manifest['files'].items():
             path = destination / name
             assert hashlib.sha256(path.read_bytes()).hexdigest() == record['sha256']

@@ -490,7 +490,12 @@ if not isinstance(policy_value, str) or pathlib.Path(policy_value) != expected_p
 policy_payload = read_private_regular(expected_policy, "Operations policy")
 catalog_payload = read_private_regular(catalog_path, "extension catalog")
 helper_payloads = []
-for helper in (helper_path, manager_path, manager_unit_path, approval_path, promoter_path, promoter_unit_path, operations_service_dropin_path, preview_path, preview_unit_path, system_observer_path, preview_path.with_name("unix_peer.py")):
+inspection_sources = tuple(preview_path.with_name(name) for name in (
+    'preview_inspection.py', 'preview_inspection_protocol.py', 'preview_inspection_capsule.py',
+    'Dockerfile.inspection', 'preview-inspection.requirements.lock', 'pixel-preview-inspection.service'))
+if not any(source.exists() or source.is_symlink() for source in inspection_sources):
+    inspection_sources = ()  # Older complete deployments remain removable.
+for helper in (helper_path, manager_path, manager_unit_path, approval_path, promoter_path, promoter_unit_path, operations_service_dropin_path, preview_path, preview_unit_path, system_observer_path, preview_path.with_name("unix_peer.py"), *inspection_sources):
     helper_info = helper.lstat()
     if (not stat.S_ISREG(helper_info.st_mode) or stat.S_ISLNK(helper_info.st_mode)
             or helper_info.st_nlink != 1 or helper_info.st_uid != os.getuid()
@@ -1535,6 +1540,16 @@ for permitted_tool in (
         normalized_sandbox_allow.append(permitted_tool)
 normalized_tools["alsoAllow"] = sorted(set(normalized_also_allow))
 normalized_sandbox_tools["allow"] = sorted(set(normalized_sandbox_allow))
+inspection_tool = 'pixel_ods_workspace_preview_inspect'
+inspection_enabled = normalized_pixel_config.get('workspacePreviewInspectionTransport') in ('unix', 'native')
+for tools in (normalized_tools['alsoAllow'], normalized_sandbox_tools['allow']):
+    if inspection_enabled and inspection_tool not in tools:
+        tools.append(inspection_tool)
+        tools.sort()
+    elif not inspection_enabled and inspection_tool in tools:
+        tools.remove(inspection_tool)
+if inspection_enabled:
+    normalized_agent_tools['deny'] = [tool for tool in normalized_agent_tools['deny'] if tool != inspection_tool]
 if "qwen" in model_label and contract.get("modelReasoning") is True:
     normalized_model["compat"] = {"thinkingFormat": "qwen-chat-template"}
     normalized_agent["thinkingDefault"] = "low"
@@ -1670,7 +1685,7 @@ _ods_pixel_refresh_plugin_registry() {
     registry="$(ods_pixel_run_as_owner "$owner" "$home" "$openclaw_bin" \
         plugins registry --refresh --json 2>/dev/null)" || return 1
     jq -e --arg root "$plugin_root" '
-        (["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] | sort) as $tools
+        (["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] | sort) as $tools
         | .refreshed == true
         and .registry.version == 1
         and .registry.refreshReason == "manual"
@@ -1690,7 +1705,7 @@ _ods_pixel_verify_plugin_loaded() {
     local owner="$1" home="$2" openclaw_bin="$3" plugin_root="$4"
     ods_pixel_run_as_owner "$owner" "$home" "$openclaw_bin" plugins list --json 2>/dev/null \
         | jq -e --arg root "$plugin_root" '
-            ["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] as $tools
+            ["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] as $tools
             | [
                 .plugins[]?
                 | select(
@@ -1785,7 +1800,7 @@ _ods_pixel_recreate_agent_sandbox() {
 
 _ods_pixel_apply_runtime_budget() {
     local owner="$1" home="$2" config="$3" openclaw_bin="$4" staged
-    local answers="${5:-}"
+    local answers="${5:-}" inspection_transport="${6:-}"
     # ODS qualifies Pixel on CPU-only hosts. The first local 9B turn can spend
     # more than five minutes loading and prefilling its managed context, while
     # OpenClaw's default session watchdogs assume a responsive remote model.
@@ -1794,7 +1809,7 @@ _ods_pixel_apply_runtime_budget() {
     local budget_writer
     budget_writer="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pixel-runtime-budget.py"
     staged="$(ods_pixel_run_as_owner "$owner" "$home" python3 "$budget_writer" \
-        "$config" "${PERPLEXICA_PORT:-3004}" "$answers")" || return 1
+        "$config" "${PERPLEXICA_PORT:-3004}" "$answers" "$home/.openclaw" "$inspection_transport")" || return 1
     if [[ "$staged" == unchanged ]]; then
         printf '%s\n' unchanged
         return 0
@@ -4271,7 +4286,35 @@ PY
     _ods_pixel_wait_extension_manager_probe "$installed_extension_manager" "$extension_id" || return 1
     _ods_pixel_wait_artifact_promoter_probe "$owner" "$home" "$system_artifact_promoter" || return 1
     _ods_pixel_wait_workspace_preview_probe "$owner" "$home" "$system_workspace_preview" \
-        "$preview_port"
+        "$preview_port" || return 1
+    _ods_pixel_install_preview_inspection "$owner" "$home" "$plugin_root/host"
+}
+
+_ods_pixel_install_preview_inspection() {
+    local owner="$1" home="$2" source="$3" config
+    local installer="${INSTALL_DIR:?}/installers/lib/pixel-preview-inspection.py"
+    config="$(ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 "$installer" build \
+        --source "$source" --owner-uid "$(id -u "$owner")" --transport local)" || return 1
+    printf '%s\n' "$config" | ods_sudo /usr/bin/python3 "$installer" install-linux --source "$source" || return 1
+    ods_sudo systemctl daemon-reload || return 1
+    ods_sudo systemctl enable pixel-preview-inspection.service || return 1
+    ods_sudo systemctl restart pixel-preview-inspection.service || return 1
+    ods_sudo systemctl is-active --quiet pixel-preview-inspection.service || return 1
+    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 - <<'PY' || return 1
+import socket, time
+for attempt in range(50):
+    try:
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(1)
+            client.connect('/run/ods-pixel-inspection/control.sock')
+        break
+    except OSError:
+        if attempt == 49:
+            raise SystemExit('Pixel preview inspection socket is not ready for its owner')
+        time.sleep(.1)
+PY
+    ods_sudo /usr/bin/python3 /usr/local/libexec/ods-pixel-inspection/preview_inspection.py health \
+        | jq -e '.schemaVersion == 1 and .kind == "ods-pixel-preview-inspection" and .status == "ready"' >/dev/null
 }
 
 _ods_pixel_wait_ingress() {
@@ -4444,6 +4487,12 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/unix_peer.py" \
         && -f "$plugin_root/host/pixel-workspace-preview.service" \
         && -f "$plugin_root/host/system_observe.py" \
+        && -f "$plugin_root/host/preview_inspection.py" \
+        && -f "$plugin_root/host/preview_inspection_protocol.py" \
+        && -f "$plugin_root/host/preview_inspection_capsule.py" \
+        && -f "$plugin_root/host/Dockerfile.inspection" \
+        && -f "$plugin_root/host/preview-inspection.requirements.lock" \
+        && -f "$plugin_root/host/pixel-preview-inspection.service" \
         && -f "$plugin_root/host/openclaw_tool_recovery.py" \
         && -f "$plugin_root/host/native_search.py" \
         && -f "$plugin_root/host/openclaw-tool-recovery.json" \
@@ -4867,6 +4916,16 @@ ods_pixel_install_default_agent() {
         ai_bad "Could not install and start the private Pixel ingress."
         return 1
     fi
+    # Enable the deferred inspector only after its exact image, broker and
+    # owner transport have passed installation health. Existing model-budget
+    # reconciliation never grants this capability to an older installation.
+    runtime_budget_status="$(_ods_pixel_apply_runtime_budget "$owner" "$home" \
+        "$home/.openclaw/openclaw.json" "$openclaw_bin" "$answers" unix)" || return 1
+    case "$runtime_budget_status" in
+        changed) _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$pixel_root" || return 1 ;;
+        unchanged) ;;
+        *) return 1 ;;
+    esac
     # sudo -u starts a fresh owner session with the newly assigned ods-pixel
     # supplementary group; the original installer shell may not see that group
     # until the next login.
