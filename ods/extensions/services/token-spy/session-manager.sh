@@ -58,6 +58,19 @@ get_agent_char_limit() {
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
+# AGENTS/REMOTE_AGENTS entries typically write the sessions dir as "~/...".
+# A tilde inside a quoted variable never expands, so every [ -d ]/[ -f ] check
+# would read a literal "~" and the shipped default entry silently did nothing.
+# Expand it explicitly: locally against $HOME; for remote entries the same
+# expansion happens inside the remote heredoc against the remote $HOME.
+sm_expand_tilde() {
+  case "$1" in
+    "~")    printf '%s\n' "$HOME" ;;
+    "~/"*)  printf '%s/%s\n' "$HOME" "${1#"~/"}" ;;
+    *)      printf '%s\n' "$1" ;;
+  esac
+}
+
 query_status() {
   local agent="$1" port="$2"
   curl -sf --max-time 5 "http://${MONITOR_HOST}:${port}/api/session-status?agent=${agent}" 2>/dev/null || echo '{"recommendation":"unavailable"}'
@@ -200,6 +213,11 @@ manage_remote_agent() {
   # Unquoted heredoc: ${remote_dir} must expand locally before remote execution
   remote_info=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "${host}" bash << REMOTESCRIPT
     SESSIONS_DIR="${remote_dir}"
+    # A leading "~" inside the quoted value never expands; resolve it against
+    # the remote user's HOME explicitly (same fix as the local path).
+    case "\$SESSIONS_DIR" in
+      "~"|"~/"*) SESSIONS_DIR="\${HOME}\${SESSIONS_DIR#\~}" ;;
+    esac
     if [ ! -d "\$SESSIONS_DIR" ]; then
       echo "NO_DIR"
       exit 0
@@ -310,6 +328,7 @@ log "=== Session Manager Start ==="
 
 for agent_entry in "${AGENTS[@]}"; do
   IFS='|' read -r agent port sessions_dir <<< "$agent_entry"
+  sessions_dir="$(sm_expand_tilde "$sessions_dir")"
   log "Checking $agent (port $port)"
 
   status_json=$(query_status "$agent" "$port")
@@ -380,6 +399,7 @@ done
 log "=== Session Manager Complete ==="
 for agent_entry in "${AGENTS[@]}"; do
   IFS='|' read -r agent port sessions_dir <<< "$agent_entry"
+  sessions_dir="$(sm_expand_tilde "$sessions_dir")"
   if [ -d "$sessions_dir" ]; then
     count=$(ls "$sessions_dir"/*.jsonl 2>/dev/null | wc -l)
     log "  $agent: $count sessions remaining"

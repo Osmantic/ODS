@@ -21,7 +21,7 @@ fail() { echo "  ✗ $1"; exit 1; }
 # main() runs under `set -euo pipefail`, so extract the two functions we drive.
 FUNCS="$(mktemp)"
 trap 'rm -f "$FUNCS"' EXIT
-sed -n '/^extract_active_ids()/,/^}/p;/^clean_inactive()/,/^}/p' "$MANAGER" > "$FUNCS"
+sed -n '/^sm_expand_tilde()/,/^}/p;/^extract_active_ids()/,/^}/p;/^clean_inactive()/,/^}/p' "$MANAGER" > "$FUNCS"
 log() { :; }   # silence the manager's logger
 # shellcheck disable=SC1090
 source "$FUNCS"
@@ -83,6 +83,34 @@ for id in aaa bbb; do
   [ -f "$WORK/$id.jsonl" ] || fail "wiped $id on a zero-byte sessions.json"
 done
 pass "no session deleted when sessions.json is a partial write"
+rm -rf "$WORK"
+
+echo "Test 6: sm_expand_tilde maps ~/ entries against HOME only"
+HOME=/fake/home
+tilde='~'   # literal tilde is the contract under test
+[ "$(sm_expand_tilde "$tilde")" = "/fake/home" ] || fail "bare ~ did not expand to HOME"
+[ "$(sm_expand_tilde "$tilde/ods/data/sessions")" = "/fake/home/ods/data/sessions" ] \
+  || fail "~/path did not expand under HOME"
+[ "$(sm_expand_tilde '/abs/path')" = "/abs/path" ] || fail "absolute path was rewritten"
+[ "$(sm_expand_tilde "${tilde}other/x")" = "~other/x" ] || fail "another user's ~ was rewritten"
+pass "tilde expansion is exact and scoped to the caller's HOME"
+
+echo "Test 7: shipped default AGENTS entry (~/...) actually reaches cleanup"
+WORK="$(mktemp -d)"
+SESSIONS_DIR="$WORK/home/ods/data/openclaw/home/agents/main/sessions"
+mkdir -p "$SESSIONS_DIR"
+printf '{"a":{"sessionId":"live1"}}\n' > "$SESSIONS_DIR/sessions.json"
+echo '{}' > "$SESSIONS_DIR/live1.jsonl"
+echo '{}' > "$SESSIONS_DIR/stale-orphan.jsonl"
+# Port 9110 is not listening in the harness: query_status fails fast into the
+# "unavailable" fallback, which still runs file cleanup under [ -d ] guards.
+output="$(HOME="$WORK/home" bash "$MANAGER" 2>&1 || true)"
+[ -f "$SESSIONS_DIR/live1.jsonl" ] || fail "deleted the live session"
+if [ -f "$SESSIONS_DIR/stale-orphan.jsonl" ]; then
+  fail "default ~-prefixed sessions dir was never cleaned (literal tilde path)"
+fi
+echo "$output" | grep -q "Session Manager Complete" || fail "manager did not finish"
+pass "default AGENTS entry resolves under HOME and cleans stale sessions"
 rm -rf "$WORK"
 
 echo ""
