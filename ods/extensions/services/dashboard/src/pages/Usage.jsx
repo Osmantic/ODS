@@ -175,23 +175,34 @@ function useUsageReport(range, reloadToken = 0) {
       if (!silent) setLoading(true)
       if (!silent) setError(null)
       try {
-        // Include response bodies in the deadline; only the winning poll
-        // may publish state or append history.
-        const pending = (async () => {
-          const [currentRes, readinessRes] = await Promise.all([
-            fetch(`/api/usage/report?start=${range.start}&end=${range.end}`, {signal:controller.signal}),
-            fetch('/api/usage/readiness', {signal:controller.signal}),
-          ])
-          if (!currentRes.ok) throw new Error(`Usage API returned HTTP ${currentRes.status}`)
-          const current = await currentRes.json()
-          const usageReadiness = readinessRes.ok ? await readinessRes.json() : {
-            ...EMPTY_READINESS,
-            status: 'unavailable',
-            detail: `Usage readiness API returned HTTP ${readinessRes.status}`,
-          }
-          return {current, usageReadiness}
+        // Each receipt owns its deadline result. A readiness outage must not
+        // discard a report already received during this poll.
+        const reportRequest = (async () => {
+          const response = await fetch(`/api/usage/report?start=${range.start}&end=${range.end}`, {signal:controller.signal})
+          if (!response.ok) throw new Error(`Usage API returned HTTP ${response.status}`)
+          return response.json()
         })()
-        const {current, usageReadiness} = await Promise.race([pending, deadline])
+        const readinessRequest = (async () => {
+          const response = await fetch('/api/usage/readiness', {signal:controller.signal})
+          if (!response.ok) throw new Error(`Usage readiness API returned HTTP ${response.status}`)
+          const data = await response.json()
+          if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            throw new TypeError('Invalid usage readiness response')
+          }
+          return data
+        })()
+        const [currentResult, readinessResult] = await Promise.allSettled([
+          Promise.race([reportRequest, deadline]),
+          Promise.race([readinessRequest, deadline]),
+        ])
+        if (currentResult.status === 'rejected') throw currentResult.reason
+        const current = currentResult.value
+        const usageReadiness = readinessResult.status === 'fulfilled' ? readinessResult.value : {
+          ...EMPTY_READINESS,
+          status: 'unavailable',
+          message: 'Tracking controls unavailable.',
+          detail: 'Usage readiness API is unavailable. Refresh to check tracking controls.',
+        }
         if (!cancelled) {
           setError(null)
           setReport({

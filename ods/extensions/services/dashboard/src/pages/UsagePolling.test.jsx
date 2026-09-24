@@ -42,7 +42,13 @@ it.each(['report headers','report body','readiness body'])(
     await settle()
     expect(screen.getByRole('button',{name:'Refresh usage'})).toBeDisabled()
     await act(async () => {await vi.advanceTimersByTimeAsync(15000)})
-    expect(screen.getByRole('alert')).toHaveTextContent('Could not load usage')
+    if (phase === 'readiness body') {
+      expect(screen.getByText('900')).toBeVisible()
+      expect(screen.getByRole('region', {name: 'Tracking status'})).toHaveTextContent('Tracking controls unavailable.')
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    } else {
+      expect(screen.getByRole('alert')).toHaveTextContent('Could not load usage')
+    }
     expect(screen.getByRole('button',{name:'Refresh usage'})).toBeEnabled()
     expect(signals.slice(0,2).every(signal => signal.aborted)).toBe(true)
     await act(async () => {await vi.advanceTimersByTimeAsync(5000)})

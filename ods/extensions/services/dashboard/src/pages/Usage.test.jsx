@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Usage from './Usage' // eslint-disable-line no-unused-vars
 
@@ -251,6 +251,36 @@ describe('Usage page', () => {
   afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();vi.unstubAllGlobals()})
   async function ready() { await screen.findByText('Recorded activity · refreshes every 10s') }
   function tab(name) { fireEvent.click(screen.getByRole('button',{name,exact:true})) }
+
+  it.each(['network', 'HTTP', 'JSON', 'null'])('retains the report after a readiness %s failure', async failure => {
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (!String(url).includes('/readiness')) return { ok: true, json: async () => currentReport }
+      if (failure === 'network') throw new TypeError('unreachable')
+      if (failure === 'HTTP') return { ok: false, status: 503 }
+      return { ok: true, json: async () => {
+        if (failure === 'JSON') throw new SyntaxError('bad JSON')
+        return null
+      } }
+    }))
+    render(<Usage />)
+    await ready()
+    expect(screen.getByText('16.4K')).toBeVisible()
+    tab('Models')
+    expect(screen.getByText('gpt-4o')).toBeVisible()
+    expect(screen.queryByText('Usage data unavailable')).not.toBeInTheDocument()
+  })
+
+  it('retains the report when readiness stalls and ignores its late receipt', async () => {
+    vi.useFakeTimers()
+    let finishBody
+    vi.stubGlobal('fetch', vi.fn(async url => ({ ok: true, json: () => String(url).includes('/readiness')
+      ? new Promise(resolve => { finishBody = resolve }) : Promise.resolve(currentReport) })))
+    render(<Usage />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+    expect(screen.getByText('16.4K')).toBeVisible()
+    await act(async () => { finishBody(offlineReadiness); await Promise.resolve() })
+    expect(screen.queryByRole('button', { name: 'Restart Token Spy' })).not.toBeInTheDocument()
+  })
 
   it('puts token activity first and separates the detailed views',async()=>{
     installFetchMock();render(<Usage compact/>);await ready()
