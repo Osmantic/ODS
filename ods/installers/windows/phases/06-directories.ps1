@@ -347,6 +347,7 @@ $envResult = New-ODSEnv `
     -SwitchboardMode $env:ODS_MODEL_SWITCHBOARD `
     -EnableLan      $lanFlag `
     -EnableODSProxy $enableODSProxy `
+    -EnableComfyui  $enableComfyui `
     -EnableWebSearch $_enableWebSearch
 Write-AISuccess "Generated .env with secure secrets"
 

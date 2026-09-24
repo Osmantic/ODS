@@ -603,7 +603,11 @@ function New-ODSEnv {
         [bool]$EnableLangfuse = $false,
         [bool]$EnableLan = $false,
         [bool]$EnableODSProxy = $false,
-        [bool]$EnableWebSearch = $true
+        [bool]$EnableWebSearch = $true,
+        # Mirrors phase 03's ComfyUI toggle into .env's ENABLE_IMAGE_GENERATION
+        # (Open WebUI reads it; compose default is false). Written from the
+        # flag on every run so an explicit -NoComfyui rerun turns it back off.
+        [bool]$EnableComfyui = $false
     )
 
     # Preserve existing secrets on re-install (mirrors Linux _env_get logic)
@@ -1159,6 +1163,8 @@ EMBEDDINGS_MEMORY_LIMIT=$embeddingsMemoryLimit
 WEBUI_AUTH=$webuiAuth
 ENABLE_WEB_SEARCH=$enableWebSearchValue
 WEB_SEARCH_ENGINE=searxng
+# Open WebUI Images feature; needs ComfyUI running (installed by -Comfyui).
+ENABLE_IMAGE_GENERATION=$(if ($EnableComfyui) { "true" } else { "false" })
 
 #=== n8n Settings ===
 N8N_HOST=localhost
