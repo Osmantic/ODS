@@ -11,6 +11,19 @@ services:
       - ./data/rvc/logs:/app/logs
     environment:
       - RVC_API_KEY=${RVC_API_KEY:-}
+    # The pinned upstream Gradio application never consumes RVC_API_KEY.
+    # Preserve its NVIDIA entrypoint, but refuse a falsely authenticated start.
+    command:
+      - /bin/bash
+      - -euo
+      - pipefail
+      - -c
+      - |
+        if [[ -n "$${RVC_API_KEY:-}" ]]; then
+          printf '%s\n' 'RVC_API_KEY is unsupported by the pinned RVC image. Startup refused; use a separately authenticated proxy or an explicitly local unauthenticated configuration.' >&2
+          exit 1
+        fi
+        exec python3 infer-web.py
     shm_size: "1gb"
     restart: unless-stopped
     security_opt:
