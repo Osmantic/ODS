@@ -1042,6 +1042,11 @@ configure_perplexica() {
     local api_key="${4:-no-key}"
     local perplexica_url="http://localhost:${perplexica_port}"
 
+    # Strip trailing slashes before the suffix check: a base URL like
+    # "http://host/v1/" must not be rewritten to "http://host/v1/v1".
+    while [[ "$llm_base_url" == ?*/ ]]; do
+        llm_base_url="${llm_base_url%/}"
+    done
     case "$llm_base_url" in
         */v1|*/api/v1) ;;
         *) llm_base_url="${llm_base_url%/}/v1" ;;

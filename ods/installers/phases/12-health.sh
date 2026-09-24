@@ -476,6 +476,11 @@ if $DOCKER_CMD inspect ods-perplexica &>/dev/null; then
         PERPLEXICA_MODEL="ods/current"
         PERPLEXICA_LLM_BASE_URL="http://litellm:4000/v1"
     fi
+    # Strip trailing slashes before the suffix check: a base URL like
+    # "http://host/v1/" must not be rewritten to "http://host/v1/v1".
+    while [[ "$PERPLEXICA_LLM_BASE_URL" == ?*/ ]]; do
+        PERPLEXICA_LLM_BASE_URL="${PERPLEXICA_LLM_BASE_URL%/}"
+    done
     case "$PERPLEXICA_LLM_BASE_URL" in
         */v1|*/api/v1) ;;
         *) PERPLEXICA_LLM_BASE_URL="${PERPLEXICA_LLM_BASE_URL%/}/v1" ;;
