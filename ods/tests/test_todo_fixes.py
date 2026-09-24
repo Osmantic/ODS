@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 
@@ -55,12 +56,17 @@ def transcribe_audio(model, file):
     assert modified is True
     assert "vad_filter=True" in patched
     assert 'vad_parameters={"threshold": 0.5}' in patched
+    compile(patched, "<patched-whisper>", "exec")
 
 
 def test_vad_patch_is_idempotent_when_kwargs_already_exist() -> None:
     source = """
 def transcribe_audio(model, file):
-    return model.transcribe(file, vad_filter=True)
+    return model.transcribe(
+        file,
+        vad_filter=True,
+        vad_parameters={"threshold": 0.2},
+    )
 """.strip()
 
     patched, modified = patch_source(source)
@@ -82,12 +88,47 @@ def transcribe_audio(model, path):
     assert 'load_audio(path), vad_filter=True, vad_parameters={"threshold": 0.5})' in patched
 
 
+def test_vad_patch_updates_each_unpatched_call_independently() -> None:
+    source = """
+def transcribe_audio(primary, fallback, file):
+    first = primary.transcribe(file, vad_filter=False)
+    second = fallback.transcribe(
+        file,
+        language="en"
+    )
+    return first, second
+""".strip()
+
+    patched, modified = patch_source(source)
+
+    assert modified is True
+    tree = ast.parse(patched)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "transcribe"
+    ]
+    assert len(calls) == 2
+    assert patched.count("vad_filter=False") == 1
+    for call in calls:
+        keyword_names = [keyword.arg for keyword in call.keywords]
+        assert keyword_names.count("vad_filter") == 1
+        assert keyword_names.count("vad_parameters") == 1
+
+    patched_again, modified_again = patch_source(patched)
+    assert modified_again is False
+    assert patched_again == patched
+
+
 if __name__ == "__main__":
     tests = [
         test_vad_patch_single_line_transcribe_call,
         test_vad_patch_multiline_transcribe_call,
         test_vad_patch_is_idempotent_when_kwargs_already_exist,
         test_vad_patch_uses_rightmost_paren_for_nested_single_line_call,
+        test_vad_patch_updates_each_unpatched_call_independently,
     ]
     for test in tests:
         test()

@@ -22,87 +22,83 @@ import sys
 import re
 
 def patch_transcribe_call(source_code):
-    """Safely patch transcribe() calls to add VAD parameters."""
-    # Newer speaches commits (post mid-2025) include vad_filter= directly in
-    # the upstream transcribe() call. Skip patching anywhere in the file
-    # already containing those kwargs — the per-call check below only sees
-    # the first line of a multi-line call and misses kwargs on continuation
-    # lines, which produced "SyntaxError: keyword argument repeated".
-    if 'vad_filter=' in source_code or 'vad_parameters=' in source_code:
-        return source_code, False
+    """Patch every transcribe() call without duplicating existing VAD kwargs."""
     try:
         # Parse the AST to find function calls
         tree = ast.parse(source_code)
 
-        # Track line numbers of transcribe calls
-        transcribe_lines = []
+        calls = []
         for node in ast.walk(tree):
             if (isinstance(node, ast.Call) and
                 isinstance(node.func, ast.Attribute) and
                 node.func.attr == 'transcribe'):
-                transcribe_lines.append(node.lineno)
+                present = {keyword.arg for keyword in node.keywords}
+                missing = []
+                if 'vad_filter' not in present:
+                    missing.append('vad_filter=True')
+                if 'vad_parameters' not in present:
+                    missing.append('vad_parameters={"threshold": 0.5}')
+                if missing:
+                    calls.append((node, missing))
 
-        if not transcribe_lines:
+        if not calls:
             return source_code, False
 
-        lines = source_code.splitlines()
-        modified = False
+        lines = source_code.splitlines(keepends=True)
+        line_starts = []
+        offset = 0
+        for line in lines:
+            line_starts.append(offset)
+            offset += len(line)
 
-        for line_num in transcribe_lines:
-            # Convert to 0-based index
-            idx = line_num - 1
-            if idx >= len(lines):
+        def absolute_offset(line_number, byte_column):
+            line = lines[line_number - 1]
+            char_column = len(
+                line.encode('utf-8')[:byte_column].decode('utf-8')
+            )
+            return line_starts[line_number - 1] + char_column
+
+        edits = []
+        for node, missing in calls:
+            close_offset = absolute_offset(node.end_lineno, node.end_col_offset) - 1
+            close_line = lines[node.end_lineno - 1]
+            close_column = close_offset - line_starts[node.end_lineno - 1]
+            before_close = close_line[:close_column]
+            call_items = [*node.args, *node.keywords]
+
+            if node.lineno == node.end_lineno or before_close.strip():
+                separator = ', ' if call_items else ''
+                edits.append((close_offset, separator + ', '.join(missing)))
                 continue
 
-            line = lines[idx]
+            if call_items:
+                last_item = max(
+                    call_items,
+                    key=lambda item: (item.end_lineno, item.end_col_offset),
+                )
+                item_end = absolute_offset(
+                    last_item.end_lineno, last_item.end_col_offset
+                )
+                between = source_code[item_end:close_offset]
+                if not between.lstrip().startswith(','):
+                    edits.append((item_end, ','))
+                item_line = lines[last_item.lineno - 1]
+                indentation = re.match(r'[ \t]*', item_line).group(0)
+            else:
+                indentation = before_close + '    '
 
-            # Check if VAD parameters already exist
-            if 'vad_filter=' in line or 'vad_parameters=' in line:
-                continue
+            keyword_lines = ''.join(
+                f'{indentation}{keyword},\n' for keyword in missing
+            )
+            edits.append((line_starts[node.end_lineno - 1], keyword_lines))
 
-            # Find the transcribe call and add VAD parameters
-            # Handle both single-line and multi-line calls
-            if 'transcribe(' in line:
-                # Simple single-line case
-                if line.strip().endswith(')'):
-                    # Insert VAD parameters before the LAST closing paren only
-                    # Use rfind to replace only the rightmost ')' to avoid breaking nested calls
-                    last_paren_idx = line.rfind(')')
-                    if last_paren_idx != -1:
-                        new_line = line[:last_paren_idx] + ', vad_filter=True, vad_parameters={"threshold": 0.5}' + line[last_paren_idx:]
-                        lines[idx] = new_line
-                        modified = True
-                else:
-                    # Multi-line call - find the closing parenthesis
-                    paren_count = line.count('(') - line.count(')')
-                    search_idx = idx + 1
-
-                    while search_idx < len(lines) and paren_count > 0:
-                        search_line = lines[search_idx]
-                        paren_count += search_line.count('(') - search_line.count(')')
-
-                        if paren_count == 0:
-                            # Found the closing line
-                            if search_line.strip() == ')':
-                                # Closing paren on its own line
-                                lines.insert(search_idx, '    vad_filter=True,')
-                                lines.insert(search_idx + 1, '    vad_parameters={"threshold": 0.5},')
-                            else:
-                                # Closing paren with other content - replace only the last ')'
-                                last_paren_idx = search_line.rfind(')')
-                                if last_paren_idx != -1:
-                                    lines[search_idx] = search_line[:last_paren_idx] + ', vad_filter=True, vad_parameters={"threshold": 0.5}' + search_line[last_paren_idx:]
-                            modified = True
-                            break
-                        search_idx += 1
-
-        return '\n'.join(lines), modified
+        patched = source_code
+        for edit_offset, replacement in sorted(edits, reverse=True):
+            patched = patched[:edit_offset] + replacement + patched[edit_offset:]
+        return patched, True
 
     except SyntaxError as e:
         print(f"Syntax error in source file: {e}", file=sys.stderr)
-        return source_code, False
-    except Exception as e:
-        print(f"Error patching transcribe call: {e}", file=sys.stderr)
         return source_code, False
 
 if __name__ == "__main__":
