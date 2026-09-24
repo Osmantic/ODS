@@ -176,6 +176,24 @@ def test_route_state_prepares_direct_provider_request_without_client_auth() -> N
     assert_true("connection" not in {key.lower() for key in upstream.headers}, "hop-by-hop headers must be stripped")
 
 
+def test_prepare_upstream_request_preserves_query_contract() -> None:
+    route = route_from_state(route_state())
+    upstream = prepare_upstream_request(
+        method="POST",
+        path="/v1/chat/completions",
+        query_string="trace=a%2Fb&trace=second",
+        headers={},
+        body=b'{"model":"ods/current","messages":[]}',
+        route=route,
+        provider_secret="unit-test-provider-token",
+    )
+    assert_true(
+        upstream.url
+        == "https://gpu.example.test/v1/chat/completions?trace=a%2Fb&trace=second",
+        f"provider query contract drifted: {upstream.url}",
+    )
+
+
 def test_direct_resolution_allows_only_global_provider_addresses() -> None:
     route = route_from_state(route_state())
     addresses = validate_direct_provider_resolution(
@@ -466,6 +484,7 @@ def main() -> int:
         test_manifest_and_network_policy_mark_no_lan_exposure,
         test_image_copies_shared_policy_package,
         test_route_state_prepares_direct_provider_request_without_client_auth,
+        test_prepare_upstream_request_preserves_query_contract,
         test_direct_resolution_allows_only_global_provider_addresses,
         test_direct_resolution_rejects_unsafe_dns_answers,
         test_ssh_route_uses_internal_tunnel_without_direct_dns,

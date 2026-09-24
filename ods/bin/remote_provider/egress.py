@@ -220,8 +220,9 @@ def sanitize_forward_headers(
     return forwarded
 
 
-def _join_openai_path(base_url: str, path: str) -> str:
-    base = base_url.rstrip("/")
+def _join_openai_path(base_url: str, path: str, query_string: str = "") -> str:
+    parts = urlsplit(base_url)
+    base_path = parts.path.rstrip("/")
     suffix = path
     if suffix.startswith("/v1/"):
         suffix = suffix[len("/v1"):]
@@ -229,7 +230,14 @@ def _join_openai_path(base_url: str, path: str) -> str:
         suffix = ""
     if suffix and not suffix.startswith("/"):
         suffix = f"/{suffix}"
-    return f"{base}{suffix}"
+    query = "&".join(value for value in (parts.query, query_string) if value)
+    return urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        f"{base_path}{suffix}",
+        query,
+        parts.fragment,
+    ))
 
 
 def _provider_host_port(base_url: str) -> tuple[str, int]:
@@ -341,6 +349,7 @@ def prepare_upstream_request(
     provider_secret: str,
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
     resolved_addresses: list[str] | None = None,
+    query_string: str = "",
 ) -> UpstreamRequest:
     """Validate and rewrite one OpenAI-compatible request for the provider."""
     required_method = FORWARD_PATHS.get(path)
@@ -403,7 +412,7 @@ def prepare_upstream_request(
     content = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     return UpstreamRequest(
         method=required_method,
-        url=_join_openai_path(upstream_base_url, path),
+        url=_join_openai_path(upstream_base_url, path, query_string),
         headers=sanitize_forward_headers(headers, provider_secret=provider_secret),
         content=content,
         requested_model=requested_model,

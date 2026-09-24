@@ -354,6 +354,7 @@ async def forward(full_path: str, request: Request) -> Response:
             provider_secret=secret,
             max_body_bytes=MAX_BODY_BYTES,
             resolved_addresses=resolved_addresses,
+            query_string=request.scope.get("query_string", b"").decode("ascii"),
         )
     except EgressError as exc:
         return _error_response(exc)
