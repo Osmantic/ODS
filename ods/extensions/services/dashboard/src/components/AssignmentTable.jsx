@@ -23,7 +23,7 @@ export const AssignmentTable = memo(function AssignmentTable({ assignment }) {
   const strategyStyle = STRATEGY_STYLE[strategy] || STRATEGY_STYLE.auto
 
   return (
-    <div className="p-5 bg-zinc-900/50 border border-zinc-800 rounded-xl">
+    <div className="min-w-0 p-5 bg-zinc-900/50 border border-zinc-800 rounded-xl">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
@@ -48,7 +48,7 @@ export const AssignmentTable = memo(function AssignmentTable({ assignment }) {
           return (
             <div
               key={name}
-              className="flex items-start gap-3 p-3 bg-zinc-800/50 rounded-lg"
+              className="flex flex-col items-start gap-3 p-3 bg-zinc-800/50 rounded-lg sm:flex-row"
             >
               {/* Service name */}
               <div className="min-w-0 flex-1">
@@ -64,7 +64,7 @@ export const AssignmentTable = memo(function AssignmentTable({ assignment }) {
               </div>
 
               {/* GPU badges */}
-              <div className="flex flex-wrap gap-1 shrink-0">
+              <div className="flex min-w-0 flex-wrap gap-1 sm:max-w-[60%]">
                 {gpus.map(uuid => (
                   <span
                     key={uuid}
