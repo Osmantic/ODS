@@ -2,14 +2,15 @@ import {act,fireEvent,render,screen,waitFor} from '@testing-library/react'
 import {unzipSync} from 'fflate'
 import PixelTaskFiles from './PixelTaskFiles'
 import {loadSnapshotFiles,loadArtifactBytes} from '../lib/pixelArtifacts'
+import fixture from '../test/fixtures/publication-digest.json'
 vi.mock('../lib/pixelArtifacts',()=>({loadSnapshotFiles:vi.fn(),loadArtifactBytes:vi.fn()}))
 vi.mock('./PixelPreviewSource',()=>({default:()=>null}))
-const preview={siteId:'site-'+ 'a'.repeat(24),sha256:'b'.repeat(64),files:2,bytes:12}
-const files=[{path:'index.html',bytes:5},{path:'assets/site.css',bytes:7}]
+const {preview} = fixture
+const files = fixture.manifest.files
 let blob
 beforeEach(()=>{
   loadSnapshotFiles.mockResolvedValue(files)
-  loadArtifactBytes.mockImplementation(async(_preview,file)=>new TextEncoder().encode(file.path==='index.html'?'hello':'a{b:c;}').buffer)
+  loadArtifactBytes.mockImplementation(async(_preview,file)=>new TextEncoder().encode(fixture.contents[file.path]).buffer)
   vi.spyOn(URL,'createObjectURL').mockImplementation(value=>{blob=value;return 'blob:archive'})
   vi.spyOn(URL,'revokeObjectURL').mockImplementation(()=>{})
   vi.spyOn(HTMLAnchorElement.prototype,'click').mockImplementation(()=>{})
@@ -23,7 +24,7 @@ it('downloads all verified publication paths and original bytes as a ZIP',async(
   const archive=unzipSync(new Uint8Array(data))
   expect(Object.keys(archive)).toEqual(files.map(file=>file.path))
   expect(new TextDecoder().decode(archive['assets/site.css'])).toBe('a{b:c;}')
-  expect(loadArtifactBytes).toHaveBeenCalledTimes(2)
+  expect(loadArtifactBytes).toHaveBeenCalledTimes(3)
   expect(document.querySelector('a[download]')).toBeNull()
 })
 it('never downloads a partial archive if verification fails',async()=>{

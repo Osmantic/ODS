@@ -1,6 +1,21 @@
 ﻿import {useEffect,useRef,useState} from 'react'
 import {zipSync} from 'fflate'
+import {sha256} from '@noble/hashes/sha2.js'
 import {loadSnapshotFiles,loadArtifactBytes} from '../lib/pixelArtifacts'
+
+function publicationDigest(entries) {
+  // Match workspace_preview.py: sorted ASCII paths, big-endian lengths,
+  // and original bytes. A manifest's per-file hashes cannot attest its own root.
+  const digest = sha256.create()
+  for (const path of Object.keys(entries).sort()) {
+    const name = new TextEncoder().encode(path)
+    const nameSize = new Uint8Array(4), dataSize = new Uint8Array(8)
+    new DataView(nameSize.buffer).setUint32(0, name.length)
+    new DataView(dataSize.buffer).setUint32(4, entries[path].byteLength)
+    digest.update(nameSize).update(name).update(dataSize).update(entries[path])
+  }
+  return Array.from(digest.digest(), byte => byte.toString(16).padStart(2, '0')).join('')
+}
 
 export default function PixelPublicationDownload({preview}) {
   const pending=useRef(null)
@@ -32,6 +47,7 @@ export default function PixelPublicationDownload({preview}) {
           entries[file.path]=new Uint8Array(bytes)
           if(pending.current===controller)setState({status:'working',done:Object.keys(entries).length,total:files.length})
         }
+        if (publicationDigest(entries) !== preview.sha256) throw new Error('Publication digest mismatch')
         // The manifest contract caps input at 128 files / 16 MiB. Store ZIP
         // entries without compression so packaging has bounded CPU cost.
         return zipSync(entries,{level:0})
