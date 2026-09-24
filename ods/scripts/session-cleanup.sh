@@ -29,6 +29,7 @@ usage() {
     echo "sessions.json so the gateway creates a fresh session."
     echo ""
     echo "Options:"
+    echo "  --dry-run    Preview every cleanup action without changing files."
     echo "  -h, --help   Show this help and exit."
     echo ""
     echo "Environment:"
@@ -40,9 +41,15 @@ usage() {
     echo "      1 when Python or sessions.json validation fails before any session mutation."
 }
 
-case "${1:-}" in
-    -h|--help) usage; exit 0 ;;
-esac
+DRY_RUN=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY_RUN=true ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
 
 # ── Preflight ──────────────────────────────────────────────────
 if [ ! -f "$SESSIONS_JSON" ]; then
@@ -121,19 +128,31 @@ echo "[$(date)] Active sessions found: ${#ACTIVE_IDS[@]}"
 
 # ── Clean up debris ────────────────────────────────────────────
 DELETED_EXIT=0
-DELETED_COUNT=$(find "$SESSIONS_DIR" -name '*.deleted.*' -delete -print 2>&1 | wc -l) || DELETED_EXIT=$?
+if $DRY_RUN; then
+    DELETED_COUNT=$(find "$SESSIONS_DIR" -name '*.deleted.*' -print 2>&1 | wc -l) || DELETED_EXIT=$?
+else
+    DELETED_COUNT=$(find "$SESSIONS_DIR" -name '*.deleted.*' -delete -print 2>&1 | wc -l) || DELETED_EXIT=$?
+fi
 if [[ $DELETED_EXIT -ne 0 ]]; then
     DELETED_COUNT=0
 fi
 
 BAK_EXIT=0
-BAK_COUNT=$(find "$SESSIONS_DIR" -name '*.bak*' -not -name '*.bak-cleanup' -delete -print 2>&1 | wc -l) || BAK_EXIT=$?
+if $DRY_RUN; then
+    BAK_COUNT=$(find "$SESSIONS_DIR" -name '*.bak*' -not -name '*.bak-cleanup' -print 2>&1 | wc -l) || BAK_EXIT=$?
+else
+    BAK_COUNT=$(find "$SESSIONS_DIR" -name '*.bak*' -not -name '*.bak-cleanup' -delete -print 2>&1 | wc -l) || BAK_EXIT=$?
+fi
 if [[ $BAK_EXIT -ne 0 ]]; then
     BAK_COUNT=0
 fi
 
 if [ "$DELETED_COUNT" -gt 0 ] || [ "$BAK_COUNT" -gt 0 ]; then
-    echo "[$(date)] Cleaned up $DELETED_COUNT .deleted files, $BAK_COUNT .bak files"
+    if $DRY_RUN; then
+        echo "[$(date)] Would clean up $DELETED_COUNT .deleted files, $BAK_COUNT .bak files"
+    else
+        echo "[$(date)] Cleaned up $DELETED_COUNT .deleted files, $BAK_COUNT .bak files"
+    fi
 fi
 
 # ── Process session files ──────────────────────────────────────
@@ -161,8 +180,12 @@ for f in "$SESSIONS_DIR"/*.jsonl; do
 
     if [ "$IS_ACTIVE" = false ]; then
         SIZE=$(du -h "$f" | cut -f1)
-        echo "[$(date)] Removing inactive session: $BASENAME ($SIZE)"
-        rm -f "$f"
+        if $DRY_RUN; then
+            echo "[$(date)] Would remove inactive session: $BASENAME ($SIZE)"
+        else
+            echo "[$(date)] Removing inactive session: $BASENAME ($SIZE)"
+            rm -f "$f"
+        fi
         REMOVED_INACTIVE=$((REMOVED_INACTIVE + 1))
     else
         # Portable stat: Linux uses -c%s, macOS uses -f%z
@@ -187,8 +210,12 @@ done
 
 # ── Commit index first, then delete unreferenced session files ─
 if [[ ${#WIPE_IDS[@]} -gt 0 ]]; then
-    echo "[$(date)] Clearing ${#WIPE_IDS[@]} session reference(s) from sessions.json"
-    "$PYTHON_CMD" - "$SESSIONS_JSON" "${WIPE_IDS[@]}" <<'PY'
+    if $DRY_RUN; then
+        echo "[$(date)] Would clear ${#WIPE_IDS[@]} session reference(s) from sessions.json"
+        REMOVED_BLOATED=${#WIPE_IDS[@]}
+    else
+        echo "[$(date)] Clearing ${#WIPE_IDS[@]} session reference(s) from sessions.json"
+        "$PYTHON_CMD" - "$SESSIONS_JSON" "${WIPE_IDS[@]}" <<'PY'
 import json
 import os
 import stat
@@ -237,16 +264,21 @@ finally:
             pass
 PY
 
-    for f in "${WIPE_FILES[@]}"; do
-        if [[ -f "$f" ]]; then
-            rm -f "$f"
-            REMOVED_BLOATED=$((REMOVED_BLOATED + 1))
-        fi
-    done
+        for f in "${WIPE_FILES[@]}"; do
+            if [[ -f "$f" ]]; then
+                rm -f "$f"
+                REMOVED_BLOATED=$((REMOVED_BLOATED + 1))
+            fi
+        done
+    fi
 fi
 
 # ── Summary ────────────────────────────────────────────────────
-echo "[$(date)] Cleanup complete: removed $REMOVED_INACTIVE inactive, $REMOVED_BLOATED bloated"
+if $DRY_RUN; then
+    echo "[$(date)] Dry run complete: would remove $REMOVED_INACTIVE inactive, $REMOVED_BLOATED bloated"
+else
+    echo "[$(date)] Cleanup complete: removed $REMOVED_INACTIVE inactive, $REMOVED_BLOATED bloated"
+fi
 REMAINING_EXIT=0
 REMAINING=$(find "$SESSIONS_DIR" -maxdepth 1 -name '*.jsonl' 2>&1 | wc -l) || REMAINING_EXIT=$?
 if [[ $REMAINING_EXIT -ne 0 ]]; then
