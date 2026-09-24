@@ -10998,10 +10998,12 @@ export function createToolLoopGuard({
   function deliveryVerificationForRun(runId) {
     const verification = verificationForRun(runId);
     const state = runs.get(runId);
+    // A validated clarification suspends this turn. Missing installation
+    // evidence is expected while awaiting the owner, not a terminal failure.
+    if (state?.ownerQuestions && !state.clientCancelled) return {status:'pending',text:questionsText(state.ownerQuestions),questions:state.ownerQuestions};
     if (state?.extensionCompletionGate?.active && !state.extensionCompletionGate.verification && verification.status === 'none') {
       return {status:'failed', text:'ODS did not observe a verified managed installation receipt for this GitHub extension request.'};
     }
-    if (state?.ownerQuestions && !state.clientCancelled) return {status:'pending',text:questionsText(state.ownerQuestions),questions:state.ownerQuestions};
     if (state?.completionAssurance.terminal && verification.status === 'none') {
       return {status:state.completionAssurance.terminalStatus, text:state.completionAssurance.terminal};
     }

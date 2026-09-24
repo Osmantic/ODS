@@ -3239,14 +3239,15 @@ PY
 _ods_pixel_write_operations_policy() {
     local owner="$1" home="$2" policy="$3" install_root="${INSTALL_DIR:?}"
     local workspace="${4:-$home/.openclaw/workspace-pixel}"
+    local source_root="${5:-$install_root}"
     local system_observer_source="$install_root/extensions/services/pixel-agent/host/system_observe.py"
 
     ods_pixel_run_as_owner "$owner" "$home" install -d -m 0700 -- "${policy%/*}" || return 1
     ods_pixel_run_as_owner "$owner" "$home" python3 - "$policy" "$install_root" "$workspace" \
-        "$system_observer_source" <<'PY'
+        "$system_observer_source" "$source_root/installers/macos/lib/pixel-native-ops-service.py" <<'PY'
 import json, os, pathlib, re, shutil, socket, stat, sys, tempfile
 
-out, install_root, workspace, system_observer_source_raw = sys.argv[1:]
+out, install_root, workspace, system_observer_source_raw, python_selector_source = sys.argv[1:]
 path = pathlib.Path(out)
 if not path.is_absolute() or path == pathlib.Path("/"):
     raise SystemExit("ODS Pixel Operations policy path must be absolute and non-root")
@@ -3292,6 +3293,16 @@ def required_binary(name):
     return str(pathlib.Path(candidate).resolve(strict=True))
 
 python_binary = str(pathlib.Path("/usr/bin/python3").resolve(strict=True))
+if native_macos:
+    # The Apple launcher needs an xcrun cache outside the broker's sandbox.
+    # Reuse daemon discovery so policy clients execute the protected Python
+    # process directly, without broadening writable roots or hiding stderr.
+    import importlib.util
+    selector_path = pathlib.Path(python_selector_source).resolve(strict=True)
+    selector_spec = importlib.util.spec_from_file_location("native_policy_python", selector_path)
+    selector = importlib.util.module_from_spec(selector_spec)
+    selector_spec.loader.exec_module(selector)
+    python_binary = str(selector.select_python())
 hostname_binary = required_binary("hostname")
 uname_binary = required_binary("uname")
 cat_binary = required_binary("cat")

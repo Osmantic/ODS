@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AtSign, Slash, ShieldCheck, ListChecks, Globe2, CheckCheck, Users, Minimize2, Package } from 'lucide-react'
-import PortalExtensionMention, { extensionMentionQuery } from './PortalExtensionMention'
+import PortalExtensionMention, { extensionMentionQuery, replaceExtensionMention } from './PortalExtensionMention'
 import PixelMascot from './PixelMascot'
 import PixelPromptLibrary from './PixelPromptLibrary'
 import { usePortalIdentity } from '../contexts/PortalIdentityContext'
@@ -16,6 +16,7 @@ const commands = [
   { title: 'Review', detail: 'Risks and concrete next actions', icon: CheckCheck, text: 'Review this critically, identify real risks, and recommend concrete next actions: ' },
 ]
 const sources = [
+  { title: 'Extensions', detail: 'Choose from the ODS catalog', icon: Package, text: '/extensions @' },
   { title: 'Current task', detail: 'Reference the current conversation', icon: AtSign, text: '@current-task ' },
   { title: 'Retained evidence', detail: 'Request evidence; no files are attached automatically', icon: AtSign, text: '@retained-evidence ' },
 ]
@@ -39,7 +40,7 @@ export default function PixelComposerTools({ disabled, input, onInsert, onCompac
   }, [menu])
   function toggle(kind, event) { lastTrigger.current = event.currentTarget; setMenu(value => value === kind ? null : kind) }
   return <div ref={root} className="pixel-composer-tools">
-    {!disabled && extensionQuery !== undefined && dismissedMention !== input && <PortalExtensionMention query={extensionQuery} onDismiss={() => setDismissedMention(input)} onSelect={text => onInsert(text, { replace: true })}/>}
+    {!disabled && extensionQuery !== undefined && dismissedMention !== input && <PortalExtensionMention query={extensionQuery} onDismiss={() => setDismissedMention(input)} onSelect={text => onInsert(replaceExtensionMention(input, text), { replace: true })}/>}
     {menu && <div className="pixel-composer-popover" role="group" onKeyDown={event => {
       const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End']
       if (!keys.includes(event.key)) return

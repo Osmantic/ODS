@@ -5,6 +5,23 @@ import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {readFileSync} from 'node:fs';
 const questions=[{id:'style',question:'Qual estilo você prefere?',options:['Minimalista','Colorido']}];
 
+test('multiline clarification is presented once without weakening ingress schema',async()=>{
+  const input=[{id:'install',question:'Para instalar Excalidraw:\n\n1. Confirma o nome?\n2. Deseja instalar agora?',options:['Sim, instalar','Nao, cancelar']}];
+  assert.equal(parseQuestions(input),null);
+  const result=await createAskUserTool().execute('ask',{questions:input});
+  assert.equal(result.details.status,'awaiting_user');
+  assert.equal(result.details.questions[0].question,'Para instalar Excalidraw: 1. Confirma o nome? 2. Deseja instalar agora?');
+  const guard=createToolLoopGuard(),ctx={agentId:'pixel',runId:'multiline',sessionId:'session'};
+  guard.observeRun(ctx,'pixel',{prompt:'instale excalibur draw algo assim'});
+  guard.afterToolCall({toolName:'pixel_ods_ask_user',result},{...ctx,toolCallId:'ask'});
+  assert.equal(guard.deliveryVerificationForRun(ctx.runId).status,'pending');
+  assert.equal(guard.beforeToolCall({toolName:'exec',params:{command:'echo forbidden'}},ctx).block,true);
+  for(const question of ['x'.repeat(301)+'\n','unsafe\u0000text']) {
+    assert.equal((await createAskUserTool().execute('ask',{questions:[{...input[0],question}]})).isError,true);
+  }
+  assert.equal((await createAskUserTool().execute('ask',{questions:[{...input[0],options:['same\ntext','same text']}]})).isError,true);
+});
+
 test('isolated plugin and installed ingress share the same bounded schema',()=>{
   assert.equal(readFileSync(new URL('../plugin/questions-schema.mjs',import.meta.url),'utf8'),readFileSync(new URL('../host/questions_schema.mjs',import.meta.url),'utf8'));
 });

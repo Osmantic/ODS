@@ -3,7 +3,12 @@ import { Package, RefreshCw } from 'lucide-react'
 import './portal-extension-mention.css'
 
 export function extensionMentionQuery(input) {
-  return typeof input === 'string' ? /^\s*\/extensions?\s+@([a-z0-9_-]*)$/i.exec(input)?.[1] : undefined
+  return typeof input === 'string' ? /(?:^|\s)\/extensions?\s+@([a-z0-9_-]*)$/i.exec(input)?.[1] : undefined
+}
+
+export function replaceExtensionMention(input, selection) {
+  if (extensionMentionQuery(input) === undefined) return input
+  return input.replace(/\/extensions?\s+@[a-z0-9_-]*$/i, selection)
 }
 
 function unavailable(entry) {

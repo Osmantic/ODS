@@ -29,6 +29,7 @@ import PortalReadiness from '../components/PortalReadiness'
 import { pixelReadinessView } from '../lib/pixelReadiness'
 import PortalAgentActivity from '../components/PortalAgentActivity'
 import PortalExtensionSetup from '../components/PortalExtensionSetup'
+import { catalogInstallCommand } from '../components/catalogInstallCommand'
 import PortalExtensionProgress from '../components/PortalExtensionProgress'
 import useExtensionInstallation from '../hooks/useExtensionInstallation'
 import useGithubExtensionRequest from '../hooks/useGithubExtensionRequest'
@@ -893,7 +894,7 @@ export default function Pixel({ systemStatus = null }) {
   }, [messages, preview, workspaceOpen, sending, interrupted, input])
 
   const sendMessage = useCallback(async (answerOverride, continuationId = null) => {
-    const trimmed = (typeof answerOverride === 'string' ? answerOverride : input).trim()
+    const trimmed = catalogInstallCommand((typeof answerOverride === 'string' ? answerOverride : input).trim())
     if(compactCommand(trimmed)){await compactConversation();return}
     if(contextControl.busy || contextControl.historyUnknown)return
     if (!trimmed || sending || modelSwitching || abortRef.current || restoredActive || restoredChecking || status !== 'available' || trimmed.length > MAX_INPUT_LEN) return

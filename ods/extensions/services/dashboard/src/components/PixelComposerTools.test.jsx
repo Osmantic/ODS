@@ -2,6 +2,24 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import PixelComposerTools from './PixelComposerTools'
 
+test('at-sign menu exposes catalog without submitting a request',()=>{
+  const insert=vi.fn()
+  render(<MemoryRouter><PixelComposerTools input="" onInsert={insert}/></MemoryRouter>)
+  fireEvent.click(screen.getByRole('button',{name:'Mention source'}))
+  fireEvent.click(screen.getByRole('button',{name:'Extensions Choose from the ODS catalog'}))
+  expect(insert).toHaveBeenCalledExactlyOnceWith('/extensions @')
+})
+
+test('inline catalog selection preserves owner text',async()=>{
+  const insert=vi.fn()
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({extensions:[{id:'excalidraw',name:'Excalidraw',installable:true}]})}))
+  try {
+    render(<MemoryRouter><PixelComposerTools input="ola, instale pra mim /extensions @ex" onInsert={insert}/></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button',{name:/Excalidraw/}))
+    expect(insert).toHaveBeenCalledWith('ola, instale pra mim /extensions @excalidraw ',{replace:true})
+  } finally {vi.unstubAllGlobals()}
+})
+
 test('commands insert a draft without sending it', () => {
   const insert = vi.fn()
   render(<MemoryRouter><PixelComposerTools input="" disabled={false} onInsert={insert}/></MemoryRouter>)

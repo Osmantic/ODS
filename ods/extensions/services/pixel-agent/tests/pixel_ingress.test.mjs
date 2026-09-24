@@ -1120,6 +1120,40 @@ test('terminal SSE preserves v4 verified project associations without a web publ
   } finally {await new Promise(resolve=>srv.close(resolve));await new Promise(resolve=>gw.server.close(resolve));}
 });
 
+for (const prompt of [
+  'ola, instale pra mim /extensions @excalibur draw algo assim',
+  '/extensions install https://github.com/python-humanize/humanize',
+  '/extensions install https://github.com/python-humanize/humanize and create a website',
+]) test(`extension clarification reaches ingress as one pending card: ${prompt}`, async () => {
+  const {createAskUserTool}=await import('../plugin/ask-user.mjs');
+  const {createToolLoopGuard}=await import('../plugin/tool-loop-guard.mjs');
+  const result=await createAskUserTool().execute('ask',{questions:[{id:'install',
+    question:'Para instalar Excalidraw:\n\n1. Confirma o nome?\n2. Deseja instalar agora?',
+    options:['Sim, instalar','Nao, cancelar']}]});
+  const guard=createToolLoopGuard(),ctx={agentId:'pixel',runId:'clarify',sessionId:'session'};
+  guard.observeRun(ctx,'pixel',{prompt});
+  if (prompt.includes('github.com')) {
+    const params={url:'https://raw.githubusercontent.com/python-humanize/humanize/HEAD/pyproject.toml'};
+    const webContext={...ctx,toolCallId:'read-repository'};
+    assert.equal(guard.beforeToolCall({toolName:'web_fetch',params},webContext),undefined);
+    guard.afterToolCall({toolName:'web_fetch',params,result:{details:{status:200}}},webContext);
+  }
+  guard.afterToolCall({toolName:'pixel_ods_ask_user',result},{...ctx,toolCallId:'ask'});
+  assert.equal(guard.beforeAgentFinalize({lastAssistantMessage:'Waiting for your answer'},ctx).action,'finalize');
+  const verification=guard.deliveryVerificationForRun(ctx.runId);
+  assert.equal(verification.status,'pending');
+  const gw=await fakeGateway({verification,completionText:'I installed it already.'});
+  const srv=await startIngress({gatewayPort:gw.port});
+  try {
+    const response=await request(srv,'POST','/v1/chat/completions',{body:JSON.stringify({stream:true,messages:[{role:'user',content:'Ask first'}]}),headers:{'Content-Type':'application/json'}});
+    assert.equal(response.status,200);
+    assert.doesNotMatch(response.body,/I installed it already/);
+    const frames=response.body.split('\n').filter(line=>line.startsWith('data: {')).map(line=>JSON.parse(line.slice(6)));
+    assert.equal(frames.filter(frame=>frame.pixel_questions).length,1);
+    assert.deepEqual(frames.at(-1).pixel_questions,{schemaVersion:1,questions:result.details.questions});
+  } finally {await new Promise(resolve=>srv.close(resolve));await new Promise(resolve=>gw.server.close(resolve));}
+});
+
 test('question cards come only from validated pending verification on the terminal frame', async () => {
   const questions=[{id:'style',question:'Qual estilo?',options:['Clean','Colorido']}];
   for (const verification of [

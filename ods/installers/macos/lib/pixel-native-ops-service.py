@@ -33,6 +33,19 @@ def installer_helpers():
     return module
 
 
+COMMAND_LINE_TOOLS = Path('/Library/Developer/CommandLineTools')
+
+
+def python_discovery_environment():
+    environment = {'PATH': '/usr/bin:/bin', 'HOME': '/var/empty', 'TMPDIR': '/private/tmp'}
+    if COMMAND_LINE_TOOLS.exists():
+        # Developer-selected Xcode can live in an owner-writable Applications
+        # tree. Prefer Apple's protected CLI toolchain without changing xcode-select.
+        with custody.protected_directory(COMMAND_LINE_TOOLS):
+            environment['DEVELOPER_DIR'] = str(COMMAND_LINE_TOOLS)
+    return environment
+
+
 def select_python():
     """Discover the final Apple Python process, not its spawning launcher."""
     if sys.platform != 'darwin':
@@ -41,7 +54,7 @@ def select_python():
              'n=ctypes.CDLL(None).proc_pidpath(os.getpid(),b,len(b)); '
              'assert n>0; print(b.value.decode())')
     result = subprocess.run(['/usr/bin/python3', '-I', '-B', '-c', probe],
-        cwd='/', env={'PATH': '/usr/bin:/bin', 'HOME': '/var/empty', 'TMPDIR': '/private/tmp'},
+        cwd='/', env=python_discovery_environment(),
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
     if result.returncode or len(result.stdout) > 4096 or len(result.stdout.splitlines()) != 1:
         raise ValueError('native-python-discovery-failed')

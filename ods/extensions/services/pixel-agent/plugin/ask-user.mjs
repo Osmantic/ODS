@@ -26,9 +26,11 @@ function normalizeRequest(value) {
         (q.options!==undefined && q.choices!==undefined && JSON.stringify(q.options)!==JSON.stringify(q.choices)) ||
         (q.question!==undefined && q.text!==undefined && q.question!==q.text)) return null;
     const options=q.options ?? q.choices;
-    return {id:q.id ?? `question_${index+1}`,question:q.question ?? q.text,
-      options:Array.isArray(options) ? options.map(option=>typeof option==='string' ? option :
-        option && Object.keys(option).join()==='text' ? option.text : null) : null};
+    const singleLine=(text,max)=>typeof text==='string' && text.length<=max
+      ? text.replace(/\r\n|[\r\n\t]/g,' ').replace(/ {2,}/g,' ').trim() : text;
+    return {id:q.id ?? `question_${index+1}`,question:singleLine(q.question ?? q.text,300),
+      options:Array.isArray(options) ? options.map(option=>singleLine(typeof option==='string' ? option :
+        option && Object.keys(option).join()==='text' ? option.text : null,160)) : null};
   });
   return parseQuestions(normalized);
 }

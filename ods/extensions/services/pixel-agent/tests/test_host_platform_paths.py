@@ -72,8 +72,15 @@ def test_shared_policy_writer_matches_native_manager_and_quarantine(tmp_path):
         environment=str(home / '.env'), owner=pwd.getpwuid(os.getuid()).pw_name, port=3002)
     arguments = plistlib.loads(rendered['plist'])['ProgramArguments']
     serve = arguments.index('serve')
+    spec = importlib.util.spec_from_file_location('native_policy_python',
+        ods / 'installers/macos/lib/pixel-native-ops-service.py')
+    python_selector = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(python_selector)
+    native_python = str(python_selector.select_python())
+    assert native_python != '/usr/bin/python3'
     for action in ('list', 'inspect', 'install', 'enable', 'disable', 'remove'):
         command = value['actions']['ods.extensions.' + action]['argv']
+        assert command[0] == native_python
         assert command[1] == arguments[serve - 1]
         assert command[2:4] == ['client', arguments[serve + 1]]
     assert '/usr/local/libexec/ods-pixel-extension-manager.py' not in encoded
@@ -81,4 +88,18 @@ def test_shared_policy_writer_matches_native_manager_and_quarantine(tmp_path):
     helper_root = '/usr/local/libexec/ods-pixel-services/helpers/'
     assert search[1:3] == [helper_root + 'extension_search.py', helper_root + 'extension-catalog.json']
     assert value['actions']['host.gpu']['argv'][1] == helper_root + 'system_observe.py'
+    assert value['actions']['host.gpu']['argv'][0] == native_python
+    assert search[0] == native_python
     assert '/opt/pixel-ops-broker/' not in encoded
+
+    # Match the broker's minimal environment and deny cache writes. The Apple
+    # launcher emits xcrun stderr here even with exit 0; the selected interpreter
+    # must return clean evidence without permitting writes outside the sandbox.
+    profile = '(version 1)(allow default)(deny file-write*)'
+    probe = subprocess.run(['/usr/bin/sandbox-exec', '-p', profile,
+        native_python, '-I', '-B', '-c', 'print("native-client-ok")'],
+        env={'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+             'LANG': 'C.UTF-8'}, capture_output=True, text=True, timeout=15)
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout == 'native-client-ok\n'
+    assert probe.stderr == ''

@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -132,8 +133,24 @@ def test_python_selection_rejects_invalid_discovery(monkeypatch, output, code):
     with pytest.raises(ValueError): service.select_python()
 
 
+@pytest.mark.skipif(sys.platform != 'darwin', reason='real Apple interpreter qualification')
+def test_selected_python_runs_without_launcher_cache_writes():
+    executable = service.select_python()
+    assert executable != Path('/usr/bin/python3')
+    result = subprocess.run([
+        '/usr/bin/sandbox-exec', '-p', '(version 1)(allow default)(deny file-write*)',
+        str(executable), '-I', '-B', '-c', 'print("native-python-ready")',
+    ], cwd='/', env={'PATH': '/usr/bin:/bin', 'LANG': 'C'},
+        capture_output=True, text=True, timeout=15, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == 'native-python-ready\n'
+    assert result.stderr == ''
+
+
 def test_python_selection_checks_final_executable_custody(monkeypatch):
     monkeypatch.setattr(service.sys, 'platform', 'darwin')
+    monkeypatch.setattr(service, 'python_discovery_environment', lambda: {
+        'PATH': '/usr/bin:/bin', 'HOME': '/var/empty', 'TMPDIR': '/private/tmp'})
     final = '/Library/Developer/final/Python'
     def run(argv, **kw):
         assert argv[:4] == ['/usr/bin/python3', '-I', '-B', '-c']
@@ -144,6 +161,29 @@ def test_python_selection_checks_final_executable_custody(monkeypatch):
     monkeypatch.setattr(service.custody, 'protected_bytes', lambda path, **kw: checked.append(path))
     assert service.select_python() == Path(final)
     assert checked == [final]
+
+
+def test_python_discovery_prefers_protected_command_line_tools(tmp_path, monkeypatch):
+    monkeypatch.setattr(service, 'COMMAND_LINE_TOOLS', tmp_path)
+    checked = []
+    monkeypatch.setattr(service.custody, 'protected_directory',
+        lambda path: checked.append(path) or nullcontext())
+    assert service.python_discovery_environment()['DEVELOPER_DIR'] == str(tmp_path)
+    assert checked == [tmp_path]
+
+
+def test_python_discovery_rejects_unprotected_command_line_tools(tmp_path, monkeypatch):
+    monkeypatch.setattr(service, 'COMMAND_LINE_TOOLS', tmp_path)
+    def reject(path):
+        raise service.custody.CustodyError('macos-root-custody-required')
+    monkeypatch.setattr(service.custody, 'protected_directory', reject)
+    with pytest.raises(service.custody.CustodyError, match='macos-root-custody-required'):
+        service.python_discovery_environment()
+
+
+def test_python_discovery_preserves_system_selection_without_cli_tools(tmp_path, monkeypatch):
+    monkeypatch.setattr(service, 'COMMAND_LINE_TOOLS', tmp_path / 'absent')
+    assert 'DEVELOPER_DIR' not in service.python_discovery_environment()
 
 
 @pytest.mark.skipif(sys.platform != 'darwin' or os.geteuid() != 0 or
