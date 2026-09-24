@@ -3606,6 +3606,11 @@ if curl -sf --max-time 3 "${_perplexica_url}/api/config" >/dev/null 2>&1; then
                 : "${_px_base_url:=http://llama-server:8080}"
             fi
         fi
+        # Strip trailing slashes before the suffix check: a base URL like
+        # "http://host/v1/" must not be rewritten to "http://host/v1/v1".
+        while [[ "$_px_base_url" == ?*/ ]]; do
+            _px_base_url="${_px_base_url%/}"
+        done
         case "$_px_base_url" in
             */v1|*/api/v1) ;;
             *) _px_base_url="${_px_base_url%/}/v1" ;;
