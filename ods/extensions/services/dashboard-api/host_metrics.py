@@ -1,6 +1,8 @@
 """Bounded, shared physical Mac telemetry bridge for container dashboards."""
 import math
+from datetime import datetime, timezone
 import platform
+import re
 import threading
 import time
 
@@ -63,4 +65,62 @@ def apple_host_metrics():
                         "utilization_percent": finite(raw_gpu.get("utilization_percent"), maximum=100),
                     }
         _cached = (time.monotonic(), result)
+        return result
+
+
+_windows_cached = (0.0, None)
+
+
+def windows_host_metrics():
+    """Native Windows snapshot from an authenticated WSL host agent, if available."""
+    global _windows_cached
+    with _lock:
+        if _windows_cached[1] is not None and time.monotonic() - _windows_cached[0] < 3:
+            return _windows_cached[1]
+        result = {"cpu": None, "ram": None, "gpus": []}
+        try:
+            payload = request_json("GET", "/v1/system/metrics", timeout=9)
+        except AgentClientError:
+            payload = None
+        if (isinstance(payload, dict) and payload.get("schema_version") == "ods.host-system-metrics.v1"
+                and payload.get("platform") == "Windows"):
+            sampled = payload.get("sampledAt")
+            # No sensor snapshot without its source time is advertised as current.
+            try:
+                source_time = datetime.fromisoformat(sampled) if isinstance(sampled, str) else None
+                age = (datetime.now(timezone.utc) - source_time).total_seconds() if source_time and source_time.tzinfo else None
+            except (ValueError, TypeError, OverflowError):
+                age = None
+            if age is not None and -5 <= age <= 30:
+                for key, fields in (("cpu", ("percent",)), ("ram", ("used_gb", "total_gb", "percent"))):
+                    raw = payload.get(key)
+                    if not isinstance(raw, dict) or raw.get("scope") != "host":
+                        continue
+                    values = {field: finite(raw.get(field), maximum=100 if field == "percent" else None) for field in fields}
+                    if key == "ram" and (not values["total_gb"] or values["used_gb"] is None or values["used_gb"] > values["total_gb"]):
+                        continue
+                    if any(value is None for value in values.values()):
+                        continue
+                    result[key] = {**values, "scope": "host", "source": "windows-cim", "sampledAt": sampled}
+                    if key == "cpu":
+                        result[key]["temp_c"] = None
+                rows = payload.get("gpus")
+                if isinstance(rows, list):
+                    for row in rows[:32]:
+                        if not isinstance(row, dict):
+                            continue
+                        total = finite(row.get("memory_total_mb"), minimum=1)
+                        name, identity = row.get("name"), row.get("uuid")
+                        if (total is None or not isinstance(name, str) or not name or not isinstance(identity, str)
+                                or not re.fullmatch(r"luid_0x[0-9a-f]{8}_0x[0-9a-f]{8}", identity)
+                                or row.get("memory_scope") != "dedicated"):
+                            continue
+                        result["gpus"].append({
+                            "name": name[:128], "uuid": identity, "memory_total_mb": int(total),
+                            "memory_used_mb": finite(row.get("memory_used_mb"), maximum=total),
+                            "memory_type": "unified" if row.get("memory_type") == "unified" else "discrete",
+                            "utilization_percent": finite(row.get("utilization_percent"), maximum=100),
+                            "backend": row.get("backend") if row.get("backend") in ("amd", "nvidia") else "unknown",
+                        })
+        _windows_cached = (time.monotonic(), result)
         return result

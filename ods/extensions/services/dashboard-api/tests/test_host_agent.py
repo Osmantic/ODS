@@ -8919,3 +8919,57 @@ def test_darwin_system_metrics_has_one_total_command_budget(monkeypatch):
     assert now[0] == 104
     assert data["cpu"]["percent"] is None
     assert data["ram"]["used_gb"] is None
+
+
+class TestWslNativeSystemMetrics:
+    @pytest.fixture
+    def native(self, monkeypatch):
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod.platform, "release", lambda: "6.6.114-microsoft-standard-WSL2")
+        monkeypatch.setattr(_mod, "_wsl_metrics_cached", (0, None))
+        monkeypatch.setattr(_mod.Path, "is_file", lambda p: True)
+        return json.loads((Path(__file__).parent / "fixtures/wsl-windows-native-telemetry.json").read_text())
+
+    def test_real_bound_adapter_and_one_shared_snapshot(self, monkeypatch, native):
+        calls = []
+        def run(args, **kwargs):
+            calls.append(args)
+            assert args[0] == "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+            assert args[1:5] == ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]
+            assert kwargs["timeout"] == 8
+            assert "shell" not in kwargs
+            assert _mod.base64.b64decode(args[5]).decode("utf-16-le") == _mod._WSL_SENSOR_POWERSHELL
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps(native))
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        result = _mod._wsl_system_metrics()
+        assert result["cpu"]["percent"] == 86 and result["cpu"]["scope"] == "host"
+        assert result["ram"]["total_gb"] == 95.8
+        row = result["gpus"][0]
+        assert row["name"] == "AMD Radeon(TM) 8060S Graphics"
+        assert row["memory_total_mb"] == 32768 and row["memory_used_mb"] == 25566
+        assert row["utilization_percent"] == 24 and row["temperature_c"] is None
+        assert row["memory_scope"] == "dedicated"
+        assert result["sampledAt"]
+        assert _mod._wsl_system_metrics() is result and len(calls) == 1
+
+    @pytest.mark.parametrize("response", ["null", "[]", "not-json", '{"gpus":false}'])
+    def test_malformed_output_is_unavailable(self, monkeypatch, native, response):
+        monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **k: types.SimpleNamespace(returncode=0, stdout=response))
+        result = _mod._wsl_system_metrics()
+        assert result["cpu"]["percent"] is None and result["gpus"] == []
+
+    def test_timeout_is_bounded_and_cached(self, monkeypatch, native):
+        calls = []
+        def run(args, **kwargs):
+            calls.append(args)
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        result = _mod._wsl_system_metrics()
+        assert result["sampledAt"] is None
+        assert result["cpu"]["percent"] is None
+        assert _mod._wsl_system_metrics() is result and len(calls) == 1
+
+    def test_interop_absent_does_not_install_or_launch_anything(self, monkeypatch, native):
+        monkeypatch.setattr(_mod.Path, "is_file", lambda p: False)
+        monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **kw: pytest.fail("must not launch"))
+        assert _mod._wsl_system_metrics() is None

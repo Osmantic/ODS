@@ -23,6 +23,8 @@ from gpu import (
     get_gpu_info_nvidia_detailed,
     get_gpu_info_windows_host,
     get_gpu_info_windows_host_detailed,
+    get_gpu_info_wsl_host_detailed,
+    get_wsl_gpu_backend,
     _live_env_value,
     read_gpu_topology,
 )
@@ -85,7 +87,7 @@ def _get_raw_gpus(gpu_backend: str) -> Optional[list[IndividualGPU]]:
     result = get_gpu_info_nvidia_detailed()
     if result:
         return result
-    return get_gpu_info_amd_detailed()
+    return get_gpu_info_amd_detailed() or get_gpu_info_wsl_host_detailed()
 
 
 def _env_int(name: str, default: int = 0) -> int:
@@ -348,6 +350,8 @@ async def _read_detailed_gpu_status() -> MultiGPUStatus:
     if not gpus:
         raise HTTPException(status_code=503, detail="No GPU data available")
 
+    if all(gpu.uuid.startswith("luid_0x") for gpu in gpus):
+        gpu_backend = await asyncio.to_thread(get_wsl_gpu_backend)
     aggregate = aggregate_gpu_details(gpus, gpu_backend)
 
     assignment_full = decode_gpu_assignment()

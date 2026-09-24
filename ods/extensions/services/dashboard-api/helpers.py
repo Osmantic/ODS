@@ -20,7 +20,7 @@ import httpx
 
 from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, read_live_env_value
 from env_values import parse_env_value
-from host_metrics import apple_host_metrics, linux_scope
+from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
 from host_agent_client import AgentClientError, async_request_json as request_agent_json
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
 from service_health_dns import ServiceHealthResolver
@@ -1305,6 +1305,10 @@ def get_cpu_metrics() -> dict:
     if _system == "Linux":
         if os.environ.get("GPU_BACKEND", "").lower() == "apple":
             return apple_host_metrics()["cpu"]
+        if linux_scope() == "wsl":
+            native = windows_host_metrics()["cpu"]
+            if native is not None:
+                return native
         return {**_get_cpu_metrics_linux(), "scope": linux_scope(), "source": "linux-procfs"}
     elif _system == "Darwin":
         return {**_get_cpu_metrics_darwin(), "scope": "host", "source": "macos-top"}
@@ -1385,6 +1389,10 @@ def get_ram_metrics() -> dict:
     if _system == "Linux":
         if os.environ.get("GPU_BACKEND", "").lower() == "apple":
             return apple_host_metrics()["ram"]
+        if linux_scope() == "wsl":
+            native = windows_host_metrics()["ram"]
+            if native is not None:
+                return native
         return {**_get_ram_metrics_linux(), "scope": linux_scope(), "source": "linux-procfs"}
     elif _system == "Darwin":
         return {**_get_ram_metrics_sysctl(), "scope": "host", "source": "macos-vm-stat"}

@@ -7596,6 +7596,140 @@ def _run_update_script(action: str, *args: str, timeout: int | None) -> subproce
     )
 
 
+# This is fixed read-only sensor code, never interpolated with request input.
+_WSL_SENSOR_POWERSHELL = r"""$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public static class OdsSensorDxgi {
+  [StructLayout(LayoutKind.Sequential)] public struct Luid { public uint Low; public int High; }
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct Desc {
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst=128)] public string Name;
+    public uint Vendor, Device, SubSystem, Revision;
+    public UIntPtr Dedicated, DedicatedSystem, Shared;
+    public Luid Id; public uint Flags;
+  }
+  public class Adapter { public string Name, Prefix; public ulong DedicatedBytes, SharedBytes; public uint Vendor; }
+  [DllImport("dxgi.dll", ExactSpelling=true)] static extern int CreateDXGIFactory1(ref Guid id, out IntPtr factory);
+  [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate int EnumAdapter(IntPtr self, uint index, out IntPtr adapter);
+  [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate int GetDesc(IntPtr self, out Desc desc);
+  static T Method<T>(IntPtr self, int slot) { return (T)(object)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(Marshal.ReadIntPtr(self), slot*IntPtr.Size), typeof(T)); }
+  public static Adapter[] Read() {
+    var rows = new List<Adapter>(); IntPtr factory;
+    var id = new Guid("770AAE78-F26F-4DBA-A829-253C83D1B387");
+    if(CreateDXGIFactory1(ref id, out factory)<0) return rows.ToArray();
+    try {
+      for(uint i=0;i<32;i++) {
+        IntPtr adapter; if(Method<EnumAdapter>(factory,12)(factory,i,out adapter)<0) break;
+        try {
+          Desc d; if(Method<GetDesc>(adapter,10)(adapter,out d)>=0 && (d.Flags&2)==0)
+            rows.Add(new Adapter { Name=d.Name.Trim(), Prefix=String.Format("luid_0x{0:x8}_0x{1:x8}",unchecked((uint)d.Id.High),d.Id.Low), DedicatedBytes=d.Dedicated.ToUInt64(), SharedBytes=d.Shared.ToUInt64(), Vendor=d.Vendor });
+        } finally { Marshal.Release(adapter); }
+      }
+    } finally { Marshal.Release(factory); }
+    return rows.ToArray();
+  }
+}
+"@
+$cpu = $null; $total = $null; $used = $null
+try { $values=@(Get-CimInstance Win32_Processor -OperationTimeoutSec 2 | Where-Object {$null -ne $_.LoadPercentage}); if($values.Count){$cpu=($values|Measure-Object LoadPercentage -Average).Average} } catch {}
+try { $mem=Get-CimInstance Win32_OperatingSystem -OperationTimeoutSec 2; $total=[double]$mem.TotalVisibleMemorySize*1024; $used=([double]$mem.TotalVisibleMemorySize-[double]$mem.FreePhysicalMemory)*1024 } catch {}
+$engines=@(); $memory=@()
+try {$engines=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -OperationTimeoutSec 2)} catch {}
+try {$memory=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory -OperationTimeoutSec 2)} catch {}
+$gpus=@()
+foreach($adapter in [OdsSensorDxgi]::Read()) {
+  $prefix=$adapter.Prefix; $totals=@{}; $util=$null; $dedicated=$null
+  foreach($row in $engines) {
+    if($row.Name -like "*${prefix}_phys_*" -and $row.Name -match '_phys_(\d+)_eng_(\d+)_engtype_(.+)$') {
+      $key="$($Matches[1])|$($Matches[2])|$($Matches[3])"
+      $totals[$key]=[double]($totals[$key]+$row.UtilizationPercentage)
+    }
+  }
+  if($totals.Count){$util=[Math]::Min(100,($totals.Values|Measure-Object -Maximum).Maximum)}
+  $rows=@($memory|Where-Object {$_.Name -like "${prefix}_phys_*"})
+  if($rows.Count){$dedicated=($rows|Measure-Object DedicatedUsage -Sum).Sum}
+  $gpus += [pscustomobject]@{name=$adapter.Name;luid=$prefix;vendor=$adapter.Vendor;dedicatedTotalBytes=$adapter.DedicatedBytes;sharedCapacityBytes=$adapter.SharedBytes;dedicatedUsedBytes=$dedicated;utilizationPercent=$util}
+}
+[pscustomobject]@{cpuPercent=$cpu;memoryTotalBytes=$total;memoryUsedBytes=$used;gpus=@($gpus)}|ConvertTo-Json -Depth 5 -Compress
+"""
+_wsl_metrics_lock = threading.Lock()
+_wsl_metrics_cached = (0.0, None)
+
+
+def _wsl_system_metrics():
+    """Read native Windows sensors through existing WSL interop, without setup."""
+    global _wsl_metrics_cached
+    if platform.system() != "Linux" or "microsoft" not in platform.release().lower():
+        return None
+    executable = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+    if not Path(executable).is_file():
+        return None
+    with _wsl_metrics_lock:
+        if _wsl_metrics_cached[1] is not None and time.monotonic() - _wsl_metrics_cached[0] < 3:
+            return _wsl_metrics_cached[1]
+        payload = {"schema_version": "ods.host-system-metrics.v1", "platform": "Windows",
+                   "sampledAt": None, "cpu": {"percent": None, "temp_c": None,
+                   "scope": "host", "source": "windows-cim"},
+                   "ram": {"used_gb": None, "total_gb": None, "percent": None,
+                   "scope": "host", "source": "windows-cim"}, "gpus": []}
+        def number(value, maximum=None):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            if not math.isfinite(value) or value < 0 or (maximum is not None and value > maximum):
+                return None
+            return value
+        try:
+            result = subprocess.run(
+                [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                 base64.b64encode(_WSL_SENSOR_POWERSHELL.encode("utf-16-le")).decode("ascii")],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=8,
+            )
+            if result.returncode != 0 or len(result.stdout) > 65536:
+                raise ValueError("Native sensor response unavailable")
+            data = json.loads(result.stdout.lstrip("\ufeff"))
+            if not isinstance(data, dict):
+                raise ValueError("Native sensor response must be an object")
+            payload["sampledAt"] = _iso_now()
+            payload["cpu"]["percent"] = number(data.get("cpuPercent"), 100)
+            total = number(data.get("memoryTotalBytes"))
+            used = number(data.get("memoryUsedBytes"), total) if total else None
+            if total:
+                payload["ram"]["total_gb"] = round(total / 1024**3, 1)
+                if used is not None:
+                    payload["ram"].update(used_gb=round(used / 1024**3, 1), percent=round(used / total * 100, 1))
+            rows = data.get("gpus")
+            if isinstance(rows, list):
+                for row in rows[:32]:
+                    if not isinstance(row, dict):
+                        continue
+                    name, luid = row.get("name"), row.get("luid")
+                    capacity = number(row.get("dedicatedTotalBytes"))
+                    if (not isinstance(name, str) or not name.strip() or not isinstance(luid, str)
+                            or not re.fullmatch(r"luid_0x[0-9a-f]{8}_0x[0-9a-f]{8}", luid)
+                            or not capacity):
+                        continue
+                    # DXGI's dedicated allocation is real capacity. Shared capacity
+                    # is a borrowing limit, not additional physical VRAM.
+                    usage = number(row.get("dedicatedUsedBytes"), capacity)
+                    payload["gpus"].append({
+                        "name": name[:128], "uuid": luid,
+                        "memory_total_mb": int(capacity // 1024**2),
+                        "memory_used_mb": int(usage // 1024**2) if usage is not None else None,
+                        "memory_type": "unified" if _is_windows_amd_integrated_gpu_name(name) else "discrete",
+                        "memory_scope": "dedicated", "utilization_percent": number(row.get("utilizationPercent"), 100),
+                        "temperature_c": None, "source": "windows-dxgi-cim",
+                        "backend": "amd" if row.get("vendor") == 0x1002 else "nvidia" if row.get("vendor") == 0x10DE else "unknown",
+                    })
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+        _wsl_metrics_cached = (time.monotonic(), payload)
+        return payload
+
+
 # Native telemetry is sampled once for simultaneous dashboard CPU/RAM/GPU calls.
 _darwin_metrics_lock = threading.Lock()
 _darwin_metrics_cached = (0.0, None)
@@ -8238,6 +8372,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         if not check_auth(self):
             return
         metrics = _darwin_system_metrics()
+        if metrics is None:
+            metrics = _wsl_system_metrics()
         if metrics is None:
             json_response(self, 503, {"error": "Host system telemetry is unavailable"})
             return

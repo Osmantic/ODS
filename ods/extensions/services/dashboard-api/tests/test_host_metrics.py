@@ -67,6 +67,7 @@ def test_linux_scope_and_unmixed_capacity(monkeypatch, release, scope):
     monkeypatch.setattr(host_metrics.platform, "release", lambda: release)
     monkeypatch.setattr(helpers.platform, "system", lambda: "Linux")
     monkeypatch.setenv("GPU_BACKEND", "nvidia")
+    monkeypatch.setattr(helpers, "windows_host_metrics", lambda: {"cpu": None, "ram": None, "gpus": []})
     monkeypatch.setenv("HOST_RAM_GB", "128")
     monkeypatch.setattr("builtins.open", mock_open(read_data="MemTotal: 16777216 kB\nMemAvailable: 8388608 kB\n"))
     data = helpers.get_ram_metrics()

@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from host_metrics import apple_host_metrics
+from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
 from env_values import parse_env_value
 from models import GPUInfo, IndividualGPU
 from host_agent_client import AgentClientError, request_json as request_agent_json
@@ -436,6 +436,31 @@ def get_gpu_info_windows_host_detailed() -> Optional[list[IndividualGPU]]:
     return result or None
 
 
+def get_wsl_gpu_backend() -> str:
+    rows = windows_host_metrics()["gpus"]
+    backends = {row["backend"] for row in rows}
+    return next(iter(backends)) if len(backends) == 1 else "unknown"
+
+
+def get_gpu_info_wsl_host_detailed() -> Optional[list[IndividualGPU]]:
+    """Inventory is independent of a CPU/external inference backend setting."""
+    if platform.system() != "Linux" or linux_scope() != "wsl":
+        return None
+    rows = windows_host_metrics()["gpus"]
+    result = []
+    for index, row in enumerate(rows):
+        total, used, utilization = row["memory_total_mb"], row["memory_used_mb"], row["utilization_percent"]
+        result.append(IndividualGPU(
+            index=index, uuid=row["uuid"], name=row["name"], memory_total_mb=total,
+            memory_used_mb=int(used or 0), memory_percent=round(used / total * 100, 1) if used is not None else 0,
+            utilization_percent=int(utilization or 0), temperature_c=0, power_w=None,
+            memory_type=row["memory_type"], assigned_services=[],
+            memory_usage_available=used is not None, utilization_available=utilization is not None,
+            temperature_available=False,
+        ))
+    return result or None
+
+
 def get_gpu_info() -> Optional[GPUInfo]:
     """Get GPU metrics. Tries the configured backend first, then auto-detects."""
     gpu_backend = os.environ.get("GPU_BACKEND", "").lower()
@@ -472,6 +497,10 @@ def get_gpu_info() -> Optional[GPUInfo]:
         info = get_gpu_info_amd()
         if info:
             return info
+
+    native = get_gpu_info_wsl_host_detailed()
+    if native:
+        return aggregate_gpu_details(native, get_wsl_gpu_backend())
 
     # Auto-detect Apple Silicon if no backend specified and nothing else found
     if platform.system() == "Darwin":
