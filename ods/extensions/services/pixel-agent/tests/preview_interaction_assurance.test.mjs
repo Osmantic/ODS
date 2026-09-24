@@ -57,6 +57,53 @@ function inspection(guard,params,{wrapped=false,id='inspect',runContext=context}
   return {...started,result};
 }
 
+test('successful static inspection reports its missing click before finalization',async()=>{
+  const {preview}=setup();
+  const params={...plan(preview),steps:[{action:'assert-visible',locator:{selector:'h1'}}]};
+  const result=await createWorkspacePreviewInspectTool({request:async()=>receipt(params)}).execute('static',params);
+  assert.equal(result.isError,undefined);
+  assert.equal(result.details.status,'passed');
+  assert.match(result.content[0].text,/no show\/hide transition was tested/);
+  assert.match(result.content[0].text,/plan contains no click/);
+  assert.equal(boundVisibilityInspection(params,result,preview),undefined);
+});
+
+test('successful click with unrelated initial assertion explains the missing same-target transition',async()=>{
+  const {preview}=setup();
+  const params=plan(preview);
+  params.steps[0]={action:'assert-visible',locator:{selector:'h1'}};
+  const result=await createWorkspacePreviewInspectTool({request:async()=>receipt(params)}).execute('mismatch',params);
+  assert.equal(result.details.status,'passed');
+  assert.match(result.content[0].text,/before and after a click do not check opposite visibility of the same affected element/);
+  assert.match(result.content[0].text,/same target locator in both assertions/);
+  assert.equal(boundVisibilityInspection(params,result,preview),undefined);
+});
+
+test('valid same-target transition retains its bound evidence without claiming all requested behavior',async()=>{
+  const {preview}=setup();
+  const params=plan(preview);
+  const result=await createWorkspacePreviewInspectTool({request:async()=>receipt(params)}).execute('transition',params);
+  assert.match(result.content[0].text,/tested opposite visibility states of the same element around a click/);
+  assert.match(result.content[0].text,/does not establish every requested behavior/);
+  assert.doesNotMatch(result.content[0].text,/no show\/hide transition was tested/);
+  assert.ok(boundVisibilityInspection(params,result,preview));
+});
+
+test('a failed transition plan never receives successful coverage feedback',async()=>{
+  const {preview}=setup();
+  const params=plan(preview);
+  const evidence=receipt(params);
+  evidence.status='failed';
+  evidence.steps=evidence.steps.slice(0,2);
+  Object.assign(evidence.steps[1],{status:'failed',errorCode:'click_failed'});
+  const result=await createWorkspacePreviewInspectTool({request:async()=>evidence}).execute('failed',params);
+  assert.equal(result.isError,true);
+  assert.equal(result.details.status,'failed');
+  assert.match(result.content[0].text,/failed inspection does not establish a visibility transition/);
+  assert.doesNotMatch(result.content[0].text,/These steps tested opposite visibility/);
+  assert.equal(boundVisibilityInspection(params,result,preview),undefined);
+});
+
 for(const wrapped of [false,true]) for(const fault of ['none','host-bytes','receipt-sha','receipt-failed','outer-error','params','session','pending'])
 test(`published inspections then grep -o require bound receipts and host bytes: wrapped=${wrapped}, fault=${fault}`,async()=>{
   let probes=0;

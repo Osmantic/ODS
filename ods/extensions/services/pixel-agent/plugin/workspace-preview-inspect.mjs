@@ -2,6 +2,7 @@
 import net from 'node:net';
 import {execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
+import {isDeepStrictEqual} from 'node:util';
 
 export const INSPECTION_KIND = 'ods-pixel-preview-inspection';
 export const INSPECTION_SCOPE = 'Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.';
@@ -13,6 +14,24 @@ const exact = (v,keys) => v && typeof v==='object' && !Array.isArray(v) && Objec
 const printable = (v,max) => typeof v==='string' && Array.from(v).length>0 && Array.from(v).length<=max && Buffer.byteLength(v)<=max*4 && !/[\p{C}\u2028\u2029]/u.test(v);
 const canonical = v => JSON.stringify(v && typeof v==='object' ? Array.isArray(v) ? v.map(x=>JSON.parse(canonical(x))) : Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])) : v);
 export const inspectionPlanHash = value => createHash('sha256').update(canonical(value)).digest('hex');
+
+export function hasVisibilityTransitionPlan(request) {
+  // A click dispatch or an unchanged button does not prove its effect.
+  return request.steps.some((step, index) => step.action === 'click' &&
+    request.steps.slice(0, index).some(before => before.action.startsWith('assert-') &&
+      request.steps.slice(index + 1).some(after =>
+        after.action.startsWith('assert-') && after.action !== before.action &&
+        isDeepStrictEqual(before.locator, after.locator))));
+}
+
+function transitionCoverageFeedback(request, result) {
+  if (result.status !== 'passed') return 'Requested behavior remains unverified; a failed inspection does not establish a visibility transition.';
+  if (hasVisibilityTransitionPlan(request)) return 'These steps tested opposite visibility states of the same element around a click. This does not establish every requested behavior.';
+  const hasClick = request.steps.some(step => step.action === 'click');
+  return 'Only the listed steps passed; no show/hide transition was tested. ' +
+    (hasClick ? 'The assertions before and after a click do not check opposite visibility of the same affected element. ' : 'This plan contains no click. ') +
+    'If the owner requested show/hide behavior, inspect the actual affected element with assert-hidden(target), click(control), assert-visible(target), or the reverse. Use the same target locator in both assertions; a heading or button assertion cannot substitute for the affected element. Keep the existing verified publication unless a file repair is needed.';
+}
 const INPUT_HINTS = new Map([
   ['invalid preview inspection fields','Provide only siteId, sha256, viewport and steps.'],
   ['invalid preview inspection digest','sha256 must be the full 64-character lowercase snapshot digest from the publication receipt; never the shortened site suffix or a file digest.'],
@@ -104,7 +123,7 @@ export function createWorkspacePreviewInspectTool({request,transport='unix'}={})
         signal?.throwIfAborted();
         const result=validateWorkspacePreviewInspectionReceipt(await request(normalized,{signal}),normalized);
         signal?.throwIfAborted();
-        return {content:[{type:'text',text:`Preview inspection ${result.status}. ${INSPECTION_SCOPE} Evidence: ${JSON.stringify(result)}`}],details:result,...(result.status==='failed'?{isError:true}:{})};
+        return {content:[{type:'text',text:`Preview inspection ${result.status}. ${transitionCoverageFeedback(normalized, result)} ${INSPECTION_SCOPE} Evidence: ${JSON.stringify(result)}`}],details:result,...(result.status==='failed'?{isError:true}:{})};
       } catch {
         return {content:[{type:'text',text:'Preview inspection unavailable or invalid. Requested behavior remains unverified; retain the published artifact and do not claim these checks passed.'}],details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:signal?.aborted?'cancelled':'unavailable',scope:INSPECTION_SCOPE},isError:true};
       }

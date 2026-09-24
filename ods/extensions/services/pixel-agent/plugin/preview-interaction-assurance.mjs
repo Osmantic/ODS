@@ -1,8 +1,9 @@
-import { isDeepStrictEqual } from 'node:util';
 import {
+  hasVisibilityTransitionPlan,
   normalizeWorkspacePreviewInspectionParams,
   validateWorkspacePreviewInspectionReceipt,
 } from './workspace-preview-inspect.mjs';
+export { hasVisibilityTransitionPlan } from './workspace-preview-inspect.mjs';
 
 export const PREVIEW_INSPECTION_TOOL = 'pixel_ods_workspace_preview_inspect';
 
@@ -22,15 +23,6 @@ export function requestsBehaviorPreservation(text) {
   return String(text ?? '').split(/[.!?;\n]+/).some(clause =>
     !/\b(?:do\s+not|don['’]t|never|avoid|skip|explain|describe|example)\b/i.test(clause) &&
     /\b(?:preserve|retain|keep|maintain)\b[^.!?;\n]{0,160}\b(?:behaviou?r|functionality|interactions?)\b/i.test(clause));
-}
-
-export function hasVisibilityTransitionPlan(request) {
-  // A click dispatch or an unchanged button does not prove its effect.
-  return request.steps.some((step, index) => step.action === 'click' &&
-    request.steps.slice(0, index).some(before => before.action.startsWith('assert-') &&
-      request.steps.slice(index + 1).some(after =>
-        after.action.startsWith('assert-') && after.action !== before.action &&
-        isDeepStrictEqual(before.locator, after.locator))));
 }
 
 export function boundVisibilityInspection(params, result, preview) {
