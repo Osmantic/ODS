@@ -1,11 +1,13 @@
 use crate::state::{InstallPhase, InstallState};
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+const DIAGNOSTIC_TAIL_LINES: usize = 20;
 const DEFAULT_REPO_URL: &str = "https://github.com/Osmantic/ODS.git";
 const DEFAULT_INSTALL_REF: &str = "main";
 const TRANSFERRED_REPO_URL_BYTES: &[u8] = &[
@@ -120,25 +122,20 @@ pub fn run_install(
             .map_err(|e| format!("Failed to start installer: {}", e))?
     };
 
-    let stderr_handle = child.stderr.take().map(|stderr| {
-        thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            reader
-                .lines()
-                .map_while(Result::ok)
-                .collect::<Vec<String>>()
-        })
-    });
+    let stderr_handle = child
+        .stderr
+        .take()
+        .map(|stderr| thread::spawn(move || collect_diagnostic_tail(BufReader::new(stderr))));
 
-    // Parse stdout for progress updates
+    // Parse stdout for progress updates while retaining a bounded diagnostic tail.
+    let mut stdout_lines = VecDeque::with_capacity(DIAGNOSTIC_TAIL_LINES);
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Some(progress) = parse_progress_line(&line) {
-                    update_progress(&state, &progress.message, progress.percent);
-                }
+        for line in reader.lines().map_while(Result::ok) {
+            if let Some(progress) = parse_progress_line(&line) {
+                update_progress(&state, &progress.message, progress.percent);
             }
+            push_diagnostic_line(&mut stdout_lines, line);
         }
     }
 
@@ -156,22 +153,51 @@ pub fn run_install(
         let _ = s.save();
         Ok(())
     } else {
-        let detail = stderr_lines
-            .iter()
-            .rev()
-            .take(10)
-            .cloned()
-            .collect::<Vec<String>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<String>>()
-            .join("\n");
+        let detail = format_failure_detail(&stdout_lines, &stderr_lines);
         if detail.is_empty() {
             Err("Installation failed. Check logs for details.".into())
         } else {
             Err(format!("Installation failed:\n{}", detail))
         }
     }
+}
+
+fn push_diagnostic_line(lines: &mut VecDeque<String>, line: String) {
+    if line.trim().is_empty() {
+        return;
+    }
+    if lines.len() == DIAGNOSTIC_TAIL_LINES {
+        lines.pop_front();
+    }
+    lines.push_back(line);
+}
+
+fn collect_diagnostic_tail(reader: impl BufRead) -> VecDeque<String> {
+    let mut lines = VecDeque::with_capacity(DIAGNOSTIC_TAIL_LINES);
+    for line in reader.lines().map_while(Result::ok) {
+        push_diagnostic_line(&mut lines, line);
+    }
+    lines
+}
+
+fn format_failure_detail(
+    stdout_lines: &VecDeque<String>,
+    stderr_lines: &VecDeque<String>,
+) -> String {
+    let mut sections = Vec::new();
+    if !stderr_lines.is_empty() {
+        sections.push(format!(
+            "Recent installer errors:\n{}",
+            stderr_lines.iter().cloned().collect::<Vec<_>>().join("\n")
+        ));
+    }
+    if !stdout_lines.is_empty() {
+        sections.push(format!(
+            "Recent installer output:\n{}",
+            stdout_lines.iter().cloned().collect::<Vec<_>>().join("\n")
+        ));
+    }
+    sections.join("\n\n")
 }
 
 fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
@@ -428,5 +454,33 @@ mod tests {
             "https://github.com/example/ODS.git",
             DEFAULT_REPO_URL
         ));
+    }
+
+    #[test]
+    fn failure_detail_includes_stdout_when_stderr_is_empty() {
+        let stdout_lines = ["Preparing services", "Docker daemon is unavailable"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        let detail = format_failure_detail(&stdout_lines, &VecDeque::new());
+
+        assert_eq!(
+            detail,
+            "Recent installer output:\nPreparing services\nDocker daemon is unavailable"
+        );
+    }
+
+    #[test]
+    fn diagnostic_reader_retains_only_the_latest_nonempty_lines() {
+        let input = (0..25)
+            .map(|index| format!("line {index}\n"))
+            .collect::<String>();
+
+        let lines = collect_diagnostic_tail(std::io::Cursor::new(input));
+
+        assert_eq!(lines.len(), DIAGNOSTIC_TAIL_LINES);
+        assert_eq!(lines.front().map(String::as_str), Some("line 5"));
+        assert_eq!(lines.back().map(String::as_str), Some("line 24"));
     }
 }
