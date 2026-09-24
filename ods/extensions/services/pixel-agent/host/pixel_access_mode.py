@@ -69,7 +69,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 def _load_helper():
     spec = importlib.util.spec_from_file_location(
         "_ods_access_mode_config", os.path.join(_HERE, "access_mode_config.py"))
-    assert spec and spec.loader
+    if spec is None or spec.loader is None:
+        raise RuntimeError(
+            "Could not load access_mode_config.py next to pixel_access_mode.py"
+        )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

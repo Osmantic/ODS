@@ -223,6 +223,9 @@ jobs:
       - name: Phase C P1 Static Checks
         run: bash tests/test-phase-c-p1.sh
 
+      - name: No Runtime Assertions In Product Python
+        run: python3 tests/test-no-runtime-assertions.py
+
       - name: Manifest Compatibility Checks
         run: |
           python3 tests/test_compatibility_compose_list.py
