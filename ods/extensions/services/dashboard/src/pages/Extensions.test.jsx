@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Extensions from './Extensions' // eslint-disable-line no-unused-vars
 
@@ -93,6 +93,120 @@ afterEach(() => {
 })
 
 describe('Extensions page — unhealthy + install derivations', () => {
+  it('keeps slow install-progress polling single-flight', async () => {
+    vi.useFakeTimers()
+    const catalog = {
+      extensions: [{
+        id: 'slow-install',
+        name: 'Slow Install',
+        status: 'installing',
+        source: 'user',
+        installable: true,
+        features: [baseFeature],
+        description: 'Installation whose progress endpoint is slower than the poll cadence.',
+      }],
+      summary: baseSummary({ installing: 1 }),
+      gpu_backend: 'nvidia',
+      agent_available: true,
+    }
+    let resolveProgress
+    const pendingProgress = new Promise((resolve) => { resolveProgress = resolve })
+    const fetchMock = vi.fn((url) => {
+      const target = String(url)
+      if (target.includes('/api/extensions/catalog')) {
+        return Promise.resolve(makeJsonResponse(catalog))
+      }
+      if (target.includes('/api/templates')) {
+        return Promise.resolve(makeJsonResponse({ templates: [] }))
+      }
+      if (target.includes('/api/extensions/slow-install/progress')) {
+        return pendingProgress
+      }
+      return Promise.reject(new Error(`Unmocked fetch: ${target}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<Extensions />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(screen.getByText('Slow Install')).toBeInTheDocument()
+
+    const progressCallCount = () => fetchMock.mock.calls.filter(
+      ([url]) => String(url).includes('/api/extensions/slow-install/progress'),
+    ).length
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(progressCallCount()).toBe(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(progressCallCount()).toBe(1)
+
+    resolveProgress(makeJsonResponse({ status: 'installing', phase_label: 'Pulling image' }))
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(progressCallCount()).toBe(2)
+  })
+
+  it('keeps the logs modal progress polling single-flight', async () => {
+    vi.useFakeTimers()
+    const catalog = {
+      extensions: [{
+        id: 'console-progress',
+        name: 'Console Progress',
+        status: 'enabled',
+        source: 'user',
+        installable: true,
+        features: [baseFeature],
+        description: 'Enabled extension with a slow progress response.',
+      }],
+      summary: baseSummary({ installed: 1 }),
+      gpu_backend: 'nvidia',
+      agent_available: true,
+    }
+    let resolveProgress
+    const pendingProgress = new Promise((resolve) => { resolveProgress = resolve })
+    const fetchMock = vi.fn((url) => {
+      const target = String(url)
+      if (target.includes('/api/extensions/catalog')) {
+        return Promise.resolve(makeJsonResponse(catalog))
+      }
+      if (target.includes('/api/templates')) {
+        return Promise.resolve(makeJsonResponse({ templates: [] }))
+      }
+      if (target.includes('/api/extensions/console-progress/progress')) {
+        return pendingProgress
+      }
+      if (target.includes('/api/extensions/console-progress/logs')) {
+        return Promise.resolve(makeJsonResponse({ logs: 'ready' }))
+      }
+      return Promise.reject(new Error(`Unmocked fetch: ${target}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<Extensions />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Logs' }))
+    await act(async () => { await Promise.resolve() })
+
+    const progressCallCount = () => fetchMock.mock.calls.filter(
+      ([url]) => String(url).includes('/api/extensions/console-progress/progress'),
+    ).length
+    expect(progressCallCount()).toBe(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(progressCallCount()).toBe(1)
+
+    resolveProgress(makeJsonResponse({ status: 'started', phase_label: 'Starting' }))
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(progressCallCount()).toBe(2)
+  })
+
   it('shows starter collections as a matching paginated library with an explicit preview', async () => {
     vi.stubGlobal('fetch', vi.fn(async url => String(url).includes('/api/templates')
       ? makeJsonResponse({templates:Array.from({length:8}, (_,index) => ({id:`collection-${index}`,name:`Collection ${index}`,description:'A useful collection',services:['a','b']}))})
