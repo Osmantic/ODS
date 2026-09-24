@@ -589,6 +589,7 @@ echo "[contract] dry-run does not install a missing jq prerequisite"
 bash tests/test-installer-dry-run-jq.sh
 
 echo "[contract] optional extension compose files are installer-gated"
+bash "$ROOT_DIR/tests/test-installer-inference-messaging.sh"
 bash "$ROOT_DIR/tests/test-phase03-no-gpu-assignment-message.sh"
 bash tests/test-installer-feature-state-sync.sh
 # Bundled optional/recommended services that ship compose.yaml must not enter

@@ -228,14 +228,24 @@ ODS_EXTERNAL_LORE_MESSAGES=(
   "This is a modifiable system. It is yours to control."
 )
 
-ods_select_lore_messages() {
-  if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
-    LORE_MESSAGES=("${ODS_EXTERNAL_LORE_MESSAGES[@]}")
-    return 0
+ods_ui_inference_scope() {
+  if [[ -n "${EXTERNAL_LLM_URL:-}" || "${LEMONADE_EXTERNAL:-false}" =~ ^(true|TRUE|1|yes|YES|on|ON)$ ]]; then
+    echo external
+  elif [[ "${ODS_MODE:-local}" == lemonade && "${AMD_INFERENCE_MANAGED:-false}" == true ]]; then
+    echo local
+  else
+    case "${ODS_MODE:-local}" in
+      cloud) echo cloud ;;
+      lemonade|external) echo external ;;
+      *) echo local ;;
+    esac
   fi
-  case "${ODS_MODE:-local}" in
+}
+
+ods_select_lore_messages() {
+  case "$(ods_ui_inference_scope)" in
     cloud) LORE_MESSAGES=("${ODS_CLOUD_LORE_MESSAGES[@]}") ;;
-    lemonade|external) LORE_MESSAGES=("${ODS_EXTERNAL_LORE_MESSAGES[@]}") ;;
+    external) LORE_MESSAGES=("${ODS_EXTERNAL_LORE_MESSAGES[@]}") ;;
     *) LORE_MESSAGES=("${ODS_LOCAL_LORE_MESSAGES[@]}") ;;
   esac
 }
@@ -758,16 +768,12 @@ show_success_card() {
     fi
     echo -e "${GRN}+--------------------------------------------------------------+${NC}"
     echo ""
-    if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
-        type_line "Inference uses the external endpoint you configured." "$DGRN" 0.04
-        type_line "Traffic handling depends on that endpoint and its operator." "$DGRN" 0.04
-    else
-      case "${ODS_MODE:-local}" in
+      case "$(ods_ui_inference_scope)" in
         cloud)
             type_line "Cloud mode is active; your configured providers may receive prompts and responses." "$DGRN" 0.04
             type_line "Review provider privacy, retention, and usage terms before sending sensitive data." "$DGRN" 0.04
             ;;
-        lemonade|external)
+        external)
             type_line "Inference uses the external endpoint you configured." "$DGRN" 0.04
             type_line "Traffic handling depends on that endpoint and its operator." "$DGRN" 0.04
             ;;
@@ -776,7 +782,6 @@ show_success_card() {
             type_line "The stack is inspectable, modifiable, and under your control." "$DGRN" 0.04
             ;;
       esac
-    fi
     echo ""
     echo -e "  ${GRN}Elapsed: $(install_elapsed)${NC}"
     echo ""
