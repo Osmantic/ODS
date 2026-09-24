@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import subprocess
 import threading
@@ -45,7 +46,7 @@ def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
     except ValueError:
         LOGGER.warning("invalid %s=%r; using default", name, raw)
         return default
-    if value < minimum:
+    if not math.isfinite(value) or value < minimum:
         LOGGER.warning("out-of-range %s=%r; using default", name, raw)
         return default
     return value
