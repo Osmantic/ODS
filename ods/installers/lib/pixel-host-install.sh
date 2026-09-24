@@ -4313,7 +4313,7 @@ for attempt in range(50):
             raise SystemExit('Pixel preview inspection socket is not ready for its owner')
         time.sleep(.1)
 PY
-    ods_sudo /usr/bin/python3 /usr/local/libexec/ods-pixel-inspection/preview_inspection.py health \
+    ods_sudo /usr/bin/python3 -B /usr/local/libexec/ods-pixel-inspection/preview_inspection.py health \
         | jq -e '.schemaVersion == 1 and .kind == "ods-pixel-preview-inspection" and .status == "ready"' >/dev/null
 }
 
