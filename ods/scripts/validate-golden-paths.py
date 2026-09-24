@@ -47,6 +47,22 @@ def nonempty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def resolve_repo_path(
+    issues: Issues,
+    value: str,
+    path: str,
+    *,
+    boundary: Path = ROOT,
+) -> Path | None:
+    candidate = (ROOT / value).resolve()
+    try:
+        candidate.relative_to(boundary)
+    except ValueError:
+        issues.add(path, f"path must stay within the repository: {value}")
+        return None
+    return candidate
+
+
 def validate_string_list(issues: Issues, value: Any, path: str) -> list[str]:
     if not isinstance(value, list):
         issues.add(path, "must be an array")
@@ -140,7 +156,14 @@ def validate_scenario(issues: Issues, scenario: Any, path: str) -> str | None:
         entrypoint = installer.get("entrypoint")
         issues.require(nonempty_string(entrypoint), f"{path}.installer.entrypoint", "must be a non-empty string")
         if nonempty_string(entrypoint):
-            issues.require((ROOT / entrypoint).exists(), f"{path}.installer.entrypoint", f"file does not exist: {entrypoint}")
+            entrypoint_path = resolve_repo_path(
+                issues,
+                str(entrypoint),
+                f"{path}.installer.entrypoint",
+                boundary=ROOT.parent,
+            )
+            if entrypoint_path is not None:
+                issues.require(entrypoint_path.exists(), f"{path}.installer.entrypoint", f"file does not exist: {entrypoint}")
         issues.require(nonempty_string(installer.get("mode")), f"{path}.installer.mode", "must be a non-empty string")
         issues.require(nonempty_string(installer.get("ci_simulation")), f"{path}.installer.ci_simulation", "must be a non-empty string")
         validate_string_list(issues, installer.get("dry_run_args"), f"{path}.installer.dry_run_args")
@@ -158,7 +181,11 @@ def validate_scenario(issues: Issues, scenario: Any, path: str) -> str | None:
 
     compose_files = validate_string_list(issues, expected.get("compose_files"), f"{path}.expected.compose_files")
     for compose_file in compose_files:
-        issues.require((ROOT / compose_file).exists(), f"{path}.expected.compose_files", f"compose file does not exist: {compose_file}")
+        compose_path = resolve_repo_path(
+            issues, compose_file, f"{path}.expected.compose_files"
+        )
+        if compose_path is not None:
+            issues.require(compose_path.exists(), f"{path}.expected.compose_files", f"compose file does not exist: {compose_file}")
 
     core_services = validate_string_list(issues, expected.get("core_services"), f"{path}.expected.core_services")
     recommended_services = validate_string_list(issues, expected.get("recommended_services"), f"{path}.expected.recommended_services")
