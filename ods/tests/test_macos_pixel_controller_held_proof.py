@@ -570,7 +570,7 @@ def test_archived_repaired_route_holds_lock_through_proof_and_skips_legacy_relea
         _controller_repair_path=lambda d: repair_path, _controller_private_bytes=lambda *a: base.encoded(repaired),
         _finish_migration_hold=lambda *a: events.append('legacy-release'))
     monkeypatch.setitem(sys.modules, 'pixel_access_bridge', SimpleNamespace(private_json=lambda *a: hold))
-    monkeypatch.setitem(sys.modules, 'pixel_macos_custody', SimpleNamespace(protected_bytes=lambda *a, **k: b'{"gateway_policy":{}}'))
+    monkeypatch.setitem(sys.modules, 'pixel_macos_custody', SimpleNamespace(protected_inspection_bytes=lambda *a, **k: b'{"gateway_policy":{}}'))
     if loading == 'native-module':
         # The shared native installer fixture already owns its POSIX imports.
         test_module = load('held_proof_native_installer_fixture', ROOT / 'tests/test_macos_pixel_access_install.py')

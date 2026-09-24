@@ -17,8 +17,11 @@ broker receives no model commands, scripts, host paths or image arguments.
 
 Native macOS installs the fixed helper and secret-free image configuration in
 the existing protected, approved service bundle. The helper uses system
-`/usr/bin/python3`, the fixed Docker Desktop binary and the owner's fixed Unix
-socket. Its only publisher operation is the fixed snapshot export command in
+`/usr/bin/python3` with a fixed working directory and Python environment. Its
+protected configuration pins the installer-approved Docker Desktop or Homebrew
+Docker binary by SHA-256 and the owner's Docker Desktop or Colima Unix socket.
+Native sandbox policy allows read access to the system Command Line Tools Python
+libraries without adding write access. Its only publisher operation is the fixed snapshot export command in
 `ods-pixel-workspace-preview`; the publisher receives no Docker socket.
 
 New Linux configurations select `workspacePreviewInspectionTransport: unix`;
