@@ -131,7 +131,7 @@ if [[ -x "$SCRIPT_DIR/scripts/ods-doctor.sh" ]]; then
         echo "[INFO] Doctor report: $DOCTOR_FILE"
     else
         echo "[WARN] Doctor report unavailable: $DOCTOR_FILE"
-        sed -n '1,5{s/^/  /;p}' "$doctor_err_file"
+        sed -n '1,5{s/^/  /;p;}' "$doctor_err_file"
         echo "  Re-run 'scripts/ods-doctor.sh $DOCTOR_FILE' for the full output."
     fi
     rm -f "$doctor_err_file"
