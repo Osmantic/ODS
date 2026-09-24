@@ -34,6 +34,7 @@ matches the work in front of them.
 
 ## Licensing, attribution and public evidence
 
+- [September maintenance audit](MAINTENANCE-AUDIT-2026-09.md): changes, validation and remaining work outside the testing freeze.
 - [Third-party licensing review](THIRD-PARTY-LICENSING.md): component restrictions and open work.
 - [Recipe source register](RECIPE-SOURCE-REGISTER.md): sources and terms for the 34 recipes missing structured provenance.
 - [Model terms inventory](MODEL-TERMS-INVENTORY.md): 57 catalog entries and source evidence.
