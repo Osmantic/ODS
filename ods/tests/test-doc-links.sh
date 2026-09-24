@@ -124,6 +124,24 @@ main() {
 
   local files_to_check=()
 
+  local architecture_doc="$REPO_ROOT/ARCHITECTURE.md"
+  local architecture_paths=(
+    "ods/install-core.sh"
+    "ods/installers/lib/"
+    "ods/installers/phases/"
+    "ods/lib/service-registry.sh"
+    "ods/scripts/resolve-compose-stack.sh"
+    "ods/config/ports.json"
+    "ods/extensions/schema/service-manifest.v1.json"
+  )
+  local architecture_path
+  for architecture_path in "${architecture_paths[@]}"; do
+    grep -qF -- "$architecture_path" "$architecture_doc" \
+      || fail "ARCHITECTURE.md does not reference $architecture_path from the repository root"
+    [[ -e "$REPO_ROOT/${architecture_path%/}" ]] \
+      || fail "ARCHITECTURE.md path does not exist: $architecture_path"
+  done
+
   # 1) top-level README (exists in repo root)
   if [[ -f "$REPO_ROOT/README.md" ]]; then
     files_to_check+=("$REPO_ROOT/README.md")

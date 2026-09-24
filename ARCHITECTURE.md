@@ -167,14 +167,14 @@ The LLM inference engine (`llama-server`) is the foundation. GPU overlays select
 
 ## Installer Architecture
 
-The installer is a 13-phase pipeline orchestrated by `install-core.sh`.
-Installer libraries in `installers/lib/` are pure functions (no side effects);
-`lib/service-registry.sh` loads service manifests and port metadata; phases in
-`installers/phases/` execute sequentially.
+The installer is a 13-phase pipeline orchestrated by `ods/install-core.sh`.
+Installer libraries in `ods/installers/lib/` are pure functions (no side effects);
+`ods/lib/service-registry.sh` loads service manifests and port metadata; phases in
+`ods/installers/phases/` execute sequentially.
 
 ```mermaid
 graph LR
-    subgraph Libraries["installers/lib/ (pure functions)"]
+    subgraph Libraries["ods/installers/lib/ (pure functions)"]
         C[constants] --> D[detection]
         D --> T[tier-map]
         T --> CS[compose-select]
@@ -187,7 +187,7 @@ graph LR
         L[logging]
     end
 
-    subgraph Phases["installers/phases/ (sequential)"]
+    subgraph Phases["ods/installers/phases/ (sequential)"]
         P01["01 Preflight"] --> P02["02 Detection"]
         P02 --> P03["03 Features"]
         P03 --> P04["04 Requirements"]
@@ -251,11 +251,11 @@ graph TB
 
 ### 1. Installation Flow
 
-`install.sh` → `install-core.sh` → sources `installers/lib/*.sh` → sources `installers/phases/01..13.sh` sequentially. Each phase reads state set by prior phases via exported variables. Hardware detection (phase 02) drives all downstream decisions: tier assignment selects the model GGUF, context window, batch size, and compose overlays.
+`install.sh` → `ods/install-core.sh` → sources `ods/installers/lib/*.sh` → sources `ods/installers/phases/01..13.sh` sequentially. Each phase reads state set by prior phases via exported variables. Hardware detection (phase 02) drives all downstream decisions: tier assignment selects the model GGUF, context window, batch size, and compose overlays.
 
 ### 2. Service Startup Flow
 
-`ods-cli start` → `resolve-compose-stack.sh` reads enabled services from `.env` → assembles `docker compose -f base -f gpu-overlay -f ext1 -f ext2 ...` → `docker compose up -d`. Health checks gate dependent services (e.g., `open-webui` waits for `llama-server` healthy).
+`ods/ods-cli start` → `ods/scripts/resolve-compose-stack.sh` reads enabled services from `.env` → assembles `docker compose -f base -f gpu-overlay -f ext1 -f ext2 ...` → `docker compose up -d`. Health checks gate dependent services (e.g., `open-webui` waits for `llama-server` healthy).
 
 ### 3. Chat Request Flow
 
@@ -287,7 +287,7 @@ Browser → `dashboard:3001` → `dashboard-api:3002/api/features` → API reads
 
 ### Port Map
 
-All services bind to `127.0.0.1` (localhost only). Canonical port assignments live in `config/ports.json`.
+All services bind to `127.0.0.1` (localhost only). Canonical port assignments live in `ods/config/ports.json`.
 
 | Port | Service | Port | Service |
 |------|---------|------|---------|
@@ -306,14 +306,14 @@ All services bind to `127.0.0.1` (localhost only). Canonical port assignments li
 
 ## Extension System
 
-Every bundled service manifest lives under `extensions/services/<id>/` with:
+Every bundled service manifest lives under `ods/extensions/services/<id>/` with:
 
 - `manifest.yaml` — Service contract (id, port, health endpoint, category, GPU backends, dependencies, features)
 - `compose.yaml` — Docker Compose service definition (optional; core services live in `docker-compose.base.yml`)
 - `compose.{nvidia,amd}.yaml` — GPU-specific overlays
 - `Dockerfile` — Custom image build (if needed)
 
-The manifest schema is enforced by `extensions/schema/service-manifest.v1.json`. The service registry library (`lib/service-registry.sh`) provides lookup functions for the CLI and installer.
+The manifest schema is enforced by `ods/extensions/schema/service-manifest.v1.json`. The service registry library (`ods/lib/service-registry.sh`) provides lookup functions for the CLI and installer.
 
 ## CI/CD
 
@@ -336,5 +336,5 @@ Priority when principles conflict: **Let It Crash > KISS > Pure Functions > SOLI
 
 - **Let It Crash**: No broad catches, no silent swallowing. Errors propagate visibly. Bash uses `set -euo pipefail` everywhere.
 - **KISS**: Readable over clever. One function, one job. No premature abstraction.
-- **Pure Functions**: Installer libraries (`installers/lib/`) are the pure functional core; phases are the imperative shell.
+- **Pure Functions**: Installer libraries (`ods/installers/lib/`) are the pure functional core; phases are the imperative shell.
 - **SOLID**: Extend via config/data (manifests, backend JSON), not code modification.
