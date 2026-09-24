@@ -234,14 +234,31 @@ def _writable_store_path() -> Path:
 def _ensure_store() -> dict:
     """Load the token store, creating an empty one if missing."""
     store_path = _writable_store_path()
-    if not store_path.exists():
-        return {"tokens": []}
     try:
-        return json.loads(store_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        # Corrupted store — start fresh rather than blocking generation.
-        logger.exception("magic-link store unreadable at %s; starting fresh", store_path)
+        raw_store = store_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return {"tokens": []}
+    except OSError as exc:
+        logger.exception("magic-link store unreadable at %s", store_path)
+        raise HTTPException(
+            status_code=503,
+            detail="Magic-link storage is unreadable; existing links were preserved.",
+        ) from exc
+    try:
+        store = json.loads(raw_store)
+    except json.JSONDecodeError as exc:
+        logger.exception("magic-link store contains invalid JSON at %s", store_path)
+        raise HTTPException(
+            status_code=503,
+            detail="Magic-link storage is unreadable; existing links were preserved.",
+        ) from exc
+    if not isinstance(store, dict) or not isinstance(store.get("tokens"), list):
+        logger.error("magic-link store has an invalid root shape at %s", store_path)
+        raise HTTPException(
+            status_code=503,
+            detail="Magic-link storage is unreadable; existing links were preserved.",
+        )
+    return store
 
 
 def _write_store(store: dict) -> None:

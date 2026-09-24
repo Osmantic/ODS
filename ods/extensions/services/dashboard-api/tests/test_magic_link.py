@@ -135,6 +135,25 @@ def test_generate_returns_token_and_url(magic_link_client):
     assert data["url"].endswith(f"/magic-link/{data['token']}")
 
 
+@pytest.mark.parametrize("corrupt_store", ["{not-json", "[]"])
+def test_generate_preserves_unreadable_token_store(
+    magic_link_client, magic_link_module, corrupt_store
+):
+    store_path = magic_link_module._magic_link_store_candidates()[0]
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.write_text(corrupt_store, encoding="utf-8")
+
+    response = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice"},
+        headers=magic_link_client.auth_headers,
+    )
+
+    assert response.status_code == 503
+    assert "existing links were preserved" in response.json()["detail"]
+    assert store_path.read_text(encoding="utf-8") == corrupt_store
+
+
 def test_generate_with_note_and_reusable(magic_link_client):
     resp = magic_link_client.post(
         "/api/auth/magic-link/generate",
