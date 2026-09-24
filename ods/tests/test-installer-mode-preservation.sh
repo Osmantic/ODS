@@ -65,4 +65,78 @@ result="$(ods_preserve_existing_install_mode local false "$env_file")"
 [[ "$result" == "local" ]] || fail "symlinked mode file was trusted"
 pass "symlinked mode files fail closed"
 
+# ---------------------------------------------------------------------------
+# Offline mode preservation across reruns.
+#
+# Phase 09 only records an offline install two ways: OFFLINE_MODE=true appended
+# to .env and the .offline-mode marker created after the embedded assets are
+# validated. A flagless rerun must keep that selection instead of regenerating
+# an online .env and re-enabling web search/update checks on an air-gapped
+# host. Deleting the marker is the supported escape back to online mode.
+# ---------------------------------------------------------------------------
+
+rm -f "$env_file"
+install_dir="$TMP_ROOT/install"
+marker="$install_dir/.offline-mode"
+mkdir -p "$install_dir"
+env_file="$install_dir/.env"
+
+# Fresh install: no .env, no marker -> caller default kept.
+result="$(ods_preserve_existing_offline_mode false false "$env_file" "$marker")"
+[[ "$result" == "false" ]] || fail "fresh install produced an offline record"
+pass "fresh installs keep the caller default"
+
+# Recorded offline install: .env true + marker present -> restored.
+printf 'OFFLINE_MODE=true\nWEB_SEARCH_ENABLED=false\n' >"$env_file"
+: >"$marker"
+result="$(ods_preserve_existing_offline_mode false false "$env_file" "$marker")"
+[[ "$result" == "true" ]] || fail "recorded offline install was not preserved"
+pass "recorded offline install preserves OFFLINE_MODE=true"
+
+# Explicit --offline stays authoritative even without a prior record.
+rm -f "$env_file" "$marker"
+result="$(ods_preserve_existing_offline_mode true true "$env_file" "$marker")"
+[[ "$result" == "true" ]] || fail "explicit --offline was overridden"
+pass "explicit --offline remains authoritative"
+
+# Escape hatch: marker deleted means the operator opted back to online mode
+# even though .env still carries the stale OFFLINE_MODE=true line.
+printf 'OFFLINE_MODE=true\n' >"$env_file"
+result="$(ods_preserve_existing_offline_mode false false "$env_file" "$marker")"
+[[ "$result" == "false" ]] || fail "stale .env was trusted without the marker"
+pass "deleting the marker restores online mode"
+
+# Marker alone is not enough: a .env that explicitly says false means the
+# operator already migrated the config back online.
+: >"$marker"
+printf 'OFFLINE_MODE=false\n' >"$env_file"
+result="$(ods_preserve_existing_offline_mode false false "$env_file" "$marker")"
+[[ "$result" == "false" ]] || fail "marker overrode an explicit .env false"
+pass "explicit .env false wins over a stale marker"
+
+# Malformed/duplicated .env values fail closed to the caller default.
+printf 'OFFLINE_MODE=true;touch /tmp/unsafe\n' >"$env_file"
+result="$(ods_preserve_existing_offline_mode false false "$env_file" "$marker")"
+[[ "$result" == "false" ]] || fail "malformed offline value was trusted"
+pass "malformed offline values fail closed without evaluation"
+
+printf 'OFFLINE_MODE=true\nOFFLINE_MODE=false\n' >"$env_file"
+result="$(ods_preserve_existing_offline_mode false false "$env_file" "$marker")"
+[[ "$result" == "false" ]] || fail "duplicate offline entries were trusted"
+pass "duplicate offline entries fail closed"
+
+# Untrusted .env files fail closed like the mode reader.
+chmod 0666 "$env_file"
+printf 'OFFLINE_MODE=true\n' >"$env_file"
+result="$(ods_preserve_existing_offline_mode false false "$env_file" "$marker")"
+[[ "$result" == "false" ]] || fail "writable-by-others .env was trusted"
+pass "writable-by-others .env files fail closed"
+chmod 0600 "$env_file"
+
+rm -f "$env_file"
+ln -s "$TMP_ROOT/some-target" "$env_file"
+result="$(ods_preserve_existing_offline_mode false false "$env_file" "$marker")"
+[[ "$result" == "false" ]] || fail "symlinked .env was trusted"
+pass "symlinked .env files fail closed"
+
 printf 'Installer mode preservation tests passed.\n'

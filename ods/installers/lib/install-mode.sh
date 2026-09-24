@@ -43,3 +43,57 @@ ods_preserve_existing_install_mode() {
         printf '%s\n' "$current_mode"
     fi
 }
+
+# Read a persisted OFFLINE_MODE value from an existing install's .env with the
+# same trust contract as ods_existing_install_mode: literal dotenv only, no
+# evaluation, fail closed on duplicates or malformed lines.
+ods_existing_offline_mode() {
+    local env_file="$1" expected_uid="${2:-${UID:-$(id -u)}}"
+    local owner_uid file_mode file_size line value="" found=false
+    local value_pattern
+    value_pattern="^[[:space:]]*((true)|\"(true)\"|'(true)'|(false)|\"(false)\"|'(false)')([[:space:]]+#.*)?[[:space:]]*$"
+
+    [[ -f "$env_file" && ! -L "$env_file" ]] || return 1
+    read -r owner_uid file_mode file_size < <(
+        stat -c '%u %a %s' -- "$env_file" 2>/dev/null
+    ) || return 1
+    [[ "$owner_uid" == "$expected_uid" ]] || return 1
+    [[ "$file_mode" =~ ^[0-7]{3,4}$ && "$file_size" =~ ^[0-9]+$ ]] || return 1
+    (( (8#$file_mode & 8#022) == 0 )) || return 1
+    (( file_size > 0 && file_size <= 1048576 )) || return 1
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*OFFLINE_MODE[[:space:]]*= ]] || continue
+        [[ "$found" == "false" ]] || return 1
+        found=true
+        [[ "${line#*=}" =~ $value_pattern ]] || return 1
+        value="${BASH_REMATCH[2]}${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}${BASH_REMATCH[6]}${BASH_REMATCH[7]}"
+    done <"$env_file"
+
+    [[ "$found" == "true" ]] || return 1
+    printf '%s\n' "$value"
+}
+
+# Preserve an --offline install across flagless reruns. Phase 09 records the
+# selection as OFFLINE_MODE=true in .env plus a .offline-mode marker that only
+# exists after the embedded assets validate; both records must agree before a
+# rerun keeps the offline contract. Deleting the marker is the documented way
+# back to an online install, so an absent marker always wins over a stale .env.
+ods_preserve_existing_offline_mode() {
+    local current_mode="$1" mode_explicit="$2" env_file="$3" marker_file="$4" existing_mode
+
+    if [[ "$mode_explicit" == "true" ]]; then
+        printf '%s\n' "$current_mode"
+        return 0
+    fi
+    if [[ ! -f "$marker_file" || -L "$marker_file" ]]; then
+        printf '%s\n' "$current_mode"
+        return 0
+    fi
+    if existing_mode="$(ods_existing_offline_mode "$env_file")"; then
+        printf '%s\n' "$existing_mode"
+    else
+        printf '%s\n' "$current_mode"
+    fi
+}

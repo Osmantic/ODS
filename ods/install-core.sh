@@ -140,6 +140,7 @@ LEMONADE_EXTERNAL="${LEMONADE_EXTERNAL:-false}"
 LEMONADE_BASE_URL="${LEMONADE_BASE_URL:-}"
 LEMONADE_API_KEY="${LEMONADE_API_KEY:-}"
 OFFLINE_MODE=false   # M1 integration: fully air-gapped operation
+OFFLINE_EXPLICIT=false
 NO_BOOTSTRAP=false  # Skip bootstrap fast-start, download full model in foreground
 BIND_ADDRESS_EXPLICIT=false
 [[ -n "${BIND_ADDRESS:-}" ]] && BIND_ADDRESS_EXPLICIT=true
@@ -285,7 +286,7 @@ while [[ $# -gt 0 ]]; do
         # surface can set ENABLE_ODS_PROXY=false in .env after install.
         --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; shift ;;
         --non-interactive) INTERACTIVE=false; shift ;;
-        --offline) OFFLINE_MODE=true; shift ;;
+        --offline) OFFLINE_MODE=true; OFFLINE_EXPLICIT=true; shift ;;
         --lan) BIND_ADDRESS="0.0.0.0"; BIND_ADDRESS_EXPLICIT=true; shift ;;
         --no-bootstrap) NO_BOOTSTRAP=true; shift ;;
         --summary-json) SUMMARY_JSON_FILE="$2"; shift 2 ;;
@@ -350,6 +351,18 @@ if [[ "$OPENCLAW_EXPLICIT" != "true" ]]; then
         log "Existing OpenClaw install detected; preserving it for this deprecation release"
     fi
     unset _existing_openclaw
+fi
+
+# --offline is recorded two ways by phase 09: OFFLINE_MODE=true appended to
+# .env and a .offline-mode marker that only exists once the embedded assets
+# validate. A flagless rerun would regenerate .env without the offline block
+# (re-enabling web search/update checks on an air-gapped host), so restore the
+# recorded selection when both records still agree. Deleting the marker is the
+# documented escape back to an online install.
+OFFLINE_MODE="$(ods_preserve_existing_offline_mode "$OFFLINE_MODE" \
+    "$OFFLINE_EXPLICIT" "$INSTALL_DIR/.env" "$INSTALL_DIR/.offline-mode")"
+if [[ "$OFFLINE_MODE" == "true" && "$OFFLINE_EXPLICIT" != "true" ]]; then
+    log "Existing offline install detected; preserving OFFLINE_MODE=true for this rerun"
 fi
 
 # Detect distro + package manager (after arg parsing so --help still shows
