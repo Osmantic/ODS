@@ -132,6 +132,29 @@ describe('useSystemStatus', () => {
     expect(result.current.status.gpu).toBeTruthy()
   })
 
+  test('marks preserved readings stale after a failed poll and replaces them on recovery', async () => {
+    vi.useFakeTimers()
+    const initial={gpu:{name:'Actual GPU',utilization:37},services:[{name:'Pixel',status:'healthy'}],model:{name:'Actual model'}}
+    fetch.mockResolvedValueOnce({ok:true,json:async()=>initial})
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue({ok:true,json:async()=>({...initial,gpu:{...initial.gpu,utilization:0}})})
+    const {result,unmount}=renderHook(()=>useSystemStatus())
+    await act(async()=>{await vi.advanceTimersByTimeAsync(0)})
+    const received=result.current.status.clientTelemetry.sampledAt
+    expect(result.current.status.clientTelemetry.stale).toBe(false)
+    await act(async()=>{await vi.advanceTimersByTimeAsync(5000)})
+    expect(result.current.status.gpu.utilization).toBe(37)
+    expect(result.current.status.services).toEqual(initial.services)
+    expect(result.current.status.model).toEqual(initial.model)
+    expect(result.current.status.clientTelemetry).toEqual({sampledAt:received,stale:true})
+    await act(async()=>{await vi.advanceTimersByTimeAsync(5000)})
+    expect(result.current.status.gpu.utilization).toBe(0)
+    expect(result.current.status.clientTelemetry.stale).toBe(false)
+    expect(result.current.status.clientTelemetry.sampledAt).toBeGreaterThan(received)
+    expect(result.current.error).toBeNull()
+    unmount()
+  })
+
   test('expires a stalled JSON body and ignores its late result after recovery', async () => {
     vi.useFakeTimers()
     let finishBody

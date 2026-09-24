@@ -167,7 +167,8 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
-const OVERVIEW_HISTORY_KEY = 'ods-system-overview-history-v1'
+// v1 coerced missing readings to zero; do not reuse those ambiguous samples.
+const OVERVIEW_HISTORY_KEY = 'ods-system-overview-history-v2'
 const SERVICE_CPU_HISTORY_KEY = 'ods-service-cpu-history-v1'
 const OVERVIEW_MAX_SAMPLES = 720
 const SERVICE_CPU_MAX_SAMPLES = 80
@@ -216,8 +217,7 @@ const SERVICE_DESCRIPTIONS = {
 }
 
 function normalizeMetricNumber(value) {
-  const n = Number(value)
-  return Number.isFinite(n) && n > 0 ? n : 0
+  return Number.isFinite(value) && value >= 0 ? value : null
 }
 
 function normalizeServiceKey(value) {
@@ -315,8 +315,8 @@ function readOverviewHistory() {
     if (!Array.isArray(parsed)) return overviewMemoryHistory
     return parsed.filter(sample =>
       Number.isFinite(sample?.t) &&
-      Number.isFinite(sample?.tokensPerSecond) &&
-      Number.isFinite(sample?.totalTokens) &&
+      (sample?.tokensPerSecond === null || Number.isFinite(sample?.tokensPerSecond)) &&
+      (sample?.totalTokens === null || Number.isFinite(sample?.totalTokens)) &&
       (!sample?.tokenCountMode || typeof sample.tokenCountMode === 'string')
     )
   } catch {
@@ -361,31 +361,46 @@ function writeServiceCpuHistory(history) {
   }
 }
 
-function useOverviewHistory(tokensPerSecond, totalTokens, tokenCountMode = 'unavailable') {
-  const [samples, setSamples] = useState(() => readOverviewHistory().filter(sample =>
-    (sample.tokenCountMode || 'cumulative') === tokenCountMode
+function useOverviewHistory(tokensPerSecond, totalTokens, tokenCountMode = 'unavailable', sample, stale) {
+  const model = sample?.loadedModel || null
+  const [samples, setSamples] = useState(() => readOverviewHistory().filter(row =>
+    (row.tokenCountMode || 'cumulative') === tokenCountMode && (row.model || null) === model
   ))
 
   useEffect(() => {
+    if (stale) return
     const now = Date.now()
     const nextSample = {
       t: now,
       tokensPerSecond: normalizeMetricNumber(tokensPerSecond),
       totalTokens: normalizeMetricNumber(totalTokens),
       tokenCountMode,
+      model,
+      throughputSampledAt: Number.isFinite(sample?.throughputSampledAt) && sample.throughputSampledAt > 0 ? sample.throughputSampledAt * 1000 : null,
     }
 
     setSamples(current => {
       const cutoff = now - OVERVIEW_RANGES[OVERVIEW_RANGES.length - 1].ms
       const recent = current.filter(sample =>
         sample.t >= cutoff &&
-        (sample.tokenCountMode || 'cumulative') === tokenCountMode
+        (sample.tokenCountMode || 'cumulative') === tokenCountMode && (sample.model || null) === model
       )
       const last = recent[recent.length - 1]
+      const alreadyObserved = nextSample.throughputSampledAt !== null && recent.some(row =>
+        row.throughputObserved !== false && row.throughputSampledAt === nextSample.throughputSampledAt)
+      const retainedWithoutTimestamp = sample?.throughputState === 'retained' && nextSample.throughputSampledAt === null
+      nextSample.throughputObserved = !alreadyObserved && !retainedWithoutTimestamp
+      if (sample?.throughputState === 'unavailable') {
+        nextSample.tokensPerSecond = null
+        nextSample.throughputSampledAt = null
+        nextSample.throughputObserved = true
+      }
+      if (!nextSample.throughputObserved && last?.totalTokens === nextSample.totalTokens) return recent
       if (
         last &&
         now - last.t < 3000 &&
         last.tokensPerSecond === nextSample.tokensPerSecond &&
+        last.throughputSampledAt === nextSample.throughputSampledAt &&
         last.totalTokens === nextSample.totalTokens
       ) {
         return current
@@ -395,9 +410,9 @@ function useOverviewHistory(tokensPerSecond, totalTokens, tokenCountMode = 'unav
       writeOverviewHistory(next)
       return next
     })
-  }, [tokensPerSecond, totalTokens, tokenCountMode])
+  }, [tokensPerSecond, totalTokens, tokenCountMode, sample, stale, model])
 
-  return samples
+  return samples.filter(row => (row.model || null) === model && (row.tokenCountMode || 'cumulative') === tokenCountMode)
 }
 
 function useServiceCpuHistory(services) {
@@ -538,18 +553,15 @@ function buildSignalPath(points) {
   return path
 }
 
-function reduceSamples(samples, maxPoints = 16) {
-  if (samples.length <= maxPoints) return samples
-  const step = (samples.length - 1) / (maxPoints - 1)
-  return Array.from({ length: maxPoints }, (_, index) => samples[Math.round(index * step)])
-}
-
 function buildOverviewSeries(samples, range, field) {
   const now = Date.now()
-  const filtered = reduceSamples(samples.filter(sample => sample.t >= now - range.ms))
+  // The retained history is bounded to 720 points. Keep its gaps intact rather
+  // than downsampling away an unavailable reading and joining across it.
+  const timestamp = sample => field === 'tokensPerSecond' ? sample.throughputSampledAt ?? sample.t : sample.t
+  const filtered = samples.filter(sample => timestamp(sample) >= now - range.ms && (field !== 'tokensPerSecond' || sample.throughputObserved !== false))
   return {
     values: filtered.map(sample => sample[field]),
-    timestamps: filtered.map(sample => sample.t),
+    timestamps: filtered.map(timestamp),
   }
 }
 
@@ -575,11 +587,13 @@ function buildTimeLabels(timestamps, rangeKey) {
 function computeDeltaFromSamples(samples, range, field, currentValue) {
   const now = Date.now()
   const scoped = samples
-    .filter(sample => sample.t >= now - range.ms && Number.isFinite(sample[field]))
+    .map(sample => field === 'tokensPerSecond' ? {...sample,t:sample.throughputSampledAt ?? sample.t} : sample)
+    .filter(sample => sample.t >= now - range.ms && Number.isFinite(sample[field]) && (field !== 'tokensPerSecond' || sample.throughputObserved !== false))
     .sort((a, b) => a.t - b.t)
   if (scoped.length < 2) return null
 
   const current = normalizeMetricNumber(currentValue)
+  if (current === null) return null
   const targetTime = now - range.compareMs
   const historical = scoped.filter(sample => sample.t <= targetTime)
   const baseSample = historical[historical.length - 1] || scoped[0]
@@ -599,12 +613,34 @@ function buildChartPoints(values, maxValue) {
   const usableHeight = height - paddingTop - paddingBottom
 
   return values.map((value, index) => {
-    const ratio = clamp(maxValue > 0 ? value / maxValue : 0, 0.08, 0.94)
+    if (!Number.isFinite(value)) return null
+    const ratio = clamp(maxValue > 0 ? value / maxValue : 0, 0, 1)
     return {
       x: paddingLeft + (usableWidth / Math.max(values.length - 1, 1)) * index,
       y: height - paddingBottom - ratio * usableHeight,
     }
   })
+}
+
+function throughputLabel(inference, stale = false) {
+  if (!Number.isFinite(inference?.tokensPerSecond)) return 'Telemetry unavailable'
+  if (stale || inference?.throughputState === 'unavailable') return 'Last known rate · telemetry unavailable'
+  if (inference?.throughputState === 'retained') return 'Last run'
+  if (inference?.throughputMode === 'generation_interval') return 'Generation interval'
+  if (inference?.throughputMode === 'latest_completion') return 'Latest completion'
+  return 'Runtime reading'
+}
+
+function metricScopeLabel(scope) {
+  return {host:'Host',wsl:'WSL',vm:'Virtual machine',container:'Container',unknown:'Scope unavailable'}[scope] || ''
+}
+
+function TelemetryNotice({telemetry}) {
+  if (!telemetry?.stale) return null
+  const sampledAt = Number.isFinite(telemetry.sampledAt) ? new Date(telemetry.sampledAt) : null
+  return <p role="status" aria-label="Telemetry freshness" className="px-4 py-2 text-xs text-amber-300">
+    {sampledAt ? <>Telemetry update failed. Showing last known readings received at <time dateTime={sampledAt.toISOString()}>{sampledAt.toLocaleTimeString()}</time>.</> : 'Telemetry unavailable. Waiting for a successful status update.'}
+  </p>
 }
 
 export default function Dashboard({ status, loading, compact = false }) {
@@ -714,9 +750,9 @@ export default function Dashboard({ status, loading, compact = false }) {
         systemMetrics.push({
           icon: HardDrive,
           label: 'Mem Used',
-          value: `${status.ram.used_gb} GB`,
-          subvalue: `of ${status.ram.total_gb} GB unified`,
-          percent: status.ram.percent,
+          value: Number.isFinite(status.ram.used_gb) ? `${status.ram.used_gb} GB` : '—',
+          subvalue: `${Number.isFinite(status.ram.total_gb) ? `of ${status.ram.total_gb} GB unified` : 'capacity unavailable'}${metricScopeLabel(status.ram.scope) ? ` · ${metricScopeLabel(status.ram.scope)}` : ''}`,
+          percent: Number.isFinite(status.ram.percent) ? status.ram.percent : undefined,
         })
       }
     } else {
@@ -745,9 +781,9 @@ export default function Dashboard({ status, loading, compact = false }) {
     systemMetrics.push({
       icon: Cpu,
       label: 'CPU',
-      value: `${status.cpu.percent}%`,
-      subvalue: 'utilization',
-      percent: status.cpu.percent,
+      value: Number.isFinite(status.cpu.percent) ? `${status.cpu.percent}%` : '—',
+      subvalue: [metricScopeLabel(status.cpu.scope),Number.isFinite(status.cpu.percent) ? 'utilization' : 'telemetry unavailable'].filter(Boolean).join(' · '),
+      percent: Number.isFinite(status.cpu.percent) ? status.cpu.percent : undefined,
     })
   }
 
@@ -755,9 +791,9 @@ export default function Dashboard({ status, loading, compact = false }) {
     systemMetrics.push({
       icon: HardDrive,
       label: 'RAM',
-      value: `${status.ram.used_gb} GB`,
-      subvalue: `of ${status.ram.total_gb} GB`,
-      percent: status.ram.percent,
+      value: Number.isFinite(status.ram.used_gb) ? `${status.ram.used_gb} GB` : '—',
+      subvalue: `${Number.isFinite(status.ram.total_gb) ? `of ${status.ram.total_gb} GB` : 'capacity unavailable'}${metricScopeLabel(status.ram.scope) ? ` · ${metricScopeLabel(status.ram.scope)}` : ''}`,
+      percent: Number.isFinite(status.ram.percent) ? status.ram.percent : undefined,
     })
   }
 
@@ -770,24 +806,22 @@ export default function Dashboard({ status, loading, compact = false }) {
     })
   }
 
-  if (status?.gpu?.memoryType !== 'unified') {
-    systemMetrics.push({
-      icon: Thermometer,
-      label: 'GPU Temp',
-      value: status?.gpu?.temperature != null ? `${status.gpu.temperature}°C` : '—',
-      subvalue: status?.gpu?.temperature != null
-        ? status.gpu.temperature < 70 ? 'normal' : status.gpu.temperature < 85 ? 'warm' : 'hot'
-        : 'thermal',
-      alert: status?.gpu?.temperature >= 85,
-    })
-  }
+  systemMetrics.push({
+    icon: Thermometer,
+    label: 'GPU Temp',
+    value: Number.isFinite(status?.gpu?.temperature) ? `${status.gpu.temperature}°C` : '—',
+    subvalue: Number.isFinite(status?.gpu?.temperature)
+      ? status.gpu.temperature < 70 ? 'normal' : status.gpu.temperature < 85 ? 'warm' : 'hot'
+      : 'telemetry unavailable',
+    alert: status?.gpu?.temperature >= 85,
+  })
 
   systemMetrics.push(
     {
       icon: Zap,
       label: 'Tokens / second',
       value: Number.isFinite(status?.inference?.tokensPerSecond) ? `${status.inference.tokensPerSecond.toFixed(1)} tok/s` : '—',
-      subvalue: Number.isFinite(status?.inference?.tokensPerSecond) ? 'runtime reading' : 'telemetry unavailable',
+      subvalue: throughputLabel(status?.inference,status?.clientTelemetry?.stale),
     },
     {
       icon: Brackets,
@@ -809,13 +843,14 @@ export default function Dashboard({ status, loading, compact = false }) {
     }
   )
 
-  if (compact) return <CompactDashboard metrics={systemMetrics} services={status?.services || []} health={health}/>
+  if (compact) return <><TelemetryNotice telemetry={status?.clientTelemetry}/><CompactDashboard metrics={systemMetrics} services={status?.services || []} health={health}/></>
 
   return (
     <div className="p-8">
       {/* Header with live meta strip */}
       <div className="mb-8 flex items-start justify-between">
         <div>
+          <TelemetryNotice telemetry={status?.clientTelemetry}/>
           <h1 className="text-2xl font-bold text-theme-text">Dashboard</h1>
           <p className={`mt-1 ${health.color}`}>
             {health.text}
@@ -891,13 +926,15 @@ export default function Dashboard({ status, loading, compact = false }) {
       {/* System Overview */}
       <div className="mb-10 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.28fr)_minmax(320px,0.72fr)]">
         <SystemOverviewPanel
-          tokensPerSecond={status?.inference?.tokensPerSecond || 0}
-          totalTokens={status?.inference?.lifetimeTokens || 0}
+          tokensPerSecond={normalizeMetricNumber(status?.inference?.tokensPerSecond)}
+          totalTokens={status?.inference?.tokenCountMode === 'unavailable' ? null : normalizeMetricNumber(status?.inference?.lifetimeTokens)}
+          sample={status?.inference}
+          stale={status?.clientTelemetry?.stale}
           tokenCountMode={status?.inference
             ? status.inference.tokenCountMode || 'cumulative'
             : 'unavailable'}
         />
-        <SystemMetricsPanel metrics={systemMetrics} />
+        <SystemMetricsPanel metrics={systemMetrics} stale={status?.clientTelemetry?.stale} />
       </div>
 
       <ServicesPanel services={serviceRows} />
@@ -984,10 +1021,10 @@ const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, 
   return <Link to={href} className="block h-full liquid-metal-sequence-slot">{content}</Link>
 })
 
-const SystemOverviewPanel = memo(function SystemOverviewPanel({ tokensPerSecond, totalTokens, tokenCountMode }) {
+const SystemOverviewPanel = memo(function SystemOverviewPanel({ tokensPerSecond, totalTokens, tokenCountMode, sample, stale }) {
   const [rangeKey, setRangeKey] = useState('1H')
   const range = OVERVIEW_RANGES.find(item => item.key === rangeKey) || OVERVIEW_RANGES[0]
-  const history = useOverviewHistory(tokensPerSecond, totalTokens, tokenCountMode)
+  const history = useOverviewHistory(tokensPerSecond, totalTokens, tokenCountMode, sample, stale)
   const throughput = useMemo(
     () => buildOverviewSeries(history, range, 'tokensPerSecond'),
     [history, range]
@@ -1027,14 +1064,14 @@ const SystemOverviewPanel = memo(function SystemOverviewPanel({ tokensPerSecond,
         <OverviewChart
           chartId="tokens-per-second"
           title="TOKENS PER SECOND"
-          subtitle="Live Throughput"
+          subtitle={throughputLabel(sample,stale)}
           values={throughput.values}
           timestamps={throughput.timestamps}
           range={range}
           rangeKey={rangeKey}
-          currentDisplay={(tokensPerSecond || 0).toFixed(1)}
+          currentDisplay={tokensPerSecond === null ? '—' : tokensPerSecond.toFixed(1)}
           unit="tokens / sec"
-          delta={computeDeltaFromSamples(history, range, 'tokensPerSecond', tokensPerSecond)}
+          delta={sample?.throughputState === 'unavailable' ? null : computeDeltaFromSamples(history, range, 'tokensPerSecond', tokensPerSecond)}
           accent="rgba(190,196,205,0.98)"
           fill="rgba(190,196,205,0.12)"
           defaultMax={12}
@@ -1052,7 +1089,7 @@ const SystemOverviewPanel = memo(function SystemOverviewPanel({ tokensPerSecond,
           timestamps={generated.timestamps}
           range={range}
           rangeKey={rangeKey}
-          currentDisplay={formatTokenCount(totalTokens || 0)}
+          currentDisplay={totalTokens === null ? '—' : formatTokenCount(totalTokens)}
           unit="tokens"
           delta={computeDeltaFromSamples(history, range, 'totalTokens', totalTokens)}
           accent="rgba(139,151,166,0.98)"
@@ -1083,16 +1120,23 @@ const OverviewChart = memo(function OverviewChart({
   axisFormatter,
   divided = false,
 }) {
-  const maxValue = Math.max(...values, defaultMax) * 1.08
+  const maxValue = Math.max(...values.filter(Number.isFinite), defaultMax) * 1.08
   const points = buildChartPoints(values, maxValue)
-  const hasSeries = points.length >= 2
-  const path = hasSeries ? buildSignalPath(points) : ''
+  // Missing readings break the line instead of fabricating zero or joining
+  // observations across an interval for which there is no telemetry.
+  const segments = [[]]
+  points.forEach(point => {
+    if (point) segments[segments.length - 1].push(point)
+    else if (segments[segments.length - 1].length) segments.push([])
+  })
+  const series = segments.filter(segment => segment.length >= 2)
+  const hasSeries = series.length > 0
+  const path = series.map(buildSignalPath).join(' ')
   const baseline = 160
-  const firstPoint = points[0] || { x: 38, y: baseline }
-  const lastPoint = points[points.length - 1] || firstPoint
-  const areaPath = path
-    ? `${path} L ${lastPoint.x} ${baseline} L ${firstPoint.x} ${baseline} Z`
-    : ''
+  const areaPath = series.map(segment => {
+    const first = segment[0], last = segment[segment.length - 1]
+    return `${buildSignalPath(segment)} L ${last.x} ${baseline} L ${first.x} ${baseline} Z`
+  }).join(' ')
   const yLabels = [maxValue, maxValue * 0.66, maxValue * 0.33, 0]
   const timeLabels = buildTimeLabels(timestamps, rangeKey)
   const deltaPrefix = delta == null || delta >= 0 ? '↑' : '↓'
@@ -1116,7 +1160,7 @@ const OverviewChart = memo(function OverviewChart({
 
         {delta == null ? (
           <div className="mb-2 whitespace-nowrap text-xs font-medium text-theme-text-muted">
-            collecting samples
+            {currentDisplay === '—' ? 'telemetry unavailable' : 'collecting samples'}
           </div>
         ) : (
           <div className={`mb-2 whitespace-nowrap text-xs font-semibold ${deltaTone}`}>
@@ -1195,7 +1239,7 @@ const OverviewChart = memo(function OverviewChart({
             fontSize="11"
             fontWeight="600"
           >
-            collecting telemetry
+            {currentDisplay === '—' ? 'telemetry unavailable' : 'collecting telemetry'}
           </text>
         )}
 
@@ -1217,7 +1261,7 @@ const OverviewChart = memo(function OverviewChart({
   )
 })
 
-const SystemMetricsPanel = memo(function SystemMetricsPanel({ metrics }) {
+const SystemMetricsPanel = memo(function SystemMetricsPanel({ metrics, stale }) {
   return (
     <aside
       className="h-full rounded-xl border px-4 py-4 sm:px-5 sm:py-5"
@@ -1226,7 +1270,7 @@ const SystemMetricsPanel = memo(function SystemMetricsPanel({ metrics }) {
       <div className="mb-4 flex min-h-7 items-center justify-between gap-3">
         <h2 className="text-base font-semibold text-theme-text sm:text-lg">System Status</h2>
         <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/65">
-          Live Telemetry
+          {stale ? 'Last Known Telemetry' : 'Live Telemetry'}
         </span>
       </div>
 

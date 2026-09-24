@@ -95,12 +95,13 @@ export function useSystemStatus() {
         })()
         const data = await Promise.race([pending, aborted])
         if (cancelled) return
-        setStatus(data)
+        setStatus({...data, clientTelemetry:{sampledAt:Date.now(),stale:false}})
         setError(null)
         hasInitialData.current = true
       } catch (err) {
         if (!cancelled) {
           setError(err?.name === 'AbortError' ? 'Status request timed out' : err.message)
+          setStatus(previous => ({...previous,clientTelemetry:{...previous.clientTelemetry,stale:true}}))
         }
       } finally {
         clearTimeout(timeout)
