@@ -8,6 +8,7 @@ services:
     environment:
       - LANGFLOW_HOST=0.0.0.0
       - LANGFLOW_PORT=7860
+      - LANGFLOW_SAVE_DB_IN_CONFIG_DIR=true
       - LLM_API_URL=${LLM_API_URL:-http://llama-server:8080}
     volumes:
       - ./data/langflow:/app/data
