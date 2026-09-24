@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +46,20 @@ def as_list(value: Any) -> list[Any] | None:
 
 def nonempty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def localhost_http_url(value: str) -> bool:
+    if any(ord(char) <= 32 or ord(char) == 127 for char in value):
+        return False
+    try:
+        url = urlsplit(value)
+        return (
+            url.scheme == "http" and url.hostname == "127.0.0.1"
+            and url.username is None and url.password is None
+            and url.port is not None and 1 <= url.port <= 65535
+        )
+    except ValueError:
+        return False
 
 
 def validate_string_list(issues: Issues, value: Any, path: str) -> list[str]:
@@ -88,7 +103,7 @@ def validate_health_checks(issues: Issues, value: Any, path: str) -> None:
         if nonempty_string(service):
             validate_service_ids(issues, [service], f"{check_path}.service")
         if nonempty_string(url):
-            issues.require(url.startswith("http://127.0.0.1:"), f"{check_path}.url", "must be localhost HTTP")
+            issues.require(localhost_http_url(url), f"{check_path}.url", "must be localhost HTTP with an explicit valid port and no credentials")
 
 
 def validate_generated_configs(issues: Issues, value: Any, path: str) -> None:
