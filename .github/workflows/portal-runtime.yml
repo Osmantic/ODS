@@ -59,6 +59,11 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_read_range.integration.mjs
+      - name: Verify native compaction lock and abort ownership
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_compaction_abort.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_lock.integration.mjs
       - name: Verify premature completion with real Pixel runtime
         if: runner.os != 'Windows'
         shell: bash

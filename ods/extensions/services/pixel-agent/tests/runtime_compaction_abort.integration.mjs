@@ -35,8 +35,16 @@ const cleanupStatement = candidate.slice(cleanupEnd, candidate.indexOf(';', clea
 const {setActiveEmbeddedRun, clearActiveEmbeddedRun, resolveActiveEmbeddedRunSessionId, abortAgentHarnessRun} =
   await import(pathToFileURL(join(root, 'dist/plugin-sdk/agent-harness.js')));
 const {d: Agent} = await import(pathToFileURL(join(root, 'dist/session-manager-3lTZxT-y.js')));
-const sessions = readFileSync(join(root, 'dist/sessions-CZbwb3_c.js'), 'utf8');
+let sessions = readFileSync(join(root, 'dist/sessions-CZbwb3_c.js'), 'utf8');
 const resume = JSON.parse(readFileSync(new URL('../host/openclaw-compaction-resume.json', import.meta.url)));
+// CI installs the pristine pinned package. Derive the reviewed recovery in
+// memory only; reject unknown bytes and leave the installed package unchanged.
+if (hash(sessions) === resume.sourceSha256) {
+  for (const [before, after] of resume.replacements) {
+    assert.equal(sessions.split(before).length, 2);
+    sessions = sessions.replace(before, after);
+  }
+}
 assert.equal(hash(sessions), resume.patchedSha256, 'use reviewed compaction recovery');
 const start = sessions.indexOf('\tasync runAutoCompaction(reason, willRetry) {');
 const end = sessions.indexOf('\n\t/**', start);
