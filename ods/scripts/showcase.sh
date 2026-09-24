@@ -36,6 +36,13 @@ TTS_URL="${TTS_URL:-http://localhost:${SERVICE_PORTS[tts]:-8880}}"
 QDRANT_URL="${QDRANT_URL:-http://localhost:${SERVICE_PORTS[qdrant]:-6333}}"
 EXAMPLES_DIR="$ODS_DIR/examples"
 
+# Bounded curl: a wedged listener that accepts TCP but never answers must not
+# freeze the demo. Probes use the ods-preflight.sh health-check convention;
+# completions get a generous ceiling for slow CPU inference.
+CURL_PROBE_FLAGS=(--connect-timeout 3 --max-time 10)
+CURL_GEN_FLAGS=(--connect-timeout 5 --max-time 300)
+
+
 clear_screen() {
     printf "\033[2J\033[H"
 }
@@ -64,7 +71,7 @@ print_menu() {
 check_service() {
     local url=$1
     local endpoint=$2
-    curl -sf "${url}${endpoint}" > /dev/null 2>&1
+    curl -sf "${CURL_PROBE_FLAGS[@]}" "${url}${endpoint}" > /dev/null 2>&1
 }
 
 demo_chat() {
@@ -96,7 +103,7 @@ demo_chat() {
         
         echo -ne "${CYAN}AI: ${NC}"
         
-        response=$(curl -sf "${LLM_URL}/v1/chat/completions" \
+        response=$(curl -sf "${CURL_GEN_FLAGS[@]}" "${LLM_URL}/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -d "$(jq -n --arg msg "$user_input" '{
                 model: "local",
@@ -216,7 +223,7 @@ demo_rag() {
         echo -ne "${CYAN}Answer: ${NC}"
         
         # Use document as context
-        response=$(curl -sf "${LLM_URL}/v1/chat/completions" \
+        response=$(curl -sf "${CURL_GEN_FLAGS[@]}" "${LLM_URL}/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -d "$(jq -n --arg doc "$DOC_CONTENT" --arg q "$question" '{
                 model: "local",
@@ -288,7 +295,7 @@ demo_code() {
     
     prompt="Task: $task\n\nCode:\n\`\`\`\n$CODE\n\`\`\`"
     
-    response=$(curl -sf "${LLM_URL}/v1/chat/completions" \
+    response=$(curl -sf "${CURL_GEN_FLAGS[@]}" "${LLM_URL}/v1/chat/completions" \
         -H "Content-Type: application/json" \
         -d "$(jq -n --arg p "$prompt" '{
             model: "local",

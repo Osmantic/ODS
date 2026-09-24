@@ -41,6 +41,13 @@ WEBUI_URL="${WEBUI_URL:-http://localhost:${SERVICE_PORTS[open-webui]:-3000}}"
 # so the demo works out-of-the-box on any tier without hardcoding a specific model name.
 DEMO_MODEL="${LLM_MODEL:-Qwen/Qwen2.5-32B-Instruct-AWQ}"
 
+# Bounded curl: a wedged listener that accepts TCP but never answers must not
+# freeze the demo. Probes use the ods-preflight.sh health-check convention;
+# completions get a generous ceiling for slow CPU inference.
+CURL_PROBE_FLAGS=(--connect-timeout 3 --max-time 10)
+CURL_GEN_FLAGS=(--connect-timeout 5 --max-time 300)
+
+
 QUICK_MODE=false
 ALL_MODE=false
 
@@ -104,7 +111,7 @@ check_service() {
     local url=$2
     local endpoint=${3:-/health}
     
-    if curl -sf "${url}${endpoint}" > /dev/null 2>&1; then
+    if curl -sf "${CURL_PROBE_FLAGS[@]}" "${url}${endpoint}" > /dev/null 2>&1; then
         success "$name is running at $url"
         return 0
     else
@@ -154,7 +161,7 @@ if check_service "Open WebUI" "$WEBUI_URL" "/"; then
 fi
 
 # Optional services
-if curl -sf "${WHISPER_URL}/health" > /dev/null 2>&1; then
+if curl -sf "${CURL_PROBE_FLAGS[@]}" "${WHISPER_URL}/health" > /dev/null 2>&1; then
     success "Whisper STT is running (voice input enabled)"
     WHISPER_AVAILABLE=true
     ((SERVICES_OK++)) || true
@@ -164,7 +171,7 @@ else
     WHISPER_AVAILABLE=false
 fi
 
-if curl -sf "${PIPER_URL}" > /dev/null 2>&1; then
+if curl -sf "${CURL_PROBE_FLAGS[@]}" "${PIPER_URL}" > /dev/null 2>&1; then
     success "OpenTTS TTS is running (voice output enabled)"
     PIPER_AVAILABLE=true
     ((SERVICES_OK++)) || true
@@ -174,7 +181,7 @@ else
     PIPER_AVAILABLE=false
 fi
 
-if curl -sf "${N8N_URL}/healthz" > /dev/null 2>&1; then
+if curl -sf "${CURL_PROBE_FLAGS[@]}" "${N8N_URL}/healthz" > /dev/null 2>&1; then
     success "n8n Workflows is running (automation enabled)"
     N8N_AVAILABLE=true
     ((SERVICES_OK++)) || true
@@ -202,7 +209,7 @@ header "💬 Demo 1: Local Chat Completion"
 
 demo "Asking your local AI a question..."
 
-RESPONSE=$(curl -sf "${LLM_URL}/v1/chat/completions" \
+RESPONSE=$(curl -sf "${CURL_GEN_FLAGS[@]}" "${LLM_URL}/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d "{\"model\": \"${DEMO_MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"In one sentence, what makes local AI special?\"}], \"max_tokens\": 100, \"temperature\": 0.7}" \
     2>/dev/null | jq -r '.choices[0].message.content' 2>/dev/null || echo "")
@@ -226,7 +233,7 @@ header "🧑‍💻 Demo 2: Code Assistance"
 
 demo "Asking for help with a Python function..."
 
-CODE_RESPONSE=$(curl -sf "${LLM_URL}/v1/chat/completions" \
+CODE_RESPONSE=$(curl -sf "${CURL_GEN_FLAGS[@]}" "${LLM_URL}/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d "{\"model\": \"${DEMO_MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"Write a Python one-liner to reverse a string. Just the code, no explanation.\"}], \"max_tokens\": 50, \"temperature\": 0.3}" \
     2>/dev/null | jq -r '.choices[0].message.content' 2>/dev/null || echo "")
@@ -252,7 +259,7 @@ demo "Watching tokens stream in real-time..."
 echo ""
 
 # Simple streaming demo - just show it works
-curl -sN "${LLM_URL}/v1/chat/completions" \
+curl -sN "${CURL_GEN_FLAGS[@]}" "${LLM_URL}/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d "{\"model\": \"${DEMO_MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"Count from 1 to 5, one number per line.\"}], \"max_tokens\": 50, \"temperature\": 0, \"stream\": true}" \
     2>/dev/null | while read -r line; do
