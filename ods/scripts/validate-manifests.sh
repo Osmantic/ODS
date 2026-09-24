@@ -271,3 +271,15 @@ if [[ "$py_exit" -eq 0 ]]; then
 else
   fail "Extension manifest validation failed"
 fi
+
+GRAPH_SCRIPT="${ROOT_DIR}/scripts/extension-dependency-graph.py"
+if $PYTHON_OK; then
+  test -f "$GRAPH_SCRIPT" || fail "dependency graph validator not found"
+  if python3 "$GRAPH_SCRIPT" --project-dir "$ROOT_DIR" --format json >/dev/null; then
+    pass "Extension dependency graph validated"
+  else
+    fail "Extension dependency graph validation failed"
+  fi
+else
+  warn "Skipping dependency graph validation because PyYAML is unavailable"
+fi

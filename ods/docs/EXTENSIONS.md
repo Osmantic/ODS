@@ -106,6 +106,29 @@ rather than filling existing fields, read
 the supported schema until migration tooling and compatibility policy are in
 place.
 
+## Inspect the Dependency Graph
+
+Before enabling or reviewing a set of extensions, inspect the same
+`service.depends_on` relationships used by the lifecycle API:
+
+```bash
+# Human-readable inventory of bundled and library extensions
+python3 scripts/extension-dependency-graph.py
+
+# Install order for one extension and its prerequisites
+python3 scripts/extension-dependency-graph.py --root hermes --format json
+
+# Reverse blast radius: every extension that transitively depends on llama-server
+python3 scripts/extension-dependency-graph.py \
+  --root llama-server --direction dependents --format dot
+```
+
+The command fails on missing dependency definitions, duplicate service IDs, or
+cycles. JSON includes a dependency-first order for automation; DOT output can
+be rendered with Graphviz. The same full-catalog graph validation runs through
+`ods config validate` / `scripts/validate-manifests.sh`, so install-time and CI
+manifest checks reject dependency topology that cannot be activated safely.
+
 ## What You Can Extend
 
 - **Docker services** via `extensions/services/<name>/compose.yaml`

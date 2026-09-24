@@ -71,6 +71,12 @@ else
     fail "Output missing 'Summary:'"
 fi
 
+if echo "$out" | grep -q "Extension dependency graph validated"; then
+    pass "Output confirms dependency graph validation"
+else
+    fail "Output missing dependency graph validation receipt"
+fi
+
 # 6. Should list at least one service (from extensions/services/)
 if echo "$out" | grep -qE "ok-no-metadata|Compatible|ok"; then
     pass "Output contains compatibility status lines"
