@@ -1211,6 +1211,45 @@ def test_revoke_short_prefix_rejected(magic_link_client):
     assert resp.status_code == 400
 
 
+def test_revoke_non_hex_prefix_rejected(magic_link_client):
+    resp = magic_link_client.delete(
+        "/api/auth/magic-link/not-hex!",
+        headers=magic_link_client.auth_headers,
+    )
+    assert resp.status_code == 400
+
+
+def test_revoke_ambiguous_prefix_does_not_revoke_either_token(
+    magic_link_client, magic_link_module
+):
+    prefix = "deadbeef"
+    magic_link_module._write_store({
+        "tokens": [
+            {
+                "token_hash": prefix + "0" * 56,
+                "target_username": "alice",
+                "revoked_at": None,
+            },
+            {
+                "token_hash": prefix + "1" * 56,
+                "target_username": "bob",
+                "revoked_at": None,
+            },
+        ]
+    })
+
+    resp = magic_link_client.delete(
+        f"/api/auth/magic-link/{prefix}",
+        headers=magic_link_client.auth_headers,
+    )
+
+    assert resp.status_code == 409
+    assert all(
+        record["revoked_at"] is None
+        for record in magic_link_module._ensure_store()["tokens"]
+    )
+
+
 def test_revoke_unknown_prefix_returns_404(magic_link_client):
     resp = magic_link_client.delete(
         "/api/auth/magic-link/deadbeef",
