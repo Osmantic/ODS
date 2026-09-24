@@ -129,6 +129,30 @@ def test_internal_key_falls_back_to_dashboard_api_key(monkeypatch):
     assert mod.INTERNAL_KEY == "dashboard-secret"
 
 
+@pytest.mark.parametrize(
+    "invalid_document",
+    [
+        [],
+        {"endpoints": None},
+        {"endpoints": ["not-an-object"]},
+    ],
+)
+def test_invalid_endpoint_allowlist_retains_last_good_config(
+    router,
+    invalid_document,
+):
+    mod, _client, _write_state, _calls = router
+    previous = mod._load_endpoints().copy()
+    assert previous
+
+    mod.ENDPOINTS_PATH.write_text(
+        json.dumps(invalid_document),
+        encoding="utf-8",
+    )
+
+    assert mod._load_endpoints() == previous
+
+
 class _ChunkedStream(httpx.AsyncByteStream):
     def __init__(self, chunks, error=None, started=None, release=None):
         self.chunks = chunks

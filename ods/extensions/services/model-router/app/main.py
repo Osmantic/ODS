@@ -522,7 +522,14 @@ def _load_endpoints() -> dict[str, dict[str, Any]]:
     endpoints: dict[str, dict[str, Any]] = {}
     try:
         raw = json.loads(ENDPOINTS_PATH.read_text(encoding="utf-8"))
-        for entry in raw.get("endpoints", []):
+        if not isinstance(raw, dict):
+            raise ValueError("endpoint allowlist root must be an object")
+        entries = raw.get("endpoints", [])
+        if not isinstance(entries, list):
+            raise ValueError("endpoint allowlist entries must be an array")
+        if not all(isinstance(entry, dict) for entry in entries):
+            raise ValueError("endpoint allowlist entries must be objects")
+        for entry in entries:
             endpoint_id = str(entry.get("id") or "")
             base_url = str(entry.get("baseUrl") or "")
             if not endpoint_id or not base_url.startswith(("http://", "https://")):
