@@ -112,6 +112,13 @@ duplicate containers and port conflicts; do not run two installers against the
 same active stack.
 These are ODS capability gates, not a reduction of the ODS support matrix.
 
+For existing Docker Desktop/WSL installations with `PIXEL_INGRESS_RUNTIME_DIR`
+or `PIXEL_PREVIEW_RUNTIME_DIR` starting with `/mnt/host/wsl`, rerun the supported
+Linux installer with `--pixel` to regenerate the client-visible `/mnt/wsl` paths.
+The schema still accepts the old values when reading existing configuration;
+updating source files alone does not repair the old bind paths. Native Linux
+continues to use `/run/ods-pixel` and `/run/ods-pixel-preview`.
+
 ## Native macOS eligibility
 
 The Apple Silicon macOS installer enables native Pixel by default. It acquires
