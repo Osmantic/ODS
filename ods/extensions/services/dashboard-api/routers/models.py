@@ -119,6 +119,7 @@ _HF_AVATAR_CACHE_MAX_ENTRIES = 512
 _HF_AVATAR_CACHE: dict[tuple[str, str], tuple[float, str | None]] = {}
 _HF_AVATAR_CACHE_LOCK = threading.Lock()
 _IMPORTED_MODELS_LOCK = threading.Lock()
+_last_recorded_throughput_sample = None
 _MODEL_DISCOVERY_TIMEOUT_SECONDS = float(os.environ.get("DASHBOARD_MODEL_DISCOVERY_TIMEOUT", "15.0"))
 _MIN_MODEL_CONTEXT = 1024
 _MAX_MODEL_CONTEXT = 9007199254740991
@@ -1334,9 +1335,18 @@ async def import_huggingface_model(
     }
 
 
+def _newly_measured_tps(metrics: dict, loaded_model: str | None) -> float:
+    # Sticky Dashboard values are historical evidence, not a fresh performance
+    # sample for the model catalogue/current context on every polling request.
+    if metrics.get("throughput_state") != "measured" or metrics.get("throughput_model") != loaded_model:
+        return 0.0
+    return float(metrics.get("tokens_per_second") or 0)
+
+
 @router.get("/api/models", response_model=ModelLibraryResponse)
 async def list_models(api_key: str = Depends(verify_api_key)):
     """List model catalog entries with source-labelled performance metadata."""
+    global _last_recorded_throughput_sample
     gpu_info, loaded_model, agent_status = await asyncio.gather(
         asyncio.to_thread(get_gpu_info),
         _await_or_default(
@@ -1371,7 +1381,7 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         ),
     )
     context_size = context_size or _verified_activation_context(loaded_model)
-    live_tps = float(metrics.get("tokens_per_second") or 0)
+    live_tps = _newly_measured_tps(metrics, loaded_model)
     payload = await asyncio.to_thread(
         build_models_payload,
         gpu_info,
@@ -1388,7 +1398,11 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         _model_lifecycle_from_agent_status(agent_status),
     )
     loaded_entry = next((m for m in payload["models"] if m["status"] == "loaded"), None) or {}
-    if gpu_info and loaded_model and live_tps > 0 and loaded_entry.get("metadata", {}).get("source") != "runtime":
+    sample_key = (loaded_model, metrics.get("throughput_sampled_at"))
+    if (gpu_info and loaded_model and live_tps > 0
+            and sample_key[1] is not None and sample_key != _last_recorded_throughput_sample
+            and loaded_entry.get("metadata", {}).get("source") != "runtime"):
+        _last_recorded_throughput_sample = sample_key
         signature = build_sample_signature(
             loaded_entry or {"id": loaded_model, "gguf": _read_active_model()},
             gpu_info,
@@ -1897,7 +1911,7 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         build_models_payload,
         gpu_info,
         loaded_model,
-        float(metrics.get("tokens_per_second") or 0),
+        _newly_measured_tps(metrics, loaded_model),
         INSTALL_DIR,
         DATA_DIR,
         context_size,

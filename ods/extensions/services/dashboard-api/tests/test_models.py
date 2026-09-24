@@ -2143,11 +2143,23 @@ def test_api_models_falls_back_to_loaded_model_probe(test_client, monkeypatch, t
     monkeypatch.setattr(models_router, "get_gpu_info", lambda: _gpu())
     monkeypatch.setattr(models_router, "get_loaded_model", AsyncMock(return_value=None))
     monkeypatch.setattr(models_router, "_fetch_llama_loaded_model", AsyncMock(return_value="Qwen3.5-9B-Q4_K_M.gguf"))
-    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 33.0, "lifetime_tokens": 0}))
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 33.0, "lifetime_tokens": 0, "throughput_state": "measured", "throughput_sampled_at": 1000, "throughput_model": "Qwen3.5-9B-Q4_K_M.gguf"}))
     monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=32768))
     monkeypatch.setattr(models_router, "SERVICES", {"llama-server": {"host": "localhost", "port": 8080}})
 
+    monkeypatch.setattr(models_router, "_last_recorded_throughput_sample", None)
+    recorded = []
+    monkeypatch.setattr(models_router, "record_model_performance", lambda *args, **kwargs: recorded.append((args, kwargs)))
     resp = test_client.get("/api/models", headers=test_client.auth_headers)
+    again = test_client.get("/api/models", headers=test_client.auth_headers)
+    assert again.status_code == 200
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={
+        "tokens_per_second": 33.0, "throughput_state": "retained",
+        "throughput_model": "Qwen3.5-9B-Q4_K_M.gguf", "throughput_sampled_at": 1000,
+    }))
+    held = test_client.get("/api/models", headers=test_client.auth_headers)
+    assert held.status_code == 200
+    assert len(recorded) == 1
 
     assert resp.status_code == 200
     payload = resp.json()

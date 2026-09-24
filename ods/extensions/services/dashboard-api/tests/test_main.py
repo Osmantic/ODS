@@ -221,7 +221,8 @@ class TestPreflightDisk:
 class TestBuildApiStatus:
 
     @pytest.mark.asyncio
-    async def test_returns_full_structure(self, monkeypatch):
+    @pytest.mark.parametrize("tps", [25.5, 0.0, None], ids=["measured", "idle", "unavailable"])
+    async def test_returns_full_structure(self, monkeypatch, tps):
         from models import GPUInfo, BootstrapStatus, ModelInfo
 
         gpu = GPUInfo(
@@ -235,7 +236,8 @@ class TestBuildApiStatus:
         monkeypatch.setattr("main.get_bootstrap_status", lambda: BootstrapStatus(active=False))
         monkeypatch.setattr("main.get_loaded_model", AsyncMock(return_value="Test-32B"))
         monkeypatch.setattr("main.get_llama_metrics", AsyncMock(return_value={
-            "tokens_per_second": 25.5,
+            "tokens_per_second": tps,
+            "throughput_model": "Test-32B",
             "lifetime_tokens": 10000,
             "token_count_mode": "cumulative",
         }))
@@ -255,7 +257,8 @@ class TestBuildApiStatus:
         assert result["model"]["currentModel"] == "Test-32B"
         assert result["model"]["loadedModel"] == "Test-32B"
         assert result["model"]["configuredModel"] == "Test-32B"
-        assert result["inference"]["tokensPerSecond"] == 25.5
+        assert result["inference"]["tokensPerSecond"] == tps
+        assert result["model"]["tokensPerSecond"] == tps
         assert result["inference"]["tokenCountMode"] == "cumulative"
         assert result["inference"]["loadedModel"] == "Test-32B"
 
@@ -1107,9 +1110,17 @@ class TestApiStatusServiceSerialization:
 
 class TestApiStatusFallback:
 
-    def test_fallback_on_oserror(self, test_client, monkeypatch):
+    @pytest.mark.parametrize("prior", [None, 25.0], ids=["no-measurement", "held-measurement"])
+    def test_fallback_on_oserror(self, test_client, monkeypatch, prior):
         """Narrow exception class (OSError) falls through to the safe-fallback dict."""
         monkeypatch.setattr("main._build_api_status", AsyncMock(side_effect=OSError("network down")))
+        import helpers
+        monkeypatch.setattr(helpers, "_llama_metrics_sample", {"result": {
+            "tokens_per_second": prior, "lifetime_tokens": 100 if prior else None,
+            "throughput_state": "measured", "throughput_sampled_at": 123.0 if prior else None,
+            "throughput_model": "known-model" if prior else None,
+            "throughput_mode": "generation_interval", "token_count_mode": "cumulative",
+        }})
 
         resp = test_client.get("/api/status", headers=test_client.auth_headers)
         assert resp.status_code == 200
@@ -1117,6 +1128,13 @@ class TestApiStatusFallback:
         assert data["gpu"] is None
         assert data["tier"] == "Unknown"
         assert data["services"] == []
+        assert data["cpu"]["percent"] is None
+        assert data["ram"]["percent"] is None
+        assert data["ram"]["total_gb"] is None
+        assert data["inference"]["tokensPerSecond"] == prior
+        assert data["inference"]["throughputState"] == "unavailable"
+        assert data["inference"]["throughputModel"] == ("known-model" if prior else None)
+        assert data["inference"]["throughputSampledAt"] == (123.0 if prior else None)
 
     def test_runtime_error_propagates_as_500(self, test_client, monkeypatch):
         """Programming errors (RuntimeError) inside _build_api_status must

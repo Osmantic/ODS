@@ -1,6 +1,7 @@
 """Shared helper functions for service health checking, metrics, and system info."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -214,12 +215,17 @@ async def _check_host_systemd_health(service_id: str, config: dict) -> ServiceSt
 _TOKEN_FILE = Path(DATA_DIR) / "token_counter.json"
 _PERF_FILE = Path(DATA_DIR) / "model_performance.json"
 MAX_SINGLE_REQUEST_TOKENS_PER_SECOND = 10_000.0
-_prev_tokens = {"count": 0, "time": 0.0, "tps": 0.0}
+_prev_tokens = {}
+_llama_metrics_lock = None
+_llama_metrics_sample = {}
+_METRICS_SAMPLE_SECONDS = 1.0
+_metrics_clock = time.monotonic
+_metrics_wall_clock = time.time
 _token_counter_lock = threading.Lock()
 
 
-def _update_lifetime_tokens(server_counter: float) -> int:
-    """Accumulate tokens across server restarts using a persistent file."""
+def _update_lifetime_tokens(server_counter: float, counter_id: Optional[str] = None) -> int:
+    """Accumulate independent runtime/model counters without crossing baselines."""
     with _token_counter_lock:
         data = _read_json_file(_TOKEN_FILE, {})
         if not isinstance(data, dict):
@@ -227,6 +233,14 @@ def _update_lifetime_tokens(server_counter: float) -> int:
 
         current = _non_negative_number(server_counter)
         prev = _non_negative_number(data.get("last_server_counter"))
+        if counter_id is not None:
+            counters = data.get("server_counters")
+            if not isinstance(counters, dict):
+                # Bind a legacy single baseline once, without recounting it.
+                counters = {counter_id: prev}
+            prev = _non_negative_number(counters.get(counter_id))
+            counters[counter_id] = current
+            data["server_counters"] = counters
         lifetime = _non_negative_number(data.get("lifetime"))
         delta = current if current < prev else current - prev
 
@@ -411,7 +425,118 @@ def get_model_performance_samples() -> list[dict]:
 
 # --- LLM Metrics ---
 
+def _measurement_number(value):
+    """Keep missing/invalid observations distinct from a measured zero."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _saved_lifetime_tokens():
+    data = _read_json_file(_TOKEN_FILE, {})
+    value = _measurement_number(data.get("lifetime")) if isinstance(data, dict) else None
+    return int(value) if value is not None else None
+
+
+def get_cached_llama_metrics() -> dict:
+    """Last known measurement for status fallback; never claim fresh telemetry."""
+    result = dict(_llama_metrics_sample.get("result", {}))
+    result.update(throughput_state="unavailable", inference_active=None)
+    return result
+
+
 async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
+    """Share one measured sample across status/model consumers for one second.
+
+    Counter deltas describe generation intervals, not instantaneous token output.
+    Retain the last measured positive rate until another generation is observed,
+    with its original timestamp and explicit retained/unavailable provenance.
+    Counter updates may occur only on completion; request activity is separate.
+    Never compute a new interval across an outage/model change.
+    """
+    global _llama_metrics_lock
+    if _llama_metrics_lock is None:
+        _llama_metrics_lock = asyncio.Lock()
+    model_name = model_hint
+    if model_name is None:
+        model_name = await get_loaded_model() or ""
+    service = SERVICES.get("llama-server", {})
+    identity = (LLM_BACKEND, service.get("host"), service.get("port"),
+                str(os.environ.get("LLAMA_METRICS_PORT", service.get("port", ""))), model_name,
+                read_live_env_value("AMD_INFERENCE_LOCATION") if LLM_BACKEND == "lemonade" else "")
+    async with _llama_metrics_lock:
+        now = _metrics_clock()
+        previous_identity = _llama_metrics_sample.get("identity")
+        if not model_name:
+            # Discovery failure is not proof of a different model. Hold only a
+            # same-endpoint historical sample, with its actual model identity.
+            same_endpoint = (previous_identity is not None
+                             and previous_identity[:4] + previous_identity[5:] == identity[:4] + identity[5:])
+            previous = _llama_metrics_sample.get("measurement") if same_endpoint else None
+            _prev_tokens.clear()
+            if not same_endpoint:
+                _llama_metrics_sample.clear()
+            saved = _llama_metrics_sample.get("result", {}) if same_endpoint else {}
+            if LLM_BACKEND == "lemonade":
+                lifetime = saved.get("lifetime_tokens")
+                count_mode = saved.get("token_count_mode", "unavailable")
+            else:
+                lifetime = _saved_lifetime_tokens()
+                count_mode = "cumulative"
+            return {
+                "tokens_per_second": previous["rate"] if previous else None,
+                "lifetime_tokens": lifetime,
+                "token_count_mode": count_mode,
+                "throughput_mode": "latest_completion" if LLM_BACKEND == "lemonade" else "generation_interval",
+                "throughput_state": "unavailable",
+                "throughput_sampled_at": previous["at"] if previous else None,
+                "throughput_model": previous_identity[4] if previous else None,
+                "inference_active": None,
+            }
+        if previous_identity != identity:
+            _prev_tokens.clear()
+            _llama_metrics_sample.clear()
+        elif now - _llama_metrics_sample["time"] < _METRICS_SAMPLE_SECONDS:
+            return dict(_llama_metrics_sample["result"])
+        counter_id = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+        result = await _fetch_llama_metrics(model_hint=model_name, counter_id=counter_id)
+        available = result.pop("_available", False)
+        reset = result.pop("_counter_reset", False)
+        counters = result.pop("_counters", None)
+        previous_counters = _llama_metrics_sample.get("counters")
+        if counters is not None:
+            if previous_counters is not None:
+                reset = reset or any(old is not None and new is not None and new < old
+                                     for old, new in zip(previous_counters, counters))
+            _llama_metrics_sample["counters"] = counters
+        if reset:
+            _llama_metrics_sample.pop("measurement", None)
+        previous = _llama_metrics_sample.get("measurement")
+        completion_identity = result.pop("_completion_identity", None)
+        rate = result.get("tokens_per_second")
+        newly_measured = (available and rate is not None and rate > 0
+                          and (completion_identity is None or previous is None
+                               or completion_identity != previous.get("completion_identity")))
+        if newly_measured:
+            previous = {"rate": rate, "at": _metrics_wall_clock(),
+                        "completion_identity": completion_identity}
+            _llama_metrics_sample["measurement"] = previous
+        result["tokens_per_second"] = previous["rate"] if previous else None
+        result["throughput_sampled_at"] = previous["at"] if previous else None
+        result["throughput_state"] = ("unavailable" if not available or not previous
+                                       else "measured" if newly_measured else "retained")
+        result["throughput_mode"] = "latest_completion" if LLM_BACKEND == "lemonade" else "generation_interval"
+        result.setdefault("inference_active", None)
+        result["throughput_model"] = model_name or None
+        _llama_metrics_sample.update(identity=identity, time=_metrics_clock(), result=dict(result))
+        return result
+
+
+async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Optional[str] = None) -> dict:
     """Get inference metrics from llama-server Prometheus /metrics endpoint.
 
     Accepts an optional *model_hint* so callers that already resolved the
@@ -425,8 +550,8 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
             else:
                 if "llama-server" not in SERVICES:
                     return {
-                        "tokens_per_second": 0,
-                        "lifetime_tokens": 0,
+                        "tokens_per_second": None,
+                        "lifetime_tokens": None,
                         "token_count_mode": "unavailable",
                     }
                 host = SERVICES["llama-server"]["host"]
@@ -450,30 +575,26 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
                     raise ValueError(f"Lemonade stats endpoint is unavailable: {last_error}")
             if not isinstance(stats, dict):
                 raise ValueError("Lemonade stats response is unavailable")
-            try:
-                tokens_per_second = float(stats.get("tokens_per_second") or 0)
-            except (TypeError, ValueError):
-                tokens_per_second = 0.0
+            tokens_per_second = _measurement_number(stats.get("tokens_per_second"))
             if tokens_per_second and not is_plausible_single_request_tps(tokens_per_second):
-                logger.warning(
-                    "Ignoring implausible Lemonade single-request throughput: %s tok/s",
-                    tokens_per_second,
-                )
-                tokens_per_second = 0.0
-            output_tokens = int(_non_negative_number(stats.get("output_tokens")))
+                logger.warning("Ignoring implausible Lemonade single-request throughput")
+                tokens_per_second = None
+            output_tokens = _measurement_number(stats.get("output_tokens"))
             return {
-                "tokens_per_second": round(max(0.0, tokens_per_second), 1),
+                "tokens_per_second": round(tokens_per_second, 1) if tokens_per_second is not None else None,
                 # Lemonade /v1/stats documents only the most recent request.
                 # It has no cumulative counter or stable event sequence, so
                 # polling cannot truthfully construct a lifetime total.
-                "lifetime_tokens": output_tokens,
-                "token_count_mode": "latest_completion",
+                "lifetime_tokens": int(output_tokens) if output_tokens is not None else None,
+                "token_count_mode": "latest_completion" if output_tokens is not None else "unavailable",
+                "_available": tokens_per_second is not None,
+                "_completion_identity": hashlib.sha256(json.dumps({key: stats.get(key) for key in ("time_to_first_token", "tokens_per_second", "input_tokens", "output_tokens", "prompt_tokens", "decode_token_times")}, sort_keys=True).encode()).hexdigest(),
             }
 
         if "llama-server" not in SERVICES:
             return {
-                "tokens_per_second": 0,
-                "lifetime_tokens": _get_lifetime_tokens(),
+                "tokens_per_second": None,
+                "lifetime_tokens": _saved_lifetime_tokens(),
                 "token_count_mode": "cumulative",
             }
 
@@ -496,14 +617,19 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
             if len(parts) < 2:
                 continue
             metric_name = parts[0].split("{", 1)[0]
+            if metric_name.endswith("requests_processing"):
+                try:
+                    metrics["requests_processing"] = float(parts[1])
+                except ValueError:
+                    pass
             if metric_name.endswith("tokens_predicted_total"):
                 try:
-                    metrics["tokens_predicted_total"] = float(parts[-1])
+                    metrics["tokens_predicted_total"] = float(parts[1])
                 except ValueError:
                     pass
             if metric_name.endswith("tokens_predicted_seconds_total"):
                 try:
-                    metrics["tokens_predicted_seconds_total"] = float(parts[-1])
+                    metrics["tokens_predicted_seconds_total"] = float(parts[1])
                 except ValueError:
                     pass
 
@@ -514,46 +640,63 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
         if "tokens_predicted_total" not in metrics:
             raise ValueError("llama-server metrics response has no token counter")
 
-        now = time.time()
-        curr = _non_negative_number(metrics["tokens_predicted_total"])
-        gen_secs = _non_negative_number(metrics.get("tokens_predicted_seconds_total"))
-        if _prev_tokens["time"] > 0 and curr > _prev_tokens["count"]:
-            delta_secs = gen_secs - _prev_tokens.get("gen_secs", 0)
-            if delta_secs > 0:
-                _prev_tokens["tps"] = round((curr - _prev_tokens["count"]) / delta_secs, 1)
-            else:
-                _prev_tokens["tps"] = 0.0
-        else:
-            # The server is idle, has restarted, or reset its counters. A
-            # previous request's throughput is not live throughput.
-            _prev_tokens["tps"] = 0.0
-        _prev_tokens["count"] = curr
-        _prev_tokens["time"] = now
-        _prev_tokens["gen_secs"] = gen_secs
+        curr = _measurement_number(metrics["tokens_predicted_total"])
+        if curr is None:
+            raise ValueError("llama-server token counter is invalid")
+        gen_secs = _measurement_number(metrics.get("tokens_predicted_seconds_total"))
+        tps = None
+        reset = bool(_prev_tokens and (curr < _prev_tokens["count"] or
+                     (gen_secs is not None and _prev_tokens.get("gen_secs") is not None
+                      and gen_secs < _prev_tokens["gen_secs"])))
+        if _prev_tokens and gen_secs is not None:
+            delta_tokens = curr - _prev_tokens["count"]
+            previous_secs = _prev_tokens.get("gen_secs")
+            if previous_secs is not None:
+                delta_secs = gen_secs - previous_secs
+                if delta_tokens == 0 and delta_secs == 0:
+                    tps = 0.0  # two successful unchanged observations
+                elif delta_tokens > 0 and delta_secs > 0:
+                    tps = round(delta_tokens / delta_secs, 1)
+                # First samples, resets, or incomplete timing are unknown rates.
+        _prev_tokens.update(count=curr, gen_secs=gen_secs)
 
-        lifetime = _update_lifetime_tokens(curr)
+        lifetime = _update_lifetime_tokens(curr, counter_id=counter_id)
         return {
-            "tokens_per_second": _prev_tokens["tps"],
+            "tokens_per_second": tps,
             "lifetime_tokens": lifetime,
             "token_count_mode": "cumulative",
+            "_available": gen_secs is not None,
+            "_counter_reset": reset,
+            "_counters": (curr, gen_secs),
+            "inference_active": (metrics["requests_processing"] > 0
+                                 if _measurement_number(metrics.get("requests_processing")) is not None else None),
         }
     except (AgentClientError, httpx.HTTPError, httpx.TimeoutException, OSError, ValueError, KeyError) as e:
+        _prev_tokens.clear()  # never measure a rate across an unavailable gap
         logger.warning("get_llama_metrics failed: %s: %s", type(e).__name__, e)
         if LLM_BACKEND == "lemonade":
             return {
-                "tokens_per_second": 0,
-                "lifetime_tokens": 0,
+                "tokens_per_second": None,
+                "lifetime_tokens": None,
                 "token_count_mode": "unavailable",
             }
         return {
-            "tokens_per_second": 0,
-            "lifetime_tokens": _get_lifetime_tokens(),
+            "tokens_per_second": None,
+            "lifetime_tokens": _saved_lifetime_tokens(),
             "token_count_mode": "cumulative",
         }
 
 
 async def get_loaded_model() -> Optional[str]:
     """Query llama-server for actually loaded model name."""
+    if LLM_BACKEND == "lemonade" and read_live_env_value("AMD_INFERENCE_LOCATION").lower() == "host":
+        try:
+            status = await request_agent_json("GET", "/v1/llm/status", timeout=6)
+            health = status.get("health") or {}
+            loaded = health.get("model_loaded")
+            return loaded.strip() if health.get("status") == "ok" and isinstance(loaded, str) and loaded.strip() else None
+        except (AgentClientError, OSError, ValueError, KeyError):
+            return None
     if "llama-server" not in SERVICES:
         return None
     try:

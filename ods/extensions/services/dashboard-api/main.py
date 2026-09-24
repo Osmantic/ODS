@@ -51,7 +51,7 @@ from helpers import (
     get_all_services, get_cached_services, set_services_cache,
     get_disk_usage, dir_size_gb, get_model_info, get_bootstrap_status,
     get_uptime, get_cpu_metrics, get_ram_metrics,
-    get_llama_metrics, get_loaded_model, get_llama_context_size,
+    get_llama_metrics, get_cached_llama_metrics, get_loaded_model, get_llama_context_size,
     _get_httpx_client, shutdown_service_health_client, shutdown_llm_client,
 )
 from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
@@ -1448,16 +1448,23 @@ async def api_status(api_key: str = Depends(verify_api_key)):
         return await _build_api_status()
     except (asyncio.TimeoutError, OSError):
         logger.exception("/api/status handler failed — returning safe fallback")
+        last_inference = get_cached_llama_metrics()
         return {
             "gpu": None, "services": [], "model": None,
             "bootstrap": None, "uptime": 0,
             "version": app.version, "tier": "Unknown",
-            "cpu": {"percent": 0, "temp_c": None},
-            "ram": {"used_gb": 0, "total_gb": 0, "percent": 0},
+            "cpu": {"percent": None, "temp_c": None, "scope": "unknown", "source": "unavailable"},
+            "ram": {"used_gb": None, "total_gb": None, "percent": None, "scope": "unknown", "source": "unavailable"},
             "disk": {"used_gb": 0, "total_gb": 0, "percent": 0},
             "system": {"uptime": 0, "hostname": os.environ.get("HOSTNAME", "ods")},
-            "inference": {"tokensPerSecond": 0, "lifetimeTokens": 0,
-                          "tokenCountMode": "unavailable",
+            "inference": {"tokensPerSecond": last_inference.get("tokens_per_second"),
+                          "lifetimeTokens": last_inference.get("lifetime_tokens"),
+                          "tokenCountMode": last_inference.get("token_count_mode", "unavailable"),
+                          "throughputMode": last_inference.get("throughput_mode", "unavailable"),
+                          "throughputState": "unavailable",
+                          "throughputSampledAt": last_inference.get("throughput_sampled_at"),
+                          "throughputModel": last_inference.get("throughput_model"),
+                          "inferenceActive": None,
                           "loadedModel": None, "contextSize": None},
             "manifest_errors": MANIFEST_ERRORS,
         }
@@ -1535,7 +1542,8 @@ async def _build_api_status() -> dict:
             "currentModel": runtime_model_name,
             "configuredModel": model_info.name,
             "loadedModel": runtime_model_name,
-            "tokensPerSecond": llama_metrics_data.get("tokens_per_second") or None,
+            "tokensPerSecond": (llama_metrics_data.get("tokens_per_second")
+                                if llama_metrics_data.get("throughput_model") == runtime_model_name else None),
             "contextLength": context_size or model_info.context_length,
         }
 
@@ -1565,9 +1573,14 @@ async def _build_api_status() -> dict:
         "disk": {"used_gb": disk_info.used_gb, "total_gb": disk_info.total_gb, "percent": disk_info.percent},
         "system": {"uptime": uptime, "hostname": os.environ.get("HOSTNAME", "ods")},
         "inference": {
-            "tokensPerSecond": llama_metrics_data.get("tokens_per_second", 0),
-            "lifetimeTokens": llama_metrics_data.get("lifetime_tokens", 0),
+            "tokensPerSecond": llama_metrics_data.get("tokens_per_second"),
+            "lifetimeTokens": llama_metrics_data.get("lifetime_tokens"),
             "tokenCountMode": llama_metrics_data.get("token_count_mode", "unavailable"),
+            "throughputMode": llama_metrics_data.get("throughput_mode", "unavailable"),
+            "throughputState": llama_metrics_data.get("throughput_state", "unavailable"),
+            "throughputSampledAt": llama_metrics_data.get("throughput_sampled_at"),
+            "throughputModel": llama_metrics_data.get("throughput_model"),
+            "inferenceActive": llama_metrics_data.get("inference_active"),
             "loadedModel": loaded_model_name,
             "contextSize": context_size or (model_data["contextLength"] if model_data else None),
         },

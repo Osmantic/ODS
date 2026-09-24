@@ -28,6 +28,15 @@ from helpers import (
 from models import BootstrapStatus, ServiceStatus, DiskUsage
 
 
+@pytest.fixture(autouse=True)
+def reset_metrics_sampler(monkeypatch):
+    import helpers
+    monkeypatch.setattr(helpers, "_prev_tokens", {})
+    monkeypatch.setattr(helpers, "_llama_metrics_sample", {})
+    monkeypatch.setattr(helpers, "_llama_metrics_lock", None)
+    monkeypatch.setattr(helpers, "_metrics_wall_clock", lambda: 1000.0)
+
+
 # --- get_model_info ---
 
 
@@ -726,10 +735,10 @@ class TestGetLlamaMetrics:
         result = await get_llama_metrics(model_hint="test-model")
         assert "tokens_per_second" in result
         assert "lifetime_tokens" in result
-        assert isinstance(result["tokens_per_second"], (int, float))
+        assert result["tokens_per_second"] is None  # first observation has no interval
 
     @pytest.mark.asyncio
-    async def test_returns_zero_on_failure(self, monkeypatch):
+    async def test_returns_unknown_on_failure(self, monkeypatch):
         fake_services = {
             "llama-server": {"host": "localhost", "port": 8080, "health": "/health", "name": "llama-server"},
         }
@@ -743,7 +752,7 @@ class TestGetLlamaMetrics:
         monkeypatch.setattr("helpers.httpx.AsyncClient", lambda **kw: mock_client)
 
         result = await get_llama_metrics(model_hint="test-model")
-        assert result["tokens_per_second"] == 0
+        assert result["tokens_per_second"] is None
 
     @pytest.mark.asyncio
     async def test_invalid_success_payload_does_not_reset_persistent_counter(
@@ -771,8 +780,13 @@ class TestGetLlamaMetrics:
         result = await get_llama_metrics(model_hint="test-model")
 
         assert result == {
-            "tokens_per_second": 0,
+            "tokens_per_second": None,
             "lifetime_tokens": 100,
+            "throughput_mode": "generation_interval",
+            "throughput_model": "test-model",
+            "throughput_state": "unavailable",
+            "throughput_sampled_at": None,
+            "inference_active": None,
             "token_count_mode": "cumulative",
         }
         assert helpers._get_lifetime_tokens() == 100
@@ -782,7 +796,7 @@ class TestGetLlamaMetrics:
     async def test_returns_fallback_when_llama_server_not_in_services(self, monkeypatch):
         monkeypatch.setattr("helpers.SERVICES", {})
         result = await get_llama_metrics(model_hint="test-model")
-        assert result["tokens_per_second"] == 0
+        assert result["tokens_per_second"] is None
         assert result["token_count_mode"] == "cumulative"
 
 
@@ -1330,7 +1344,7 @@ class TestGetLlamaMetricsTPS:
 
         monkeypatch.setattr("helpers.httpx.AsyncClient", lambda **kw: mock_client)
 
-        result = await get_llama_metrics(model_hint="test")
+        result = await helpers._fetch_llama_metrics(model_hint="test")
         # 100 tokens / 5 seconds = 20.0 tps
         assert result["tokens_per_second"] == 20.0
 
@@ -1369,12 +1383,16 @@ class TestGetLlamaMetricsTPS:
         mock_client.get = AsyncMock(return_value=mock_response)
         monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=mock_client))
 
-        result = await get_llama_metrics(model_hint="test")
+        result = await helpers._fetch_llama_metrics(model_hint="test")
 
-        assert result["tokens_per_second"] == 0.0
+        assert result["tokens_per_second"] == (0.0 if current_count == previous_count else None)
 
 
 class TestLemonadeMetrics:
+    @pytest.fixture(autouse=True)
+    def loaded_model(self, monkeypatch):
+        monkeypatch.setattr("helpers.get_loaded_model", AsyncMock(return_value="lemonade-model"))
+
     @pytest.mark.asyncio
     async def test_host_stats_report_real_tps_and_latest_completion_tokens(
         self, monkeypatch, tmp_path,
@@ -1406,6 +1424,11 @@ class TestLemonadeMetrics:
             "tokens_per_second": 188.5,
             "lifetime_tokens": 7,
             "token_count_mode": "latest_completion",
+            "throughput_mode": "latest_completion",
+            "throughput_model": "lemonade-model",
+            "throughput_state": "measured",
+            "throughput_sampled_at": 1000.0,
+            "inference_active": None,
         }
         assert not token_file.exists()
 
@@ -1431,9 +1454,14 @@ class TestLemonadeMetrics:
         result = await helpers.get_llama_metrics()
 
         assert result == {
-            "tokens_per_second": 0.0,
+            "tokens_per_second": None,
             "lifetime_tokens": 36,
             "token_count_mode": "latest_completion",
+            "throughput_mode": "latest_completion",
+            "throughput_model": "lemonade-model",
+            "throughput_state": "unavailable",
+            "throughput_sampled_at": None,
+            "inference_active": None,
         }
 
     @pytest.mark.asyncio
@@ -1455,9 +1483,14 @@ class TestLemonadeMetrics:
         result = await helpers.get_llama_metrics()
 
         assert result == {
-            "tokens_per_second": 0,
-            "lifetime_tokens": 0,
+            "tokens_per_second": None,
+            "lifetime_tokens": None,
             "token_count_mode": "unavailable",
+            "throughput_mode": "latest_completion",
+            "throughput_model": "lemonade-model",
+            "throughput_state": "unavailable",
+            "throughput_sampled_at": None,
+            "inference_active": None,
         }
 
     @pytest.mark.asyncio
@@ -1494,6 +1527,11 @@ class TestLemonadeMetrics:
             "tokens_per_second": 33.3,
             "lifetime_tokens": 5,
             "token_count_mode": "latest_completion",
+            "throughput_mode": "latest_completion",
+            "throughput_model": "lemonade-model",
+            "throughput_state": "measured",
+            "throughput_sampled_at": 1000.0,
+            "inference_active": None,
         }
         assert [call.args[0] for call in client.get.await_args_list] == [
             "http://llama-server:8080/api/v1/stats",
