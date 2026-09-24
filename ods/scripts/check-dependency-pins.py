@@ -189,7 +189,14 @@ def _image_tag(value: str) -> str | None:
 
 
 def _has_digest(value: str) -> bool:
-    return "@sha256:" in value
+    image, separator, digest = value.partition("@")
+    return bool(image and separator and re.fullmatch(r"sha256:[a-f0-9]{64}", digest))
+
+
+def _invalid_sha256_digest(ref: ImageRef) -> str | None:
+    if "@sha256:" in ref.value and not _has_digest(ref.value):
+        return f"{ref.path}:{ref.line}: invalid SHA-256 image digest (expected 64 lowercase hex characters): {ref.value}"
+    return None
 
 
 def _has_tag_or_digest(value: str) -> bool:
@@ -304,6 +311,10 @@ def validate_refs(refs: Iterable[ImageRef], lock: dict[str, object], root: Path 
                 errors.append(f"{location}: variable image ref does not resolve to a default: {ref.raw}")
                 continue
 
+        digest_error = _invalid_sha256_digest(ref)
+        if digest_error:
+            errors.append(digest_error)
+
         if (ref.path, ref.value) in local_allow:
             continue
 
@@ -330,6 +341,9 @@ def validate_refs(refs: Iterable[ImageRef], lock: dict[str, object], root: Path 
 def validate_ephemeral_sha_tags(refs: Iterable[ImageRef]) -> list[str]:
     errors: list[str] = []
     for ref in refs:
+        digest_error = _invalid_sha256_digest(ref)
+        if digest_error:
+            errors.append(digest_error)
         if _is_ephemeral_sha_tag(ref.value) and not _has_digest(ref.value):
             errors.append(_ephemeral_sha_tag_error(ref))
     return errors
