@@ -40,6 +40,22 @@ def load_workflow_catalog() -> dict:
         categories = data.get("categories", {})
         if not isinstance(workflows, list):
             workflows = []
+        else:
+            # Endpoints index entries with wf["id"]/wf["name"] and iterate
+            # wf["dependencies"] as strings; drop records that can't honor that.
+            workflows = [
+                wf for wf in workflows
+                if isinstance(wf, dict)
+                and isinstance(wf.get("id"), str)
+                and isinstance(wf.get("name"), str)
+            ]
+            for wf in workflows:
+                deps = wf.get("dependencies")
+                wf["dependencies"] = (
+                    [d for d in deps if isinstance(d, str)]
+                    if isinstance(deps, list)
+                    else []
+                )
         if not isinstance(categories, dict):
             categories = {}
         return {"workflows": workflows, "categories": categories}
@@ -158,12 +174,16 @@ async def api_workflows(api_key: str = Depends(verify_api_key)):
 
         executions = 0
         if installed:
-            executions = installed.get("statistics", {}).get("executions", {}).get("total", 0)
+            statistics = installed.get("statistics")
+            if isinstance(statistics, dict):
+                exec_stats = statistics.get("executions")
+                if isinstance(exec_stats, dict) and isinstance(exec_stats.get("total"), (int, float)):
+                    executions = exec_stats["total"]
 
         workflows.append({
             "id": wf["id"],
             "name": wf["name"],
-            "description": wf["description"],
+            "description": wf.get("description", ""),
             "icon": wf.get("icon", "Workflow"),
             "category": wf.get("category", "general"),
             "status": "active" if installed and installed.get("active") else ("installed" if installed else "available"),
@@ -204,7 +224,11 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
     if missing_deps:
         raise HTTPException(status_code=400, detail=f"Missing dependencies: {', '.join(missing_deps)}. Enable these services first.")
 
-    workflow_file = WORKFLOW_DIR / wf_info["file"]
+    file_name = wf_info.get("file")
+    if not isinstance(file_name, str) or not file_name:
+        raise HTTPException(status_code=404, detail=f"Workflow has no deployable file: {workflow_id}")
+
+    workflow_file = WORKFLOW_DIR / file_name
     try:
         workflow_file = workflow_file.resolve()
         if not workflow_file.is_relative_to(WORKFLOW_DIR.resolve()):
@@ -215,7 +239,7 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
         raise HTTPException(status_code=400, detail="Invalid workflow file path")
 
     if not workflow_file.exists():
-        raise HTTPException(status_code=404, detail=f"Workflow file not found: {wf_info['file']}")
+        raise HTTPException(status_code=404, detail=f"Workflow file not found: {file_name}")
 
     try:
         with open(workflow_file) as f:
@@ -322,7 +346,10 @@ async def workflow_executions(workflow_id: str, limit: int = 20, api_key: str = 
             async with session.get(f"{N8N_URL}/api/v1/executions", headers=headers, params={"workflowId": n8n_wf["id"], "limit": limit}) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return {"workflowId": workflow_id, "n8nId": n8n_wf["id"], "executions": data.get("data", [])}
+                    executions = data.get("data", []) if isinstance(data, dict) else []
+                    if not isinstance(executions, list):
+                        executions = []
+                    return {"workflowId": workflow_id, "n8nId": n8n_wf["id"], "executions": executions}
                 else:
                     return {"executions": [], "error": "Failed to fetch executions"}
     except (aiohttp.ClientError, OSError, json.JSONDecodeError):
