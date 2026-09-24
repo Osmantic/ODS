@@ -97,10 +97,10 @@ class ContainerLlamaAdapter:
         self._lemonade_model_id = lemonade_model_id
         supplied_capabilities = capabilities or {}
         self._capabilities = {
-            "chat": bool(supplied_capabilities.get("chat", True)),
-            "tools": bool(supplied_capabilities.get("tools", False)),
-            "vision": bool(supplied_capabilities.get("vision", False)),
-            "agentViable": bool(supplied_capabilities.get("agentViable", False)),
+            "chat": supplied_capabilities.get("chat", True) is True,
+            "tools": supplied_capabilities.get("tools") is True,
+            "vision": supplied_capabilities.get("vision") is True,
+            "agentViable": supplied_capabilities.get("agentViable") is True,
         }
         self._unload = unload
         self._delete = delete
@@ -241,10 +241,10 @@ class LemonadeAdapter:
         self._lemonade_model_id = lemonade_model_id
         supplied_capabilities = capabilities or {}
         self._capabilities = {
-            "chat": bool(supplied_capabilities.get("chat", True)),
-            "tools": bool(supplied_capabilities.get("tools", False)),
-            "vision": bool(supplied_capabilities.get("vision", False)),
-            "agentViable": bool(supplied_capabilities.get("agentViable", False)),
+            "chat": supplied_capabilities.get("chat", True) is True,
+            "tools": supplied_capabilities.get("tools") is True,
+            "vision": supplied_capabilities.get("vision") is True,
+            "agentViable": supplied_capabilities.get("agentViable") is True,
         }
         self._unload = unload
         self._delete = delete

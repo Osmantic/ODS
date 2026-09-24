@@ -49,6 +49,30 @@ class TestStateModule:
         schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
         jsonschema.validate(read, schema)
 
+    def test_recorded_capabilities_require_json_booleans(self, tmp_path):
+        doc = sb.record_verified_route(
+            tmp_path / "model-state.json",
+            catalog_id="model",
+            runtime_model_id="Model.gguf",
+            backend_kind="llama-server",
+            endpoint_id="llama-server-default",
+            context_length=32768,
+            capabilities={
+                "chat": "false",
+                "tools": "true",
+                "vision": 1,
+                "agentViable": [True],
+            },
+            proof_identity="Model.gguf",
+        )
+
+        assert doc["active"]["capabilities"] == {
+            "chat": False,
+            "tools": False,
+            "vision": False,
+            "agentViable": False,
+        }
+
     def test_state_file_is_readable_by_model_router_user(self, tmp_path):
         path = tmp_path / "model-state.json"
         _record(path)

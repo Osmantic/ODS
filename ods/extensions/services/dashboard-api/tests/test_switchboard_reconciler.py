@@ -217,6 +217,30 @@ class TestContainerLlamaAdapter:
         assert run["ok"] is False and run["phase"] == "stage"
         assert "compose down" in run["detail"]
 
+    def test_capabilities_require_json_booleans(self):
+        adapter = ad.ContainerLlamaAdapter(
+            restart=lambda _env: None,
+            wait_ready=lambda *args, **kwargs: _readiness_proof("M.gguf", 4096),
+            expected_gguf="M.gguf",
+            context_length=4096,
+            capabilities={
+                "chat": "false",
+                "tools": "true",
+                "vision": 1,
+                "agentViable": [True],
+            },
+        )
+
+        run = rc.run_runtime_activation(adapter, {})
+
+        assert run["ok"] is True
+        assert run["capabilities"] == {
+            "chat": False,
+            "tools": False,
+            "vision": False,
+            "agentViable": False,
+        }
+
     def test_not_ready_is_identity_failure(self):
         adapter = ad.ContainerLlamaAdapter(
             restart=lambda _env: None,
@@ -311,6 +335,21 @@ class TestLemonadeAdapter:
         )
         run = rc.run_runtime_activation(adapter, {})
         assert run["ok"] is False and run["phase"] == "stage"
+
+    def test_capabilities_require_json_booleans(self):
+        adapter = ad.LemonadeAdapter(
+            wait_ready=lambda *args, **kwargs: _readiness_proof("extra.Q.gguf", 4096),
+            expected_gguf="Q.gguf",
+            context_length=4096,
+            lemonade_model_id="extra.Q.gguf",
+            capabilities={"chat": "false", "tools": 1},
+        )
+
+        run = rc.run_runtime_activation(adapter, {})
+
+        assert run["ok"] is True
+        assert run["capabilities"]["chat"] is False
+        assert run["capabilities"]["tools"] is False
 
     def test_not_ready_is_identity_failure(self):
         adapter = ad.LemonadeAdapter(
