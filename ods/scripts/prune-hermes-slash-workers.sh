@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: prune-hermes-slash-workers.sh [--force] [--dry-run] [--max-count N] [--max-age-seconds N] [--container NAME]
+Usage: prune-hermes-slash-workers.sh [--force] [--dry-run] [--json] [--max-count N] [--max-age-seconds N] [--container NAME]
 
 Finds Hermes tui_gateway.slash_worker children inside the Hermes container and
 prunes only workers that exceed the age/count policy. Dry-run is the default.
@@ -19,6 +19,7 @@ MAX_COUNT="${HERMES_SLASH_WORKER_MAX_COUNT:-8}"
 MAX_AGE_SECONDS="${HERMES_SLASH_WORKER_MAX_AGE_SECONDS:-3600}"
 CONTAINER="${HERMES_CONTAINER:-ods-hermes}"
 FORCE=0
+JSON_OUTPUT=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -28,6 +29,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dry-run)
             FORCE=0
+            shift
+            ;;
+        --json)
+            JSON_OUTPUT=1
             shift
             ;;
         --max-count)
@@ -62,8 +67,8 @@ if [[ ! "$MAX_AGE_SECONDS" =~ ^[0-9]+$ ]]; then
     echo "[FAIL] --max-age-seconds must be a non-negative integer" >&2
     exit 1
 fi
-if [[ -z "$CONTAINER" ]]; then
-    echo "[FAIL] --container must not be empty" >&2
+if [[ ! "$CONTAINER" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    echo "[FAIL] --container must be a valid Docker container name" >&2
     exit 1
 fi
 
@@ -142,11 +147,30 @@ CANDIDATES_FILE="$(mktemp)"
 OVERAGE_FILE="$(mktemp)"
 trap 'rm -f "$WORKERS_FILE" "$CANDIDATES_FILE" "$OVERAGE_FILE"' EXIT
 
+emit_json() {
+    local outcome="$1"
+    local candidates=""
+    local separator=""
+    while IFS=$'\t' read -r pid age _command; do
+        [[ -n "$pid" ]] || continue
+        candidates+="${separator}{\"pid\":${pid},\"age_seconds\":${age}}"
+        separator=","
+    done < "$CANDIDATES_FILE"
+    printf '{"outcome":"%s","dry_run":%s,"worker_count":%s,"candidate_count":%s,"policy":{"max_count":%s,"max_age_seconds":%s},"candidates":[%s]}\n' \
+        "$outcome" "$([[ "$FORCE" -eq 1 ]] && echo false || echo true)" \
+        "${WORKER_COUNT:-0}" "${CANDIDATE_COUNT:-0}" "$MAX_COUNT" "$MAX_AGE_SECONDS" "$candidates"
+}
+
 collect_workers > "$WORKERS_FILE"
 
 WORKER_COUNT="$(wc -l < "$WORKERS_FILE" | tr -d ' ')"
 if [[ "$WORKER_COUNT" -eq 0 ]]; then
-    echo "[PASS] no Hermes slash workers found"
+    if [[ "$JSON_OUTPUT" -eq 1 ]]; then
+        CANDIDATE_COUNT=0
+        emit_json "no-workers"
+    else
+        echo "[PASS] no Hermes slash workers found"
+    fi
     exit 0
 fi
 
@@ -166,26 +190,44 @@ fi
 sort -t "$(printf '\t')" -k1,1n -u "$CANDIDATES_FILE" -o "$CANDIDATES_FILE"
 CANDIDATE_COUNT="$(wc -l < "$CANDIDATES_FILE" | tr -d ' ')"
 
-echo "[INFO] found $WORKER_COUNT Hermes slash_worker process(es); policy max-count=$MAX_COUNT max-age=${MAX_AGE_SECONDS}s"
+[[ "$JSON_OUTPUT" -eq 1 ]] || echo "[INFO] found $WORKER_COUNT Hermes slash_worker process(es); policy max-count=$MAX_COUNT max-age=${MAX_AGE_SECONDS}s"
 if [[ "$CANDIDATE_COUNT" -eq 0 ]]; then
-    echo "[PASS] no slash workers exceed the prune policy"
+    if [[ "$JSON_OUTPUT" -eq 1 ]]; then
+        emit_json "within-policy"
+    else
+        echo "[PASS] no slash workers exceed the prune policy"
+    fi
     exit 0
 fi
 
-echo "[INFO] $CANDIDATE_COUNT slash worker(s) selected for pruning:"
-awk -F '\t' '{printf "  pid=%s age=%ss %s\n", $1, $2, $3}' "$CANDIDATES_FILE"
+if [[ "$JSON_OUTPUT" -ne 1 ]]; then
+    echo "[INFO] $CANDIDATE_COUNT slash worker(s) selected for pruning:"
+    awk -F '\t' '{printf "  pid=%s age=%ss %s\n", $1, $2, $3}' "$CANDIDATES_FILE"
+fi
 
 if [[ "$FORCE" -ne 1 ]]; then
-    echo "[DRY-RUN] rerun with --force to kill selected workers"
+    if [[ "$JSON_OUTPUT" -eq 1 ]]; then
+        emit_json "candidates-selected"
+    else
+        echo "[DRY-RUN] rerun with --force to kill selected workers"
+    fi
     exit 0
 fi
 
 if [[ -n "${ODS_HERMES_SLASH_WORKER_PS_FIXTURE:-}" ]]; then
-    echo "[DRY-RUN] fixture mode is read-only; not killing processes"
+    if [[ "$JSON_OUTPUT" -eq 1 ]]; then
+        emit_json "fixture-read-only"
+    else
+        echo "[DRY-RUN] fixture mode is read-only; not killing processes"
+    fi
     exit 0
 fi
 
 awk -F '\t' '{print $1}' "$CANDIDATES_FILE" \
     | docker exec -i "$CONTAINER" sh -c 'while read -r pid; do kill "$pid" 2>/dev/null || true; done'
 
-echo "[PASS] requested termination for $CANDIDATE_COUNT Hermes slash_worker process(es)"
+if [[ "$JSON_OUTPUT" -eq 1 ]]; then
+    emit_json "termination-requested"
+else
+    echo "[PASS] requested termination for $CANDIDATE_COUNT Hermes slash_worker process(es)"
+fi

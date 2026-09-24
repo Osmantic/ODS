@@ -227,6 +227,36 @@ else
     pass "unreadable process table: never claims that no workers exist"
 fi
 
+# 8. JSON mode exposes the selected workers and policy at the public boundary.
+OUT="$WORKDIR/out8.json"
+ODS_HERMES_SLASH_WORKER_PS_FIXTURE="$WORKDIR/procps.txt" \
+    bash "$PRUNE" --json --max-age-seconds 3600 --max-count 99 > "$OUT" 2>&1
+JSON_SUMMARY="$(python3 - "$OUT" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    report = json.load(handle)
+print(
+    report["outcome"],
+    report["dry_run"],
+    report["worker_count"],
+    report["candidate_count"],
+    report["policy"]["max_count"],
+    report["policy"]["max_age_seconds"],
+    ",".join(str(item["pid"]) for item in report["candidates"]),
+)
+PY
+)"
+check_eq "json: reports policy and selected workers" \
+    "candidates-selected True 3 2 99 3600 101,103" "$JSON_SUMMARY"
+
+OUT="$WORKDIR/out9.json"
+ODS_HERMES_SLASH_WORKER_PS_FIXTURE="$WORKDIR/procps.txt" \
+    bash "$PRUNE" --json --force --max-age-seconds 3600 --max-count 99 > "$OUT" 2>&1
+JSON_OUTCOME="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["outcome"])' "$OUT")"
+check_eq "json: fixture force remains read-only" "fixture-read-only" "$JSON_OUTCOME"
+
 # ── Summary ───────────────────────────────────────────────────────────────
 
 echo ""
