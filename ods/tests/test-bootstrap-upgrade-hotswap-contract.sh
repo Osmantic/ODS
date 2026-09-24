@@ -107,7 +107,21 @@ docker() {
     hermes_docker_args=("$@")
     local arg_count=${#hermes_docker_args[@]}
     local sed_arg_count=$((arg_count - 4))
-    command sed "${hermes_docker_args[@]:3:$sed_arg_count}" "$hermes_config"
+    local -a sed_args=("${hermes_docker_args[@]:3:$sed_arg_count}")
+    # The container runs GNU/busybox sed, where `-i` takes no operand. The
+    # host replay runs whatever sed the developer has — BSD sed (macOS)
+    # consumes the next word as the `-i` backup suffix, eating the first
+    # `-e` and then treating the second `-e` as a filename. Give BSD hosts
+    # the explicit empty suffix so the replayed argv means the same thing.
+    if ! sed --version >/dev/null 2>&1; then
+        local -a translated=() _a
+        for _a in "${sed_args[@]}"; do
+            translated+=("$_a")
+            [[ "$_a" == "-i" ]] && translated+=("")
+        done
+        sed_args=("${translated[@]}")
+    fi
+    command sed "${sed_args[@]}" "$hermes_config"
 }
 DOCKER_CMD=docker
 hermes_malicious_model="model&branch|tag\\path\"quoted' ; touch ${hermes_patch_marker} ; #"
