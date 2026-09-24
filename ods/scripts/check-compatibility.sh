@@ -5,21 +5,53 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST_FILE="${ROOT_DIR}/manifest.json"
+JSON_OUTPUT=false
+[[ "${1:-}" == "--json" ]] && JSON_OUTPUT=true
+CHECKS_JSON='[]'
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-fail() { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
-pass() { echo -e "${GREEN}[PASS]${NC} $1"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+record_check() {
+  local status="$1" name="$2"
+  command -v jq >/dev/null 2>&1 || return 0
+  CHECKS_JSON=$(jq -c --arg status "$status" --arg name "$name" \
+    '. + [{name: $name, status: $status}]' <<< "$CHECKS_JSON")
+}
+
+emit_json() {
+  local ok="$1"
+  jq -cn \
+    --argjson ok "$ok" \
+    --argjson checks "$CHECKS_JSON" \
+    --arg manifest_version "${MANIFEST_VERSION:-}" \
+    --arg release_version "${RELEASE_VERSION:-}" \
+    '{ok: $ok, manifest_version: $manifest_version, release_version: $release_version, checks: $checks}'
+}
+
+fail() {
+  record_check "fail" "$1"
+  if $JSON_OUTPUT; then emit_json false; else echo -e "${RED}[FAIL]${NC} $1"; fi
+  exit 1
+}
+pass() {
+  record_check "pass" "$1"
+  $JSON_OUTPUT || echo -e "${GREEN}[PASS]${NC} $1"
+}
+warn() {
+  record_check "warn" "$1"
+  $JSON_OUTPUT || echo -e "${YELLOW}[WARN]${NC} $1"
+}
 
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 test -f "$MANIFEST_FILE" || fail "manifest.json not found"
 
 jq -e '.manifestVersion and .release.version and .compatibility and .contracts' "$MANIFEST_FILE" >/dev/null \
   || fail "manifest.json missing required top-level fields"
+MANIFEST_VERSION="$(jq -r '.manifestVersion' "$MANIFEST_FILE")"
+RELEASE_VERSION="$(jq -r '.release.version' "$MANIFEST_FILE")"
 pass "manifest structure"
 
 # Compose contract files
@@ -61,3 +93,6 @@ if jq -e '.compatibility.os.macos.supported == false' "$MANIFEST_FILE" >/dev/nul
     || warn "manifest says macOS unsupported/preview but docs may be out of sync"
 fi
 pass "compatibility check complete"
+if $JSON_OUTPUT; then
+  emit_json true
+fi
