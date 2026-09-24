@@ -83,7 +83,7 @@ Use the [Portal installation steps for Ubuntu/WSL2](ods/docs/WINDOWS-QUICKSTART.
 This installs the core Portal agent through the Linux installer with `--pixel`.
 Docker Desktop's WSL2 backend alone does not provision the agent.
 
-**Windows PowerShell — alternative native stack**
+**Windows PowerShell** — alternative native stack
 
 The native path below does not install Portal. Choose it explicitly if you want
 the native Windows stack with optional Hermes instead of the core Portal agent.
