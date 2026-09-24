@@ -50,6 +50,23 @@ const STACK_OPTIONS = [
 
 const TOTAL_STEPS = 4
 
+function isValidOwnerCardReceipt(receipt, username, urlMode) {
+  if (!receipt || typeof receipt !== 'object') return false
+
+  try {
+    const url = new URL(receipt.url)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+  } catch {
+    return false
+  }
+
+  return receipt.target_username === username
+    && receipt.scope === 'hermes'
+    && receipt.reusable === true
+    && receipt.token_type === 'owner'
+    && receipt.url_mode === urlMode
+}
+
 function readProgress() {
   try {
     const raw = globalThis.localStorage?.getItem(PROGRESS_KEY)
@@ -195,6 +212,10 @@ export default function FirstBoot({ onComplete }) {
           throw new Error(body.detail || `generate failed: ${genResp.status}`)
         }
         inviteData = await genResp.json()
+        const expectedUrlMode = ownerCardStatus?.url_mode || 'lan'
+        if (!isValidOwnerCardReceipt(inviteData, username, expectedUrlMode)) {
+          throw new Error('Owner-card service returned an invalid generation receipt. Retry Finish after updating ODS.')
+        }
       }
 
       // Flip the server-side sentinel so this device is "configured".

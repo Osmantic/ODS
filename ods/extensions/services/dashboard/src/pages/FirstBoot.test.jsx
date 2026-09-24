@@ -133,6 +133,33 @@ describe('FirstBoot', () => {
     expect(await screen.findByAltText('QR code for owner card')).toHaveAttribute('src', 'data:image/png;base64,qrpayload')
   })
 
+  test('keeps first-run active when owner-card generation returns an invalid receipt', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardReady)
+      }
+      if (url === '/api/auth/magic-link/generate' && options.method === 'POST') {
+        return response({
+          url: '',
+          target_username: 'sam',
+          scope: 'hermes',
+          reusable: 'true',
+          token_type: 'owner',
+          url_mode: 'lan',
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<FirstBoot onComplete={vi.fn()} />)
+    await finishWizard()
+
+    expect(await screen.findByText(/invalid generation receipt/i)).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/setup/complete', expect.anything())
+    expect(screen.queryByRole('heading', { name: /you're set/i })).not.toBeInTheDocument()
+  })
+
   test('applies the selected agent stack before creating credentials or completing setup', async () => {
     const fetchMock = vi.fn(async (url, options = {}) => {
       if (url === '/api/auth/magic-link/owner-card/status') {
@@ -152,6 +179,10 @@ describe('FirstBoot', () => {
         return response({
           url: 'http://auth.spark.local/magic-link/agent-token',
           target_username: 'sam',
+          scope: 'hermes',
+          reusable: true,
+          token_type: 'owner',
+          url_mode: 'lan',
         })
       }
       if (url === '/api/setup/complete' && options.method === 'POST') {
