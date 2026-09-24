@@ -43,9 +43,9 @@ services:
     volumes:
       - ./data/immich/postgres:/var/lib/postgresql/data
     environment:
-      - POSTGRES_USER=postgres
+      - POSTGRES_USER=${IMMICH_DB_USER:-postgres}
       - POSTGRES_PASSWORD=${IMMICH_DB_PASSWORD:-postgres}
-      - POSTGRES_DB=immich
+      - POSTGRES_DB=${IMMICH_DB_NAME:-immich}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -55,7 +55,7 @@ services:
           memory: 1G
           cpus: '1.0'
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
       timeout: 5s
       retries: 5

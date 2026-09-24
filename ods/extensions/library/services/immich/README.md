@@ -4,6 +4,20 @@ High-performance self-hosted photo and video backup solution with AI-powered org
 
 ## Requirements
 
+For a new bundled PostgreSQL database, `IMMICH_DB_USER`, `IMMICH_DB_NAME` and
+`IMMICH_DB_PASSWORD` configure both the application connection and database
+initialization. User/database defaults remain `postgres`/`immich`. Set your own
+password before first activation. The readiness probe uses the configured role
+and database over TCP, so the temporary Unix-socket-only initialization server
+does not count as ready. Readiness alone does not prove password authentication.
+
+PostgreSQL initialization variables apply only to an empty data directory.
+Changing them does not rename a role/database or rotate a password in existing
+`data/immich/postgres`. Keep the original settings for an existing installation,
+or perform a separately planned PostgreSQL migration with a verified backup.
+Do not delete existing data to apply a configuration change. External databases
+selected with `IMMICH_DB_HOST` remain operator-managed.
+
 - **GPU:** NVIDIA or AMD (min 2 GB VRAM)
 - **Dependencies:** None
 
