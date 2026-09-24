@@ -1219,6 +1219,37 @@ def test_revoke_unknown_prefix_returns_404(magic_link_client):
     assert resp.status_code == 404
 
 
+def test_revoke_refuses_ambiguous_hash_prefix(
+    magic_link_client, magic_link_module
+):
+    prefix = "deadbeef"
+    store = {
+        "tokens": [
+            {
+                "token_hash": prefix + ("1" * 56),
+                "target_username": "alice",
+                "revoked_at": None,
+            },
+            {
+                "token_hash": prefix + ("2" * 56),
+                "target_username": "bob",
+                "revoked_at": None,
+            },
+        ]
+    }
+    magic_link_module._write_store(store)
+
+    response = magic_link_client.delete(
+        f"/api/auth/magic-link/{prefix}",
+        headers=magic_link_client.auth_headers,
+    )
+
+    assert response.status_code == 409
+    assert "longer prefix" in response.json()["detail"]
+    persisted = magic_link_module._ensure_store()
+    assert all(record["revoked_at"] is None for record in persisted["tokens"])
+
+
 # ---------------------------------------------------------------------------
 # QR endpoint
 # ---------------------------------------------------------------------------

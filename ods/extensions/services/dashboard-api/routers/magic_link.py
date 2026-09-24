@@ -867,12 +867,23 @@ def revoke_magic_link(token_hash_prefix: str) -> dict:
         raise HTTPException(status_code=400, detail="Invalid token hash prefix")
     with _STORE_LOCK:
         store = _ensure_store()
-        for record in store.get("tokens", []):
-            if record["token_hash"].startswith(token_hash_prefix) and not record.get("revoked_at"):
-                record["revoked_at"] = _now_iso()
-                _write_store(store)
-                logger.info("magic-link revoked target=%s", record["target_username"])
-                return {"revoked": True}
+        matches = [
+            record
+            for record in store.get("tokens", [])
+            if record["token_hash"].startswith(token_hash_prefix)
+            and not record.get("revoked_at")
+        ]
+        if len(matches) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail="Token hash prefix is ambiguous; use a longer prefix.",
+            )
+        if matches:
+            record = matches[0]
+            record["revoked_at"] = _now_iso()
+            _write_store(store)
+            logger.info("magic-link revoked target=%s", record["target_username"])
+            return {"revoked": True}
     raise HTTPException(status_code=404, detail="No active magic link with that prefix")
 
 
