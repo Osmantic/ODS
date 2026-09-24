@@ -3,7 +3,7 @@
 // validates and snapshots every byte before returning a browser-verifiable URL.
 
 import net from "node:net";
-import { DERIVED_ARTIFACT_CONTRACT } from "./agent-skills.mjs";
+import { DERIVED_ARTIFACT_CONTRACT, PREVIEW_RUNTIME_CONTRACT } from "./agent-skills.mjs";
 import { dockerWorkspacePreviewRequest } from "./workspace-preview-docker.mjs";
 
 const SOCKET_PATH = "/run/ods-pixel-preview/control.sock";
@@ -245,7 +245,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
   return {
     name: "pixel_ods_workspace_preview",
     description:
-      "Publish and verify a static visual artifact already created by the active model in Pixel's writable workspace. Pass only relativeDirectory after writing the complete site, app, SVG, game, or visualization with workspace tools. ODS never supplies creative starter bytes: it validates and snapshots the model-authored files, then returns the only localhost URL Pixel may claim is browser-accessible. Never start a sandbox server. Dashboard previews have opaque origins: localStorage/sessionStorage property getters, reads and writes may throw. Guard every storage access/operation with try/catch and keep an in-memory fallback; optional persistence must not block startup or controls. Do not claim durable storage or weaken isolation. HTTP readback does not prove startup or interactions. " + DERIVED_ARTIFACT_CONTRACT,
+      "Publish and verify a static visual artifact already created by the active model in Pixel's writable workspace. Pass only relativeDirectory after writing the complete site, app, SVG, game, or visualization with workspace tools. ODS never supplies creative starter bytes: it validates and snapshots the model-authored files, then returns the only localhost URL Pixel may claim is browser-accessible. Never start a sandbox server. " + PREVIEW_RUNTIME_CONTRACT + " " + DERIVED_ARTIFACT_CONTRACT,
     parameters: {
       type: "object",
       additionalProperties: false,

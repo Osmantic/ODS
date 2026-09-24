@@ -67,10 +67,12 @@ test("exposes a publish-only schema with no creative generator input", () => {
   assert.match(tool.description, /already created by the active model/);
   assert.match(tool.description, /never supplies creative starter bytes/i);
   assert.match(tool.description, /localStorage\/sessionStorage property getters, reads and writes may throw/);
-  assert.match(tool.description, /Guard every storage access\/operation with try\/catch and keep an in-memory fallback/);
-  assert.match(tool.description, /optional persistence must not block startup or controls/);
-  assert.match(tool.description, /Do not claim durable storage or weaken isolation/);
-  assert.match(tool.description, /HTTP readback does not prove startup or interactions/);
+  assert.match(tool.description, /Guard every storage access\/operation with try\/catch and an in-memory fallback/);
+  assert.match(tool.description, /Saving failure must not block startup, controls or continued work/);
+  assert.match(tool.description, /Never promise persistence or add allow-same-origin to bypass isolation/);
+  assert.match(tool.description, /blocks alert\(\), confirm\(\) and prompt\(\); use inline DOM controls, including date inputs/);
+  assert.match(tool.description, /remote scripts, styles, fonts, images and API requests are blocked/);
+  assert.match(tool.description, /HTTP readback proves publication, not startup or interactions/);
   assert.doesNotMatch(JSON.stringify(tool.parameters), /scaffold|template|title|tagline|theme/);
 });
 

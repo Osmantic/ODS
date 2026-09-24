@@ -26,7 +26,7 @@ import {
   userMessageRequestsNewPlaygroundProject,
   workspacePreviewMode,
 } from "./tool-loop-guard.mjs";
-import { AGENT_SKILLS, PREVIEW_STORAGE_CONTRACT } from "./agent-skills.mjs";
+import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "./agent-skills.mjs";
 
 const PLAYGROUND_PROJECT_CONTRACT =
   "For a new project, choose one short descriptive folder under Playground, for example Playground/snake-game or Playground/weather-tool, and create every project file there. This is a real workspace folder, not a display label. Use the exact canonical paths returned by tools, including any collision suffix, for later reads, edits, exec workdir and preview relativeDirectory. Preserve explicitly requested paths and existing projects in their current locations; never move them into Playground. Keep shell commands relative to the chosen workdir; never invent host-specific paths.";
@@ -102,7 +102,7 @@ const CURRENT_OPERATING_COMPATIBILITY = [
   "Load pixel_ods_skill when detailed ODS guidance is useful: extensions, workspace, research or verification. Choose the relevant topic; do not load everything. Recover earlier requirements with pixel_ods_history after compaction.",
   "Keep conversation and actions consistent with observed state. Prior explicit authorization remains valid within scope. If you ask for missing input or permission, wait without starting the dependent action. If work is running, report its state rather than asking to start it. Draft requested text in chat unless an artifact was requested.",
   "Ask before irreversible or high-consequence external effects. If input or capability is missing, explain or ask. Finish concisely when verified or blocked.",
-  PREVIEW_STORAGE_CONTRACT,
+  PREVIEW_RUNTIME_CONTRACT,
 ];
 export const ODS_CONVERSATION_CONTRACT =
   [ODS_SEPTEMBER16_CONVERSATION_CONTRACT, ...CURRENT_OPERATING_COMPATIBILITY].join(" ");
@@ -123,7 +123,7 @@ export const ODS_COMPACT_CONVERSATION_CONTRACT = [
   "Load pixel_ods_skill when detailed ODS guidance is useful: extensions, workspace, research or verification. Choose the relevant topic; do not load everything. Recover earlier requirements with pixel_ods_history after compaction.",
   "Keep conversation and actions consistent with observed state. Prior explicit authorization remains valid within scope. If you ask for missing input or permission, wait without starting the dependent action. If work is running, report its state rather than asking to start it. Draft requested text in chat unless an artifact was requested.",
   "Ask before irreversible or high-consequence external effects. If input or capability is missing, explain or ask. Finish concisely when verified or blocked.",
-  PREVIEW_STORAGE_CONTRACT,
+  PREVIEW_RUNTIME_CONTRACT,
 ].join(" ");
 
 // The historical full core assumed a sandbox. Adapt only those environment
