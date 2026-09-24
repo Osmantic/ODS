@@ -1465,13 +1465,15 @@ export default function Pixel({ systemStatus = null }) {
             className={`inline-flex items-center gap-1.5 text-[11px] font-medium ${
             sending
               ? 'text-theme-accent-light'
-              : 'text-amber-300'
+              : statusLabel === 'Available'
+                ? 'text-theme-text-secondary'
+                : 'text-amber-300'
           }`}
           >
             {sending || status === 'loading' || status === 'switching' ? (
               <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
+              <span className="h-1.5 w-1.5 rounded-full bg-current" />
             )}
             {statusLabel}
             {sending && <span className="font-mono text-[10px] opacity-80">{workingElapsed}</span>}
