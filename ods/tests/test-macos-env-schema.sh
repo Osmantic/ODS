@@ -91,6 +91,8 @@ for tier in 1 CLOUD; do
         || fail "tier $tier .env must declare LLM_BACKEND exactly once"
     grep -qx 'TTS_WORKERS=1' "$env_file" \
         || fail "tier $tier macOS install must use one TTS worker"
+    grep -qx 'HERMES_REQUIRE_OWNER_CARD=false' "$env_file" \
+        || fail "tier $tier must open Hermes without an owner card by default"
     pass "tier $tier: generated .env assigns every key once"
 
     # validate-env.sh needs Bash 4+ (associative arrays); ods-cli runs it with
@@ -110,6 +112,16 @@ generate_env 1 "$tts_override_dir" false
 grep -qx 'TTS_WORKERS=2' "$tts_override_dir/.env" \
     || fail 'macOS reinstall did not preserve an explicit TTS worker override'
 pass 'macOS reinstall preserves an explicit TTS worker override'
+
+hermes_override_dir="$TMP_DIR/hermes-owner-card-override"
+generate_env 1 "$hermes_override_dir"
+sed 's/^HERMES_REQUIRE_OWNER_CARD=false$/HERMES_REQUIRE_OWNER_CARD=true/' \
+    "$hermes_override_dir/.env" > "$hermes_override_dir/.env.new"
+mv "$hermes_override_dir/.env.new" "$hermes_override_dir/.env"
+generate_env 1 "$hermes_override_dir" false
+grep -qx 'HERMES_REQUIRE_OWNER_CARD=true' "$hermes_override_dir/.env" \
+    || fail 'macOS reinstall did not preserve explicit Hermes owner-card gating'
+pass 'macOS reinstall preserves explicit Hermes owner-card gating'
 
 # A forced reinstall must not rotate credentials already bound to a persisted
 # Langfuse database. Other install secrets may still rotate under --force.
