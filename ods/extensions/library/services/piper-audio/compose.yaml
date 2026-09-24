@@ -5,7 +5,7 @@ services:
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${PIPER_PORT:-10200}:10200"
     volumes:
-      - ./data/piper:/config/piper
+      - ./data/piper:/config
     environment:
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
