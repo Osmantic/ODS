@@ -21,12 +21,14 @@ import os
 import stat
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 import main as main_module
+from routers import oauth_passthrough
 
 
 @pytest.fixture
@@ -433,6 +435,27 @@ def test_callback_atomic_write(oauth_client):
     assert resp.status_code == 200
     assert not (oauth_client.tmp / "oauth_callback.json.tmp").exists()
     assert (oauth_client.tmp / "oauth_callback.json").exists()
+
+
+def test_atomic_writer_uses_independent_temps_for_concurrent_callbacks(tmp_path, monkeypatch):
+    """Two callback writers must not race over one shared temporary path."""
+    target = tmp_path / "oauth_callback.json"
+    real_replace = Path.replace
+    replacement_sources = []
+
+    def record_replace(source, destination):
+        replacement_sources.append(source.name)
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(Path, "replace", record_replace)
+    payloads = [json.dumps({"code": "a"}), json.dumps({"code": "b"})]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(lambda payload: oauth_passthrough._atomic_write_0600(target, payload), payloads))
+
+    assert len(set(replacement_sources)) == 2
+    assert json.loads(target.read_text(encoding="utf-8"))["code"] in {"a", "b"}
+    assert list(tmp_path.glob(".oauth_callback.json.*.tmp")) == []
 
 
 # ---------------------------------------------------------------------------

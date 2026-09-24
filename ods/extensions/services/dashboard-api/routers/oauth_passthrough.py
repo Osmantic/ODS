@@ -71,6 +71,8 @@ import logging
 import os
 import re
 import secrets
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -84,6 +86,7 @@ from security import verify_api_key
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["oauth"])
+_ATOMIC_WRITE_LOCK = threading.Lock()
 
 # base64url alphabet (RFC 4648 §5). token_urlsafe(32) yields 43 chars; we
 # accept 22..128 to allow for future entropy tweaks without a breaking
@@ -263,16 +266,29 @@ def _prune_expired_nonces(nonce_dir: Path) -> None:
 def _atomic_write_0600(target: Path, data: str) -> None:
     """Write ``data`` to ``target`` atomically with mode 0600 on POSIX.
     The chmod is best-effort on filesystems that don't honour it
-    (Windows dev boxes, some overlayfs setups). Uses ``with_name`` rather
-    than ``with_suffix`` because Path.with_suffix rejects suffixes that
-    contain embedded dots on some Python versions."""
-    tmp = target.with_name(target.name + ".tmp")
-    tmp.write_text(data, encoding="utf-8")
+    (Windows dev boxes, some overlayfs setups). Each writer gets a private
+    same-directory temporary file so concurrent callbacks cannot collide."""
+    fd, tmp_name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+    )
+    tmp = Path(tmp_name)
     try:
-        tmp.chmod(0o600)
-    except OSError:
-        logger.debug("could not chmod %s to 0600", tmp, exc_info=True)
-    tmp.replace(target)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            logger.debug("could not chmod %s to 0600", tmp, exc_info=True)
+        # Concurrent destination replacement can fail on Windows. Serialize
+        # only the publication instant; preparation remains independent.
+        with _ATOMIC_WRITE_LOCK:
+            tmp.replace(target)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _success_page(skill: str, return_url: Optional[str] = None) -> str:
