@@ -1292,7 +1292,7 @@ def _collect_inference_contract():
             "Route external Lemonade clients through LiteLLM, usually http://litellm:4000.",
         ],
         "ODS-RUNTIME-EXTERNAL-LEMONADE-UNAUTHENTICATED-HOST-ROUTE": [
-            "Configure Lemonade with LEMONADE_API_KEY or LEMONADE_ADMIN_API_KEY, then reinstall with --lemonade-api-key.",
+            "Configure Lemonade with LEMONADE_API_KEY or LEMONADE_ADMIN_API_KEY, then reinstall with --use-existing-lemonade --lemonade-api-key.",
             "Prefer binding Lemonade to a host-only or Docker-reachable interface instead of exposing it broadly on 0.0.0.0.",
             "Keep firewall rules scoped to the Docker network subnet when host-routed Lemonade is required.",
         ],

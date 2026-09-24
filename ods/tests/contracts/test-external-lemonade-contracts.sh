@@ -60,6 +60,46 @@ grep -q 'BIND_ADDRESS_EXPLICIT' install-core.sh \
 grep -q 'BIND_ADDRESS_EXPLICIT' installers/phases/06-directories.sh \
   || { echo "[FAIL] phase 06 must let explicit BIND_ADDRESS override stale .env"; exit 1; }
 
+echo "[contract] --lemonade-api-key without an external selection fails loudly"
+# LEMONADE_API_KEY is only consumed when LEMONADE_EXTERNAL resolves true; a
+# credential flag on a managed install must refuse instead of being silently
+# ignored and leaving an unauthenticated external route configured.
+parse_block="$(awk '
+  /^while \[\[ \$# -gt 0 \]\]; do/ { emit=1 }
+  /^export EXTERNAL_LLM_URL/ { exit }
+  emit { print }
+' install-core.sh)"
+[[ "$parse_block" == *'--lemonade-api-key'* ]] || { echo "[FAIL] could not extract install-core flag parsing"; exit 1; }
+run_flag_parse() {
+  local api_key="${LEMONADE_API_KEY:-}"
+  LEMONADE_API_KEY="$api_key" LEMONADE_EXTERNAL=false ODS_MODE=local \
+  ODS_MODE_EXPLICIT=false ENABLE_RECOMMENDED=false INSTALL_DIR=/nonexistent \
+  bash -c '
+    LOG_FILE=/dev/null
+    error() { echo "ERROR:$*"; exit 1; }
+    log() { :; }
+    warn() { :; }
+    ods_preserve_existing_install_mode() { printf "%s\n" "$1"; }
+    '"$parse_block"'
+  ' _ "$@"
+}
+set +e
+key_only_output="$(run_flag_parse --lemonade-api-key test-key 2>&1)"
+key_only_rc=$?
+set -e
+[[ "$key_only_rc" -ne 0 ]] \
+  || { echo "[FAIL] --lemonade-api-key alone was silently ignored"; exit 1; }
+[[ "$key_only_output" == *'external'* ]] \
+  || { echo "[FAIL] refusal must name the missing external Lemonade selection"; exit 1; }
+env_key_output="$(LEMONADE_API_KEY=test-key run_flag_parse 2>&1)" && \
+  { echo "[FAIL] exported LEMONADE_API_KEY without an external selection was silently ignored"; exit 1; }
+[[ "$env_key_output" == *'external'* ]] \
+  || { echo "[FAIL] env-key refusal must name the missing external selection"; exit 1; }
+run_flag_parse --use-existing-lemonade --lemonade-api-key test-key >/dev/null \
+  || { echo "[FAIL] --use-existing-lemonade --lemonade-api-key must be accepted"; exit 1; }
+run_flag_parse --lemonade-url http://localhost:13305 --lemonade-api-key test-key >/dev/null \
+  || { echo "[FAIL] --lemonade-url --lemonade-api-key must be accepted"; exit 1; }
+
 echo "[contract] external Lemonade does not pull managed Lemonade image"
 grep -q '_lemonade_external' installers/phases/08-images.sh \
   || { echo "[FAIL] phase 08 must skip managed Lemonade image pulls in external mode"; exit 1; }

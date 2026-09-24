@@ -170,6 +170,7 @@ Options:
                       (auto-detects localhost:13305, then localhost:8000 when omitted)
     --lemonade-api-key K
                       API key LiteLLM should send to the existing Lemonade server
+                      (requires --use-existing-lemonade or --lemonade-url)
     --external-llm-url U
                       Reuse an OpenAI-compatible local or LAN endpoint
     --external-llm-provider P
@@ -310,6 +311,13 @@ if [[ "$ODS_MODE_EXPLICIT" != "true" && "$ODS_MODE" != "$_requested_ods_mode" ]]
     log "Existing ODS mode detected; preserving ODS_MODE=$ODS_MODE for this installer rerun"
 fi
 unset _requested_ods_mode
+
+# LEMONADE_API_KEY is only consumed by an external Lemonade install. Without
+# an external selection it would be silently ignored, leaving the managed
+# install untouched while the operator believes an API key was configured.
+if [[ -n "$LEMONADE_API_KEY" && "${LEMONADE_EXTERNAL,,}" != "true" ]]; then
+    error "--lemonade-api-key/LEMONADE_API_KEY requires an external Lemonade selection; pass --use-existing-lemonade or --lemonade-url"
+fi
 
 if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
     ODS_MODE="lemonade"
