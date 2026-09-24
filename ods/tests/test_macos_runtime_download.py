@@ -157,9 +157,11 @@ download_with_progress() {
     return 1
 }
 '''
-        result = self.run_install(extra)
-        self.assertEqual(result.returncode, 143, result.stderr)
-        self.assert_rejected_before_use(result)
+        for signal, status in (("SIGHUP", 129), ("SIGINT", 130), ("SIGTERM", 143)):
+            with self.subTest(signal=signal):
+                result = self.run_install(extra.replace("SIGTERM", signal))
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assert_rejected_before_use(result)
 
     def test_concurrent_downloads_have_independent_staging_and_cleanup(self):
         calls = r'''

@@ -48,9 +48,11 @@ macos_install_native_llama() (
     expected="$(macos_llama_asset_sha256 "$release")" || return 1
     temporary="$(umask 077; mktemp -d /tmp/ods-llama.XXXXXXXXXX)" || return 1
     trap 'rm -rf -- "$temporary"' EXIT
-    trap 'exit 129' HUP
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
+    # Bash 3.2 can skip EXIT when a signal trap exits a function subshell.
+    # Clean directly in each handler as well as on ordinary exit.
+    trap 'trap - EXIT; rm -rf -- "$temporary"; exit 129' HUP
+    trap 'trap - EXIT; rm -rf -- "$temporary"; exit 130' INT
+    trap 'trap - EXIT; rm -rf -- "$temporary"; exit 143' TERM
     archive="$temporary/$asset"
     destination="$(dirname "$binary")"
 
