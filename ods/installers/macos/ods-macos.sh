@@ -831,7 +831,7 @@ cmd_status() {
 
     # Parallel arrays (Bash 3.2 compatible)
     local ep_names=("$CLI_LLM_NAME" "Chat UI" "Dashboard" "OpenCode (IDE)")
-    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:3000" "http://127.0.0.1:3001" "http://127.0.0.1:3003")
+    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:${ENV_WEBUI_PORT:-3000}" "http://127.0.0.1:${ENV_DASHBOARD_PORT:-3001}" "http://127.0.0.1:${ENV_OPENCODE_PORT:-3003}")
 
     for ((i=0; i<${#ep_names[@]}; i++)); do
         local name="${ep_names[$i]}"
