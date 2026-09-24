@@ -71,6 +71,9 @@ describe('Invites', () => {
       )
     })
     expect(await screen.findByText('No owner cards yet')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Refresh setup owner links' })).toHaveFocus()
+    })
   })
 
   test('generates owner card with revoke-only ODS Talk payload and loads QR', async () => {
