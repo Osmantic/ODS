@@ -9,7 +9,7 @@
 
 If you want a lightweight setup on CPU-only machines (no dedicated GPU), use **cloud mode**:
 
-- Install: `./install-core.sh --cloud` (from repo root)
+- Install from the repository root: `cd ods && ./install-core.sh --cloud`
 - Full install guide: [QUICKSTART.md](QUICKSTART.md)
 - macOS Apple Silicon: [docs/MACOS-QUICKSTART.md](docs/MACOS-QUICKSTART.md)
 - Documentation index: [docs/README.md](docs/README.md)

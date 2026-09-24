@@ -202,6 +202,11 @@ clone_docs=(
     "$ROOT_DIR/docs/INSTALLER_TRUST.md"
 )
 
+require_literal \
+    "$ROOT_DIR/EDGE-QUICKSTART.md" \
+    'cd ods && ./install-core.sh --cloud' \
+    "Edge quickstart repository-root install command"
+
 windows_copy_paste_docs=(
     "$REPO_ROOT/README.md"
     "$ROOT_DIR/README.md"
