@@ -1082,7 +1082,7 @@ cmd_chat() {
         auth_args=(-H "Authorization: Bearer ${CLI_LLM_API_KEY}")
     fi
     local response
-    response=$(curl -sf -X POST "${CLI_LLM_BASE_URL}/v1/chat/completions" \
+    response=$(curl -sf --connect-timeout 5 --max-time 300 -X POST "${CLI_LLM_BASE_URL}/v1/chat/completions" \
         -H "Content-Type: application/json" \
         "${auth_args[@]}" \
         -d "$payload" 2>/dev/null) || {

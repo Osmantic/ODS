@@ -511,7 +511,7 @@ print("done" if is_ready else "needed")
     if [[ "$PERPLEXICA_SETUP" == "needed" ]]; then
         ai "Configuring Perplexica for ${PERPLEXICA_MODEL}..."
         # Query current config to get provider UUIDs, then set model + preferences via API
-        curl -sf "${PERPLEXICA_URL}/api/config" 2>/dev/null | \
+        curl -sf --max-time 5 "${PERPLEXICA_URL}/api/config" 2>/dev/null | \
         PERPLEXICA_URL="$PERPLEXICA_URL" \
         PERPLEXICA_MODEL="$PERPLEXICA_MODEL" \
         PERPLEXICA_LLM_BASE_URL="$PERPLEXICA_LLM_BASE_URL" \
