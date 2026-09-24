@@ -18,7 +18,8 @@ SHEPHERD = Path(__file__).resolve().parents[1] / 'memory-shepherd/memory-shepher
 
 def exercise():
     class ScratchArchiveTests(unittest.TestCase):
-        def reset_fixture(self, remote, content, *, archive_failure=False, full_backup=False):
+        def reset_fixture(self, remote, content, *, archive_failure=False, full_backup=False,
+                          separator='---'):
             with tempfile.TemporaryDirectory(prefix='ods-scratch-') as directory:
                 root = Path(directory)
                 baseline = b'# Curated baseline\n' + b'Keep durable instructions.\n' * 30
@@ -32,6 +33,7 @@ def exercise():
                 location = ('remote_host=fixture.invalid\nremote_user=fixture\n'
                             'remote_memory=/fixture/MEMORY.md\n') if remote else f'memory_file={memory}\n'
                 conf.write_text(f'[general]\nbaseline_dir={root}\narchive_dir={archive}\n'
+                                f'separator={separator}\n'
                                 f'[fixture]\nbaseline=baseline.md\n{location}')
                 binary = root / 'bin'
                 binary.mkdir()
@@ -64,10 +66,14 @@ fi
                     self.assertEqual(len(files), 1, result.stdout)
                     self.assertEqual(files[0].read_bytes(), content)
                     return
-                notes = content.split(b'---\n', 1)[1] if b'---\n' in content else b''
+                marker = separator.encode() + b'\n'
+                notes = content.split(marker, 1)[1] if marker in content else b''
                 if notes.strip():
                     self.assertEqual(len(files), 1, result.stdout)
                     self.assertIn(notes.rstrip(b'\n'), files[0].read_bytes())
+                    # A separator that never matches falls back to archiving the
+                    # whole file; the scratch split must produce a smaller file.
+                    self.assertNotEqual(files[0].read_bytes(), content)
                 else:
                     self.assertEqual(files, [])
 
@@ -93,6 +99,21 @@ fi
                 with self.subTest(remote=remote):
                     self.reset_fixture(remote, b'# Existing memory\nNo separator or final newline',
                                        full_backup=True)
+
+        def test_separator_is_a_literal_line_not_a_regex(self):
+            for remote in (False, True):
+                # separator='.' as a regex also matched the trailing 'z' line,
+                # so the scratch suffix read as empty and the real notes were
+                # discarded without an archive.
+                with self.subTest(remote=remote, separator='.'):
+                    self.reset_fixture(remote, b'# Previous baseline\n.\nreal note\nz\n',
+                                       separator='.')
+                # separator='[.]' as a regex matched only a single '.'
+                # character line, so the literal '[.]' separator was never
+                # found and the run took the full-backup path instead.
+                with self.subTest(remote=remote, separator='[.]'):
+                    self.reset_fixture(remote, b'# Previous baseline\n[.]\nreal note\n',
+                                       separator='[.]')
 
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(ScratchArchiveTests)
     return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1

@@ -21,7 +21,8 @@ max_memory_size=16384
 # Delete archived notes older than this many days
 archive_retention_days=30
 
-# The separator line between baseline and scratch notes
+# The separator line between baseline and scratch notes.
+# Matched literally — the whole memory line must equal this value.
 separator=---
 
 # ─── Local Agent Example ──────────────────────────────────────────────

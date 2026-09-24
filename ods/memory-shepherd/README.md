@@ -88,7 +88,7 @@ Memory Shepherd uses an INI-style config file. The search order is:
 | `archive_dir` | `./archives` | Root directory for archived scratch notes |
 | `max_memory_size` | `16384` | Max memory file size (bytes) before warning |
 | `archive_retention_days` | `30` | Delete archives older than this |
-| `separator` | `---` | The line that separates baseline from scratch notes |
+| `separator` | `---` | Line separating baseline from scratch notes (matched literally, whole line) |
 
 ### Agent Sections
 
