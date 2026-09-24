@@ -258,7 +258,7 @@ def query_usage(agent: str | None = None, hours: int = 24, limit: int = 200) -> 
                 FROM requests r
                 LEFT JOIN agents a ON r.agent_id = a.id
                 WHERE r.tenant_id = %s
-                AND r.timestamp > NOW() - INTERVAL '%s hours'
+                AND r.timestamp > NOW() - (%s * INTERVAL '1 hour')
             """
             params = [_tenant_id, hours]
 
@@ -510,7 +510,7 @@ def query_summary(hours: int = 24) -> list[dict]:
                 FROM requests r
                 LEFT JOIN agents a ON r.agent_id = a.id
                 WHERE r.tenant_id = %s
-                AND r.timestamp > NOW() - INTERVAL '%s hours'
+                AND r.timestamp > NOW() - (%s * INTERVAL '1 hour')
                 GROUP BY a.name
                 """,
                 (_tenant_id, hours)
