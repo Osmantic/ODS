@@ -1328,3 +1328,54 @@ def test_apply_template_blocking_calls_run_in_to_thread():
             f"{callee}() is called directly (without asyncio.to_thread). "
             f"All blocking helpers must run in the thread pool."
         )
+
+
+# --- GPU compatibility parity with the Extensions page ---
+
+
+def test_gpu_backend_error_treats_undeclared_backends_as_unrestricted():
+    """An empty gpu_backends list means "no declared restriction".
+
+    gpu_backends is optional in the manifest schema, and config.py stores an
+    undeclared list as []. _compute_extension_status already reads [] as
+    unrestricted, so reading it as "supports nothing" here made the Extensions
+    page and the template gate disagree about the same extension.
+    """
+    from routers.templates import _gpu_backend_error
+
+    with (
+        patch("routers.templates.SERVICES", {"no-decl": {"port": 1234, "gpu_backends": []}}),
+        patch("routers.templates.GPU_BACKEND", "nvidia"),
+    ):
+        assert _gpu_backend_error("no-decl") is None
+
+    # A declared list is still enforced.
+    with (
+        patch("routers.templates.SERVICES", {"cuda-only": {"gpu_backends": ["nvidia"]}}),
+        patch("routers.templates.GPU_BACKEND", "amd"),
+    ):
+        assert _gpu_backend_error("cuda-only") is not None
+
+
+@pytest.mark.asyncio
+async def test_template_preview_does_not_flag_undeclared_backends_incompatible():
+    """Preview must not mark an extension incompatible that Extensions shows as usable."""
+    mock_templates = [{
+        "id": "test-tmpl",
+        "name": "Test",
+        "services": ["no-decl"],
+    }]
+
+    with (
+        patch("routers.templates.TEMPLATES", mock_templates),
+        patch("routers.templates.SERVICES", {"no-decl": {"port": 1234, "gpu_backends": []}}),
+        patch("routers.templates.EXTENSION_CATALOG", []),
+        patch("routers.templates.GPU_BACKEND", "nvidia"),
+        patch("helpers.get_cached_services", return_value=[]),
+    ):
+        from routers.templates import preview_template
+        result = await preview_template("test-tmpl", api_key="test")
+
+    assert result["changes"]["incompatible"] == []
+    assert result["changes"]["to_enable"] == ["no-decl"]
+    assert result["warnings"] == []

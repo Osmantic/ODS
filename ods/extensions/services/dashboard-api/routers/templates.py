@@ -67,8 +67,13 @@ def _gpu_backend_error(service_id: str) -> str | None:
     if not service_config or GPU_BACKEND == "apple":
         return None
 
-    gpu_backends = service_config.get("gpu_backends", ["amd", "nvidia", "apple"])
-    if "all" in gpu_backends or GPU_BACKEND in gpu_backends:
+    # gpu_backends is optional in the manifest schema, and both config.py and
+    # the catalog generator store an undeclared list as []. An empty list means
+    # "no declared restriction", exactly as _compute_extension_status treats it
+    # — reading it as "supports nothing" would make the Extensions page and the
+    # template gate disagree about the same extension.
+    gpu_backends = service_config.get("gpu_backends") or []
+    if not gpu_backends or "all" in gpu_backends or GPU_BACKEND in gpu_backends:
         return None
     return f"requires one of {gpu_backends}; current backend is {GPU_BACKEND}"
 
