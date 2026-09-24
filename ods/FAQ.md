@@ -10,7 +10,7 @@ Frequently asked questions about installing, running, and troubleshooting ODS.
 
 ### What is ODS?
 ODS is a turnkey local AI stack that runs entirely on your own hardware. It includes:
-- LLM inference via llama-server (qwen2.5-32b-instruct)
+- LLM inference via llama-server (hardware-appropriate model selected automatically)
 - Web dashboard for chat and model management
 - Voice capabilities (STT via Whisper, TTS via Kokoro)
 - Workflow automation via n8n
@@ -161,7 +161,7 @@ sudo systemctl restart docker
 
 ### "CUDA out of memory" errors
 Your GPU doesn't have enough VRAM. Options:
-1. Use a smaller model (qwen2.5-7b-instruct instead of 32b)
+1. Switch to a lower hardware tier (for example, `ods model swap T1`)
 2. All models use GGUF Q4_K_M quantization by default
 3. Reduce `CTX_SIZE` in `.env` (try 4096)
 4. Run on CPU only (slower but works)

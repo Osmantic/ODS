@@ -211,6 +211,14 @@ windows_copy_paste_docs=(
     "$ROOT_DIR/docs/WINDOWS-INSTALL-WALKTHROUGH.md"
 )
 
+require_literal \
+    "$ROOT_DIR/FAQ.md" \
+    'ods model swap T1' \
+    "FAQ low-VRAM recovery command"
+if grep -qE 'qwen2\.5-(32b|7b)-instruct' "$ROOT_DIR/FAQ.md"; then
+    fail "FAQ must not present retired default model names as current guidance"
+fi
+
 for file in "${install_docs[@]}"; do
     [[ -f "$file" ]] || fail "Expected install document missing: $file"
     require_literal "$file" "$CANONICAL_ENDPOINT" "Canonical install endpoint"
