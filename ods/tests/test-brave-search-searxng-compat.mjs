@@ -85,6 +85,24 @@ function stubHandler(req, res) {
     respond(200, "null");
   } else if (q === "badshape") {
     respond(200, JSON.stringify({ web: { results: "not-an-array" } }));
+  } else if (q === "baditems") {
+    respond(
+      200,
+      JSON.stringify({
+        web: {
+          results: [
+            null,
+            "not-an-object",
+            { title: 42, url: 99, description: { nested: true } },
+            {
+              title: " Valid Result ",
+              url: "https://example.com/valid",
+              description: " Valid snippet ",
+            },
+          ],
+        },
+      }),
+    );
   } else if (q === "slow") {
     setTimeout(() => respond(200, braveBody()), SLOW_UPSTREAM_DELAY_MS);
   } else if (q === "redirect") {
@@ -233,6 +251,16 @@ async function testV1Route(base) {
       JSON.stringify(oddShape),
     );
   }
+
+  const badItems = await getJson(base, "/v1/search?q=baditems");
+  check(
+    "malformed result entries are skipped without losing valid siblings",
+    badItems.status === 200 &&
+      badItems.body.results.length === 1 &&
+      badItems.body.results[0].title === "Valid Result" &&
+      badItems.body.results[0].url === "https://example.com/valid",
+    JSON.stringify(badItems.body),
+  );
 }
 
 async function testCompatDisabled(base) {
@@ -392,6 +420,17 @@ async function testCompatEnabled(base) {
       JSON.stringify(oddShape.body),
     );
   }
+
+
+  const badItems = await getJson(base, "/search?format=json&q=baditems");
+  check(
+    "compat skips malformed result entries without a 500",
+    badItems.status === 200 &&
+      badItems.body.results.length === 1 &&
+      badItems.body.results[0].title === "Valid Result" &&
+      badItems.body.results[0].url === "https://example.com/valid",
+    JSON.stringify(badItems.body),
+  );
 }
 
 async function testClientDisconnect(base) {

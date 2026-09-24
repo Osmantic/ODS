@@ -184,9 +184,9 @@ async function handleV1Search(res, params, signal) {
   const results = braveWebResults(outcome.data)
     .slice(0, count)
     .map((r) => ({
-      title: (r.title ?? "").trim(),
-      url: (r.url ?? "").trim(),
-      snippet: (r.description ?? "").trim(),
+      title: stringField(r.title),
+      url: stringField(r.url),
+      snippet: stringField(r.description),
     }))
     .filter((r) => r.url.length > 0);
 
@@ -211,7 +211,16 @@ function searxngEnvelope(query, results, unresponsiveEngines) {
 }
 
 function braveWebResults(data) {
-  return Array.isArray(data?.web?.results) ? data.web.results : [];
+  if (!Array.isArray(data?.web?.results)) {
+    return [];
+  }
+  return data.web.results.filter(
+    (result) => result !== null && typeof result === "object" && !Array.isArray(result),
+  );
+}
+
+function stringField(value) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 // Python urlparse 6-tuple (scheme, netloc, path, params, query, fragment),
@@ -231,7 +240,7 @@ function toSearxngResults(data) {
   const raw = braveWebResults(data).slice(0, SEARXNG_PAGE_SIZE);
   const results = [];
   for (const r of raw) {
-    const urlText = (r.url ?? "").trim();
+    const urlText = stringField(r.url);
     if (!urlText) {
       continue;
     }
@@ -246,8 +255,8 @@ function toSearxngResults(data) {
     const position = results.length + 1;
     const item = {
       url: urlText,
-      title: (r.title ?? "").trim(),
-      content: (r.description ?? "").trim(),
+      title: stringField(r.title),
+      content: stringField(r.description),
       engine: "brave",
       engines: ["brave"],
       positions: [position],
