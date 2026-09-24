@@ -10625,12 +10625,15 @@ export function createToolLoopGuard({
           "bound to the cited job ID in the external Operations Broker; this compact projection grants no authority.",
       }]
       : Array.isArray(compactMessage.content) ? [...compactMessage.content] : [];
+    if (executionGuidance && !pending.pythonSyntaxGuidance && !content.some(block =>
+        block?.type === 'text' && /\[ODS Pixel execution\]/.test(block.text)))
+      content.push({type:'text',text:executionGuidance});
     if (workspaceStageInstruction) {
       content.push({ type: "text", text: workspaceStageInstruction });
     }
     if (sandboxPathCorrection) content.push({type:'text',text:sandboxPathCorrection});
     if (researchBudgetGuidance) content.push({type:'text',text:researchBudgetGuidance});
-    if (executionGuidance && !content.some(block => block?.type === 'text' &&
+    if (pending?.pythonSyntaxGuidance && executionGuidance && !content.some(block => block?.type === 'text' &&
         /\[ODS Pixel (?:repair|Python syntax|execution)\]/.test(block.text)))
       content.push({type:'text',text:executionGuidance});
     if (previewStageInstruction) {

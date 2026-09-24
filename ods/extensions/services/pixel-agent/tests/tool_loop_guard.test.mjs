@@ -1099,9 +1099,15 @@ for (const [name, setup, callId, toolName, persistRun] of [
   test(`native unittest projection leaves ${name} unchanged`, () => {
     const { guard, result } = nativeFailureRun(setup);
     const message = { role: "toolResult", toolName, toolCallId: callId, ...result };
-    assert.equal(guard.toolResultPersist({ toolCallId: callId, message }, {
+    const projected = guard.toolResultPersist({ toolCallId: callId, message }, {
       agentId: "pixel", toolCallId: callId, toolName, runId: persistRun,
-    }), undefined);
+    });
+    if (["clean unittest result", "non-unittest command"].includes(name)) {
+      assert.deepEqual(projected.message.content[0], message.content[0]);
+      assert.equal(projected.message.details, message.details);
+      assert.equal(projected.message.content.length, 2);
+      assert.match(projected.message.content[1].text, /\[ODS Pixel execution\] Exec returned completed/);
+    } else assert.equal(projected, undefined);
     assert.equal(message.content[0].text, result.content[0].text);
   });
 }
