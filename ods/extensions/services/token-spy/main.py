@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 import anyio
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, Security
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from filters import apply_filters
@@ -1780,7 +1780,11 @@ def _update_timer_interval(minutes: int):
         log.warning(f"[SETTINGS] Could not update timer: {e} (may need sudo)")
 
 @app.get("/api/usage", dependencies=[Depends(verify_api_key)])
-def api_usage(agent: str | None = None, hours: int = 24, limit: int = 200):
+def api_usage(
+    agent: str | None = None,
+    hours: int = Query(default=24, ge=1, le=8760),
+    limit: int = Query(default=200, ge=1, le=1000),
+):
     return query_usage(agent=agent, hours=hours, limit=limit)
 
 
@@ -1794,13 +1798,17 @@ def api_report(start: str, end: str):
 
 
 @app.get("/token-usage", dependencies=[Depends(verify_api_key)])
-def token_usage_alias(agent: str | None = None, hours: int = 24, limit: int = 200):
+def token_usage_alias(
+    agent: str | None = None,
+    hours: int = Query(default=24, ge=1, le=8760),
+    limit: int = Query(default=200, ge=1, le=1000),
+):
     """Alias for /api/usage — returns recent token usage events."""
     return query_usage(agent=agent, hours=hours, limit=limit)
 
 
 @app.get("/api/summary", dependencies=[Depends(verify_api_key)])
-def api_summary(hours: int = 24):
+def api_summary(hours: int = Query(default=24, ge=1, le=8760)):
     try:
         result = query_summary(hours=hours) if _db_available else []
     except Exception as e:
