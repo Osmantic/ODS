@@ -436,7 +436,7 @@ test('explicit workspace intent cannot authorize traversal at the full publicati
     const previewArgs={relativeDirectory:operand};
     const preview=guard.beforeToolCall({toolName:wrapped?'tool_call':'pixel_ods_workspace_preview',params:wrapped?{id:'pixel_ods_workspace_preview',args:previewArgs}:previewArgs},context);
     assert.equal(preview.block,true);
-    assert.match(preview.blockReason,/cannot publish|workspace directory/);
+    assert.match(preview.blockReason,/Invalid preview relativeDirectory/);
     assert.equal(fs.existsSync(path.join(root,'Playground')),false);
   }
 });

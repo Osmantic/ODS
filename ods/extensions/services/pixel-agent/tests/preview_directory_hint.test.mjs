@@ -37,7 +37,13 @@ test('previous-turn writes do not become current-turn hints',()=>{
 });
 
 test('malformed requested directories never receive a recovery hint',()=>{
- for(const directory of ['../escape','one/../escape','/host/private','bad\npath','x'.repeat(513)]){const {guard,context}=setup();write(guard,context,'valid/index.html');assert.equal(preview(guard,context,directory).blockReason,WORKSPACE_PREVIEW_REQUIRES_FILES_REASON,directory);}
+ for(const directory of ['../escape','one/../escape','/host/private','bad\npath','x'.repeat(513)]){
+  const {guard,context}=setup();write(guard,context,'valid/index.html');
+  const rejected=preview(guard,context,directory);assert.equal(rejected.block,true);
+  assert.match(rejected.blockReason,/Invalid preview relativeDirectory/,directory);
+  assert.doesNotMatch(rejected.blockReason,/This turn successfully wrote|valid\/index.html/);
+  assert.equal(rejected.params,undefined);
+ }
 });
 
 test('unsafe and oversized written paths cannot appear in recovery hints',()=>{
