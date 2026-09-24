@@ -11715,6 +11715,10 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
         "[ODS Pixel delivery requirement: Answer the owner's complete message above.]",
     }
   );
+  const readInstruction = WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON +
+    ' Next, call read with args {"path":"signal-garden/index.html"}. ' +
+    "If using Tool Search, call tool_call with id read and those same args. " +
+    "Wait for that file's successful read result before editing it.";
   const blindEdit = call(guard, "tool_call", {
     ...run2,
     event: {
@@ -11731,7 +11735,7 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
   assert.equal(blindEdit.block, true);
   assert.equal(
     blindEdit.blockReason,
-    WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON
+    readInstruction
   );
   const blindWrite = call(guard, "tool_call", {
     ...run2,
@@ -11739,7 +11743,7 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
       path: "index.html", content: "<!doctype html><p>fast</p>",
     } } },
   });
-  assert.equal(blindWrite.blockReason, WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON);
+  assert.equal(blindWrite.blockReason, readInstruction);
 
   const persistFollowup = (toolName, toolCallId, result) => {
     const message = { role: "toolResult", toolName, toolCallId, ...result };
@@ -11750,7 +11754,7 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
     )?.message ?? message;
   };
   const finalizeFollowup = () => guard.beforeAgentFinalize({}, { agentId: "pixel", ...run2.context });
-  assert.equal(finalizeFollowup().retry.instruction, WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON);
+  assert.equal(finalizeFollowup().retry.instruction, readInstruction);
   assert.equal(finalizeFollowup().retry.idempotencyKey, "pixel-ods-workspace-visual-continuation-read");
   assert.equal(finalizeFollowup().retry.maxAttempts, 1);
   // Replay before-tool rejection -> persisted tool result, the chain observed
@@ -11763,12 +11767,47 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
       } },
     })],
   ]) {
-    assert.equal(rejection.blockReason, WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON);
+    assert.equal(rejection.blockReason, readInstruction);
     const error = { isError: true, content: [{ type: "text", text: rejection.blockReason }] };
     const persisted = persistFollowup(toolName, id, error);
     assert.equal(persisted.isError, true);
     assert.deepEqual(persisted.content, error.content);
   }
+
+  // Execute the suggested read through both transports: failed readback and
+  // successful readback of another project file must not authorize this edit.
+  for (const deferred of [false, true]) {
+    for (const wrongFile of [false, true]) {
+      const toolName = deferred ? "tool_call" : "read";
+      const path = wrongFile ? "signal-garden/styles.css" : "signal-garden/index.html";
+      const args = { path };
+      const params = deferred ? { id: "read", args } : args;
+      const toolCallId = `read-prerequisite-${deferred}-${wrongFile}`;
+      const context = { ...run2.context, toolCallId };
+      const prepared = call(guard, toolName, { event: { ...run2.event, toolCallId, params }, context });
+      assert.notEqual(prepared?.block, true);
+      const result = wrongFile
+        ? { details: { status: "completed" }, content: [{ type: "text", text: "body {color: red}" }] }
+        : { isError: true, details: { status: "error" }, content: [{ type: "text", text: "Read failed" }] };
+      afterCall(guard, toolName, {
+        event: { ...run2.event, toolCallId, params: prepared?.params ?? params,
+          result: deferred ? wrappedCoreResult("read", result) : result }, context,
+      });
+      const stillBlocked = call(guard, mutationName, {
+        ...run2, event: { ...run2.event, params: { path: "index.html", content: "replacement",
+          edits: [{ oldText: "slow", newText: "fast" }] } },
+      });
+      assert.equal(stillBlocked.block, true);
+      assert.equal(stillBlocked.blockReason, readInstruction);
+    }
+  }
+  const unreadNestedFile = call(guard, mutationName, {
+    ...run2, event: { ...run2.event, params: { path: "signal-garden/assets/theme.css",
+      content: "replacement", edits: [{ oldText: "red", newText: "blue" }] } },
+  });
+  assert.equal(unreadNestedFile.block, true);
+  assert.ok(unreadNestedFile.blockReason.includes('read with args {"path":"signal-garden/assets/theme.css"}'));
+  assert.ok(!unreadNestedFile.blockReason.includes('signal-garden/index.html'));
 
   const read = call(guard, "tool_call", {
     ...run2,

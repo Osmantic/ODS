@@ -7592,7 +7592,7 @@ export function createToolLoopGuard({
       ) {
         return {
           block: true,
-          blockReason: WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON,
+          blockReason: visualContinuationReadInstruction(state, selectedPath),
         };
       }
       if (
@@ -10056,6 +10056,24 @@ export function createToolLoopGuard({
     return undefined;
   }
 
+  function visualContinuationReadInstruction(state, selectedPath) {
+    const directory = state?.workspaceTaskDirectory;
+    // Only recommend a path inside the already verified continuation project.
+    // This is guidance for a real read, never an automatic read or permission
+    // to mutate; the existing per-file successfulReadPaths gate still applies.
+    const path = selectedPath ?? (typeof directory === "string" ? `${directory}/index.html` : undefined);
+    if (typeof directory !== "string" || normalizeWorkspaceFilePath(directory) !== directory ||
+        typeof path !== "string" || normalizeWorkspaceFilePath(path) !== path ||
+        !path.startsWith(`${directory}/`) ||
+        !path.slice(directory.length + 1).split("/").every(part => WORKSPACE_PATH_COMPONENT.test(part))) {
+      return WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON;
+    }
+    return WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON +
+      ` Next, call read with args ${JSON.stringify({path})}. ` +
+      "If using Tool Search, call tool_call with id read and those same args. " +
+      "Wait for that file's successful read result before editing it.";
+  }
+
   function visualContinuationPrerequisite(state) {
     if (!state?.workspaceVisualContinuationRequested || state.workspaceVisualContinuationEdited) return undefined;
     const directory = state.workspaceTaskDirectory;
@@ -10065,7 +10083,7 @@ export function createToolLoopGuard({
     return {
       stage: hasRead ? "workspace-visual-continuation-edit" : "workspace-visual-continuation-read",
       instruction: hasRead ? WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON
-        : WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON,
+        : visualContinuationReadInstruction(state),
     };
   }
 
