@@ -8,10 +8,12 @@ import { PixelCodeLines, PixelLanguageBadge, needsPlainSource } from './PixelCod
 import PixelArtifactDownload from './PixelArtifactDownload'
 import PixelSourceFind from './PixelSourceFind'
 import PixelSourceExcerpt from './PixelSourceExcerpt'
+import PixelVerifiedImage from './PixelVerifiedImage'
 import './portal-workspace-source.css'
 
 
 const TEXT_LANGUAGES = {html:'html',htm:'html',css:'css',scss:'scss',js:'javascript',mjs:'javascript',cjs:'javascript',jsx:'javascript',ts:'typescript',tsx:'typescript',py:'python',sh:'bash',yml:'yaml',yaml:'yaml',toml:'ini',json:'json',svg:'xml',xml:'xml',md:'markdown',markdown:'markdown',txt:'text',map:'json',csv:'text',tsv:'text'}
+const IMAGE_TYPES = {png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', webp:'image/webp'}
 
 // Only links to this verified publication may open an internal file tab. Treat
 // rendered Markdown as untrusted content: no HTML execution or remote images.
@@ -72,6 +74,7 @@ export default function PixelPreviewSource({ preview, file, workbench = false, o
   const language = TEXT_LANGUAGES[extension]
   const [source, setSource] = useState(null)
   const [binarySize, setBinarySize] = useState(null)
+  const [image, setImage] = useState(null)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
   const [attempt, setAttempt] = useState(0)
@@ -91,7 +94,7 @@ export default function PixelPreviewSource({ preview, file, workbench = false, o
     let current = true
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 12000)
-    setSource(null); setBinarySize(null); setError(''); setCopied(false); setCopyError('')
+    setSource(null); setBinarySize(null); setImage(null); setError(''); setCopied(false); setCopyError('')
     setViewSource(false); setShowFind(false); setShowExcerpt(false)
     if (optionsRef.current) optionsRef.current.open = false
     async function load() {
@@ -100,13 +103,16 @@ export default function PixelPreviewSource({ preview, file, workbench = false, o
         if (language) {
           const value = new TextDecoder('utf-8', {fatal:true, ignoreBOM:true}).decode(bytes)
           if (current) setSource(value)
-        } else if (current) setBinarySize(bytes.byteLength)
+        } else if (current) {
+          setBinarySize(bytes.byteLength)
+          if (IMAGE_TYPES[extension]) setImage({bytes, mime:IMAGE_TYPES[extension]})
+        }
       } catch { if (current) setError('The published source could not be verified. No unverified code is displayed.') }
       finally { clearTimeout(timeout) }
     }
     void load()
     return () => { current = false; copyRevision.current++; controller.abort(); clearTimeout(timeout) }
-  }, [preview.siteId, path, expectedDigest, file?.bytes, language, attempt])
+  }, [preview.siteId, path, expectedDigest, file?.bytes, language, extension, attempt])
   async function copy() {
     if (source === null) return
     const revision = ++copyRevision.current
@@ -147,6 +153,7 @@ export default function PixelPreviewSource({ preview, file, workbench = false, o
     {copyError && <p role="alert" className="portal-source-notice">{copyError}</p>}
     {source === null && binarySize === null && !error && <p role="status" className="portal-source-notice">Loading file…</p>}
     {binarySize !== null && <div className="portal-source-binary"><PixelLanguageBadge path={path}/><p>No text preview available</p><small>{binarySize.toLocaleString()} bytes · Use Download to open this file.</small></div>}
+    {image && <PixelVerifiedImage key={`${preview.siteId}/${path}/${expectedDigest}`} {...image} path={path}/>}
     {source !== null && <>
       {showFind && !plain && <PixelSourceFind key={`find/${preview.siteId}/${path}/${expectedDigest}`} source={source} codeRef={codeRef}/>}
       {showExcerpt && <div className="portal-source-excerpt"><PixelSourceExcerpt key={`excerpt/${preview.siteId}/${path}/${expectedDigest}`} source={source}/></div>}
@@ -162,6 +169,7 @@ export default function PixelPreviewSource({ preview, file, workbench = false, o
   return <section className="pixel-preview-source pixel-original-source" data-wrap-lines={wrapLines} aria-label={path === 'index.html' ? 'Published HTML source' : `Source: ${path}`}>
     {source === null && binarySize === null && !error && <p role="status">Verifying source…</p>}
     {binarySize !== null && <p role="status">Binary asset. Its bytes are verified; no text source is available.</p>}
+    {image && <PixelVerifiedImage key={`${preview.siteId}/${path}/${expectedDigest}`} {...image} path={path}/>}
     {error && <div role="alert"><p>{error}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>Retry source</button></div>}
     {copyError && <p role="alert">{copyError}</p>}
     <div className="pixel-code-block">
