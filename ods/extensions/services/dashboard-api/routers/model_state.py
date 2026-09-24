@@ -63,7 +63,7 @@ def _validate_document(doc: Any) -> list[str]:
         schema = json.loads(_schema_path().read_text(encoding="utf-8"))
         Draft202012Validator.check_schema(schema)
         validator = Draft202012Validator(schema)
-    except (OSError, ValueError, SchemaError) as exc:
+    except (OSError, ValueError, SchemaError, RecursionError) as exc:
         return [f"state schema unavailable or invalid: {exc}"]
 
     errors = []
@@ -115,7 +115,7 @@ async def get_model_state(api_key: str = Depends(verify_api_key)):
 
     try:
         doc = json.loads(raw)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
         return _invalid_response([f"not valid JSON: {exc}"])
 
     if not isinstance(doc, dict):
