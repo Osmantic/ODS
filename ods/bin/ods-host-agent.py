@@ -7039,11 +7039,15 @@ def read_json_body(handler) -> dict | None:
     except (ValueError, TypeError):
         json_response(handler, 400, {"error": "Invalid Content-Length"})
         return None
+    if length > MAX_BODY:
+        handler.close_connection = True
+        json_response(handler, 413, {"error": "Request body too large"})
+        return None
     if length <= 0:
         json_response(handler, 400, {"error": "Request body required"})
         return None
     try:
-        data = json.loads(handler.rfile.read(min(length, MAX_BODY)))
+        data = json.loads(handler.rfile.read(length))
     except (json.JSONDecodeError, UnicodeDecodeError):
         json_response(handler, 400, {"error": "Invalid JSON"})
         return None
@@ -7072,10 +7076,14 @@ def read_optional_json_body(handler) -> dict | None:
     except (ValueError, TypeError):
         json_response(handler, 400, {"error": "Invalid Content-Length"})
         return None
+    if length > MAX_BODY:
+        handler.close_connection = True
+        json_response(handler, 413, {"error": "Request body too large"})
+        return None
     if length <= 0:
         return {}
     try:
-        data = json.loads(handler.rfile.read(min(length, MAX_BODY)))
+        data = json.loads(handler.rfile.read(length))
     except (json.JSONDecodeError, UnicodeDecodeError):
         json_response(handler, 400, {"error": "Invalid JSON"})
         return None

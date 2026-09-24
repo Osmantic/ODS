@@ -8351,6 +8351,23 @@ def test_read_json_body_accepts_object():
     assert _mod.read_json_body(handler) == {"a": 1}
 
 
+@pytest.mark.parametrize(
+    "reader",
+    [_mod.read_json_body, _mod.read_optional_json_body],
+)
+def test_json_body_readers_reject_oversize_before_consuming(reader):
+    handler = _FakeHandler(
+        b"{}",
+        headers={"Content-Length": str(_mod.MAX_BODY + 1)},
+    )
+
+    assert reader(handler) is None
+    assert handler.response_code == 413
+    assert handler.parse_response() == {"error": "Request body too large"}
+    assert handler.close_connection is True
+    assert handler.rfile.tell() == 0
+
+
 class TestWindowsObservability:
 
     def test_adapter_selection_prefers_configured_discrete_amd(self, monkeypatch):
