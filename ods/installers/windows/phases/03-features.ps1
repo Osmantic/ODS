@@ -54,6 +54,27 @@ $enableRemoteAccess  = $false
 # explicit override so a -All run can still suppress Langfuse.
 $enableLangfuse   = ($langfuseFlag -or $allFlag) -and (-not $noLangfuseFlag)
 
+# ── Preserve the recorded feature selection on reruns that do not restate it ──
+# The installed tree records each optional service's enablement as
+# compose.yaml / compose.yaml.disabled — the record the service plan below
+# consumes — so a flagless reinstall must not silently revert services the
+# user opted in to (voice/workflows/RAG default off) or out of (ComfyUI,
+# Perplexica, Privacy Shield default on). The interactive menu below still
+# overrides whatever the record says.
+$enableVoice         = Resolve-ODSWindowsFeatureFlag $enableVoice         ($voiceFlag -or $allFlag)                          "whisper"        $installDir
+$enableWorkflows     = Resolve-ODSWindowsFeatureFlag $enableWorkflows     ($workflowsFlag -or $allFlag)                      "n8n"            $installDir
+$enableRag           = Resolve-ODSWindowsFeatureFlag $enableRag           ($ragFlag -or $allFlag)                            "qdrant"         $installDir
+$enableRecommended   = Resolve-ODSWindowsFeatureFlag $enableRecommended   ($recommendedFlag -or $noRecommendedFlag -or $allFlag) "token-spy"     $installDir
+$enableHermes        = Resolve-ODSWindowsFeatureFlag $enableHermes        ($hermesFlag -or $noHermesFlag -or $allFlag)       "hermes"         $installDir
+$enableOpenClaw      = Resolve-ODSWindowsFeatureFlag $enableOpenClaw      $openClawFlag                                      "openclaw"       $installDir
+$enableComfyui       = Resolve-ODSWindowsFeatureFlag $enableComfyui       ($comfyuiFlag -or $noComfyuiFlag -or $allFlag)     "comfyui"        $installDir
+$enableDeepResearch  = Resolve-ODSWindowsFeatureFlag $enableDeepResearch  $allFlag                                           "perplexica"     $installDir
+$enablePrivacyShield = Resolve-ODSWindowsFeatureFlag $enablePrivacyShield $allFlag                                           "privacy-shield" $installDir
+$enableLangfuse      = Resolve-ODSWindowsFeatureFlag $enableLangfuse      ($langfuseFlag -or $noLangfuseFlag -or $allFlag)   "langfuse"       $installDir
+$enableBraveSearch   = Resolve-ODSWindowsFeatureFlag $enableBraveSearch   $allFlag                                           "brave-search"   $installDir
+$enableODSProxy      = Resolve-ODSWindowsFeatureFlag $enableODSProxy      $allFlag                                           "ods-proxy"      $installDir
+$enableRemoteAccess  = Resolve-ODSWindowsFeatureFlag $enableRemoteAccess  $allFlag                                           "tailscale"      $installDir
+
 # ── Interactive menu (skipped in non-interactive / dry-run / --All mode) ──────
 if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
     Write-Host ""

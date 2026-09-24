@@ -137,6 +137,53 @@ function Test-ODSWindowsServiceEnabled {
     return ($Plan.ContainsKey($ServiceId) -and $Plan[$ServiceId].Enabled)
 }
 
+function Get-ODSWindowsFeatureRecord {
+    <#
+    .SYNOPSIS
+        Read the recorded enablement of an optional service from the installed
+        tree. Phase orchestration renames each optional service's compose.yaml
+        to compose.yaml.disabled when its feature is off (see
+        Set-ODSWindowsExtensionComposeState), so the installed marker pair is
+        the authoritative record of the last selection. Returns $true / $false,
+        or $null when there is no record (fresh install) or the record is
+        ambiguous (both markers present after an interrupted sync).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceId,
+        [Parameter(Mandatory = $true)][string]$InstallRoot
+    )
+
+    $serviceDir = Join-Path (Join-Path (Join-Path $InstallRoot "extensions") "services") $ServiceId
+    $composePath = Join-Path $serviceDir "compose.yaml"
+    $disabledPath = "$composePath.disabled"
+
+    $hasActive = Test-Path -LiteralPath $composePath
+    $hasDisabled = Test-Path -LiteralPath $disabledPath
+    if ($hasActive -and -not $hasDisabled) { return $true }
+    if ($hasDisabled -and -not $hasActive) { return $false }
+    return $null
+}
+
+function Resolve-ODSWindowsFeatureFlag {
+    <#
+    .SYNOPSIS
+        Keep a feature flag at its caller value when it was explicitly passed
+        this run; when it was not, restore the selection recorded by the
+        previous install. Unknown or ambiguous records keep the caller value.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][bool]$Current,
+        [Parameter(Mandatory = $true)][bool]$Explicit,
+        [Parameter(Mandatory = $true)][string]$ServiceId,
+        [Parameter(Mandatory = $true)][string]$InstallRoot
+    )
+
+    if ($Explicit) { return $Current }
+    $record = Get-ODSWindowsFeatureRecord -ServiceId $ServiceId -InstallRoot $InstallRoot
+    if ($null -ne $record) { return [bool]$record }
+    return $Current
+}
+
 function Set-ODSWindowsExtensionComposeState {
     param(
         [Parameter(Mandatory = $true)][string]$ComposePath,
