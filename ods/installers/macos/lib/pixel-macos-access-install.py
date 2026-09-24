@@ -233,6 +233,7 @@ def _policy_deployment(environment, document, node, entrypoint, owner, *, bundle
         protected.append(Path(bundle_plan['destination']))
         writable.append(Path(bundle_plan['config_path']).parent)
     readable = [_path(document['WorkingDirectory']).resolve(strict=True)]
+    readable.extend(_policy.system_python_readable_paths())
     sockets = [socket]
     if native_services:
         state = Path('/private/var/lib/pixel-ops-broker')
