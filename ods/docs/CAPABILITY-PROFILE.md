@@ -15,6 +15,16 @@ ODS now exposes a normalized installer capability profile so platform and hardwa
 scripts/build-capability-profile.sh --output /tmp/ods-capabilities.json
 ```
 
+For read-only automation, stream the same profile without writing the default
+file:
+
+```bash
+scripts/build-capability-profile.sh --stdout
+```
+
+`--stdout` is intentionally exclusive with `--output` and `--env` so each
+invocation has one unambiguous output contract.
+
 For shell-driven installers:
 
 ```bash

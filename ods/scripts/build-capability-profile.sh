@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 OUTPUT_FILE=""
 ENV_MODE="false"
+STDOUT_MODE="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -16,12 +17,26 @@ while [[ $# -gt 0 ]]; do
             ENV_MODE="true"
             shift
             ;;
+        --stdout)
+            STDOUT_MODE="true"
+            shift
+            ;;
         *)
             echo "Unknown argument: $1" >&2
             exit 1
             ;;
     esac
 done
+
+if [[ "$STDOUT_MODE" == "true" && "$ENV_MODE" == "true" ]]; then
+    echo "--stdout and --env are mutually exclusive" >&2
+    exit 1
+fi
+
+if [[ "$STDOUT_MODE" == "true" && -n "$OUTPUT_FILE" ]]; then
+    echo "--stdout and --output are mutually exclusive" >&2
+    exit 1
+fi
 
 if [[ -z "$OUTPUT_FILE" ]]; then
     OUTPUT_FILE="${ROOT_DIR}/.capabilities.json"
@@ -67,7 +82,7 @@ fi
 _LLM_PORT="${SERVICE_PORTS[llama-server]:-11434}"
 _LLM_HEALTH="${SERVICE_HEALTH[llama-server]:-/health}"
 
-"$PYTHON_CMD" - "$HARDWARE_JSON" "$OUTPUT_FILE" "$ENV_MODE" "${HW_CLASS_ID:-unknown}" "${HW_CLASS_LABEL:-Unknown}" "${HW_REC_BACKEND:-cpu}" "${HW_REC_TIER:-T1}" "${HW_REC_COMPOSE_OVERLAYS:-}" "$_LLM_PORT" "$_LLM_HEALTH" <<'PY'
+"$PYTHON_CMD" - "$HARDWARE_JSON" "$OUTPUT_FILE" "$ENV_MODE" "${HW_CLASS_ID:-unknown}" "${HW_CLASS_LABEL:-Unknown}" "${HW_REC_BACKEND:-cpu}" "${HW_REC_TIER:-T1}" "${HW_REC_COMPOSE_OVERLAYS:-}" "$_LLM_PORT" "$_LLM_HEALTH" "$STDOUT_MODE" <<'PY'
 import json
 import os
 import pathlib
@@ -84,6 +99,7 @@ hw_rec_tier = sys.argv[7]
 hw_rec_overlays = [x for x in sys.argv[8].split(",") if x]
 llm_port = int(sys.argv[9]) if len(sys.argv) > 9 else 11434
 llm_health = sys.argv[10] if len(sys.argv) > 10 else "/health"
+stdout_mode = len(sys.argv) > 11 and sys.argv[11] == "true"
 
 os_name = (hardware.get("os") or "unknown").lower()
 if os_name in {"linux", "wsl"}:
@@ -171,20 +187,21 @@ profile = {
     }
 }
 
-output_path.parent.mkdir(parents=True, exist_ok=True)
-fd, tmp_path = tempfile.mkstemp(dir=str(output_path.parent), suffix=".tmp")
-try:
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(json.dumps(profile, indent=2) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, str(output_path))
-except BaseException:
+if not stdout_mode:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=str(output_path.parent), suffix=".tmp")
     try:
-        os.unlink(tmp_path)
-    except OSError:
-        pass
-    raise
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(profile, indent=2) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(output_path))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 if env_mode:
     env = {
@@ -208,4 +225,6 @@ if env_mode:
     for key, value in env.items():
         safe = str(value).replace("\\", "\\\\").replace('"', '\\"')
         print(f'{key}="{safe}"')
+elif stdout_mode:
+    print(json.dumps(profile, indent=2))
 PY
