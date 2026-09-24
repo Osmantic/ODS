@@ -270,6 +270,9 @@ jobs:
           bash tests/test-validate-manifests.sh
           bash tests/test-validate-manifest-schema.sh
 
+      - name: Community Extension Recipes Resolve Once Installed
+        run: bash tests/test-library-recipes-resolve.sh
+
       - name: Health Check Tests
         run: bash tests/test-health-check.sh
       - name: Post-install Inference Validation Tests

@@ -19,11 +19,9 @@ This ODS entry is intentionally conservative:
 
 ## Enable
 
-```bash
-cp -r ods/extensions/library/services/gaia ods/extensions/services/gaia
-ods enable gaia
-ods start gaia
-```
+Install **AMD GAIA** from the Extensions page of the ODS dashboard. The
+recipe is installed under `data/user-extensions/gaia` and built from that
+directory.
 
 Open the UI at:
 
@@ -44,11 +42,18 @@ GAIA_LEMONADE_BASE_URL=
 ```
 
 Use `GAIA_LEMONADE_BASE_URL` when you already have Lemonade Server or a
-compatible endpoint available, for example:
+compatible endpoint available. The URL must be reachable from inside the
+container. On Docker Desktop (macOS, Windows) the host is available as
+`host.docker.internal`:
 
 ```env
 GAIA_LEMONADE_BASE_URL=http://host.docker.internal:8000/api/v1
 ```
+
+On Linux, `host.docker.internal` is not defined for installed extensions
+(ODS does not let user extensions add `extra_hosts`), so use an address the
+container can route to, such as the host's LAN address, with Lemonade
+listening on that interface.
 
 The GAIA CLI also reads `LEMONADE_BASE_URL`, `GAIA_BASE_URL`, and
 `GAIA_MODEL_ID`; the compose file passes those through for advanced setups.

@@ -1,7 +1,7 @@
 services:
   gaia:
     build:
-      context: ./extensions/services/gaia
+      context: .
       dockerfile: Dockerfile
       args:
         GAIA_AGENT_UI_VERSION: ${GAIA_AGENT_UI_VERSION:-0.19.0}
@@ -22,8 +22,6 @@ services:
       - GAIA_MODEL_ID=${GAIA_MODEL_ID:-}
     volumes:
       - ./data/gaia:/home/gaia/.gaia:rw
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${GAIA_PORT:-7822}:4200"
     healthcheck:

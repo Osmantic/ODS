@@ -143,6 +143,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== Manifest schema source of truth ==="
 	@bash tests/test-validate-manifest-schema.sh
+	@bash tests/test-library-recipes-resolve.sh
 	@echo "=== ComfyUI user directory is persisted ==="
 	@bash tests/test-comfyui-user-dir-persisted.sh
 	@echo ""
