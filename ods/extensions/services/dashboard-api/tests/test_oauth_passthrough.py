@@ -164,6 +164,27 @@ def test_oauth_init_prunes_expired_nonces(oauth_client):
     assert not stale.exists(), "expired nonce should have been pruned on init"
 
 
+@pytest.mark.parametrize(
+    "invalid_metadata",
+    [
+        {"created_at": "not-a-timestamp", "ttl_seconds": 900},
+        {"created_at": int(time.time()), "ttl_seconds": []},
+    ],
+)
+def test_oauth_init_prunes_type_invalid_nonce_metadata(
+    oauth_client, invalid_metadata
+):
+    nonce_dir = oauth_client.tmp / "oauth-nonces"
+    nonce_dir.mkdir(parents=True, exist_ok=True)
+    corrupt = nonce_dir / "corrupt-nonce-abcdefghijk.json"
+    corrupt.write_text(json.dumps(invalid_metadata), encoding="utf-8")
+
+    state = _init_flow(oauth_client, skill_id="spotify")
+
+    assert not corrupt.exists()
+    assert (nonce_dir / f"{state}.json").exists()
+
+
 # ---------------------------------------------------------------------------
 # /api/oauth/callback — happy path
 # ---------------------------------------------------------------------------
@@ -352,6 +373,24 @@ def test_callback_rejects_unreadable_nonce(oauth_client):
     assert resp.status_code == 400
     assert not (oauth_client.tmp / "oauth_callback.json").exists()
     assert not nonce_file.exists(), "unreadable nonce should be cleaned up"
+
+
+def test_callback_rejects_type_invalid_nonce_metadata(oauth_client):
+    state = _init_flow(oauth_client)
+    nonce_file = oauth_client.tmp / "oauth-nonces" / f"{state}.json"
+    payload = json.loads(nonce_file.read_text(encoding="utf-8"))
+    payload["ttl_seconds"] = {"invalid": True}
+    nonce_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    response = oauth_client.get(
+        "/api/oauth/callback",
+        params={"code": "provider-code", "state": state},
+    )
+
+    assert response.status_code == 400
+    assert "unreadable" in response.text
+    assert not nonce_file.exists()
+    assert not (oauth_client.tmp / "oauth_callback.json").exists()
 
 
 # ---------------------------------------------------------------------------

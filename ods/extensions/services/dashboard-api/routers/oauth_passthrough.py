@@ -244,15 +244,15 @@ def _prune_expired_nonces(nonce_dir: Path) -> None:
     for path in entries:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            created = int(payload.get("created_at", 0) or 0)
+            ttl = int(payload.get("ttl_seconds", 0) or 0)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError, OverflowError):
             # Unreadable/corrupt — clean it up too.
             try:
                 path.unlink(missing_ok=True)
             except OSError:
                 pass
             continue
-        created = int(payload.get("created_at", 0) or 0)
-        ttl = int(payload.get("ttl_seconds", 0) or 0)
         if not created or not ttl or (now - created) > ttl:
             try:
                 path.unlink(missing_ok=True)
@@ -443,7 +443,9 @@ async def oauth_callback(
 
     try:
         nonce_payload = json.loads(nonce_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        created = int(nonce_payload.get("created_at", 0) or 0)
+        ttl = int(nonce_payload.get("ttl_seconds", 0) or 0)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError, OverflowError) as exc:
         logger.warning("oauth callback saw unreadable nonce %s: %s", nonce_path, exc)
         try:
             nonce_path.unlink(missing_ok=True)
@@ -455,8 +457,6 @@ async def oauth_callback(
         )
 
     now = int(time.time())
-    created = int(nonce_payload.get("created_at", 0) or 0)
-    ttl = int(nonce_payload.get("ttl_seconds", 0) or 0)
     if not created or not ttl or (now - created) > ttl:
         try:
             nonce_path.unlink(missing_ok=True)
