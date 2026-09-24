@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 import pytest
 
@@ -249,7 +250,12 @@ class TestScanUserExtensions:
         _write_manifest(ext_dir, _make_manifest("real-ext"))
         (ext_dir / "compose.yaml").write_text("services: {}\n")
 
-        (user_dir / "link-ext").symlink_to(ext_dir)
+        try:
+            (user_dir / "link-ext").symlink_to(ext_dir, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                pytest.skip("Windows symlink privilege is unavailable")
+            raise
 
         result = scan_user_extension_services(user_dir)
         assert "real-ext" in result
