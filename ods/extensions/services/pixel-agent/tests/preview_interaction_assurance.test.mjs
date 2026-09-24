@@ -7,6 +7,32 @@ import {INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash, normalizeWorkspac
 
 const owner='Create and publish a website in a new workspace directory site. Add a button that toggles hidden details.';
 const context={agentId:'pixel',runId:'run',sessionId:'session',sessionKey:'opaque-key'};
+test('bundle output mutation invalidates publication and interaction until fresh verification',()=>{
+  const {guard,preview}=setup();
+  const observed=inspection(guard,plan(preview));
+  guard.afterToolCall({...observed.event,result:observed.result},observed.ctx);
+  assert.equal(guard.verificationForRun('run').status,'passed');
+  assert.equal(guard.invalidateWorkspaceBundle({...context,sessionId:'unrelated'}),false);
+  assert.equal(guard.verificationForRun('run').status,'passed');
+  assert.equal(guard.invalidateWorkspaceBundle(context),true);
+  assert.notEqual(guard.verificationForRun('run').status,'passed');
+  guard.afterToolCall({...observed.event,result:observed.result},observed.ctx);
+  assert.notEqual(guard.verificationForRun('run').status,'passed','late old inspection cannot restore the old publication');
+  call(guard,'pixel_ods_workspace_preview',{relativeDirectory:preview.relativeDirectory},'new-publish',{details:preview});
+  assert.notEqual(guard.verificationForRun('run').status,'passed','new publication still needs current interaction proof');
+  const fresh=inspection(guard,plan(preview),{id:'new-inspection'});
+  guard.afterToolCall({...fresh.event,result:fresh.result},fresh.ctx);
+  assert.equal(guard.verificationForRun('run').status,'passed');
+  const next=revisePublishedSite(guard,preview);
+  const staticPlan={...plan(next.preview),steps:[{action:'assert-visible',locator:{selector:'button'}}]};
+  const staticCheck=inspection(guard,staticPlan,{id:'followup-static',runContext:next.ctx});
+  guard.afterToolCall({...staticCheck.event,result:staticCheck.result},staticCheck.ctx);
+  assert.equal(guard.verificationForRun(next.ctx.runId).status,'failed');
+  assert.match(guard.verificationForRun(next.ctx.runId).text,/show\/hide interaction/);
+  const nextTransition=inspection(guard,plan(next.preview),{id:'followup-transition',runContext:next.ctx});
+  guard.afterToolCall({...nextTransition.event,result:nextTransition.result},nextTransition.ctx);
+  assert.equal(guard.verificationForRun(next.ctx.runId).status,'passed');
+});
 function call(guard,name,params,id,result,runContext=context) {
   const ctx={...runContext,toolName:name,toolCallId:id};
   const event={toolName:name,runId:runContext.runId,toolCallId:id,params};

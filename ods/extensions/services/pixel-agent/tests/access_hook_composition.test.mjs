@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
 
 // Exercise the actual registration callbacks without importing the installed
@@ -12,7 +13,7 @@ const start = source.indexOf('    if (!managedRuntime) {');
 const end = source.indexOf('    api.registerHttpRoute(', start);
 assert.ok(start >= 0 && end > start, 'expected tool lifecycle registration block');
 function hooks(guardResult, managedRuntime = false) {
-  const callbacks = {}, calls = [], activity = [];
+  const callbacks = {}, calls = [], activity = [], bundleAdmission = createWorkspaceBundleAdmission();
   const runtime = {
     isProbe: context => context?.runId === 'private-proof',
     beforeTool: () => { calls.push('admit'); },
@@ -33,9 +34,9 @@ function hooks(guardResult, managedRuntime = false) {
       finish: () => activity.push('finish'),
     },
     goalProgress: {before() {}, update() {}, finish() {}},
-    managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, AGENT_ID: 'pixel',
+    bundleAdmission, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, AGENT_ID: 'pixel',
   });
-  return {callbacks, calls, runtime, activity};
+  return {callbacks, calls, runtime, activity, bundleAdmission};
 }
 const context = {agentId: 'pixel', runId: 'cron-request', toolName: 'cron'};
 const event = {toolCallId: 'cron-1', toolName: 'cron', params: {
@@ -101,3 +102,20 @@ for (const managed of [false, true]) {
     assert.deepEqual(activity, [], 'private proofs must not create workbench activity');
   });
 }
+
+
+test('bundle scope is recorded only after guard and native admission both permit the call',async()=>{
+  const name='pixel_ods_workspace_bundle';
+  const args={outputRoot:'project/bundles',mappingPath:'map.json',files:[{source:'project/a.py',key:'a',copyTo:'project/a.txt'}]};
+  const ctx={agentId:'pixel',runId:'run',sessionId:'session',sessionKey:'key',toolCallId:'bundle'};
+  const event={toolName:name,toolCallId:'bundle',params:args};
+  for(const held of [false,true]) {
+    const {callbacks,runtime,bundleAdmission}=hooks();
+    if(held)runtime.beforeTool=()=>({block:true});
+    await callbacks.before_tool_call(event,ctx);
+    if(held)assert.throws(()=>bundleAdmission.take('bundle',args,ctx),/unbound/);
+    else assert.deepEqual(bundleAdmission.take('bundle',args,ctx),ctx);
+    callbacks.after_tool_call(event,ctx);
+    assert.throws(()=>bundleAdmission.take('bundle',args,ctx),/unbound/);
+  }
+});

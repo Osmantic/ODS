@@ -25,6 +25,7 @@ import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLane
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
+import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
   visibilityInspectionMatches, visibilityInspectionInstruction } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, completedPreviewInspection, boundedPreviewVerification } from "./preview-revalidation.mjs";
@@ -372,7 +373,7 @@ const WORKSPACE_MUTATION_TOOLS = new Set(["write", "edit", "apply_patch"]);
 const FILE_PATH_TOOLS = new Set(["read", "write", "edit"]);
 const WORKSPACE_CONTINUATION_TOOLS = new Set([
   "read", "write", "edit", "apply_patch", "exec", "process",
-  "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
+  "pixel_ods_evidence_report", "pixel_ods_evidence_readback", WORKSPACE_BUNDLE_TOOL,
 ]);
 const FAILED_TEST_READ_REPAIR_REASON =
   "The verification command failed. Preserve the owner's explicit behavior contract: correct a test only when its expectation contradicts the owner; otherwise repair the implementation, and never weaken an assertion merely to match broken output. A blank label such as `Invalid integer:` is not a helpful empty-input message. When the failure already contains actual and expected evidence, apply one focused edit to the file implicated by the failure (test or implementation), then rerun the same verification command. If the failure is a missing-file error for a file you previously wrote, recreate it before rerunning. If evidence is insufficient, read the relevant file or run a focused diagnostic, then repair and rerun verification. Report an unresolved blocker honestly when the available tools cannot resolve it.";
@@ -3697,7 +3698,7 @@ function toolProgressLane(state, tool, wrappedTarget) {
   if (wrappedTarget !== undefined && ![tool,`openclaw:${source}:${tool}`].includes(wrappedTarget)) return undefined;
   if (EXTENSION_REQUEST_TOOLS.has(tool)) return 'extension';
   if (['read','write','edit','apply_patch','exec','process',WORKSPACE_PREVIEW_TOOL,PREVIEW_INSPECTION_TOOL,
-    EVIDENCE_REPORT_TOOL,EVIDENCE_READBACK_TOOL,'pixel_ods_download_promote'].includes(tool)) return 'workspace';
+    EVIDENCE_REPORT_TOOL,EVIDENCE_READBACK_TOOL,'pixel_ods_download_promote',WORKSPACE_BUNDLE_TOOL].includes(tool)) return 'workspace';
   // Missing hooks, malformed IDs and shared research remain globally bounded.
   return undefined;
 }
@@ -5670,10 +5671,10 @@ function workspacePreviewRestrictionReason(state, tool, params) {
   if (!restriction) return undefined;
   const scopedMutation = restriction.existingFile &&
     ['write', 'edit', 'apply_patch', 'move', 'rename', 'delete', 'mkdir',
-      EVIDENCE_REPORT_TOOL, 'pixel_ods_download_promote'].includes(tool);
+      EVIDENCE_REPORT_TOOL, 'pixel_ods_download_promote', WORKSPACE_BUNDLE_TOOL].includes(tool);
   if ((scopedMutation && !scopedExistingFileMutationAllowed(state, tool, params)) ||
-      (restriction.mutation && ['write', 'edit', 'apply_patch'].includes(tool)) ||
-      (restriction.exec && ['exec', 'process'].includes(tool)) ||
+      (restriction.mutation && ['write', 'edit', 'apply_patch', WORKSPACE_BUNDLE_TOOL].includes(tool)) ||
+      (restriction.exec && ['exec', 'process', WORKSPACE_BUNDLE_TOOL].includes(tool)) ||
       (restriction.web && ['web_search', 'web_fetch', 'pixel_ods_research', 'pixel_ods_web_extract', 'browser'].includes(tool))) {
     return restriction.existingFile
       ? `The owner restricted this repair to the existing file ${restriction.existingFile}. Read that exact file successfully in this turn, then edit it or use an Update File-only patch. Do not create, rename, move, delete, or change other files, and do not use shell commands or excluded web tools to bypass this boundary.`
@@ -7624,6 +7625,13 @@ export function createToolLoopGuard({
     }
     if (state?.workspaceVisualContinuationRequested) {
       const continuationDirectory = state.workspaceTaskDirectory;
+      if (selectedToolName === WORKSPACE_BUNDLE_TOOL) {
+        let bundle;
+        try { bundle = normalizeWorkspaceBundle(selectedParams); } catch { return {block:true, blockReason:'Invalid workspace bundle paths.'}; }
+        if (![bundle.outputRoot, ...bundle.files.map(item => item.source)]
+          .every(file => file === continuationDirectory || file.startsWith(`${continuationDirectory}/`)))
+          return {block:true, blockReason:WORKSPACE_VISUAL_CONTINUATION_SCOPE_REASON};
+      }
       const selectedPath = FILE_PATH_TOOLS.has(selectedToolName)
         ? normalizeWorkspaceFilePath(selectedParams?.path)
         : undefined;
@@ -7636,7 +7644,7 @@ export function createToolLoopGuard({
           .split("/")
           .every((part) => WORKSPACE_PATH_COMPONENT.test(part));
       if (
-        (!["read", "write", "edit", "exec", "process", "tool_search", "tool_describe", WORKSPACE_PREVIEW_TOOL, PREVIEW_INSPECTION_TOOL].includes(selectedToolName) &&
+        (!["read", "write", "edit", "exec", "process", "tool_search", "tool_describe", WORKSPACE_PREVIEW_TOOL, PREVIEW_INSPECTION_TOOL, WORKSPACE_BUNDLE_TOOL].includes(selectedToolName) &&
           !(state.workspaceExtensionIsolated && EXTENSION_METADATA_TOOLS.has(selectedToolName))) ||
         (FILE_PATH_TOOLS.has(selectedToolName) && !insideContinuationDirectory)
       ) {
@@ -11169,6 +11177,20 @@ export function createToolLoopGuard({
 
   return {
     beforeToolCall,
+    invalidateWorkspaceBundle(context) {
+      const state = runs.get(context?.runId);
+      if (!state || state.clientCancelled || state.progressBudget.exhausted ||
+          state.currentSessionId !== context.sessionId || state.currentSessionKey !== context.sessionKey ||
+          sessionRuns.get(context.sessionId) !== context.runId) return false;
+      if (state.workspacePreview) state.workspacePreviewVerifiedDirectory = state.workspacePreview.relativeDirectory;
+      state.workspacePreview = undefined;
+      state.previewRevalidationCandidate = undefined;
+      state.workspaceVisibilityInspection = undefined;
+      state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
+      sessionPreviews.delete(state.currentSessionId);
+      sessionPreviewVisibilityObligations.delete(state.currentSessionId);
+      return true;
+    },
     observeRepositorySource(runId, result) {
       const state = runs.get(runId);
       if (!state?.githubCanonicalUrl || result?.isError ||

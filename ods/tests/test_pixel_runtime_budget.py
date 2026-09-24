@@ -92,7 +92,7 @@ def test_shared_overlay_is_staged_idempotent_and_uses_selected_home(tmp_path, co
     assert value['tools']['toolSearch']['enabled'] is True
     assert value['tools']['toolSearch']['mode'] == 'tools'
     assert agent['contextLimits']['toolResultMaxChars'] == max(4000, min(16000, context // 4))
-    assert {'pixel_ops_run', 'pixel_ods_workspace_preview', 'create_goal'}.issubset(value['tools']['alsoAllow'])
+    assert {'pixel_ops_run', 'pixel_ods_workspace_preview', 'pixel_ods_workspace_bundle', 'create_goal'}.issubset(value['tools']['alsoAllow'])
     assert 'pixel_ods_extension_proposal' in value['tools']['alsoAllow']
     assert 'pixel_ods_extension_proposal' in value['tools']['sandbox']['tools']['allow']
     assert 'pixel_ods_extension_proposal' not in agent['tools']['deny']

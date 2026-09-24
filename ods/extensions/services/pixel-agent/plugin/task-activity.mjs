@@ -7,7 +7,7 @@ const noEarlierThan = (observed, floor) => observed < floor ? floor : observed;
 const ORDER = ['read', 'agent', 'run', 'edit', 'browser', 'preview', 'action', 'unknown'];
 const KINDS = new Map([
   ...['read', 'ls', 'glob', 'grep'].map(name => [name, 'read']),
-  ...['write', 'edit', 'apply_patch'].map(name => [name, 'edit']),
+  ...['write', 'edit', 'apply_patch', 'pixel_ods_workspace_bundle'].map(name => [name, 'edit']),
   ...['exec', 'process', 'shell', 'bash', 'eval', 'lsp', 'debug'].map(name => [name, 'run']),
   ...['task', 'hub', 'sessions_spawn', 'sessions_send'].map(name => [name, 'agent']),
   ...['browser', 'web_search', 'web_fetch', 'pixel_ods_web_extract', 'pixel_ods_research'].map(name => [name, 'browser']),

@@ -66,6 +66,8 @@ import {
 import { createEvidenceArtifactWriter } from "./evidence-artifact.mjs";
 import { createWorkspacePreviewTool, createWorkspacePreviewVerifier } from "./workspace-preview.mjs";
 import { createWorkspacePreviewInspectTool } from "./workspace-preview-inspect.mjs";
+import {createWorkspaceBundleAdmission, createWorkspaceBundleService, createWorkspaceBundleTool} from './workspace-bundle.mjs';
+import {createWorkspaceBundleExecution} from './workspace-bundle-execution.mjs';
 import { createTaskActivity } from "./task-activity.mjs";
 import { createWorkspaceProjects } from "./workspace-projects.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
@@ -89,6 +91,7 @@ let contextCompaction;
 let currentManagedRuntime;
 const managedRuntimeRegistry = createManagedRuntimeRegistry();
 const evidenceArtifactWriter = createEvidenceArtifactWriter();
+const bundleAdmission = createWorkspaceBundleAdmission();
 
 // Restrict tool registration to the Pixel agent. Tools are only offered to the
 // agent id declared by this plugin (see openclaw.plugin.json); this guards the
@@ -307,6 +310,16 @@ export default definePluginEntry({
           .execute('ods-preview-delivery', params, signal) : undefined,
       warn: (message) => api.logger.warn(message),
     });
+    const bundleExecution = createWorkspaceBundleExecution({
+      readConfig: () => api.runtime?.config?.current?.() ?? api.config,
+      createTools: createOpenClawCodingTools, resolveSandbox: resolveSandboxContext,
+      execControl: () => execCancellationControl,
+    });
+    const executeBundle = createWorkspaceBundleService({runHelper: bundleExecution.runHelper,
+      invalidatePreview: scope => toolLoopGuard.invalidateWorkspaceBundle(scope)});
+    api.registerTool(onlyPixel(context => createWorkspaceBundleTool(context, {
+      admission: bundleAdmission, execute: executeBundle, scopeForContext: bundleExecution.scopeForContext,
+    })), {names: ['pixel_ods_workspace_bundle']});
 
     // OpenClaw does not replay arbitrary plugin tools after an empty model
     // continuation. Give the Pixel agent an explicit, trusted prompt contract
@@ -359,10 +372,12 @@ export default definePluginEntry({
         event, context, AGENT_ID,
       );
       const decision = guard?.block ? guard : goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
+      bundleAdmission.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);
       return decision;
     });
     api.on("after_tool_call", (event, context) => {
+      bundleAdmission.after(event, context);
       accessRuntime.afterTool(event, context);
       if (!accessRuntime.isProbe(context)) {
         goalProgress.update(event, context);
