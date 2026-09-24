@@ -162,7 +162,7 @@ PY
 while IFS= read -r _key; do
     _key="${_key%$'\r'}"
     [[ -n "$_key" ]] || continue
-    unset "$_key" 2>/dev/null || true
+    unset "$_key"
     load_model_selector_env_from_output <<< "$(printf '%s="profile-value"' "$_key")"
     [[ "${!_key:-}" == "profile-value" ]] || fail "$_key is declared by a catalog runtime profile but dropped by the model selector allowlist"
 done <<< "$_profile_env_keys"
