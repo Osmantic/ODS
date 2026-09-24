@@ -86,6 +86,23 @@ def test_explicit_completion_still_finishes_the_answer(test_client, vision_serve
     assert events[-2]["warning"] is None
 
 
+@pytest.mark.parametrize("malformed", [
+    'data: ["unexpected"]\n\n',
+    'data: {"choices":[]}\n\n',
+    'data: {"choices":null}\n\n',
+    'data: {"choices":[null]}\n\n',
+    'data: {"choices":[{"delta":"raw"}]}\n\n',
+    'data: 5\n\n',
+])
+def test_malformed_chunks_are_skipped_without_dropping_the_answer(test_client, vision_server, malformed):
+    # llama.cpp emits usage-only {"choices":[]} frames; a structurally odd chunk
+    # must not kill the SSE generator before the terminal frame.
+    vision_server["frames"] = [malformed, delta("A white pixel."), "data: [DONE]\n\n"]
+    events = image_request(test_client, vision_server)
+    assert [event["type"] for event in events] == ["session", "delta", "complete", "done"]
+    assert events[-2]["text"] == "A white pixel."
+
+
 def test_token_limit_is_reported_as_a_limited_answer(test_client, vision_server):
     vision_server["frames"] = [delta("A white"), delta(finish="length"), "data: [DONE]\n\n"]
     events = image_request(test_client, vision_server)
