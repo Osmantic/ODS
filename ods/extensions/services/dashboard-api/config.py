@@ -44,7 +44,12 @@ def normalize_llm_contract(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
 
-    consumes = bool(value.get("consumes", False))
+    raw_consumes = value.get("consumes", False)
+    if type(raw_consumes) is bool:
+        consumes = raw_consumes
+    else:
+        logger.warning("Treating invalid llm.consumes value as false: %r", raw_consumes)
+        consumes = False
     route = str(value.get("route") or "").strip().lower()
     pinning = str(value.get("pinning") or "").strip().lower()
     if route not in LLM_CONTRACT_ROUTES:
@@ -60,9 +65,9 @@ def normalize_llm_contract(value: Any) -> dict[str, Any] | None:
 
     min_context = value.get("min_context")
     if min_context is not None:
-        try:
-            normalized["min_context"] = max(0, int(min_context))
-        except (TypeError, ValueError):
+        if type(min_context) is int and min_context >= 0:
+            normalized["min_context"] = min_context
+        else:
             logger.warning("Ignoring invalid llm.min_context value: %r", min_context)
 
     probe = value.get("probe")

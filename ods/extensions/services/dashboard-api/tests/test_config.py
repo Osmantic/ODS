@@ -392,6 +392,39 @@ class TestLoadExtensionManifests:
         assert llm["swap_safe"] is False
         assert llm["badge"] == "not-swap-safe"
 
+    def test_manifest_loader_does_not_coerce_invalid_llm_scalar_types(self, tmp_path, caplog):
+        svc_dir = tmp_path / "invalid-llm-app"
+        svc_dir.mkdir()
+        (svc_dir / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: invalid-llm-app\n"
+            "  name: Invalid LLM App\n"
+            "  port: 8080\n"
+            "  health: /health\n"
+            "  llm:\n"
+            "    consumes: 'false'\n"
+            "    route: gateway\n"
+            "    pinning: dynamic\n"
+            "    min_context: '65536'\n"
+        )
+
+        with caplog.at_level(logging.WARNING):
+            services, _, _ = load_extension_manifests(tmp_path, "nvidia")
+
+        llm = services["invalid-llm-app"]["llm"]
+        assert llm["consumes"] is False
+        assert llm["swap_safe"] is False
+        assert "min_context" not in llm
+        assert "invalid llm.consumes" in caplog.text
+        assert "invalid llm.min_context" in caplog.text
+
+    @pytest.mark.parametrize("min_context", [True, -1, "65536"])
+    def test_normalizer_rejects_non_schema_min_context_values(self, min_context):
+        llm = config.normalize_llm_contract({"consumes": True, "min_context": min_context})
+
+        assert "min_context" not in llm
+
     def test_skips_docker_service_when_declared_compose_file_is_absent(self, tmp_path):
         svc_dir = tmp_path / "openclaw"
         svc_dir.mkdir()
