@@ -29,7 +29,7 @@ $script:EnvMap = @{ ODS_ACTIVE_MODEL_STORE = 'ssd'; GGUF_FILE = 'model.gguf'; CT
 function Read-ODSEnv { return $script:EnvMap }
 function Sync-ODSNativeInferenceConfig { }
 function Get-ODSEnvValue { param($Name, $Default) if ($script:EnvMap[$Name]) { return $script:EnvMap[$Name] }; return $Default }
-function Resolve-ODSHostAgentPython { return [pscustomobject]@{ FilePath = (Get-Command python -CommandType Application).Source; PrefixArgs = @() } }
+function Resolve-ODSHostAgentPython { return [pscustomobject]@{ FilePath = (Get-Command python -CommandType Application | Select-Object -First 1).Source; PrefixArgs = @() } }
 function Write-AI { param($Message) }
 function Write-AIWarn { param($Message) }
 function Write-AISuccess { param($Message) }
@@ -38,11 +38,11 @@ function Start-Sleep { param($Seconds, $Milliseconds) }
 function Invoke-WebRequest { param($Uri, $TimeoutSec, [switch]$UseBasicParsing, $ErrorAction) return @{ StatusCode = 200 } }
 function Get-NativeInferenceStatus { return @{ Running = $false; Backend = 'llama-server' } }
 function Write-FixtureRegistry {
-    $script:Registry | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $InstallDir 'data/model-stores.json') -Encoding utf8
+    [IO.File]::WriteAllText((Join-Path $InstallDir 'data/model-stores.json'), ($script:Registry | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 }
 function Write-FixtureEnv {
-    @($script:EnvMap.Keys | ForEach-Object { "$_=$($script:EnvMap[$_])" }) |
-        Set-Content -LiteralPath (Join-Path $InstallDir '.env') -Encoding utf8
+    $content = @($script:EnvMap.Keys | ForEach-Object { "$_=$($script:EnvMap[$_])" }) -join "`n"
+    [IO.File]::WriteAllText((Join-Path $InstallDir '.env'), $content, [Text.UTF8Encoding]::new($false))
 }
 try {
     foreach ($directory in @('data/models','scripts','extensions/services/dashboard-api')) {
@@ -52,9 +52,31 @@ try {
     [IO.File]::WriteAllText($runtime, 'fixture runtime; never execute')
     [IO.File]::WriteAllText((Join-Path $ssd 'model.gguf'), 'fixture checkpoint')
     Copy-Item -LiteralPath (Join-Path $root 'scripts/resolve-model-store.py') -Destination (Join-Path $InstallDir 'scripts')
-    foreach ($module in @('model_stores.py','env_values.py')) {
+    foreach ($module in @('model_stores.py','env_values.py','model_mtp.py')) {
         Copy-Item -LiteralPath (Join-Path $root "extensions/services/dashboard-api/$module") -Destination (Join-Path $InstallDir 'extensions/services/dashboard-api')
     }
+    # The real resolver now validates native launch arguments with --help.
+    # Keep the real model-store/hash/command validators; mock only that external
+    # process boundary because the fixture executable is deliberately inert.
+    $probeShim = @'
+import importlib.util
+import json
+import sysconfig
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('_fixture_real_subprocess', Path(sysconfig.get_path('stdlib')) / 'subprocess.py')
+real = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(real)
+DEVNULL, PIPE, STDOUT = real.DEVNULL, real.PIPE, real.STDOUT
+CREATE_NO_WINDOW = getattr(real, 'CREATE_NO_WINDOW', 0)
+def run(command, **kwargs):
+    assert command[-1] == '--help', 'Fixture attempted to start inference'
+    assert Path(command[0]).read_text() == 'fixture runtime; never execute', 'Unexpected runtime probe'
+    assert '--model' in command and '--ctx-size' in command, 'Incomplete runtime arguments'
+    with (Path(__file__).parent / 'runtime-probes.jsonl').open('a') as out:
+        out.write(json.dumps(command) + '\n')
+    return real.CompletedProcess(command, 0, '--model FNAME\n--ctx-size N\n')
+'@
+    [IO.File]::WriteAllText((Join-Path $InstallDir 'extensions/services/dashboard-api/subprocess.py'), $probeShim)
     $script:Registry = @{ schemaVersion = 1; stores = @(@{ id = 'ssd'; hostPath = $ssd; containerPath = '/model-stores/ssd';
         profiles = @{ 'model.gguf' = @{ backend = 'vulkan'; executable = $runtime; contextLength = 16384; mtp = $true; draftTokens = 2;
             runtimeSha256 = (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant();
@@ -64,6 +86,8 @@ try {
     Assert-True ($selection.modelsDirectory -eq $ssd) 'SSD was not resolved'
     Assert-True ($selection.profile.executable -eq $runtime) 'Qualified executable was lost'
     Assert-True ($selection.profile.contextLength -eq 8192) 'Persisted context was lost'
+    $probe = Get-Content -LiteralPath (Join-Path $InstallDir 'extensions/services/dashboard-api/runtime-probes.jsonl') | Select-Object -First 1 | ConvertFrom-Json
+    Assert-True ($probe[0] -eq $runtime -and $probe[-1] -eq '--help') 'Real resolver did not validate the selected runtime command'
 
     # Missing/remounted disks never become the default directory. Stop can still
     # identify a running qualified executable without needing the checkpoint.

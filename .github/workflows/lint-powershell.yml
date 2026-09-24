@@ -96,6 +96,16 @@ jobs:
         shell: powershell
         run: ./tests/test-windows-env-credential-acl.ps1
 
+      - name: Windows Model Store and Reinstall Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-model-stores.ps1
+
+      - name: Windows Model Store and Reinstall Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-model-stores.ps1
+
       - name: Windows Model Activation Contract
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1
