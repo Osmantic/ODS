@@ -280,6 +280,9 @@ jobs:
 
       - name: Health Check Tests
         run: bash tests/test-health-check.sh
+
+      - name: Update Rollback Tests
+        run: bash tests/test-update-rollback-restart-failure.sh
       - name: Post-install Inference Validation Tests
         run: python3 tests/test_validate_chat_response.py
 
