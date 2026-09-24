@@ -96,6 +96,15 @@ sr_load() {
 import yaml, sys, os
 from pathlib import Path
 
+# Manifest values can contain non-ASCII text (service names, descriptions).
+# Python's default stdio encoding follows the host locale — C/POSIX or Windows
+# cp1252 — so print() would crash mid-parse and the per-service try/except
+# below would silently drop the service as a "parse error". Emit UTF-8
+# unconditionally so the generated registry is locale-independent.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import re as _re
 
 _SAFE_VALUE = _re.compile(r'^[a-zA-Z0-9 _./:@,=-]*$')
