@@ -358,6 +358,9 @@ test('compact views keep the connection draft and never apply changes on navigat
   globalThis.fetch.mockResolvedValue(response(statusPayload))
   render(createElement(RemoteProvider, { compact: true }))
   await screen.findByRole('button', { name: 'Connection', exact: true })
+  // Navigation is mounted before the initial status has hydrated the form.
+  // Exercise view switching only once that independent request has settled.
+  await waitFor(() => expect(screen.getByLabelText('Base URL')).toHaveValue(statusPayload.routeState.provider.baseUrl))
   expect(screen.queryByRole('heading', { name: 'Egress' })).toBeNull()
   // The tab exists before the status-to-form effect has hydrated the fields.
   // Start this navigation test from a fully loaded connection draft.
