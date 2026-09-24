@@ -10,7 +10,7 @@ CANONICAL_ENDPOINT="https://install.osmantic.com/ods.sh"
 CANONICAL_REPO_URL="https://github.com/Osmantic/ODS.git"
 WINDOWS_SOURCE_ZIP_URL="https://github.com/Osmantic/ODS/archive/refs/heads/main.zip"
 STABLE_VERSION="$(
-    python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["release"]["version"])' \
+    python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["release"]["stable_version"])' \
         "$ROOT_DIR/manifest.json"
 )"
 STABLE_TAG="v$STABLE_VERSION"

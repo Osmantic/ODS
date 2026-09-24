@@ -11,7 +11,7 @@
 #   Change ODS_VERSION for custom builds. Must match constants.sh VERSION.
 # ============================================================================
 
-ODS_VERSION="2.6.0"
+ODS_VERSION="3.0.0"
 
 # Install location - use shared path resolution if available.
 # constants.sh lives at two different depths depending on layout:

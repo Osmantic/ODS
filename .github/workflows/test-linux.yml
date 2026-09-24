@@ -185,6 +185,11 @@ jobs:
       - name: Docs Link Checks
         run: bash tests/test-doc-links.sh
 
+      - name: Product Version Consistency
+        run: |
+          python3 scripts/check-version-consistency.py
+          python3 tests/test-version-consistency.py
+
       - name: Install Documentation Contract
         run: |
           bash tests/test-install-docs.sh

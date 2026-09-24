@@ -22,7 +22,7 @@ Evidence from the initial candidate must not be relabeled as a later-head pass.
 
 The promotion includes the bundled Portal assistant and its Pixel runtime,
 dashboard and model-routing changes, expanded native platform handling, and
-installer/lifecycle fixes. See [Unreleased](../CHANGELOG.md#unreleased).
+installer/lifecycle fixes. See [V3 candidate changelog](../CHANGELOG.md#300---2026-09-24).
 Native Windows does not install the Portal host runtime; qualifying WSL
 installations use the Linux path. Platform eligibility is not a guarantee of
 agent task quality.
@@ -66,8 +66,10 @@ deployments should use a pinned release or audited commit.
 
 These restrictions expose unsupported operations rather than claiming a
 successful upgrade or complete backup. Native update and disaster recovery
-remain release acceptance gaps. The version remains `2.6.0`, so the stable
-release checker does not advertise this branch promotion as a version upgrade.
+remain release acceptance gaps. At promotion, the version remained `2.6.0`, so the stable
+release checker did not advertise this branch promotion as a version upgrade.
+The subsequent [V3 development stamp](RELEASE_NOTES_3.0.0.md) is a separate
+change and does not retroactively qualify this promotion.
 
 ## Evidence available
 

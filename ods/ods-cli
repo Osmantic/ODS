@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ods-cli - Command line interface for ODS
 # Mission: M5 (Clonable ODS Setup Server)
-# Version: 2.0.0 — Registry-driven service resolution
+# Registry-driven service resolution; VERSION below is the product version.
 
 set -euo pipefail
 
@@ -44,7 +44,7 @@ _resolve_cli_install_dir() {
 }
 
 INSTALL_DIR="$(_resolve_cli_install_dir)"
-VERSION="2.6.0"
+VERSION="3.0.0"
 if [[ -f "$INSTALL_DIR/.env" ]]; then
     _v=$(awk -F= '/^ODS_VERSION=/{gsub(/^["'"'"']|["'"'"']$/,"",$2); print $2; exit}' "$INSTALL_DIR/.env" 2>/dev/null) || true
     [[ -n "${_v:-}" ]] && VERSION="$_v"

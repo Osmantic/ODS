@@ -20,7 +20,7 @@ def read_text(path: Path) -> str:
 def first_match(path: Path, pattern: str, label: str) -> str:
     match = re.search(pattern, read_text(path), re.MULTILINE | re.DOTALL)
     if not match:
-        raise ValueError(f"{label}: could not find version in {path.relative_to(ROOT)}")
+        raise ValueError(f"{label}: could not find version in {path.relative_to(ROOT.parent)}")
     return match.group(1)
 
 
@@ -82,6 +82,36 @@ def main() -> int:
         errors.append(f"manifest.json ods_version must be x.y.z, got {expected!r}")
 
     checks = [("manifest.json release.version", release_version)]
+    stable_version = str(release.get("stable_version", "")).strip()
+    if not SEMVER.fullmatch(stable_version):
+        errors.append("manifest.json release.stable_version must identify a published x.y.z baseline")
+    elif SEMVER.fullmatch(expected) and tuple(map(int, stable_version.split("."))) > tuple(map(int, expected.split("."))):
+        errors.append("manifest.json stable_version cannot exceed the current product version")
+    if release.get("channel") == "stable" and stable_version != expected:
+        errors.append("stable channel requires stable_version to equal ods_version")
+
+    for relative in (
+        "installer/package.json", "installer/package-lock.json",
+        "installer/src-tauri/tauri.conf.json",
+        "ods/extensions/services/dashboard/package.json",
+        "ods/extensions/services/dashboard/package-lock.json",
+    ):
+        try:
+            value = json.loads(read_text(ROOT.parent / relative))
+        except (OSError, ValueError) as exc:
+            errors.append(f"{relative}: cannot read package version: {exc}")
+            continue
+        checks.append((f"{relative} version", str(value.get("version", ""))))
+        if relative.endswith("package-lock.json"):
+            checks.append((f"{relative} root package version", str(value.get("packages", {}).get("", {}).get("version", ""))))
+    for relative in ("installer/src-tauri/Cargo.toml", "installer/src-tauri/Cargo.lock"):
+        add_regex_check(checks, errors, f"{relative} ods-installer version", ROOT.parent / relative,
+                        r'^name = "ods-installer"\nversion = "([^"]+)"')
+    for relative, pattern in (
+        (".env.example", r"^# ODS_VERSION=([^\n]+)"),
+        ("installers/lib/pixel-host-install.sh", r'local ods_version="\$\{VERSION:-([^}]+)\}"'),
+    ):
+        add_regex_check(checks, errors, f"{relative} ODS version", ROOT / relative, pattern)
     add_regex_check(
         checks,
         errors,

@@ -1197,7 +1197,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
 # Tier: ${TIER} (${TIER_NAME})
 
 #=== ODS Version (used by ods-cli update for version-compat checks) ===
-ODS_VERSION=${VERSION:-2.6.0}
+ODS_VERSION=${VERSION:-3.0.0}
 
 #=== Network Binding ===
 # 127.0.0.1 = localhost only (secure default)
