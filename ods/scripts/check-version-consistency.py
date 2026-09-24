@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -62,7 +63,10 @@ def add_regex_check(
         errors.append(str(exc))
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="emit a machine-readable consistency report")
+    args = parser.parse_args(argv)
     errors: list[str] = []
     manifest_path = ROOT / "manifest.json"
 
@@ -73,6 +77,9 @@ def main() -> int:
         release_version = str(release.get("version", "")).strip()
         release_date = str(release.get("date", "")).strip()
     except Exception as exc:  # noqa: BLE001 - gate should report cleanly
+        if args.json:
+            print(json.dumps({"ok": False, "expected": None, "errors": [str(exc)]}, sort_keys=True))
+            return 1
         print(f"[FAIL] version consistency: cannot read manifest.json: {exc}")
         return 1
 
@@ -149,6 +156,10 @@ def main() -> int:
     for label, value in checks:
         if value != expected:
             errors.append(f"{label} {value!r} != manifest.json ods_version {expected!r}")
+
+    if args.json:
+        print(json.dumps({"ok": not errors, "expected": expected, "errors": errors}, sort_keys=True))
+        return 1 if errors else 0
 
     if errors:
         print("[FAIL] version consistency")
