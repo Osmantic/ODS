@@ -31,6 +31,9 @@ jobs:
       - name: WSL Logic Smoke
         run: bash tests/smoke/wsl-logic.sh
 
+      - name: Package-manager CI helper contracts
+        run: python3 -m unittest discover -s tests -p 'test_matrix_*.py' -v
+
       - name: Pixel Execution Cancellation
         run: python3 tests/test_pixel_cancellable_exec.py
 
@@ -139,6 +142,16 @@ jobs:
             done
           }
 
+          configure_zypper_ci_repository_transport() {
+            # The HTTP mirror route can reference files missing on its selected
+            # mirror. Keep official paths and signature checks; use HTTPS.
+            local repository
+            for repository in "${1:-/etc/zypp/repos.d}"/*.repo; do
+              [ -f "$repository" ] || continue
+              sed -i -E 's#^([[:space:]]*(baseurl|gpgkey)[[:space:]]*=[[:space:]]*)http://download\.opensuse\.org/#\1https://download.opensuse.org/#' "$repository"
+            done
+          }
+
           configure_zypper_ci_network() {
             mkdir -p /etc/zypp/zypp.conf.d
             {
@@ -168,6 +181,7 @@ jobs:
             prepare_pacman_keyrings
             retry pacman -Syyu --noconfirm --needed ca-certificates git curl
           elif command -v zypper &>/dev/null; then
+            configure_zypper_ci_repository_transport
             configure_zypper_ci_network
             echo "Skipping zypper checkout prerequisites; packaging.sh install behavior is tested after checkout."
           fi
