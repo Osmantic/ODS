@@ -159,7 +159,7 @@ if [[ "$WORKER_COUNT" -gt "$MAX_COUNT" ]]; then
     # is -1, so break the tie on the lowest pid — the longest-lived worker —
     # instead of leaving the pick to sort order.
     sort -t "$(printf '\t')" -k2,2nr -k1,1n "$WORKERS_FILE" \
-        | head -n "$OVERAGE" > "$OVERAGE_FILE"
+        | awk -v limit="$OVERAGE" 'NR <= limit' > "$OVERAGE_FILE"
     cat "$OVERAGE_FILE" >> "$CANDIDATES_FILE"
 fi
 

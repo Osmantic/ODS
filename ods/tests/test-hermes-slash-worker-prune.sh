@@ -229,6 +229,22 @@ fi
 
 # ── Summary ───────────────────────────────────────────────────────────────
 
+# A large process table used to make `sort | head -n 1` fail under pipefail:
+# head closed the pipe early and sort surfaced SIGPIPE instead of a candidate.
+LARGE_FIXTURE="$WORKDIR/large.txt"
+awk 'BEGIN {
+    for (i = 1; i <= 20000; i++) {
+        printf "%d %d python -m hermes.tui_gateway.slash_worker --id %d\n", \
+            10000 + i, 100000 - i, i
+    }
+}' > "$LARGE_FIXTURE"
+OUT="$WORKDIR/out8.txt"
+ODS_HERMES_SLASH_WORKER_PS_FIXTURE="$LARGE_FIXTURE" \
+    bash "$PRUNE" --max-age-seconds 999999 --max-count 19999 > "$OUT" 2>&1
+rc=$?
+check_eq "large fixture: count selection exits 0 under pipefail" "0" "$rc"
+check_eq "large fixture: selects the single oldest overage" "10001" "$(selected_pids "$OUT")"
+
 echo ""
 echo "Passed: $PASS  Failed: $FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1
