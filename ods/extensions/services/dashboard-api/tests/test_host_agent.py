@@ -616,6 +616,14 @@ class TestResolveAgentBindAddr:
 
         assert _resolve_agent_bind_addr({}, "Linux") == "172.17.0.1"
 
+    def test_managed_windows_inference_ignores_leftover_native_bridge(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(_mod, "_detect_docker_bridge_gateway", lambda: "172.17.0.1")
+        monkeypatch.setattr(_mod, "_local_bind_address_available", lambda _address: True)
+        assert _resolve_agent_bind_addr(
+            {"AMD_INFERENCE_RUNTIME_MODE": "wsl-windows-lemonade"}, "Linux"
+        ) == "127.0.0.1"
+
     def test_wsl_docker_desktop_uses_loopback_for_unbindable_bridge(self, monkeypatch):
         monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(

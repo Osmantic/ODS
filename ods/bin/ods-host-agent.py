@@ -5357,6 +5357,11 @@ def _resolve_agent_bind_addr(
         return "127.0.0.1"
 
     if _running_under_wsl(system_name):
+        # This placement explicitly requires Docker Desktop. A leftover native
+        # docker0 can make Desktop's numerically identical gateway bindable,
+        # but it is still a different network namespace.
+        if env.get("AMD_INFERENCE_RUNTIME_MODE") == "wsl-windows-lemonade":
+            return "127.0.0.1"
         # A native Docker daemon inside WSL owns its default bridge locally,
         # and Compose's host-gateway mapping resolves to that address. Bind
         # only that scoped bridge so dashboard-api can reach the agent without
