@@ -32,13 +32,20 @@ function Initialize-ODSPortalModelStore {
             if (-not [Uri]::TryCreate([string]$Model.GgufUrl, [UriKind]::Absolute, [ref]$uri) -or $uri.Scheme -ne 'https' -or $uri.UserInfo) {
                 throw 'A valid HTTPS catalog URL is required to download the model.'
             }
-            $partial = $destination + '.ods-download'
-            if (Test-Path -LiteralPath $partial) { throw 'An earlier model download needs inspection before retrying.' }
-            if (-not (Invoke-DownloadWithRetry -Url $uri.AbsoluteUri -Destination $partial -Label "Downloading $filename" -MaxRetries 4)) {
-                throw 'Model download failed; no complete model was published.'
+            # Each attempt owns its temporary artifact. An interrupted earlier
+            # install must not block retries or be mistaken for a complete GGUF.
+            $partial = $destination + '.' + [guid]::NewGuid().ToString('N') + '.ods-download'
+            try {
+                if (-not (Invoke-DownloadWithRetry -Url $uri.AbsoluteUri -Destination $partial -Label "Downloading $filename" -MaxRetries 4)) {
+                    throw 'Model download failed; no complete model was published.'
+                }
+                Assert-ODSPortalModelFile -Path $partial -Hash $hash
+                Move-Item -LiteralPath $partial -Destination $destination
+            } finally {
+                # Delete only this invocation's unpublished file; retain any
+                # earlier partial or existing model for the owner's inspection.
+                if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }
             }
-            Assert-ODSPortalModelFile -Path $partial -Hash $hash
-            Move-Item -LiteralPath $partial -Destination $destination
         } else {
             Assert-ODSPortalModelFile -Path $destination -Hash $hash
         }

@@ -147,6 +147,19 @@ if ($Distro) {
     }
 }
 
+# The Windows inference transport uses Docker Desktop's host gateway. A native
+# Linux daemon inside WSL cannot use that gateway to reach Windows loopback.
+# Verify the selected distro's actual daemon before provisioning a model.
+if ($Distro -and $runtimePlan.InferenceHost -eq 'windows') {
+    try {
+        $selectedDockerOS = (& wsl.exe --distribution $Distro --exec docker info --format '{{.OperatingSystem}}' 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $selectedDockerOS -ne 'Docker Desktop') { throw 'Selected distro does not reach Docker Desktop' }
+        Add-Check 'windows-inference-docker' 'pass' 'The selected WSL distribution uses Docker Desktop for Windows inference connectivity.'
+    } catch {
+        Add-Check 'windows-inference-docker' 'blocker' 'Managed AMD inference on Windows requires Docker Desktop integration in the selected WSL distribution.' 'Start Docker Desktop, enable its WSL integration for this distribution, and retry. A native Linux Docker daemon does not provide this Windows host gateway.'
+    }
+}
+
 if ($runtimePlan.Backend -eq 'cuda' -and (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
     Write-Host "[OK] NVIDIA tooling detected on Windows host."
     Add-Check "windows-nvidia-smi" "pass" "nvidia-smi available on Windows host."

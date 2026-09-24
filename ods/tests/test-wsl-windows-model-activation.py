@@ -1,6 +1,5 @@
 """Exercise the real host-agent helpers, with a fake inference transport."""
 import importlib.util
-import json
 from pathlib import Path
 import sys
 import threading
