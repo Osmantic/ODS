@@ -86,7 +86,14 @@ def run_runtime_activation(
                 "detail": "adapter returned a non-contract result",
                 **proof,
             }
-        if phase.startswith("verify_") and outcome.get("ok"):
+        if not isinstance(outcome["ok"], bool):
+            return {
+                "ok": False,
+                "phase": phase,
+                "detail": "adapter returned an invalid ok value",
+                **proof,
+            }
+        if phase.startswith("verify_") and outcome["ok"]:
             contract_error = _verification_error(outcome)
             if contract_error:
                 return {
@@ -126,7 +133,7 @@ def run_runtime_activation(
                     **proof,
                 }
             proof = outcome_proof
-        if not outcome.get("ok"):
+        if not outcome["ok"]:
             return {
                 "ok": False,
                 "phase": phase,

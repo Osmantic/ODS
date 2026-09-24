@@ -173,6 +173,22 @@ class TestReconcilerBoundaries:
         assert run["ok"] is False and run["phase"] == "stage"
         assert "non-contract" in run["detail"]
 
+    @pytest.mark.parametrize("phase", rc.PHASES)
+    @pytest.mark.parametrize("invalid_ok", ["false", 1, 0, None])
+    def test_non_boolean_ok_never_advances_activation(self, phase, invalid_ok):
+        plan = {phase: [{"ok": invalid_ok}]}
+        if phase == "verify_completion":
+            plan["verify_identity"] = [_proof_result()]
+        fake = ad.FakeAdapter(plan)
+
+        run = rc.run_runtime_activation(fake, {})
+
+        phase_index = rc.PHASES.index(phase)
+        assert run["ok"] is False
+        assert run["phase"] == phase
+        assert run["detail"] == "adapter returned an invalid ok value"
+        assert fake.calls == list(rc.PHASES[: phase_index + 1])
+
 
 class TestContainerLlamaAdapter:
     def test_delegates_with_expected_arguments(self):
