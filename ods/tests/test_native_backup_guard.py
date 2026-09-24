@@ -36,7 +36,9 @@ def fixture(tmp_path):
         "if len(sys.argv)>1 and sys.argv[1].endswith('/backup-native-preflight.py'):\n"
         "    pwd.getpwuid=lambda uid:types.SimpleNamespace(pw_name='fixture-owner',pw_dir=os.environ['FIXTURE_OWNER_HOME'],pw_uid=uid)\n"
         "    platform.system=lambda:os.environ.get('FIXTURE_SYSTEM','Linux')\n"
-        "    if os.environ.get('FIXTURE_ROOT')=='1':os.geteuid=lambda:0\n"
+        "    if os.environ.get('FIXTURE_ROOT')=='1':\n"
+        "        fixture_uid=os.geteuid();os.geteuid=lambda:0\n"
+        "        pwd.getpwall=lambda:[types.SimpleNamespace(pw_uid=fixture_uid,pw_dir=os.environ['FIXTURE_OWNER_HOME'])]\n"
         "    sys.argv=sys.argv[1:];runpy.run_path(sys.argv[0],run_name='__main__')\n"
         "else:os.execv(" + repr(sys.executable) + ",[" + repr(sys.executable) + ",*sys.argv[1:]])\n")
     launcher.chmod(0o755)
@@ -184,7 +186,10 @@ def test_native_config_archive_cannot_be_applied_to_ordinary_target(fixture, leg
 
 
 @pytest.mark.parametrize("foreign", [False, True])
-def test_ordinary_backup_restore_roundtrip_and_empty_disabled_directory(fixture, foreign):
+@pytest.mark.parametrize("root", [False, True])
+def test_ordinary_backup_restore_roundtrip_and_empty_disabled_directory(fixture, foreign, root):
+    if root:
+        fixture[2]["FIXTURE_ROOT"] = "1"
     if foreign:
         marker(fixture, foreign=True)
     (fixture[0] / "data/pixel").mkdir()

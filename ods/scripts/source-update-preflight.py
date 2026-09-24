@@ -52,17 +52,67 @@ def locally_selected_native(install_dir):
     return False
 
 
+def root_managed_pixel_identity(install_dir):
+    """Inspect owner receipts as root without adopting an ambient deployment.
+
+    A sudo caller's HOME/SUDO_USER is not proof of which account installed Pixel.
+    Root can inspect all account receipts, including a non-root Pixel owner of a
+    root-owned ODS tree. Missing/inaccessible account enumeration is not absence.
+    """
+    import pwd
+
+    accounts = pwd.getpwall()
+    if not accounts or len(accounts) > 10000:
+        raise ValueError("Cannot enumerate native Pixel owners safely.")
+    found = False
+    for account in accounts:
+        home = Path(account.pw_dir)
+        if not home.is_absolute() or home == Path("/"):
+            # System accounts without a usable home cannot own managed Pixel;
+            # its installer rejects these identities before creating state.
+            continue
+        marker = home / ".config/ods/pixel-managed.json"
+        try:
+            fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_uid != account.pw_uid or info.st_mode & 0o077
+                    or info.st_size > 65536):
+                raise ValueError("A native Pixel owner receipt is unsafe; preserve the installation.")
+            payload = stream.read(65537)
+            if len(payload) > 65536:
+                raise ValueError("A native Pixel owner receipt exceeded its size limit.")
+            value = json.loads(payload.decode("utf-8"))
+        if not isinstance(value, dict) or value.get("manager") != "ods":
+            raise ValueError("A native Pixel owner receipt is invalid.")
+        boundary = value.get("install_dir")
+        if not isinstance(boundary, str) or not boundary or not Path(boundary).is_absolute():
+            raise ValueError("A native Pixel owner receipt has no safe installation boundary.")
+        if Path(boundary).resolve() != install_dir:
+            continue
+        if (account.pw_uid == 0 or value.get("schema_version") != 2
+                or value.get("state") != "ready"):
+            raise ValueError("This installation has incomplete or unsafe native Pixel ownership.")
+        found = True
+    return "linux" if found else None
+
+
 def managed_pixel_identity(install_dir):
     """Return linux/macos/None; refuse unknown ownership or native state."""
     install_dir = Path(install_dir).resolve(strict=True)
     if platform.system() == "Linux":
         if os.geteuid() == 0:
-            raise ValueError("Automatic source migration cannot verify owner-scoped native state when run as root. For a non-root-owned install, run as its install owner. Root-owned appliances require a reviewed migration plan; keep the installation intact. Routine image-only maintenance remains available through ods update.")
-        if install_dir.stat().st_uid != os.geteuid():
-            raise ValueError("Run as the ODS install directory owner; native Pixel identity is ambiguous for this caller.")
-        agent = load_helper(ROOT / "bin/ods-host-agent.py", "ods_source_update_agent")
-        agent.INSTALL_DIR = install_dir
-        if agent._ods_managed_pixel_identity() is not None:
+            identity = root_managed_pixel_identity(install_dir)
+        else:
+            if install_dir.stat().st_uid != os.geteuid():
+                raise ValueError("Run as the ODS install directory owner; native Pixel identity is ambiguous for this caller.")
+            agent = load_helper(ROOT / "bin/ods-host-agent.py", "ods_source_update_agent")
+            agent.INSTALL_DIR = install_dir
+            identity = agent._ods_managed_pixel_identity()
+        if identity is not None:
             return "linux"
         footprint = install_dir / "data/pixel"
         if os.path.lexists(footprint) and (footprint.is_symlink() or not footprint.is_dir() or any(footprint.iterdir())):

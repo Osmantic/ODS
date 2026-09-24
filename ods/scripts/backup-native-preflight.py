@@ -56,8 +56,8 @@ def main():
         print("native-excluded")
         return 0
     if identity == "unverified":
-        print("Ownership checks require the non-root installation owner; incomplete or unsafe "
-              "receipts also block these operations.", file=sys.stderr)
+        print("Run as the installation owner or root with readable account receipts; incomplete "
+              "or unsafe receipts also block these operations.", file=sys.stderr)
     print("Native Pixel backup/restore is not supported by this utility. Native state is present "
           "or its ownership could not be safely verified. No backup or restore was performed. "
           "Keep the installation, owner data, protected state, and recovery receipts intact. "

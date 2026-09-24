@@ -8,8 +8,10 @@ The source updater refuses managed native Pixel and source-built Compose stacks
 before snapshots or Git mutation because it cannot restore their previous
 runtime artifacts. Invalid native state, unresolved Compose configuration, and
 Compose versions without JSON configuration output also fail closed. Linux
-source updates require the non-root install-directory owner; root-owned
-appliances require a reviewed migration plan. The normal image-only CLI remains
+source updates require the install-directory owner or root. Root inspects the
+account database and owner receipts rather than trusting `HOME` or `SUDO_USER`;
+ordinary root-owned appliances retain backup, restore and configuration rollback.
+Native or unverifiable state still refuses these operations. The image-only CLI remains
 available. These guards do not make the remaining source updater transactional:
 its configuration rollback does not restore Git source or prior image IDs.
 

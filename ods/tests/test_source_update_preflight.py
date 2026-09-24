@@ -71,11 +71,65 @@ def test_foreign_or_absent_native_not_adopted(linux_identity):
     guard.check_native(install)
 
 
-def test_root_must_use_actual_install_owner(tmp_path, monkeypatch):
+def test_root_ordinary_install_supported(tmp_path, monkeypatch):
+    import pwd
     monkeypatch.setattr(guard.platform, 'system', lambda: 'Linux')
     monkeypatch.setattr(guard.os, 'geteuid', lambda: 0)
-    with pytest.raises(ValueError, match='install owner'):
+    monkeypatch.setattr(pwd, 'getpwall', lambda: [types.SimpleNamespace(pw_uid=0, pw_dir=str(tmp_path / 'root'))])
+    guard.check_native(tmp_path)
+
+
+@pytest.mark.parametrize('state', ['ready', 'installing', 'foreign', 'absent', 'unsafe', 'symlink', 'hardlink'])
+def test_root_inspects_all_owner_receipts(linux_identity, monkeypatch, state):
+    import os
+    import pwd
+    install, marker, record = linux_identity
+    uid = os.geteuid()
+    monkeypatch.setattr(guard.os, 'geteuid', lambda: 0)
+    # Neither HOME nor SUDO_USER is consulted; the receipt may belong to another
+    # account from the caller and installation-directory owner.
+    accounts = [types.SimpleNamespace(pw_uid=0, pw_dir=str(install.parent / 'root')),
+                types.SimpleNamespace(pw_uid=uid, pw_dir=str(marker.parents[2]))]
+    monkeypatch.setattr(pwd, 'getpwall', lambda: accounts)
+    if state == 'foreign':
+        record['install_dir'] = str(install.parent / 'foreign')
+    elif state == 'installing':
+        record['state'] = state
+    if state != 'absent':
+        save_marker(marker, record)
+    if state == 'unsafe':
+        marker.chmod(0o644)
+    elif state == 'symlink':
+        target = marker.with_name('real')
+        marker.rename(target)
+        marker.symlink_to(target)
+    elif state == 'hardlink':
+        marker.with_name('second').hardlink_to(marker)
+    if state in {'foreign', 'absent'}:
+        guard.check_native(install)
+    else:
+        with pytest.raises((ValueError, OSError), match='Pixel|symbolic'):
+            guard.check_native(install)
+
+
+def test_root_cannot_infer_absence_from_failed_account_enumeration(tmp_path, monkeypatch):
+    import pwd
+    monkeypatch.setattr(guard.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(guard.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(pwd, 'getpwall', lambda: [])
+    with pytest.raises(ValueError, match='enumerate'):
         guard.check_native(tmp_path)
+
+
+def test_root_system_accounts_without_pixel_home_do_not_block(tmp_path, monkeypatch):
+    import pwd
+    monkeypatch.setattr(guard.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(guard.os, 'geteuid', lambda: 0)
+    home_file = tmp_path / 'home-file'
+    home_file.write_text('system account')
+    monkeypatch.setattr(pwd, 'getpwall', lambda: [types.SimpleNamespace(pw_uid=1, pw_dir=p)
+                        for p in ('/', '/nonexistent', str(home_file))])
+    guard.check_native(tmp_path)
 
 @pytest.mark.parametrize('build', ['.', {'context': '.', 'dockerfile': 'Dockerfile'}, {}])
 def test_source_built_compose_refused(build):

@@ -38,8 +38,10 @@ deployments should use a pinned release or audited commit.
   native Pixel updates or source-built service rollback. They must refuse those
   installations before pulling source. The separate `ods update` image/runtime
   command is not a source or native Pixel upgrade. Source update also refuses
-  root-owned or ambiguous owner contexts where native identity cannot be
-  established. These guards do not retrofit an older installed updater or
+  ambiguous owner contexts where native identity cannot be established. Root
+  callers inspect account-owner receipts, so ordinary root-owned appliances
+  retain their backup, restore and configuration rollback paths. These guards
+  do not retrofit an older installed updater or
   establish transactional rollback for other source updates.
 - Generic ODS backups do not capture the complete native Pixel deployment.
   Full/user-data backup and applying restore must stop on native Pixel state
@@ -47,7 +49,7 @@ deployments should use a pinned release or audited commit.
   configuration-only archive is not a Pixel backup. Preserve the existing
   installation and recovery receipts; do not delete the source directory or
   manually copy protected state into a replacement deployment. Ambiguous owner
-  contexts, including root-owned Linux appliances, are refused too; this does
+  contexts with unreadable or unsafe ownership receipts are refused too; this does
   not establish that those installations contain Pixel. Old user-data-only
   archives may lack any native selection or exclusion record, so their original
   native coverage cannot be established retroactively.
