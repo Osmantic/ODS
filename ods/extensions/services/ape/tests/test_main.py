@@ -108,6 +108,24 @@ def test_audit_endpoint_contract(make_client):
     assert isinstance(body["entries"], list)
 
 
+def test_audit_accepts_maximum_page_size(make_client):
+    client, _ = make_client()
+    _verify(client)
+
+    response = client.get("/audit", params={"last_n": 1000})
+
+    assert response.status_code == 200
+    assert len(response.json()["entries"]) == 1
+
+
+def test_audit_rejects_out_of_range_page_sizes(make_client):
+    client, _ = make_client()
+
+    for last_n in (-1, 0, 1001):
+        response = client.get("/audit", params={"last_n": last_n})
+        assert response.status_code == 422
+
+
 def test_api_key_required(make_client):
     client, _ = make_client()
     r = client.post("/verify", headers={"X-API-Key": "wrong"},

@@ -68,7 +68,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
-from fastapi import FastAPI, Request, HTTPException, Header, Depends
+from fastapi import FastAPI, Request, HTTPException, Header, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -1036,7 +1036,10 @@ async def approve(req: ApproveRequest, request: Request,
 
 
 @app.get("/audit")
-async def audit(last_n: int = 50, api_key: str = Depends(verify_api_key)):
+async def audit(
+    last_n: int = Query(default=50, ge=1, le=1000),
+    api_key: str = Depends(verify_api_key),
+):
     """Return the last N audit log entries."""
     if not AUDIT_LOG.exists():
         return {"entries": []}
