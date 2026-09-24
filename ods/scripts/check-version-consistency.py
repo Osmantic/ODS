@@ -109,6 +109,8 @@ def main() -> int:
                         r'^name = "ods-installer"\nversion = "([^"]+)"')
     for relative, pattern in (
         (".env.example", r"^# ODS_VERSION=([^\n]+)"),
+        ("bin/ods-host-agent.py", r'^ODS_VERSION = "([^"]+)"'),
+        ("extensions/services/dashboard/src/hooks/useSystemStatus.js", r"version: '([^']+)'"),
         ("installers/lib/pixel-host-install.sh", r'local ods_version="\$\{VERSION:-([^}]+)\}"'),
     ):
         add_regex_check(checks, errors, f"{relative} ODS version", ROOT / relative, pattern)

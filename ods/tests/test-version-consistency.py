@@ -24,6 +24,8 @@ class VersionConsistencyTests(unittest.TestCase):
             "ARCHITECTURE.md", "installer/package.json", "installer/package-lock.json",
             "installer/src-tauri/tauri.conf.json", "installer/src-tauri/Cargo.toml",
             "installer/src-tauri/Cargo.lock", "ods/manifest.json", "ods/CHANGELOG.md",
+            "ods/bin/ods-host-agent.py",
+            "ods/extensions/services/dashboard/src/hooks/useSystemStatus.js",
             "ods/.env.example", "ods/ods-cli", "ods/installers/lib/constants.sh",
             "ods/installers/lib/pixel-host-install.sh", "ods/installers/macos/lib/constants.sh",
             "ods/installers/windows/lib/constants.ps1", "ods/installers/phases/06-directories.sh",
@@ -81,6 +83,13 @@ class VersionConsistencyTests(unittest.TestCase):
     def test_malformed_product_version_is_reported(self):
         self.update_json("ods/manifest.json", lambda d: d.update(ods_version="V3"))
         self.assertIn("must be x.y.z", self.run_gate(1))
+
+    def test_host_agent_product_version_is_not_the_component_version(self):
+        path = self.repo / "ods/bin/ods-host-agent.py"
+        source = path.read_text(encoding="utf-8")
+        source = source.replace('ODS_VERSION = "3.0.0"', 'ODS_VERSION = "1.0.0"', 1)
+        path.write_text(source, encoding="utf-8")
+        self.assertIn("ods-host-agent.py ODS version", self.run_gate(1))
 
     def test_dependency_versions_are_independent(self):
         self.update_json("installer/package.json", lambda d: d["dependencies"].update(react="99.1.2"))

@@ -142,8 +142,9 @@ def _lemonade_recipe_options_path() -> Path:
         cache = str(Path(os.environ.get("USERPROFILE") or str(Path.home())) / ".cache" / "lemonade")
     return Path(cache) / "recipe_options.json"
 
+# Host Agent component version is independent of the installed ODS product.
 VERSION = "1.0.0"
-ODS_VERSION = VERSION
+ODS_VERSION = "3.0.0"
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 PIXEL_OPS_JOB_ID_RE = re.compile(r"^ops-[0-9]{13}-[a-f0-9]{12}$")
 PIXEL_OPS_PLAN_HASH_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -17750,7 +17751,7 @@ def main():
         str(DATA_DIR / "user-extensions"),
     ))
     EXTENSIONS_DIR = INSTALL_DIR / "extensions" / "services"
-    ODS_VERSION = env.get("ODS_VERSION", VERSION)
+    ODS_VERSION = env.get("ODS_VERSION", ODS_VERSION)
 
     port = args.port
     env_port = env.get("ODS_AGENT_PORT", "")
