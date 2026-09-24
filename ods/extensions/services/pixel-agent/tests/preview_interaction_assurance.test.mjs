@@ -71,6 +71,7 @@ test('published links remain available without falsely passing missing interacti
   assert.match(JSON.stringify(guidance),/pixel_ods_workspace_preview_inspect/);
   assert.match(retry.instruction,/tool_describe/);
   assert.match(retry.instruction,/tool_call/);
+  assert.match(retry.instruction,/call pixel_ods_workspace_preview_inspect directly/);
   assert.ok(retry.instruction.includes(preview.sha256));
   assert.ok(retry.instruction.includes(preview.siteId));
 });

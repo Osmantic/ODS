@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createPublicWebExtractTool } from '../plugin/web-extract.mjs';
+import { createWorkspacePreviewInspectTool, INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash } from '../plugin/workspace-preview-inspect.mjs';
 
 const file = process.env.OPENCLAW_TOOL_SEARCH_MODULE;
 const manifest = JSON.parse(readFileSync(new URL('../host/openclaw-image-envelope.json', import.meta.url)));
@@ -41,13 +42,13 @@ test('working tools are direct while specialist tools remain in the real catalog
 test('the ordinary direct surface stays small while every specialist stays catalogued', () => {
   const nativeNames = ['read', 'write', 'edit', 'apply_patch', 'exec', 'process',
     'web_fetch', 'web_search', 'pixel_ods_web_extract', 'pixel_ods_skill', 'pixel_ods_ask_user',
-    'pixel_ods_extensions', 'pixel_ods_extension_request_status', 'pixel_ods_workspace_preview'];
+    'pixel_ods_extensions', 'pixel_ods_extension_request_status', 'pixel_ods_workspace_preview', 'pixel_ods_workspace_preview_inspect'];
   const specialistNames = ['pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance',
     'pixel_ods_extension_request_retry', 'pixel_ods_source_proposal',
     'pixel_ods_python_library_proposal', 'pixel_ods_extension_proposal'];
   const result = run([...nativeNames, ...specialistNames].map(tool));
   assert.deepEqual(result.tools.map(t => t.name), [...controls.map(t => t.name), ...nativeNames]);
-  assert.equal(result.tools.length, 17); // Fourteen native tools plus the three search controls.
+  assert.equal(result.tools.length, 18); // Fifteen native tools plus the three search controls.
   assert.equal(result.catalogToolCount, nativeNames.length + specialistNames.length);
 });
 
@@ -170,4 +171,38 @@ test('native extraction preserves actual runtime policy denials and ambiguity de
   assert.deepEqual(ambiguous.tools, controls);
   assert.equal(ambiguous.catalogToolCount, 2);
   assert.deepEqual(run([extractor], {agentId:'another-agent'}).tools, controls);
+});
+
+test('native preview inspection retains exact snapshot validation and bounded broker execution', async () => {
+  let calls = 0;
+  const inspector = createWorkspacePreviewInspectTool({request: async request => {
+    calls++;
+    return {schemaVersion:1, kind:INSPECTION_KIND, status:'failed', errorCode:'unavailable',
+      siteId:request.siteId, sha256:request.sha256, planSha256:inspectionPlanHash(request), scope:INSPECTION_SCOPE};
+  }});
+  const direct = run([inspector]).tools.find(tool => tool.name === inspector.name);
+  assert.equal(direct, inspector);
+  const args = {siteId:'site-' + 'a'.repeat(24), sha256:'a'.repeat(64), viewport:{width:800,height:600},
+    steps:[{action:'assert-hidden',locator:{selector:'#details'}},
+      {action:'click',locator:{role:'button',name:'Show details',exact:true}},
+      {action:'assert-visible',locator:{selector:'#details'}}]};
+  assert.equal((await direct.execute('wrong-snapshot',{...args,sha256:'b'.repeat(64)})).details.errorCode,'invalid_request');
+  assert.equal(calls,0);
+  const result = await direct.execute('inspect',args);
+  assert.equal(calls,1);
+  assert.equal(result.isError,true);
+  assert.equal(result.details.errorCode,'unavailable');
+  assert.match(result.content[0].text,/not pixel paint/);
+});
+
+test('native inspection cannot expose absent, denied or ambiguous capabilities', () => {
+  const inspector = tool('pixel_ods_workspace_preview_inspect');
+  assert.deepEqual(run([]).tools,controls);
+  const filtered = filterByPolicy([inspector,tool('read')],{deny:[inspector.name]});
+  assert.deepEqual(filtered.map(t=>t.name),['read']);
+  const denied = run(filtered);
+  assert.equal(resolveExact({agentId:'pixel',catalogRef:denied.catalogRef},inspector.name),undefined);
+  assert.ok(!denied.tools.some(t=>t.name===inspector.name));
+  assert.deepEqual(run([inspector,tool(inspector.name)]).tools,controls);
+  assert.deepEqual(run([inspector],{agentId:'another-agent'}).tools,controls);
 });
