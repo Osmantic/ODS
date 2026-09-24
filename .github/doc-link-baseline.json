@@ -1,0 +1,146 @@
+{
+  "reviewed_source": "1bc5e1cbb24864f1c9efd551e0613202af324e3f",
+  "reviewed_at": "2026-09-24",
+  "scope": "Exact normalized document SHA-256 and missing target allowlist. Known debt is reported, not represented as fixed.",
+  "documents": {
+    "SECURITY_AUDIT.md": {
+      "normalized_sha256": "30b1272ca01368dbd4b60532d5e63bf2b55fe8af86157bc44cba2e64fad3998f",
+      "targets": [
+        "ods/extensions/services/dashboard/src/hooks/useVoiceAgent.js"
+      ],
+      "reason": "Owned-document fixes are in PR #6541; remove this entry after that PR merges."
+    },
+    "ods/extensions/library/README.md": {
+      "normalized_sha256": "080b54c90b8b88b61879a0fb8b1d62e072bbb5ebe4d37f3a0b3a8345149dc402",
+      "targets": [
+        "../../docs/EXTENSION-CANDIDATES-200-2026-09-20.md",
+        "../../docs/EXTENSION-EXPANSION.md",
+        "services/fooocus/"
+      ],
+      "reason": "Owned-document fixes are in PR #6541; remove this entry after that PR merges."
+    },
+    "ods/vendor/pixel/OPENCLAW-COMPATIBILITY.md": {
+      "normalized_sha256": "b8074434e0ecde3d2a3c5493a61c38e23d2c54b6e716a6b9e9e9e776a38fd7c6",
+      "targets": [
+        "LIVE-AUDIT-4.0.0.md",
+        "LIVE-AUDIT-4.1.0.md",
+        "LIVE-AUDIT-4.2.0.md",
+        "LIVE-AUDIT-4.3.0.md",
+        "LIVE-AUDIT-4.3.1.md",
+        "LIVE-AUDIT-4.3.11.md",
+        "LIVE-AUDIT-4.3.12.md",
+        "LIVE-AUDIT-4.3.13.md",
+        "LIVE-AUDIT-4.3.14.md",
+        "LIVE-AUDIT-4.3.15.md",
+        "LIVE-AUDIT-4.3.16.md",
+        "LIVE-AUDIT-4.3.17.md",
+        "LIVE-AUDIT-4.3.18.md",
+        "LIVE-AUDIT-4.3.19.md",
+        "LIVE-AUDIT-4.3.2.md",
+        "LIVE-AUDIT-4.3.20.md",
+        "LIVE-AUDIT-4.3.21.md",
+        "LIVE-AUDIT-4.3.22.md",
+        "LIVE-AUDIT-4.3.23.md",
+        "LIVE-AUDIT-4.3.24.md",
+        "LIVE-AUDIT-4.3.25.md",
+        "LIVE-AUDIT-4.3.26.md",
+        "LIVE-AUDIT-4.3.27.md",
+        "LIVE-AUDIT-4.3.3.md",
+        "LIVE-AUDIT-4.3.4.md",
+        "LIVE-AUDIT-4.3.5.md",
+        "LIVE-AUDIT-4.3.6.md",
+        "LIVE-AUDIT-4.3.7.md",
+        "LIVE-AUDIT-4.3.8.md",
+        "LIVE-AUDIT-4.3.9.md",
+        "LIVE-AUDIT.md"
+      ],
+      "reason": "Links reference intentionally omitted private source-audit files. Repair requires a coordinated verified Pixel bundle refresh; deferred while release runtime testing uses this source identity."
+    },
+    "ods/vendor/pixel/docs/reference/document-inventory.md": {
+      "normalized_sha256": "c62de0dab2f2e69f16219177b941877579737b49ebd7b44ff22515319a36b33b",
+      "targets": [
+        "../../.github/pull_request_template.md",
+        "../../DREAM-FORGE-SOURCE-AUDIT.md",
+        "../../LIVE-AUDIT-4.0.0.md",
+        "../../LIVE-AUDIT-4.1.0.md",
+        "../../LIVE-AUDIT-4.2.0.md",
+        "../../LIVE-AUDIT-4.3.0.md",
+        "../../LIVE-AUDIT-4.3.1.md",
+        "../../LIVE-AUDIT-4.3.10.md",
+        "../../LIVE-AUDIT-4.3.11.md",
+        "../../LIVE-AUDIT-4.3.12.md",
+        "../../LIVE-AUDIT-4.3.13.md",
+        "../../LIVE-AUDIT-4.3.14.md",
+        "../../LIVE-AUDIT-4.3.15.md",
+        "../../LIVE-AUDIT-4.3.16.md",
+        "../../LIVE-AUDIT-4.3.17.md",
+        "../../LIVE-AUDIT-4.3.18.md",
+        "../../LIVE-AUDIT-4.3.19.md",
+        "../../LIVE-AUDIT-4.3.2.md",
+        "../../LIVE-AUDIT-4.3.20.md",
+        "../../LIVE-AUDIT-4.3.21.md",
+        "../../LIVE-AUDIT-4.3.22.md",
+        "../../LIVE-AUDIT-4.3.23.md",
+        "../../LIVE-AUDIT-4.3.24.md",
+        "../../LIVE-AUDIT-4.3.25.md",
+        "../../LIVE-AUDIT-4.3.26.md",
+        "../../LIVE-AUDIT-4.3.27.md",
+        "../../LIVE-AUDIT-4.3.3.md",
+        "../../LIVE-AUDIT-4.3.4.md",
+        "../../LIVE-AUDIT-4.3.5.md",
+        "../../LIVE-AUDIT-4.3.6.md",
+        "../../LIVE-AUDIT-4.3.7.md",
+        "../../LIVE-AUDIT-4.3.8.md",
+        "../../LIVE-AUDIT-4.3.9.md",
+        "../../LIVE-AUDIT.md"
+      ],
+      "reason": "Links reference intentionally omitted private source-audit files. Repair requires a coordinated verified Pixel bundle refresh; deferred while release runtime testing uses this source identity."
+    },
+    "ods/vendor/pixel/docs/releases/evidence-index.md": {
+      "normalized_sha256": "f700efcc371902825f208b3a65ac397bca792329f78c4cb4d805501d03e01b91",
+      "targets": [
+        "../../LIVE-AUDIT-4.0.0.md",
+        "../../LIVE-AUDIT-4.1.0.md",
+        "../../LIVE-AUDIT-4.2.0.md",
+        "../../LIVE-AUDIT-4.3.0.md",
+        "../../LIVE-AUDIT-4.3.1.md",
+        "../../LIVE-AUDIT-4.3.10.md",
+        "../../LIVE-AUDIT-4.3.11.md",
+        "../../LIVE-AUDIT-4.3.12.md",
+        "../../LIVE-AUDIT-4.3.13.md",
+        "../../LIVE-AUDIT-4.3.14.md",
+        "../../LIVE-AUDIT-4.3.15.md",
+        "../../LIVE-AUDIT-4.3.16.md",
+        "../../LIVE-AUDIT-4.3.17.md",
+        "../../LIVE-AUDIT-4.3.18.md",
+        "../../LIVE-AUDIT-4.3.19.md",
+        "../../LIVE-AUDIT-4.3.2.md",
+        "../../LIVE-AUDIT-4.3.20.md",
+        "../../LIVE-AUDIT-4.3.21.md",
+        "../../LIVE-AUDIT-4.3.22.md",
+        "../../LIVE-AUDIT-4.3.23.md",
+        "../../LIVE-AUDIT-4.3.24.md",
+        "../../LIVE-AUDIT-4.3.25.md",
+        "../../LIVE-AUDIT-4.3.26.md",
+        "../../LIVE-AUDIT-4.3.27.md",
+        "../../LIVE-AUDIT-4.3.3.md",
+        "../../LIVE-AUDIT-4.3.4.md",
+        "../../LIVE-AUDIT-4.3.5.md",
+        "../../LIVE-AUDIT-4.3.6.md",
+        "../../LIVE-AUDIT-4.3.7.md",
+        "../../LIVE-AUDIT-4.3.8.md",
+        "../../LIVE-AUDIT-4.3.9.md",
+        "../../LIVE-AUDIT.md"
+      ],
+      "reason": "Links reference intentionally omitted private source-audit files. Repair requires a coordinated verified Pixel bundle refresh; deferred while release runtime testing uses this source identity."
+    },
+    "ods/vendor/pixel/docs/status.md": {
+      "normalized_sha256": "faa79002b90edb2f6a0be8ad1b9465ac7fb566af6fa513fa94bcf6de6b56d22d",
+      "targets": [
+        "../LIVE-AUDIT-4.3.26.md",
+        "../LIVE-AUDIT-4.3.27.md"
+      ],
+      "reason": "Links reference intentionally omitted private source-audit files. Repair requires a coordinated verified Pixel bundle refresh; deferred while release runtime testing uses this source identity."
+    }
+  }
+}

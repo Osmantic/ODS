@@ -72,13 +72,13 @@ jobs:
 
             Architecture context:
             - ods/installers/ = Bash installer libraries and phases
-            - ods/ods-cli = main CLI tool (~45K lines Bash)
+            - ods/ods-cli = main Bash CLI; inspect current source instead of assuming a line count
             - ods/extensions/services/dashboard-api/ = Python FastAPI backend
             - ods/extensions/services/dashboard/ = React/Vite frontend
             - ods/scripts/ = operational scripts
             - ods/config/ = backend configs (GPU tiers, models)
             - ods/tests/ = shell-based tests (BATS, contracts, smoke)
-            - ods/extensions/services/ = 17 service extensions with manifests
+            - ods/extensions/services/ = built-in service manifests; ods/extensions/library/services/ = additional recipes
 
             Analyze this new issue and apply appropriate labels:
 
