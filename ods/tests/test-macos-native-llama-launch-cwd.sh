@@ -101,4 +101,24 @@ grep -qF 'write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES"' "$bootstrap" 
     || fail "macOS native hot-swap failure must report real downloaded bytes"
 pass "macOS native hot-swap failure is reported as failed"
 
+# Regression (#2351 bug 3): the installer used to treat a present
+# llama-server binary as sufficient, with no check that it's actually the
+# build the current model profile requires. A prior qwen-profile install
+# pinned at LLAMA_CPP_RELEASE_TAG=b8210 survived a later gemma4-profile
+# swap (which overrides the tag to a newer build) untouched — the model
+# then failed at RUNTIME with "unknown model architecture" instead of at
+# install time with an actionable message.
+llama_block="$(awk '/LLAMA_ZIP="\/tmp\/\$\{LLAMA_CPP_MACOS_ASSET\}"/,/Start native llama-server with Metal/' "$installer")"
+[[ -n "$llama_block" ]] || fail "could not locate the native llama-server install block"
+
+echo "$llama_block" | grep -qF 'LLAMA_SERVER_TAG_FILE=' \
+    || fail "macOS installer must track which llama.cpp tag is on disk"
+echo "$llama_block" | grep -qF '"$LLAMA_SERVER_INSTALLED_TAG" != "$LLAMA_CPP_RELEASE_TAG"' \
+    || fail "macOS installer must compare the on-disk tag against the required tag, not just check presence"
+echo "$llama_block" | grep -qF 'rm -f "$LLAMA_SERVER_BIN"' \
+    || fail "macOS installer must remove a stale-tag binary before reinstalling"
+echo "$llama_block" | grep -qF 'printf '"'"'%s'"'"' "$LLAMA_CPP_RELEASE_TAG" > "$LLAMA_SERVER_TAG_FILE"' \
+    || fail "macOS installer must persist the newly installed tag for future comparisons"
+pass "macOS installer detects a stale llama.cpp build and reinstalls instead of assuming presence means correctness"
+
 echo "[OK] macOS native llama launch cwd contract holds"

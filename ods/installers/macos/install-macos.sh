@@ -2245,6 +2245,22 @@ else
 
         # Download llama.cpp Metal build
         LLAMA_ZIP="/tmp/${LLAMA_CPP_MACOS_ASSET}"
+
+        # A present binary alone doesn't mean the RIGHT binary: a prior
+        # install pinned an older LLAMA_CPP_RELEASE_TAG (e.g. a qwen-profile
+        # install at b8210), and a later profile swap (e.g. to gemma4, which
+        # overrides the tag to a newer build the older binary can't serve)
+        # used to log "llama-server already present" and never fetch the
+        # required build — the model then fails at runtime with
+        # "unknown model architecture" instead of at install time. Track
+        # which tag is actually on disk and force a reinstall on mismatch.
+        LLAMA_SERVER_TAG_FILE="${LLAMA_SERVER_DIR}/.llama-cpp-release-tag"
+        LLAMA_SERVER_INSTALLED_TAG=""
+        [[ -f "$LLAMA_SERVER_TAG_FILE" ]] && LLAMA_SERVER_INSTALLED_TAG="$(cat "$LLAMA_SERVER_TAG_FILE" 2>/dev/null || true)"
+        if [[ -x "$LLAMA_SERVER_BIN" ]] && [[ "$LLAMA_SERVER_INSTALLED_TAG" != "$LLAMA_CPP_RELEASE_TAG" ]]; then
+            ai_warn "Installed llama-server (${LLAMA_SERVER_INSTALLED_TAG:-unknown build}) does not match the build required for this model profile (${LLAMA_CPP_RELEASE_TAG}) — reinstalling"
+            rm -f "$LLAMA_SERVER_BIN"
+        fi
         if [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
             if [[ ! -f "$LLAMA_ZIP" ]]; then
                 download_with_progress "$LLAMA_CPP_MACOS_URL" "$LLAMA_ZIP" \
@@ -2311,8 +2327,15 @@ else
             # Remove quarantine attribute (macOS Gatekeeper)
             xattr -rd com.apple.quarantine "$LLAMA_SERVER_BIN" 2>/dev/null || true
             xattr -rd com.apple.quarantine "$LLAMA_SERVER_DIR"/*.dylib 2>/dev/null || true
+
+            # Record which tag is now on disk. The Homebrew fallback doesn't
+            # actually guarantee this exact tag (brew tracks its own current
+            # version), but no worse than the total absence of tracking
+            # before this fix, and correctly triggers a reinstall the next
+            # time a pinned-build profile requires a specific tag.
+            printf '%s' "$LLAMA_CPP_RELEASE_TAG" > "$LLAMA_SERVER_TAG_FILE" 2>/dev/null || true
         else
-            ai_ok "llama-server already present"
+            ai_ok "llama-server already present (${LLAMA_CPP_RELEASE_TAG})"
         fi
 
         # Start native llama-server with Metal
