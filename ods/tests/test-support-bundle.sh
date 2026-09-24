@@ -189,6 +189,61 @@ else
     pass "raw test secret is absent from bundle directory"
 fi
 
+# ---------------------------------------------------------------------------
+# redact_file (every collected file) must use the same secret-word set as
+# write_redacted_env (.env only). validation/compose-config.txt is
+# `docker compose config` output, which renders every environment value, so a
+# narrower file redactor ships those values in the archive users attach to
+# public issues.
+# ---------------------------------------------------------------------------
+FAKE_DOCKER_DIR="$TMP_DIR/fake-docker"
+mkdir -p "$FAKE_DOCKER_DIR"
+cat > "$FAKE_DOCKER_DIR/docker" <<STUB
+#!/usr/bin/env bash
+# Stand in for a collected command whose output echoes resolved env values,
+# the way \`docker compose config\` renders the whole environment block.
+case "\$1" in
+  compose) exit 1 ;;
+  info)
+    echo "N8N_USER=$SECRET_VALUE"
+    echo "LANGFUSE_MINIO_ROOT_USER=$SECRET_VALUE"
+    echo "LANGFUSE_INIT_USER_EMAIL=$SECRET_VALUE"
+    echo "DASHBOARD_API_KEY=$SECRET_VALUE"
+    ;;
+  *) echo "fake docker" ;;
+esac
+exit 0
+STUB
+chmod +x "$FAKE_DOCKER_DIR/docker"
+
+COLLECTED_DIR="$TMP_DIR/out-collected"
+if ODS_SUPPORT_BUNDLE_BASH="$BASH_WRAPPER" \
+   ODS_SUPPORT_BUNDLE_DOCKER="$FAKE_DOCKER_DIR/docker" \
+   bash "$SUPPORT_SCRIPT" --output "$COLLECTED_DIR" --no-logs --json > "$TMP_DIR/collected.json"; then
+    pass "support bundle command succeeds with a stubbed docker"
+else
+    fail "support bundle command failed with a stubbed docker"
+fi
+
+COLLECTED_BUNDLE="$(python3 - "$TMP_DIR/collected.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))["bundle_dir"])
+PY
+)"
+
+if grep -R "$SECRET_VALUE" "$COLLECTED_BUNDLE" >/dev/null 2>&1; then
+    fail "collected command output leaked a schema-secret value into the bundle"
+    grep -Rl "$SECRET_VALUE" "$COLLECTED_BUNDLE" | sed 's/^/    /'
+else
+    pass "collected command output is redacted with the shared secret-word set"
+fi
+
+if grep -q "DASHBOARD_API_KEY=\[REDACTED\]" "$COLLECTED_BUNDLE/docker/info.txt"; then
+    pass "file redactor still covers the original keyword set"
+else
+    fail "file redactor stopped redacting DASHBOARD_API_KEY"
+fi
+
 EVIDENCE_PATH="$BUNDLE_DIR/manifest/evidence.json"
 if [[ -f "$EVIDENCE_PATH" ]] && python3 -m json.tool "$EVIDENCE_PATH" >/dev/null; then
     pass "evidence.json is valid JSON"
