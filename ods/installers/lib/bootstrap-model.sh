@@ -24,6 +24,28 @@ BOOTSTRAP_GGUF_SHA256="aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee91
 BOOTSTRAP_LLM_MODEL="qwen3.5-2b"
 BOOTSTRAP_MAX_CONTEXT=65536
 
+# Keep the selector's VRAM-fit context on sub-8GB discrete GPUs. Raising a
+# bootstrap model to 64K can consume the remaining VRAM in KV cache and kill
+# llama-server before the full-model download starts. Unified-memory and CPU
+# hosts retain the agent-capable 64K fast-start default.
+bootstrap_runtime_context() {
+    local selected_context="$1"
+    local vram_mb="${GPU_VRAM:-0}"
+
+    if [[ "${HERMES_CONTEXT_SIZE_EXPLICIT:-false}" != "true" \
+        && "${GPU_MEMORY_TYPE:-}" == "discrete" \
+        && "$vram_mb" =~ ^[0-9]+$ \
+        && "$vram_mb" -gt 0 \
+        && "$vram_mb" -lt 8192 \
+        && "$selected_context" =~ ^[0-9]+$ \
+        && "$selected_context" -lt "$BOOTSTRAP_MAX_CONTEXT" ]]; then
+        printf '%s\n' "$selected_context"
+        return
+    fi
+
+    printf '%s\n' "$BOOTSTRAP_MAX_CONTEXT"
+}
+
 # bootstrap_needed — Should we use the fast-start bootstrap pattern?
 #
 # Returns 0 (true) when ALL of these hold:

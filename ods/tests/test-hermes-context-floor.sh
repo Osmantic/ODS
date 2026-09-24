@@ -13,6 +13,8 @@ fail() { echo "  FAIL: $1" >&2; exit 1; }
 
 run_linux_phase_with_context() {
     local input_context="$1"
+    local memory_type="${2:-none}"
+    local vram_mb="${3:-0}"
     (
         set -euo pipefail
         INTERACTIVE=false
@@ -32,6 +34,8 @@ run_linux_phase_with_context() {
         SCRIPT_DIR="/tmp/ods-context-floor-no-compose"
         GPU_COUNT=1
         GPU_BACKEND=cpu
+        GPU_MEMORY_TYPE="$memory_type"
+        GPU_VRAM="$vram_mb"
         HOST_ARCH=x86_64
 
         ods_progress() { :; }
@@ -60,6 +64,24 @@ large_context="$(printf '%s\n' "$large" | sed -n '1p')"
 [[ "$large_context" == "131072" ]] \
     || fail "Linux Hermes floor should not reduce existing 128K context, got ${large_context}"
 pass "Linux Hermes floor preserves 128K-capable contexts"
+
+low_vram="$(run_linux_phase_with_context 16384 discrete 4096)"
+low_vram_context="$(printf '%s\n' "$low_vram" | sed -n '1p')"
+[[ "$low_vram_context" == "16384" ]] \
+    || fail "Linux must preserve selector context on sub-8GB discrete GPUs, got ${low_vram_context}"
+pass "Linux Hermes floor preserves the VRAM-fit context on a 4GB discrete GPU"
+
+source installers/lib/bootstrap-model.sh
+GPU_MEMORY_TYPE=discrete GPU_VRAM=4096 HERMES_CONTEXT_SIZE_EXPLICIT=false
+[[ "$(bootstrap_runtime_context 16384)" == "16384" ]] \
+    || fail "bootstrap must preserve the selector context on a 4GB discrete GPU"
+GPU_MEMORY_TYPE=unified GPU_VRAM=4096
+[[ "$(bootstrap_runtime_context 16384)" == "65536" ]] \
+    || fail "bootstrap must retain 64K on unified-memory hardware"
+GPU_MEMORY_TYPE=discrete GPU_VRAM=4096 HERMES_CONTEXT_SIZE_EXPLICIT=true
+[[ "$(bootstrap_runtime_context 16384)" == "65536" ]] \
+    || fail "an explicit Hermes context override must retain 64K"
+pass "Bootstrap context distinguishes low discrete VRAM from unified and explicit profiles"
 
 grep -Eq 'hermesContextSize[[:space:]]*=[[:space:]]*65536' installers/windows/phases/03-features.ps1 \
     || fail "Windows Hermes floor must be 64K"

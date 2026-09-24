@@ -139,8 +139,16 @@ fi
 export PIXEL_AGENT_MODE ENABLE_PIXEL_RUNTIME ENABLE_PIXEL
 
 if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
+    HERMES_CONTEXT_SIZE_EXPLICIT=false
+    [[ -n "${HERMES_CONTEXT_SIZE+x}" ]] && HERMES_CONTEXT_SIZE_EXPLICIT=true
     HERMES_CONTEXT_SIZE="${HERMES_CONTEXT_SIZE:-65536}"
-    if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
+    if [[ "$HERMES_CONTEXT_SIZE_EXPLICIT" != "true" \
+        && "${GPU_MEMORY_TYPE:-}" == "discrete" \
+        && "${GPU_VRAM:-0}" =~ ^[0-9]+$ \
+        && "${GPU_VRAM:-0}" -gt 0 \
+        && "${GPU_VRAM:-0}" -lt 8192 ]]; then
+        ai_warn "Hermes context floor skipped on a ${GPU_VRAM}MB discrete GPU; preserving the ${MAX_CONTEXT}-token VRAM-fit context."
+    elif [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
         ai_warn "Hermes enabled: increasing llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (64K floor)."
         if [[ -n "${MODEL_RECOMMENDATION_REASON:-}" ]]; then
             MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON} Hermes requires at least 64K context, so runtime context was raised to ${HERMES_CONTEXT_SIZE}."
