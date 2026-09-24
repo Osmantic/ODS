@@ -182,6 +182,27 @@ describe('SetupWizard diagnostics sentinel parser', () => {
     expect(onComplete).toHaveBeenCalledTimes(1)
   })
 
+  test('completes setup on the server when browser storage is unavailable', async () => {
+    stubFetchWithSetupStream([
+      '__ODS_RESULT__:FAIL:3\n'
+    ])
+    vi.spyOn(globalThis.Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new globalThis.DOMException('Storage is blocked', 'SecurityError')
+    })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const onComplete = vi.fn()
+    render(<SetupWizard onComplete={onComplete} />)
+    await navigateToStep6()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /Start Diagnostics/i })))
+    await waitFor(() => expect(screen.getByText(/Some tests failed/i)).toBeInTheDocument())
+
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /Continue Anyway/i })))
+
+    expect(fetch).toHaveBeenCalledWith('/api/setup/complete', { method: 'POST' })
+    expect(onComplete).toHaveBeenCalledTimes(1)
+  })
+
   test('falls back to "All tests passed!" trailer when sentinel missing (older backend)', async () => {
     stubFetchWithSetupStream([
       'starting...\n',

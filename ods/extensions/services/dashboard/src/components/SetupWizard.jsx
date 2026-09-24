@@ -150,7 +150,14 @@ export default function SetupWizard({ onComplete }) {
     // localStorage retains the wizard's *answers* (voice / userName etc.)
     // for the dashboard to consult later, but is no longer the source of
     // truth for "have we onboarded?" — that lives on the server now.
-    localStorage.setItem('ods-config', JSON.stringify(config))
+    try {
+      localStorage.setItem('ods-config', JSON.stringify(config))
+    } catch (err) {
+      // Storage can be unavailable in private browsing, hardened browser
+      // profiles, or quota-constrained webviews. It is only a convenience
+      // cache, so it must not prevent the server-side completion marker.
+      console.warn('Could not persist setup preferences in browser storage:', err)
+    }
     try {
       // The server endpoint writes setup-complete.json which the
       // useFirstRun hook reads. Best-effort: if it fails (e.g. dashboard-api
