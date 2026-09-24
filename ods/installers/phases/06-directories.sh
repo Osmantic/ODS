@@ -670,6 +670,19 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         return 1
     fi
 
+    # Remaining documented service ports: compose consumes these knobs and
+    # .env.example documents them, but the generated .env never emitted them,
+    # so hand-set overrides were lost on every rerun. Resolve with the same
+    # precedence as the other ports: explicit env var > existing .env >
+    # default.
+    DASHBOARD_API_PORT_VALUE="$(_env_get_explicit_first DASHBOARD_API_PORT "3002")"
+    DASHBOARD_PORT_VALUE="$(_env_get_explicit_first DASHBOARD_PORT "3001")"
+    COMFYUI_PORT_VALUE="$(_env_get_explicit_first COMFYUI_PORT "8188")"
+    TOKEN_SPY_PORT_VALUE="$(_env_get_explicit_first TOKEN_SPY_PORT "3005")"
+    APE_PORT_VALUE="$(_env_get_explicit_first APE_PORT "7890")"
+    SHIELD_PORT_VALUE="$(_env_get_explicit_first SHIELD_PORT "8085")"
+    ODS_PROXY_PORT_VALUE="$(_env_get_explicit_first ODS_PROXY_PORT "80")"
+
     # Secrets: reuse existing values, generate only if missing
     WEBUI_SECRET=$(_phase06_env_hex_secret WEBUI_SECRET 32)
     N8N_PASS=$(_env_get N8N_PASS "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
@@ -1388,6 +1401,13 @@ EMBEDDINGS_PORT=8090
 LITELLM_PORT=4000
 OPENCLAW_PORT=7860
 LANGFUSE_PORT=$(dotenv_value "${LANGFUSE_PORT}")
+DASHBOARD_API_PORT=$(dotenv_value "${DASHBOARD_API_PORT_VALUE}")
+DASHBOARD_PORT=$(dotenv_value "${DASHBOARD_PORT_VALUE}")
+COMFYUI_PORT=$(dotenv_value "${COMFYUI_PORT_VALUE}")
+TOKEN_SPY_PORT=$(dotenv_value "${TOKEN_SPY_PORT_VALUE}")
+APE_PORT=$(dotenv_value "${APE_PORT_VALUE}")
+SHIELD_PORT=$(dotenv_value "${SHIELD_PORT_VALUE}")
+ODS_PROXY_PORT=$(dotenv_value "${ODS_PROXY_PORT_VALUE}")
 
 #=== Hermes Agent ===
 # On AMD/Lemonade hosts, route Hermes through litellm. Lemonade is strict
