@@ -490,6 +490,16 @@ This section describes the end-to-end flow of how extensions are discovered, ins
 
 At startup, the Dashboard API (`config.py:load_extension_catalog()`) loads `config/extensions-catalog.json` — a static JSON file listing all available extensions. This catalog is served via `GET /api/extensions/catalog` and enriched at request time with live status (enabled, disabled, not_installed, incompatible) by checking the filesystem and service health (`routers/extensions.py:_compute_extension_status()`).
 
+The same product-owned catalog is discoverable from the host CLI:
+
+```bash
+ods catalog list
+ods catalog list --backend apple --json
+ods catalog search rag --backend nvidia
+```
+
+Search matches extension IDs, names, descriptions, and tags. Backend filtering uses the catalog's declared `gpu_backends`; it does not probe the current host or mutate extension state.
+
 ### 2. Manifest Loading
 
 The Dashboard API loads manifests from `extensions/services/*/manifest.yaml` at startup (`config.py:load_extension_manifests()`). This populates the `SERVICES` dict (used for health checks) and `FEATURES` list (used by the features endpoint). Disabled extensions (those with `compose.yaml.disabled` instead of `compose.yaml`) are skipped during manifest loading — they do not appear in service health checks or feature recommendations.

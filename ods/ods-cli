@@ -6443,6 +6443,51 @@ cmd_repair() {
 }
 
 #=============================================================================
+# Extension catalog
+#=============================================================================
+cmd_catalog() {
+    check_install
+
+    local action="${1:-list}"
+    shift || true
+    local query=""
+    case "$action" in
+        list) ;;
+        search)
+            query="${1:-}"
+            [[ -n "$query" ]] || error "Usage: ods catalog search <query> [--backend BACKEND] [--json]"
+            shift
+            ;;
+        *) error "Usage: ods catalog <list|search> [query] [--backend BACKEND] [--json]" ;;
+    esac
+
+    local backend=""
+    local json_mode="false"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --backend)
+                [[ -n "${2:-}" ]] || error "--backend requires a value"
+                backend="$2"
+                shift 2
+                ;;
+            --json) json_mode="true"; shift ;;
+            *) error "Unknown catalog argument: $1" ;;
+        esac
+    done
+
+    local catalog="$INSTALL_DIR/config/extensions-catalog.json"
+    local query_script="$INSTALL_DIR/scripts/query-extensions-catalog.py"
+    [[ -f "$catalog" ]] || error "Extension catalog not found: $catalog"
+    [[ -f "$query_script" ]] || error "Extension catalog query tool not found: $query_script"
+
+    local -a args=("$query_script" "$catalog")
+    [[ -z "$query" ]] || args+=(--query "$query")
+    [[ -z "$backend" ]] || args+=(--backend "$backend")
+    [[ "$json_mode" == "false" ]] || args+=(--json)
+    python3 "${args[@]}"
+}
+
+#=============================================================================
 # Templates
 #=============================================================================
 _template_list() {
@@ -6677,6 +6722,7 @@ ${CYAN}Commands:${NC}
   repair|fix [voice|hermes-workers]
                       Repair voice services or prune leaked Hermes slash workers
   template [action]   Apply pre-built service templates (list|preview|apply)
+  catalog [action]    Discover extension-library services (list|search)
   audit [extensions]  Audit extension manifests and compose contracts
   agent [action]      Manage ods host agent (status|start|stop|restart|logs)
   help                Show this help
@@ -6779,6 +6825,8 @@ ${CYAN}Examples:${NC}
                                   # Preview what a template will change
   ods template apply chat-playground
                                   # Apply a template (enables services)
+  ods catalog search rag --backend nvidia
+                                  # Find compatible library extensions
   ods audit                     # Audit every extension contract
   ods audit --json whisper      # Audit one service as JSON
   ods agent status              # Check host agent health
@@ -6830,6 +6878,7 @@ case "${1:-help}" in
     benchmark|bench|b) cmd_benchmark ;;
     doctor|diag|d) shift; cmd_doctor "$@" ;;
     audit)        shift; cmd_audit "$@" ;;
+    catalog)      shift; cmd_catalog "$@" ;;
     template|tmpl) shift; cmd_template "$@" ;;
     agent)        shift; cmd_agent "$@" ;;
     help|h|--help|-h) cmd_help ;;
