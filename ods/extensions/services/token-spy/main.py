@@ -1897,6 +1897,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .chart-container { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
   .chart-container h3 { font-size: 0.95em; margin-bottom: 12px; }
   .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  .table-scroll { overflow-x: auto; }
   canvas { width: 100%; height: 280px; max-height: 300px; display: block; }
   .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; color: #8b949e; font-size: 0.8em; }
   .chart-legend-item { display: inline-flex; align-items: center; gap: 6px; }
@@ -2036,6 +2037,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <div class="chart-container">
   <h3>Recent Turns</h3>
+  <div class="table-scroll" role="region" aria-label="Recent turns table" tabindex="0">
   <table>
     <thead>
       <tr>
@@ -2054,6 +2056,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </thead>
     <tbody id="recent-table"></tbody>
   </table>
+  </div>
 </div>
 
 <script src="/dashboard-assets/charts.js"></script>

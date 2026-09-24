@@ -7,11 +7,12 @@
 
   function getContext(canvas) {
     const dpr = window.devicePixelRatio || 1;
-    const width = Math.max(canvas.clientWidth || 320, 320);
+    // Keep layout responsive; pixel dimensions belong only to the bitmap.
+    canvas.style.width = '100%';
+    const width = canvas.clientWidth || 320;
     const height = Math.max(parseInt(canvas.dataset.height || '', 10) || canvas.clientHeight || 280, 220);
     canvas.width = Math.floor(width * dpr);
     canvas.height = Math.floor(height * dpr);
-    canvas.style.width = width + 'px';
     canvas.style.height = height + 'px';
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -110,14 +111,16 @@
         ctx.fillText(label, margin.left - 8, y);
       }
 
-      tickXRange(xMin, xMax, 5).forEach(value => {
+      const ticks = tickXRange(xMin, xMax, Math.min(5, Math.max(2, Math.floor(plotW / 90) + 1)));
+      ticks.forEach((value, index) => {
         const x = xFor(value);
         ctx.beginPath();
         ctx.moveTo(x, margin.top);
         ctx.lineTo(x, height - margin.bottom);
         ctx.stroke();
         const label = options.xFormatter ? options.xFormatter(new Date(value)) : new Date(value).toLocaleTimeString();
-        ctx.textAlign = 'center';
+        // Endpoint labels must stay inside the plot on narrow screens.
+        ctx.textAlign = index === 0 ? 'left' : index === ticks.length - 1 ? 'right' : 'center';
         ctx.textBaseline = 'top';
         ctx.fillText(label, x, height - margin.bottom + 8);
       });
