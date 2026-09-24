@@ -1,12 +1,15 @@
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
-import PortalExtensionMention, { extensionMentionQuery } from './PortalExtensionMention'
+import PortalExtensionMention, { extensionMentionQuery, replaceExtensionMention } from './PortalExtensionMention'
 
 afterEach(() => vi.unstubAllGlobals())
 
 test('only a complete extension command opens catalog suggestions', () => {
   expect(extensionMentionQuery('/extension @')).toBe('')
   expect(extensionMentionQuery('/extensions @doc')).toBe('doc')
-  for (const text of ['Explain /extension @doc', '/extension @doc ', '/extension @a/b', 'hello', null]) {
+  expect(extensionMentionQuery('ola, instale pra mim /extensions @ex')).toBe('ex')
+  expect(replaceExtensionMention('ola, instale pra mim /extensions @ex', '/extensions @excalidraw ')).toBe('ola, instale pra mim /extensions @excalidraw ')
+  expect(replaceExtensionMention('hello', '/extensions @excalidraw ')).toBe('hello')
+  for (const text of ['url/extension @doc', '/extension @doc ', '/extension @a/b', 'hello', null]) {
     expect(extensionMentionQuery(text)).toBeUndefined()
   }
 })
