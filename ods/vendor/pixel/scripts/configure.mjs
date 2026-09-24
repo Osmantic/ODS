@@ -136,7 +136,7 @@ if (!Array.isArray(gatewayExtensions) || gatewayExtensions.some((extension) =>
   typeof extension.id !== "string" || !/^[a-z][a-z0-9-]{1,62}$/.test(extension.id) ||
   (extension.path !== undefined && (typeof extension.path !== "string" || !isAbsolute(extension.path) || resolve(extension.path) === resolve("/") || !/^[0-9a-f]{64}$/.test(extension.sha256 ?? ""))) ||
   (extension.path === undefined && (extension.sha256 !== undefined || extension.tools !== undefined)) ||
-  (extension.tools !== undefined && (!Array.isArray(extension.tools) || extension.tools.length < 1 || extension.tools.length > 24 || extension.tools.some((name) => typeof name !== "string" || !/^pixel_[a-z0-9_]{2,63}$/.test(name))))
+  (extension.tools !== undefined && (!Array.isArray(extension.tools) || extension.tools.length < 1 || extension.tools.length > 32 || extension.tools.some((name) => typeof name !== "string" || !/^pixel_[a-z0-9_]{2,63}$/.test(name))))
 )) throw new Error("gatewayExtensions must contain {id} for bundled plugins or {id, absolute path, sha256, optional tools} for custom plugins");
 if (new Set(gatewayExtensions.map(({ id }) => id)).size !== gatewayExtensions.length) throw new Error("gatewayExtensions contains a duplicate plugin ID");
 const declaredExtensionTools = gatewayExtensions.flatMap(({ tools = [] }) => tools);

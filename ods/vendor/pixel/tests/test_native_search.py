@@ -91,7 +91,7 @@ class NativeSearchTests(unittest.TestCase):
         return tools, {"id": "parallel", "path": str(self.plugin), "sha256": digest.hexdigest(), "tools": tools}
 
     def test_gateway_tool_cap_accepts_ods_surface_and_rejects_overflow(self):
-        for count in (22, 24):
+        for count in (22, 25, 32):
             tools, extension = self.extension_with_tools(count)
             self.answers["gatewayExtensions"] = [extension]
             self.configure()
@@ -102,11 +102,23 @@ class NativeSearchTests(unittest.TestCase):
             self.assertEqual(config["tools"]["sandbox"]["tools"]["allow"], [tools[0]])
             self.assertTrue(set(tools[1:]).issubset(config["agents"]["list"][0]["tools"]["deny"]))
 
-        _, overflow = self.extension_with_tools(25)
+        _, overflow = self.extension_with_tools(33)
         self.answers["gatewayExtensions"] = [overflow]
         self.assertIn("gatewayExtensions", self.configure(expected=1).stderr)
         env["PIXEL_GATEWAY_EXTENSIONS"] = json.dumps([overflow])
         self.assertIn("PIXEL_GATEWAY_EXTENSIONS", self.render(env, expected=1))
+
+    def test_tool_cap_increase_retains_extension_identity_guards(self):
+        tools, valid = self.extension_with_tools(25)
+        for invalid in (
+            dict(valid, tools=tools[:-1] + ["not_a_pixel_tool"]),
+            dict(valid, tools=tools[:-1] + [tools[0]]),
+            dict(valid, path="relative/plugin"),
+            dict(valid, sha256="not-a-digest"),
+        ):
+            with self.subTest(invalid=invalid):
+                self.answers["gatewayExtensions"] = [invalid]
+                self.configure(expected=1)
 
     def test_legacy_provider_and_url_remain_default(self):
         self.configure()

@@ -9,6 +9,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=installers/lib/pixel-host-install.sh
 source "$ROOT/installers/lib/pixel-host-install.sh"
 
+CONFIGURE_TEST_PATH="$PATH"
 PASS=0
 FAIL=0
 pass() { PASS=$((PASS + 1)); printf 'PASS: %s\n' "$1"; }
@@ -1317,6 +1318,7 @@ else
     pass "symlink Operations policy rejected"
 fi
 _ods_pixel_write_onboarding "$owner" "$home" "$answers" /usr/bin/openclaw /opt/ods/pixel-plugin "$digest"
+check env PATH="$CONFIGURE_TEST_PATH" python3 "$ROOT/tests/test_pixel_gateway_extension_configure.py" "$answers"
 check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["gatewayPort"] == 18789; assert v["webSearchProvider"] == "searxng"; assert not any(e["id"] == "parallel" for e in v["gatewayExtensions"])' "$answers"
 alternate_gateway_answers="$TEST_ROOT/alternate-gateway-onboarding.json"
 PIXEL_GATEWAY_PORT=18790 _ods_pixel_write_onboarding "$owner" "$home" \
