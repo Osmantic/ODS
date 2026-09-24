@@ -397,6 +397,13 @@ def prepare_upstream_request(
         raise EgressError(400, "invalid_json", f"invalid JSON body: {exc}") from exc
     if not isinstance(payload, dict):
         raise EgressError(400, "invalid_json", "request body must be a JSON object")
+    stream = payload.get("stream", False)
+    if type(stream) is not bool:
+        raise EgressError(
+            400,
+            "invalid_request",
+            "stream must be a JSON boolean when provided",
+        )
     requested_model = str(payload.get("model") or PUBLIC_MODEL_ALIAS)
     provider_model = str(provider.get("model") or "")
     payload["model"] = provider_model
@@ -408,7 +415,7 @@ def prepare_upstream_request(
         content=content,
         requested_model=requested_model,
         provider_model=provider_model,
-        stream=bool(payload.get("stream")),
+        stream=stream,
         tls_server_name=tls_server_name,
         host_header=host_header,
         connection_key=connection_key,

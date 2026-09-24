@@ -176,6 +176,37 @@ def test_route_state_prepares_direct_provider_request_without_client_auth() -> N
     assert_true("connection" not in {key.lower() for key in upstream.headers}, "hop-by-hop headers must be stripped")
 
 
+def test_request_stream_flag_requires_a_json_boolean() -> None:
+    route = route_from_state(route_state())
+    for invalid in ("false", 1, None, []):
+        error = assert_egress_error(
+            lambda invalid=invalid: prepare_upstream_request(
+                method="POST",
+                path="/v1/chat/completions",
+                headers={},
+                body=json.dumps({
+                    "model": "ods/current",
+                    "messages": [],
+                    "stream": invalid,
+                }).encode("utf-8"),
+                route=route,
+                provider_secret="unit-test-provider-token",
+            ),
+            "invalid_request",
+        )
+        assert_true(error.status == 400, "invalid stream flags must be client errors")
+
+    upstream = prepare_upstream_request(
+        method="POST",
+        path="/v1/chat/completions",
+        headers={},
+        body=b'{"model":"ods/current","messages":[],"stream":false}',
+        route=route,
+        provider_secret="unit-test-provider-token",
+    )
+    assert_true(upstream.stream is False, "JSON false must remain non-streaming")
+
+
 def test_direct_resolution_allows_only_global_provider_addresses() -> None:
     route = route_from_state(route_state())
     addresses = validate_direct_provider_resolution(
@@ -466,6 +497,7 @@ def main() -> int:
         test_manifest_and_network_policy_mark_no_lan_exposure,
         test_image_copies_shared_policy_package,
         test_route_state_prepares_direct_provider_request_without_client_auth,
+        test_request_stream_flag_requires_a_json_boolean,
         test_direct_resolution_allows_only_global_provider_addresses,
         test_direct_resolution_rejects_unsafe_dns_answers,
         test_ssh_route_uses_internal_tunnel_without_direct_dns,
