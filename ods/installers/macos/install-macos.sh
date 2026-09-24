@@ -183,6 +183,7 @@ source "${LIB_DIR}/detection.sh"
 source "${LIB_DIR}/preflight-fs.sh"
 source "${LIB_DIR}/env-generator.sh"
 source "${LIB_DIR}/installed-footprint.sh"
+source "${LIB_DIR}/llama-release.sh"
 if [[ -f "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh" ]]; then
     source "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh"
 fi
@@ -2245,7 +2246,15 @@ else
 
         # Download llama.cpp Metal build
         LLAMA_ZIP="/tmp/${LLAMA_CPP_MACOS_ASSET}"
-        if [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
+        LLAMA_RELEASE_STAMP="${LLAMA_SERVER_DIR}/.llama-cpp-release-tag"
+        _llama_install_required=true
+        if macos_llama_release_is_current \
+            "$LLAMA_SERVER_BIN" "$LLAMA_RELEASE_STAMP" "$LLAMA_CPP_RELEASE_TAG"; then
+            _llama_install_required=false
+        elif [[ -x "$LLAMA_SERVER_BIN" ]]; then
+            ai "Refreshing llama-server for required llama.cpp release ${LLAMA_CPP_RELEASE_TAG}..."
+        fi
+        if $_llama_install_required; then
             if [[ ! -f "$LLAMA_ZIP" ]]; then
                 download_with_progress "$LLAMA_CPP_MACOS_URL" "$LLAMA_ZIP" \
                     "Downloading llama-server (Metal)" || {
@@ -2259,6 +2268,8 @@ else
                             mkdir -p "$LLAMA_SERVER_DIR"
                             cp "$BREW_LLAMA" "$LLAMA_SERVER_BIN"
                             chmod +x "$LLAMA_SERVER_BIN"
+                            macos_record_llama_release "$LLAMA_RELEASE_STAMP" "homebrew"
+                            _llama_install_required=false
                             ai_ok "Installed llama-server via Homebrew"
                         else
                             ai_err "Could not install llama-server. Install manually:"
@@ -2274,7 +2285,7 @@ else
                 }
             fi
 
-            if [[ -f "$LLAMA_ZIP" ]] && [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
+            if [[ -f "$LLAMA_ZIP" ]] && $_llama_install_required; then
                 # Extract
                 ai "Extracting llama-server..."
                 mkdir -p "$LLAMA_SERVER_DIR"
@@ -2297,6 +2308,7 @@ else
                     FOUND_DIR=$(dirname "$FOUND_BIN")
                     find "$FOUND_DIR" -name "*.dylib" -exec cp {} "$LLAMA_SERVER_DIR/" \; 2>/dev/null || true
                     find "$FOUND_DIR" -name "*.metal" -exec cp {} "$LLAMA_SERVER_DIR/" \; 2>/dev/null || true
+                    macos_record_llama_release "$LLAMA_RELEASE_STAMP" "$LLAMA_CPP_RELEASE_TAG"
 
                     ai_ok "Extracted llama-server"
                 else
@@ -2312,7 +2324,7 @@ else
             xattr -rd com.apple.quarantine "$LLAMA_SERVER_BIN" 2>/dev/null || true
             xattr -rd com.apple.quarantine "$LLAMA_SERVER_DIR"/*.dylib 2>/dev/null || true
         else
-            ai_ok "llama-server already present"
+            ai_ok "llama-server ${LLAMA_CPP_RELEASE_TAG} already present"
         fi
 
         # Start native llama-server with Metal

@@ -30,6 +30,7 @@ assert_llama_exec_anchored() {
 bootstrap="$ROOT_DIR/scripts/bootstrap-upgrade.sh"
 installer="$ROOT_DIR/installers/macos/install-macos.sh"
 cli="$ROOT_DIR/installers/macos/ods-macos.sh"
+release_lib="$ROOT_DIR/installers/macos/lib/llama-release.sh"
 
 grep -qF 'cd "$INSTALL_DIR" || {' "$bootstrap" \
     || fail "bootstrap-upgrade.sh must anchor its own cwd to INSTALL_DIR"
@@ -44,6 +45,27 @@ grep -qF 'bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" stop'
 grep -qF 'com.ods.full-model-download' "$installer" \
     || fail "macOS installer must unload legacy full-model-download LaunchAgent"
 pass "macOS installer clears legacy native llama LaunchAgents"
+
+source "$release_lib"
+release_tmp="$(mktemp -d)"
+trap 'rm -rf "$release_tmp"' EXIT
+release_bin="$release_tmp/llama-server"
+release_stamp="$release_tmp/.llama-cpp-release-tag"
+printf '#!/bin/sh\n' > "$release_bin"
+chmod +x "$release_bin"
+if macos_llama_release_is_current "$release_bin" "$release_stamp" b9014; then
+    fail "an unversioned native binary must be refreshed"
+fi
+macos_record_llama_release "$release_stamp" b8210
+if macos_llama_release_is_current "$release_bin" "$release_stamp" b9014; then
+    fail "a stale native binary must be refreshed"
+fi
+macos_record_llama_release "$release_stamp" b9014
+macos_llama_release_is_current "$release_bin" "$release_stamp" b9014 \
+    || fail "the required native release should be reusable"
+grep -qF 'macos_record_llama_release "$LLAMA_RELEASE_STAMP" "$LLAMA_CPP_RELEASE_TAG"' "$installer" \
+    || fail "macOS installer must record the extracted llama.cpp release"
+pass "macOS installer refreshes unversioned and stale llama.cpp binaries"
 
 grep -qF 'lsof -a -p "$pid" -d cwd -Fn' "$installer" \
     || fail "macOS installer must inspect cwd for relative native llama-server launches"
