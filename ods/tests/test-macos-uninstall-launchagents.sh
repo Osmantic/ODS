@@ -50,6 +50,15 @@ EOF
 #!/usr/bin/env bash
 exit 1
 EOF
+    cat > "$stub_dir/rm" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+    if [[ -n "${RM_FAIL_PATH:-}" && "$arg" == "$RM_FAIL_PATH" ]]; then
+        exit 1
+    fi
+done
+exec /bin/rm "$@"
+EOF
     cat > "$stub_dir/uname" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "-s" || $# -eq 0 ]]; then
@@ -117,6 +126,7 @@ run_uninstall() {
     UNAME_S="${UNAME_S:-Darwin}" \
     LOADED_LABELS="${LOADED_LABELS:-}" \
     BOOTOUT_FAIL="${BOOTOUT_FAIL:-}" \
+    RM_FAIL_PATH="${RM_FAIL_PATH:-}" \
         bash "$install_dir/ods-uninstall.sh" --force > "$out_file" 2>&1
 }
 
@@ -185,11 +195,11 @@ main() {
     local install4="$TMP_DIR/install4" home4="$TMP_DIR/home4"
     make_install "$install4"
     make_home_with_plists "$home4" com.ods.opencode-web
-    chmod 555 "$home4/Library/LaunchAgents"
+    local failed_plist="$home4/Library/LaunchAgents/com.ods.opencode-web.plist"
     LAUNCHCTL_LOG="$TMP_DIR/launchctl4.log" LOADED_LABELS="" \
+    RM_FAIL_PATH="$failed_plist" \
         run_uninstall "$install4" "$home4" "$stub_dir" "$TMP_DIR/out4.log" \
         || fail "plist removal failure must not fail the uninstall"
-    chmod 755 "$home4/Library/LaunchAgents"
     grep -qiE "could not remove.*com\.ods\.opencode-web" "$TMP_DIR/out4.log" \
         || fail "failed plist removal must produce a warning"
     pass "failed plist removal warns without aborting uninstall"
