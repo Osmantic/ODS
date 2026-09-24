@@ -32,18 +32,26 @@ jobs:
             CLAUDE.md
           sparse-checkout-cone-mode: true
 
-      - name: Validate required secrets
+      - name: Check triage credentials
+        id: creds
         env:
           HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         run: |
-          if [ "$HAS_API_KEY" != "true" ]; then
-            echo "::error::ANTHROPIC_API_KEY not configured"
-            exit 1
+          if [ "$HAS_API_KEY" = "true" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "ANTHROPIC_API_KEY present; triaging."
+          else
+            # Do NOT fail the run: this workflow is triggered by `issues: opened`,
+            # so a hard failure emails the ISSUE AUTHOR — who cannot set the org
+            # secret and did nothing wrong. It also fails on every fork. Skip the
+            # AI steps and let the run succeed as a no-op instead.
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY not configured; skipping AI triage (no-op)."
           fi
-          echo "Required secrets present"
 
       - name: Sanitize issue input
         id: sanitize
+        if: steps.creds.outputs.configured == 'true'
         env:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
@@ -63,6 +71,7 @@ jobs:
           } >> $GITHUB_OUTPUT
 
       - name: AI Triage
+        if: steps.creds.outputs.configured == 'true'
         uses: anthropics/claude-code-action@9db782c3a17ef2bfc274cd17411bc3e0a5ba1345 # v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
