@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Validate resolved Docker Compose stack for syntax errors
-# Usage: validate-compose-stack.sh --compose-flags "-f file1.yml -f file2.yml" [--env-file /path/to/.env]
+# Usage: validate-compose-stack.sh --compose-flags "-f file1.yml -f file2.yml" [--env-file /path/to/.env] [--json]
 #
 # Returns:
 #   0 - Valid compose stack
@@ -11,6 +11,36 @@ set -euo pipefail
 COMPOSE_FLAGS=""
 ENV_FILE=""
 QUIET=false
+JSON_OUTPUT=false
+
+usage() {
+    cat <<'EOF'
+Usage: validate-compose-stack.sh --compose-flags FLAGS [OPTIONS]
+
+Options:
+  --env-file FILE  Supply an environment file to Docker Compose.
+  --quiet          Suppress the human success report.
+  --json           Emit a machine-readable validation receipt.
+  -h, --help       Show this help.
+EOF
+}
+
+json_escape() {
+    local value="${1-}"
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    value=${value//$'\n'/\\n}
+    value=${value//$'\r'/\\r}
+    value=${value//$'\t'/\\t}
+    printf '%s' "$value"
+}
+
+emit_json() {
+    local valid="$1" engine="$2" service_count="$3" error_code="$4"
+    printf '{"schema_version":"1","kind":"compose-validation","valid":%s,' "$valid"
+    printf '"engine":"%s","service_count":%d,"error_code":"%s"}\n' \
+        "$(json_escape "$engine")" "$service_count" "$(json_escape "$error_code")"
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -26,6 +56,15 @@ while [[ $# -gt 0 ]]; do
             QUIET=true
             shift
             ;;
+        --json)
+            JSON_OUTPUT=true
+            QUIET=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
         *)
             echo "Unknown argument: $1" >&2
             exit 1
@@ -35,6 +74,7 @@ done
 
 if [[ -z "$COMPOSE_FLAGS" ]]; then
     echo "ERROR: --compose-flags required" >&2
+    $JSON_OUTPUT && emit_json false "" 0 "missing_compose_flags"
     exit 1
 fi
 
@@ -51,6 +91,7 @@ elif command -v docker-compose &>/dev/null; then
     DOCKER_COMPOSE_CMD="docker-compose"
 else
     echo "ERROR: docker compose not found" >&2
+    $JSON_OUTPUT && emit_json false "" 0 "compose_unavailable"
     exit 1
 fi
 
@@ -68,12 +109,13 @@ fi
 # - Invalid environment variable references
 validation_output=$(mktemp)
 if $DOCKER_COMPOSE_CMD $ENV_FILE_FLAG $COMPOSE_FLAGS config > "$validation_output" 2>&1; then
+    service_count=$(grep -c "^  [a-z]" "$validation_output" || echo "0")
     if ! $QUIET; then
         echo "Compose stack validation passed"
         # Show summary of services
-        service_count=$(grep -c "^  [a-z]" "$validation_output" || echo "0")
         echo "  Services defined: $service_count"
     fi
+    $JSON_OUTPUT && emit_json true "$DOCKER_COMPOSE_CMD" "$service_count" ""
     rm -f "$validation_output"
     exit 0
 else
@@ -83,6 +125,7 @@ else
     cat "$validation_output" >&2
     echo "" >&2
     echo "Compose flags: $COMPOSE_FLAGS" >&2
+    $JSON_OUTPUT && emit_json false "$DOCKER_COMPOSE_CMD" 0 "compose_config_failed"
     rm -f "$validation_output"
     exit 1
 fi
