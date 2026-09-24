@@ -61,22 +61,25 @@ _phase11_build_local_images() {
             # Cross-check that a successful build produced a tagged image. An
             # image left by an earlier install never overrides a non-zero build.
             if ! $build_failed; then
-                resolved_image=$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --format json 2>/dev/null \
+                if ! resolved_image=$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --format json 2>> "$build_log" \
                     | python3 -c "
 import json, sys
-try:
-    d = json.load(sys.stdin)
-    svc_name = '$svc'
-    svc_config = d.get('services', {}).get(svc_name, {})
-    image = svc_config.get('image', '') or ''
-    if not image and svc_config.get('build') is not None:
-        project = d.get('name') or 'ods'
-        image = f'{project}-{svc_name}'
-    print(image)
-except Exception:
-    pass
-" 2>/dev/null || echo "")
-                if [[ -n "$resolved_image" ]] && ! $DOCKER_CMD image inspect "$resolved_image" &>/dev/null; then
+d = json.load(sys.stdin)
+svc_name = '$svc'
+svc_config = d.get('services', {}).get(svc_name)
+if not isinstance(svc_config, dict):
+    raise SystemExit(f'Compose config has no service named {svc_name}')
+image = svc_config.get('image', '') or ''
+if not image and svc_config.get('build') is not None:
+    project = d.get('name') or 'ods'
+    image = f'{project}-{svc_name}'
+if not image:
+    raise SystemExit(f'Compose config has no image or build metadata for {svc_name}')
+print(image)
+" 2>> "$build_log"); then
+                    build_failed=true
+                    echo "Could not resolve the built image for '$svc' from Docker Compose metadata." >> "$build_log"
+                elif ! $DOCKER_CMD image inspect "$resolved_image" &>/dev/null; then
                     build_failed=true
                     echo "Built image '$resolved_image' was not found after build attempt $attempt." >> "$build_log"
                 fi

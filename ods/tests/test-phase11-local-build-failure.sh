@@ -53,6 +53,10 @@ case "$args" in
         exit 0
         ;;
     *" config --format json "*)
+        if [[ "${MOCK_CONFIG_INVALID:-false}" == "true" ]]; then
+            printf '%s\n' '{not-json'
+            exit 0
+        fi
         cat <<'JSON'
 {"name":"ods","services":{"comfyui":{"build":{"context":"extensions/services/comfyui"}}}}
 JSON
@@ -149,3 +153,23 @@ set -e
 grep -q 'WARN: comfyui build failed; retrying' "$LOG_FILE" \
     || fail "retry warning was not recorded"
 pass "phase 11 retries transient local image build failures"
+
+: > "$CALL_LOG"
+: > "$LOG_FILE"
+rm -f "$MOCK_COMFYUI_BUILD_COUNT"
+unset MOCK_COMFYUI_FAIL_BEFORE_SUCCESS
+export MOCK_CONFIG_INVALID=true
+export ODS_DOCKER_BUILD_MAX_ATTEMPTS=1
+
+set +e
+_phase11_build_local_images comfyui
+phase_rc=$?
+set -e
+
+[[ "$phase_rc" -ne 0 ]] \
+    || fail "invalid Compose build metadata was accepted as a verified image"
+! grep -q 'image inspect' "$CALL_LOG" \
+    || fail "installer inspected an image name parsed from invalid Compose metadata"
+grep -q "Could not resolve the built image for 'comfyui'" "$LOG_FILE" \
+    || fail "installer did not explain the Compose metadata failure"
+pass "invalid Compose build metadata fails closed"
