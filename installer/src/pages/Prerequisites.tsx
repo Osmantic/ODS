@@ -20,6 +20,8 @@ export default function Prerequisites({ onNext, onError }: Props) {
   const [wslStatus, setWslStatus] = useState<InstallStatus>("idle");
   const [message, setMessage] = useState("");
   const [rebootNeeded, setRebootNeeded] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const busy = checking || dockerStatus === "installing" || wslStatus === "installing";
 
   useEffect(() => {
     checkPrerequisites()
@@ -63,6 +65,7 @@ export default function Prerequisites({ onNext, onError }: Props) {
   }
 
   const handleInstallDocker = async () => {
+    if (busy) return;
     setDockerStatus("installing");
     setMessage("Installing Docker... this may take a few minutes.");
     try {
@@ -81,6 +84,7 @@ export default function Prerequisites({ onNext, onError }: Props) {
   };
 
   const handleInstallWSL = async () => {
+    if (busy) return;
     setWslStatus("installing");
     setMessage("Installing WSL2... this may take a few minutes.");
     try {
@@ -102,8 +106,17 @@ export default function Prerequisites({ onNext, onError }: Props) {
   };
 
   const handleRecheck = async () => {
-    const updated = await checkPrerequisites();
-    setPrereqs(updated);
+    if (busy) return;
+    setChecking(true);
+    setMessage("");
+    try {
+      const updated = await checkPrerequisites();
+      setPrereqs(updated);
+    } catch (error) {
+      setMessage(`Could not re-check prerequisites: ${String(error)}`);
+    } finally {
+      setChecking(false);
+    }
   };
 
   return (
@@ -142,9 +155,9 @@ export default function Prerequisites({ onNext, onError }: Props) {
               />
               <span className="text-sm text-white">WSL2</span>
             </div>
-            {!prereqs.wsl2_installed && wslStatus === "idle" && (
-              <Button variant="secondary" onClick={handleInstallWSL}>
-                Install
+            {!prereqs.wsl2_installed && (wslStatus === "idle" || wslStatus === "failed") && (
+              <Button variant="secondary" onClick={handleInstallWSL} disabled={busy}>
+                {wslStatus === "failed" ? "Retry WSL2" : "Install"}
               </Button>
             )}
           </div>
@@ -171,9 +184,9 @@ export default function Prerequisites({ onNext, onError }: Props) {
               )}
             </div>
           </div>
-          {!prereqs.docker_installed && dockerStatus === "idle" && (
-            <Button variant="secondary" onClick={handleInstallDocker}>
-              Install
+          {!prereqs.docker_installed && (dockerStatus === "idle" || dockerStatus === "failed") && (
+            <Button variant="secondary" onClick={handleInstallDocker} disabled={busy}>
+              {dockerStatus === "failed" ? "Retry Docker" : "Install"}
             </Button>
           )}
         </div>
@@ -197,12 +210,13 @@ export default function Prerequisites({ onNext, onError }: Props) {
         </div>
       ) : (
         <div className="flex gap-3">
-          <Button variant="ghost" onClick={handleRecheck}>
+          <Button variant="ghost" onClick={handleRecheck} disabled={busy}>
             Re-check
           </Button>
           <Button
             onClick={onNext}
             disabled={
+              busy ||
               !prereqs.git_installed ||
               !prereqs.docker_installed ||
               !prereqs.docker_running
