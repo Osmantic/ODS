@@ -46,6 +46,9 @@ _TEXTUAL_RE = re.compile(
 # Bodies larger than this are passed through untouched even if textual, so a
 # pathological response cannot pin the box buffering a hold-back window.
 RESTORE_MAX_BYTES = int(os.getenv("SHIELD_RESTORE_MAX_BYTES", str(8 * 1024 * 1024)))
+# Requests must be fully buffered before PII scrubbing. Bound that buffer even
+# when Content-Length is absent or untrusted (for example, chunked uploads).
+REQUEST_MAX_BYTES = int(os.getenv("SHIELD_REQUEST_MAX_BYTES", str(8 * 1024 * 1024)))
 
 
 def _parse_content_type(content_type: str) -> tuple[str, str]:
@@ -71,6 +74,32 @@ def _sanitize_error(exc: Exception) -> str:
         r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "[EMAIL]", error_str
     )
     return error_str
+
+
+async def _read_request_body_bounded(request: Request) -> bytes:
+    """Read at most REQUEST_MAX_BYTES, rejecting before PII processing."""
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > REQUEST_MAX_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Request body exceeds privacy shield limit",
+                )
+        except ValueError:
+            # An invalid or combined header is not trusted for enforcement;
+            # the streaming byte count below remains authoritative.
+            pass
+
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > REQUEST_MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="Request body exceeds privacy shield limit",
+            )
+        body.extend(chunk)
+    return bytes(body)
 
 # Security: API Key Authentication
 DEFAULT_KEY_PATH = os.environ.get("SHIELD_API_KEY_PATH", "/data/shield_api_key")
@@ -284,7 +313,7 @@ async def proxy(request: Request, path: str):
     start_time = time.time()
     shield = get_session(request)
 
-    raw_body = await request.body()
+    raw_body = await _read_request_body_bounded(request)
     if raw_body:
         try:
             body_str = raw_body.decode("utf-8")

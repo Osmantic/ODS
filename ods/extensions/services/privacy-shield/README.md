@@ -60,6 +60,7 @@ Environment variables (set in `.env`):
 | `PII_CACHE_ENABLED` | true | Enable session PII caching |
 | `PII_CACHE_SIZE` | 1000 | Max cached sessions |
 | `PII_CACHE_TTL` | 300 | Session TTL in seconds |
+| `SHIELD_REQUEST_MAX_BYTES` | 8388608 | Maximum buffered request body before a 413 response |
 
 For example, `SHIELD_PORT=18085` publishes `127.0.0.1:18085` while Docker
 health checks and dashboard requests continue to use `privacy-shield:8085`.

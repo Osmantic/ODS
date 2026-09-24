@@ -19,6 +19,7 @@ services:
       - PII_CACHE_ENABLED=${PII_CACHE_ENABLED:-true}
       - PII_CACHE_SIZE=${PII_CACHE_SIZE:-1000}
       - PII_CACHE_TTL=${PII_CACHE_TTL:-300}
+      - SHIELD_REQUEST_MAX_BYTES=${SHIELD_REQUEST_MAX_BYTES:-8388608}
       - LOG_LEVEL=${LOG_LEVEL:-info}
     volumes:
       - ./data/privacy-shield:/data:z

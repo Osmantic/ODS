@@ -282,6 +282,55 @@ class TestBinaryPassthrough:
         assert seen["body"] == bad, "non-utf8 request body not forwarded verbatim"
 
 
+# ── 3b. Request buffering is bounded before PII scrubbing ──────────────────
+
+class TestRequestBodyLimit:
+    @staticmethod
+    def _reject_upstream(_request):  # pragma: no cover - must not be reached
+        raise AssertionError("oversized request reached the upstream")
+
+    def test_declared_oversized_request_rejected_before_upstream(
+        self, client, install_upstream, monkeypatch
+    ):
+        monkeypatch.setattr(proxy, "REQUEST_MAX_BYTES", 16)
+        install_upstream(self._reject_upstream)
+
+        resp = client.post("/v1/chat/completions", headers=AUTH, content=b"x" * 17)
+
+        assert resp.status_code == 413
+        assert resp.json()["detail"] == "Request body exceeds privacy shield limit"
+
+    def test_chunked_oversized_request_rejected_while_streaming(
+        self, client, install_upstream, monkeypatch
+    ):
+        monkeypatch.setattr(proxy, "REQUEST_MAX_BYTES", 16)
+        install_upstream(self._reject_upstream)
+
+        resp = client.post(
+            "/v1/chat/completions",
+            headers=AUTH,
+            content=(chunk for chunk in (b"x" * 10, b"y" * 10)),
+        )
+
+        assert resp.status_code == 413
+
+    def test_request_at_limit_is_forwarded(
+        self, client, install_upstream, monkeypatch
+    ):
+        monkeypatch.setattr(proxy, "REQUEST_MAX_BYTES", 16)
+        seen = {}
+
+        def handler(request):
+            seen["body"] = request.content
+            return _resp(200, {"content-type": "application/json"}, [b'{"ok":true}'])
+
+        install_upstream(handler)
+        resp = client.post("/v1/chat/completions", headers=AUTH, content=b"x" * 16)
+
+        assert resp.status_code == 200
+        assert seen["body"] == b"x" * 16
+
+
 # ── 4. WebSocket upgrade lane ───────────────────────────────────────────────
 
 class TestWebSocketLane:
