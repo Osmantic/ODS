@@ -16,20 +16,26 @@ def download_snapshot(
     allow_patterns: list[str] | None = None,
 ) -> Path:
     try:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import HfApi, snapshot_download
     except ImportError as exc:
         raise RuntimeError(
             "huggingface_hub is not installed; install with: "
             "python -m pip install 'huggingface_hub[hf_xet]>=0.27'"
         ) from exc
 
+    if not revision:
+        # Resolve the mutable default branch to its current commit SHA so the
+        # prefetch pins the exact artifact it downloads instead of silently
+        # tracking whatever "main" points at on a given day.
+        revision = HfApi().model_info(repo_id).sha
+        print(f"Resolved {repo_id} default branch to revision {revision}")
+
     cache_dir.mkdir(parents=True, exist_ok=True)
     kwargs: dict[str, object] = {
         "repo_id": repo_id,
         "cache_dir": str(cache_dir),
+        "revision": revision,
     }
-    if revision:
-        kwargs["revision"] = revision
     if allow_patterns:
         kwargs["allow_patterns"] = allow_patterns
 
