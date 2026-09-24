@@ -20,13 +20,40 @@ export default function GpuDetected({ onNext }: Props) {
   const [result, setResult] = useState<GpuResult | null>(null);
   const [selectedTier, setSelectedTier] = useState<number>(1);
 
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
   useEffect(() => {
-    detectGpu().then((r) => {
-      setResult(r);
-      setSelectedTier(r.recommended_tier);
-      setLoading(false);
-    });
-  }, []);
+    let active = true;
+    setLoading(true);
+    setError(null);
+    detectGpu().then(
+      (detected) => {
+        if (!active) return;
+        setResult(detected);
+        setSelectedTier(detected.recommended_tier);
+        setLoading(false);
+      },
+      (reason: unknown) => {
+        if (!active) return;
+        setError(String(reason));
+        setLoading(false);
+      },
+    );
+    return () => { active = false; };
+  }, [attempt]);
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-full py-8 px-8">
+        <h2 className="text-2xl font-bold mb-4">GPU check failed</h2>
+        <p role="alert" className="text-gray-400 mb-6 text-center max-w-md">{error}</p>
+        <Button onClick={() => setAttempt((previous) => previous + 1)}>
+          Retry GPU Check
+        </Button>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
