@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from host_agent_client import AgentHTTPError, AgentProtocolError, AgentUnavailable, async_request_json as request_agent_json
 from security import verify_api_key
+from request_body import read_bounded_body
 from .pixel_handoff import _parse
 
 router = APIRouter(tags=['pixel-provider-scopes'])
@@ -55,11 +56,7 @@ def normalize_status(value, chat):
 async def scopes(action: str, request: Request, _key: str = Depends(verify_api_key)):
     if action not in FIELDS:
         raise HTTPException(404, 'Unknown scope action')
-    raw = bytearray()
-    async for chunk in request.stream():
-        if len(raw)+len(chunk) > 4096:
-            raise HTTPException(413, 'Scope request too large')
-        raw.extend(chunk)
+    raw = await read_bounded_body(request, 4096, 'Scope request too large')
     try:
         body = _parse(bytes(raw).decode())
         if type(body) is not dict or set(body) != FIELDS[action] or type(body['chatId']) is not str or not CHAT.fullmatch(body['chatId']):
