@@ -26,6 +26,67 @@ def _validate_workflow_id(workflow_id: str) -> None:
         raise HTTPException(status_code=400, detail="Invalid workflow ID format")
 
 
+def _workflow_template_is_runnable(workflow_data: object) -> bool:
+    """Return whether a trigger reaches at least one executable node."""
+    if not isinstance(workflow_data, dict):
+        return False
+    nodes = workflow_data.get("nodes")
+    connections = workflow_data.get("connections")
+    if not isinstance(nodes, list) or not isinstance(connections, dict):
+        return False
+
+    node_types = {
+        node.get("name"): node.get("type", "")
+        for node in nodes
+        if isinstance(node, dict) and isinstance(node.get("name"), str)
+    }
+    trigger_names = {
+        name
+        for name, node_type in node_types.items()
+        if node_type.lower().endswith("trigger")
+        or node_type in {
+            "n8n-nodes-base.webhook",
+            "n8n-nodes-base.emailReadImap",
+        }
+    }
+    if not trigger_names:
+        return False
+
+    adjacency: dict[str, set[str]] = {}
+    for source, output_groups in connections.items():
+        if source not in node_types or not isinstance(output_groups, dict):
+            continue
+        targets = adjacency.setdefault(source, set())
+        for outputs in output_groups.values():
+            if not isinstance(outputs, list):
+                continue
+            for output in outputs:
+                if not isinstance(output, list):
+                    continue
+                for link in output:
+                    if not isinstance(link, dict):
+                        continue
+                    target = link.get("node")
+                    if target in node_types:
+                        targets.add(target)
+
+    visited = set(trigger_names)
+    pending = list(trigger_names)
+    while pending:
+        source = pending.pop()
+        for target in adjacency.get(source, set()):
+            if target in visited:
+                continue
+            if (
+                target not in trigger_names
+                and node_types[target] != "n8n-nodes-base.stickyNote"
+            ):
+                return True
+            visited.add(target)
+            pending.append(target)
+    return False
+
+
 def load_workflow_catalog() -> dict:
     """Load workflow catalog from JSON file."""
     if not WORKFLOW_CATALOG_FILE.exists():
@@ -222,6 +283,12 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
             workflow_data = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
         raise HTTPException(status_code=500, detail=f"Failed to read workflow: {e}")
+
+    if not _workflow_template_is_runnable(workflow_data):
+        raise HTTPException(
+            status_code=422,
+            detail="Workflow template is a non-runnable starter stub; no workflow was imported",
+        )
 
     try:
         headers = {"Content-Type": "application/json"}

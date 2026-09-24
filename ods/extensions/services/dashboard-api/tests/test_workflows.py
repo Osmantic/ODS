@@ -732,7 +732,16 @@ def test_workflow_enable_success(test_client, tmp_path, monkeypatch):
 
     workflow_dir = tmp_path / "workflows"
     workflow_dir.mkdir()
-    (workflow_dir / "ok-wf.json").write_text(json.dumps({"name": "OK Workflow", "nodes": []}))
+    (workflow_dir / "ok-wf.json").write_text(json.dumps({
+        "name": "OK Workflow",
+        "nodes": [
+            {"name": "Start", "type": "n8n-nodes-base.manualTrigger"},
+            {"name": "Do Work", "type": "n8n-nodes-base.set"},
+        ],
+        "connections": {
+            "Start": {"main": [[{"node": "Do Work", "type": "main", "index": 0}]]}
+        },
+    }))
     monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
 
     # Mock n8n POST (create) → 201 with id
@@ -788,7 +797,16 @@ def test_workflow_enable_n8n_error(test_client, tmp_path, monkeypatch):
 
     workflow_dir = tmp_path / "workflows"
     workflow_dir.mkdir()
-    (workflow_dir / "err-wf.json").write_text(json.dumps({"name": "Err"}))
+    (workflow_dir / "err-wf.json").write_text(json.dumps({
+        "name": "Err",
+        "nodes": [
+            {"name": "Start", "type": "n8n-nodes-base.manualTrigger"},
+            {"name": "Do Work", "type": "n8n-nodes-base.set"},
+        ],
+        "connections": {
+            "Start": {"main": [[{"node": "Do Work", "type": "main", "index": 0}]]}
+        },
+    }))
     monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
 
     create_resp = AsyncMock()
@@ -830,7 +848,16 @@ def test_workflow_enable_n8n_unreachable(test_client, tmp_path, monkeypatch):
 
     workflow_dir = tmp_path / "workflows"
     workflow_dir.mkdir()
-    (workflow_dir / "net-wf.json").write_text(json.dumps({"name": "Net"}))
+    (workflow_dir / "net-wf.json").write_text(json.dumps({
+        "name": "Net",
+        "nodes": [
+            {"name": "Start", "type": "n8n-nodes-base.manualTrigger"},
+            {"name": "Do Work", "type": "n8n-nodes-base.set"},
+        ],
+        "connections": {
+            "Start": {"main": [[{"node": "Do Work", "type": "main", "index": 0}]]}
+        },
+    }))
     monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
 
     session_mock = AsyncMock()
