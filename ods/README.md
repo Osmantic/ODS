@@ -409,6 +409,7 @@ ods config show         # View .env (secrets masked)
 ods config edit         # Open .env in editor
 ods preset save <name>  # Snapshot current config
 ods preset load <name>  # Restore a saved preset
+ods preset list --json  # Export preset metadata for automation
 ```
 
 Full mode-switching documentation: [docs/MODE-SWITCH.md](docs/MODE-SWITCH.md)

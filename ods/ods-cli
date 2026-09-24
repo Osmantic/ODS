@@ -3338,6 +3338,55 @@ META
             ;;
 
         list|ls)
+            if [[ "$name" == "--json" ]]; then
+                python3 - "$PRESETS_DIR" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+presets_dir = Path(sys.argv[1])
+presets = []
+if presets_dir.is_dir():
+    for preset_dir in sorted(path for path in presets_dir.iterdir() if path.is_dir()):
+        metadata = {}
+        metadata_path = preset_dir / "meta.txt"
+        if metadata_path.is_file():
+            for line in metadata_path.read_text(encoding="utf-8").splitlines():
+                if "=" not in line or line.startswith("#"):
+                    continue
+                key, value = line.split("=", 1)
+                metadata[key] = value
+
+        enabled_services = []
+        disabled_services = []
+        extensions_path = preset_dir / "extensions.list"
+        if extensions_path.is_file():
+            for line in extensions_path.read_text(encoding="utf-8").splitlines():
+                state, separator, service = line.partition(":")
+                if not separator or not service:
+                    continue
+                if state == "enabled":
+                    enabled_services.append(service)
+                elif state == "disabled":
+                    disabled_services.append(service)
+
+        presets.append(
+            {
+                "name": preset_dir.name,
+                "created": metadata.get("created"),
+                "gpu_backend": metadata.get("gpu_backend"),
+                "tier": metadata.get("tier"),
+                "enabled_services": enabled_services,
+                "disabled_services": disabled_services,
+            }
+        )
+
+json.dump(presets, sys.stdout, ensure_ascii=False)
+sys.stdout.write("\n")
+PYEOF
+                return
+            fi
+            [[ -z "$name" ]] || error "Usage: ods preset list [--json]"
             echo -e "${BLUE}━━━ Saved Presets ━━━${NC}"
             if [[ ! -d "$PRESETS_DIR" ]] || [[ -z "$(ls -A "$PRESETS_DIR" 2>/dev/null)" ]]; then
                 echo "  No presets saved yet."
@@ -3598,7 +3647,7 @@ Usage: ods preset <command> [args]
 Commands:
   save <name>              Save current configuration as a preset
   load <name>              Load a preset (restores .env and service state)
-  list                     List all saved presets
+  list [--json]            List all saved presets
   delete <name>            Delete a preset
   export <name> <file>     Export preset to .tar.gz archive
   import <file>            Import preset from .tar.gz archive
@@ -3607,6 +3656,7 @@ Commands:
 Examples:
   ods preset save gaming
   ods preset load gaming
+  ods preset list --json
   ods preset diff gaming production
   ods preset export gaming ~/gaming-preset.tar.gz
 EOF
@@ -6684,7 +6734,7 @@ ${CYAN}Commands:${NC}
 ${CYAN}Preset Commands:${NC}
   preset save <name>     Snapshot current config (env, mode, extensions)
   preset load <name>     Restore a saved preset
-  preset list            Show all saved presets
+  preset list [--json]   Show all saved presets
   preset delete <name>   Delete a saved preset
   preset export <name> <file.tar.gz>
                          Export preset to shareable archive
