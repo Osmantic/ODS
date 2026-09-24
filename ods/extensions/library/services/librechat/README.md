@@ -37,3 +37,7 @@ Your data is preserved when disabling. To re-enable later: `ods enable librechat
 | `LIBRECHAT_MEILI_KEY` | Meilisearch master key (auto-generated) | _(required)_ |
 | `CREDS_KEY` | AES-128 encryption key for stored credentials (auto-generated) | _(optional)_ |
 | `CREDS_IV` | AES initialization vector for credential encryption (auto-generated) | _(optional)_ |
+
+`LIBRECHAT_MEILI_KEY` is passed to both Meilisearch and LibreChat's search client.
+After changing it, recreate both services together so their credentials agree.
+`SEARCH=false` still disables LibreChat indexing and conversation search.
