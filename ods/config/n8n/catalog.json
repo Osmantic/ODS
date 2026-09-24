@@ -390,59 +390,50 @@
     {
       "id": "email-to-task",
       "file": "email-to-task.json",
-      "name": "Email-to-Task via LiteLLM",
-      "description": "Poll an IMAP mailbox, extract tasks and priority via LiteLLM, create cards in your task manager.",
+      "name": "Email-to-Task with Local AI",
+      "description": "Accept a normalized email webhook and return a validated task list extracted by the local LLM.",
       "icon": "Mail",
       "category": "automation",
       "dependencies": [
-        "litellm"
+        "llama-server"
       ],
       "setupTime": "5 minutes",
       "featured": false,
       "diagram": {
         "nodes": [
           {
-            "id": "poll",
-            "type": "schedule",
-            "label": "IMAP Poll"
+            "id": "receive",
+            "type": "webhook",
+            "label": "Receive Email"
           },
           {
-            "id": "filter",
+            "id": "validate",
             "type": "transform",
-            "label": "Filter Unread"
+            "label": "Validate Payload"
           },
           {
             "id": "llm",
             "type": "llm",
-            "label": "LiteLLM Extract Tasks"
+            "label": "Local LLM Extract"
           },
           {
-            "id": "create",
-            "type": "http",
-            "label": "Create Task Card"
-          },
-          {
-            "id": "mark",
+            "id": "respond",
             "type": "output",
-            "label": "Mark Processed"
+            "label": "Return Tasks"
           }
         ],
         "edges": [
           {
-            "from": "poll",
-            "to": "filter"
+            "from": "receive",
+            "to": "validate"
           },
           {
-            "from": "filter",
+            "from": "validate",
             "to": "llm"
           },
           {
             "from": "llm",
-            "to": "create"
-          },
-          {
-            "from": "create",
-            "to": "mark"
+            "to": "respond"
           }
         ]
       }
