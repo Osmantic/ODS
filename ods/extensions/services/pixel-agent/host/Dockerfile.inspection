@@ -1,0 +1,15 @@
+# Multi-platform Python 3.11.16 / Debian bookworm manifest (amd64 and arm64).
+FROM python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright HOME=/tmp
+WORKDIR /source
+COPY preview-inspection.requirements.lock /source/requirements.lock
+RUN python3 -m pip --isolated install --no-cache-dir --only-binary=:all: --require-hashes -r /source/requirements.lock \
+    && python3 -m playwright install --with-deps --only-shell chromium \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod -R a+rX /ms-playwright
+COPY preview_inspection_protocol.py preview_inspection_capsule.py /source/
+LABEL org.osmantic.ods.component="pixel-preview-inspection" \
+      org.osmantic.ods.inspection.protocol="1" \
+      org.osmantic.ods.inspection.playwright="1.62.0"
+USER 65534:65534
+ENTRYPOINT ["python3", "/source/preview_inspection_capsule.py"]

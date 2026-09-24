@@ -116,6 +116,12 @@
       "value": "python:3.11-slim"
     },
     {
+      "id": "pixel-preview-inspection.python",
+      "type": "image",
+      "path": "extensions/services/pixel-agent/host/Dockerfile.inspection",
+      "value": "python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b"
+    },
+    {
       "id": "remote-provider-egress.python",
       "type": "image",
       "path": "extensions/services/remote-provider-egress/Dockerfile",

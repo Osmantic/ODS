@@ -304,8 +304,12 @@ def prepare_migration(*, source, ref, node, runtime, docker, ods_source, install
             sandbox_image=sandbox['imageId'], destination=destination / 'candidate',
             previous_config=previous, previous_state_dir=env['OPENCLAW_STATE_DIR'])
         checkpoint('services')
+        inspection = config.inspection_install.build_config(
+            source=Path(ods_source) / 'extensions/services/pixel-agent/host',
+            owner_uid=os.getuid(), transport='docker-desktop', docker_binary=str(docker),
+            docker_host=env.get('DOCKER_HOST'))
         record['serviceDigest'] = config.stage_services(source=source, ref=ref, ods_source=ods_source,
-            candidate=candidate, destination=destination / 'services')
+            candidate=candidate, destination=destination / 'services', inspection_config=inspection)
         checkpoint('runtime')
         record['runtimeDigest'] = config.stage_bundle(source=source, ref=ref, candidate=candidate,
             node=node, runtime=runtime, destination=destination / 'runtime', services_digest=record['serviceDigest'],
@@ -399,8 +403,12 @@ def prepare(*, source=None, ref, answers=None, node, runtime=None, sandbox_image
             research_port=research_port)
         record['phase'] = 'services'
         checkpoint()
+        inspection = config.inspection_install.build_config(
+            source=Path(ods_source) / 'extensions/services/pixel-agent/host',
+            owner_uid=os.getuid(), transport='docker-desktop', docker_binary=str(docker),
+            docker_host=os.environ.get('DOCKER_HOST'))
         record['serviceDigest'] = config.stage_services(source=source, ref=ref, ods_source=ods_source,
-            candidate=candidate, destination=destination / 'services')
+            candidate=candidate, destination=destination / 'services', inspection_config=inspection)
         record['phase'] = 'runtime'
         checkpoint()
         record['runtimeDigest'] = config.stage_bundle(source=source, ref=ref, candidate=candidate,

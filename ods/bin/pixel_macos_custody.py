@@ -331,6 +331,89 @@ def replace_protected_bytes(filename, *, expected, replacement, mode, gid=0):
                 os.unlink(temporary, dir_fd=directory)
 
 
+INSPECTION_ADDITIONS = frozenset('/usr/local/libexec/ods-pixel-services/helpers/' + name for name in (
+    'preview_inspection.py', 'preview_inspection_protocol.py', 'workspace_preview.py',
+    'unix_peer.py', 'preview-inspection.json'))
+
+
+def protected_inspection_bytes(filename, *, limit=8 * 1024 * 1024):
+    """Allow true absence only at the five fixed, journaled migration paths."""
+    value = os.fspath(filename)
+    try:
+        return protected_bytes(filename, limit=limit)
+    except CustodyError:
+        if value not in INSPECTION_ADDITIONS:
+            raise
+        parent, name = value.rsplit('/', 1)
+        with protected_directory(parent) as directory:
+            try:
+                os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                return None
+        raise
+
+
+def replace_protected_inspection_bytes(filename, *, expected, replacement, mode, gid=0):
+    """Create/remove only journaled inspection additions under the deployment lock.
+
+    Existing-file replacements retain the original custody contract. An absent
+    target is published by atomic rename only after rechecking absence in its
+    root-protected parent; untrusted users cannot race this namespace. An fsync
+    failure can follow a completed mutation, so recovery must inspect the bytes.
+    """
+    if expected is not None and replacement is not None:
+        return replace_protected_bytes(filename, expected=expected, replacement=replacement, mode=mode, gid=gid)
+    value = os.fspath(filename)
+    body = replacement if expected is None else expected
+    if (value not in INSPECTION_ADDITIONS or type(body) is not bytes or len(body) > 8 * 1024 * 1024
+            or mode != 0o644 or gid != 0 or (expected is None and replacement is None)):
+        raise CustodyError('macos-custody-inspection-addition-invalid')
+    parent, name = value.rsplit('/', 1)
+    identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+    with protected_directory(parent) as directory:
+        if replacement is None:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                before = _verify_fd(fd, directory=False)
+                if stat.S_IMODE(before.st_mode) != mode or before.st_gid != gid:
+                    raise CustodyError('macos-custody-replacement-metadata-changed')
+                with os.fdopen(os.dup(fd), 'rb') as stream:
+                    actual = stream.read(len(expected) + 1)
+                current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if actual != expected or identity(before) != identity(current) or identity(before) != identity(os.fstat(fd)):
+                    raise CustodyError('macos-custody-replacement-source-changed')
+                os.unlink(name, dir_fd=directory)
+                os.fsync(directory)
+            finally:
+                os.close(fd)
+            return
+        def absent():
+            try:
+                os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            raise CustodyError('macos-custody-replacement-source-changed')
+        absent()
+        temporary = '.ods-inspection-add-' + os.urandom(16).hex()
+        out = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        try:
+            os.fchown(out, 0, gid)
+            os.fchmod(out, mode)
+            _verify_fd(out, directory=False)
+            with os.fdopen(os.dup(out), 'wb') as stream:
+                stream.write(replacement)
+                stream.flush()
+            os.fsync(out)
+            absent()
+            os.rename(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+            temporary = None
+            os.fsync(directory)
+        finally:
+            os.close(out)
+            if temporary is not None:
+                os.unlink(temporary, dir_fd=directory)
+
+
 def launchd_document_binding(filename, expected):
     """Pin a complete approved plist; never infer approval from its label alone.
 

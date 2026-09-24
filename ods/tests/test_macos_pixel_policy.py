@@ -228,3 +228,44 @@ def test_selected_profile_only_applies_to_new_process(policy_fixture, monkeypatc
         if process.poll() is None:
             process.kill()
         process.communicate(timeout=5)
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='requires macOS Seatbelt')
+def test_sandboxed_system_python_can_import_stdlib_without_owner_site(tmp_path):
+    root = tmp_path.resolve()
+    runtime, state, outside = (root / name for name in ('runtime', 'state', 'outside'))
+    for path in (runtime, state, outside): path.mkdir()
+    profile = root / 'python.sb'
+    profile.write_bytes(render_policy(mode='sandboxed', writable=[state], protected=[runtime],
+        readable=policy.system_python_readable_paths(), probe=root / 'probe'))
+    target = outside / 'must-not-write'
+    program = "import json,hashlib,pathlib; print(json.dumps({'stdlib':True})); pathlib.Path(" + repr(str(target)) + ").write_text('denied')"
+    result = subprocess.run(['/usr/bin/sandbox-exec', '-f', str(profile), '/usr/bin/python3',
+                             '-E', '-s', '-B', '-c', program], cwd='/',
+                            env={'PATH':'/usr/bin:/bin', 'HOME':'/var/empty'}, capture_output=True, text=True, timeout=30)
+    assert result.stdout.strip() == '{"stdlib": true}', result.stderr
+    assert result.returncode != 0 and not target.exists()
+
+
+@pytest.mark.parametrize('selected,expected', [
+    ('/Library/Developer/CommandLineTools', ('/Library/Developer/CommandLineTools',)),
+    ('/Applications/Xcode_26.6.app/Contents/Developer', ('/Applications/Xcode_26.6.app/Contents', '/Library/Preferences/com.apple.dt.Xcode.plist')),
+    ('/Applications/Xcode.app/Contents/Developer', ('/Applications/Xcode.app/Contents', '/Library/Preferences/com.apple.dt.Xcode.plist')),
+    ('/Applications', None), ('/Users/owner/Developer', None),
+    ('/Applications/Xcode.app/Contents/Developer/../../..', None),
+])
+def test_system_python_runtime_is_selected_without_ambient_sdk_override(monkeypatch, selected, expected):
+    monkeypatch.setattr(policy.sys, 'platform', 'darwin')
+    monkeypatch.setenv('DEVELOPER_DIR', '/untrusted/Developer')
+    def run(argv, **kwargs):
+        assert argv == ['/usr/bin/xcode-select', '--print-path']
+        assert kwargs['env'] == {'PATH':'/usr/bin:/bin', 'HOME':'/var/empty'}
+        return subprocess.CompletedProcess(argv, 0, selected + '\n', '')
+    monkeypatch.setattr(policy.subprocess, 'run', run)
+    # Path existence is platform-specific; the actual macOS test resolves the
+    # installed runtime and executes Python under the real generated policy.
+    monkeypatch.setattr(policy.Path, 'resolve', lambda p, strict: Path(os.path.normpath(str(p))))
+    if expected is None:
+        with pytest.raises(PolicyError): policy.system_python_readable_paths()
+    else:
+        assert policy.system_python_readable_paths() == (str(Path(expected[0])), *expected[1:])

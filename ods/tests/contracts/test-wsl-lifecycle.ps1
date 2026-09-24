@@ -116,7 +116,19 @@ try {
 
     $script:plan=[pscustomobject]@{schemaVersion=1;action='stop';installRoot=$a.installRoot;ownerUid=1000;nativeUnits=@('pixel-ingress.service','openclaw-gateway.service','pixel-extension-manager.service','pixel-artifact-promoter.service','pixel-workspace-preview.service')}
     Assert-ODSWslStackPlan $a stop $script:plan
-    Check $true 'strict ordinary-owner plan accepted'
+    Check $true 'strict ordinary-owner legacy five-unit plan accepted'
+    $complete=$script:plan|ConvertTo-Json -Depth 5|ConvertFrom-Json
+    $complete.nativeUnits+=@('pixel-preview-inspection.service')
+    Assert-ODSWslStackPlan $a stop $complete
+    Check $true 'strict complete six-unit inspection plan accepted'
+    $bad=$script:plan|ConvertTo-Json -Depth 5|ConvertFrom-Json;$bad.nativeUnits=@($bad.nativeUnits[0..3])
+    Reject { Assert-ODSWslStackPlan $a stop $bad } 'reject incomplete four-unit legacy plan'
+    $bad=$complete|ConvertTo-Json -Depth 5|ConvertFrom-Json;$bad.nativeUnits=@($bad.nativeUnits[0..3])+@($bad.nativeUnits[5])
+    Reject { Assert-ODSWslStackPlan $a stop $bad } 'reject five-unit plan replacing publisher with inspector'
+    $bad=$complete|ConvertTo-Json -Depth 5|ConvertFrom-Json;$bad.nativeUnits[5]=$bad.nativeUnits[4]
+    Reject { Assert-ODSWslStackPlan $a stop $bad } 'reject duplicate service in six-unit plan'
+    $bad=$complete|ConvertTo-Json -Depth 5|ConvertFrom-Json;$bad.nativeUnits[5]='Pixel-preview-inspection.service'
+    Reject { Assert-ODSWslStackPlan $a stop $bad } 'reject case-altered inspection unit'
     $bad=$script:plan|ConvertTo-Json -Depth 5|ConvertFrom-Json;$bad.nativeUnits+=@('docker.service')
     Reject { Assert-ODSWslStackPlan $a stop $bad } 'reject extra native unit'
     $bad=$script:plan|ConvertTo-Json -Depth 5|ConvertFrom-Json;$bad.nativeUnits[0]='unknown.service'
@@ -152,6 +164,14 @@ try {
     $script:transport=@();$script:plan.action='start';$script:unitState='active'
     $null=Invoke-ODSWslStack $a start
     Check ($script:transport[1].arguments[2] -eq 'compose-start' -and -not $script:transport[1].asRoot) 'Compose starts before native services as ordinary owner'
+    $script:transport=@();$script:plan=$complete;$script:unitState='inactive'
+    $null=Invoke-ODSWslStack $a stop
+    $rootCalls=@($script:transport|Where-Object asRoot)
+    Check ($rootCalls.Count -eq 6 -and $rootCalls[-1].arguments[2] -ceq 'pixel-preview-inspection.service') 'complete inspection stop dispatches exactly six fixed native units'
+    $script:transport=@();$script:plan.action='start';$script:unitState='active'
+    $null=Invoke-ODSWslStack $a start
+    $rootCalls=@($script:transport|Where-Object asRoot)
+    Check ($rootCalls.Count -eq 6 -and @($rootCalls|Where-Object {$_.arguments[2] -ceq 'pixel-preview-inspection.service'}).Count -eq 1) 'complete inspection start dispatches its inspector exactly once'
     $script:transport=@();$script:plan.action='stop';$script:unitState='inactive';$script:nativeFail=$true
     Reject { Invoke-ODSWslStack $a stop } 'native stop failure is propagated'
     Check (@($script:transport|Where-Object {$_.arguments[2] -eq 'compose-stop'}).Count -eq 0) 'native stop failure prevents Compose stop'

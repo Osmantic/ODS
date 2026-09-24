@@ -18,6 +18,7 @@ NATIVE_UNITS = (
     "pixel-ingress.service", "openclaw-gateway.service",
     "pixel-extension-manager.service", "pixel-artifact-promoter.service",
     "pixel-workspace-preview.service",
+    "pixel-preview-inspection.service",
 )
 
 
@@ -50,6 +51,12 @@ def managed_units(root, home, unit_dir=Path("/etc/systemd/system"), root_uid=0):
     units = []
     for name in NATIVE_UNITS:
         path = unit_dir / name
+        if name == 'pixel-preview-inspection.service' and not os.path.lexists(path):
+            # Older installations have no inspection capability. A partial new
+            # install is not silently admitted as an older installation.
+            if os.path.lexists('/etc/ods-pixel-inspection.json') or os.path.lexists('/usr/local/libexec/ods-pixel-inspection'):
+                raise RuntimeError('Incomplete preview inspection installation')
+            continue
         content = regular(path, root_uid)
         text = content.decode("utf-8")
         if name == "openclaw-gateway.service":
@@ -62,6 +69,10 @@ def managed_units(root, home, unit_dir=Path("/etc/systemd/system"), root_uid=0):
                     or "EnvironmentFile=/etc/ods/pixel-agent.env" not in text
                     or "Description=Pixel Agent host ingress" not in text):
                 raise RuntimeError("Ingress unit does not match the ODS runtime")
+        elif name == 'pixel-preview-inspection.service':
+            source = root / 'extensions/services/pixel-agent/host' / name
+            if content != regular(source, os.getuid()):
+                raise RuntimeError('Inspection unit differs from this installation')
         else:
             source = root / "data/pixel" / name.removeprefix("pixel-")
             if content != regular(source, os.getuid()):

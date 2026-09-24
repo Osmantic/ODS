@@ -27,6 +27,7 @@
       "pixel_ods_web_extract",
       "pixel_ods_download_promote",
       "pixel_ods_workspace_preview",
+      "pixel_ods_workspace_preview_inspect",
       "pixel_ods_research",
       "pixel_ods_extension_request_advance",
       "pixel_ods_extension_request_retry",
@@ -34,6 +35,9 @@
     ]
   },
   "toolMetadata": {
+    "pixel_ods_workspace_preview_inspect": {
+      "replaySafe": true
+    },
     "pixel_ods_goal": {
       "replaySafe": true
     },
@@ -113,6 +117,10 @@
           "docker-desktop"
         ],
         "default": "unix"
+      },
+      "workspacePreviewInspectionTransport": {
+        "type": "string",
+        "enum": ["unix", "native"]
       },
       "leanPrompt": {
         "type": "boolean"

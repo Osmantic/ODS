@@ -87,12 +87,45 @@ def test_manager_readiness_requires_successful_inventory(monkeypatch, fault):
     monkeypatch.setattr(module.subprocess, 'run', run)
     checks = module.readiness_checks(owner='owner', identity={'name': '_ods_pixel_ops', 'uid': 60000, 'gid': 60000},
         python='/python', program_root='/programs')
+    assert set(checks) == {'manager', 'promoter', 'operations'}
     if fault:
         with pytest.raises(ValueError, match='manager-readiness-failed'):
             checks['manager']()
     else:
         assert checks['manager']() is True
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize('fault', [None, 'image', 'owner', 'failed'])
+def test_final_native_readiness_checks_inspection_before_operations(monkeypatch, fault):
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(module.os, 'geteuid', lambda: 0)
+    owner = SimpleNamespace(pw_uid=501, pw_gid=20, pw_dir='/Users/owner')
+    broker = SimpleNamespace(pw_uid=60000, pw_gid=60000)
+    monkeypatch.setattr(module.pwd, 'getpwnam', lambda name: owner if name == 'owner' else broker)
+    image = 'sha256:' + 'a' * 64
+    class OperationsReached(Exception): pass
+    def protected_directory(path): raise OperationsReached()
+    def protected_bytes(path, **kw):
+        return json.dumps({'ownerUid': 502 if fault == 'owner' else 501, 'imageId': image}).encode() \
+            if path.endswith('preview-inspection.json') else b'approved'
+    custody = SimpleNamespace(protected_bytes=protected_bytes, protected_directory=protected_directory)
+    monkeypatch.setattr(module, 'helper', lambda name: SimpleNamespace(custody=custody))
+    calls = []
+    def run(argv, **kw):
+        calls.append(argv)
+        assert argv == ['/usr/bin/python3', '-B', '/programs/helpers/preview_inspection.py', 'health']
+        assert kw['user'] == 501 and kw['env']['HOME'] == '/Users/owner'
+        return SimpleNamespace(returncode=0, stdout=json.dumps({'schemaVersion': 1,
+            'kind': 'ods-pixel-preview-inspection', 'status': 'failed' if fault == 'failed' else 'ready',
+            'imageId': 'sha256:' + 'b' * 64 if fault == 'image' else image}).encode())
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    checks = module.readiness_checks(owner='owner', identity={'name': '_ods_pixel_ops', 'uid': 60000, 'gid': 60000},
+        python='/python', program_root='/programs')
+    assert set(checks) == {'manager', 'promoter', 'operations'}
+    with pytest.raises(ValueError if fault else OperationsReached):
+        checks['operations']()
+    assert len(calls) == (0 if fault == 'owner' else 1)
 
 
 @pytest.mark.parametrize('fault', [None, 'loaded', 'disabled', 'print-error', 'bootstrap', 'readiness', 'stop'])

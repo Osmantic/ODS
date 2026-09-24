@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
-export async function registeredPixelTools() {
+export async function registeredPixelTools({inspection = true} = {}) {
   const entry = new URL('../plugin/index.js', import.meta.url);
   const source = await readFile(entry, 'utf8');
   const isolated = source.replace(/from\s+(['"])([^'"]+)\1/g, (match, quote, specifier) => {
@@ -31,7 +31,7 @@ export async function registeredPixelTools() {
   plugin.register({
     registrationMode: 'discovery',
     config: {agents: {list: [{id: 'pixel', sandbox: {mode: 'off'}, tools: {exec: {host: 'gateway'}}}]}},
-    pluginConfig: {},
+    pluginConfig: inspection ? {workspacePreviewInspectionTransport:'unix'} : {},
     logger: {warn() {}}, on() {}, registerHttpRoute() {},
     registerTool(factory, options) {
       const tool = typeof factory === 'function' ? factory(context) : factory;
@@ -42,7 +42,8 @@ export async function registeredPixelTools() {
     },
   });
   const manifest = JSON.parse(await readFile(new URL('../plugin/openclaw.plugin.json', import.meta.url)));
-  assert.deepEqual(tools.map(tool => tool.name).sort(), [...manifest.contracts.tools].sort(),
+  const expected = manifest.contracts.tools.filter(name => inspection || name !== 'pixel_ods_workspace_preview_inspect');
+  assert.deepEqual(tools.map(tool => tool.name).sort(), expected.sort(),
     'compile every registered tool, including future registrations');
   assert.equal(new Set(tools.map(tool => tool.name)).size, tools.length);
   return tools;

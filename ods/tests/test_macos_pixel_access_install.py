@@ -512,8 +512,9 @@ def managed_service_fixture(plan, monkeypatch):
         for path, (mode, gid) in contract.items()]
 
 
+@pytest.mark.parametrize('legacy', [False, True, 'partial', 'selection-mismatch'])
 @pytest.mark.parametrize('fault', [None, 'pending', 'owner', 'phase', 'incomplete', 'foreign', 'drift', 'metadata'])
-def test_managed_service_snapshots_preserve_existing_state_before_any_write(monkeypatch, fault):
+def test_managed_service_snapshots_preserve_existing_state_before_any_write(monkeypatch, fault, legacy):
     import pixel_macos_custody as custody
     plan = dict(owner=SimpleNamespace(pw_name='fixture', pw_uid=501, pw_gid=20),
         native_services={'expected_digest': 'b' * 64}, native_manager_port=3002,
@@ -522,18 +523,25 @@ def test_managed_service_snapshots_preserve_existing_state_before_any_write(monk
     records = managed_service_fixture(plan, monkeypatch)
     journal = str(installer._launchd.ACCESS_STATE / 'service-installation.json')
     disk = {r['path']: r['before'] for r in records}
+    if legacy:
+        for path in installer._upgrade.INSPECTION_ADDITIONS:
+            disk[path] = None
+        if legacy == 'partial':
+            disk[next(iter(installer._upgrade.INSPECTION_ADDITIONS))] = b'foreign partial file'
     old = json.loads(disk[journal])
     if fault == 'pending': old['requiresRecovery'] = True
     if fault == 'owner': old['owner'] = 502
     if fault == 'phase': old['progress']['phase'] = 'starting'
     disk[journal] = json.dumps(old).encode()
     monkeypatch.setattr(custody, 'protected_bytes', lambda path, **kwargs: disk[str(path)])
+    monkeypatch.setattr(custody, 'protected_inspection_bytes', lambda path, **kwargs: disk[str(path)])
     checked = []
     def metadata(path, body, **kwargs):
         checked.append(path)
         assert body == disk[str(path)]
         if fault == 'metadata': raise installer.InstallError('existing-ods-file-unsafe')
     monkeypatch.setattr(installer, '_check_existing', metadata)
+    monkeypatch.setattr(installer, '_managed_inspection_required', lambda selection: not legacy or legacy == 'selection-mismatch')
     monkeypatch.setattr(installer, '_verify_new_services',
         lambda previous: previous['native_services'] == old['selection'] or pytest.fail('wrong previous selection'))
     files = [(Path(r['path']), r['after'], r['mode'], r['gid']) for r in records if r['path'] != journal]
@@ -546,11 +554,12 @@ def test_managed_service_snapshots_preserve_existing_state_before_any_write(monk
         return files
     monkeypatch.setattr(installer._native_services, 'publication_files', publication)
     monkeypatch.setattr(installer, '_write_exact', lambda *a, **kw: pytest.fail('snapshot wrote files'))
-    if fault:
+    if fault or legacy in ('partial', 'selection-mismatch'):
         with pytest.raises(installer.InstallError): installer._managed_service_snapshots(plan)
     else:
         result = installer._managed_service_snapshots(plan)
-        assert len(result) == len(records) == len(checked)
+        assert len(result) == len(records)
+        assert len(checked) == len(records) - (5 if legacy else 0)
         assert all(item['before'] == disk[item['path']] for item in result)
         updated = installer._managed_service_record(result, 'after')
         assert updated['selection'] == plan['native_services']
@@ -2013,6 +2022,7 @@ def test_candidate_health_includes_all_native_services_and_stable_journal(monkey
         events.append(('ready', name))
         return fault != 'readiness'
     monkeypatch.setattr(installer._native_services, 'recovery_adapters', lambda *a, **kw: services)
+    monkeypatch.setattr(installer, '_managed_inspection_required', lambda selection: True)
     monkeypatch.setattr(installer._native_services, 'readiness_checks', lambda **kw:
         {name: lambda name=name: ready(name) for name in services})
     if fault:
@@ -2969,7 +2979,7 @@ def test_load_upgrade_recovery_enforces_independent_contract(monkeypatch, fault)
         runtime.assert_called_once_with(plan)
 
 
-@pytest.mark.parametrize('managed', [False, True])
+@pytest.mark.parametrize('managed', [False, 'current', 'legacy', 'upgrade', 'partial'])
 @pytest.mark.parametrize('with_profiles', [False, True])
 @pytest.mark.parametrize('completed_phase', [None, 'active', 'restored', 'prepared'])
 def test_load_upgrade_recovery_uses_real_journal_decoder(monkeypatch, with_profiles, completed_phase, managed):
@@ -2983,7 +2993,14 @@ def test_load_upgrade_recovery_uses_real_journal_decoder(monkeypatch, with_profi
         context.update(owner=SimpleNamespace(pw_name='owner', pw_uid=501, pw_gid=20),
             native_services={'expected_digest': 'b' * 64}, migration_qualification={'approved': True})
         records.extend(managed_service_fixture(context, monkeypatch))
-        contract.update(installer._managed_service_contract())
+        if managed in ('legacy', 'partial'):
+            omit = installer._upgrade.INSPECTION_ADDITIONS if managed == 'legacy' else {next(iter(installer._upgrade.INSPECTION_ADDITIONS))}
+            records = [item for item in records if item['path'] not in omit]
+        if managed == 'upgrade':
+            for item in records:
+                if item['path'] in installer._upgrade.INSPECTION_ADDITIONS: item['before'] = None
+        contract.update({path: metadata for path, metadata in installer._managed_service_contract().items()
+                         if path in {item['path'] for item in records}})
     value = installer._upgrade.encode_recovery(records, current_digest='a' * 64,
         candidate_digest='b' * 64, allowed_paths=set(contract))
     if completed_phase: value['phase'] = completed_phase
@@ -2994,6 +3011,9 @@ def test_load_upgrade_recovery_uses_real_journal_decoder(monkeypatch, with_profi
     def load():
         return installer._load_upgrade_recovery(current_digest='a' * 64,
             candidate_digest='b' * 64, owner_name='owner', completed=completed_phase is not None)
+    if managed == 'partial' and completed_phase != 'prepared':
+        with pytest.raises(installer.InstallError, match='inspection-file-set-incomplete'): load()
+        return
     if completed_phase == 'prepared':
         with pytest.raises(installer.InstallError, match='archive-not-terminal'): load()
         return
