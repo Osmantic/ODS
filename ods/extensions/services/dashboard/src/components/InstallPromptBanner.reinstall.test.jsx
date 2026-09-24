@@ -15,7 +15,7 @@ beforeEach(() => {
   localStorage.setItem('ods-pwa-visit-count','5')
   vi.stubGlobal('matchMedia',vi.fn(() => ({matches:false})))
 })
-afterEach(() => {cleanup();vi.unstubAllGlobals()})
+afterEach(() => {cleanup();vi.restoreAllMocks();vi.unstubAllGlobals()})
 
 test('a fresh browser install offer supersedes the retained installed marker after reload', async () => {
   localStorage.setItem(INSTALLED,'1')
@@ -59,4 +59,39 @@ test('a standalone app stays installed even if it receives an install offer', ()
   installable()
   expect(banner()).toBeNull()
   expect(localStorage.getItem(INSTALLED)).toBe('1')
+})
+
+test('a denied session-storage getter does not prevent accepting a fresh install offer', async () => {
+  vi.spyOn(globalThis, 'sessionStorage', 'get').mockImplementation(() => {
+    throw new window.DOMException('Storage blocked', 'SecurityError')
+  })
+  render(<InstallPromptBanner />)
+  const event = installable()
+  expect(banner()).toBeInTheDocument()
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Add to home screen' })))
+  expect(event.prompt).toHaveBeenCalledOnce()
+  expect(banner()).toBeNull()
+})
+
+test('a denied local-storage getter does not crash the rendered banner or install events', () => {
+  vi.spyOn(globalThis, 'localStorage', 'get').mockImplementation(() => {
+    throw new window.DOMException('Storage blocked', 'SecurityError')
+  })
+  render(<InstallPromptBanner />)
+  installable()
+  act(() => window.dispatchEvent(new Event('appinstalled')))
+  expect(banner()).toBeNull()
+})
+
+test('accepts installation in memory when browser storage writes are denied', async () => {
+  vi.spyOn(window.Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new window.DOMException('Storage quota exceeded', 'QuotaExceededError')
+  })
+  render(<InstallPromptBanner />)
+  const event = installable()
+  expect(banner()).toBeInTheDocument()
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Add to home screen' })))
+  expect(event.prompt).toHaveBeenCalledOnce()
+  expect(banner()).toBeNull()
+  expect(localStorage.getItem(INSTALLED)).toBeNull()
 })
