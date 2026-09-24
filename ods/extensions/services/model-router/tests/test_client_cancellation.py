@@ -2,17 +2,25 @@
 import asyncio
 import json
 import time
+import uuid
 
 import httpx
 import pytest
-from test_router import router as router  # noqa: F401
+from test_router import router as router, _signed_marker  # noqa: F401
 
 
-@pytest.mark.parametrize('phase', ['admission','route-queue','headers','json-body','stream-body','silent-stream','completed-tool'])
+@pytest.mark.parametrize('phase', ['admission','route-queue','headers','json-body','stream-body','silent-stream','completed-tool','repair'])
 @pytest.mark.parametrize('spec_version', ['2.3', '2.4'])
-def test_disconnect_cancels_work_and_releases_admission(router, phase, spec_version):
+@pytest.mark.parametrize('capture', [False, True])
+def test_disconnect_cancels_work_and_releases_admission(router, phase, spec_version, capture):
     mod, _client, write_state, _calls = router
     write_state(queue=phase == 'route-queue')
+    probe = str(uuid.uuid4())
+    if capture:
+        response = _client.post(f'/internal/route-evidence/{probe}/capture',
+            headers={'Authorization': 'Bearer internal-secret'},
+            json={'ttlSeconds': 60, 'maxAttempts': 2})
+        assert response.status_code == 201
 
     async def exercise():
         started = asyncio.Event()
@@ -30,7 +38,11 @@ def test_disconnect_cancels_work_and_releases_admission(router, phase, spec_vers
                 closed.set()
         async def handler(request):
             forwarded.append(request)
-            if phase in ('headers', 'completed-tool'):
+            if phase == 'repair' and len(forwarded) == 1:
+                return httpx.Response(200, json={'model': 'Concrete.gguf', 'choices': [
+                    {'message': {'role': 'assistant', 'content': '<tool_call>\n<function=missing_tool>\n<parameter=key>\nx\n</parameter>\n</function>\n</tool_call>'},
+                     'finish_reason': 'stop'}]})
+            if phase in ('headers', 'completed-tool', 'repair'):
                 started.set()
                 try:
                     await asyncio.sleep(60)
@@ -46,9 +58,9 @@ def test_disconnect_cancels_work_and_releases_admission(router, phase, spec_vers
                 'method':'POST','scheme':'http','path':'/v1/chat/completions','raw_path':b'/v1/chat/completions',
                 'query_string':b'','headers':[],'server':('127.0.0.1',9099),'client':('127.0.0.1',1000)}
             body = {'model':'ods/shared',
-                'messages':[{'role':'user','content':'synthetic'}],
+                'messages':[{'role':'user','content':_signed_marker(probe) if capture else 'synthetic'}],
                 'stream':phase in ('stream-body','silent-stream','completed-tool')}
-            if phase == 'completed-tool':
+            if phase in ('completed-tool', 'repair'):
                 body['tools'] = [{'type':'function','function':{'name':'lookup'}}]
             await pending.put({'type':'http.request','body':json.dumps(body).encode(),'more_body':False})
             async def send(_message):
@@ -75,6 +87,15 @@ def test_disconnect_cancels_work_and_releases_admission(router, phase, spec_vers
                 mod.app.state.http = previous
                 mod._swap_gate = None
     asyncio.run(exercise())
+    if capture:
+        rows = mod._probe_attempts.public(probe, 'probe-secret')['attempts']
+        if phase in ('admission', 'route-queue'):
+            assert rows == []
+        else:
+            assert len(rows) == (2 if phase == 'repair' else 1)
+            assert rows[-1]['status'] == 'cancelled' and rows[-1]['elapsedMs'] >= 0
+            if phase == 'repair':
+                assert rows[0]['status'] == 'complete'
 
 
 def test_response_disconnect_tie_disposes_unclaimed_stream(router):

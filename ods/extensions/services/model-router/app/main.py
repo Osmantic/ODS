@@ -43,6 +43,7 @@ from jsonschema import validators as jsonschema_validators
 from jsonschema.exceptions import SchemaError, ValidationError
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from .probe_attempts import ProbeAttempts
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ods-model-router")
@@ -298,6 +299,24 @@ _state_cache: dict[str, Any] = {"mtime": None, "doc": None}
 _endpoints_cache: dict[str, Any] = {"mtime": None, "endpoints": {}}
 _probe_key_cache: dict[str, Any] = {"mtime": None, "key": ""}
 _evidence: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+_probe_attempts = ProbeAttempts()
+
+
+def _begin_probe_attempt(probe_id, request_id, attempt, body, route):
+    if not probe_id:
+        return None
+    try:
+        return _probe_attempts.begin(probe_id, _current_probe_key(), request_id,
+                                     attempt, body, route)
+    except Exception:
+        return None  # Optional diagnostics must never alter inference.
+
+
+def _finish_probe_attempt(handle, status, http_status=None):
+    try:
+        _probe_attempts.finish(handle, status, http_status)
+    except Exception:
+        pass
 
 
 class _TelemetrySink:
@@ -1480,10 +1499,39 @@ async def route_evidence(probe_id: str, request: Request) -> Response:
     if not INTERNAL_KEY or provided != f"Bearer {INTERNAL_KEY}":
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     record = _evidence.get(probe_id)
+    attempts = _probe_attempts.public(probe_id, _current_probe_key())
     if record is None or time.monotonic() - record["storedAt"] > EVIDENCE_TTL_SECONDS:
-        return JSONResponse({"error": "not_found"}, status_code=404)
-    public = {k: v for k, v in record.items() if k != "storedAt"}
+        if attempts is None:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        public = {"probeId": probe_id, "instanceId": INSTANCE_ID}
+    else:
+        public = {k: v for k, v in record.items() if k != "storedAt"}
+    if attempts is not None:
+        public["upstreamAttempts"] = attempts
     return JSONResponse(public)
+
+
+@app.post("/internal/route-evidence/{probe_id}/capture")
+async def capture_probe_attempts(probe_id: str, request: Request) -> Response:
+    """Arm one signed probe, never ordinary traffic or raw-payload logging."""
+    if not INTERNAL_KEY or request.headers.get("authorization", "") != f"Bearer {INTERNAL_KEY}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 512:
+                return JSONResponse({"error": "body_too_large"}, status_code=413)
+        value = json.loads(body)
+        if type(value) is not dict or set(value) != {"ttlSeconds", "maxAttempts"}:
+            raise ValueError("Invalid lease")
+        result = _probe_attempts.arm(probe_id, value["ttlSeconds"], value["maxAttempts"],
+                                     _current_probe_key())
+    except FileExistsError:
+        return JSONResponse({"error": "capture_exists"}, status_code=409)
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "invalid_capture_lease"}, status_code=400)
+    return JSONResponse({**result, "instanceId": INSTANCE_ID}, status_code=201)
 
 
 @app.post("/internal/model-swap/admission")
@@ -1687,10 +1735,13 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
         **({"offeredTools": _offered_tool_evidence(payload)} if probe_id else {}),
     }
 
+    attempt_handle = None
     try:
+        forwarded_body = json.dumps(payload).encode("utf-8")
+        attempt_handle = _begin_probe_attempt(probe_id, request_id, 1, forwarded_body, route)
         if is_stream and not completed_tool_stream:
             upstream_request = client.build_request(
-                "POST", url, content=json.dumps(payload).encode("utf-8"),
+                "POST", url, content=forwarded_body,
                 headers=headers, timeout=UPSTREAM_TIMEOUT_SECONDS,
             )
             upstream = await client.send(upstream_request, stream=True)
@@ -1703,11 +1754,13 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     with suppress(httpx.HTTPError, OSError):
                         await upstream.aclose()
                 finally:
+                    _finish_probe_attempt(attempt_handle, "cancelled", upstream.status_code)
                     await _release_admission()
 
             async def stream_body() -> AsyncIterator[bytes]:
                 rewriter = _SSERewriter(requested_alias, route["runtimeModelId"])
                 completed = False
+                disconnected = False
                 try:
                     async for chunk in upstream.aiter_bytes():
                         events = rewriter.feed(chunk)
@@ -1717,6 +1770,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                             yield event
 
                         if await request.is_disconnected():
+                            disconnected = True
                             break
                     tail = rewriter.finish()
                     if pinned_route and not rewriter.identity_matches:
@@ -1724,7 +1778,15 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     if tail:
                         yield tail
                     completed = True
+                except asyncio.CancelledError:
+                    _finish_probe_attempt(attempt_handle, "cancelled", upstream.status_code)
+                    raise
+                except Exception:
+                    _finish_probe_attempt(attempt_handle, "stream-error", upstream.status_code)
+                    raise
                 finally:
+                    _finish_probe_attempt(attempt_handle,
+                        "complete" if completed and not disconnected else "cancelled", upstream.status_code)
                     if (
                         completed
                         and rewriter.completed
@@ -1767,16 +1829,22 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             ), True
 
         upstream = await client.post(
-            url, content=json.dumps(payload).encode("utf-8"), headers=headers,
+            url, content=forwarded_body, headers=headers,
             timeout=UPSTREAM_TIMEOUT_SECONDS,
         )
+        _finish_probe_attempt(attempt_handle, "complete", upstream.status_code)
+    except asyncio.CancelledError:
+        _finish_probe_attempt(attempt_handle, "cancelled")
+        raise
     except httpx.TimeoutException:
+        _finish_probe_attempt(attempt_handle, "timeout")
         return JSONResponse(
             {"error": {"message": "Upstream model runtime timed out",
                        "type": "upstream_timeout", "code": "504"}},
             status_code=504, headers=ods_headers,
         ), False
     except httpx.HTTPError as exc:
+        _finish_probe_attempt(attempt_handle, "transport-error")
         return JSONResponse(
             {"error": {"message": f"Upstream model runtime unavailable: {exc}",
                        "type": "upstream_unavailable", "code": "502"}},
@@ -1815,17 +1883,26 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     "messages": [*payload["messages"], {"role": "user",
                         "content": _native_tool_repair_feedback(native_names, payload)}]}
                 repair_payload.pop("stream_options", None)
+                repair_handle = None
                 try:
+                    repair_body = json.dumps(repair_payload).encode("utf-8")
+                    repair_handle = _begin_probe_attempt(probe_id, request_id, 2, repair_body, route)
                     upstream = await client.post(
-                        url, content=json.dumps(repair_payload).encode("utf-8"),
+                        url, content=repair_body,
                         headers=headers, timeout=remaining,
                     )
+                    _finish_probe_attempt(repair_handle, "complete", upstream.status_code)
+                except asyncio.CancelledError:
+                    _finish_probe_attempt(repair_handle, "cancelled")
+                    raise
                 except httpx.TimeoutException:
+                    _finish_probe_attempt(repair_handle, "timeout")
                     return JSONResponse({"error": {
                         "message": "Upstream model runtime timed out during tool protocol repair",
                         "type": "upstream_timeout", "code": "504",
                     }}, status_code=504, headers=ods_headers), False
                 except httpx.HTTPError as exc:
+                    _finish_probe_attempt(repair_handle, "transport-error")
                     return JSONResponse({"error": {
                         "message": f"Upstream model runtime unavailable during tool protocol repair: {exc}",
                         "type": "upstream_unavailable", "code": "502",
