@@ -1,54 +1,63 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, render, fireEvent } from '@testing-library/react'
+import { cleanup, render, act } from '@testing-library/react'
 import ODSLogo from './ODSLogo'
 
-vi.mock('@paper-design/shaders-react', () => ({ LiquidMetal: ({speed}) => <canvas data-speed={speed}/> }))
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-it('keeps the supplied logo visible when WebGL is unavailable', () => {
-  const removeEventListener = vi.fn()
-  vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener: vi.fn(), removeEventListener }))
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
-  const { container, unmount } = render(<ODSLogo />)
-  expect(container.querySelector('img')).toHaveAttribute('src', '/osmantic-isolated-os.png')
-  expect(container.querySelector('img')).toHaveStyle({filter:'grayscale(1)'})
-  expect(container.querySelector('canvas')).toBeNull()
-  unmount()
-  expect(removeEventListener).toHaveBeenCalled()
-})
-
-it('keeps the dashboard usable when a browser denies GPU contexts', () => {
-  vi.stubGlobal('matchMedia', () => ({matches:false, addEventListener:vi.fn(), removeEventListener:vi.fn()}))
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(() => { throw new Error('GPU disabled') })
-  const {container} = render(<ODSLogo />)
-  expect(container.querySelector('img')).toHaveAttribute('src', '/osmantic-isolated-os.png')
-  expect(container.querySelector('canvas')).toBeNull()
-})
-
-it('falls back to the static logo when canvas readback is denied', () => {
-  vi.stubGlobal('matchMedia', () => ({matches:false, addEventListener:vi.fn(), removeEventListener:vi.fn()}))
+function loadedImage() {
   vi.stubGlobal('Image', class {
-    naturalWidth = 1
+    naturalWidth = 2
     naturalHeight = 1
     set src(_value) { this.onload() }
   })
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(type => type === 'webgl2'
-    ? {getExtension:() => null}
-    : {drawImage:vi.fn(), getImageData:() => { throw new Error('Canvas readback denied') }})
+}
+
+it('keeps the supplied logo available when 2D canvas is unavailable', () => {
+  loadedImage()
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
   const {container} = render(<ODSLogo />)
   expect(container.querySelector('img')).toHaveAttribute('src', '/osmantic-isolated-os.png')
-  expect(container.querySelector('canvas')).toBeNull()
+  expect(container.firstChild).not.toHaveAttribute('data-mask-ready')
 })
 
-it.each([false,true])('animates only on hover and honors reduced motion: %s', reduced => {
-  vi.stubGlobal('matchMedia', () => ({matches:reduced}))
-  vi.stubGlobal('Image', class { naturalWidth=1; naturalHeight=1; set src(_value) {this.onload()} })
-  vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockImplementation(type => type === 'webgl2' ? {getExtension:()=>null} : {drawImage:vi.fn(),getImageData:()=>({data:new Uint8ClampedArray([255,0,0,255])}),putImageData:vi.fn()})
-  vi.spyOn(HTMLCanvasElement.prototype,'toDataURL').mockReturnValue('data:image/png;base64,YQ==')
-  const {container}=render(<ODSLogo active/>)
-  expect(container.querySelector('canvas')).toHaveAttribute('data-speed','0')
-  fireEvent.mouseEnter(container.firstChild)
-  expect(container.querySelector('canvas')).toHaveAttribute('data-speed',reduced ? '0' : '0.35')
-  fireEvent.mouseLeave(container.firstChild)
-  expect(container.querySelector('canvas')).toHaveAttribute('data-speed','0')
+it.each(['context','readback'])('retains the original silhouette when canvas %s is denied', denial => {
+  loadedImage()
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(() => {
+    if (denial === 'context') throw new Error('Canvas disabled')
+    return {drawImage:vi.fn(),getImageData:() => {throw new Error('Readback denied')}}
+  })
+  const {container} = render(<ODSLogo />)
+  expect(container.querySelector('img')).toHaveAttribute('src', '/osmantic-isolated-os.png')
+  expect(container.firstChild).not.toHaveAttribute('data-mask-ready')
+})
+
+it('preserves the chroma mask without requiring WebGL or starting an animation', () => {
+  loadedImage()
+  const pixels = new Uint8ClampedArray([255,0,0,255,20,20,20,255])
+  const putImageData = vi.fn()
+  const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+    drawImage:vi.fn(),getImageData:() => ({data:pixels}),putImageData,
+  })
+  vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,YQ==')
+  const {container} = render(<ODSLogo />)
+  expect(context).toHaveBeenCalledExactlyOnceWith('2d')
+  expect([...pixels]).toEqual([255,255,255,255,255,255,255,0])
+  expect(putImageData).toHaveBeenCalledOnce()
+  expect(container.firstChild).toHaveAttribute('data-mask-ready')
+  expect(container.firstChild.style.getPropertyValue('--ods-logo-mask')).toBe('url("data:image/png;base64,YQ==")')
+  expect(container.querySelector('canvas')).toBeNull()
+  // Collapsed navigation hides label spans; the decorative mask is not a label.
+  expect(container.querySelector('.ods-frosted-mark').tagName).toBe('DIV')
+  expect(container.firstChild).toHaveAttribute('aria-hidden','true')
+  expect(container.querySelector('img')).toHaveAttribute('alt','')
+})
+
+it('ignores a late image load after unmount', () => {
+  let image
+  vi.stubGlobal('Image', class { constructor() {image=this} })
+  const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+  const {unmount} = render(<ODSLogo />)
+  unmount()
+  act(() => image.onload())
+  expect(context).not.toHaveBeenCalled()
 })

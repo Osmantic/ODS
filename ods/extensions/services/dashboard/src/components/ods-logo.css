@@ -1,0 +1,54 @@
+/* The existing OS silhouette is glass over the same surface as the sidebar. */
+.ods-frosted-logo {
+  position:relative;
+  --ods-logo-highlight:rgb(var(--theme-text,228 228 231) / .76);
+  --ods-logo-fill:rgb(var(--theme-text,228 228 231) / .42);
+  --ods-logo-base:rgb(var(--theme-text,228 228 231) / .58);
+}
+.ods-frosted-mark { display:none; }
+.ods-frosted-logo .ods-logo-fallback {
+  filter:grayscale(1);
+  mix-blend-mode:screen;
+  opacity:.78;
+}
+@supports ((mask-image:url('')) or (-webkit-mask-image:url(''))) {
+  .ods-frosted-logo[data-mask-ready] .ods-logo-fallback { display:none; }
+  .ods-frosted-logo[data-mask-ready] .ods-frosted-mark {
+    display:block;
+    position:absolute;
+    inset:0;
+    mask-image:var(--ods-logo-mask);
+    -webkit-mask-image:var(--ods-logo-mask);
+    mask-size:contain;
+    -webkit-mask-size:contain;
+    mask-position:center;
+    -webkit-mask-position:center;
+    mask-repeat:no-repeat;
+    -webkit-mask-repeat:no-repeat;
+    background:linear-gradient(145deg,var(--ods-logo-highlight),var(--ods-logo-fill) 48%,var(--ods-logo-base));
+    backdrop-filter:blur(9px) saturate(125%);
+    -webkit-backdrop-filter:blur(9px) saturate(125%);
+  }
+}
+:root[data-wallpaper] .ods-frosted-logo {
+  --ods-logo-highlight:rgb(var(--theme-text,228 228 231) / .64);
+  --ods-logo-fill:rgb(var(--theme-text,228 228 231) / .22);
+  --ods-logo-base:rgb(var(--theme-text,228 228 231) / .46);
+}
+@media (prefers-reduced-transparency:reduce) {
+  .ods-frosted-logo[data-mask-ready] .ods-frosted-mark {
+    background:rgb(var(--theme-text,228 228 231));
+    backdrop-filter:none;
+    -webkit-backdrop-filter:none;
+  }
+  .ods-frosted-logo .ods-logo-fallback { opacity:1; }
+}
+@media (forced-colors:active) {
+  .ods-frosted-logo[data-mask-ready] .ods-frosted-mark {
+    forced-color-adjust:none;
+    background:CanvasText;
+    backdrop-filter:none;
+    -webkit-backdrop-filter:none;
+  }
+  .ods-frosted-logo .ods-logo-fallback { opacity:1; }
+}
