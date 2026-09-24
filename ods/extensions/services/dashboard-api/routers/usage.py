@@ -382,6 +382,10 @@ async def _fetch_token_spy_report(start: str, end: str) -> dict[str, Any]:
         )
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return _empty_report(start, end, detail=f"Token Spy unavailable: {exc}")
+    except (ValueError, TypeError) as exc:
+        # A reachable but malformed upstream (bad JSON or a non-object body)
+        # degrades to the same honest report as a transport failure.
+        return _empty_report(start, end, detail=f"Token Spy returned invalid data: {exc}")
 
 
 def _request_token_spy_report(start: str, end: str, headers: dict[str, str]) -> dict[str, Any]:
@@ -390,6 +394,8 @@ def _request_token_spy_report(start: str, end: str, headers: dict[str, str]) -> 
     request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=10) as response:
         payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Token Spy report is not a JSON object")
     payload["source"] = {
         "name": "token-spy",
         "status": "ok",
