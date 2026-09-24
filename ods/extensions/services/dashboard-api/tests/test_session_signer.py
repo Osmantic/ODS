@@ -48,6 +48,11 @@ class TestIssue:
         c2 = session_signer.issue(ttl_seconds=60)
         assert c1.split(".")[0] != c2.split(".")[0]
 
+    @pytest.mark.parametrize("ttl", [True, 1.5, "60", None])
+    def test_rejects_non_integer_ttl_before_minting_cookie(self, ttl):
+        with pytest.raises(TypeError, match="must be an integer"):
+            session_signer.issue(ttl_seconds=ttl)
+
 
 # ---------------------------------------------------------------------------
 # is_configured()

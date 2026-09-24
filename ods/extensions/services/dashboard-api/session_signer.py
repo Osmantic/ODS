@@ -103,8 +103,9 @@ def _sign(payload: str) -> str:
 def issue(ttl_seconds: int = 12 * 3600) -> str:
     """Mint a new signed cookie value valid for ``ttl_seconds`` seconds.
 
-    Raises ``RuntimeError`` if ODS_SESSION_SECRET is not configured —
-    we refuse to issue cookies that can't be verified.
+    Raises ``RuntimeError`` if ODS_SESSION_SECRET is not configured and
+    ``TypeError`` if ``ttl_seconds`` is not an integer. We refuse to issue
+    cookies that can't be verified.
     """
     if not _SECRET:
         raise RuntimeError(
@@ -112,6 +113,8 @@ def issue(ttl_seconds: int = 12 * 3600) -> str:
             "unsignable session cookie. Set it in .env (32+ random bytes) "
             "and restart dashboard-api."
         )
+    if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int):
+        raise TypeError("ttl_seconds must be an integer")
     if ttl_seconds < 1:
         raise ValueError(f"ttl_seconds must be positive, got {ttl_seconds}")
 
