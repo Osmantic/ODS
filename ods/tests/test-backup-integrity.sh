@@ -67,6 +67,26 @@ fi
 
 pass "verify fails after tampering"
 
+info "Verifying a corrupt archive cleans extracted temporary data"
+(cd "$BACKUPS_DIR" && tar czf "$backup_id.tar.gz" "$backup_id")
+rm -rf "$BACKUPS_DIR/$backup_id"
+VERIFY_TMP="$TMP_ROOT/verify-tmp"
+mkdir -p "$VERIFY_TMP"
+
+set +e
+TMPDIR="$VERIFY_TMP" ODS_DIR="$FAKE_ODS" \
+  "$ODS_BACKUP" --output "$BACKUPS_DIR" verify "$backup_id.tar.gz" >/dev/null 2>&1
+rc=$?
+set -e
+
+if [[ $rc -eq 0 ]]; then
+  fail "archive verify unexpectedly succeeded with a checksum mismatch"
+fi
+if find "$VERIFY_TMP" -mindepth 1 -print -quit | grep -q .; then
+  fail "archive verify left extracted backup data in TMPDIR after failure"
+fi
+pass "archive verify removes extracted data after checksum failure"
+
 # ── Lifecycle: list, retention, and delete must see the script's own IDs ──
 # Backup IDs are YYYYMMDD-HHMMSS (one hyphen); a glob requiring two hyphens
 # regressed list/retention into ignoring every backup this script creates.

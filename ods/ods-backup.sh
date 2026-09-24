@@ -594,20 +594,18 @@ verify_backup() {
     fi
 
     if [[ -f "$target" && "$target" == *.tar.gz ]]; then
-        local tmpdir
-        tmpdir=$(mktemp -d)
-        trap 'rm -rf "$tmpdir"' RETURN
-
-        # Extract checksums first (fast fail if missing)
-        local archive_name="${backup_id%.tar.gz}"
-        if ! tar xzf "$target" -C "$tmpdir" "${archive_name}/checksums.sha256" >/dev/null 2>&1; then
-            log_error "checksums.sha256 not found in archive: $backup_id"
-            return 1
-        fi
-
-        tar xzf "$target" -C "$tmpdir"
-
+        local tmpdir archive_name="${backup_id%.tar.gz}"
         (
+            tmpdir=$(mktemp -d)
+            trap 'rm -rf "$tmpdir"' EXIT
+
+            # Extract checksums first (fast fail if missing)
+            if ! tar xzf "$target" -C "$tmpdir" "${archive_name}/checksums.sha256" >/dev/null 2>&1; then
+                log_error "checksums.sha256 not found in archive: $backup_id"
+                exit 1
+            fi
+
+            tar xzf "$target" -C "$tmpdir"
             cd "$tmpdir/$archive_name"
             if command -v sha256sum >/dev/null 2>&1; then
                 sha256sum -c "checksums.sha256"
