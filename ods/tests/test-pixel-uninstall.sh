@@ -995,6 +995,55 @@ else
     fail "verified Operations Broker deployment could not be removed"
 fi
 
+write_inspection_contract_fixture() {
+    write_ops_fixture
+    local file digest
+    for file in preview_inspection.py preview_inspection_protocol.py preview_inspection_capsule.py \
+        Dockerfile.inspection preview-inspection.requirements.lock pixel-preview-inspection.service; do
+        cp "$ROOT_DIR/extensions/services/pixel-agent/host/$file" "$INSTALL_DIR/extensions/services/pixel-agent/host/$file"
+    done
+    # Generate the marker using the actual installer, not a parallel test hash.
+    digest="$(
+        source "$ROOT_DIR/installers/lib/pixel-host-install.sh"
+        ods_pixel_run_as_owner() { shift 2; "$@"; }
+        _ods_pixel_contract_sha256 "$(id -un)" "$HOME_DIR" "$INSTALL_DIR/data/pixel/onboarding.json"
+    )"
+    python3 - "$HOME_DIR/.config/ods/pixel-managed.json" "$digest" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value['contract_sha256'] = sys.argv[2]
+path.write_text(json.dumps(value) + '\n')
+PY
+}
+
+write_inspection_contract_fixture
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    pass "installer-produced inspection contract passes complete uninstall custody validation"
+else
+    fail "installer-produced inspection contract was rejected as onboarding drift"
+fi
+
+for fault in changed missing symlink writable hardlink; do
+    write_inspection_contract_fixture
+    inspection_source="$INSTALL_DIR/extensions/services/pixel-agent/host/preview_inspection.py"
+    case "$fault" in
+        changed) printf '\n# changed\n' >>"$inspection_source" ;;
+        missing) rm -- "$inspection_source" ;;
+        symlink) mv "$inspection_source" "$inspection_source.saved"; ln -s "$inspection_source.saved" "$inspection_source" ;;
+        writable) chmod 0666 "$inspection_source" ;;
+        hardlink) ln "$inspection_source" "$inspection_source.link" ;;
+    esac
+    if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+        fail "inspection contract accepted $fault source"
+    elif [[ ! -s "$SYSTEMCTL_LOG" && -e "$SYSTEMD_DIR/pixel-ingress.service" \
+        && -e "$HOME_DIR/.config/ods/pixel-managed.json" ]]; then
+        pass "inspection contract rejects $fault source before service or marker mutation"
+    else
+        fail "inspection contract $fault rejection changed installed state"
+    fi
+done
+
 write_interrupted_ops_receipt_fixture
 if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
     if [[ ! -e "$SYSTEMD_DIR/pixel-ops-broker.service" \

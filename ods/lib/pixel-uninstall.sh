@@ -1279,6 +1279,24 @@ if onboarding.exists():
                                             current_v10_digest = v10.hexdigest()
                                             accepted_contracts.add(current_v10_digest)
                                             system_observer_contract_present |= value.get("contract_sha256") == current_v10_digest
+                                            # The inspector installer extends the v10 payload
+                                            # with this complete fixed source inventory. Keep
+                                            # older v10 records valid, but never accept a
+                                            # partial, linked or writable inspection bundle.
+                                            inspection_sources = tuple(workspace_preview_source.with_name(name) for name in (
+                                                "preview_inspection.py", "preview_inspection_protocol.py", "preview_inspection_capsule.py",
+                                                "Dockerfile.inspection", "preview-inspection.requirements.lock", "pixel-preview-inspection.service"))
+                                            if any(source.exists() or source.is_symlink() for source in inspection_sources):
+                                                for source in inspection_sources:
+                                                    info = regular(source, owner_uid, 2 * 1024 * 1024)
+                                                    if info.st_nlink != 1 or info.st_mode & 0o022:
+                                                        raise SystemExit("unsafe ODS Pixel inspection source")
+                                                    payload = source.read_bytes()
+                                                    v10.update(len(payload).to_bytes(8, "big"))
+                                                    v10.update(payload)
+                                                current_v10_digest = v10.hexdigest()
+                                                accepted_contracts.add(current_v10_digest)
+                                                system_observer_contract_present |= value.get("contract_sha256") == current_v10_digest
         # During an exact-source reinstall, _ods_pixel_mark_installing records
         # the requested source and contract but intentionally keeps the
         # previously verified contract until the replacement route completes
