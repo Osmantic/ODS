@@ -1,10 +1,11 @@
 import { memo, useState } from 'react'
-import { Activity, RefreshCw, AlertTriangle } from 'lucide-react'
+import { Activity, RefreshCw, AlertTriangle, Download } from 'lucide-react'
 import { useGPUDetailed } from '../hooks/useGPUDetailed'
 import { GPUCard } from '../components/GPUCard'
 import { GPUChart } from '../components/GPUChart'
 import { TopologyView } from '../components/TopologyView'
 import { AssignmentTable } from '../components/AssignmentTable'
+import { downloadGpuHistoryCsv } from '../utils/gpuHistoryCsv'
 
 // Aggregate bar shared between aggregate section
 const AggBar = memo(function AggBar({ label, value, percent }) {
@@ -157,11 +158,24 @@ export default function GPUMonitor() {
       )}
 
       {activeTab === 'history' && (
-        <div className={`grid gap-4 ${gpus.length <= 2 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-2 lg:grid-cols-4'}`}>
-          {gpus.map(gpu => (
-            <GPUChart key={gpu.uuid} history={history} gpuIndex={gpu.index} />
-          ))}
-        </div>
+        <>
+          <div className="flex justify-end mb-3">
+            <button
+              type="button"
+              onClick={() => downloadGpuHistoryCsv(history)}
+              disabled={!history?.timestamps?.length}
+              className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900/70 px-3 py-2 text-xs font-medium text-zinc-300 transition-colors hover:border-indigo-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Download size={14} />
+              Export CSV
+            </button>
+          </div>
+          <div className={`grid gap-4 ${gpus.length <= 2 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-2 lg:grid-cols-4'}`}>
+            {gpus.map(gpu => (
+              <GPUChart key={gpu.uuid} history={history} gpuIndex={gpu.index} />
+            ))}
+          </div>
+        </>
       )}
     </div>
   )
