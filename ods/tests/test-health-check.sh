@@ -117,7 +117,38 @@ else
     pass "no hardcoded /v1/completions probe remains"
 fi
 
-# 8. Async service failures must reach the summary, exit code, and JSON.
+# 8. Registry load failures must stop at the health-check boundary with an
+# actionable critical result instead of an empty report or nounset crash.
+REGISTRY_SANDBOX=$(mktemp -d)
+mkdir -p "$REGISTRY_SANDBOX/scripts" "$REGISTRY_SANDBOX/lib" "$REGISTRY_SANDBOX/bin"
+cp "$ROOT_DIR/scripts/health-check.sh" "$REGISTRY_SANDBOX/scripts/"
+cp "$ROOT_DIR/lib/service-registry.sh" "$REGISTRY_SANDBOX/lib/"
+cat > "$REGISTRY_SANDBOX/bin/python3" <<'PYTHON_STUB'
+#!/bin/sh
+exit 1
+PYTHON_STUB
+cp "$REGISTRY_SANDBOX/bin/python3" "$REGISTRY_SANDBOX/bin/python"
+chmod +x "$REGISTRY_SANDBOX/bin/python3" "$REGISTRY_SANDBOX/bin/python"
+
+set +e
+registry_json=$(cd "$REGISTRY_SANDBOX" && PATH="$REGISTRY_SANDBOX/bin:$PATH" \
+    bash scripts/health-check.sh --json 2>/dev/null)
+registry_exit=$?
+set -e
+
+if [[ "$registry_exit" -eq 2 ]]; then
+    pass "missing PyYAML is a critical health-check failure"
+else
+    fail "missing PyYAML should exit 2; got $registry_exit"
+fi
+if echo "$registry_json" | grep -q '"error":"Service registry unavailable: PyYAML is required"'; then
+    pass "missing PyYAML produces an actionable JSON error"
+else
+    fail "missing PyYAML JSON error is absent or malformed"
+fi
+rm -rf "$REGISTRY_SANDBOX"
+
+# 9. Async service failures must reach the summary, exit code, and JSON.
 # The per-service checks run in background subshells, so the parent has to
 # aggregate their results — a regression here reports HEALTHY/exit 0 with
 # services down and omits them from the JSON services map.

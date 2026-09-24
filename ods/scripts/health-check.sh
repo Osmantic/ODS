@@ -41,6 +41,15 @@ if [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]]; then
     . "$SCRIPT_DIR/lib/service-registry.sh" 
     sr_load 
 fi
+if [[ "${_SR_FAILED:-false}" == "true" ]]; then
+    if $JSON_OUTPUT; then
+        printf '%s\n' '{"status":"critical","error":"Service registry unavailable: PyYAML is required","remediation":"Install PyYAML with: pip3 install pyyaml"}'
+    else
+        echo "CRITICAL: Service registry unavailable because PyYAML is not installed." >&2
+        echo "Install PyYAML with: pip3 install pyyaml" >&2
+    fi
+    exit 2
+fi
 INSTALL_DIR="${INSTALL_DIR:-$HOME/ods}"
 LLM_HOST="${LLM_HOST:-localhost}"
 LLM_PORT="${LLM_PORT:-8080}"
