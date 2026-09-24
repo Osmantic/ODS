@@ -407,6 +407,29 @@ def _uses_openai_upstream() -> bool:
     return API_PROVIDER in ("openai", "moonshot", "local", "ollama", "vllm", "llama-server")
 
 
+_DECODED_RESPONSE_HEADERS_TO_DROP = {
+    "connection",
+    "content-encoding",
+    "content-length",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+def _decoded_response_headers(headers) -> dict[str, str]:
+    """Keep end-to-end headers that still describe httpx's decoded body."""
+    return {
+        name: value
+        for name, value in headers.items()
+        if name.lower() not in _DECODED_RESPONSE_HEADERS_TO_DROP
+    }
+
+
 _db_available = True
 
 @app.on_event("startup")
@@ -835,7 +858,7 @@ async def _handle_non_streaming(client, raw_body, headers, model, sys_analysis,
     return Response(
         content=resp.content,
         status_code=resp.status_code,
-        headers=dict(resp.headers),
+        headers=_decoded_response_headers(resp.headers),
     )
 
 
@@ -1060,7 +1083,7 @@ async def _handle_openai_non_streaming(client, raw_body, headers, model, sys_ana
     return Response(
         content=resp.content,
         status_code=resp.status_code,
-        headers=dict(resp.headers),
+        headers=_decoded_response_headers(resp.headers),
     )
 
 
@@ -2589,7 +2612,7 @@ async def proxy_other(request: Request, path: str):
         return Response(
             content=resp.content,
             status_code=resp.status_code,
-            headers=dict(resp.headers),
+            headers=_decoded_response_headers(resp.headers),
         )
     except Exception as e:
         log.error(f"Proxy passthrough error: {e}")
