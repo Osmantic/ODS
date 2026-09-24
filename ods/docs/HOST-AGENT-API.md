@@ -6,6 +6,15 @@ The ODS Host Agent (`bin/ods-host-agent.py`) is a lightweight HTTP server that r
 
 The Dashboard API runs inside a Docker container and cannot directly run `docker compose` commands on the host. The host agent bridges this gap: it listens on `ODS_AGENT_BIND:ODS_AGENT_PORT`, accepts authenticated requests from the Dashboard API, and executes Docker Compose operations on its behalf. This avoids mounting the Docker socket into the container (a significant security risk).
 
+Operators can check the local agent without calling its HTTP endpoint directly:
+
+```bash
+ods agent status
+ods agent status --json
+```
+
+The JSON form reports `status`, `port`, `daemon_type`, and the validated health payload, making it suitable for monitoring and fleet automation.
+
 ## How It Runs
 
 | Platform | Mechanism |

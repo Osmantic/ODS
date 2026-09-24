@@ -190,6 +190,9 @@ test: ## Run unit and contract tests
 	@echo "=== desktop host-agent environment contract ==="
 	@bash tests/test-desktop-agent-host-env.sh
 	@echo ""
+	@echo "=== host-agent status JSON output ==="
+	@bash tests/test-agent-status-json.sh
+	@echo ""
 	@echo "=== macOS model download retry contract ==="
 	@bash tests/test-macos-download-retries.sh
 	@echo ""

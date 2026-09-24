@@ -5010,12 +5010,26 @@ cmd_agent() {
         [[ -n "$command_line" && "$command_line" == *"$agent_script"* ]]
     }
 
-    _agent_health_ready() {
+    _agent_health_payload() {
         local bind_addr health_payload
         bind_addr="$(_agent_probe_host)"
-        health_payload=$(curl -sf --max-time 2 "http://${bind_addr}:${port}/health" 2>/dev/null) || return 1
-        grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' <<<"$health_payload" && \
-            grep -Eq '"version"[[:space:]]*:' <<<"$health_payload"
+        health_payload=$(curl -sf --max-time 2 "http://${bind_addr}:${port}/health") || return 1
+        python3 - "$health_payload" <<'PYEOF'
+import json
+import sys
+
+try:
+    payload = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    raise SystemExit(1)
+if not isinstance(payload, dict) or payload.get("status") != "ok" or "version" not in payload:
+    raise SystemExit(1)
+json.dump(payload, sys.stdout, ensure_ascii=False, separators=(",", ":"))
+PYEOF
+    }
+
+    _agent_health_ready() {
+        _agent_health_payload >/dev/null
     }
 
     # Installer phases can explicitly request the per-session fallback when
@@ -5039,9 +5053,25 @@ cmd_agent() {
 
     case "$action" in
         status)
-            if _agent_health_ready; then
+            local json_mode="false"
+            [[ "${2:-}" == "--json" ]] && json_mode="true"
+            [[ -z "${2:-}" || "$json_mode" == "true" ]] || error "Usage: ods agent status [--json]"
+            [[ -z "${3:-}" ]] || error "Usage: ods agent status [--json]"
+
+            local health_payload=""
+            if health_payload=$(_agent_health_payload); then
+                if [[ "$json_mode" == "true" ]]; then
+                    printf '{"status":"running","port":"%s","daemon_type":"%s","health":%s}\n' \
+                        "$(_json_escape "$port")" "$(_json_escape "$daemon_type")" "$health_payload"
+                    return 0
+                fi
                 success "ODS host agent: running (port ${port}, ${daemon_type})"
             else
+                if [[ "$json_mode" == "true" ]]; then
+                    printf '{"status":"unreachable","port":"%s","daemon_type":"%s","health":null}\n' \
+                        "$(_json_escape "$port")" "$(_json_escape "$daemon_type")"
+                    return 0
+                fi
                 warn "ODS host agent: not responding (port ${port})"
             fi
             ;;
@@ -5147,7 +5177,7 @@ cmd_agent() {
             fi
             ;;
         *)
-            log "Usage: ods agent [status|start|stop|restart|logs]"
+            log "Usage: ods agent [status [--json]|start|stop|restart|logs]"
             ;;
     esac
 }
@@ -6678,7 +6708,7 @@ ${CYAN}Commands:${NC}
                       Repair voice services or prune leaked Hermes slash workers
   template [action]   Apply pre-built service templates (list|preview|apply)
   audit [extensions]  Audit extension manifests and compose contracts
-  agent [action]      Manage ods host agent (status|start|stop|restart|logs)
+  agent [action]      Manage ods host agent (status [--json]|start|stop|restart|logs)
   help                Show this help
 
 ${CYAN}Preset Commands:${NC}
@@ -6781,7 +6811,7 @@ ${CYAN}Examples:${NC}
                                   # Apply a template (enables services)
   ods audit                     # Audit every extension contract
   ods audit --json whisper      # Audit one service as JSON
-  ods agent status              # Check host agent health
+  ods agent status [--json]     # Check host agent health
   ods agent restart             # Restart host agent
   ods repair voice              # Start voice services and cache STT model
   ods repair rootless-ownership # Repair active bind mounts for rootless Docker
