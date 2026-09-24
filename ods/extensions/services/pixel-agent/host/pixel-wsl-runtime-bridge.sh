@@ -8,7 +8,7 @@ action="${1:-}"
 [[ "$#" -eq 1 && "$action" == ensure || "$#" -eq 1 && "$action" == remove ]] || exit 2
 [[ "$(id -u)" -eq 0 ]] || exit 1
 [[ -r /proc/sys/kernel/osrelease ]] && grep -qi microsoft /proc/sys/kernel/osrelease || exit 1
-[[ "$(findmnt -n -o PROPAGATION -T /mnt/wsl)" == shared ]] || exit 1
+[[ "$(findmnt -n --direction backward --first-only -o PROPAGATION -T /mnt/wsl)" == shared ]] || exit 1
 
 bridge() {
     local source="$1" target="$2" source_inode target_inode
@@ -26,9 +26,9 @@ bridge() {
         # Docker Desktop may self-bind an empty shared directory before the
         # socket bridge starts. Accept only that exact tmpfs directory, never
         # a foreign mount or an old runtime directory with different contents.
-        [[ "$(findmnt -n -o FSTYPE -T "$target")" == tmpfs ]] || return 1
-        [[ "$(findmnt -n -o MAJ:MIN -T "$target")" == "$(findmnt -n -o MAJ:MIN -T /mnt/wsl)" ]] || return 1
-        [[ "$(findmnt -n -o FSROOT -T "$target")" == "${target#/mnt/wsl}" ]] || return 1
+        [[ "$(findmnt -n --direction backward --first-only -o FSTYPE -T "$target")" == tmpfs ]] || return 1
+        [[ "$(findmnt -n --direction backward --first-only -o MAJ:MIN -T "$target")" == "$(findmnt -n --direction backward --first-only -o MAJ:MIN -T /mnt/wsl)" ]] || return 1
+        [[ "$(findmnt -n --direction backward --first-only -o FSROOT -T "$target")" == "${target#/mnt/wsl}" ]] || return 1
         [[ "$(stat -Lc '%u:%g:%a' -- "$target")" == 0:0:755 ]] || return 1
         [[ -z "$(find "$target" -mindepth 1 -maxdepth 1 -print -quit)" ]] || return 1
     fi
@@ -36,7 +36,7 @@ bridge() {
     [[ -z "$(find "$target" -mindepth 1 -maxdepth 1 -print -quit)" ]] || return 1
     mount --bind -- "$source" "$target"
     [[ "$(stat -Lc '%d:%i' -- "$target")" == "$source_inode" ]] || return 1
-    [[ "$(findmnt -n -o PROPAGATION -T "$target")" == shared ]] || return 1
+    [[ "$(findmnt -n --direction backward --first-only -o PROPAGATION -T "$target")" == shared ]] || return 1
 }
 
 base=/mnt/wsl/ods-portal-runtime

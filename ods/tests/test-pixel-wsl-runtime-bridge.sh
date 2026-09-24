@@ -16,7 +16,7 @@ assert 'bridge /run/ods-pixel "$base/ingress"' in bridge
 assert 'bridge /run/ods-pixel-preview "$base/preview"' in bridge
 assert 'mountpoint -q -- "$target"' in bridge
 assert '[[ "$source_inode" == "$target_inode" ]]' in bridge
-assert '[[ "$(findmnt -n -o PROPAGATION -T "$target")" == shared ]]' in bridge
+assert '[[ "$(findmnt -n --direction backward --first-only -o PROPAGATION -T "$target")" == shared ]]' in bridge
 assert 'ConditionVirtualization=wsl' in unit
 assert 'BindsTo=pixel-ingress.service pixel-workspace-preview.service' in unit
 assert 'ExecStart=/usr/local/libexec/ods-pixel-wsl-runtime-bridge ensure' in unit
@@ -39,9 +39,12 @@ action=ensure
 mounted=1
 mountpoint() { return 0; }
 findmnt() {
-    case "$3" in
+    # Multiple mount layers are normal after Docker creates a self-bind.
+    # Require selection of the newest (visible) layer, not the covered one.
+    [[ "$2 $3 $4" == '--direction backward --first-only' ]] || return 1
+    case "$6" in
         FSTYPE) echo "${filesystem:-tmpfs}";;
-        MAJ:MIN) if [[ "$5" == /mnt/wsl ]]; then echo 0:32; else echo "${device:-0:32}"; fi;;
+        MAJ:MIN) if [[ "$8" == /mnt/wsl ]]; then echo 0:32; else echo "${device:-0:32}"; fi;;
         FSROOT) echo "${mountroot:-/ods-portal-runtime/ingress}";;
         PROPAGATION) echo "${propagation:-shared}";;
     esac
