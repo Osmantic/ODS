@@ -131,6 +131,27 @@ class TestStreamingNotBuffered:
         )
 
 
+class TestQueryPassthrough:
+    def test_http_query_string_reaches_upstream_unchanged(
+        self, client, install_upstream
+    ):
+        seen = {}
+
+        def handler(request):
+            seen["raw_path"] = request.url.raw_path
+            return _resp(200, {"content-type": "application/json"}, [b"{}"])
+
+        install_upstream(handler)
+
+        response = client.get(
+            "/models?limit=5&cursor=a%2Fb&tag=x+y",
+            headers=AUTH,
+        )
+
+        assert response.status_code == 200
+        assert seen["raw_path"] == b"/v1/models?limit=5&cursor=a%2Fb&tag=x+y"
+
+
 # ── 1b. Oversized-text cutover keeps ONE upstream iterator (#1268) ─────────
 #
 # When a textual body crosses SHIELD_RESTORE_MAX_BYTES mid-stream, body_iter()
