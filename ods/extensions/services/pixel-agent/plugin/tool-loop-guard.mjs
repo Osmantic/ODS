@@ -24,6 +24,7 @@ import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, 
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import { inspectionRevalidationCandidate, boundedPreviewVerification } from "./preview-revalidation.mjs";
+import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -6565,6 +6566,7 @@ export function createToolLoopGuard({
   evidenceArtifactWriter,
   onWorkspaceMutation = () => {},
   verifyWorkspacePreview,
+  publishWorkspacePreview,
   execMarkerCleanupDelayMs = 5000,
   limits,
   warn = () => {},
@@ -10387,6 +10389,51 @@ export function createToolLoopGuard({
     };
   }
 
+  async function recoverWorkspacePreview(event, context, agentId = 'pixel') {
+    if (context?.agentId !== agentId || typeof publishWorkspacePreview !== 'function') return false;
+    const runId = context.runId ?? event?.runId;
+    const state = runs.get(runId);
+    if (!state || state.previewDeliveryAttempted || state.workspacePreviewAttempted) return false;
+    // Use current-run file evidence only. A historical read or model-supplied
+    // directory is not authority to publish some other existing project.
+    const directories = new Set([...state.successfulWritePaths]
+      .filter(path => path.endsWith('/index.html')).map(path => path.slice(0, -11)));
+    if (directories.size !== 1) return false;
+    const directory = [...directories][0];
+    let generation = state.previewVerificationGeneration;
+    const root = state.configuredWorkspaceRoot;
+    const callId = `ods-preview-delivery-${runId}`;
+    const valid = () => Boolean(runs.get(runId) === state &&
+      state.previewVerificationGeneration === generation && state.configuredWorkspaceRoot === root &&
+      context.sessionId && state.currentSessionId === context.sessionId &&
+      context.sessionKey && state.currentSessionKey === context.sessionKey &&
+      sessionRuns.get(context.sessionId) === runId && state.ownerIntentObserved &&
+      state.workspacePreviewRequired && !state.workspacePreviewForbidden && !state.workspacePreview &&
+      !state.workspacePreviewRestrictions?.mutation && !state.ownerQuestions && !state.ownerQuestionIntent &&
+      !state.operationsRequired && !state.exactDownloadRequested && !state.extensionCompletionGate?.active &&
+      !state.clientCancelled && !state.recursiveDeleteDenied && !state.webLoopAborted &&
+      !state.progressBudget.exhausted && !state.progressBudget.laneExhausted('workspace') &&
+      !visualContinuationPrerequisite(state) &&
+      !state.failedExec.size &&
+      (!state.workspaceVerificationRequested || state.latestVerificationStatus === 'passed') &&
+      !['failed', 'pending'].includes(state.latestVerificationStatus) &&
+      !state.pendingExecSessions.size && !state.pendingProjectExecs?.size &&
+      ![...pendingToolRuns.entries()].some(([id, pending]) => pending.runId === runId && id !== callId));
+    if (!valid()) return false;
+    state.previewDeliveryAttempted = true;
+    const ctx = {...context, toolName: WORKSPACE_PREVIEW_TOOL, toolCallId: callId};
+    const params = {relativeDirectory: directory};
+    const prepared = beforeToolCall({toolName: WORKSPACE_PREVIEW_TOOL, toolCallId: callId, params}, ctx, agentId);
+    if (prepared?.block) { pendingToolRuns.delete(callId); return false; }
+    generation = state.previewVerificationGeneration;
+    try {
+      const result = await boundedPreviewDelivery(publishWorkspacePreview, prepared?.params ?? params, valid);
+      if (!result || !valid()) return false;
+      afterToolCall({toolName: WORKSPACE_PREVIEW_TOOL, toolCallId: callId, params, result}, ctx, agentId);
+      return Boolean(state.workspacePreview);
+    } finally { pendingToolRuns.delete(callId); }
+  }
+
   async function revalidateWorkspacePreview(event, context, agentId = 'pixel') {
     if (context?.agentId !== agentId || typeof verifyWorkspacePreview !== 'function') return false;
     const runId = context?.runId ?? event?.runId;
@@ -10878,6 +10925,7 @@ export function createToolLoopGuard({
     afterToolCall,
     toolResultPersist,
     beforeAgentFinalize,
+    recoverWorkspacePreview,
     revalidateWorkspacePreview,
     endPreviewRevalidation,
     replyPayloadSending,

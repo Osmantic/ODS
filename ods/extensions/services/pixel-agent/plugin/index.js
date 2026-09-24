@@ -2,6 +2,7 @@ import {createAgentSkillTool} from './agent-skills.mjs';
 import {createRuntimeIdentity} from './runtime-identity.mjs';
 import {fileURLToPath} from 'node:url';
 import {createActivityTool, ACTIVITY_CONTRACT} from './activity-display.mjs';
+import {previewRecoveryAllowed} from './preview-delivery-recovery.mjs';
 import {compactToolResultEnvelope} from './tool-result-envelope.mjs';
 import {withPiToolErrorContract} from './pi-tool-result.mjs';
 import {createGoalProgress, createGoalProgressTool, GOAL_CONTRACT} from './goal-progress.mjs';
@@ -299,6 +300,9 @@ export default definePluginEntry({
       evidenceArtifactWriter,
       onWorkspaceMutation:mutation=>workspaceProjects.record(mutation),
       verifyWorkspacePreview:createWorkspacePreviewVerifier({transport:api.pluginConfig?.workspacePreviewTransport}),
+      publishWorkspacePreview: previewRecoveryAllowed(api.config) ? (params, {signal}) =>
+        createWorkspacePreviewTool({transport:api.pluginConfig?.workspacePreviewTransport})
+          .execute('ods-preview-delivery', params, signal) : undefined,
       warn: (message) => api.logger.warn(message),
     });
 
@@ -437,6 +441,7 @@ export default definePluginEntry({
     });
     api.on("before_agent_finalize", async (event, context) => {
       await toolLoopGuard.revalidateWorkspacePreview(event, context, AGENT_ID);
+      await toolLoopGuard.recoverWorkspacePreview(event, context, AGENT_ID);
       const guardDecision = toolLoopGuard.beforeAgentFinalize(event, context, AGENT_ID);
       const verification = toolLoopGuard.deliveryVerificationForRun(context?.runId ?? event?.runId);
       return goalProgress.finalize(event, context, {guardDecision,

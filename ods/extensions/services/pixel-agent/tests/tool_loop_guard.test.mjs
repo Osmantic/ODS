@@ -16042,6 +16042,90 @@ test('actual registered finalize hook awaits trusted revalidation before goal an
   assert.equal(guard.verificationForRun('run-1').status,'passed');
 });
 
+function previewDeliveryFixture(publish, prompt='Build and publish a website in existing signal-garden.') {
+  const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',sessionKey:'agent:pixel:test'};
+  const writes=[{path:'signal-garden/index.html',content:'<!doctype html><title>Game</title>'}];
+  const snapshot=workspacePreviewSnapshot('signal-garden',writes);
+  const receipt={content:[{type:'text',text:'published'}],details:{schemaVersion:1,
+    kind:'ods-pixel-workspace-preview',status:'succeeded',relativeDirectory:'signal-garden',port:9437,
+    url:`http://${snapshot.siteId}.localhost:9437/${snapshot.siteId}/`,...snapshot,
+    httpStatus:200,readbackVerified:true,executable:false,overwritten:false}};
+  const guard=createToolLoopGuard({publishWorkspacePreview:publish});
+  guard.observeRun(context,'pixel',{prompt});
+  const invoke=(name,params,result,id)=>{
+    const ctx={...context,toolName:name,toolCallId:id};
+    const prepared=guard.beforeToolCall({toolName:name,params,toolCallId:id},ctx);
+    assert.notEqual(prepared?.block,true);
+    if(!result)return;
+    guard.afterToolCall({toolName:name,params:prepared?.params??params,result,toolCallId:id},ctx);
+    guard.toolResultPersist({toolName:name,toolCallId:id,message:{role:'toolResult',toolName:name,toolCallId:id,...result}},ctx);
+  };
+  invoke('write',writes[0],{content:[{type:'text',text:'written'}],details:{status:'completed'}},'write');
+  return {guard,context,invoke,receipt};
+}
+
+test('saved project gets one verified publication at finalization without replaying writes',async()=>{
+  let calls=0,fixture;
+  fixture=previewDeliveryFixture(async(params)=>{calls++;assert.deepEqual(params,{relativeDirectory:'signal-garden'});return fixture.receipt;});
+  const {guard,context}=fixture;
+  assert.equal(guard.verificationForRun(context.runId).status,'failed');
+  const source=readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');
+  const start=source.indexOf('    api.on("before_agent_finalize",');
+  const end=source.indexOf('    // Delivery rewriting',start);
+  let finalize;
+  vm.runInNewContext(source.slice(start,end),{
+    api:{on:(_name,callback)=>{finalize=callback;}},toolLoopGuard:guard,AGENT_ID:'pixel',
+    goalProgress:{finalize(_event,_context,decision){return decision;}},
+  });
+  assert.equal((await finalize({},context)).guardDecision,undefined);
+  assert.equal(await guard.recoverWorkspacePreview({},context),false);
+  assert.equal(calls,1);
+  assert.equal(guard.verificationForRun(context.runId).status,'passed');
+  assert.match(guard.replyPayloadSending({runId:context.runId,kind:'final',payload:{text:'Done'}}).payload.text,/Open preview/);
+});
+
+for (const fault of ['wrong-run','wrong-session','wrong-key','wrong-agent','pending','ambiguous','failed-check','no-preview']) {
+  test(`automatic preview delivery fails closed: ${fault}`,async()=>{
+    let calls=0;
+    const {guard,context,invoke}=previewDeliveryFixture(async()=>{calls++;return {};},
+      fault==='no-preview'?'Build a website in existing signal-garden. Do not publish a preview.':undefined);
+    const ctx={...context};
+    if(fault==='wrong-run')ctx.runId='other';
+    if(fault==='wrong-session')ctx.sessionId='other';
+    if(fault==='wrong-key')ctx.sessionKey='other';
+    if(fault==='wrong-agent')ctx.agentId='other';
+    if(fault==='pending')invoke('read',{path:'signal-garden/index.html'},null,'pending');
+    if(fault==='ambiguous')invoke('write',{path:'other/index.html',content:'other'},
+      {content:[{type:'text',text:'written'}]},'other');
+    if(fault==='failed-check')invoke('exec',{command:'node --check signal-garden/index.html'},
+      {isError:true,content:[{type:'text',text:'SyntaxError'}],details:{status:'completed',exitCode:1}},'check');
+    assert.equal(await guard.recoverWorkspacePreview({},ctx),false);
+    assert.equal(calls,0);
+  });
+}
+
+for(const outcome of ['failed','malformed','throws']) test(`publication ${outcome} is not retried or reported as delivered`,async()=>{
+  let calls=0;
+  const {guard,context}=previewDeliveryFixture(async()=>{
+    calls++;if(outcome==='throws')throw Error('unavailable');
+    return outcome==='failed'?{isError:true,content:[{type:'text',text:'failed'}]}:{details:{status:'succeeded'}};
+  });
+  assert.equal(await guard.recoverWorkspacePreview({},context),false);
+  assert.equal(await guard.recoverWorkspacePreview({},context),false);
+  assert.equal(calls,1);assert.equal(guard.verificationForRun(context.runId).status,'failed');
+});
+
+test('concurrent finalizers publish once and discard receipt after run invalidation',async()=>{
+  let resolve,calls=0;
+  const {guard,context,receipt}=previewDeliveryFixture(()=>{calls++;return new Promise(r=>resolve=r);});
+  const pending=guard.recoverWorkspacePreview({},context);
+  await Promise.resolve();
+  assert.equal(await guard.recoverWorkspacePreview({},context),false);
+  guard.endPreviewRevalidation({},context);
+  resolve(receipt);assert.equal(await pending,false);
+  assert.equal(calls,1);assert.equal(guard.verificationForRun(context.runId).status,'failed');
+});
+
 for(const change of ['end','write']) test(`final restore rejects ${change} in the nested async resolution microtask gap`,async()=>{
   let fixture,changed=false;
   fixture=revalidationGuardFixture(()=>{
