@@ -1287,20 +1287,14 @@ if ! _ensure_colima_private_network; then
     exit 1
 fi
 
-# Pre-flight the docker daemon's CPU allocation. Trip early with a clear
-# message rather than letting compose fail after pulls/builds. If the user
-# already requested voice from CLI flags (for example --all), account for
-# Kokoro's 8-CPU pin now; interactive feature selection is checked again
-# after the user picks features.
+# Pre-flight the docker daemon's CPU allocation. Bundled service limits are
+# capped to the daemon's available CPUs by env-generator.sh, so optional
+# features must not raise this baseline requirement. ODS_MIN_DOCKER_CPUS stays
+# available for operators who intentionally enforce a larger local floor.
 _docker_cpu_override="${ODS_MIN_DOCKER_CPUS:-}"
 _docker_cpu_min="${_docker_cpu_override:-6}"
 _docker_cpu_max_pin=4
 _docker_cpu_workload="base compose stack"
-if $ENABLE_VOICE && [[ -z "$_docker_cpu_override" ]]; then
-    _docker_cpu_min=10
-    _docker_cpu_max_pin=8
-    _docker_cpu_workload="voice-enabled compose stack"
-fi
 _docker_cpu_preflight_min="$_docker_cpu_min"
 _require_docker_cpu_budget "$_docker_cpu_min" "$_docker_cpu_max_pin" "$_docker_cpu_workload"
 
@@ -1674,10 +1668,6 @@ info_box "  Langfuse:" "$(if $ENABLE_LANGFUSE; then echo enabled; else echo disa
 # Surface this to operators who passed --all so they aren't left wondering
 # why the dashboard shows no image-gen tile after install.
 info_box "  ComfyUI:" "not available on macOS (no MPS Docker image upstream)"
-
-if $ENABLE_VOICE && [[ -z "$_docker_cpu_override" ]] && [[ "${_docker_cpu_preflight_min:-0}" -lt 10 ]]; then
-    _require_docker_cpu_budget 10 8 "voice-enabled compose stack"
-fi
 
 # ============================================================================
 # PHASE 4 -- SETUP (directories, copy source, generate .env)

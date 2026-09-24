@@ -27,6 +27,21 @@ pass() {
     echo "[PASS] $*"
 }
 
+# Optional services are written with daemon-capped CPU limits. The installer
+# therefore has one baseline Docker CPU gate regardless of whether voice was
+# selected by --voice/--all or by the interactive prompt. A second feature
+# gate would reject an 8-core M1 even though the generated Compose plan is
+# valid for that daemon.
+cpu_gate_calls="$(grep -c '^_require_docker_cpu_budget ' "$INSTALLER")"
+[[ "$cpu_gate_calls" == "1" ]] \
+    || fail "macOS installer must apply exactly one baseline Docker CPU gate"
+if grep -q 'voice-enabled compose stack' "$INSTALLER"; then
+    fail "voice selection still raises the macOS Docker CPU floor"
+fi
+grep -Fq '_docker_cpu_min="${_docker_cpu_override:-6}"' "$INSTALLER" \
+    || fail "macOS installer lost the operator-overridable six-CPU baseline"
+pass "macOS optional services preserve the auto-capped Docker CPU baseline"
+
 extract_installer_function() {
     sed -n "/^${1}() {/,/^}$/p" "$INSTALLER"
 }
