@@ -1606,7 +1606,8 @@ def test_talk_approval_endpoint_is_choice_only(talk_client, monkeypatch):
 
     monkeypatch.setattr("hermes_bridge.respond_approval", fake_respond)
 
-    for payload in ({}, {"choice": "always"}, {"choice": "once", "command": "changed"}):
+    for payload in ({}, {"choice": "always"}, {"choice": "once", "command": "changed"},
+                    {"choice": ["once"]}, {"choice": {"reply": "once"}}, {"choice": None}):
         assert talk_client.post("/api/talk/approval", json=payload).status_code == 422
     assert calls == []
 

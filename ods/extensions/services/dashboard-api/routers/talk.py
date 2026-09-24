@@ -782,16 +782,17 @@ async def talk_message_stream(payload: dict[str, Any], request: Request) -> Stre
 async def talk_approval(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     """Answer the one pending Hermes tool approval for this Talk session."""
     session_key, _expires_at = _require_session(request)
-    if set(payload) != {"choice"} or payload.get("choice") not in {"once", "deny"}:
+    choice = payload.get("choice")
+    if set(payload) != {"choice"} or not isinstance(choice, str) or choice not in {"once", "deny"}:
         raise HTTPException(status_code=422, detail="Choice must be 'once' or 'deny'.")
 
     try:
-        accepted = await hermes_bridge.respond_approval(session_key, payload["choice"])
+        accepted = await hermes_bridge.respond_approval(session_key, choice)
     except hermes_bridge.HermesBridgeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if not accepted:
         raise HTTPException(status_code=409, detail="No pending approval for this session.")
-    return {"accepted": True, "choice": payload["choice"]}
+    return {"accepted": True, "choice": choice}
 
 
 def _classify_attachment(file: UploadFile) -> str:
