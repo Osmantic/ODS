@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {inspectionRevalidationCandidate, boundedPreviewVerification} from '../plugin/preview-revalidation.mjs';
+import {inspectionRevalidationCandidate, workspaceRevalidationCandidate, boundedPreviewVerification} from '../plugin/preview-revalidation.mjs';
 import {createWorkspacePreviewVerifier} from '../plugin/workspace-preview.mjs';
 
 test('only bounded inspection syntax opts into real host verification',()=>{
@@ -53,4 +53,11 @@ test('internal verifier accepts only exact bounded host receipt equality',async(
   assert.equal(await createWorkspacePreviewVerifier({request:async request=>{observed=request;return valid;}})(receipt),true);
   assert.deepEqual(observed,{schemaVersion:1,action:'verify-current',relativeDirectory:'site',siteId:receipt.siteId,sha256:receipt.sha256});
   for(const patch of [{status:'mismatched'},{sha256:'c'.repeat(64)},{entrySha256:'d'.repeat(64)},{files:3},{bytes:81},{relativeDirectory:'other'},{extra:true},{boundary:'model says equal'}]) assert.equal(await createWorkspacePreviewVerifier({request:async()=>({...valid,...patch})})(receipt),false);
+});
+
+
+test('synchronous file tools may request equality while detached or arbitrary exec stays ineligible',()=>{
+  for(const tool of ['read','write','edit','apply_patch']) assert.equal(workspaceRevalidationCandidate(tool,{}),true);
+  for(const command of ['python3 report.py test-data.csv','sh -c "sleep 1; touch site/index.html" >/dev/null 2>&1 &','setsid sh -c "sleep 1; touch site/index.html" >/dev/null 2>&1 &']) assert.equal(workspaceRevalidationCandidate('exec',{command}),false,command);
+  for(const command of ['ls -la site/','pwd']) assert.equal(workspaceRevalidationCandidate('exec',{command}),true,command);
 });

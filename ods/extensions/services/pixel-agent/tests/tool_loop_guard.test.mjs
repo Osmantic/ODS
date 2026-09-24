@@ -11715,6 +11715,10 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
         "[ODS Pixel delivery requirement: Answer the owner's complete message above.]",
     }
   );
+  const readInstruction = WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON +
+    ' Next, call read with args {"path":"signal-garden/index.html"}. ' +
+    "If using Tool Search, call tool_call with id read and those same args. " +
+    "Wait for that file's successful read result before editing it.";
   const blindEdit = call(guard, "tool_call", {
     ...run2,
     event: {
@@ -11731,7 +11735,7 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
   assert.equal(blindEdit.block, true);
   assert.equal(
     blindEdit.blockReason,
-    WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON
+    readInstruction
   );
   const blindWrite = call(guard, "tool_call", {
     ...run2,
@@ -11739,7 +11743,7 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
       path: "index.html", content: "<!doctype html><p>fast</p>",
     } } },
   });
-  assert.equal(blindWrite.blockReason, WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON);
+  assert.equal(blindWrite.blockReason, readInstruction);
 
   const persistFollowup = (toolName, toolCallId, result) => {
     const message = { role: "toolResult", toolName, toolCallId, ...result };
@@ -11750,7 +11754,7 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
     )?.message ?? message;
   };
   const finalizeFollowup = () => guard.beforeAgentFinalize({}, { agentId: "pixel", ...run2.context });
-  assert.equal(finalizeFollowup().retry.instruction, WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON);
+  assert.equal(finalizeFollowup().retry.instruction, readInstruction);
   assert.equal(finalizeFollowup().retry.idempotencyKey, "pixel-ods-workspace-visual-continuation-read");
   assert.equal(finalizeFollowup().retry.maxAttempts, 1);
   // Replay before-tool rejection -> persisted tool result, the chain observed
@@ -11763,12 +11767,47 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
       } },
     })],
   ]) {
-    assert.equal(rejection.blockReason, WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON);
+    assert.equal(rejection.blockReason, readInstruction);
     const error = { isError: true, content: [{ type: "text", text: rejection.blockReason }] };
     const persisted = persistFollowup(toolName, id, error);
     assert.equal(persisted.isError, true);
     assert.deepEqual(persisted.content, error.content);
   }
+
+  // Execute the suggested read through both transports: failed readback and
+  // successful readback of another project file must not authorize this edit.
+  for (const deferred of [false, true]) {
+    for (const wrongFile of [false, true]) {
+      const toolName = deferred ? "tool_call" : "read";
+      const path = wrongFile ? "signal-garden/styles.css" : "signal-garden/index.html";
+      const args = { path };
+      const params = deferred ? { id: "read", args } : args;
+      const toolCallId = `read-prerequisite-${deferred}-${wrongFile}`;
+      const context = { ...run2.context, toolCallId };
+      const prepared = call(guard, toolName, { event: { ...run2.event, toolCallId, params }, context });
+      assert.notEqual(prepared?.block, true);
+      const result = wrongFile
+        ? { details: { status: "completed" }, content: [{ type: "text", text: "body {color: red}" }] }
+        : { isError: true, details: { status: "error" }, content: [{ type: "text", text: "Read failed" }] };
+      afterCall(guard, toolName, {
+        event: { ...run2.event, toolCallId, params: prepared?.params ?? params,
+          result: deferred ? wrappedCoreResult("read", result) : result }, context,
+      });
+      const stillBlocked = call(guard, mutationName, {
+        ...run2, event: { ...run2.event, params: { path: "index.html", content: "replacement",
+          edits: [{ oldText: "slow", newText: "fast" }] } },
+      });
+      assert.equal(stillBlocked.block, true);
+      assert.equal(stillBlocked.blockReason, readInstruction);
+    }
+  }
+  const unreadNestedFile = call(guard, mutationName, {
+    ...run2, event: { ...run2.event, params: { path: "signal-garden/assets/theme.css",
+      content: "replacement", edits: [{ oldText: "red", newText: "blue" }] } },
+  });
+  assert.equal(unreadNestedFile.block, true);
+  assert.ok(unreadNestedFile.blockReason.includes('read with args {"path":"signal-garden/assets/theme.css"}'));
+  assert.ok(!unreadNestedFile.blockReason.includes('signal-garden/index.html'));
 
   const read = call(guard, "tool_call", {
     ...run2,
@@ -15920,14 +15959,15 @@ for (const deferred of [false,true]) test(`trusted final host revalidation resto
   invoke(deferred?'tool_call':'exec',deferred?{id:'openclaw:core:exec',args:{command:'pwd'}}:{command:'pwd'},deferred?wrappedCoreResult('exec',result):result,'second-inspection');
   assert.equal(await guard.revalidateWorkspacePreview({},context),true);
   assert.equal(probes,2);assert.equal(guard.verificationForRun('run-1').status,'passed');
+  matched=false;
   invoke('write',{path:'signal-garden/README.txt',content:'changed'},{content:[{type:'text',text:'written'}],details:{status:'completed'}},'changed');
   assert.equal(await guard.revalidateWorkspacePreview({},context),false);
-  assert.equal(probes,2,'write can never recover through host equality');
+  assert.equal(probes,3,'changed publication bytes cannot recover despite completed write');
 });
 
-function revalidationGuardFixture(verify) {
-  const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',sessionKey:'agent:pixel:test'};
-  const guard=createToolLoopGuard({verifyWorkspacePreview:verify});
+function revalidationGuardFixture(verify,options={}) {
+  const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',sessionKey:'agent:pixel:test',...options.context};
+  const guard=createToolLoopGuard({verifyWorkspacePreview:verify,...options.guard});
   guard.observeRun(context,'pixel',{prompt:'Build and publish a website in existing signal-garden.'});
   const invoke=(name,params,result,id)=>{
     const ctx={...context,toolName:name,toolCallId:id};
@@ -16042,6 +16082,90 @@ test('actual registered finalize hook awaits trusted revalidation before goal an
   assert.equal(guard.verificationForRun('run-1').status,'passed');
 });
 
+function previewDeliveryFixture(publish, prompt='Build and publish a website in existing signal-garden.') {
+  const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',sessionKey:'agent:pixel:test'};
+  const writes=[{path:'signal-garden/index.html',content:'<!doctype html><title>Game</title>'}];
+  const snapshot=workspacePreviewSnapshot('signal-garden',writes);
+  const receipt={content:[{type:'text',text:'published'}],details:{schemaVersion:1,
+    kind:'ods-pixel-workspace-preview',status:'succeeded',relativeDirectory:'signal-garden',port:9437,
+    url:`http://${snapshot.siteId}.localhost:9437/${snapshot.siteId}/`,...snapshot,
+    httpStatus:200,readbackVerified:true,executable:false,overwritten:false}};
+  const guard=createToolLoopGuard({publishWorkspacePreview:publish});
+  guard.observeRun(context,'pixel',{prompt});
+  const invoke=(name,params,result,id)=>{
+    const ctx={...context,toolName:name,toolCallId:id};
+    const prepared=guard.beforeToolCall({toolName:name,params,toolCallId:id},ctx);
+    assert.notEqual(prepared?.block,true);
+    if(!result)return;
+    guard.afterToolCall({toolName:name,params:prepared?.params??params,result,toolCallId:id},ctx);
+    guard.toolResultPersist({toolName:name,toolCallId:id,message:{role:'toolResult',toolName:name,toolCallId:id,...result}},ctx);
+  };
+  invoke('write',writes[0],{content:[{type:'text',text:'written'}],details:{status:'completed'}},'write');
+  return {guard,context,invoke,receipt};
+}
+
+test('saved project gets one verified publication at finalization without replaying writes',async()=>{
+  let calls=0,fixture;
+  fixture=previewDeliveryFixture(async(params)=>{calls++;assert.deepEqual(params,{relativeDirectory:'signal-garden'});return fixture.receipt;});
+  const {guard,context}=fixture;
+  assert.equal(guard.verificationForRun(context.runId).status,'failed');
+  const source=readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');
+  const start=source.indexOf('    api.on("before_agent_finalize",');
+  const end=source.indexOf('    // Delivery rewriting',start);
+  let finalize;
+  vm.runInNewContext(source.slice(start,end),{
+    api:{on:(_name,callback)=>{finalize=callback;}},toolLoopGuard:guard,AGENT_ID:'pixel',
+    goalProgress:{finalize(_event,_context,decision){return decision;}},
+  });
+  assert.equal((await finalize({},context)).guardDecision,undefined);
+  assert.equal(await guard.recoverWorkspacePreview({},context),false);
+  assert.equal(calls,1);
+  assert.equal(guard.verificationForRun(context.runId).status,'passed');
+  assert.match(guard.replyPayloadSending({runId:context.runId,kind:'final',payload:{text:'Done'}}).payload.text,/Open preview/);
+});
+
+for (const fault of ['wrong-run','wrong-session','wrong-key','wrong-agent','pending','ambiguous','failed-check','no-preview']) {
+  test(`automatic preview delivery fails closed: ${fault}`,async()=>{
+    let calls=0;
+    const {guard,context,invoke}=previewDeliveryFixture(async()=>{calls++;return {};},
+      fault==='no-preview'?'Build a website in existing signal-garden. Do not publish a preview.':undefined);
+    const ctx={...context};
+    if(fault==='wrong-run')ctx.runId='other';
+    if(fault==='wrong-session')ctx.sessionId='other';
+    if(fault==='wrong-key')ctx.sessionKey='other';
+    if(fault==='wrong-agent')ctx.agentId='other';
+    if(fault==='pending')invoke('read',{path:'signal-garden/index.html'},null,'pending');
+    if(fault==='ambiguous')invoke('write',{path:'other/index.html',content:'other'},
+      {content:[{type:'text',text:'written'}]},'other');
+    if(fault==='failed-check')invoke('exec',{command:'node --check signal-garden/index.html'},
+      {isError:true,content:[{type:'text',text:'SyntaxError'}],details:{status:'completed',exitCode:1}},'check');
+    assert.equal(await guard.recoverWorkspacePreview({},ctx),false);
+    assert.equal(calls,0);
+  });
+}
+
+for(const outcome of ['failed','malformed','throws']) test(`publication ${outcome} is not retried or reported as delivered`,async()=>{
+  let calls=0;
+  const {guard,context}=previewDeliveryFixture(async()=>{
+    calls++;if(outcome==='throws')throw Error('unavailable');
+    return outcome==='failed'?{isError:true,content:[{type:'text',text:'failed'}]}:{details:{status:'succeeded'}};
+  });
+  assert.equal(await guard.recoverWorkspacePreview({},context),false);
+  assert.equal(await guard.recoverWorkspacePreview({},context),false);
+  assert.equal(calls,1);assert.equal(guard.verificationForRun(context.runId).status,'failed');
+});
+
+test('concurrent finalizers publish once and discard receipt after run invalidation',async()=>{
+  let resolve,calls=0;
+  const {guard,context,receipt}=previewDeliveryFixture(()=>{calls++;return new Promise(r=>resolve=r);});
+  const pending=guard.recoverWorkspacePreview({},context);
+  await Promise.resolve();
+  assert.equal(await guard.recoverWorkspacePreview({},context),false);
+  guard.endPreviewRevalidation({},context);
+  resolve(receipt);assert.equal(await pending,false);
+  assert.equal(calls,1);assert.equal(guard.verificationForRun(context.runId).status,'failed');
+});
+
 for(const change of ['end','write']) test(`final restore rejects ${change} in the nested async resolution microtask gap`,async()=>{
   let fixture,changed=false;
   fixture=revalidationGuardFixture(()=>{
@@ -16058,4 +16182,103 @@ for(const change of ['end','write']) test(`final restore rejects ${change} in th
   assert.equal(changed,true);
   assert.equal(result,false);
   assert.notEqual(guard.verificationForRun('run-1').status,'passed');
+});
+
+
+for(const deferred of [false,true]) for(const matched of [false,true]) test(`completed core reads and scratch writes require host equality, deferred=${deferred}, matched=${matched}`,async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return matched;});
+  const act=(name,args,result,id)=>invoke(deferred?'tool_call':name,deferred?{id:`openclaw:core:${name}`,args}:args,deferred?wrappedCoreResult(name,result):result,id);
+  act('write',{path:'scratch/test-data.csv',content:'category,amount\nfood,10.50\n'},{content:[{type:'text',text:'written'}],details:{status:'completed'}},'scratch');
+  act('read',{path:'signal-garden/index.html'},{content:[{type:'text',text:'observed'}],details:{status:'completed'}},'readback');
+  assert.equal(guard.verificationForRun(context.runId).status,'failed','completed actions alone never establish byte equality');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),matched);
+  assert.equal(probes,1);
+  assert.equal(guard.verificationForRun(context.runId).status,matched?'passed':'failed');
+});
+
+for(const fault of ['failed-write','failed-check','pending-check','missing-result','foreign-completion','changed-root','cancelled']) test(`post-effect revalidation keeps independent rejection: ${fault}`,async()=>{
+  let probes=0;const user='ods-'+'c'.repeat(64);
+  const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;},{context:{sessionKey:`agent:pixel:openai-user:${user}`},guard:{abortRunAndDrain:async()=>({aborted:true,drained:true,forceCleared:false})}});
+  const result={content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}};
+  if(fault==='failed-write')invoke('write',{path:'scratch/test.txt',content:'x'},{isError:true,content:[{type:'text',text:'write failed'}]},'failed');
+  else if(fault==='failed-check')invoke('exec',{command:'python3 -m unittest'},{isError:true,content:[{type:'text',text:'FAILED (failures=1)'}],details:{status:'completed',exitCode:1}},'failed');
+  else if(fault==='pending-check')invoke('exec',{command:'python3 -m unittest'},{content:[{type:'text',text:'running'}],details:{status:'running',sessionId:'pending-owned-check'}},'running');
+  else {
+    invoke('exec',{command:'ls -la signal-garden/'},['missing-result','foreign-completion'].includes(fault)?null:result,'completed');
+    if(fault==='foreign-completion')guard.afterToolCall({toolName:'exec',toolCallId:'different-call',params:{command:'ls -la signal-garden/'},result},context);
+    if(fault==='changed-root')guard.observeRun(context,'pixel',{prompt:'Build and publish a website in existing signal-garden.'},{workspaceRoot:'/different-owner-workspace'});
+    if(fault==='cancelled')assert.equal(await guard.abortUserRun(user),true);
+  }
+  const before=guard.verificationForRun(context.runId).status;
+  assert.equal(await guard.revalidateWorkspacePreview({},context),false);
+  assert.equal(probes,0,'ineligible state cannot even probe the host');
+  assert.equal(guard.verificationForRun(context.runId).status,before,'failed revalidation cannot alter independent verification state');
+  if(['failed-check','pending-check'].includes(fault))assert.notEqual(before,'passed');
+});
+
+
+for(const name of ['write','read','exec']) test(`nested core ${name} waits for its bound outer receipt before revalidation`,async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
+  invoke('exec',{command:'ls -la signal-garden/'},{content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}},'prior-check');
+  const args=name==='exec'?{command:'ls -la signal-garden/'}:name==='read'?{path:'signal-garden/index.html'}:{path:'scratch/data.csv',content:'category,amount\n'},params={id:`openclaw:core:${name}`,args};
+  const parent={...context,toolName:'tool_call',toolCallId:'outer-write'};
+  guard.beforeToolCall({toolName:'tool_call',toolCallId:'outer-write',params},parent);
+  const result={content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}};
+  const child=`tool_search_code:outer-write:${name}:1`;
+  const childContext={...context,toolName:name,toolCallId:child};
+  const childPrepared=guard.beforeToolCall({toolName:name,toolCallId:child,params:args},childContext);
+  assert.notEqual(childPrepared?.block,true,childPrepared?.blockReason);
+  guard.afterToolCall({toolName:name,toolCallId:child,params:childPrepared?.params??args,result},childContext);
+  guard.toolResultPersist({toolName:name,toolCallId:child,message:{role:'toolResult',toolName:name,toolCallId:child,...result}},childContext);
+  assert.equal(await guard.revalidateWorkspacePreview({},context),false);
+  assert.equal(probes,0);
+  const outerResult=wrappedCoreResult(name,result);
+  guard.afterToolCall({toolName:'tool_call',toolCallId:'outer-write',params,result:outerResult},parent);
+  guard.toolResultPersist({toolName:'tool_call',toolCallId:'outer-write',message:{role:'toolResult',toolName:'tool_call',toolCallId:'outer-write',...outerResult}},parent);
+  assert.equal(await guard.revalidateWorkspacePreview({},context),true);
+  assert.equal(probes,1);
+});
+
+
+for(const wrapped of [false,true]) for(const fault of ['changed-params','outer-error','outer-result-error','event-run','event-call','event-tool','context-session','context-key']) test(`revalidation completion binding rejects ${fault}, wrapped=${wrapped}`,async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
+  invoke('exec',{command:'ls -la signal-garden/'},{content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}},'prior');
+  const args={command:'ls -la signal-garden/'},name=wrapped?'tool_call':'exec';
+  const params=wrapped?{id:'openclaw:core:exec',args}:args;
+  const ctx={...context,toolName:name,toolCallId:'bound-call'};
+  guard.beforeToolCall({toolName:name,toolCallId:'bound-call',params},ctx);
+  const result={content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}};
+  const event={toolName:name,toolCallId:'bound-call',params:structuredClone(params),result:wrapped?wrappedCoreResult('exec',result):result};
+  if(fault==='changed-params')(wrapped?event.params.args:event.params).command='python3 different.py';
+  if(fault==='outer-error')event.error='wrapper failed after inner completion';
+  if(fault==='outer-result-error')event.result.isError=true;
+  if(fault==='event-run')event.runId='foreign-run';
+  if(fault==='event-call')event.toolCallId='foreign-call';
+  if(fault==='event-tool')event.toolName='foreign-tool';
+  if(fault==='context-session')ctx.sessionId='foreign-session';
+  if(fault==='context-key')ctx.sessionKey='agent:pixel:foreign';
+  guard.afterToolCall(event,ctx);
+  guard.toolResultPersist({toolName:name,toolCallId:'bound-call',message:{role:'toolResult',toolName:name,toolCallId:'bound-call',...event.result}},ctx);
+  assert.equal(await guard.revalidateWorkspacePreview({},context),false);
+  assert.equal(probes,0);
+});
+
+
+for(const command of ['python3 report.py test-data.csv','sh -c "sleep 1; touch site/index.html" >/dev/null 2>&1 &','setsid sh -c "sleep 1; touch site/index.html" >/dev/null 2>&1 &']) test(`arbitrary exec cannot regain publication currency: ${command}`,async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
+  invoke('exec',{command},{content:[{type:'text',text:'shell exited'}],details:{status:'completed',exitCode:0}},'unsafe-exec');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),false);
+  assert.equal(probes,0,'shell success does not attest descendant quiescence');
+  assert.notEqual(guard.verificationForRun(context.runId).status,'passed');
+});
+
+for(const wrapped of [false,true]) for(const name of ['edit','apply_patch']) for(const matched of [false,true]) test(`completed ${name} outside publication requires host equality, wrapped=${wrapped}, matched=${matched}`,async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return matched;});
+  const args=name==='edit'?{path:'scratch/notes.txt',oldText:'before',newText:'after'}:{input:'*** Begin Patch\n*** Add File: scratch/notes.txt\n+after\n*** End Patch'};
+  const result={content:[{type:'text',text:'updated'}],details:{status:'completed'}};
+  invoke(wrapped?'tool_call':name,wrapped?{id:`openclaw:core:${name}`,args}:args,wrapped?wrappedCoreResult(name,result):result,`scratch-${name}`);
+  assert.notEqual(guard.verificationForRun(context.runId).status,'passed');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),matched);
+  assert.equal(probes,1);
+  assert.equal(guard.verificationForRun(context.runId).status,matched?'passed':'failed');
 });

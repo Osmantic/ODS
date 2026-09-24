@@ -16,11 +16,13 @@ function call(guard,name,params,id,result) {
   if(result)guard.afterToolCall({...event,result},ctx);
   return {event,ctx};
 }
-function setup({enabled=true,prompt=owner}={}) {
-  const guard=createToolLoopGuard({workspacePreviewInspectionAvailable:enabled});
+function setup({enabled=true,prompt=owner,automatic=false}={}) {
+  const guard=createToolLoopGuard({workspacePreviewInspectionAvailable:enabled,
+    ...(automatic ? {publishWorkspacePreview:async()=>({details:preview})} : {})});
   guard.observeRun(context,'pixel',{prompt});
   const content='<!doctype html><button>Show details</button><p hidden>Details</p>';
   const write=call(guard,'write',{path:'site/index.html',content},'write',{content:[{type:'text',text:'Successfully wrote file.'}]}).event.params;
+  guard.toolResultPersist({toolName:'write',toolCallId:'write',message:{role:'toolResult',toolName:'write',toolCallId:'write',content:[{type:'text',text:'Successfully wrote file.'}]}},{...context,toolName:'write',toolCallId:'write'});
   const dir=write.path.replace(/\/index.html$/,'');
   const name=Buffer.from('index.html'),data=Buffer.from(content),a=Buffer.alloc(4),b=Buffer.alloc(8);
   a.writeUInt32BE(name.length);b.writeBigUInt64BE(BigInt(data.length));
@@ -29,7 +31,7 @@ function setup({enabled=true,prompt=owner}={}) {
   const preview={schemaVersion:1,kind:'ods-pixel-workspace-preview',status:'succeeded',relativeDirectory:dir,
     siteId,sha256,entryFile:'index.html',entrySha256:createHash('sha256').update(data).digest('hex'),files:1,bytes:data.length,
     port:9437,url:`http://${siteId}.localhost:9437/${siteId}/`,httpStatus:200,readbackVerified:true,executable:false,overwritten:false};
-  call(guard,'pixel_ods_workspace_preview',{relativeDirectory:dir},'publish',{details:preview});
+  if(!automatic) call(guard,'pixel_ods_workspace_preview',{relativeDirectory:dir},'publish',{details:preview});
   return {guard,preview};
 }
 function plan(preview) { return {siteId:preview.siteId,sha256:preview.sha256,viewport:{width:800,height:600},steps:[
@@ -113,4 +115,15 @@ test('session identity changes within a run invalidate interaction proof',()=>{
     guard.observeRun({...context,...patch},'pixel',{prompt:owner});
     assert.equal(guard.verificationForRun('run').status,'failed');
   }
+});
+
+
+test('automatic preview delivery preserves the interaction gate until exact evidence arrives',async()=>{
+  const {guard,preview}=setup({automatic:true});
+  assert.equal(await guard.recoverWorkspacePreview({},context),true);
+  const outcome=guard.verificationForRun('run');
+  assert.equal(outcome.status,'failed');assert.equal(outcome.preview.sha256,preview.sha256);
+  assert.equal(guard.beforeAgentFinalize({},context)?.retry?.idempotencyKey,'pixel-ods-workspace-preview-interaction');
+  const a=inspection(guard,plan(preview));guard.afterToolCall({...a.event,result:a.result},a.ctx);
+  assert.equal(guard.verificationForRun('run').status,'passed');
 });

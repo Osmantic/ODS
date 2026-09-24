@@ -24,9 +24,10 @@ import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLane
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
-import { inspectionRevalidationCandidate, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, boundVisibilityInspection,
   visibilityInspectionMatches, visibilityInspectionInstruction } from './preview-interaction-assurance.mjs';
+import { workspaceRevalidationCandidate, boundedPreviewVerification } from "./preview-revalidation.mjs";
+import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -6568,6 +6569,7 @@ export function createToolLoopGuard({
   onWorkspaceMutation = () => {},
   verifyWorkspacePreview,
   workspacePreviewInspectionAvailable = false,
+  publishWorkspacePreview,
   execMarkerCleanupDelayMs = 5000,
   limits,
   warn = () => {},
@@ -6920,10 +6922,10 @@ export function createToolLoopGuard({
     if (state) {
       state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
       const selected = toolName === 'tool_call'
-        ? /^(?:openclaw:core:)?(?:exec|read)$/.test(event?.params?.id ?? '')
+        ? /^(?:openclaw:core:)?(?:exec|read|write|edit|apply_patch)$/.test(event?.params?.id ?? '')
           ? {name:event.params.id.split(':').at(-1),params:event.params.args} : undefined
         : {name:toolName,params:event?.params};
-      if (selected?.name !== 'read' && !(selected?.name === 'exec' && inspectionRevalidationCandidate(selected.params))) {
+      if (!workspaceRevalidationCandidate(selected?.name, selected?.params)) {
         state.previewRevalidationCandidate = undefined;
       }
     }
@@ -7604,7 +7606,7 @@ export function createToolLoopGuard({
       ) {
         return {
           block: true,
-          blockReason: WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON,
+          blockReason: visualContinuationReadInstruction(state, selectedPath),
         };
       }
       if (
@@ -9251,11 +9253,36 @@ export function createToolLoopGuard({
     const completedCommand = pendingToolRun?.runId === runId && pendingToolRun.selectedToolName === 'exec'
       ? pendingToolRun.selectedParams?.command
       : originalExecFingerprint ? JSON.parse(originalExecFingerprint)[0] : completedExecution?.params?.command;
-    if (successfulMutation || (completedExecution && (
-        pendingToolRun?.runId !== runId || pendingToolRun.selectedToolName !== 'exec' ||
-        pendingToolRun.transport !== toolName || !inspectionRevalidationCandidate(pendingToolRun.selectedParams) ||
-        toolCallFailed(completedExecution) || completedExecution.result?.details?.exitCode !== 0 ||
-        runningExecSessionId(completedExecution)))) state.previewRevalidationCandidate = undefined;
+    // A nested core result is provisional until its exactly bound outer
+    // receipt. Never let a forged child id clear or complete an unrelated call.
+    const revalidationParents = state.previewRevalidationCandidate && toolName !== 'tool_call' &&
+      typeof toolCallId === 'string' ? [...pendingToolRuns].filter(([parentId,pending]) => {
+        if (pending.transport !== 'tool_call' || pending.runId !== runId ||
+            pending.selectedToolName !== toolName || !isDeepStrictEqual(pending.selectedParams,event.params)) return false;
+        const parent = parentId.trim().replace(/[^A-Za-z0-9_.:-]+/g,'_').slice(0,120) || 'call';
+        const prefix = `tool_search_code:${parent}:${toolName}:`;
+        return toolCallId.startsWith(prefix) && /^[1-9][0-9]*$/.test(toolCallId.slice(prefix.length));
+      }) : [];
+    if (state.previewRevalidationCandidate && revalidationParents.length !== 1) {
+      const selectedName = pendingToolRun?.selectedToolName;
+      const completed = toolName === 'tool_call'
+        ? toolSearchSelectedToolEvent(event, selectedName, 'core') : event;
+      const candidate = state.previewRevalidationCandidate;
+      const paired = pendingToolRun?.runId === runId && pendingToolRun.transport === toolName &&
+        (event?.runId === undefined || event.runId === runId) &&
+        (event?.toolCallId === undefined || event.toolCallId === toolCallId) &&
+        (event?.toolName === undefined || event.toolName === toolName) &&
+        (context?.sessionId === undefined || context.sessionId === candidate.sessionId) &&
+        (context?.sessionKey === undefined || context.sessionKey === candidate.sessionKey) &&
+        state.currentSessionId === candidate.sessionId && state.currentSessionKey === candidate.sessionKey &&
+        isDeepStrictEqual(completed?.params,pendingToolRun.selectedParams) &&
+        workspaceRevalidationCandidate(selectedName, pendingToolRun.selectedParams);
+      const terminal = paired && !failedToolOutcome(event) && completed?.result && !toolCallFailed(completed) &&
+        (selectedName !== 'exec' || (completed.result.details?.status === 'completed' &&
+          completed.result.details.exitCode === 0 && !runningExecSessionId(completed)));
+      if (terminal) state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;
+      else state.previewRevalidationCandidate = undefined;
+    }
     if (state.workspacePreview && (successfulMutation ||
         (completedExecution?.result && !toolCallFailed(completedExecution) &&
           !isLiteralEcho(completedCommand)))) {
@@ -9435,6 +9462,7 @@ export function createToolLoopGuard({
         state.workspacePreview = preview;
         state.previewRevalidationCandidate = Object.freeze({preview:Object.freeze({...preview}),
           sessionId:state.currentSessionId,sessionKey:state.currentSessionKey,workspaceRoot:state.configuredWorkspaceRoot});
+        state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;
         state.workspaceLastVerifiedPreview = Object.freeze({ ...preview });
         state.successfulWriteContentByPath.clear();
         rememberSessionPreview(state.currentSessionId, preview);
@@ -10091,6 +10119,24 @@ export function createToolLoopGuard({
     return undefined;
   }
 
+  function visualContinuationReadInstruction(state, selectedPath) {
+    const directory = state?.workspaceTaskDirectory;
+    // Only recommend a path inside the already verified continuation project.
+    // This is guidance for a real read, never an automatic read or permission
+    // to mutate; the existing per-file successfulReadPaths gate still applies.
+    const path = selectedPath ?? (typeof directory === "string" ? `${directory}/index.html` : undefined);
+    if (typeof directory !== "string" || normalizeWorkspaceFilePath(directory) !== directory ||
+        typeof path !== "string" || normalizeWorkspaceFilePath(path) !== path ||
+        !path.startsWith(`${directory}/`) ||
+        !path.slice(directory.length + 1).split("/").every(part => WORKSPACE_PATH_COMPONENT.test(part))) {
+      return WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON;
+    }
+    return WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON +
+      ` Next, call read with args ${JSON.stringify({path})}. ` +
+      "If using Tool Search, call tool_call with id read and those same args. " +
+      "Wait for that file's successful read result before editing it.";
+  }
+
   function visualContinuationPrerequisite(state) {
     if (!state?.workspaceVisualContinuationRequested || state.workspaceVisualContinuationEdited) return undefined;
     const directory = state.workspaceTaskDirectory;
@@ -10100,7 +10146,7 @@ export function createToolLoopGuard({
     return {
       stage: hasRead ? "workspace-visual-continuation-edit" : "workspace-visual-continuation-read",
       instruction: hasRead ? WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON
-        : WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON,
+        : visualContinuationReadInstruction(state),
     };
   }
 
@@ -10452,6 +10498,51 @@ export function createToolLoopGuard({
     };
   }
 
+  async function recoverWorkspacePreview(event, context, agentId = 'pixel') {
+    if (context?.agentId !== agentId || typeof publishWorkspacePreview !== 'function') return false;
+    const runId = context.runId ?? event?.runId;
+    const state = runs.get(runId);
+    if (!state || state.previewDeliveryAttempted || state.workspacePreviewAttempted) return false;
+    // Use current-run file evidence only. A historical read or model-supplied
+    // directory is not authority to publish some other existing project.
+    const directories = new Set([...state.successfulWritePaths]
+      .filter(path => path.endsWith('/index.html')).map(path => path.slice(0, -11)));
+    if (directories.size !== 1) return false;
+    const directory = [...directories][0];
+    let generation = state.previewVerificationGeneration;
+    const root = state.configuredWorkspaceRoot;
+    const callId = `ods-preview-delivery-${runId}`;
+    const valid = () => Boolean(runs.get(runId) === state &&
+      state.previewVerificationGeneration === generation && state.configuredWorkspaceRoot === root &&
+      context.sessionId && state.currentSessionId === context.sessionId &&
+      context.sessionKey && state.currentSessionKey === context.sessionKey &&
+      sessionRuns.get(context.sessionId) === runId && state.ownerIntentObserved &&
+      state.workspacePreviewRequired && !state.workspacePreviewForbidden && !state.workspacePreview &&
+      !state.workspacePreviewRestrictions?.mutation && !state.ownerQuestions && !state.ownerQuestionIntent &&
+      !state.operationsRequired && !state.exactDownloadRequested && !state.extensionCompletionGate?.active &&
+      !state.clientCancelled && !state.recursiveDeleteDenied && !state.webLoopAborted &&
+      !state.progressBudget.exhausted && !state.progressBudget.laneExhausted('workspace') &&
+      !visualContinuationPrerequisite(state) &&
+      !state.failedExec.size &&
+      (!state.workspaceVerificationRequested || state.latestVerificationStatus === 'passed') &&
+      !['failed', 'pending'].includes(state.latestVerificationStatus) &&
+      !state.pendingExecSessions.size && !state.pendingProjectExecs?.size &&
+      ![...pendingToolRuns.entries()].some(([id, pending]) => pending.runId === runId && id !== callId));
+    if (!valid()) return false;
+    state.previewDeliveryAttempted = true;
+    const ctx = {...context, toolName: WORKSPACE_PREVIEW_TOOL, toolCallId: callId};
+    const params = {relativeDirectory: directory};
+    const prepared = beforeToolCall({toolName: WORKSPACE_PREVIEW_TOOL, toolCallId: callId, params}, ctx, agentId);
+    if (prepared?.block) { pendingToolRuns.delete(callId); return false; }
+    generation = state.previewVerificationGeneration;
+    try {
+      const result = await boundedPreviewDelivery(publishWorkspacePreview, prepared?.params ?? params, valid);
+      if (!result || !valid()) return false;
+      afterToolCall({toolName: WORKSPACE_PREVIEW_TOOL, toolCallId: callId, params, result}, ctx, agentId);
+      return Boolean(state.workspacePreview);
+    } finally { pendingToolRuns.delete(callId); }
+  }
+
   async function revalidateWorkspacePreview(event, context, agentId = 'pixel') {
     if (context?.agentId !== agentId || typeof verifyWorkspacePreview !== 'function') return false;
     const runId = context?.runId ?? event?.runId;
@@ -10461,6 +10552,7 @@ export function createToolLoopGuard({
     if (!candidate || state.previewRevalidationAttemptedGeneration === generation) return false;
     const valid = () => Boolean(candidate && runs.get(runId) === state && !state.workspacePreview &&
       state.previewRevalidationCandidate === candidate && state.previewVerificationGeneration === generation &&
+      state.previewRevalidationCompletedGeneration === generation &&
       context.sessionId && context.sessionId === candidate.sessionId && state.currentSessionId === candidate.sessionId &&
       context.sessionKey && context.sessionKey === candidate.sessionKey && state.currentSessionKey === candidate.sessionKey &&
       state.configuredWorkspaceRoot === candidate.workspaceRoot &&
@@ -10948,6 +11040,7 @@ export function createToolLoopGuard({
     afterToolCall,
     toolResultPersist,
     beforeAgentFinalize,
+    recoverWorkspacePreview,
     revalidateWorkspacePreview,
     endPreviewRevalidation,
     replyPayloadSending,

@@ -4,14 +4,18 @@ import argparse
 import base64
 import fcntl
 import hashlib
+import http.client
 import io
 import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
+import ssl
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 
 PACKAGE = "@openclaw/parallel-plugin"
@@ -60,6 +64,28 @@ def verify_archive(data):
     actual = base64.b64encode(hashlib.sha512(data).digest()).decode("ascii")
     if len(data) > MAX_ARCHIVE or actual != INTEGRITY:
         raise ValueError("search plugin archive differs from the pinned release; inspect the cache before retrying")
+
+
+def download_archive():
+    # Retry only an interrupted transport or a transient HTTP response. Never
+    # retry certificate, redirect, size, or integrity failures, and never cache
+    # a partial response. Every attempt uses the same pinned HTTPS URL.
+    opener = urllib.request.build_opener(NoRedirect())
+    for attempt in range(3):
+        try:
+            with opener.open(URL, timeout=30) as response:
+                data = response.read(MAX_ARCHIVE + 1)
+            verify_archive(data)
+            return data
+        except (urllib.error.URLError, OSError, http.client.IncompleteRead) as error:
+            reason = error.reason if isinstance(error, urllib.error.URLError) else error
+            retry = (error.code in {408, 429, 500, 502, 503, 504}
+                     if isinstance(error, urllib.error.HTTPError) else
+                     isinstance(reason, (TimeoutError, ConnectionError, ssl.SSLEOFError,
+                                         http.client.IncompleteRead)))
+            if not retry or attempt == 2:
+                raise
+            time.sleep(attempt + 1)
 
 
 def archive_files(data):
@@ -179,9 +205,7 @@ def prepare(base_dir):
             data = read_private(cache)
             verify_archive(data)
         else:
-            with urllib.request.build_opener(NoRedirect()).open(URL, timeout=30) as response:
-                data = response.read(MAX_ARCHIVE + 1)
-            verify_archive(data)
+            data = download_archive()
             archive_fd, temporary_name = tempfile.mkstemp(dir=base, prefix=".archive-")
             temporary = Path(temporary_name)
             try:

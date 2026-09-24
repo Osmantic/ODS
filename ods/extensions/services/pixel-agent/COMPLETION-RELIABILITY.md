@@ -20,6 +20,46 @@ If execution never occurred, delivery reports incompleteness instead of another
 promise. Existing Operations, publication and permission checks take precedence.
 Recovery does not replay side effects or grant additional permissions.
 
+## Saved project delivery
+
+A model can successfully write an HTML project and then stop without calling
+`pixel_ods_workspace_preview`. The pinned harness refuses another model pass
+after potential side effects, so a revision instruction alone cannot reliably
+finish that delivery.
+
+Finalization now permits one internal publication attempt for one unambiguous
+directory whose `index.html` was successfully written in the current run. It
+uses the existing preview tool and Unix-socket or Docker Desktop transport,
+including host path validation, immutable snapshot creation and HTTP readback.
+It never writes project bytes, starts a server, reruns commands or asks the
+model to repeat the task. The ordinary preview guard still evaluates the exact
+directory. The trusted receipt reaches the existing ingress preview card.
+
+Recovery requires the same active run/session/workspace, permitted publication,
+no pending tools or processes, no failed commands, and no missing requested
+verification or visual-edit prerequisite. Explicit no-preview requests,
+clarification, mixed Operations/download/extension tasks, exhausted budgets,
+ambiguous projects and previous publication attempts do not trigger it. Custom
+tool-policy restrictions conservatively disable recovery; ordinary tools retain
+their normal policy handling. Publication waits at most 30 seconds and stop on
+run invalidation. A late receipt cannot revive a cancelled run. A host snapshot
+may already exist when cancellation interrupts the receipt wait; cancellation
+does not promise rollback of publication.
+
+This is publication recovery, not code repair or proof of playability. The
+receipt explicitly scopes its evidence to the snapshot and HTTP readback.
+Missing files, unsafe paths, unavailable preview services and rejected receipts
+remain incomplete deliveries rather than fabricated success.
+
+`tests/preview_delivery_recovery.test.mjs` and the tool-loop tests cover policy,
+deadlines, cancellation, duplicate finalization and invalid receipts. The real
+pinned-harness fixture `tests/runtime_preview_delivery.integration.mjs` exercises
+an actual file write, premature model finalization, the existing publication
+tool against a deterministic host response, and the real ingress SSE preview
+card. It uses disposable state and no real model or production data. Set
+`OPENCLAW_PACKAGE` to the pinned installed runtime to run it. CI runs the guard
+tests on Windows, macOS and Linux, and the process-level fixture on macOS/Linux.
+
 Each prompt also receives the current host UTC time. The model must preserve
 the owner's requested date/timezone, check source publication dates and avoid
 confusing its training cutoff with the actual date.
