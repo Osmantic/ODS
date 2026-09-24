@@ -33,6 +33,10 @@ were not changed.
 
 - The strict extension audit passes 203 service definitions. That is structural
   validation, not qualification of every extension or its upstream license.
+- AudioCraft and Baserow descriptions now distinguish restricted model weights
+  and premium/enterprise terms from their code/core licenses. The regenerated
+  catalog changes only those two descriptions and its generation timestamp;
+  service execution settings remain unchanged.
 - The model terms inventory covers 57 curated entries. All 54 direct
   Hugging Face GGUF source records were retrieved; 52 declare license metadata
   and two do not. Metadata is not a substitute for original-model terms.
@@ -83,7 +87,6 @@ clean vulnerability report.
 | Item | Remaining action |
 | --- | --- |
 | XTTS consent | Replace the hardcoded agreement with reviewed explicit operator acceptance; retain the noncommercial model/output terms |
-| AudioCraft catalog copy | Correct manifest and generated-catalog claims together; documentation already explains the code/weights distinction |
 | Model/recipe custody | Bind original-source terms, notices and acceptance needs to exact downloaded artifacts and image digests |
 | Pixel private-reference debt | Repair the public export during a coordinated, verified source/bundle refresh; do not invent omitted private receipts |
 | Dependency advisories | Review applicability, update deliberately and run affected regression/build checks after the freeze |
