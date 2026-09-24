@@ -170,6 +170,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-backup-restore-roundtrip.sh
 	@bash tests/test-backup-macos-appledouble.sh
 	@python3 tests/test-rsync-transfer-failures.py
+	@python3 tests/test_hf_download_helper.py
 	@echo ""
 	@echo "=== ods-update.sh rollback picks the newest backup ==="
 	@bash tests/test-update-rollback-latest-backup.sh
