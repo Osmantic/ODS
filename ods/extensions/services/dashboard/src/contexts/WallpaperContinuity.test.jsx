@@ -23,9 +23,9 @@ afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals()})
 
 it('keeps the playing resource on focus refresh but releases it when storage removes the video',async()=>{
   const {container}=render(<ThemeProvider><Stage/></ThemeProvider>)
-  await screen.findByRole('button',{name:'Movie'})
-  // The gallery arrives before WallpaperVideo's object-URL effect commits.
-  await waitFor(()=>expect(container.querySelector('video')).not.toBeNull())
+  // The gallery button appears before WallpaperVideo's effect creates its
+  // blob URL and commits the media element. Wait for the resource we exercise.
+  await waitFor(()=>expect(container.querySelector('video')).toHaveAttribute('src','blob:movie'))
   const video=container.querySelector('video')
   video.currentTime=12
   await act(async()=>window.dispatchEvent(new Event('focus')))
@@ -42,8 +42,8 @@ it('keeps the playing resource on focus refresh but releases it when storage rem
 })
 
 it('still discovers and selects newly added records after a refresh',async()=>{
-  render(<ThemeProvider><Stage/></ThemeProvider>)
-  await screen.findByRole('button',{name:'Movie'})
+  const {container}=render(<ThemeProvider><Stage/></ThemeProvider>)
+  await waitFor(()=>expect(container.querySelector('video')).toHaveAttribute('src','blob:movie'))
   const image={id:'custom-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',name:'New image',image:'data:image/png;base64,Yg=='}
   readCustomWallpapers.mockResolvedValue([movie(),image])
   await act(async()=>window.dispatchEvent(new Event('focus')))
