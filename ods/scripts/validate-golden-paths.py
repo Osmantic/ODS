@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -17,21 +18,29 @@ VALID_PLATFORMS = {"linux", "windows-wsl2", "macos"}
 
 class Issues:
     def __init__(self) -> None:
-        self.items: list[str] = []
+        self.items: list[dict[str, str]] = []
 
     def add(self, path: str, message: str) -> None:
-        self.items.append(f"{path}: {message}")
+        self.items.append({"path": path, "message": message})
 
     def require(self, condition: bool, path: str, message: str) -> None:
         if not condition:
             self.add(path, message)
 
-    def exit_if_any(self) -> None:
+    def exit_if_any(self, *, json_output: bool, source: Path, scenario_count: int) -> None:
         if not self.items:
             return
-        print("[FAIL] golden path validation")
-        for item in self.items:
-            print(f"  - {item}")
+        if json_output:
+            print(json.dumps({
+                "ok": False,
+                "source": str(source),
+                "scenario_count": scenario_count,
+                "issues": self.items,
+            }, separators=(",", ":")))
+        else:
+            print("[FAIL] golden path validation")
+            for item in self.items:
+                print(f"  - {item['path']}: {item['message']}")
         raise SystemExit(1)
 
 
@@ -179,21 +188,41 @@ def validate_scenario(issues: Issues, scenario: Any, path: str) -> str | None:
 
 
 def main(argv: list[str]) -> int:
-    path = Path(argv[0]) if argv else DEFAULT_PATH
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("path", nargs="?", type=Path, default=DEFAULT_PATH)
+    parser.add_argument("--json", action="store_true", help="emit a machine-readable validation receipt")
+    args = parser.parse_args(argv)
+    path = args.path
     if not path.exists():
-        print(f"[FAIL] golden path file not found: {path}")
+        if args.json:
+            print(json.dumps({
+                "ok": False,
+                "source": str(path),
+                "scenario_count": 0,
+                "issues": [{"path": "$file", "message": "golden path file not found"}],
+            }, separators=(",", ":")))
+        else:
+            print(f"[FAIL] golden path file not found: {path}")
         return 1
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        print(f"[FAIL] invalid JSON in {path}: {exc}")
+        if args.json:
+            print(json.dumps({
+                "ok": False,
+                "source": str(path),
+                "scenario_count": 0,
+                "issues": [{"path": "$", "message": f"invalid JSON: {exc}"}],
+            }, separators=(",", ":")))
+        else:
+            print(f"[FAIL] invalid JSON in {path}: {exc}")
         return 1
 
     issues = Issues()
     root = as_dict(data)
     if root is None:
         issues.add("$", "must be an object")
-        issues.exit_if_any()
+        issues.exit_if_any(json_output=args.json, source=path, scenario_count=0)
         return 1
 
     issues.require(root.get("version") == 1, "$.version", "must be 1")
@@ -211,8 +240,21 @@ def main(argv: list[str]) -> int:
         expected_ids = {"linux-nvidia", "windows-wsl2-nvidia", "windows-wsl2-amd-lemonade", "apple-silicon"}
         issues.require(set(seen) == expected_ids, "$.scenarios", f"must define exactly {sorted(expected_ids)}")
 
-    issues.exit_if_any()
-    print("[PASS] golden path contracts")
+    scenario_count = len(scenarios) if isinstance(scenarios, list) else 0
+    issues.exit_if_any(
+        json_output=args.json,
+        source=path,
+        scenario_count=scenario_count,
+    )
+    if args.json:
+        print(json.dumps({
+            "ok": True,
+            "source": str(path),
+            "scenario_count": scenario_count,
+            "issues": [],
+        }, separators=(",", ":")))
+    else:
+        print("[PASS] golden path contracts")
     return 0
 
 
