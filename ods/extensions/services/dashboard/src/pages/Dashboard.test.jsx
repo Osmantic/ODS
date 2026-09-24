@@ -281,6 +281,15 @@ describe('Dashboard system overview', () => {
     expect(history[0]).toMatchObject({model:'new-owner',tokensPerSecond:24.8})
   })
 
+  it.each([[73,'73°C'],[0,'0°C'],[null,'—'],[undefined,'—']])('shows CPU thermal reading %s without substituting GPU or system temperature', async (temp_c,expected) => {
+    render(<Dashboard compact status={{...baseStatus,cpu:{percent:38,temp_c},gpu:{name:'GPU',temperature:55,memoryType:'discrete'}}} loading={false}/>)
+    const thermal=screen.getByText('CPU Temp').closest('.dashboard-metric-row')
+    expect(within(thermal).getByText(expected)).toBeVisible()
+    expect(within(thermal).getByText(temp_c == null ? 'telemetry unavailable' : 'sensor reading')).toBeVisible()
+    expect(within(thermal).queryByText('55°C')).toBeNull()
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
   it('uses theme-responsive surfaces instead of fixed dark dashboard panels', async () => {
     await renderDashboard()
 

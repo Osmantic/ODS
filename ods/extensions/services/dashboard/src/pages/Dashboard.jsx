@@ -788,6 +788,13 @@ export default function Dashboard({ status, loading, compact = false }) {
     })
   }
 
+  systemMetrics.push({
+    icon: Thermometer,
+    label: 'CPU Temp',
+    value: Number.isFinite(status?.cpu?.temp_c) ? `${status.cpu.temp_c}°C` : '—',
+    subvalue: Number.isFinite(status?.cpu?.temp_c) ? 'sensor reading' : 'telemetry unavailable',
+  })
+
   if (status?.ram && status?.gpu?.memoryType !== 'unified') {
     systemMetrics.push({
       icon: HardDrive,
