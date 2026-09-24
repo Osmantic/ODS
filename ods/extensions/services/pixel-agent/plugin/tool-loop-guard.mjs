@@ -10320,6 +10320,21 @@ export function createToolLoopGuard({
       (!context?.runId || context.runId === pending.runId) &&
       (!event?.runId || event.runId === pending.runId)
       ? projectNativeFetchGuidance(message, pending.successfulTruncatedNativeFetch) : undefined;
+    // Give discovery feedback before the search lane is exhausted. This is
+    // exact-call-bound metadata, not source evidence or an additional allowance.
+    const researchBudgetGuidance = pending?.selectedToolName === 'web_search' &&
+      (compactNativeWebResult || compactWebResult) && message.isError !== true &&
+      (compactNativeWebResult ?? compactWebResult)?.isError !== true &&
+      pending.capturedToolSearchFailed !== true && state
+      ? (() => {
+        const total = Math.max(0, effective.total - state.total);
+        const search = Math.min(total, Math.max(0, effective.search - state.search));
+        const read = Math.min(total, Math.max(0, effective.fetch - state.fetch));
+        return `ODS research budget (not source evidence): Remaining this response: ${search} search calls, ${read} page-reading calls, ${total} web calls total. ` +
+          (read > 0
+            ? 'If these leads match the request, read their actual URLs with web_fetch or pixel_ods_web_extract before broadening discovery. Search again only for a specific unresolved evidence gap; do not invent source URLs.'
+            : 'Finish with collected evidence or otherwise-authorized tools; do not claim unread sources were verified.');
+      })() : undefined;
     const nativeFailure = pending?.nativeUnittestFailure;
     const compactNativeVerification = nativeFailure && pending.transport === "exec" &&
       message.role === "toolResult" && message.toolName === "exec" &&
@@ -10504,6 +10519,7 @@ export function createToolLoopGuard({
       content.push({ type: "text", text: workspaceStageInstruction });
     }
     if (sandboxPathCorrection) content.push({type:'text',text:sandboxPathCorrection});
+    if (researchBudgetGuidance) content.push({type:'text',text:researchBudgetGuidance});
     if (previewStageInstruction) {
       content.push({ type: "text", text: previewStageInstruction });
     }
