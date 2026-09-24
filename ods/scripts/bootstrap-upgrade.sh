@@ -2311,7 +2311,7 @@ refresh_lemonade_after_bootstrap_cleanup() {
         $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d --force-recreate --no-deps llama-server 2>&1 || return 1
 
     local lemonade_port model_id old_model_id models_json
-    lemonade_port="$(read_env_value OLLAMA_PORT)"
+    lemonade_port="$(read_env_value AMD_INFERENCE_PORT)"
     [[ -n "$lemonade_port" ]] || lemonade_port="8080"
     model_id="$(read_env_value LEMONADE_MODEL)"
     if ! lemonade_model_id_matches_gguf "$model_id" "$FULL_GGUF_FILE"; then
@@ -2751,9 +2751,12 @@ BOOTSTRAP_PATH="$MODELS_DIR/$BOOTSTRAP_GGUF"
 HOT_SWAP_VERIFIED=false
 
 # ── Phase 5: Hot-swap llama-server (if running) ──
-# Read OLLAMA_PORT from .env (nohup doesn't inherit env vars from parent)
+# Read OLLAMA_PORT from .env (nohup doesn't inherit env vars from parent).
+# AMD_INFERENCE_PORT carries the native Lemonade host port — it is distinct
+# from OLLAMA_PORT, which .env always sets to the llama-server external port.
 if [[ -f "$ENV_FILE" ]]; then
     OLLAMA_PORT=$(grep -E '^OLLAMA_PORT=' "$ENV_FILE" | cut -d= -f2 | tr -d '"\047\r')
+    AMD_INFERENCE_PORT=$(grep -E '^AMD_INFERENCE_PORT=' "$ENV_FILE" | cut -d= -f2 | tr -d '"\047\r')
 fi
 
 if [[ "$_windows_lemonade_swap_applies" == "true" ]]; then
@@ -2932,9 +2935,9 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
     # Pick health endpoint based on GPU backend — Lemonade (AMD) serves
     # /api/v1/health, llama.cpp (NVIDIA/Apple/CPU) serves /health.
     if [[ "$_gpu_backend" == "amd" ]]; then
-        _health_url="http://127.0.0.1:${OLLAMA_PORT:-8080}/api/v1/health"
+        _health_url="http://127.0.0.1:${AMD_INFERENCE_PORT:-8080}/api/v1/health"
     else
-        _health_url="http://127.0.0.1:${OLLAMA_PORT:-8080}/health"
+        _health_url="http://127.0.0.1:${OLLAMA_PORT:-11434}/health"
     fi
 
     # Wait for health (up to 5 minutes for the larger model to load)
@@ -2996,7 +2999,7 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
                     # Mirrors the _safe_model pattern in write_status() above.
                     _model_id="$(read_env_value LEMONADE_MODEL)"
                     if ! lemonade_model_id_matches_gguf "$_model_id" "$FULL_GGUF_FILE"; then
-                        _resolved_model_id="$(resolve_live_lemonade_model_id "${OLLAMA_PORT:-8080}" "$FULL_GGUF_FILE" || true)"
+                        _resolved_model_id="$(resolve_live_lemonade_model_id "${AMD_INFERENCE_PORT:-8080}" "$FULL_GGUF_FILE" || true)"
                         if [[ -n "$_resolved_model_id" ]]; then
                             _model_id="$_resolved_model_id"
                             write_env_value LEMONADE_MODEL "$_model_id" || \
@@ -3010,7 +3013,7 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
                     [[ -n "$_model_id" ]] || _model_id="extra.${FULL_GGUF_FILE//\"/\\\"}"
                     log "Sending warm-up request to trigger model loading: $_model_id (attempt $_i/60)"
                     if curl -sf --max-time 30 -X POST \
-                        "http://127.0.0.1:${OLLAMA_PORT:-8080}/api/v1/chat/completions" \
+                        "http://127.0.0.1:${AMD_INFERENCE_PORT:-8080}/api/v1/chat/completions" \
                         -H "Content-Type: application/json" \
                         -d "{\"model\":\"${_model_id}\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"max_tokens\":1}" \
                         &>/dev/null; then
@@ -3094,7 +3097,7 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
             && $DOCKER_CMD ps --filter name=ods-litellm --format '{{.Names}}' 2>/dev/null | grep -q ods-litellm; then
             _lemonade_model_id="$(read_env_value LEMONADE_MODEL)"
             if ! lemonade_model_id_matches_gguf "$_lemonade_model_id" "$FULL_GGUF_FILE"; then
-                _resolved_lemonade_model_id="$(resolve_live_lemonade_model_id "${OLLAMA_PORT:-8080}" "$FULL_GGUF_FILE" || true)"
+                _resolved_lemonade_model_id="$(resolve_live_lemonade_model_id "${AMD_INFERENCE_PORT:-8080}" "$FULL_GGUF_FILE" || true)"
                 if [[ -n "$_resolved_lemonade_model_id" ]]; then
                     _lemonade_model_id="$_resolved_lemonade_model_id"
                 else
