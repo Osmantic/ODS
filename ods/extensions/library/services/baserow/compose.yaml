@@ -6,7 +6,7 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      - BASEROW_PUBLIC_URL=${BASEROW_PUBLIC_URL:-http://localhost:3007}
+      - BASEROW_PUBLIC_URL=${BASEROW_PUBLIC_URL:-http://localhost:${BASEROW_PORT:-3007}}
       - BASEROW_CADDY_ADDRESSES=${BASEROW_CADDY_ADDRESSES:-:80}
       - BASEROW_BACKEND_LOG_LEVEL=${BASEROW_LOG_LEVEL:-INFO}
       - BASEROW_FRONTEND_LOG_LEVEL=${BASEROW_LOG_LEVEL:-INFO}

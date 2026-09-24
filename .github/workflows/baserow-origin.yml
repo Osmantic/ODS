@@ -1,0 +1,33 @@
+name: Baserow public origin contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/baserow-origin.yml'
+      - 'ods/extensions/library/services/baserow/**'
+      - 'ods/tests/test_baserow_public_url.py'
+  push:
+    branches: [main, public-beta]
+    paths:
+      - '.github/workflows/baserow-origin.yml'
+      - 'ods/extensions/library/services/baserow/**'
+      - 'ods/tests/test_baserow_public_url.py'
+
+permissions:
+  contents: read
+
+jobs:
+  baserow-public-origin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'pytest>=8,<9'
+      - name: Public origin precedence and shipped Django settings
+        working-directory: ods
+        env:
+          ODS_TEST_BASEROW_SETTINGS: '1'
+        run: python -m pytest -q tests/test_baserow_public_url.py
