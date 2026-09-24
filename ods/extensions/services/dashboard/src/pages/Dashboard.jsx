@@ -362,7 +362,8 @@ function writeServiceCpuHistory(history) {
 }
 
 function useOverviewHistory(tokensPerSecond, totalTokens, tokenCountMode = 'unavailable', sample, stale) {
-  const model = sample?.loadedModel || null
+  const model = typeof sample?.throughputModel === 'string' && sample.throughputModel.trim()
+    ? sample.throughputModel : sample?.loadedModel || null
   const [samples, setSamples] = useState(() => readOverviewHistory().filter(row =>
     (row.tokenCountMode || 'cumulative') === tokenCountMode && (row.model || null) === model
   ))

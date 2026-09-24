@@ -265,6 +265,22 @@ describe('Dashboard system overview', () => {
     await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
   })
 
+  it('binds held throughput to its measured model during a discovery outage rather than a configured fallback', async () => {
+    const clock=vi.spyOn(Date,'now').mockReturnValue(1800000000000)
+    const inference={...baseStatus.inference,tokensPerSecond:24.8,throughputState:'measured',throughputSampledAt:1800000000,throughputModel:'actual-owner'}
+    const view=render(<Dashboard status={{...baseStatus,inference}} loading={false}/>)
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+    clock.mockReturnValue(1800000005000)
+    view.rerender(<Dashboard status={{...baseStatus,inference:{...inference,loadedModel:'configured-fallback',throughputState:'unavailable'}}} loading={false}/>)
+    let history=JSON.parse(localStorage.getItem('ods-system-overview-history-v2'))
+    expect(history.map(row=>[row.model,row.tokensPerSecond])).toEqual([['actual-owner',24.8],['actual-owner',null]])
+    clock.mockReturnValue(1800000010000)
+    view.rerender(<Dashboard status={{...baseStatus,inference:{...inference,loadedModel:'configured-fallback',throughputModel:'new-owner',throughputSampledAt:1800000010}}} loading={false}/>)
+    history=JSON.parse(localStorage.getItem('ods-system-overview-history-v2'))
+    expect(history).toHaveLength(1)
+    expect(history[0]).toMatchObject({model:'new-owner',tokensPerSecond:24.8})
+  })
+
   it('uses theme-responsive surfaces instead of fixed dark dashboard panels', async () => {
     await renderDashboard()
 
