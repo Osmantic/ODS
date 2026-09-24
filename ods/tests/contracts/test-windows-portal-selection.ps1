@@ -10,3 +10,6 @@ foreach ($entry in @('install.ps1', 'ods/installers/windows/install-windows.ps1'
     }
 }
 Write-Output 'PASS: both Windows entrypoints reject unsupported Portal provisioning before setup'
+# Both child failures are expected. GitHub's PowerShell runner propagates the
+# last native exit code unless the contract explicitly reports success.
+exit 0
