@@ -14,13 +14,15 @@ not detect GitHub and AWS markers.
 
 ## Reviewed exceptions
 
-The 2026-09-24 default-rule restoration found 41 additional historical findings
-in the available Git refs. Each was checked against its exact source commit.
+The 2026-09-24 default-rule restoration found 57 additional historical findings
+across the fetched branches and tags. Each was checked against its source commit.
 The review covers synthetic test/evaluation strings, placeholder curl headers,
 browser storage names, a password-free JDBC URL, a descriptive cache-policy
 string, a public artifact hash, and empty installer key declarations matched
 across a comment. Many older exceptions had the later `ods/` path even though
-the original commit used `dream-server/` or `resources/dev/`.
+the original commit used older directory names. The additional remote-branch
+findings include Python planning-field set names and a synthetic provenance
+test input, plus duplicate vendor fixture and JDBC findings at distinct commits.
 
 There is also an already-public historical SearXNG default key. Its exact
 commit/path fingerprint is acknowledged; that does **not** make it safe for

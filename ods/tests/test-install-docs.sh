@@ -169,6 +169,13 @@ for relative_path in tracked_files:
 
     text = data.decode("utf-8", errors="ignore")
     for line_number, line in enumerate(text.splitlines(), start=1):
+        # Secret-scan fingerprints must use the path at the historical commit.
+        # Only exact fingerprints in this dedicated file qualify; comments,
+        # current source paths and arbitrary prose remain subject to the guard.
+        if relative_path == ".gitleaksignore" and re.fullmatch(
+            r"[0-9a-f]{40}:[^\s:]+:[a-z0-9-]+:[1-9][0-9]*", line
+        ):
+            continue
         if has_retired_reference(line, allow_fleet=allow_fleet):
             matches.append(f"{relative_path}:{line_number}:{line}")
 

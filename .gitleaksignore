@@ -110,3 +110,22 @@ dd97e51445ea4d01fd6f291ce384e46988d1d584:resources/dev/extensions-library/servic
 
 # Previously published SearXNG default at this historical commit only; never reuse it. See ods/docs/SECRET-SCANNING.md.
 48a1d87d3d155359fb23d7a65d1db55b036b7508:dream-server/config/searxng/settings.yml:generic-api-key:3
+
+# Additional remote-branch history: reviewed vendor fixtures/JDBC URL,
+# Python planning-field set names, and a synthetic provenance test input.
+0c3a3c0b0c432a71cd5701e8d749e99d6ed2fd0f:ods/extensions/services/dashboard-api/extension_planning_contract.py:generic-api-key:33
+0c3a3c0b0c432a71cd5701e8d749e99d6ed2fd0f:ods/extensions/services/dashboard-api/extension_planning_contract.py:generic-api-key:51
+4f9fc03cfb36597f530213ef79187ee2977810c1:ods/extensions/services/dashboard-api/extension_planning_contract.py:generic-api-key:31
+4f9fc03cfb36597f530213ef79187ee2977810c1:ods/extensions/services/dashboard-api/tests/test_plan_provenance.py:generic-api-key:564
+5584c90c3e5d49d8f929e8eeec09e80aa6b0c259:ods/extensions/library/services/keycloak/compose.yaml:generic-api-key:19
+83a95d8e0f465a541306ae5f5512b50dab3a645a:ods/extensions/services/dashboard-api/extension_planning_contract.py:generic-api-key:32
+83a95d8e0f465a541306ae5f5512b50dab3a645a:ods/extensions/services/dashboard-api/extension_planning_contract.py:generic-api-key:33
+83a95d8e0f465a541306ae5f5512b50dab3a645a:ods/extensions/services/dashboard-api/extension_planning_contract.py:generic-api-key:49
+8419eeb051615046f7129013e95551763a3c01b2:ods/vendor/pixel/RELEASE-MANIFEST.json:generic-api-key:306
+8419eeb051615046f7129013e95551763a3c01b2:ods/vendor/pixel/scripts/generated/release.env:discord-api-token:17
+8419eeb051615046f7129013e95551763a3c01b2:ods/vendor/pixel/security-evals/agent-comparison/task-battery-v1.json:generic-api-key:179
+8419eeb051615046f7129013e95551763a3c01b2:ods/vendor/pixel/tests/test_frontier_broker.py:generic-api-key:1309
+8419eeb051615046f7129013e95551763a3c01b2:ods/vendor/pixel/tests/test_mesh_peer.py:generic-api-key:2879
+8419eeb051615046f7129013e95551763a3c01b2:ods/vendor/pixel/tests/test_ops_broker.py:curl-auth-header:177
+8419eeb051615046f7129013e95551763a3c01b2:ods/vendor/pixel/tests/test_source_audit.py:generic-api-key:178
+e31fc3e4ccaedb327ce52c34b0a8eb8815b6d5a0:ods/extensions/services/dashboard-api/routers/extension_planning.py:generic-api-key:40
