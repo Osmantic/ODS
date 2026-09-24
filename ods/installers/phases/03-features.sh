@@ -115,6 +115,13 @@ if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]]; then
     esac
 fi
 
+if [[ "${AMD_INFERENCE_RUNTIME_MODE:-}" == "wsl-windows-lemonade" && "${ENABLE_COMFYUI:-false}" == true ]]; then
+    # This placement exposes inference through HTTP, not ROCm devices to Linux.
+    # Full Stack must not launch a GPU container that cannot access this GPU.
+    ENABLE_COMFYUI=false
+    ai_warn "ComfyUI skipped: the Windows inference runtime does not provide Linux ROCm GPU access. Pixel/Portal remains enabled."
+fi
+
 # Pixel is the preferred agent on qualified hosts. ODS platform support is
 # unchanged; auto mode falls back to Hermes without failing.
 if ! PIXEL_AGENT_MODE="$(ods_pixel_resolve_enablement "${ENABLE_PIXEL:-auto}" 2>/dev/null)"; then

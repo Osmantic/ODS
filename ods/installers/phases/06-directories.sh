@@ -1630,7 +1630,7 @@ ENV_EOF
             return 1
         fi
         if [[ -n "$_lemonade_model_id" ]]; then
-            ai_ok "Generated LiteLLM config for external Lemonade (model: ${_lemonade_model_id})"
+            ai_ok "Generated LiteLLM config for host Lemonade (model: ${_lemonade_model_id})"
         else
             ai_ok "Generated LiteLLM config for Lemonade (model: extra.${_active_gguf})"
         fi

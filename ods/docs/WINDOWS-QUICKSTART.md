@@ -48,6 +48,10 @@ externally managed endpoint mode; do not configure an external URL just because
 inference runs on Windows. Existing incompatible listeners produce an explicit
 error instead of being silently stopped or adopted.
 
+The Windows AMD bridge provides model inference, not ROCm devices inside Linux.
+Full Stack therefore skips the Linux ComfyUI GPU service on that placement and
+explains why; native Linux AMD and NVIDIA image-generation paths are unchanged.
+
 The Linux installation and service data live inside the selected distribution.
 Windows model storage does not relocate Docker Desktop's disk or the WSL virtual
 disk. Those are separate storage settings.

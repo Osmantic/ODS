@@ -43,13 +43,13 @@ run_phase() {
     local gpu_count="$1" gpu_backend="$2" external_url="${3:-}"
     mkdir -p "$tmp_dir/install" "$tmp_dir/scripts"
     HARNESS_TMP="$tmp_dir" HARNESS_GPU_COUNT="$gpu_count" HARNESS_GPU_BACKEND="$gpu_backend" \
-        HARNESS_EXTERNAL_URL="$external_url" \
+        HARNESS_EXTERNAL_URL="$external_url" HARNESS_RUNTIME_MODE="${4:-}" HARNESS_COMFYUI="${5:-false}" \
         bash -c '
 set -euo pipefail
 INTERACTIVE=false
 DRY_RUN=true
 INSTALL_CHOICE=1
-TIER=1
+TIER=3
 ODS_MODE=local
 ENABLE_VOICE=false
 ENABLE_WORKFLOWS=false
@@ -57,7 +57,8 @@ ENABLE_RAG=false
 ENABLE_RECOMMENDED=false
 ENABLE_HERMES=false
 ENABLE_OPENCLAW=false
-ENABLE_COMFYUI=false
+ENABLE_COMFYUI="$HARNESS_COMFYUI"
+AMD_INFERENCE_RUNTIME_MODE="$HARNESS_RUNTIME_MODE"
 ENABLE_APE=false
 ENABLE_PERPLEXICA=false
 ENABLE_PRIVACY_SHIELD=false
@@ -99,6 +100,7 @@ error() { printf "ERROR: %s\n" "$*" >&2; return 1; }
 # shellcheck source=/dev/null
 source "$1"
 echo PHASE03_COMPLETED
+echo COMFYUI_ENABLED="$ENABLE_COMFYUI"
 ' _ "$FEATURES_PHASE"
 }
 
@@ -119,6 +121,13 @@ grep -q 'Single GPU detected — non-NVIDIA backend, skipping GPU assignment' <<
 grep -q 'No GPU detected — skipping' <<<"$out" \
     && fail "GPU_COUNT=1 must not log the no-GPU skip message"
 pass "single non-NVIDIA GPU keeps the single-GPU skip message"
+
+out="$(run_phase 1 amd '' wsl-windows-lemonade true)" || fail "Windows inference feature selection failed"
+grep -q 'COMFYUI_ENABLED=false' <<<"$out" || fail "Windows inference cannot provide ROCm to ComfyUI"
+pass "Windows inference disables inaccessible ROCm image generation"
+out="$(run_phase 1 amd '' '' true)" || fail "native AMD feature selection failed"
+grep -q 'COMFYUI_ENABLED=true' <<<"$out" || fail "native Linux AMD must retain image generation"
+pass "native AMD image generation selection is preserved"
 
 # A busy multi-GPU host reusing a LAN model must not try to reserve VRAM for
 # an ODS-managed llama model it will never launch.

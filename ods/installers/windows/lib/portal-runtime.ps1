@@ -51,6 +51,17 @@ function Initialize-ODSPortalWindowsRuntime {
         $store = Initialize-ODSPortalModelStore -WindowsPath $paths.WindowsPath -Model $Model
         $envPath = Join-Path $Identity.directory 'inference.env'
         $apiKey = Get-ODSLemonadeAdminApiKey -EnvPath $envPath
+        if (-not $apiKey -and $Identity.id) {
+            $legacyDirectory = Join-Path $env:LOCALAPPDATA "ODS\wsl\$($Identity.id)"
+            $legacyEnvPath = Join-Path $legacyDirectory 'inference.env'
+            if ($legacyDirectory -ine $Identity.directory -and (Test-Path -LiteralPath $legacyEnvPath)) {
+                # Keep authentication to a running modern server when moving
+                # from the former (potentially virtualized) task directory.
+                Assert-ODSPrivatePath $legacyDirectory -Directory
+                Assert-ODSPrivatePath $legacyEnvPath
+                $apiKey = Get-ODSLemonadeAdminApiKey -EnvPath $legacyEnvPath
+            }
+        }
         if (-not $apiKey) {
             $random = New-Object byte[] 32
             $rng = [Security.Cryptography.RandomNumberGenerator]::Create()

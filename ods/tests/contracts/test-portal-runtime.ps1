@@ -69,6 +69,24 @@ try {
     $rejected=$false
     try { $null=Initialize-ODSPortalWindowsRuntime -SourceRoot . -Identity $identity -ModelsDirectory 'D:\ODS Models' -Model $model } catch { $rejected=$true }
     Check $rejected 'a completion from a different model cannot mark the runtime ready'
+    $script:wrongModel=$false
+    $originalLocalAppData=$env:LOCALAPPDATA
+    try {
+        $env:LOCALAPPDATA=$fixture
+        $migrated=[pscustomobject]@{directory=(Join-Path $fixture 'new-location');taskName=$identity.taskName;id='migration-fixture'}
+        $legacyDirectory=Join-Path $fixture 'ODS\wsl\migration-fixture'
+        New-Item -ItemType Directory -Path $legacyDirectory -Force | Out-Null
+        $legacyKey='ab'*32
+        Set-Content -LiteralPath (Join-Path $legacyDirectory 'inference.env') -Value "LITELLM_LEMONADE_API_KEY=$legacyKey"
+        $script:privateChecks=@();$script:unsafeLegacy=$false
+        function Assert-ODSPrivatePath { param($Path,[switch]$Directory); if($script:unsafeLegacy){throw 'unsafe old credential'}; $script:privateChecks+= $Path }
+        $result=Initialize-ODSPortalWindowsRuntime -SourceRoot . -Identity $migrated -ModelsDirectory 'D:\ODS Models' -Model $model
+        Check ($result.ApiKey -ceq $legacyKey -and $script:privateChecks.Count -eq 2) 'credential migration preserves the running server key after validating directory and file ownership'
+        $migrated.directory=Join-Path $fixture 'unsafe-migration'
+        $script:unsafeLegacy=$true;$priorRegistered=$script:registered;$rejected=$false
+        try { $null=Initialize-ODSPortalWindowsRuntime -SourceRoot . -Identity $migrated -ModelsDirectory 'D:\ODS Models' -Model $model } catch { $rejected=$true }
+        Check ($rejected -and $script:registered -eq $priorRegistered) 'unsafe old credentials cannot be adopted or replace the inference task'
+    } finally { $env:LOCALAPPDATA=$originalLocalAppData }
 } finally {
     $prefix=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
     if (-not $fixture.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { throw 'Fixture escaped temporary directory' }
