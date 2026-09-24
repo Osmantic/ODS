@@ -271,6 +271,7 @@ require_literal "$trust_doc" 'AUDITED_COMMIT_SHA/ods/get-ods.sh' "Immutable boot
 require_literal "$trust_doc" 'ods/main.sh' "Hosted main-channel guidance"
 require_literal "$trust_doc" 'verify-hosted-bootstrap.sh' "Hosted bootstrap deployment verification"
 require_literal "$REPO_ROOT/README.md" "\`$PUBLISHED_TAG\` is the latest published source release" "README published release"
+require_literal "$REPO_ROOT/README.md" "[![Release](https://img.shields.io/badge/release-$PUBLISHED_TAG-blue)](https://github.com/Osmantic/ODS/releases/tag/$PUBLISHED_TAG)" "README published-version badge and tag link"
 require_literal "$release_doc" "latest published source release is \`$PUBLISHED_TAG\`" "Release channel published release"
 require_literal "$trust_doc" "--branch $PUBLISHED_TAG $CANONICAL_REPO_URL" "Manual published-tag clone"
 require_literal "$trust_doc" "ODS_REF=$PUBLISHED_TAG" "Published bootstrap ref guidance"
