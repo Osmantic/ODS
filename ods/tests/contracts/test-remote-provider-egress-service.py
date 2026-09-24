@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "bin"))
 
 from remote_provider.egress import (  # noqa: E402
     EgressError,
+    load_route_state,
     prepare_upstream_request,
     provider_secret_status,
     route_from_state,
@@ -265,6 +266,27 @@ def test_egress_fails_closed_without_secret_or_supported_transport() -> None:
     )
 
 
+def test_route_state_rejects_non_object_json_roots() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        state_path = Path(tmp_dir) / "routing-state.json"
+        for payload in (None, [], [route_state()], "enabled", 1, True):
+            state_path.write_text(json.dumps(payload), encoding="utf-8")
+            exc = assert_egress_error(
+                lambda: load_route_state(state_path),
+                "invalid_route_state",
+            )
+            assert_true(exc.status == 503, f"wrong status for {payload!r}: {exc.status}")
+
+            direct_exc = assert_egress_error(
+                lambda: route_from_state(payload),
+                "invalid_route_state",
+            )
+            assert_true(
+                direct_exc.status == 503,
+                f"route_from_state returned wrong status for {payload!r}",
+            )
+
+
 def test_secret_file_status_is_support_bundle_safe() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         missing = Path(tmp) / "provider-api-key"
@@ -470,6 +492,7 @@ def main() -> int:
         test_direct_resolution_rejects_unsafe_dns_answers,
         test_ssh_route_uses_internal_tunnel_without_direct_dns,
         test_egress_fails_closed_without_secret_or_supported_transport,
+        test_route_state_rejects_non_object_json_roots,
         test_secret_file_status_is_support_bundle_safe,
         test_probe_response_returns_redacted_ssh_receipt_through_tunnel_boundary,
         test_probe_response_fails_closed_when_ssh_tunnel_is_not_ready,

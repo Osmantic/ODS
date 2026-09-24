@@ -103,7 +103,7 @@ def load_route_state(path: str | Path) -> dict[str, Any]:
     """Read generated remote routing state; missing means disabled."""
     state_path = Path(path)
     try:
-        return json.loads(state_path.read_text(encoding="utf-8"))
+        state = json.loads(state_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {
             "schema": ROUTING_STATE_SCHEMA,
@@ -113,6 +113,13 @@ def load_route_state(path: str | Path) -> dict[str, Any]:
         }
     except (OSError, ValueError) as exc:
         raise EgressError(503, "invalid_route_state", str(exc)) from exc
+    if not isinstance(state, Mapping):
+        raise EgressError(
+            503,
+            "invalid_route_state",
+            "routing-state root must be a JSON object",
+        )
+    return dict(state)
 
 
 def _route_env_from_state(state: Mapping[str, Any], provider: Mapping[str, Any]) -> dict[str, str]:
@@ -142,6 +149,8 @@ def route_from_state(
     policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate generated routing-state metadata and return a public route."""
+    if not isinstance(state, Mapping):
+        raise EgressError(503, "invalid_route_state", "routing-state root must be an object")
     if state.get("schema") != ROUTING_STATE_SCHEMA:
         raise EgressError(503, "invalid_route_state", "unknown routing-state schema")
     mode = str(state.get("mode") or "cloud")
