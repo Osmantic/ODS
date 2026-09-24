@@ -38,6 +38,9 @@ Recipes missing structured upstream records at the reviewed commit:
 
 `aider`, `anythingllm`, `audiocraft`, `bark`, `baserow`, `chromadb`, `continue`, `crewai`, `dify`, `flowise`, `forge`, `frigate`, `gaia`, `gitea`, `immich`, `invokeai`, `jan`, `jupyter`, `label-studio`, `langflow`, `librechat`, `localai`, `milvus`, `miniflux`, `ntfy`, `ollama`, `open-interpreter`, `paperless-ngx`, `piper-audio`, `rvc`, `sillytavern`, `text-generation-webui`, `weaviate`, `xtts`.
 
+The [recipe source register](RECIPE-SOURCE-REGISTER.md) now provides pinned
+upstream license evidence for all 34; image-to-source provenance remains open.
+
 Backfill source repository, exact ref/image, application and model license
 distinctions, required notices and any restrictions. Verify against upstream;
 do not infer a license from an ODS wrapper, an image name, or a project's older

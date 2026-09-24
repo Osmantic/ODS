@@ -36,6 +36,14 @@ and an evidence-backed quality tier. `verified` models may be recommended by def
 must never disable chat or make an otherwise callable model inaccessible to
 Pixel.
 
+## Historical evidence scope
+
+The dated probes below describe their named source revisions and artifacts;
+they are not qualification of the current `main` runtime. Private session IDs
+and process labels have been omitted from this public summary. Preserve the
+underlying receipts in the maintainer evidence store for independent review.
+Commands, source hashes, model profiles and observed verdicts remain recorded.
+
 ## 2026-08-30 Windows laptop probe
 
 The probe ran through the installed ODS Pixel UI on WSL2 Ubuntu 24.04 with an
@@ -53,7 +61,6 @@ to completion, repair failures, and report only verified truth.
 
 ### NVIDIA Nemotron 3 Nano 4B
 
-- Pixel session: `c6de656b-4b30-4b94-951f-55e2d6beb16f`
 - The model created an implementation and tests but ignored the injected fake
   clock, copied test behavior into implementation details, used real sleeping,
   and did not implement correct LRU/size semantics.
@@ -65,7 +72,6 @@ to completion, repair failures, and report only verified truth.
 
 ### Qwen 3.5 4B
 
-- Pixel session: `7f9cb5c6-b64e-41e3-bc2e-ad24013e33a5`
 - The model created both files and launched a background unittest command, but
   the suite failed with an undefined `time` name.
 - It made one ineffective duplicate edit, reached the bounded tool circuit
@@ -77,7 +83,6 @@ to completion, repair failures, and report only verified truth.
 
 ### Qwen 2.5 Coder 3B 128K
 
-- Pixel session: `0e477566-5158-425d-a54c-666eb0887481`
 - The model made no tool calls and created no files.
 - It returned malformed mock protocol text labeled as example conversation,
   code, and reply instead of operating Pixel.
@@ -85,7 +90,6 @@ to completion, repair failures, and report only verified truth.
 
 ### Ministral 3 8B Instruct 2512
 
-- Pixel session: `f150ff79-c88e-4b12-a564-0769fd52a6a8`
 - The real tool-loop generation rate fell to roughly 2.5 tok/s after the
   shallow Models-page activation probe had reported 15.1 tok/s.
 - The model wrote the implementation in the requested directory but wrote the
@@ -106,8 +110,6 @@ to completion, repair failures, and report only verified truth.
 
 ### Qwen3 4B Instruct 2507
 
-- Initial Pixel session: `505b13f2-871a-4aaf-a381-34565bd6d617`
-- Focused continuation session: `cd025ef5-6217-405c-8b7c-55a91fd29831`
 - Direct OpenAI-compatible tool requests proved that the model artifact and
   chat template could emit a valid structured tool call. A roughly 9.7K-token
   direct request also produced a tool call, so model loading alone was not the
@@ -123,8 +125,8 @@ to completion, repair failures, and report only verified truth.
 - The model invented a process-session alias in the initial turn. Candidate
   guard commit `7c1a8af544dcde07e0104a35804fe653c612835d` repaired only the exact
   `session-<known-label>-<pid>` shape for a process already created by the same
-  run. The focused continuation then polled the canonical `fresh-ocean` and
-  `dawn-glade` labels successfully, demonstrating that background-process
+  run. The focused continuation then polled the canonical background-process
+  labels successfully, demonstrating that background-process
   continuity was no longer the blocker.
 - The continuation inspected the real two-test failure, but retained real
   sleeping, added expiration cleanup after capacity eviction, failed to repair
@@ -138,7 +140,6 @@ to completion, repair failures, and report only verified truth.
 
 ### Qwen 3.5 9B
 
-- Pixel session: `551719d8-dfd9-421b-9da2-d1d3ecf30613`
 - A direct OpenAI-compatible request at 24K produced a valid structured `exec`
   call in about 1.2 seconds, and the first full Pixel turn reached a real tool
   action in about 9.5 seconds. This established responsive tool syntax, not a
@@ -203,17 +204,17 @@ installed ODS source was `d0808d08645841ffcbb3cf3919a9c81fe485937b`; the
 installed Pixel 4.3.23 source and harness were
 `d99923246e5ea22c0f1c8c8fc7b0927ac8b523fe`.
 
-- Session `80901059-efd1-4df0-b5d9-d09b97164704` created a JSON task-board
+- The task-board probe created a JSON task-board
   CLI and subprocess-based unittest suite from scratch. It found and fixed its
   own boolean-versus-integer validation defect and a contradictory expected
   result, finished 9/9, and passed an independent exact parsed-output check.
-- Session `b8365ace-7fea-4c78-8a23-897f239676db` repaired two seeded log
+- The initial log-rotation probe repaired two seeded log
   rotation defects and finished 8/8, but those commands completed too quickly
   to count as proof of background-process continuity.
-- Load-bearing session `0ce4de20-5faf-42b2-ba41-b609b2a5ad28` ran exactly
-  `python3 -m unittest -v`. The command yielded process `salty-falcon`; Pixel
+- The background-process probe ran exactly
+  `python3 -m unittest -v`. The command yielded a background process; Pixel
   polled it to a terminal four-failure result, diagnosed two root causes, and
-  changed only `rotation.py`. The exact rerun yielded process `lucky-crest`;
+  changed only `rotation.py`. The exact rerun yielded another background process;
   Pixel polled it to exit zero with 9/9 in 12.001 seconds, then produced the
   exact `rotation_repair=passed` functional marker.
 - Independent replay again passed 9/9 in 12.001 seconds and produced the same

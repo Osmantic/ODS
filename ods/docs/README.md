@@ -32,6 +32,15 @@ matches the work in front of them.
 | Maintain a release or fork | [MAINTAINER_RUNBOOK.md](MAINTAINER_RUNBOOK.md) | [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md), [INSTALLER_PHASE_CONTRACTS.md](INSTALLER_PHASE_CONTRACTS.md), [COMPOSE_RESOLVER_CONTRACTS.md](COMPOSE_RESOLVER_CONTRACTS.md), [BRANCH_HYGIENE.md](BRANCH_HYGIENE.md) |
 | Review automation guardrails | [AI_WORKFLOW_GUARDRAILS.md](AI_WORKFLOW_GUARDRAILS.md) | [../CONTRIBUTING.md](../CONTRIBUTING.md), [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md) |
 
+## Licensing, attribution and public evidence
+
+- [Third-party licensing review](THIRD-PARTY-LICENSING.md): component restrictions and open work.
+- [Recipe source register](RECIPE-SOURCE-REGISTER.md): sources and terms for the 34 recipes missing structured provenance.
+- [Model terms inventory](MODEL-TERMS-INVENTORY.md): 57 catalog entries and source evidence.
+- [Artwork provenance](ASSET-PROVENANCE.md): file hashes, sources and rights status.
+- [Contributor ledger](CONTRIBUTOR-LEDGER-2026-09.md): promoted-range attribution without inferred identities.
+- [Documentation hygiene](DOCUMENTATION-HYGIENE.md): link gate and pinned vendor exceptions.
+
 ## Choosing Validation
 
 The shortest useful rule is: docs-only changes get docs checks; operational
