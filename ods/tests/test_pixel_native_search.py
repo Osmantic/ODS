@@ -16,7 +16,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 spec = importlib.util.spec_from_file_location(
     "native_search", Path(__file__).resolve().parents[1]
@@ -71,6 +71,59 @@ class NativeSearchTests(unittest.TestCase):
             answers.write_text(json.dumps({"webSearchProvider": value}))
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "search provider"):
                 ns.select_provider(answers)
+
+    def test_download_recovers_interrupted_tls_and_partial_read(self):
+        partial = Mock()
+        partial.__enter__ = Mock(return_value=partial)
+        partial.__exit__ = Mock(return_value=False)
+        partial.read.side_effect = ns.http.client.IncompleteRead(b'partial')
+        opener = Mock()
+        opener.open.side_effect = [ns.urllib.error.URLError(ns.ssl.SSLEOFError('EOF')),
+                                   partial, io.BytesIO(self.data)]
+        integrity = base64.b64encode(hashlib.sha512(self.data).digest()).decode()
+        with patch.object(ns.urllib.request, 'build_opener', return_value=opener), \
+                patch.object(ns.time, 'sleep') as sleep, patch.object(ns, 'INTEGRITY', integrity):
+            receipt = ns.prepare(self.root / 'recovered')
+        self.assertTrue(receipt['changed'])
+        self.assertEqual((self.root / 'recovered' / f'parallel-{ns.VERSION}.tgz').read_bytes(), self.data)
+        self.assertEqual(opener.open.call_count, 3)
+        self.assertEqual([call.args for call in sleep.call_args_list], [(1,), (2,)])
+        for call in opener.open.call_args_list:
+            self.assertEqual(call.args, (ns.URL,))
+            self.assertEqual(call.kwargs, {'timeout': 30})
+
+    def test_download_transient_failures_are_bounded_and_leave_no_cache(self):
+        for error in [TimeoutError('timeout'), ConnectionResetError('reset'),
+                      ns.urllib.error.HTTPError(ns.URL, 503, 'unavailable', {}, None)]:
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as tmp:
+                opener = Mock()
+                opener.open.side_effect = error
+                with patch.object(ns.urllib.request, 'build_opener', return_value=opener), \
+                        patch.object(ns.time, 'sleep') as sleep, self.assertRaises(type(error)):
+                    ns.prepare(Path(tmp) / 'failed')
+                self.assertEqual(opener.open.call_count, 3)
+                self.assertEqual(sleep.call_count, 2)
+                self.assertEqual([p.name for p in (Path(tmp) / 'failed').iterdir()], ['.install.lock'])
+
+    def test_download_does_not_retry_certificate_http_or_integrity_refusals(self):
+        for error in [ns.urllib.error.URLError(ns.ssl.SSLCertVerificationError('certificate')),
+                      ns.urllib.error.HTTPError(ns.URL, 404, 'missing', {}, None),
+                      ValueError('unexpected redirect')]:
+            with self.subTest(error=str(error)):
+                opener = Mock()
+                opener.open.side_effect = error
+                with patch.object(ns.urllib.request, 'build_opener', return_value=opener), \
+                        patch.object(ns.time, 'sleep') as sleep, self.assertRaises(type(error)):
+                    ns.download_archive()
+                self.assertEqual(opener.open.call_count, 1)
+                sleep.assert_not_called()
+        opener = Mock()
+        opener.open.return_value = io.BytesIO(b'untrusted partial archive')
+        with patch.object(ns.urllib.request, 'build_opener', return_value=opener), \
+                patch.object(ns.time, 'sleep') as sleep, self.assertRaisesRegex(ValueError, 'pinned release'):
+            ns.download_archive()
+        self.assertEqual(opener.open.call_count, 1)
+        sleep.assert_not_called()
 
     def test_onboarding_requires_private_regular_file(self):
         answers = self.root / "answers.json"
