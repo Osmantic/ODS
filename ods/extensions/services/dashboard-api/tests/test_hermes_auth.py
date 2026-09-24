@@ -48,6 +48,14 @@ def test_explicit_password_and_hash_only_are_preserved(tmp_path):
     assert hermes_auth.settings(env, absent) is None
 
 
+def test_upstream_empty_auth_defaults_do_not_disable_managed_restart(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text(json.dumps({'dashboard': {'oauth': {'client_id': '', 'portal_url': ''},
+        'basic_auth': {'username': '', 'password_hash': '', 'password': '', 'secret': 'operator-signing-secret', 'session_ttl_seconds': 0}}}))
+    value = hermes_auth.settings({'HERMES_DASHBOARD_SESSION_TOKEN': 'seed'}, config)
+    assert value['managed'] is True and value['secret'] == 'operator-signing-secret'
+
+
 def test_bridge_policy_missing_stale_unknown_operator_fail_closed(tmp_path):
     path = tmp_path / "policy.json"
     env = {"HERMES_DASHBOARD_SESSION_TOKEN": "seed", "HERMES_AUTH_POLICY_PATH": str(path)}
@@ -152,6 +160,11 @@ async def test_ticket_protocol_does_not_scrape_or_reuse_legacy_token(monkeypatch
         async def __aexit__(self, *args): pass
         async def json(self): return {'ticket': 'single-use+ticket/fixture'}
     class Session:
+        def get(self, url, **kwargs):
+            assert url.endswith('/api/status')
+            response = Response()
+            response.json = AsyncMock(return_value={'version': '0.21.5'})
+            return response
         def post(self, url, **kwargs):
             assert url.endswith('/api/auth/ws-ticket') and kwargs['allow_redirects'] is False
             return Response()

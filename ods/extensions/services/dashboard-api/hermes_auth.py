@@ -43,7 +43,12 @@ def settings(env=None, config_path=None):
         return {"username": username or "ods", "password": password, "managed": False}
     # A hash cannot be turned into a bridge password. Nor can ODS silently
     # replace an operator's OAuth or other dashboard provider with basic auth.
-    custom_auth = any(dashboard.get(k) for k in ("oauth", "self_hosted", "auth", "basic_auth"))
+    oauth = dashboard.get("oauth", {}) or {}
+    oidc = oauth.get("self_hosted", {}) or dashboard.get("self_hosted", {}) or {}
+    # Upstream config migration fills empty auth sections. Empty provider
+    # defaults are not an operator override and must not disable the next boot.
+    custom_auth = bool(basic.get("username") or oauth.get("client_id")
+                       or oidc.get("issuer") or oidc.get("client_id") or dashboard.get("auth"))
     if (password_hash or custom_auth or env.get("HERMES_DASHBOARD_OAUTH_CLIENT_ID")
             or env.get("HERMES_DASHBOARD_OIDC_CLIENT_ID")
             or env.get("HERMES_ODS_MANAGED_AUTH", "true").lower() == "false"):
@@ -54,7 +59,7 @@ def settings(env=None, config_path=None):
     def derive(purpose):
         return hmac.new(seed.encode(), ("ods/hermes/" + purpose + "/v1").encode(), hashlib.sha256).hexdigest()
     return {"username": username or "ods", "password": derive("password"),
-            "secret": derive("signing"), "managed": True}
+            "secret": env.get("HERMES_DASHBOARD_BASIC_AUTH_SECRET") or basic.get("secret") or derive("signing"), "managed": True}
 
 
 def bootstrap():

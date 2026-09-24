@@ -119,8 +119,18 @@ async def _fetch_hermes_token(session: aiohttp.ClientSession) -> str:
 async def _connect_ws(session: aiohttp.ClientSession) -> aiohttp.ClientWebSocketResponse:
     ws_base = _base_url().replace("http://", "ws://", 1).replace("https://", "wss://", 1)
     auth = hermes_auth.settings()
+    legacy_protocol = False
+    if auth:
+        async with session.get(f"{_base_url()}/api/status", allow_redirects=False) as resp:
+            if resp.status != 200:
+                raise HermesUnavailable("Hermes dashboard protocol identity is unavailable")
+            # The previously shipped 0.16 release has password login but no
+            # ws-ticket endpoint (its token gate can mask missing routes).
+            # Select its known protocol before sending a ticket request;
+            # authentication failures never trigger a downgrade.
+            legacy_protocol = (await resp.json()).get("version") == "0.16.0"
     authenticated = await login_dashboard(session, auth) if auth else None
-    if authenticated is not None:
+    if authenticated is not None and not legacy_protocol:
         async with session.post(f"{_base_url()}/api/auth/ws-ticket", allow_redirects=False) as resp:
             if resp.status != 200:
                 raise HermesUnavailable("Hermes did not issue a WebSocket ticket")
