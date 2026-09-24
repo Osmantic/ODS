@@ -122,6 +122,50 @@ check_eq "switching back to local repoints LLM_API_URL" "LLM_API_URL=http://llam
 check_eq "local switchboard routes Hermes through model-router" "HERMES_LLM_BASE_URL=http://model-router:9099/v1" "$(grep -m1 '^HERMES_LLM_BASE_URL=' "$ROOT/.env")"
 check_eq "local switchboard gives Hermes the local router key" "HERMES_LLM_API_KEY=no-key" "$(grep -m1 '^HERMES_LLM_API_KEY=' "$ROOT/.env")"
 
+# ── 5b. Lemonade installs keep their /api/v1 route on `local` ─────────────
+#
+# The installer maps an AMD `local` request to ODS_MODE=lemonade and routes
+# every consumer through LiteLLM because Lemonade serves the OpenAI API at
+# /api/v1, not /v1. `mode-switch.sh local` must not regress that install to
+# llama.cpp endpoints — http://llama-server:8080/v1 is a 404 on the
+# Lemonade-backed container.
+
+ROOT="$(new_root)"
+cat > "$ROOT/.env" <<'EOF'
+ODS_MODE=cloud
+LLM_BACKEND=lemonade
+LITELLM_KEY=sk-test-litellm
+EOF
+run_mode "$ROOT" local > /dev/null
+check_eq "lemonade local keeps the lemonade mode" "ODS_MODE=lemonade" "$(grep -m1 '^ODS_MODE=' "$ROOT/.env")"
+check_eq "lemonade local keeps the LiteLLM gateway URL" "LLM_API_URL=http://litellm:4000" "$(grep -m1 '^LLM_API_URL=' "$ROOT/.env")"
+check_eq "lemonade local points Hermes at LiteLLM, not /v1" "HERMES_LLM_BASE_URL=http://litellm:4000/v1" "$(grep -m1 '^HERMES_LLM_BASE_URL=' "$ROOT/.env")"
+check_eq "lemonade local gives Hermes the LiteLLM key" "HERMES_LLM_API_KEY=sk-test-litellm" "$(grep -m1 '^HERMES_LLM_API_KEY=' "$ROOT/.env")"
+
+ROOT="$(new_root)"
+cat > "$ROOT/.env" <<'EOF'
+ODS_MODE=cloud
+LLM_BACKEND=lemonade
+ODS_MODEL_SWITCHBOARD=enabled
+LITELLM_KEY=sk-test-litellm
+EOF
+run_mode "$ROOT" local > /dev/null
+check_eq "lemonade switchboard local keeps the lemonade mode" "ODS_MODE=lemonade" "$(grep -m1 '^ODS_MODE=' "$ROOT/.env")"
+check_eq "lemonade switchboard local keeps the LiteLLM gateway URL" "LLM_API_URL=http://litellm:4000" "$(grep -m1 '^LLM_API_URL=' "$ROOT/.env")"
+check_eq "lemonade switchboard routes Hermes through model-router" "HERMES_LLM_BASE_URL=http://model-router:9099/v1" "$(grep -m1 '^HERMES_LLM_BASE_URL=' "$ROOT/.env")"
+check_eq "lemonade switchboard gives Hermes the local router key" "HERMES_LLM_API_KEY=no-key" "$(grep -m1 '^HERMES_LLM_API_KEY=' "$ROOT/.env")"
+
+ROOT="$(new_root)"
+cat > "$ROOT/.env" <<'EOF'
+ODS_MODE=local
+LLM_BACKEND=llama-server
+LLM_API_URL=http://llama-server:8080
+EOF
+run_mode "$ROOT" local > /dev/null
+check_eq "llama.cpp local keeps the direct runtime URL" "LLM_API_URL=http://llama-server:8080" "$(grep -m1 '^LLM_API_URL=' "$ROOT/.env")"
+check_eq "llama.cpp local points Hermes at the runtime /v1" "HERMES_LLM_BASE_URL=http://llama-server:8080/v1" "$(grep -m1 '^HERMES_LLM_BASE_URL=' "$ROOT/.env")"
+check_eq "llama.cpp local keeps ODS_MODE=local" "ODS_MODE=local" "$(grep -m1 '^ODS_MODE=' "$ROOT/.env")"
+
 # ── 6. External topology cannot be partially overwritten ─────────────────
 
 ROOT="$(new_root)"

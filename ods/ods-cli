@@ -3650,6 +3650,10 @@ cmd_mode() {
                 echo "  LLM:  Local llama-server → Cloud fallback on failure"
                 echo "  Cost: \$0 when local works, cloud rates on fallback"
                 ;;
+            lemonade)
+                echo "  LLM:  Local Lemonade server (AMD)"
+                echo "  Cost: \$0 (electricity only)"
+                ;;
         esac
 
         echo ""
@@ -3673,21 +3677,44 @@ cmd_mode() {
         error "External LLM routing is installer-managed. Run './install.sh --no-external-llm' first, then retry 'ods mode $mode'."
     fi
 
+    local effective_mode="$mode"
+    if [[ "$mode" == "local" && "${configured_backend,,}" == "lemonade" ]]; then
+        # A `local` request on a Lemonade install maps to ODS_MODE=lemonade
+        # the same way the installer does (installers/phases/06-directories.sh).
+        effective_mode="lemonade"
+    fi
+
     # Update .env
-    _env_set "ODS_MODE" "$mode"
+    _env_set "ODS_MODE" "$effective_mode"
 
     local api_url
     if [[ "$mode" == "local" ]]; then
-        api_url="http://llama-server:8080"
-        _env_set "LLM_API_URL" "$api_url"
         local switchboard_mode
         switchboard_mode=$(grep -m1 "^ODS_MODEL_SWITCHBOARD=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
-        if [[ "${switchboard_mode,,}" == "enabled" ]]; then
-            _env_set "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
-            _env_set "HERMES_LLM_API_KEY" "no-key"
+        if [[ "${configured_backend,,}" == "lemonade" ]]; then
+            # Lemonade serves the OpenAI API at /api/v1, not /v1 — the
+            # llama-server:8080/v1 defaults below return 404 on a Lemonade
+            # install. Local traffic keeps the installer's LiteLLM gateway
+            # route (lemonade.yaml mounts api_base .../api/v1).
+            api_url="http://litellm:4000"
+            _env_set "LLM_API_URL" "$api_url"
+            if [[ "${switchboard_mode,,}" == "enabled" ]]; then
+                _env_set "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
+                _env_set "HERMES_LLM_API_KEY" "no-key"
+            else
+                _env_set "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
+                [[ -n "${LITELLM_KEY:-}" ]] && _env_set "HERMES_LLM_API_KEY" "$LITELLM_KEY"
+            fi
         else
-            _env_set "HERMES_LLM_BASE_URL" "http://llama-server:8080/v1"
-            _env_set "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
+            api_url="http://llama-server:8080"
+            _env_set "LLM_API_URL" "$api_url"
+            if [[ "${switchboard_mode,,}" == "enabled" ]]; then
+                _env_set "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
+                _env_set "HERMES_LLM_API_KEY" "no-key"
+            else
+                _env_set "HERMES_LLM_BASE_URL" "http://llama-server:8080/v1"
+                _env_set "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
+            fi
         fi
     else
         api_url="http://litellm:4000"
