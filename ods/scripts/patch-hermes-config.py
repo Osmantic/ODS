@@ -10,8 +10,33 @@ the rest of the user's config.
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import stat
+import tempfile
 from pathlib import Path
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Replace a live Hermes config without exposing partial contents."""
+    target = path.resolve(strict=False) if path.is_symlink() else path
+    previous_mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else None
+    fd, temporary_name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        if previous_mode is not None:
+            os.fchmod(fd, previous_mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _top_level_block(lines: list[str], name: str) -> tuple[int, int] | None:
@@ -290,7 +315,7 @@ def patch_config(
         updated += "\n"
     if updated == original:
         return False
-    path.write_text(updated, encoding="utf-8")
+    _atomic_write_text(path, updated)
     return True
 
 
