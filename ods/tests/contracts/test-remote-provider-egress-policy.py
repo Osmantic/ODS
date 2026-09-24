@@ -575,6 +575,21 @@ def test_activation_transaction_fails_closed_and_rolls_back_after_commit() -> No
     )
 
 
+def test_activation_transaction_rejects_truthy_non_boolean_status() -> None:
+    class MalformedAdapter(FakeActivationAdapter):
+        def stage(self, env: dict[str, str]) -> dict[str, object]:
+            self.calls.append("stage")
+            return {"ok": "false", "detail": "not a boolean"}
+
+    adapter = MalformedAdapter()
+    run = run_activation_transaction(adapter, {})
+
+    assert_true(run["ok"] is False, "truthy string status must not pass activation")
+    assert_true(run["phase"] == "stage", "malformed status phase drifted")
+    assert_true("non-contract" in run["detail"], "malformed status detail drifted")
+    assert_true(adapter.calls == ["stage"], "malformed status must stop the sequence")
+
+
 def test_lifecycle_configure_operation_is_redacted_and_typed() -> None:
     operation = plan_lifecycle_operation(
         {
@@ -938,6 +953,7 @@ def main() -> int:
         test_activation_receipt_redacts_secret_references,
         test_activation_transaction_orders_phases,
         test_activation_transaction_fails_closed_and_rolls_back_after_commit,
+        test_activation_transaction_rejects_truthy_non_boolean_status,
         test_lifecycle_configure_operation_is_redacted_and_typed,
         test_lifecycle_peer_operation_tracks_peer_token_without_leaks,
         test_lifecycle_test_disable_and_remove_write_intent,

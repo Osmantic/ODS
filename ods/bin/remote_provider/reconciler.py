@@ -46,7 +46,7 @@ def _rollback(adapter: ActivationAdapter, env: dict[str, str]) -> dict[str, Any]
         outcome = adapter.rollback(env)
     except Exception as exc:
         return result(False, f"rollback raised: {exc}")
-    if not isinstance(outcome, dict) or "ok" not in outcome:
+    if not isinstance(outcome, dict) or type(outcome.get("ok")) is not bool:
         return result(False, "rollback returned a non-contract result")
     return outcome
 
@@ -65,7 +65,7 @@ def run_activation_transaction(
             if committed or phase == "commit":
                 payload["rollback"] = _rollback(adapter, env)
             return payload
-        if not isinstance(outcome, dict) or "ok" not in outcome:
+        if not isinstance(outcome, dict) or type(outcome.get("ok")) is not bool:
             payload = result(False, "adapter returned a non-contract result", phase=phase)
             if committed or phase == "commit":
                 payload["rollback"] = _rollback(adapter, env)
