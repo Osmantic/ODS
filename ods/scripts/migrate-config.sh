@@ -39,26 +39,36 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# Get current version
-get_current_version() {
-    if [[ -f "$VERSION_FILE" ]]; then
-        if jq -e '.version' "$VERSION_FILE" >/dev/null 2>&1; then
-            jq -r '.version' "$VERSION_FILE"
-        else
-            cat "$VERSION_FILE" | tr -d '[:space:]'
-        fi
+# Read a version string from a state file that may hold either a bare
+# version word or a JSON record (ods-update.sh writes {"version": ...}).
+# Anything else normalizes to 0.0.0 so compare_versions never receives
+# unparseable input — a JSON blob used to flow straight through and fail
+# arithmetic inside [[ -gt ]].
+read_version_file() {
+    local file="$1" raw=""
+    if [[ ! -f "$file" ]]; then
+        echo "0.0.0"
+        return
+    fi
+    raw="$(tr -d '[:space:]' < "$file")"
+    if [[ "$raw" == \{* ]] && jq -e . "$file" >/dev/null 2>&1; then
+        raw="$(jq -r '.version // empty' "$file")"
+    fi
+    if [[ "$raw" =~ ^v?[0-9]+(\.[0-9]+){0,2}$ ]]; then
+        echo "$raw"
     else
         echo "0.0.0"
     fi
 }
 
+# Get current version
+get_current_version() {
+    read_version_file "$VERSION_FILE"
+}
+
 # Get last migrated version
 get_last_migrated_version() {
-    if [[ -f "$MIGRATION_STATE" ]]; then
-        cat "$MIGRATION_STATE" | tr -d '[:space:]'
-    else
-        echo "0.0.0"
-    fi
+    read_version_file "$MIGRATION_STATE"
 }
 
 # Set last migrated version
