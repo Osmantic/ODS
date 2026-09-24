@@ -55,3 +55,24 @@ test_platform=Linux; test_arch=x86_64; ldd() { echo musl; }
 test_arch=unknown
 if ods_opencode_release; then exit 1; fi
 echo 'PASS supported architecture/libc selection and unsupported rejection'
+# Model a service that is already active: enable alone leaves its old executable
+# and environment in use. The installer must reload before an explicit restart.
+unit_generation=new; loaded_generation=old; running_generation=old
+service_calls=(); restart_fails=false
+ods_systemctl_user() {
+    service_calls+=("$*")
+    case "$1" in
+        daemon-reload) loaded_generation="$unit_generation" ;;
+        enable) : ;;
+        restart) $restart_fails && return 1; running_generation="$loaded_generation" ;;
+        is-active) [[ "$running_generation" == new ]] ;;
+        *) return 1 ;;
+    esac
+}
+ods_restart_opencode_service
+[[ "$running_generation" == new && "${service_calls[*]}" == 'daemon-reload enable opencode-web.service restart opencode-web.service is-active --quiet opencode-web.service' ]]
+echo 'PASS existing active service reloads and restarts into new binary/environment'
+restart_fails=true; service_calls=()
+if ods_restart_opencode_service; then exit 1; fi
+[[ "${service_calls[*]}" != *is-active* ]]
+echo 'PASS failed managed restart never reports successful activation'

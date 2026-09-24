@@ -21,7 +21,9 @@ work and rerun the installer. Configuration/session directories are not removed.
 The existing ODS model-route configuration migration still runs after success.
 
 ODS launchers enable the upstream `websearch` tool for local model providers via
-`OPENCODE_ENABLE_EXA=1` and `OPENCODE_WEBSEARCH_PROVIDER=exa`. This searches the
+`OPENCODE_ENABLE_EXA=1`. Upstream uses Exa by default and ODS preserves an explicit
+`OPENCODE_WEBSEARCH_PROVIDER` override in the service/launcher environment.
+The default searches the
 public web through `https://mcp.exa.ai/mcp`, which upstream supports without an API
 key. Existing OpenCode permissions still apply. These environment settings belong
 to the ODS service/launcher, not the user's global shell. Upstream 1.18.32 does not
@@ -37,3 +39,6 @@ To advance the standard version, review the canonical stable release and tag,
 update the shared asset digests and message constants, run the runtime upgrade
 tests on Unix and Windows, then fresh-install/qualify the fleet. Do not update a
 binary while a qualification or comparison session is active.
+After a successful Linux reinstall, ODS reloads, enables and explicitly restarts
+its managed service so the running process uses the new binary and environment.
+A disk `--version` alone is not proof that an old running process was upgraded.

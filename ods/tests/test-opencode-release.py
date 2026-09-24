@@ -31,6 +31,9 @@ class ReleaseContract(unittest.TestCase):
             text = (ROOT / file).read_text(encoding='utf-8')
             self.assertIn('OPENCODE_ENABLE_EXA', text)
             self.assertIn('OPENCODE_WEBSEARCH_PROVIDER', text)
+            self.assertNotIn('Environment=OPENCODE_WEBSEARCH_PROVIDER=', text)
+            self.assertNotIn("`$env:OPENCODE_WEBSEARCH_PROVIDER =", text)
+            self.assertNotIn('<key>OPENCODE_WEBSEARCH_PROVIDER</key>', text)
         for file in ['installers/phases/07-devtools.sh', 'installers/macos/install-macos.sh']:
             text = (ROOT / file).read_text(encoding='utf-8')
             self.assertIn('ods_install_opencode', text)

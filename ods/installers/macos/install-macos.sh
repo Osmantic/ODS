@@ -2995,8 +2995,7 @@ for service in (data.get("services") or {}).values():
         <string>${OPENCODE_LAUNCHD_PATH}</string>
         <key>OPENCODE_ENABLE_EXA</key>
         <string>1</string>
-        <key>OPENCODE_WEBSEARCH_PROVIDER</key>
-        <string>exa</string>
+        <!-- Preserve inherited OPENCODE_WEBSEARCH_PROVIDER; Exa is the default. -->
     </dict>
     <key>RunAtLoad</key>
     <true/>

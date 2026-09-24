@@ -74,7 +74,7 @@ if ($_ocReady -and (Test-Path $script:OPENCODE_EXE)) {
 `$ErrorActionPreference = "Stop"
 Remove-Item Env:OPENCODE_SERVER_PASSWORD -ErrorAction SilentlyContinue
 `$env:OPENCODE_ENABLE_EXA = '1'
-`$env:OPENCODE_WEBSEARCH_PROVIDER = 'exa'
+# Preserve inherited OPENCODE_WEBSEARCH_PROVIDER; enabled Exa is the default.
 Set-Location -LiteralPath '$_ocDirLiteral'
 & '$_ocExeLiteral' web --port $($script:OPENCODE_PORT) --hostname 127.0.0.1
 exit `$LASTEXITCODE

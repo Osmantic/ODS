@@ -17,6 +17,15 @@ ods_opencode_version_matches() {
     [[ "$actual" == "$2" ]]
 }
 
+# enable --now does not replace an already-running process after an upgrade.
+# The reinstall caller must settle active sessions before this managed restart.
+ods_restart_opencode_service() {
+    ods_systemctl_user daemon-reload &&
+        ods_systemctl_user enable opencode-web.service &&
+        ods_systemctl_user restart opencode-web.service &&
+        ods_systemctl_user is-active --quiet opencode-web.service
+}
+
 # Emits only the selected absolute executable. Existing custom PATH binaries are
 # reused at the reviewed version, otherwise install under ~/.opencode/bin; never
 # overwrite Homebrew or another user's package-managed executable/configuration.
