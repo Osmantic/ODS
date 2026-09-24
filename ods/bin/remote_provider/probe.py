@@ -65,16 +65,28 @@ def _read_probe_body(response: Any) -> bytes:
     return body
 
 
-def _model_count(body: bytes) -> int | None:
+def _model_count(body: bytes) -> int:
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
-        return None
+        raise ProbeError(
+            502,
+            "provider_invalid_response",
+            "remote provider models endpoint returned invalid JSON",
+        )
     if not isinstance(payload, Mapping):
-        return None
+        raise ProbeError(
+            502,
+            "provider_invalid_response",
+            "remote provider models endpoint did not return an object",
+        )
     models = payload.get("data")
     if not isinstance(models, list):
-        return None
+        raise ProbeError(
+            502,
+            "provider_invalid_response",
+            "remote provider models endpoint did not return a data array",
+        )
     return len(models)
 
 
