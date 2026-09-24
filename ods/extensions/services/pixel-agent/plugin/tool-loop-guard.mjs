@@ -10413,7 +10413,10 @@ export function createToolLoopGuard({
         const read = Math.min(total, Math.max(0, effective.fetch - state.fetch));
         return `ODS research budget (not source evidence): Remaining this response: ${search} search calls, ${read} page-reading calls, ${total} web calls total. ` +
           (read > 0
-            ? 'If these leads match the request, read their actual URLs with web_fetch or pixel_ods_web_extract before broadening discovery. Search again only for a specific unresolved evidence gap; do not invent source URLs.'
+            ? 'If these leads match the request, read their actual URLs with web_fetch or pixel_ods_web_extract. ' +
+              (search > 0
+                ? 'Search again only for a specific unresolved evidence gap; do not invent source URLs.'
+                : 'Do not call web_search again in this response; its allowance is exhausted. Do not invent source URLs.')
             : 'Finish with collected evidence or otherwise-authorized tools; do not claim unread sources were verified.');
       })() : undefined;
     const nativeFailure = pending?.nativeUnittestFailure;
