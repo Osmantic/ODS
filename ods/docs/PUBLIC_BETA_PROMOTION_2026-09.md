@@ -54,8 +54,10 @@ deployments should use a pinned release or audited commit.
   archives may lack any native selection or exclusion record, so their original
   native coverage cannot be established retroactively.
 - Native Windows credential files must have verified current-user-only access
-  before secret bytes are written. Failure to apply or verify those permissions
-  stops installation instead of returning success with a warning.
+  from creation, before secret bytes are written. Atomic replacement prevents
+  existing read handles from observing new credentials. Failure to apply or
+  verify permissions, or publish the replacement, stops installation while
+  retaining the previous credential file.
 
 These restrictions expose unsupported operations rather than claiming a
 successful upgrade or complete backup. Native update and disaster recovery

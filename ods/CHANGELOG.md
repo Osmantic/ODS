@@ -24,12 +24,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Native Windows verifies private `.env` access before writing credentials in
   both Windows PowerShell and PowerShell 7; protection failures stop the install.
+  Credentials are created with a private ACL and published by replacement, so
+  an already-open reader cannot observe new credentials after a reinstall.
 - Source update and rollback preserve quoted Compose paths. The source updater
   refuses native Pixel and source-built stacks whose runtime artifacts it cannot
   safely coordinate; ordinary image maintenance remains a separate operation.
 - Generic backup and restore refuse unsupported native Pixel state instead of
   silently omitting it. Configuration-only archives explicitly record the
   exclusion. This restriction does not add native backup/recovery support.
+  Ordinary Linux installations retain backup, restore and configuration rollback
+  when run as root; account-owner receipts determine native state.
 - Installer failure guidance preserves source and recovery receipts instead of
   recommending manual directory deletion or promising every retry is safe.
 - Pixel retry and compaction handling preserves the current request, task

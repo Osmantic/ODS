@@ -68,9 +68,32 @@ try {
             $threw = $true
         }
         if (-not $threw) { throw 'Generator swallowed a credential protection failure' }
-        if ((Get-Item -LiteralPath (Join-Path $failureRoot '.env')).Length -ne 0) { throw 'Secret payload was written before ACL verification' }
+        if (Test-Path -LiteralPath (Join-Path $failureRoot '.env')) { throw 'Credential target was published before ACL verification' }
+        if (@(Get-ChildItem -LiteralPath $failureRoot -Force -Filter '.ods-private-env-*').Count -ne 0) { throw 'Failed credential staging file was retained' }
         $checks++
     }
+    # Revoking an ACL does not revoke a reader's existing handle. Replacement
+    # must keep that handle on old bytes while publishing a private new file.
+    Write-ODSPrivateEnvFile -Path $path -Content 'old-fixture'
+    $reader = [IO.File]::Open($path, 'Open', 'Read', ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try {
+        Write-ODSPrivateEnvFile -Path $path -Content 'new-fixture-credential'
+        $bytes = New-Object byte[] 100
+        $length = $reader.Read($bytes, 0, $bytes.Length)
+        if ([Text.Encoding]::UTF8.GetString($bytes, 0, $length) -ne 'old-fixture') { throw 'Existing read handle observed replacement credentials' }
+        if ([IO.File]::ReadAllText($path) -ne 'new-fixture-credential') { throw 'Replacement credential was not published' }
+        Assert-Private $path
+        $checks++
+    } finally { $reader.Dispose() }
+    # Failed publication must preserve the old credential and remove staging.
+    $reader = [IO.File]::Open($path, 'Open', 'Read', [IO.FileShare]::ReadWrite)
+    try {
+        $threw = $false
+        try { Write-ODSPrivateEnvFile -Path $path -Content 'must-not-publish' } catch { $threw = $true }
+        if (-not $threw -or [IO.File]::ReadAllText($path) -ne 'new-fixture-credential') { throw 'Failed publication did not preserve the old credential' }
+        if (@(Get-ChildItem -LiteralPath $tempRoot -Force -Filter '.ods-private-env-*').Count -ne 0) { throw 'Failed publication retained staging credentials' }
+        $checks++
+    } finally { $reader.Dispose() }
     $badPath = Join-Path $tempRoot 'directory.env'
     New-Item -ItemType Directory -Path $badPath | Out-Null
     $threw = $false

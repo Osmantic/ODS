@@ -159,13 +159,47 @@ function Write-ODSPrivateEnvFile {
     if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
         $parent = Split-Path -Parent $Path
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
-        if (-not (Test-Path -LiteralPath $Path)) {
-            # Establish and verify the DACL on an empty file before any secret
-            # bytes are written, including installs beneath a shared directory.
-            $empty = [IO.File]::Open($Path, 'CreateNew', 'Write', 'None')
-            $empty.Dispose()
+        $existed = Test-Path -LiteralPath $Path
+        if ($existed) {
+            # File.Replace preserves destination metadata. Verify its private
+            # DACL before publication, but never overwrite the old file's bytes:
+            # tightening a DACL cannot revoke already-open reader handles.
+            Protect-ODSPrivateEnvFile $Path
         }
-        Protect-ODSPrivateEnvFile $Path
+        $temporary = Join-Path $parent ('.ods-private-env-' + [guid]::NewGuid().ToString('N'))
+        $security = [Security.AccessControl.FileSecurity]::new()
+        $security.SetAccessRuleProtection($true, $false)
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow'))
+        $stream = $null
+        try {
+            # Supply the DACL at CreateNew so even the empty staging file never
+            # inherits public read access. Keep the handle until payload flush.
+            if ($PSVersionTable.PSEdition -eq 'Core') {
+                $stream = [IO.FileSystemAclExtensions]::Create([IO.FileInfo]::new($temporary),
+                    [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::FullControl,
+                    [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $security)
+            } else {
+                $stream = [IO.FileStream]::new($temporary, [IO.FileMode]::CreateNew,
+                    [Security.AccessControl.FileSystemRights]::FullControl,
+                    [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $security)
+            }
+            Protect-ODSPrivateEnvFile $temporary
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Content)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+            $stream.Dispose()
+            $stream = $null
+            if ($existed) {
+                [IO.File]::Replace($temporary, $Path, [System.Management.Automation.Language.NullString]::Value)
+            } else {
+                [IO.File]::Move($temporary, $Path)
+            }
+        } finally {
+            if ($null -ne $stream) { $stream.Dispose() }
+            if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+        }
+        return
     }
     Write-Utf8NoBom -Path $Path -Content $Content
 }
