@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
+import TalkExport from '../components/TalkExport'
 import {
   AlertCircle, CheckCircle2, Loader2, Mic, Paperclip, RefreshCw,
   Send, Volume2, VolumeX,
@@ -746,6 +747,7 @@ export default function ODSTalk() {
               </button>
             </div>
           </div>
+          <TalkExport messages={messages} busy={sending || recording} />
         </header>
 
         <main className="flex-1 overflow-y-auto px-4 py-4">
