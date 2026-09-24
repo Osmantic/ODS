@@ -2,6 +2,7 @@ import {useEffect, useMemo, useState} from 'react'
 import {ChevronLeft, ChevronRight, RefreshCw, Search, Download, Activity, Cpu, Layers, Wallet} from 'lucide-react'
 import MetalMetricIcon from '../MetalMetricIcon'
 import DailyUsageExport from './DailyUsageExport'
+import UsageReportDownload from './UsageReportDownload'
 import './usage-refined.css'
 
 export const integer = value => Number(value || 0).toLocaleString('en-US')
@@ -56,6 +57,7 @@ export default function UsageView({compact=false,report,readiness,loading,error,
         <button className="usage-refresh" aria-label="Refresh usage" title="Refresh usage" onClick={onRefresh} disabled={loading}><RefreshCw size={14}/></button>
       </div>
       <div className="usage-source-state"><span className={`usage-status-dot ${available ? 'is-ready' : ''}`}/>{loading ? 'Updating usage…' : available ? 'Recorded activity · refreshes every 10s' : 'Usage data unavailable'}</div>
+      <UsageReportDownload report={report} range={range} available={available}/>
     </header>
     {readiness.status!=='ready' && !(loading && readiness.status==='unknown') && <section className="usage-notice" aria-label="Tracking status">
       <h2>{readiness.message || 'Usage tracking needs attention.'}</h2><p>{readiness.detail}</p>
