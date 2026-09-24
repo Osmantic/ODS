@@ -321,7 +321,52 @@ class TestModelStateEndpoint:
         assert body["routeSeq"] == 2
         assert body["active"]["catalogId"] == "phi-4-mini"
         assert body["historyCount"] == 1
+        assert body["historyTotal"] == 1
         assert body["capabilityImpact"]["agentViable"] is True
+
+    def test_conditional_state_read_and_bounded_history(
+        self, test_client, monkeypatch, tmp_path
+    ):
+        path = self._point_at(monkeypatch, tmp_path)
+        _record(path)
+        _record(path, model="phi-4-mini", runtime="Phi-4-mini-Q4_K_M.gguf")
+
+        first = test_client.get(
+            "/api/models/state?history_limit=0", headers=test_client.auth_headers
+        )
+        assert first.status_code == 200
+        assert first.headers["cache-control"] == "private, no-cache"
+        etag = first.headers["etag"]
+        assert etag.startswith('"') and etag.endswith('"')
+        assert first.json()["history"] == []
+        assert first.json()["historyCount"] == 0
+        assert first.json()["historyTotal"] == 1
+
+        unchanged = test_client.get(
+            "/api/models/state?history_limit=0",
+            headers={**test_client.auth_headers, "If-None-Match": f'W/{etag}, "other"'},
+        )
+        assert unchanged.status_code == 304
+        assert unchanged.content == b""
+        assert unchanged.headers["etag"] == etag
+
+        _record(path, model="gemma-3", runtime="Gemma-3-Q4_K_M.gguf")
+        changed = test_client.get(
+            "/api/models/state?history_limit=0",
+            headers={**test_client.auth_headers, "If-None-Match": etag},
+        )
+        assert changed.status_code == 200
+        assert changed.headers["etag"] != etag
+        assert changed.json()["routeSeq"] == 3
+
+    def test_history_limit_is_schema_bounded(
+        self, test_client, monkeypatch, tmp_path
+    ):
+        self._point_at(monkeypatch, tmp_path)
+        resp = test_client.get(
+            "/api/models/state?history_limit=11", headers=test_client.auth_headers
+        )
+        assert resp.status_code == 422
 
     def test_malformed_state_is_diagnostic(self, test_client, monkeypatch, tmp_path):
         path = self._point_at(monkeypatch, tmp_path)
