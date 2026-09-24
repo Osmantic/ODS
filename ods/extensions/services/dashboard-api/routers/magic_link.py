@@ -73,6 +73,10 @@ from security import verify_api_key
 
 logger = logging.getLogger(__name__)
 
+# Revocation prefixes must be at least as long as what the list API shows
+# (token_hash[:8]); see revoke_magic_link.
+_REVOKE_PREFIX_MIN_LEN = 8
+
 router = APIRouter(tags=["magic-link"])
 
 DATA_DIR = Path(os.environ.get("ODS_DATA_DIR", "/data"))
@@ -863,16 +867,36 @@ def revoke_magic_link(token_hash_prefix: str) -> dict:
     returns the same 404 so admins don't fingerprint state. A successful
     revocation flips revoked_at to now, leaves the audit trail intact.
     """
-    if len(token_hash_prefix) < 4 or len(token_hash_prefix) > 64:
+    # Minimum matches what the list API hands out (token_hash[:8]), so an admin
+    # can always paste exactly what they were shown. The old 4-char floor
+    # admitted a 65k-wide prefix space over a store that may hold many tokens.
+    if len(token_hash_prefix) < _REVOKE_PREFIX_MIN_LEN or len(token_hash_prefix) > 64:
         raise HTTPException(status_code=400, detail="Invalid token hash prefix")
     with _STORE_LOCK:
         store = _ensure_store()
-        for record in store.get("tokens", []):
-            if record["token_hash"].startswith(token_hash_prefix) and not record.get("revoked_at"):
-                record["revoked_at"] = _now_iso()
-                _write_store(store)
-                logger.info("magic-link revoked target=%s", record["target_username"])
-                return {"revoked": True}
+        matches = [
+            record
+            for record in store.get("tokens", [])
+            if record["token_hash"].startswith(token_hash_prefix)
+            and not record.get("revoked_at")
+        ]
+        # Never guess which user to revoke. The old loop revoked whichever
+        # record happened to come first and still reported success, so a
+        # colliding prefix silently killed the wrong person's access.
+        if len(matches) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{len(matches)} active magic links share that prefix; "
+                    "supply more characters to identify one"
+                ),
+            )
+        if matches:
+            record = matches[0]
+            record["revoked_at"] = _now_iso()
+            _write_store(store)
+            logger.info("magic-link revoked target=%s", record["target_username"])
+            return {"revoked": True}
     raise HTTPException(status_code=404, detail="No active magic link with that prefix")
 
 
