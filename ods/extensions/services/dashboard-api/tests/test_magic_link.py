@@ -1259,3 +1259,138 @@ def test_store_falls_back_when_primary_parent_is_unwritable(
 
     assert fallback_store.exists()
     assert magic_link_module._ensure_store() == {"tokens": []}
+
+
+# ---------------------------------------------------------------------------
+# Malformed on-disk store — valid JSON of the wrong shape must never brick
+# every magic-link endpoint with a 500.
+# ---------------------------------------------------------------------------
+
+
+def _write_raw_store(magic_link_module, content: str):
+    path = magic_link_module.TOKEN_STORE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["[]", "null", "42", '"text"', '{"tokens": {}}', '{"tokens": "x"}'],
+)
+def test_store_with_wrong_root_shape_does_not_crash(
+    magic_link_client, magic_link_module, raw
+):
+    """A parseable but non-object store is treated as empty, not fatal."""
+    _write_raw_store(magic_link_module, raw)
+
+    list_resp = magic_link_client.get(
+        "/api/auth/magic-link/list", headers=magic_link_client.auth_headers
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    assert list_resp.json() == {"tokens": []}
+
+    redeem = magic_link_client.get(
+        "/auth/magic-link/any-token", follow_redirects=False
+    )
+    assert redeem.status_code == 404
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice"},
+        headers=magic_link_client.auth_headers,
+    )
+    assert gen.status_code == 200, gen.text
+
+    revoke = magic_link_client.delete(
+        "/api/auth/magic-link/abcd1234", headers=magic_link_client.auth_headers
+    )
+    assert revoke.status_code == 404
+
+
+def test_malformed_records_do_not_break_valid_tokens(
+    magic_link_client, magic_link_module
+):
+    """Non-dict / incomplete records must not break every other token."""
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice"},
+        headers=magic_link_client.auth_headers,
+    )
+    assert gen.status_code == 200
+    token = gen.json()["token"]
+
+    store = magic_link_module._ensure_store()
+    store["tokens"] += [
+        42,
+        "not-a-record",
+        None,
+        {"note": "missing token_hash and created_at"},
+        {"token_hash": 7},
+    ]
+    magic_link_module._write_store(store)
+
+    resp = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+    assert resp.status_code == 302, resp.text
+
+    list_resp = magic_link_client.get(
+        "/api/auth/magic-link/list", headers=magic_link_client.auth_headers
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    assert any(t["target_username"] == "alice" for t in list_resp.json()["tokens"])
+
+    alice = next(
+        t for t in magic_link_module._ensure_store()["tokens"]
+        if t.get("target_username") == "alice"
+    )
+    revoke = magic_link_client.delete(
+        f"/api/auth/magic-link/{alice['token_hash'][:8]}",
+        headers=magic_link_client.auth_headers,
+    )
+    assert revoke.status_code == 200, revoke.text
+
+
+def test_malformed_guest_expires_at_fails_closed(
+    magic_link_client, magic_link_module
+):
+    """A guest token whose expiry cannot be parsed must not redeem."""
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice", "expires_in": 3600},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    for bad_value in ("not-a-date", 12345, {"bad": True}):
+        store = magic_link_module._ensure_store()
+        store["tokens"][0]["expires_at"] = bad_value
+        magic_link_module._write_store(store)
+
+        resp = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+        assert resp.status_code == 404, f"expires_at={bad_value!r} redeemed"
+        assert resp.json()["detail"] == "Invalid or expired magic link"
+
+
+def test_record_missing_created_at_still_lists_and_redeems(
+    magic_link_client, magic_link_module
+):
+    """Legacy/partial records without created_at must not crash prune's sort."""
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice"},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    store = magic_link_module._ensure_store()
+    store["tokens"][0].pop("created_at")
+    store["tokens"].append({"token_hash": "0" * 64})  # no created_at either
+    magic_link_module._write_store(store)
+
+    list_resp = magic_link_client.get(
+        "/api/auth/magic-link/list", headers=magic_link_client.auth_headers
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    assert len(list_resp.json()["tokens"]) == 2
+
+    resp = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+    assert resp.status_code == 302, resp.text

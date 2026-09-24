@@ -237,11 +237,17 @@ def _ensure_store() -> dict:
     if not store_path.exists():
         return {"tokens": []}
     try:
-        return json.loads(store_path.read_text(encoding="utf-8"))
+        store = json.loads(store_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         # Corrupted store — start fresh rather than blocking generation.
         logger.exception("magic-link store unreadable at %s; starting fresh", store_path)
         return {"tokens": []}
+    if not isinstance(store, dict) or not isinstance(store.get("tokens"), list):
+        # Valid JSON of the wrong shape is just as unusable — a bare list,
+        # scalar, or non-list "tokens" would crash every reader below.
+        logger.error("magic-link store at %s has invalid shape; starting fresh", store_path)
+        return {"tokens": []}
+    return store
 
 
 def _write_store(store: dict) -> None:
@@ -284,6 +290,15 @@ def _normalize_record(record: dict) -> dict:
         url_mode = "lan"
     record["url_mode"] = url_mode
 
+    # Identity/display fields every reader dereferences — coerce corrupt or
+    # missing values to inert defaults instead of letting them raise.
+    if not isinstance(record.get("token_hash"), str):
+        record["token_hash"] = ""
+    if not isinstance(record.get("target_username"), str):
+        record["target_username"] = ""
+    if not isinstance(record.get("created_at"), str):
+        record["created_at"] = ""
+
     if token_type == "owner":
         record["reusable"] = True
         record["expires_at"] = None
@@ -292,6 +307,10 @@ def _normalize_record(record: dict) -> dict:
 
     if not isinstance(record.get("redemptions"), list):
         record["redemptions"] = []
+    else:
+        record["redemptions"] = [
+            entry for entry in record["redemptions"] if isinstance(entry, dict)
+        ]
     record.setdefault("note", None)
     record.setdefault("revoked_at", None)
     return record
@@ -302,8 +321,14 @@ def _is_expired(token_record: dict, now: Optional[datetime] = None) -> bool:
     if token_record["token_type"] == "owner" or not token_record.get("expires_at"):
         return False
     now = now or datetime.now(timezone.utc)
-    expires_at = datetime.fromisoformat(token_record["expires_at"])
-    return now >= expires_at
+    try:
+        expires_at = datetime.fromisoformat(token_record["expires_at"])
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return now >= expires_at
+    except (TypeError, ValueError):
+        # A guest token whose expiry cannot be evaluated must not redeem.
+        return True
 
 
 def _prune(store: dict) -> dict:
@@ -311,6 +336,10 @@ def _prune(store: dict) -> dict:
     now = datetime.now(timezone.utc)
     keep = []
     for record in store.get("tokens", []):
+        if not isinstance(record, dict):
+            # Structurally invalid entries can never match, redeem, or
+            # display — prune drops them like expired unused records.
+            continue
         record = _normalize_record(record)
         # Always keep revoked or recently-redeemed records for audit.
         if record.get("revoked_at"):
@@ -332,7 +361,7 @@ def _prune(store: dict) -> dict:
 
 def _find_by_hash(store: dict, token_hash: str) -> Optional[dict]:
     for record in store.get("tokens", []):
-        if record["token_hash"] == token_hash:
+        if isinstance(record, dict) and record.get("token_hash") == token_hash:
             return record
     return None
 
@@ -837,7 +866,11 @@ def list_magic_links() -> dict:
         _write_store(store)  # persist pruning
         out: list[TokenSummary] = []
         for r in store.get("tokens", []):
+            if not isinstance(r, dict):
+                continue
             r = _normalize_record(r)
+            last_redemption = r["redemptions"][-1] if r["redemptions"] else None
+            last_at = last_redemption.get("at") if isinstance(last_redemption, dict) else None
             out.append(TokenSummary(
                 token_hash_prefix=r["token_hash"][:8],
                 target_username=r["target_username"],
@@ -848,7 +881,7 @@ def list_magic_links() -> dict:
                 created_at=r["created_at"],
                 expires_at=r.get("expires_at"),
                 redemption_count=len(r.get("redemptions", [])),
-                last_redeemed_at=(r["redemptions"][-1]["at"] if r.get("redemptions") else None),
+                last_redeemed_at=last_at if isinstance(last_at, str) else None,
                 revoked_at=r.get("revoked_at"),
                 note=r.get("note"),
             ))
@@ -868,10 +901,11 @@ def revoke_magic_link(token_hash_prefix: str) -> dict:
     with _STORE_LOCK:
         store = _ensure_store()
         for record in store.get("tokens", []):
-            if record["token_hash"].startswith(token_hash_prefix) and not record.get("revoked_at"):
+            token_hash = record.get("token_hash") if isinstance(record, dict) else None
+            if isinstance(token_hash, str) and token_hash.startswith(token_hash_prefix) and not record.get("revoked_at"):
                 record["revoked_at"] = _now_iso()
                 _write_store(store)
-                logger.info("magic-link revoked target=%s", record["target_username"])
+                logger.info("magic-link revoked target=%s", record.get("target_username"))
                 return {"revoked": True}
     raise HTTPException(status_code=404, detail="No active magic link with that prefix")
 
