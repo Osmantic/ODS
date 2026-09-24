@@ -2,7 +2,7 @@
 # ODS Pre-flight Check
 # Validates all services start correctly before user interaction
 # Backend-aware: detects AMD vs NVIDIA (both use llama-server)
-# Usage: ./ods-preflight.sh
+# Usage: ./ods-preflight.sh [--json]
 #        ./ods-preflight.sh --install-env   # Linux install environment report (JSON: see scripts/linux-install-preflight.sh --help)
 
 set -euo pipefail
@@ -16,6 +16,20 @@ case "${1:-}" in
         exec "$SCRIPT_DIR/scripts/linux-install-preflight.sh" "$@"
         ;;
 esac
+
+JSON_OUTPUT=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --json) JSON_OUTPUT=true ;;
+        -h|--help)
+            echo "Usage: ./ods-preflight.sh [--json]"
+            echo "       ./ods-preflight.sh --install-env [OPTIONS]"
+            exit 0
+            ;;
+        *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
 LOG_FILE="$ODS_DIR/preflight-$(date +%Y%m%d-%H%M%S).log"
 
 # Safe .env loading (no eval; use lib/safe-env.sh)
@@ -83,14 +97,45 @@ NC='\033[0m' # No Color
 PASS=0
 FAIL=0
 WARN=0
+COLLECT_RESULTS=true
+RESULT_STATUSES=()
+RESULT_MESSAGES=()
 
 log() {
-    echo -e "$1"
+    $JSON_OUTPUT || echo -e "$1"
     echo -e "$1" | sed $'s/\033\\[[0-9;]*m//g' >> "$LOG_FILE"
 }
-pass() { log "${GREEN}✓${NC} $1"; PASS=$((PASS+1)); }
-fail() { log "${RED}✗${NC} $1"; FAIL=$((FAIL+1)); }
-warn() { log "${YELLOW}⚠${NC} $1"; WARN=$((WARN+1)); }
+record_result() {
+    $COLLECT_RESULTS || return 0
+    RESULT_STATUSES+=("$1")
+    RESULT_MESSAGES+=("$2")
+}
+pass() { log "${GREEN}✓${NC} $1"; PASS=$((PASS+1)); record_result "pass" "$1"; }
+fail() { log "${RED}✗${NC} $1"; FAIL=$((FAIL+1)); record_result "fail" "$1"; }
+warn() { log "${YELLOW}⚠${NC} $1"; WARN=$((WARN+1)); record_result "warn" "$1"; }
+
+json_escape() {
+    local value="${1-}"
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    value=${value//$'\n'/\\n}
+    value=${value//$'\r'/\\r}
+    value=${value//$'\t'/\\t}
+    printf '%s' "$value"
+}
+
+emit_json() {
+    local i comma=""
+    printf '{"schema_version":"1","kind":"runtime-preflight","backend":"%s","ready":%s,' \
+        "$(json_escape "$BACKEND")" "$([[ "$FAIL" -eq 0 ]] && echo true || echo false)"
+    printf '"log_file":"%s","checks":[' "$(json_escape "$LOG_FILE")"
+    for i in "${!RESULT_STATUSES[@]}"; do
+        printf '%s{"status":"%s","message":"%s"}' "$comma" \
+            "${RESULT_STATUSES[$i]}" "$(json_escape "${RESULT_MESSAGES[$i]}")"
+        comma=","
+    done
+    printf '],"summary":{"passed":%d,"failed":%d,"warnings":%d}}\n' "$PASS" "$FAIL" "$WARN"
+}
 
 echo "" > "$LOG_FILE"
 log "========================================"
@@ -305,6 +350,7 @@ fi
 log ""
 
 # Summary
+COLLECT_RESULTS=false
 log "========================================"
 log "Pre-flight Summary"
 log "========================================"
@@ -314,14 +360,16 @@ log "$(printf "${YELLOW}⚠${NC} Warnings: %d" "$WARN")"
 log ""
 
 if [ $FAIL -eq 0 ]; then
-    pass "Pre-flight PASSED — ODS is ready!"
+    log "${GREEN}✓${NC} Pre-flight PASSED — ODS is ready!"
     EXIT_CODE=0
 else
-    fail "Pre-flight FAILED — fix issues above before proceeding"
+    log "${RED}✗${NC} Pre-flight FAILED — fix issues above before proceeding"
     EXIT_CODE=1
 fi
 
 log ""
 log "Full log: $LOG_FILE"
+
+$JSON_OUTPUT && emit_json
 
 exit $EXIT_CODE
