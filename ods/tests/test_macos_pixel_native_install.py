@@ -281,3 +281,23 @@ _retirement_spec = importlib.util.spec_from_file_location('native_retirement_con
 _retirement_tests = importlib.util.module_from_spec(_retirement_spec)
 _retirement_spec.loader.exec_module(_retirement_tests)
 RetirementSelection = _retirement_tests.RetirementSelection
+
+
+@pytest.mark.parametrize('error, shown, hidden', [
+    (ValueError('native-installer-command-failed'), '(ValueError: native-installer-command-failed).', None),
+    (ValueError('native-node-or-homebrew-required'), '(ValueError: native-node-or-homebrew-required). Install native Node.js', None),
+    (ValueError('Expecting value: line 1 column 1 (char 0)'), '(ValueError).', 'Expecting value'),
+    (OSError(2, 'No such file or directory', '/Users/owner/private'), '(FileNotFoundError).', '/Users/owner/private'),
+    (KeyError('secret-token'), '(KeyError).', 'secret-token'),
+])
+def test_install_failure_names_its_error_code_without_other_detail(monkeypatch, capsys, error, shown, hidden):
+    def fail(**kwargs):
+        raise error
+    monkeypatch.setattr(module, 'install', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py', '--install-dir', '/ods', '--ods-source', '/ods'])
+    assert module.main() == 1
+    stderr = capsys.readouterr().err
+    assert stderr.startswith('Native Pixel installation stopped ')
+    assert shown in stderr
+    if hidden:
+        assert hidden not in stderr
