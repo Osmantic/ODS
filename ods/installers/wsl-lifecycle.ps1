@@ -299,8 +299,10 @@ function Assert-ODSWslStackPlan($Identity,[string]$Action,$Plan) {
         $Plan.nativeUnits -isnot [Array]) { throw 'Invalid owner-verified WSL lifecycle plan' }
     $allowed=@('pixel-ingress.service','openclaw-gateway.service','pixel-extension-manager.service','pixel-artifact-promoter.service','pixel-workspace-preview.service','pixel-preview-inspection.service')
     if ($Plan.nativeUnits.Count -ne 0) {
-        if ($Plan.nativeUnits.Count -ne $allowed.Count) { throw 'Unexpected native service plan' }
-        for ($i=0;$i -lt $allowed.Count;$i++) {
+        # The owner-side verifier accepts only a complete legacy installation
+        # or the complete inspection installation; partial artifacts fail there.
+        if ($Plan.nativeUnits.Count -notin @(($allowed.Count - 1), $allowed.Count)) { throw 'Unexpected native service plan' }
+        for ($i=0;$i -lt $Plan.nativeUnits.Count;$i++) {
             if ($Plan.nativeUnits[$i] -isnot [string] -or $Plan.nativeUnits[$i] -cne $allowed[$i]) { throw 'Unexpected native service in lifecycle plan' }
         }
     }
