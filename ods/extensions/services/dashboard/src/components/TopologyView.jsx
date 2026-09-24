@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
 import { Network } from 'lucide-react'
 
 // Rank → visual style mapping
@@ -21,11 +21,19 @@ function buildMatrix(gpuCount, links) {
 }
 
 export const TopologyView = memo(function TopologyView({ topology }) {
+  const [focusedGpu, setFocusedGpu] = useState(null)
   if (!topology) return null
 
   const { gpus = [], links = [], gpu_count, vendor, driver_version, mig_enabled } = topology
   const n = gpu_count || gpus.length
   const matrix = buildMatrix(n, links)
+  const focus = Number.isInteger(focusedGpu) && focusedGpu >= 0 && focusedGpu < n
+    ? focusedGpu
+    : null
+
+  const toggleFocus = gpuIndex => {
+    setFocusedGpu(current => current === gpuIndex ? null : gpuIndex)
+  }
 
   return (
     <div className="p-5 bg-zinc-900/50 border border-zinc-800 rounded-xl">
@@ -47,13 +55,30 @@ export const TopologyView = memo(function TopologyView({ topology }) {
       {/* GPU reference chips */}
       <div className="flex flex-wrap gap-2 mb-4">
         {gpus.map(g => (
-          <div key={g.index} className="flex items-center gap-1.5 px-2 py-1 bg-zinc-800 rounded-lg text-xs">
+          <button
+            key={g.index}
+            type="button"
+            aria-label={`Focus GPU ${g.index}`}
+            aria-pressed={focus === g.index}
+            onClick={() => toggleFocus(g.index)}
+            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-xs transition-colors ${
+              focus === g.index
+                ? 'border-indigo-400 bg-indigo-500/20'
+                : 'border-transparent bg-zinc-800 hover:border-zinc-600'
+            }`}
+          >
             <span className="text-indigo-300 font-mono">GPU{g.index}</span>
             <span className="text-zinc-400">{g.name.replace('NVIDIA ', '').replace('AMD Radeon ', '')}</span>
             <span className="text-zinc-600 font-mono">{g.memory_gb}GB</span>
-          </div>
+          </button>
         ))}
       </div>
+
+      {focus != null && (
+        <p role="status" className="mb-3 text-[11px] text-indigo-300">
+          Focused on GPU{focus}; select it again to restore the full matrix.
+        </p>
+      )}
 
       {/* Topology matrix table */}
       {n > 1 && links.length > 0 ? (
@@ -63,7 +88,12 @@ export const TopologyView = memo(function TopologyView({ topology }) {
               <tr>
                 <th className="px-2 py-1.5 text-zinc-500 text-left" />
                 {Array.from({ length: n }, (_, i) => (
-                  <th key={i} className="px-3 py-1.5 text-indigo-300 text-center font-medium">
+                  <th
+                    key={i}
+                    className={`px-3 py-1.5 text-indigo-300 text-center font-medium transition-opacity ${
+                      focus != null && focus !== i ? 'opacity-30' : ''
+                    }`}
+                  >
                     GPU{i}
                   </th>
                 ))}
@@ -72,13 +102,16 @@ export const TopologyView = memo(function TopologyView({ topology }) {
             <tbody>
               {Array.from({ length: n }, (_, row) => (
                 <tr key={row}>
-                  <td className="px-2 py-1.5 text-indigo-300 font-medium whitespace-nowrap">
+                  <td className={`px-2 py-1.5 text-indigo-300 font-medium whitespace-nowrap transition-opacity ${
+                    focus != null && focus !== row ? 'opacity-30' : ''
+                  }`}>
                     GPU{row}
                   </td>
                   {Array.from({ length: n }, (_, col) => {
+                    const isFocusedLink = focus == null || row === focus || col === focus
                     if (row === col) {
                       return (
-                        <td key={col} className="px-3 py-1.5 text-center">
+                        <td key={col} className={`px-3 py-1.5 text-center transition-opacity ${isFocusedLink ? '' : 'opacity-20'}`}>
                           <span className="text-zinc-600">—</span>
                         </td>
                       )
@@ -86,12 +119,12 @@ export const TopologyView = memo(function TopologyView({ topology }) {
                     const link = matrix[row][col]
                     if (!link) {
                       return (
-                        <td key={col} className="px-3 py-1.5 text-center text-zinc-600">?</td>
+                        <td key={col} className={`px-3 py-1.5 text-center text-zinc-600 transition-opacity ${isFocusedLink ? '' : 'opacity-20'}`}>?</td>
                       )
                     }
                     const style = linkStyle(link.rank || 0)
                     return (
-                      <td key={col} className="px-1 py-1">
+                      <td key={col} className={`px-1 py-1 transition-opacity ${isFocusedLink ? '' : 'opacity-20'}`}>
                         <span
                           className={`block px-2 py-1 rounded text-center text-[10px] ${style.bg} ${style.text}`}
                           title={`GPU${link.gpu_a} ↔ GPU${link.gpu_b}: ${link.link_type}`}
