@@ -3,6 +3,8 @@
 .pixel-viewport-controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px; color:rgb(var(--theme-text-secondary)); font-size:11px; }
 .pixel-viewport-controls select,.pixel-viewport-controls button { padding:5px; border:1px solid rgb(var(--theme-border)); border-radius:5px; background:rgb(var(--theme-bg)); color:inherit; }
 .pixel-viewport-controls button:disabled { opacity:.4; }
+.pixel-viewport-controls form { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.pixel-viewport-controls input { width:78px; padding:5px; border:1px solid rgb(var(--theme-border)); border-radius:5px; background:rgb(var(--theme-bg)); color:inherit; }
 .pixel-viewport-stage { flex:1; min-height:0; min-width:0; overflow:auto; background:rgb(var(--theme-bg)); }
 .pixel-viewport-stage iframe { display:block; max-width:none; border:0; background:#fff; }
 .pixel-viewport-note { margin:0; padding:6px 8px; font-size:10px; color:rgb(var(--theme-text-muted)); }

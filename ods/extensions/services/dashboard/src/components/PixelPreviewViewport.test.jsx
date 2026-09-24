@@ -2,6 +2,29 @@ import {render, screen, fireEvent} from '@testing-library/react'
 import PixelPreviewViewport from './PixelPreviewViewport'
 
 const access = {frameUrl:'/pixel-preview/site-'+'a'.repeat(24)+'/__ods_view__.html',sandbox:'allow-scripts allow-forms allow-downloads',route:'dashboard-relay'}
+it('applies exact custom breakpoints atomically without reloading the verified frame', () => {
+  render(<PixelPreviewViewport access={access} title="Interactive preview" hidden={false}/>)
+  const frame = screen.getByTitle('Interactive preview')
+  fireEvent.change(screen.getByLabelText('Preview viewport size'),{target:{value:'custom'}})
+  const width = screen.getByLabelText('Viewport width'), height = screen.getByLabelText('Viewport height')
+  fireEvent.change(width,{target:{value:'1023'}})
+  fireEvent.change(height,{target:{value:'900'}})
+  expect(frame.style.width).toBe('1024px')
+  fireEvent.click(screen.getByRole('button',{name:'Apply viewport'}))
+  expect(frame.style.width).toBe('1023px')
+  expect(frame.style.height).toBe('900px')
+  for(const value of ['', '0', '4097', '300.5']) {
+    fireEvent.change(width,{target:{value}})
+    expect(screen.getByRole('button',{name:'Apply viewport'})).toBeDisabled()
+    expect(frame.style.width).toBe('1023px')
+  }
+  fireEvent.click(screen.getByRole('button',{name:'Rotate viewport'}))
+  expect(frame.style.width).toBe('900px')
+  expect(frame.style.height).toBe('1023px')
+  expect(screen.getByTitle('Interactive preview')).toBe(frame)
+  expect(frame).toHaveAttribute('sandbox',access.sandbox)
+  expect(frame).toHaveAttribute('src',access.frameUrl)
+})
 it('changes actual frame dimensions without remounting or changing its authenticated route', () => {
   render(<PixelPreviewViewport access={access} title="Interactive preview" hidden={false}/>)
   const frame = screen.getByTitle('Interactive preview')
