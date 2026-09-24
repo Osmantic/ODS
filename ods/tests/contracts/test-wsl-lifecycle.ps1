@@ -17,6 +17,7 @@ try {
         Check (-not $lifetimeRequired) "installer $preview does not request a persistent lifetime task"
     }
     $a=Get-ODSWslIdentity 'Ubuntu-24.04' '/home/ods/ods'
+    Check ($a.directory -ceq (Join-Path $env:USERPROFILE ('.ods\wsl\'+$a.id))) 'controller uses shared profile storage outside packaged LocalAppData virtualization'
     $b=Get-ODSWslIdentity 'Other-Ubuntu' '/home/ods/ods'
     $c=Get-ODSWslIdentity 'Ubuntu-24.04' '/home/ods/ods-other'
     Check ($a.id -ne $b.id -and $a.id -ne $c.id) 'identity separates distributions and install roots'
@@ -78,6 +79,37 @@ try {
     $script:testTask.Settings.ExecutionTimeLimit='PT0S';$script:testTask.Settings.RestartCount=1
     Reject { Assert-ODSWslTask $a } 'reject automatic failure restart policy'
     $script:testTask.Settings.RestartCount=0
+
+    $originalLocalAppData=$env:LOCALAPPDATA
+    $originalTask=$script:testTask
+    try {
+        $env:LOCALAPPDATA=$fixture
+        $legacy=$a.PSObject.Copy()
+        $legacy.directory=Join-Path $fixture "ODS\wsl\$($a.id)"
+        Initialize-ODSPrivateDirectory $legacy.directory
+        Write-ODSWslJson (Join-Path $legacy.directory 'instance.json') $legacy
+        Write-ODSWslJson (Join-Path $legacy.directory 'request.json') @{generation='legacy';action='run'}
+        $script:testTask.Actions[0].Arguments=Get-ODSWslTaskArguments $legacy
+        function Get-ODSWslRunningDistributions { @() }
+        function Unregister-ScheduledTask { param($TaskName,[switch]$Confirm); Check ($TaskName -ceq $a.taskName) 'migration only unregisters the exact owned task'; $script:testTask=$null }
+        Check ((Get-ODSWslExistingIdentity $a).directory -ceq $legacy.directory) 'stop and status resolve the validated legacy controller'
+        $script:testTask.Actions[0].Arguments+=' injected'
+        Reject { Move-ODSWslLegacyController $a } 'migration refuses altered task actions'
+        $script:testTask.Actions[0].Arguments=Get-ODSWslTaskArguments $legacy
+        $badLegacy=$legacy.PSObject.Copy();$badLegacy.installRoot='/different'
+        Write-ODSWslJson (Join-Path $legacy.directory 'instance.json') $badLegacy
+        Reject { Move-ODSWslLegacyController $a } 'migration refuses mismatched legacy manifests'
+        Write-ODSWslJson (Join-Path $legacy.directory 'instance.json') $legacy
+        $legacyLock=Open-ODSPrivateLock (Join-Path $legacy.directory 'command.lock')
+        try { Reject { Move-ODSWslLegacyController $a } 'migration cannot race an old lifecycle command' } finally { $legacyLock.Dispose() }
+        Move-ODSWslLegacyController $a
+        Check ($null -eq $script:testTask -and (Test-Path (Join-Path $legacy.directory 'instance.json'))) 'migration retires old task while preserving its private evidence'
+        Check ((Read-ODSWslJson (Join-Path $legacy.directory 'request.json')).action -ceq 'stop') 'migration cancels delayed old controller starts'
+    } finally {
+        $env:LOCALAPPDATA=$originalLocalAppData
+        $script:testTask=$originalTask
+        $script:testTask.Actions[0].Arguments=Get-ODSWslTaskArguments $a
+    }
 
     $ownedProcess=Start-Process -FilePath (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList '-NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Sleep -Seconds 60"' -WindowStyle Hidden -PassThru
     $null=$ownedProcess.Handle

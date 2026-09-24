@@ -90,6 +90,31 @@ exit 17
     $output = & $shell -NoProfile -File (Join-Path $fixture 'install.ps1') -NativeWindows -DryRun
     Check ($LASTEXITCODE -eq 17) 'native installer failure exit code preserved'
     Check ($output -contains 'NATIVE:True') 'explicit native mode forwards only its supported parameters'
+    # Start-Process does not sanitize an inherited module path as invoking
+    # powershell.exe directly can. Simulate an incompatible parent's module.
+    if ($env:OS -eq 'Windows_NT') {
+    $foreignModules=Join-Path $fixture 'foreign-modules'
+    $foreignUtility=Join-Path $foreignModules 'Microsoft.PowerShell.Utility'
+    New-Item -ItemType Directory -Path $foreignUtility -Force | Out-Null
+    "throw 'Incompatible parent module was loaded'" | Set-Content (Join-Path $foreignUtility 'Microsoft.PowerShell.Utility.psm1')
+    $installerSource=Get-Content (Join-Path $PSScriptRoot '../../installers/windows.ps1') -Raw
+    $bootstrapStart=$installerSource.IndexOf('$builtinModules =')
+    $bootstrapEnd=$installerSource.IndexOf('$checks =', $bootstrapStart)
+    $probe=Join-Path $fixture 'module-probe.ps1'
+    $probeBody='$ErrorActionPreference="Stop"' + "`n" + $installerSource.Substring($bootstrapStart,$bootstrapEnd-$bootstrapStart) + @'
+
+$null=Get-Acl -LiteralPath $PSCommandPath
+if ((Get-FileHash -LiteralPath $PSCommandPath).Hash.Length -ne 64) { throw 'SHA256 unavailable' }
+exit 0
+'@
+    Set-Content -LiteralPath $probe -Value $probeBody
+    $originalModulePath=$env:PSModulePath
+    try {
+        $env:PSModulePath=$foreignModules+';'+$originalModulePath
+        $child=Start-Process -FilePath (Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe') -ArgumentList @('-NoProfile','-File',('"'+$probe+'"')) -WindowStyle Hidden -Wait -PassThru
+        Check ($child.ExitCode -eq 0) 'Windows PowerShell child ignores incompatible inherited built-in modules'
+    } finally { $env:PSModulePath=$originalModulePath }
+    }
 } finally {
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
     if (-not $fixture.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Fixture escaped temporary directory' }

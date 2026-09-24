@@ -302,7 +302,7 @@ import pathlib
 import sys
 
 text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-start = text.index('if [[ "$_docker_ver" == 29.3.* ]]')
+start = text.index('if [[ "$_docker_ver" == 29.3.*')
 end = text.index("# Decide whether to use sudo", start)
 block = text[start:end]
 gate = block.index("if ! ods_sudo_available")

@@ -18,10 +18,17 @@ function Get-ODSWslIdentity([string]$Distro, [string]$InstallRoot) {
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $hash = [Security.Cryptography.SHA256]::Create()
     try { $id = -join ($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes("$sid`n$Distro`n$InstallRoot")) | ForEach-Object { $_.ToString('x2') }) } finally { $hash.Dispose() }
-    [pscustomobject]@{ schemaVersion=1; ownerSid=$sid; distro=$Distro; installRoot=$InstallRoot; id=$id; taskName="ODS-WSL-$($id.Substring(0,24))"; directory=(Join-Path $env:LOCALAPPDATA "ODS\wsl\$id") }
+    # Packaged launchers may virtualize LocalAppData. Task Scheduler runs outside
+    # that package and would not see the controller at the same apparent path.
+    # UserProfile is shared by both processes; private ACLs are applied below.
+    [pscustomobject]@{ schemaVersion=1; ownerSid=$sid; distro=$Distro; installRoot=$InstallRoot; id=$id; taskName="ODS-WSL-$($id.Substring(0,24))"; directory=(Join-Path $env:USERPROFILE ".ods\wsl\$id") }
 }
 
 function Assert-ODSPrivatePath([string]$Path, [switch]$Directory) {
+    # A 5.1 child launched by PowerShell 7 through Start-Process can inherit
+    # PSModulePath with the incompatible 7.x Security module ahead of its own.
+    # Load the built-in module for this engine, not a module found on that path.
+    Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
     $item = Get-Item -LiteralPath $Path -Force
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or ($Directory -and -not $item.PSIsContainer)) { throw "Unsafe lifecycle path: $Path" }
     $ancestor = if ($item.PSIsContainer) { $item } else { $item.Directory }
@@ -171,7 +178,38 @@ function Get-ODSWslLifetimeStatus($Identity) {
     [pscustomobject]@{ scope='wsl-lifetime'; state=$state; distroRunning=$running; identity=$Identity; runtime=$runtime }
 }
 
+function Get-ODSWslExistingIdentity($Identity) {
+    $task = Get-ScheduledTask -TaskName $Identity.taskName -ErrorAction SilentlyContinue
+    if (-not $task -or $task.Actions[0].Arguments -ceq (Get-ODSWslTaskArguments $Identity)) { return $Identity }
+    $legacy = $Identity.PSObject.Copy()
+    $legacy.directory = Join-Path $env:LOCALAPPDATA "ODS\wsl\$($Identity.id)"
+    # Only the exact previous location, manifest and task are eligible. Never
+    # adopt an arbitrary directory obtained from task arguments.
+    $null = Assert-ODSWslTask $legacy
+    $null = Assert-ODSWslManifest $legacy
+    return $legacy
+}
+
+function Move-ODSWslLegacyController($Identity) {
+    $legacy = Get-ODSWslExistingIdentity $Identity
+    if ($legacy.directory -ceq $Identity.directory) { return }
+    $lock = Open-ODSPrivateLock (Join-Path $legacy.directory 'command.lock')
+    try {
+        $null = Stop-ODSWslLifetime $legacy
+        for ($attempt=0; $attempt -lt 30; $attempt++) {
+            $task = Assert-ODSWslTask $legacy
+            if ($task.State -notin @('Running','Queued')) { break }
+            Start-Sleep -Milliseconds 500
+        }
+        if ($task.State -in @('Running','Queued')) { throw 'Previous WSL controller has not exited; migration was not completed' }
+        Unregister-ScheduledTask -TaskName $legacy.taskName -Confirm:$false
+        # Preserve the old state for diagnosis. A fresh controller and manifest
+        # will be created in the shared profile directory by Start below.
+    } finally { $lock.Dispose() }
+}
+
 function Start-ODSWslLifetime($Identity) {
+    Move-ODSWslLegacyController $Identity
     Initialize-ODSPrivateDirectory $Identity.directory
     $manifestPath = Join-Path $Identity.directory 'instance.json'
     if (Test-Path -LiteralPath $manifestPath) { $null=Assert-ODSWslManifest $Identity } else { Write-ODSWslJson $manifestPath $Identity }
@@ -356,6 +394,16 @@ function Invoke-ODSWslStack($Identity,[string]$Action) {
 
 function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$InstallRoot) {
     $identity=Get-ODSWslIdentity $Distro $InstallRoot
+    if ($Action -in @('status','stop','release','restart')) {
+        $existing=Get-ODSWslExistingIdentity $identity
+        if ($Action -eq 'restart' -and $existing.directory -cne $identity.directory) {
+            # Release the legacy command lock before start takes the new lock
+            # and migrates the old controller. Preserve normal drain ordering.
+            $null=Invoke-ODSWslLifecycle stop $Distro $InstallRoot
+            return (Invoke-ODSWslLifecycle start $Distro $InstallRoot)
+        }
+        $identity=$existing
+    }
     if ($Action -eq 'status') { return (Get-ODSWslLifetimeStatus $identity) }
     Initialize-ODSPrivateDirectory $identity.directory
     $lock=Open-ODSPrivateLock (Join-Path $identity.directory 'command.lock')

@@ -17,6 +17,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Start-Process can carry PowerShell 7's module search path into Windows
+# PowerShell 5.1. Prefer this engine's built-ins before loading any helpers.
+$builtinModules = Join-Path $PSHOME 'Modules'
+$env:PSModulePath = (@($builtinModules) + @($env:PSModulePath -split ';' | Where-Object { $_ -and $_ -ine $builtinModules })) -join ';'
+foreach ($module in @('Microsoft.PowerShell.Utility','Microsoft.PowerShell.Management','Microsoft.PowerShell.Security')) {
+    Import-Module (Join-Path $builtinModules "$module\$module.psd1") -ErrorAction Stop
+}
 $checks = @()
 . (Join-Path $PSScriptRoot 'windows/lib/portal-install-plan.ps1')
 $PassthroughArgs = @(Get-ODSWindowsPortalArguments -Arguments $PassthroughArgs)
