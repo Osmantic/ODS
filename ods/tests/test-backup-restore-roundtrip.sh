@@ -27,6 +27,8 @@ trap 'rm -rf "$TMP"' EXIT
 SRC="$TMP/src"
 mkdir -p "$SRC/data/open-webui" "$SRC/data/hermes/sessions" "$SRC/data/persona"
 mkdir -p "$SRC/data/n8n"
+mkdir -p "$SRC/data/hermes-auth"
+echo '{"schemaVersion":1,"managed":true,"seedDigest":"old-startup"}' > "$SRC/data/hermes-auth/policy.json"
 mkdir -p "$SRC/config"
 mkdir -p "$SRC/models"
 # Cache tier: the directories the compose stack bind-mounts for weights and
@@ -82,6 +84,8 @@ pass "Full backup captures the cache tier (data/models, data/whisper, data/embed
     || fail "Full backup lost its environment config"
 
 BACKUP_DIR="$SRC/.backups/$BACKUP_ID"
+[[ ! -e "$BACKUP_DIR/data/hermes-auth" ]] \
+    || fail "Full backup must not preserve a derived Hermes startup auth policy"
 [[ -f "$BACKUP_DIR/data/hermes/sessions/session.jsonl" ]] \
     || fail "Backup omitted data/hermes"
 [[ -f "$BACKUP_DIR/data/persona/SOUL.md" ]] \
@@ -127,6 +131,7 @@ info "Validating restored contents"
 [[ -f "$DST/data/open-webui/data.txt" ]] || fail "Missing data/open-webui/data.txt after restore"
 [[ -f "$DST/data/hermes/sessions/session.jsonl" ]] || fail "Missing Hermes session after restore"
 [[ -f "$DST/data/persona/SOUL.md" ]] || fail "Missing persona SOUL.md after restore"
+[[ ! -e "$DST/data/hermes-auth" ]] || fail "Restore must regenerate Hermes auth policy on service startup"
 [[ -f "$DST/data/n8n/workflow.txt" ]] || fail "Missing data/n8n/workflow.txt after restore"
 [[ -f "$DST/data/open-webui/local-only.txt" ]] \
     || fail "Restore deleted a file created after the backup"

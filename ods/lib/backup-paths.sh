@@ -46,6 +46,7 @@ ODS_USER_DATA_PATHS=(
 # "deliberately skipped" from "forgotten".
 # shellcheck disable=SC2034  # consumed by tests/test-backup-data-coverage.sh
 ODS_BACKUP_EXCLUDED_DATA_PATHS=(
+    "data/hermes-auth"   # startup policy receipt; regenerate from restored seed/config
     "data/models"        # GGUF weights — re-downloadable, tens of GB
     "data/whisper"       # STT model cache
     "data/embeddings"    # TEI model cache

@@ -81,6 +81,43 @@ def client():
     session_signer._set_secret_for_tests("")
 
 
+@pytest.mark.parametrize("operator", [False, True])
+def test_restored_seed_and_config_regenerate_auth_policy_before_upstream_start(tmp_path, monkeypatch, operator):
+    import os
+    home = tmp_path / "hermes"
+    home.mkdir()
+    config = home / "config.yaml"
+    config.write_text(json.dumps({"dashboard": {"basic_auth": {"password_hash": "operator-hash"}}} if operator else {}))
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    path = policy / "policy.json"
+    path.write_text(json.dumps({"schemaVersion": 1, "managed": True, "seedDigest": hashlib.sha256(b'old-seed').hexdigest()}))
+    for key in list(os.environ):
+        if key.startswith('HERMES_DASHBOARD_') or key == 'HERMES_ODS_MANAGED_AUTH':
+            monkeypatch.delenv(key)
+    env = {'HERMES_HOME': str(home), 'HERMES_AUTH_POLICY_DIR': str(policy),
+           'HERMES_AUTH_POLICY_PATH': str(path), 'HERMES_DASHBOARD_SESSION_TOKEN': 'restored-seed'}
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert hermes_auth.settings(env) is None
+    before = config.read_bytes()
+    monkeypatch.setattr(os, 'getuid', lambda: 1000, raising=False)
+    class UpstreamStarted(Exception):
+        pass
+    def exec_upstream(*args):
+        receipt = json.loads(path.read_text())
+        assert receipt == {'schemaVersion': 1, 'managed': not operator,
+                           'seedDigest': hashlib.sha256(b'restored-seed').hexdigest()}
+        assert not (policy / 'policy.json.tmp').exists()
+        raise UpstreamStarted
+    monkeypatch.setattr(os, 'execv', exec_upstream)
+    with pytest.raises(UpstreamStarted):
+        hermes_auth.bootstrap()
+    assert config.read_bytes() == before
+    value = hermes_auth.settings(env)
+    assert (value is None) if operator else value['managed'] is True
+
+
 def test_unauthorized_cannot_get_hermes_cookies(client, monkeypatch):
     login = AsyncMock()
     monkeypatch.setattr(hermes_bridge, "login_dashboard", login)

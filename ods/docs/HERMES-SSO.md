@@ -6,6 +6,8 @@ Operators who want the additional owner-card gate can set `HERMES_REQUIRE_OWNER_
 
 ODS Talk still requires its signed session. Dashboard API authentication, owner-card issuance, and invite revocation are unchanged.
 
+Backups retain Hermes configuration and the installation seed in `.env`, but exclude `data/hermes-auth`: its nonsecret policy receipt is regenerated atomically before Hermes starts. After a restore, restart Hermes so that receipt reflects the restored configuration. Missing receipts or receipts for a different seed disable managed login until startup regenerates them; explicit operator authentication remains authoritative.
+
 The dashboard sign-in security update invalidates previously issued ODS session
 cookies, including unexpired chat-only guest cookies. Owners renew through their
 existing owner card or authenticated dashboard; the reusable owner-card links
