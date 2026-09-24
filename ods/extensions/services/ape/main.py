@@ -296,8 +296,7 @@ def _args_hash(args: dict) -> str:
 def _grant_key(session_id: Optional[str], tool_name: str, intent: str,
                args_hash: str) -> str:
     """Tight one-shot-grant key: scope + tool + intent + args fingerprint."""
-    scope = session_id or "_global"
-    return f"{scope}|{tool_name}|{intent}|{args_hash}"
+    return json.dumps([session_id or None, tool_name, intent, args_hash], separators=(",", ":"))
 
 
 def _coerce_state(raw: Any) -> dict[str, Any]:
@@ -562,6 +561,19 @@ def consume_grant(
     with _STATE_LOCK:
         grants = _state.setdefault("grants", {})
         grant = grants.pop(gkey, None)
+        if grant is None:
+            # Older state uses delimiter-joined keys. Accept an existing grant
+            # only after matching its stored identity: separators in session
+            # or tool names (and the old _global sentinel) are ambiguous.
+            legacy_key = f"{session_id or '_global'}|{tool_name}|{intent}|{_args_hash(args)}"
+            legacy = grants.get(legacy_key)
+            if legacy and (
+                (legacy.get("session") or None) == (session_id or None)
+                and legacy.get("tool_name") == tool_name
+                and legacy.get("intent") == intent
+                and legacy.get("args_hash") == _args_hash(args)
+            ):
+                grant = grants.pop(legacy_key)
         return grant if grant and _approval_fresh(grant, "granted_at", time.time()) else None
 
 
