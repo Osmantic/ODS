@@ -85,16 +85,34 @@ async def get_n8n_workflows() -> list[dict]:
     return []
 
 
+def _service_aliases() -> dict[str, str]:
+    """Map manifest-declared service aliases to their service id.
+
+    Manifests declare aliases (tts → kokoro, llama-server → llm, n8n →
+    workflows). Workflow catalog dependencies use those same names, so an
+    unresolved alias permanently fails the enable prerequisite even while the
+    service runs healthy.
+    """
+    aliases = {}
+    for sid, cfg in SERVICES.items():
+        for alias in cfg.get("aliases", []):
+            if isinstance(alias, str):
+                aliases.setdefault(alias, sid)
+    return aliases
+
+
 async def check_workflow_dependencies(deps: list[str], health_cache: dict[str, bool] | None = None) -> dict[str, bool]:
     """Check if required services are running. Uses health_cache to avoid duplicate checks."""
     from helpers import check_service_health
 
+    # Legacy spellings not covered by manifest aliases.
     _DEP_ALIASES = {"ollama": "llama-server"}
+    manifest_aliases = _service_aliases()
     if health_cache is None:
         health_cache = {}
     results = {}
     for dep in deps:
-        resolved = _DEP_ALIASES.get(dep, dep)
+        resolved = _DEP_ALIASES.get(dep) or manifest_aliases.get(dep, dep)
         if resolved in health_cache:
             results[dep] = health_cache[resolved]
         elif resolved in SERVICES:

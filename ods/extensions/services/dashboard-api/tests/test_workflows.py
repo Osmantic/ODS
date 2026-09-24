@@ -360,6 +360,58 @@ def test_check_workflow_dependencies_uses_cache(test_client, monkeypatch):
     mock_fn.assert_not_called()
 
 
+def test_check_workflow_dependencies_manifest_alias(test_client, monkeypatch):
+    """Manifest-declared aliases resolve to their service for dep checks.
+
+    The shipped n8n catalog lists `kokoro` as a dependency of voice-to-voice,
+    but the Kokoro service id is `tts` (its manifest declares aliases:
+    [kokoro]). Without alias resolution the enable prerequisite fails even
+    while TTS runs healthy — the workflow can never be enabled.
+    """
+    import routers.workflows as wf_mod
+    from models import ServiceStatus
+
+    monkeypatch.setitem(
+        wf_mod.SERVICES, "tts",
+        {"name": "Kokoro (TTS)", "port": 8880, "aliases": ["kokoro"]},
+    )
+    healthy = ServiceStatus(
+        id="tts", name="Kokoro (TTS)", port=8880,
+        external_port=8880, status="healthy",
+    )
+    mock_fn = AsyncMock(return_value=healthy)
+    monkeypatch.setattr("helpers.check_service_health", mock_fn)
+
+    import asyncio
+    result = asyncio.run(
+        wf_mod.check_workflow_dependencies(["kokoro"])
+    )
+    assert result["kokoro"] is True
+    mock_fn.assert_awaited_once_with("tts", wf_mod.SERVICES["tts"])
+
+
+def test_check_workflow_dependencies_manifest_alias_unhealthy(test_client, monkeypatch):
+    """A manifest alias reports the aliased service's real health."""
+    import routers.workflows as wf_mod
+    from models import ServiceStatus
+
+    monkeypatch.setitem(
+        wf_mod.SERVICES, "tts",
+        {"name": "Kokoro (TTS)", "port": 8880, "aliases": ["kokoro"]},
+    )
+    down = ServiceStatus(
+        id="tts", name="Kokoro (TTS)", port=8880,
+        external_port=8880, status="down",
+    )
+    monkeypatch.setattr("helpers.check_service_health", AsyncMock(return_value=down))
+
+    import asyncio
+    result = asyncio.run(
+        wf_mod.check_workflow_dependencies(["kokoro"])
+    )
+    assert result["kokoro"] is False
+
+
 # ---------------------------------------------------------------------------
 # check_n8n_available() unit tests
 # ---------------------------------------------------------------------------
