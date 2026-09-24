@@ -10,6 +10,7 @@ the rest of the user's config.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from pathlib import Path
 
@@ -75,6 +76,11 @@ def _key_value(lines: list[str], block: tuple[int, int], key: str, indent: int) 
     return None
 
 
+def _yaml_scalar(value: str) -> str:
+    """Encode a string as a YAML-safe double-quoted scalar."""
+    return json.dumps(value, ensure_ascii=False)
+
+
 def _ensure_model(
     lines: list[str],
     model: str | None,
@@ -87,12 +93,12 @@ def _ensure_model(
     if block is None:
         insert = ["model:"]
         if model:
-            insert.append(f'  default: "{model}"')
+            insert.append(f"  default: {_yaml_scalar(model)}")
         if base_url:
             insert.append('  provider: "custom"')
-            insert.append(f'  base_url: "{base_url}"')
+            insert.append(f"  base_url: {_yaml_scalar(base_url)}")
         if api_key:
-            insert.append(f'  api_key: "{api_key}"')
+            insert.append(f"  api_key: {_yaml_scalar(api_key)}")
         if context_length:
             insert.append(f"  context_length: {context_length}")
         if max_tokens:
@@ -101,11 +107,11 @@ def _ensure_model(
         return
 
     if model:
-        block = _set_key(lines, block, "default", f'"{model}"', 2)
+        block = _set_key(lines, block, "default", _yaml_scalar(model), 2)
     if base_url:
-        block = _set_key(lines, block, "base_url", f'"{base_url}"', 2)
+        block = _set_key(lines, block, "base_url", _yaml_scalar(base_url), 2)
     if api_key:
-        block = _set_key(lines, block, "api_key", f'"{api_key}"', 2)
+        block = _set_key(lines, block, "api_key", _yaml_scalar(api_key), 2)
     if context_length:
         block = _set_key(lines, block, "context_length", str(context_length), 2)
     # Existing operator values win, but migrate configs that predate ODS's
