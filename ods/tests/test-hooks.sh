@@ -92,12 +92,14 @@ mkdir -p "$EXT_DIR/hooks"
 touch "$EXT_DIR/hooks/new-setup.sh"
 
 export SCRIPT_DIR="$PROJECT_DIR"
-export EXTENSIONS_DIR="$TMPDIR_TEST/extensions/services"
 
-# Source registry and load
+# Source registry and load. The registry derives EXTENSIONS_DIR from
+# SCRIPT_DIR at source time, so the fixture override must be applied
+# after sourcing to take effect.
 # Reset loaded flag
 _SR_LOADED=false
 . "$PROJECT_DIR/lib/service-registry.sh"
+export EXTENSIONS_DIR="$TMPDIR_TEST/extensions/services"
 sr_load 2>/dev/null
 
 HOOK_PATH="${SERVICE_SETUP_HOOKS[test-ext]:-}"
