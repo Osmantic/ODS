@@ -139,6 +139,30 @@ prompt fit every model.
 
 ## Concurrent compaction session locks
 
+The same source-bound `openclaw-compaction-budget.json` repair retains the
+active attempt's cancellation handle through automatic compaction. The native
+`agent_end` event can precede overflow recovery and continuation in the same
+attempt; clearing the handle there made later progress-limit aborts return
+false while the model continued. Cleanup now occurs in the existing outer
+attempt `finally`, whose handle identity check protects a newer run. No
+stop-reason heuristic, broad cancellation, registry replacement or force-clear
+is added. Normal completion and prompt exceptions still release their handle.
+
+The previous reviewed module hash migrates through the original source hash,
+using the existing Linux/WSL repair receipt and macOS staged-bundle composition.
+No already-running runtime is modified by the installer-free regression:
+
+```sh
+OPENCLAW_PACKAGE_DIR=/path/to/openclaw node --test \
+  ods/extensions/services/pixel-agent/tests/runtime_compaction_abort.integration.mjs
+```
+
+This checks the real SDK registry and continuation boundary using test-owned
+handles and a deterministic compactor, including the original failure,
+repeated retries, abort acknowledgement, normal/error cleanup, and stale
+handle/session isolation. It does not invoke a model or qualify live fleet
+cancellation by itself.
+
 `openclaw-compaction-budget.json` also repairs OpenClaw 2026.6.33's
 `selection-BEwSQKM-.js` session lock controller. Split-turn compaction starts
 history and turn-prefix summaries concurrently. Both prompt wrappers release
