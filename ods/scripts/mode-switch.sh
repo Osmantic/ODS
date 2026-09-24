@@ -2,7 +2,7 @@
 # ============================================================================
 # ODS Mode Switch
 # ============================================================================
-# Usage: ./mode-switch.sh <local|cloud|hybrid> [--status]
+# Usage: ./mode-switch.sh <local|cloud|hybrid> | --status [--json]
 #
 # Switches ODS between local/cloud/hybrid modes by updating .env.
 # This is the backend for `ods mode <mode>`.
@@ -46,16 +46,34 @@ env_set() {
 }
 
 show_status() {
+    local json_output="${1:-false}"
     local current=""
+    local source="default"
     if [[ -f "$ENV_FILE" ]]; then
         # `grep` exits 1 when the key is absent and the script runs under
         # `set -euo pipefail`, so a bare pipeline here aborted the whole script
         # before the default below could apply — status printed nothing at all.
         current=$(grep -m1 "^ODS_MODE=" "$ENV_FILE" | cut -d= -f2- | tr -d '"\047\r' || true)
+        [[ -n "$current" ]] && source="configured"
     else
-        warn ".env not found at $ENV_FILE — showing defaults"
+        [[ "$json_output" == "true" ]] || warn ".env not found at $ENV_FILE — showing defaults"
     fi
-    echo "Current mode: ${current:-local}"
+
+    current="${current:-local}"
+    if [[ "$json_output" == "true" ]]; then
+        MODE_STATUS="$current" MODE_SOURCE="$source" MODE_ENV_FILE="$ENV_FILE" python3 - <<'PY'
+import json
+import os
+
+print(json.dumps({
+    "mode": os.environ["MODE_STATUS"],
+    "source": os.environ["MODE_SOURCE"],
+    "env_file": os.environ["MODE_ENV_FILE"],
+}, separators=(",", ":")))
+PY
+        return
+    fi
+    echo "Current mode: $current"
     echo ""
     echo "Available modes:"
     echo "  local   — Local inference via llama-server (requires GPU/CPU)"
@@ -116,9 +134,15 @@ switch_mode() {
 # Called directly or sourced
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     case "${1:---status}" in
-        --status|-s|status) show_status ;;
+        --status|-s|status)
+            case "${2:-}" in
+                "") show_status ;;
+                --json) show_status true ;;
+                *) error "Unknown status option: $2. Use: --json" ;;
+            esac
+            ;;
         --help|-h|help)
-            echo "Usage: mode-switch.sh <local|cloud|hybrid|--status>"
+            echo "Usage: mode-switch.sh <local|cloud|hybrid|--status [--json]>"
             ;;
         *) switch_mode "${1:-}" ;;
     esac

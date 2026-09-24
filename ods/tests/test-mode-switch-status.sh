@@ -37,6 +37,11 @@ check_contains() {
     fi
 }
 
+json_field() {
+    local field="$1"
+    python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$field"
+}
+
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
@@ -99,6 +104,21 @@ check_eq "quoted mode is reported unquoted" "Current mode: hybrid" "$(current_mo
 ROOT="$(new_root)"
 printf 'ODS_MODE=cloud\r\n' > "$ROOT/.env"
 check_eq "CRLF .env does not leak a carriage return" "Current mode: cloud" "$(current_mode_line "$(run_mode "$ROOT" --status)")"
+
+# ── 4. Machine-readable status ──────────────────────────────────────────────
+
+ROOT="$(new_root)"
+printf 'ODS_MODE=hybrid\n' > "$ROOT/.env"
+OUT="$(run_mode "$ROOT" --status --json)"
+check_eq "JSON status exits 0" "0" "$(run_rc "$ROOT" --status --json)"
+check_eq "JSON status reports configured mode" "hybrid" "$(json_field mode <<< "$OUT")"
+check_eq "JSON status identifies configured source" "configured" "$(json_field source <<< "$OUT")"
+
+ROOT="$(new_root)"
+OUT="$(run_mode "$ROOT" --status --json)"
+check_eq "JSON status remains standalone without .env" "local" "$(json_field mode <<< "$OUT")"
+check_eq "JSON status identifies default source" "default" "$(json_field source <<< "$OUT")"
+check_eq "unknown JSON status option is rejected" "1" "$(run_rc "$ROOT" --status --yaml)"
 
 # ── 4. Bare invocation defaults to status ─────────────────────────────────
 
