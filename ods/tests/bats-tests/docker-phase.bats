@@ -25,6 +25,8 @@ setup() {
     pkg_install() { :; }; export -f pkg_install
     pkg_update() { :; }; export -f pkg_update
     pkg_resolve() { echo "$1"; }; export -f pkg_resolve
+    ods_sudo_available() { return 1; }; export -f ods_sudo_available
+    ods_sudo() { return 1; }; export -f ods_sudo
 
     export SCRIPT_DIR="$BATS_TEST_TMPDIR/ods"
     export LOG_FILE="$BATS_TEST_TMPDIR/docker.log"
@@ -37,7 +39,9 @@ setup() {
     export DOCKER_COMPOSE_CMD=""
     export DOCKER_NEEDS_SUDO=false
 
-    mkdir -p "$SCRIPT_DIR"
+    mkdir -p "$SCRIPT_DIR/installers/lib"
+    cp "$BATS_TEST_DIRNAME/../../installers/lib/podman-registries.sh" \
+        "$SCRIPT_DIR/installers/lib/podman-registries.sh"
     touch "$LOG_FILE"
 }
 
@@ -76,12 +80,26 @@ teardown() {
         pkg_update() { :; }
         pkg_resolve() { echo "$1"; }
 
+        # --skip-docker means the operator supplied a usable runtime. Keep the
+        # test independent of whether the BATS host happens to provide one.
+        docker() {
+            case "$*" in
+                "version --format "*) echo "27.0.0" ;;
+                "--version"|"version") echo "Docker version 27.0.0" ;;
+                "compose version") echo "Docker Compose version v2.27.0" ;;
+                "info") return 0 ;;
+                *) return 0 ;;
+            esac
+        }
+
         source "'"$BATS_TEST_DIRNAME/../../installers/phases/05-docker.sh"'"
         echo "PHASE_COMPLETE"
     '
     assert_success
     assert_output --partial "PHASE_COMPLETE"
     assert_output --partial "Skipping Docker"
+    refute_output --partial "No such file or directory"
+    refute_output --partial "command not found"
 }
 
 # ── _docker_cmd_arr ─────────────────────────────────────────────────────────
