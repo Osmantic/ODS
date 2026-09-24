@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { isIP } from "node:net";
 import { isDeepStrictEqual } from "node:util";
+import { pythonSyntaxGuidance } from './python-syntax-guidance.mjs';
 import { captureNativeWebSearchResult, projectNativeWebSearchResult, projectWebResult,
   successfulTruncatedFetch, projectNativeFetchGuidance, TRUNCATED_FETCH_EXTRACTION_GUIDANCE } from "./web-result-projection.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
@@ -6647,8 +6648,9 @@ export function createToolLoopGuard({
     pendingToolRuns.set(toolCallId, {
       runId,
       selectedToolName,
-      selectedParams: selectedToolName === PREVIEW_INSPECTION_TOOL
+      selectedParams: [PREVIEW_INSPECTION_TOOL, 'exec'].includes(selectedToolName)
         ? structuredClone(selectedParams) : selectedParams,
+      executedParams: selectedToolName === 'exec' ? structuredClone(selectedParams) : undefined,
       inspectionSessionId: runs.get(runId)?.currentSessionId,
       inspectionSessionKey: runs.get(runId)?.currentSessionKey,
       verificationFingerprint,
@@ -8659,6 +8661,9 @@ export function createToolLoopGuard({
           return { block: true, blockReason: CANCELLABLE_EXEC_UNAVAILABLE_REASON };
         }
         const wrappedFingerprint = execFingerprint(params);
+        const pendingExec = pendingToolRuns.get(context?.toolCallId ?? event?.toolCallId);
+        if (pendingExec?.runId === runId && pendingExec.selectedToolName === 'exec')
+          pendingExec.executedParams = structuredClone(params);
         if (originalFingerprint && wrappedFingerprint) {
           state.execOriginalByWrapped.set(wrappedFingerprint, originalFingerprint);
         }
@@ -9237,6 +9242,21 @@ export function createToolLoopGuard({
       : toolName === "tool_call"
         ? toolSearchSelectedToolEvent(event, "exec", "core")
         : undefined;
+    const syntaxExecution = toolName === 'exec' ? event
+      : toolName === 'tool_call' ? toolSearchEventEnvelope(event, 'exec', 'core') : undefined;
+    if (syntaxExecution && pendingToolRun?.runId === runId &&
+        pendingToolRun.selectedToolName === 'exec' && pendingToolRun.transport === toolName &&
+        pendingToolRun.inspectionSessionId === state.currentSessionId &&
+        pendingToolRun.inspectionSessionKey === state.currentSessionKey &&
+        (!context?.sessionId || context.sessionId === state.currentSessionId) &&
+        (!context?.sessionKey || context.sessionKey === state.currentSessionKey) &&
+        (!event?.runId || event.runId === runId) &&
+        (!event?.toolCallId || event.toolCallId === toolCallId) &&
+        (!event?.toolName || event.toolName === toolName) && !event.error &&
+        isDeepStrictEqual(syntaxExecution.params, pendingToolRun.executedParams)) {
+      pendingToolRun.pythonSyntaxGuidance = pythonSyntaxGuidance(pendingToolRun.selectedParams, syntaxExecution.result);
+      pendingToolRun.pythonSyntaxExitCode = syntaxExecution.result?.details?.exitCode;
+    }
     if (completedExecution && pendingToolRun?.runId === runId &&
         pendingToolRun.selectedToolName === 'exec' && pendingToolRun.transport === toolName) {
       pendingToolRun.sandboxPathCorrection = sandboxHostWorkspaceFailure(
@@ -10346,6 +10366,24 @@ export function createToolLoopGuard({
           details: { ...message.details, aggregated: nativeFailure } }
       : undefined;
     const compactVerification = compactCleanVerificationResult(message, pending);
+    const syntaxReceipt = pending?.transport === 'exec' ? message
+      : pending?.transport === 'tool_call' ? validatedToolSearchEnvelope(message.details, 'exec', 'core')?.result : undefined;
+    const syntaxGuidance = pending?.pythonSyntaxGuidance &&
+      syntaxReceipt?.details?.status === 'completed' &&
+      syntaxReceipt.details.exitCode === pending.pythonSyntaxExitCode &&
+      message.role === 'toolResult' && message.toolName === pending.transport &&
+      pending.inspectionSessionId === state?.currentSessionId &&
+      pending.inspectionSessionKey === state?.currentSessionKey &&
+      (!state?.currentSessionId || sessionRuns.get(state.currentSessionId) === pending.runId) &&
+      (!context?.sessionId || context.sessionId === state?.currentSessionId) &&
+      (!context?.sessionKey || context.sessionKey === state?.currentSessionKey) &&
+      (!context?.toolName || context.toolName === pending.transport) &&
+      (!event?.toolName || event.toolName === pending.transport) &&
+      (!message.toolCallId || message.toolCallId === toolCallId) &&
+      (!event?.toolCallId || event.toolCallId === toolCallId) &&
+      (!context?.runId || context.runId === pending.runId) &&
+      (!event?.runId || event.runId === pending.runId)
+      ? pending.pythonSyntaxGuidance : undefined;
     const sandboxPathCorrection = pending?.sandboxPathCorrection &&
       message.role === 'toolResult' && message.toolName === pending.transport &&
       (!message.toolCallId || message.toolCallId === toolCallId) &&
@@ -10502,7 +10540,8 @@ export function createToolLoopGuard({
       !compactNativeWebResult &&
       !nativeFetchGuidance &&
       !previewStageInstruction &&
-      !sandboxPathCorrection
+      !sandboxPathCorrection &&
+      !syntaxGuidance
     ) {
       return undefined;
     }
@@ -10520,6 +10559,9 @@ export function createToolLoopGuard({
     }
     if (sandboxPathCorrection) content.push({type:'text',text:sandboxPathCorrection});
     if (researchBudgetGuidance) content.push({type:'text',text:researchBudgetGuidance});
+    if (syntaxGuidance && !content.some(block => block?.type === 'text' &&
+        /\[ODS Pixel (?:repair|Python syntax)\]/.test(block.text)))
+      content.push({type:'text',text:syntaxGuidance});
     if (previewStageInstruction) {
       content.push({ type: "text", text: previewStageInstruction });
     }
