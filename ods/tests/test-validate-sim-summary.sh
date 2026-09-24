@@ -137,6 +137,18 @@ else
     fail "valid summary should print PASS marker"
 fi
 
+json_out=$(python3 "$ROOT_DIR/scripts/validate-sim-summary.py" --json "$TMP_DIR/valid.json")
+python3 - "$json_out" <<'PY'
+import json
+import sys
+
+report = json.loads(sys.argv[1])
+assert report["ok"] is True
+assert report["strict"] is False
+assert report["errors"] == []
+PY
+pass "valid summary emits machine-readable JSON"
+
 python3 - <<'PY' "$TMP_DIR/valid.json" "$TMP_DIR/bad-golden-count.json"
 import json
 import sys
