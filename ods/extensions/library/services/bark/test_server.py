@@ -148,7 +148,8 @@ def test_tts_text_empty():
     response = client.post("/tts", json={
         "text": ""
     })
-    assert response.status_code == 200  # Empty text is allowed by Pydantic
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "text"]
 
 
 def test_tts_model_loading_on_first_request(mock_bark_preload_models, mock_bark_generate_audio, mock_soundfile_write):
