@@ -32,6 +32,13 @@
 	# these local handle blocks. Keep the literal order so health, favicon,
 	# and invite-help assets remain public, before the optional session gate.
 	route {
+		# Explicit ODS sign-in on this Hermes origin. The API verifies the
+		# signed ODS session before issuing any host-only Hermes cookies.
+		@ods_login path /auth/ods
+		handle @ods_login {
+			rewrite * /api/auth/hermes-session
+			reverse_proxy {$ODS_AUTH_UPSTREAM:ods-dashboard-api:3002}
+		}
 		# Cheap health endpoints for Docker / dashboard / k8s probes. NEVER
 		# gate on the cookie — health checks are anonymous by design. Match
 		# both /health (Docker / our dashboard) and /healthz (k8s convention,

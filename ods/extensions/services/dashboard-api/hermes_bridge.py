@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 import aiohttp
+import hermes_auth
 
 logger = logging.getLogger(__name__)
 
@@ -116,13 +117,43 @@ async def _fetch_hermes_token(session: aiohttp.ClientSession) -> str:
 
 
 async def _connect_ws(session: aiohttp.ClientSession) -> aiohttp.ClientWebSocketResponse:
-    token = await _fetch_hermes_token(session)
     ws_base = _base_url().replace("http://", "ws://", 1).replace("https://", "wss://", 1)
-    url = f"{ws_base}/api/ws?token={token}"
+    auth = hermes_auth.settings()
+    authenticated = await login_dashboard(session, auth) if auth else None
+    if authenticated is not None:
+        async with session.post(f"{_base_url()}/api/auth/ws-ticket", allow_redirects=False) as resp:
+            if resp.status != 200:
+                raise HermesUnavailable("Hermes did not issue a WebSocket ticket")
+            ticket = (await resp.json()).get("ticket")
+        if not isinstance(ticket, str) or not ticket:
+            raise HermesUnavailable("Hermes WebSocket ticket was missing")
+        from urllib.parse import quote
+        url = f"{ws_base}/api/ws?ticket={quote(ticket, safe='')}"
+    else:
+        # Explicit older custom images retain their original token protocol.
+        token = await _fetch_hermes_token(session)
+        url = f"{ws_base}/api/ws?token={token}"
     try:
         return await session.ws_connect(url)
     except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
         raise HermesUnavailable("Hermes JSON-RPC websocket is not reachable") from exc
+
+
+async def login_dashboard(session: aiohttp.ClientSession, auth: dict) -> list | None:
+    """Supported upstream password login. Never relay the credential to a browser."""
+    try:
+        async with session.post(f"{_base_url()}/auth/password-login", json={
+            "provider": "basic", "username": auth["username"], "password": auth["password"],
+        }, allow_redirects=False) as resp:
+            if resp.status == 404 and auth.get("managed"):
+                # Older explicit image overrides predate password auth. Never
+                # downgrade after a credential rejection or transport failure.
+                return None
+            if resp.status != 200 or (await resp.json()).get("ok") is not True:
+                raise HermesUnavailable("Hermes dashboard sign-in failed")
+            return list(resp.cookies.values())
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+        raise HermesUnavailable("Hermes dashboard sign-in is unavailable") from exc
 
 
 async def _recv_json(ws: aiohttp.ClientWebSocketResponse, timeout: float) -> dict[str, Any]:

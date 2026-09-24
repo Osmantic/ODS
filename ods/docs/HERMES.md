@@ -133,15 +133,16 @@ For local backends, keep `model.context_length` and `auxiliary.compression.conte
 
 ## Security posture
 
-- **`--insecure` is enabled inside the container.** Hermes's dashboard refuses non-loopback binds without it. ODS accepts that trade-off only because port 9119 is not host-bound in the default stack; the entry is the proxy on port 9120, controlled by `BIND_ADDRESS`. Enable `HERMES_REQUIRE_OWNER_CARD=true` when the additional signed-session gate is needed. Do not add a public 9119 host binding.
-- **Hermes's internal dashboard token is independent of ODS authentication.** The installer stores `HERMES_DASHBOARD_SESSION_TOKEN` in the mode-600 `.env`; the browser receives it from Hermes with the page. The token is stable across restarts and remains required for Hermes API/WebSocket requests. With the default direct-access mode, anyone who can reach the proxy can open the shared Hermes instance; use the optional owner-card gate for untrusted access.
-- **The container runs as a non-root user** (UID 10000 by default, remappable via `HERMES_UID`). The entrypoint drops privileges via `gosu` before any agent code runs.
+- **Hermes 0.21.5 requires authentication on non-loopback binds.** ODS uses its supported basic provider, with domain-separated password/signing defaults derived from the persisted `HERMES_DASHBOARD_SESSION_TOKEN`. The deprecated insecure environment option only supports older explicit image overrides; it does not disable the current release's gate. Port 9119 stays internal; the proxy on 9120 honors `BIND_ADDRESS`.
+- **Open Hermes from the authenticated ODS dashboard.** The `/auth/ods` proxy launch checks the signed ODS session, signs in through Hermes's supported endpoint, and returns only host-only HttpOnly session cookies with a fixed redirect. No credential is sent to the browser. Each host alias must have its own valid ODS session; this flow does not widen cookie domains. Talk uses supported login and single-use WebSocket tickets on its server connection.
+- **Operator auth remains authoritative.** Existing `dashboard.basic_auth`/`dashboard.oauth` settings and explicit `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`, `PASSWORD_HASH`, or OAuth/OIDC variables are preserved. Hash-only or OAuth installations use native Hermes sign-in; ODS cannot derive a plaintext password from a hash. Supply a matching explicit basic username/password to enable the server Talk bridge, or set `HERMES_ODS_MANAGED_AUTH=false` to disable managed defaults. A nonsecret startup receipt in `data/hermes-auth` lets the API select managed mode without reading another UID's private Hermes home.
+- **The container runs as a non-root user** (UID 10000 by default, remappable via `HERMES_UID`). The upstream entrypoint remaps ownership and drops privileges via s6 before agent code runs. ODS's read-only bootstrap sets auth defaults before handing control to that entrypoint.
 - **The container has full network access** within ODS's bridge net — Hermes can make outbound HTTP requests for tools like `web_search`. If you want to restrict this, add an iptables firewall rule on the host or run Hermes behind a forward proxy.
 - **No APE policy enforcement yet.** Hermes's 70+ tools include shell + file write. The base config defaults toward less-risky tools, but Hermes can still execute shell commands inside its sandbox container. APE policy wrapping is a planned follow-up; until then, the trust model is "the user with access to Hermes is trusted to use the local container."
 
 ## How to bump the image pin
 
-Hermes is a young, fast-moving project. ODS pins a reviewed upstream image tag in `compose.yaml` instead of auto-tracking `:latest`. Operators can temporarily override it with `HERMES_AGENT_IMAGE`, and can provide `HERMES_AGENT_IMAGE_FALLBACK` for registry hotfixes, but changing the shipped default is a deliberate review-and-smoke-test pass:
+Hermes is a young, fast-moving project. ODS pins a reviewed stable release tag and immutable multiarchitecture digest in `compose.yaml`. Docker's `:latest` can track upstream development after a release. Operators can temporarily override the default with `HERMES_AGENT_IMAGE`, and can provide `HERMES_AGENT_IMAGE_FALLBACK` for registry hotfixes. Existing configuration, sessions, profiles, and persona data stay in `data/hermes`; changing the default does not reset them. Release identity is recorded in `config/hermes-release.json`.
 
 ```bash
 # 1. Pick a published upstream image tag.
@@ -158,6 +159,9 @@ docker manifest inspect nousresearch/hermes-agent:<new-tag> >/dev/null
 #    - extensions/services/hermes/compose.yaml
 #    - installers/phases/08-images.sh
 #    - config/dependency-lock.json
+#    - .env.example and .env.schema.json
+#    - installers/macos/install-macos.sh and installers/windows/install-windows.ps1
+#    - config/hermes-release.json and the matching pin contract tests
 #    - this bump-history table
 
 # 5. Smoke test:
@@ -285,6 +289,7 @@ When promoting / talking about this extension, the convention is: "Hermes Agent 
 
 | Date | Pinned image | Notes |
 |---|---|---|
+| 2026-09-24 | `nousresearch/hermes-agent:v2026.9.24` at `sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7` | Hermes Agent 0.21.5 stable release, source `f97608f178d1ffeca59860195ab7da295f7c8e5f`; shared AMD64/ARM64 index. Custom image overrides and persistent data remain supported. |
 | 2026-07-30 | `nousresearch/hermes-agent:v2026.6.5` | Persist Hermes's supported dashboard session token so WebSocket reconnects survive container restarts; retain compatibility with ODS's authenticated proxy topology. |
 | 2026-06-01 | `nousresearch/hermes-agent:v2026.5.16` | Replace removed upstream `sha-*` tag with a published version tag; add `HERMES_AGENT_IMAGE` override/fallback path. |
 | 2026-05-12 | `dd0923bb89ed2dd56f82cb63656a1323f6f42e6f` | Initial integration. |

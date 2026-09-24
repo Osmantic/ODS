@@ -13,7 +13,7 @@ service:
   external_port_env: HERMES_PROXY_PORT
   external_port_default: 9120
   health: /health
-  ui_path: /
+  ui_path: /auth/ods
   health_timeout: 10
   type: docker
   gpu_backends: [all]
@@ -22,9 +22,10 @@ service:
   depends_on: [hermes, dashboard-api]
   description: >
     Caddy-based reverse proxy that fronts the Hermes Agent extension.
-    Opens Hermes directly by default. Set HERMES_REQUIRE_OWNER_CARD=true
+    The dashboard opens an authenticated ODS launch at /auth/ods. Native
+    Hermes login remains available. Set HERMES_REQUIRE_OWNER_CARD=true
     to verify the signed `ods-session` cookie via dashboard-api before
-    forwarding. Hermes's own session-token model handles per-request auth
+    forwarding. Hermes's own provider session handles per-request auth
     in both modes.
     Native streaming + WebSocket support via Caddy's `reverse_proxy`.
 

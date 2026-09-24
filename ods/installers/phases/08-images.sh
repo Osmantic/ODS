@@ -61,7 +61,7 @@ if [[ "$ENABLE_HERMES" == "true" ]]; then
     # Version-pinned upstream image. See extensions/services/hermes/compose.yaml
     # and docs/HERMES.md for the bump process. Hermes-proxy is the auth gate
     # (Caddy) and is pulled alongside Hermes.
-    PULL_LIST+=("${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.6.5}|HERMES — default agent (Nous Research)")
+    PULL_LIST+=("${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7}|HERMES — default agent (Nous Research)")
     PULL_LIST+=("caddy:2.11.3-alpine|HERMES PROXY — magic-link auth gate (Caddy)")
 fi
 [[ "$ENABLE_OPENCLAW" == "true" ]] && PULL_LIST+=("ghcr.io/openclaw/openclaw:2026.3.8|OPENCLAW — agent framework")

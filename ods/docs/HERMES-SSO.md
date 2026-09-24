@@ -1,6 +1,6 @@
 # Hermes access and optional owner-card SSO
 
-Default ODS installs open [Hermes](HERMES.md) directly through `hermes-proxy` on port 9120. No owner card, guest invite, or ODS session is needed to open this core app. The proxy retains Hermes's own API/session-token checks and the configured `BIND_ADDRESS` network boundary.
+Current ODS installs use Hermes 0.21.5's required dashboard authentication. The dashboard's Hermes link opens `/auth/ods` through `hermes-proxy` on port 9120, validates the existing ODS session, and signs into Hermes with server-held managed credentials. Only allowlisted HttpOnly cookies are returned, without a Domain attribute, and the destination is always `/` on the same origin. Direct visits can use Hermes's native login for operator-configured credentials. See [the current auth contract](HERMES.md#security-posture).
 
 Operators who want the additional owner-card gate can set `HERMES_REQUIRE_OWNER_CARD=true` in the installed `.env` and recreate `hermes-proxy`. It defaults to `false` on Linux, Windows, and macOS. Keep direct access limited to a trusted network; enable the gate before publishing Hermes to untrusted users.
 
@@ -9,7 +9,7 @@ ODS Talk still requires its signed session. Dashboard API authentication, owner-
 The dashboard sign-in security update invalidates previously issued ODS session
 cookies, including unexpired chat-only guest cookies. Owners renew through their
 existing owner card or authenticated dashboard; the reusable owner-card links
-remain valid. Default Hermes access still does not require an owner card.
+remain valid. The current managed launch requires a valid ODS session.
 
 When owner-card gating is explicitly enabled:
 
@@ -19,7 +19,7 @@ When owner-card gating is explicitly enabled:
 - Verified (HTTP 200 from the verify endpoint) → traffic is forwarded to `ods-hermes:9119`. Hermes's own [per-process session token model](HERMES.md#security-posture) then handles per-request `/api/` auth.
 - Not verified (HTTP 401 — missing cookie, bad signature, or expired) → 303 redirect to a static "you need an owner card" page.
 
-## Optional SSO design
+## Historical original SSO design (before Hermes 0.21.5)
 
 After reading [upstream's web_server.py at our pinned SHA](https://github.com/NousResearch/hermes-agent/blob/dd0923bb89ed2dd56f82cb63656a1323f6f42e6f/hermes_cli/web_server.py), Hermes's auth is **per-PROCESS, not per-user**. The session token is `secrets.token_urlsafe(32)` generated at server start and baked into the SPA HTML — no env-var to pre-seed, no login flow, no user concept.
 
