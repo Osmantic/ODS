@@ -28,6 +28,7 @@ ODS_USER_DATA_PATHS=(
     "data/hermes"           # agent state and configuration
     "data/persona"          # Hermes persona (SOUL.md)
     "data/hermes-proxy"     # proxy session state
+    "data/auth"             # dashboard owner cards, guest links and revocations
     "data/ape"              # governance decisions and approvals
     "data/token-spy"        # usage and cost history
     "data/privacy-shield"   # scrubber state and keys
