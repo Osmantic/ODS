@@ -32,3 +32,11 @@ Your data is preserved when disabling. To re-enable later: `ods enable paperless
 | Variable | Description | Default |
 |----------|------------|---------|
 | `PAPERLESS_SECRET_KEY` | Django secret key for session security (auto-generated) | _(required)_ |
+| `PAPERLESS_DB_PASSWORD` | Shared application/PostgreSQL password | `paperless` |
+
+Set `PAPERLESS_DB_PASSWORD` before the first enable to initialize PostgreSQL with
+your chosen password and pass the same value to Paperless. Empty or unset values
+retain the existing `paperless` default. Changing this variable after PostgreSQL
+has initialized does not rotate its stored password: update the database role
+password as well before recreating the services. Keep the database data directory
+when changing credentials or disabling the extension.
