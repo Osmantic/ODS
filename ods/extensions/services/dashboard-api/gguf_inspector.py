@@ -82,8 +82,13 @@ _FILE_TYPE_LABELS = {
     30: "IQ4_XS",
     31: "IQ1_M",
     32: "BF16",
-    33: "TQ1_0",
-    34: "TQ2_0",
+    # 33-35 were removed runtime-repacking formats, not ternary types.
+    36: "TQ1_0",
+    37: "TQ2_0",
+    38: "MXFP4_MOE",
+    39: "NVFP4",
+    40: "Q1_0",
+    41: "Q2_0",
 }
 
 
