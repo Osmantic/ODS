@@ -317,6 +317,7 @@ bash tests/test-macos-direct-bind-bridge.sh
 python3 tests/test_macos_native_service.py
 python3 extensions/services/pixel-agent/tests/test_unix_peer.py
 bash tests/test-macos-native-llama-launch-cwd.sh
+python3 tests/test_macos_runtime_download.py
 
 echo "[contract] macOS CLI preserves cloud/local model routing"
 bash tests/test-macos-cli-mode-routing.sh

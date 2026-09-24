@@ -178,6 +178,7 @@ source "${LIB_DIR}/ui.sh"
 macos_apply_presentation_mode
 source "${LIB_DIR}/bridge-manager.sh"
 source "${LIB_DIR}/native-model.sh"
+source "${LIB_DIR}/native-runtime-download.sh"
 source "${LIB_DIR}/tier-map.sh"
 source "${LIB_DIR}/detection.sh"
 source "${LIB_DIR}/preflight-fs.sh"
@@ -2243,77 +2244,9 @@ else
         LLAMA_SERVER_DIR="$(dirname "$LLAMA_SERVER_BIN")"
         MAX_CONTEXT="$MACOS_NATIVE_CONTEXT"
 
-        # Download llama.cpp Metal build
-        LLAMA_ZIP="/tmp/${LLAMA_CPP_MACOS_ASSET}"
-        if [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
-            if [[ ! -f "$LLAMA_ZIP" ]]; then
-                download_with_progress "$LLAMA_CPP_MACOS_URL" "$LLAMA_ZIP" \
-                    "Downloading llama-server (Metal)" || {
-
-                    # Fallback: try Homebrew
-                    ai_warn "Pre-built binary download failed. Trying Homebrew..."
-                    if command -v brew >/dev/null 2>&1; then
-                        brew install llama.cpp 2>&1 | tail -5
-                        BREW_LLAMA=$(command -v llama-server 2>/dev/null || true)
-                        if [[ -n "$BREW_LLAMA" ]]; then
-                            mkdir -p "$LLAMA_SERVER_DIR"
-                            cp "$BREW_LLAMA" "$LLAMA_SERVER_BIN"
-                            chmod +x "$LLAMA_SERVER_BIN"
-                            ai_ok "Installed llama-server via Homebrew"
-                        else
-                            ai_err "Could not install llama-server. Install manually:"
-                            ai "  brew install llama.cpp"
-                            exit 1
-                        fi
-                    else
-                        ai_err "llama-server download failed and Homebrew not available."
-                        ai "Install Homebrew: https://brew.sh"
-                        ai "Then: brew install llama.cpp"
-                        exit 1
-                    fi
-                }
-            fi
-
-            if [[ -f "$LLAMA_ZIP" ]] && [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
-                # Extract
-                ai "Extracting llama-server..."
-                mkdir -p "$LLAMA_SERVER_DIR"
-                TEMP_EXTRACT="/tmp/llama-extract-$$"
-                mkdir -p "$TEMP_EXTRACT"
-                # Format-aware extraction (handles .tar.gz and .zip)
-                if [[ "$LLAMA_ZIP" == *.tar.gz ]] || [[ "$LLAMA_ZIP" == *.tgz ]]; then
-                    tar xzf "$LLAMA_ZIP" -C "$TEMP_EXTRACT"
-                else
-                    unzip -o -q "$LLAMA_ZIP" -d "$TEMP_EXTRACT"
-                fi
-
-                # Find llama-server binary (may be in a subdirectory)
-                FOUND_BIN=$(find "$TEMP_EXTRACT" -name "llama-server" -type f -print -quit)
-                if [[ -n "$FOUND_BIN" ]]; then
-                    cp "$FOUND_BIN" "$LLAMA_SERVER_BIN"
-                    chmod +x "$LLAMA_SERVER_BIN"
-
-                    # Also copy any companion dylibs and Metal libraries
-                    FOUND_DIR=$(dirname "$FOUND_BIN")
-                    find "$FOUND_DIR" -name "*.dylib" -exec cp {} "$LLAMA_SERVER_DIR/" \; 2>/dev/null || true
-                    find "$FOUND_DIR" -name "*.metal" -exec cp {} "$LLAMA_SERVER_DIR/" \; 2>/dev/null || true
-
-                    ai_ok "Extracted llama-server"
-                else
-                    ai_err "llama-server binary not found in archive."
-                    ai "Try: brew install llama.cpp"
-                    rm -rf "$TEMP_EXTRACT"
-                    exit 1
-                fi
-                rm -rf "$TEMP_EXTRACT"
-            fi
-
-            # Remove quarantine attribute (macOS Gatekeeper)
-            xattr -rd com.apple.quarantine "$LLAMA_SERVER_BIN" 2>/dev/null || true
-            xattr -rd com.apple.quarantine "$LLAMA_SERVER_DIR"/*.dylib 2>/dev/null || true
-        else
-            ai_ok "llama-server already present"
-        fi
+        # Fresh private download/extraction; authenticate executable bytes first.
+        macos_install_native_llama "$LLAMA_SERVER_BIN" "$LLAMA_CPP_RELEASE_TAG" \
+            "$LLAMA_CPP_MACOS_ASSET" "$LLAMA_CPP_MACOS_URL" || exit 1
 
         # Start native llama-server with Metal
         ai "Starting native llama-server (Metal)..."
