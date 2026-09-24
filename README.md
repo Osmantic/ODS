@@ -77,7 +77,16 @@ Choose your system, copy the block, run it in a normal terminal. ODS installs th
 curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
 
-**Windows PowerShell**
+**Windows — Portal / OpenClaw (recommended)**
+
+Use the [Portal installation steps for Ubuntu/WSL2](ods/docs/WINDOWS-QUICKSTART.md#portal--openclaw-recommended).
+This installs the core Portal agent through the Linux installer with `--pixel`.
+Docker Desktop's WSL2 backend alone does not provision the agent.
+
+**Windows PowerShell — alternative native stack**
+
+The native path below does not install Portal. Choose it explicitly if you want
+the native Windows stack with optional Hermes instead of the core Portal agent.
 
 ```powershell
 $ProgressPreference = "SilentlyContinue"

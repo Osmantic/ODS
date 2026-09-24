@@ -113,6 +113,11 @@ llama-server runs natively with Metal GPU acceleration; all other services run i
 
 ### Windows (NVIDIA + AMD)
 
+**For the core Portal / OpenClaw agent, follow the
+[recommended Ubuntu/WSL2 installation](docs/WINDOWS-QUICKSTART.md#portal--openclaw-recommended).**
+The PowerShell path below is an alternative native stack; it does not provision
+Portal and can use Hermes when selected.
+
 > **Prerequisite:** Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend and make sure it is running before you start.
 
 ```powershell
