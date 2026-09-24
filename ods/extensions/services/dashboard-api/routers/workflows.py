@@ -31,7 +31,7 @@ def load_workflow_catalog() -> dict:
     if not WORKFLOW_CATALOG_FILE.exists():
         return DEFAULT_WORKFLOW_CATALOG
     try:
-        with open(WORKFLOW_CATALOG_FILE) as f:
+        with open(WORKFLOW_CATALOG_FILE, encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict):
             logger.warning("Workflow catalog must be a JSON object: %s", WORKFLOW_CATALOG_FILE)
@@ -43,7 +43,7 @@ def load_workflow_catalog() -> dict:
         if not isinstance(categories, dict):
             categories = {}
         return {"workflows": workflows, "categories": categories}
-    except (json.JSONDecodeError, OSError, KeyError) as e:
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError, KeyError) as e:
         logger.warning("Failed to load workflow catalog from %s: %s", WORKFLOW_CATALOG_FILE, e)
         return DEFAULT_WORKFLOW_CATALOG
 
@@ -218,9 +218,9 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
         raise HTTPException(status_code=404, detail=f"Workflow file not found: {wf_info['file']}")
 
     try:
-        with open(workflow_file) as f:
+        with open(workflow_file, encoding="utf-8") as f:
             workflow_data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
         raise HTTPException(status_code=500, detail=f"Failed to read workflow: {e}")
 
     try:
