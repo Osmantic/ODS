@@ -1,12 +1,40 @@
 # ODS Integration Guide
 
-You've got ODS running. Now what? This guide shows how to connect your apps.
+You've got ODS running. This guide connects applications to the stable,
+OpenAI-compatible API contract that ODS exposes through LiteLLM.
+
+## Before you connect
+
+LiteLLM is the recommended integration boundary because its URL and public
+model alias stay the same when ODS moves between local, cloud, and hybrid
+modes. Ensure the recommended service is enabled:
+
+```bash
+ods enable litellm
+```
+
+Use these values in the examples below:
+
+- API base: `http://localhost:4000/v1`
+- API key: the generated `LITELLM_KEY` from your ODS `.env`
+- model: `default`
+
+Treat `LITELLM_KEY` as a secret. Replace `YOUR_LITELLM_KEY` in configuration
+files, or inject it through the application's secret mechanism. Check the live
+catalog before relying on an additional mode-specific alias:
+
+```bash
+curl http://localhost:4000/v1/models \
+  -H "Authorization: Bearer YOUR_LITELLM_KEY"
+```
+
+Direct llama-server ports are platform-dependent (`OLLAMA_PORT` defaults to
+11434 on Linux/WSL and 8080 for the native macOS runtime). Use them only when
+you intentionally want to bypass ODS mode routing and LiteLLM authentication.
 
 ---
 
-## 1. OpenAI SDK Compatibility
-
-ODS exposes an OpenAI-compatible API. Just point your SDK at localhost.
+## 1. OpenAI SDK compatibility
 
 ### Python
 
@@ -15,18 +43,18 @@ pip install openai
 ```
 
 ```python
+import os
+
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8080/v1",  # ODS llama-server
-    api_key="not-needed"  # Local, no auth required
+    base_url="http://localhost:4000/v1",
+    api_key=os.environ["LITELLM_KEY"],
 )
 
 response = client.chat.completions.create(
-    model="qwen2.5-32b-instruct",  # Your running model
-    messages=[
-        {"role": "user", "content": "Hello!"}
-    ]
+    model="default",
+    messages=[{"role": "user", "content": "Hello!"}],
 )
 print(response.choices[0].message.content)
 ```
@@ -41,12 +69,12 @@ npm install openai
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-  baseURL: 'http://localhost:8080/v1',
-  apiKey: 'not-needed',
+  baseURL: 'http://localhost:4000/v1',
+  apiKey: process.env.LITELLM_KEY,
 });
 
 const response = await openai.chat.completions.create({
-  model: 'qwen2.5-32b-instruct',
+  model: 'default',
   messages: [{ role: 'user', content: 'Hello!' }],
 });
 
@@ -56,29 +84,32 @@ console.log(response.choices[0].message.content);
 ### curl
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:4000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_LITELLM_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen2.5-32b-instruct",
+    "model": "default",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
 ---
 
-## 2. LangChain Integration
+## 2. LangChain integration
 
 ```bash
-pip install langchain langchain-openai
+pip install langchain-openai
 ```
 
 ```python
+import os
+
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
-    base_url="http://localhost:8080/v1",
-    api_key="not-needed",
-    model="qwen2.5-32b-instruct",
+    base_url="http://localhost:4000/v1",
+    api_key=os.environ["LITELLM_KEY"],
+    model="default",
     temperature=0.7,
 )
 
@@ -86,112 +117,132 @@ response = llm.invoke("Explain quantum computing in one sentence.")
 print(response.content)
 ```
 
-### With RAG (Qdrant + Embeddings)
+### With bundled embeddings and Qdrant
+
+The embeddings extension exposes Hugging Face TEI at port 8090. Its documented
+public request shape is `POST /embed`, separate from the LiteLLM chat API:
 
 ```python
-from langchain_openai import OpenAIEmbeddings
-from langchain_qdrant import Qdrant
+import os
 
-embeddings = OpenAIEmbeddings(
-    base_url="http://localhost:8090/v1",  # Embeddings service
-    api_key="not-needed",
-)
+import requests
+from qdrant_client import QdrantClient
 
-# Connect to ODS's Qdrant
-qdrant = Qdrant.from_existing_collection(
-    embeddings=embeddings,
-    collection_name="documents",
+vectors = requests.post(
+    "http://localhost:8090/embed",
+    json={"inputs": ["ODS runs locally", "Private RAG pipeline"]},
+    timeout=30,
+).json()
+
+qdrant = QdrantClient(
     url="http://localhost:6333",
+    api_key=os.environ.get("QDRANT_API_KEY"),
 )
+```
 
-# Query documents
-results = qdrant.similarity_search("What is the policy on refunds?")
+Enable both extensions before using this path:
+
+```bash
+ods enable embeddings
+ods enable qdrant
 ```
 
 ---
 
-## 3. Continue.dev Setup
+## 3. Continue setup
 
-Continue is an open-source AI code assistant that works in VS Code.
+Continue's current configuration format is `~/.continue/config.yaml`; the old
+`config.json` format is deprecated. Add an OpenAI-compatible model:
 
-1. Install Continue extension in VS Code
-2. Edit `~/.continue/config.json`:
+```yaml
+name: ODS
+version: 1.0.0
+schema: v1
 
-```json
-{
-  "models": [
-    {
-      "title": "ODS",
-      "provider": "openai",
-      "model": "qwen2.5-32b-instruct",
-      "apiBase": "http://localhost:8080/v1",
-      "apiKey": "not-needed"
-    }
-  ]
-}
+models:
+  - name: ODS
+    provider: openai
+    model: default
+    apiBase: http://localhost:4000/v1
+    apiKey: YOUR_LITELLM_KEY
+    roles:
+      - chat
+      - edit
+      - apply
 ```
 
-3. Restart VS Code, select "ODS" in Continue panel
+See Continue's [OpenAI-compatible provider guide](https://docs.continue.dev/customize/model-providers/top-level/openai)
+and [config.yaml reference](https://docs.continue.dev/reference) for additional
+roles and secret handling.
 
 ---
 
-## 4. Cursor IDE Integration
+## 4. Cursor compatibility
 
-Cursor supports custom API endpoints.
+Cursor's OpenAI base-URL override is not a supported direct-local integration
+for ODS. Cursor currently routes those requests through its backend and does
+not accept a `localhost` or LAN-only endpoint. Using a public HTTPS tunnel would
+also change the local-only security boundary that ODS provides.
 
-1. Open Cursor Settings → Models
-2. Add custom model:
-   - **API Base:** `http://localhost:8080/v1`
-   - **API Key:** `not-needed`
-   - **Model:** `qwen2.5-32b-instruct`
+Use Continue or an OpenAI SDK client for a direct local connection. If you
+choose to expose ODS through a reviewed HTTPS gateway, configure Cursor's
+**Settings -> Models -> OpenAI API Key -> Override OpenAI Base URL** with the
+gateway URL and understand that the override affects Cursor's OpenAI-compatible
+model routing. Cursor documents the current localhost limitation in its
+[official community response](https://forum.cursor.com/t/add-an-option-to-add-local-model-in-the-same-machine-or-lan-with-just-the-ip-and-http/148311/3).
 
 ---
 
-## 5. n8n Workflow Examples
+## 5. n8n workflow examples
 
-ODS includes n8n for workflow automation. Access at `http://localhost:5678`.
+ODS includes n8n for workflow automation at `http://localhost:5678`.
 
-### Creating Workflows
-
-1. Open n8n at http://localhost:5678
-2. Log in with the credentials from your `.env` (`N8N_USER` / `N8N_PASS`)
-3. Create a new workflow or import from the n8n template library
-4. Use the "HTTP Request" node pointed at `http://llama-server:8080/v1/chat/completions` (Docker-internal URL)
-
-### Example Workflow Ideas
+1. Open n8n and log in with `N8N_USER` / `N8N_PASS` from `.env`.
+2. Create or import a workflow.
+3. In an HTTP Request node, use
+   `http://litellm:4000/v1/chat/completions` (the Docker-internal URL).
+4. Add `Authorization: Bearer YOUR_LITELLM_KEY` and
+   `Content-Type: application/json` headers.
+5. Send `model: default` in the JSON body.
 
 | Workflow | Description |
 |----------|-------------|
-| Chat Endpoint | HTTP webhook → LLM → response |
-| Document Q&A | File upload → embeddings → Qdrant → LLM |
-| Voice Transcription | Audio → Whisper STT → text |
-| TTS API | Text → Kokoro TTS → audio |
-| Voice-to-Voice | STT → LLM → TTS pipeline |
+| Chat endpoint | HTTP webhook -> LiteLLM -> response |
+| Document Q&A | File upload -> embeddings -> Qdrant -> LiteLLM |
+| Voice transcription | Audio -> Whisper STT -> text |
+| TTS API | Text -> Kokoro TTS -> audio |
+| Voice-to-voice | STT -> LiteLLM -> TTS pipeline |
 
 ---
 
-## 6. REST API Reference
+## 6. REST API reference
 
-### Endpoints
+All paths below are relative to `http://localhost:4000` and require a Bearer
+token containing `LITELLM_KEY`.
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /v1/chat/completions` | Chat (OpenAI compatible) |
+| `POST /v1/chat/completions` | Chat completion (OpenAI compatible) |
 | `POST /v1/completions` | Text completion |
-| `GET /v1/models` | List available models |
-| `GET /health` | Health check |
+| `GET /v1/models` | List configured model aliases |
+| `GET /health/readiness` | LiteLLM readiness probe |
 
 ### Streaming
 
 ```python
+import os
+
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="x")
+client = OpenAI(
+    base_url="http://localhost:4000/v1",
+    api_key=os.environ["LITELLM_KEY"],
+)
 
 stream = client.chat.completions.create(
-    model="qwen2.5-32b-instruct",
+    model="default",
     messages=[{"role": "user", "content": "Write a poem"}],
-    stream=True
+    stream=True,
 )
 
 for chunk in stream:
@@ -201,79 +252,72 @@ for chunk in stream:
 
 ---
 
-## 7. Environment Variables
+## 7. Environment variables
 
-Key variables in `.env` (see [.env.example](../.env.example) for the full list):
+Key variables in `.env` (see [.env.example](../.env.example) for the complete
+schema-backed example):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OLLAMA_PORT` | 11434 | llama-server external port (maps to internal 8080) |
-| `WEBUI_PORT` | 3000 | Open WebUI port |
-| `N8N_PORT` | 5678 | n8n workflows port |
-| `LLM_MODEL` | *(tier-dependent)* | Model name for OpenClaw/dashboard |
-| `CTX_SIZE` | 16384 | Context window size (tokens) |
-| `GGUF_FILE` | *(tier-dependent)* | GGUF model filename in data/models/ |
+| `LITELLM_PORT` | 4000 | Stable external LLM gateway port |
+| `LITELLM_KEY` | generated | Required LiteLLM master key |
+| `ODS_MODE` | local | `local`, `cloud`, or `hybrid` routing |
+| `OLLAMA_PORT` | platform-dependent | Direct llama-server port; bypasses the gateway |
+| `EMBEDDINGS_PORT` | 8090 | Bundled TEI embeddings API |
+| `QDRANT_PORT` | 6333 | Bundled vector database API |
+| `LLM_MODEL` | tier-dependent | Configured local backend model |
+| `CTX_SIZE` | 16384 | Context-window size unless the tier overrides it |
 
 ---
 
-## 8. Authentication Options
+## 8. Authentication and exposure
 
-### No Auth (Default)
+LiteLLM requires `LITELLM_KEY`; there is no supported unauthenticated custom
+application path through the gateway. Send it as an OpenAI-style Bearer token:
 
-Local-only, no auth required. Good for development.
-
-### API Key Auth
-
-Set in `.env`:
-```
-LLM_API_KEY=your-secret-key
+```text
+Authorization: Bearer YOUR_LITELLM_KEY
 ```
 
-Then include in requests:
-```python
-client = OpenAI(
-    base_url="http://localhost:8080/v1",
-    api_key="your-secret-key"
-)
-```
-
-### Open WebUI Auth
-
-Loopback-only ODS installs open directly. For a network deployment, Open WebUI
-has built-in user management:
-
-1. Set `WEBUI_AUTH=true` in `.env`
-2. Restart Open WebUI
-3. The first user becomes admin and can configure auth in Open WebUI settings
+ODS binds service ports to `127.0.0.1` by default. Do not change
+`BIND_ADDRESS` or expose port 4000 to a LAN/public network without adding a
+reviewed TLS and access-control boundary. Open WebUI has its own user-management
+setting (`WEBUI_AUTH`) and is separate from LiteLLM API authentication.
 
 ---
 
-## Common Issues
+## Common issues
 
-### "Model not found"
+### 401 Unauthorized
 
-Check running model name:
+Confirm the request contains the current `LITELLM_KEY` value from the active
+ODS `.env`. Restarted clients can retain an older key.
+
+### Model not found
+
+Query the authenticated catalog and use an ID it returns. `default` is the
+stable cross-mode alias shipped by ODS:
+
 ```bash
-curl http://localhost:8080/v1/models
+curl http://localhost:4000/v1/models \
+  -H "Authorization: Bearer YOUR_LITELLM_KEY"
 ```
-
-Use the exact model name in your requests.
 
 ### Connection refused
 
-Ensure services are running:
+Check the gateway and its logs:
+
 ```bash
-docker compose ps
+ods status
+docker compose logs litellm --tail 50
 ```
 
-Check llama-server is ready:
-```bash
-docker compose logs llama-server | tail -20
-```
+If LiteLLM is disabled, run `ods enable litellm` and then `ods restart`.
 
 ### Slow first response
 
-First request after start triggers model warm-up. Wait 30-60 seconds.
+The first local request after startup may materialize model and KV-cache state.
+Follow backend logs with `ods logs llm` while it warms up.
 
 ---
 

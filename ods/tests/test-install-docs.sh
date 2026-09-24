@@ -290,6 +290,22 @@ security_doc="$ROOT_DIR/SECURITY.md"
 require_literal "$security_doc" 'security@osmantic.com' "Security reporting address"
 require_literal "$security_doc" 'inbound alias monitored through the shared' "Security alias routing guidance"
 
+integration_guide="$ROOT_DIR/docs/INTEGRATION-GUIDE.md"
+require_literal "$integration_guide" 'http://localhost:4000/v1' "Stable LiteLLM integration endpoint"
+require_literal "$integration_guide" 'Authorization: Bearer YOUR_LITELLM_KEY' "LiteLLM authentication guidance"
+require_literal "$integration_guide" 'model="default"' "Stable cross-mode model alias"
+require_literal "$integration_guide" 'http://litellm:4000/v1/chat/completions' "Docker-internal n8n gateway route"
+require_literal "$integration_guide" '~/.continue/config.yaml' "Current Continue configuration path"
+require_literal "$ROOT_DIR/extensions/services/litellm/manifest.yaml" 'external_port_default: 4000' "LiteLLM manifest port contract"
+for litellm_config in local cloud hybrid; do
+    require_literal "$ROOT_DIR/config/litellm/${litellm_config}.yaml" 'model_name: default' "${litellm_config} stable model alias"
+done
+if grep -qF 'http://localhost:8080/v1' "$integration_guide" \
+    || grep -qF 'qwen2.5-32b-instruct' "$integration_guide" \
+    || grep -qF 'api_key="not-needed"' "$integration_guide"; then
+    fail "Integration guide still publishes the retired direct-backend contract"
+fi
+
 if grep -qF 'separately deployed bootstrap revision' "${compatible_ref_docs[@]}" "$trust_doc"; then
     fail "Install guidance still describes a separately promoted hosted bootstrap"
 fi
