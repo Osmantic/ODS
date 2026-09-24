@@ -2,14 +2,17 @@
 
 - Inter and JetBrains Mono are bundled locally under the SIL Open Font License
   1.1. Copyright notices and the license are in `public/fonts/OFL.txt`.
-- The ODS mark (`public/osmantic-isolated-os.png`), its favicon and the wallpaper
-  collection in `src/assets/wallpapers/` were supplied by Gabriel. The existing
-  contribution records permission asserted by that contributor; it does not
-  establish each third-party rights holder's grant. The
-  [per-file artwork evidence ledger](../../../docs/ASSET-PROVENANCE.md) records
-  the remaining source/rights gaps. No open-source or public-domain status is
-  asserted for these images. Resolve each gap before relying on redistribution
-  rights; changing this notice does not clear the artwork.
+- The 12 current JPEG wallpapers in `src/assets/wallpapers/` are AI-generated
+  replacements created for ODS on 2026-09-24 under maintainer authorization.
+  They use generic text prompts, with no former wallpaper supplied as an input,
+  and are distributed under the repository's Apache-2.0 license to the extent
+  applicable rights exist. They are not device-vendor wallpapers or location
+  photographs. The [provenance ledger](../../../docs/ASSET-PROVENANCE.md)
+  records concepts, dimensions and master/distribution hashes. Older images
+  remain in history and older releases; this notice grants no rights in them.
+- The ODS mark (`public/osmantic-isolated-os.png`) and favicon were supplied by
+  Gabriel with asserted permission. Preserve a durable source/authorization
+  record before representing downstream rebranding or redistribution as cleared.
 - Pixel's mascot renderer and workbench adaptation come from the Osmantic Pixel
   project. Read the current [Pixel License for ODS](../../../vendor/pixel/LICENSE.md)
   and [third-party notices](../../../vendor/pixel/THIRD_PARTY_NOTICES.md).

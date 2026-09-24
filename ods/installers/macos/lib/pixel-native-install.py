@@ -42,6 +42,10 @@ ERROR_GUIDANCE = {
         'Existing native Pixel state was found. This initial-install path cannot migrate or resume it; leave it intact.',
     'native-node-or-homebrew-required': 'Install native Node.js 22+ with npm, or Homebrew for automatic Node setup.',
     'local-docker-socket-required': 'Select a local Docker Desktop Unix-socket context.',
+    'native-identity-authorization-required':
+        'Could not authorize the retained Pixel identity check. Run sudo -v and rerun this installer in the same terminal, or use the interactive installer in a terminal. Keep Pixel state intact.',
+    'native-identity-verification-unavailable':
+        'Could not complete the privileged Pixel identity check. Check sudo and system Python availability, then retry. Keep Pixel state intact.',
 }
 
 
@@ -61,19 +65,25 @@ def command(args, *, env=None, timeout=60):
     return result.stdout.strip()
 
 
-def retained_identity_only(*, empty_home=False):
+def retained_identity_only(*, empty_home=False, prompt_for_sudo=False):
     """Ask the root-owned account helper to prove an identity-only reinstall."""
     try:
-        result = subprocess.run(['/usr/bin/sudo', '-n', '/usr/bin/python3',
+        interactive = prompt_for_sudo and sys.stdin.isatty() and sys.stderr.isatty()
+        result = subprocess.run(['/usr/bin/sudo', *([] if interactive else ['-n']), '/usr/bin/python3',
             str(HERE / 'pixel-native-ops-account.py'),
             '--verify-empty-home-only' if empty_home else '--verify-identity-only'],
-            stdin=subprocess.DEVNULL, capture_output=True, timeout=60, check=False)
-        return result.returncode == 0
-    except (OSError, subprocess.SubprocessError):
+            stdin=None if interactive else subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=None if interactive else subprocess.PIPE, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError('native-identity-verification-unavailable') from error
+    if result.returncode == os.EX_DATAERR:
         return False
+    if result.returncode:
+        raise ValueError('native-identity-authorization-required')
+    return True
 
 
-def preflight(install_dir):
+def preflight(install_dir, *, prompt_for_sudo=False):
     if sys.platform != 'darwin' or platform.machine() != 'arm64' or os.geteuid() == 0:
         raise ValueError('native-apple-silicon-owner-required')
     install_dir = Path(install_dir)
@@ -91,7 +101,8 @@ def preflight(install_dir):
     retained_identity = os.path.lexists('/private/var/lib/ods-pixel-access')
     if retained_home and not retained_identity:
         raise ValueError('existing-native-pixel-requires-migration-or-recovery')
-    if retained_identity and not retained_identity_only(empty_home=retained_home):
+    if retained_identity and not retained_identity_only(
+            empty_home=retained_home, prompt_for_sudo=prompt_for_sudo):
         raise ValueError('existing-native-pixel-requires-migration-or-recovery')
     return install_dir
 
@@ -133,8 +144,8 @@ def node_tools():
     return selected
 
 
-def install(*, install_dir, ods_source, compose_files, ref=DEFAULT_REF):
-    install_dir = preflight(install_dir).resolve(strict=True)
+def install(*, install_dir, ods_source, compose_files, ref=DEFAULT_REF, prompt_for_sudo=False):
+    install_dir = preflight(install_dir, prompt_for_sudo=prompt_for_sudo).resolve(strict=True)
     if not re.fullmatch('[a-f0-9]{40}', ref):
         raise ValueError('exact-pixel-source-ref-required')
     paths = [Path(path).resolve(strict=True) for path in compose_files]
@@ -202,15 +213,17 @@ def main():
     parser.add_argument('--compose-file', action='append', default=[])
     parser.add_argument('--ref', default=DEFAULT_REF)
     parser.add_argument('--preflight-only', action='store_true')
+    parser.add_argument('--prompt-for-sudo', action='store_true',
+        help='Allow a terminal password prompt for retained-identity verification')
     args = parser.parse_args()
     try:
         if args.preflight_only:
-            preflight(args.install_dir)
+            preflight(args.install_dir, prompt_for_sudo=args.prompt_for_sudo)
         else:
             if not args.ods_source:
                 raise ValueError('ods-source-required')
             install(install_dir=args.install_dir, ods_source=args.ods_source, compose_files=args.compose_file,
-                ref=args.ref)
+                ref=args.ref, prompt_for_sudo=args.prompt_for_sudo)
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         # Error codes contain no captured subprocess output, environment or keys.
         guidance = ERROR_GUIDANCE.get(str(error),

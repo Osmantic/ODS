@@ -12,9 +12,9 @@ export const WALLPAPERS = [
   {id:'blue', name:'Blue', image:blue},
   {id:'purple', name:'Purple', image:purple},
   {id:'red', name:'Red', image:red},
-  {id:'bannalpsee', name:'Bannalpsee', image:bannalpsee},
-  {id:'vivo-x-fold', name:'Vivo X Fold', image:vivoXFold},
+  {id:'bannalpsee', name:'Aurora Lake', image:bannalpsee},
+  {id:'vivo-x-fold', name:'Silver Fold', image:vivoXFold},
   {id:'forest', name:'Forest', image:forest},
-  {id:'clouds', name:'Sonoma Clouds', image:clouds},
+  {id:'clouds', name:'Dawn Clouds', image:clouds},
   {id:'nightfall', name:'Nightfall', image:nightfall},
 ]

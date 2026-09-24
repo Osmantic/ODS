@@ -2585,7 +2585,10 @@ def _bootstrap_status_allows_route_proof() -> bool:
 
 def _model_status_allows_route_proof(data: dict) -> bool:
     status = str(data.get("status") or "").strip().casefold()
-    if status in {"already_downloaded", "complete"}:
+    # A fresh install can already be serving its bootstrap model without a
+    # download receipt. Status may schedule proof, never grant readiness; the
+    # worker still verifies the current runtime and discards changed env inputs.
+    if status in {"idle", "already_downloaded", "complete"}:
         return True
     return _bootstrap_status_allows_route_proof()
 

@@ -19,7 +19,7 @@ service:
   description: |
     Open-source no-code database tool and Airtable alternative.
     Create databases, tables, and views with a spreadsheet-like interface.
-    Self-hosted with no storage restrictions. MIT licensed.
+    Self-hosted with an MIT-licensed core; premium and enterprise terms differ.
   
     
   tags:

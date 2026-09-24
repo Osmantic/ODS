@@ -1468,6 +1468,24 @@ restart_windows_lemonade_with_full_model() {
     for _i in $(seq 1 "$_swap_attempts"); do
         if curl -sf --max-time 5 "http://127.0.0.1:${lemonade_port}/api/v1/models" 2>/dev/null \
             | grep -q "\"id\"[[:space:]]*:[[:space:]]*\"${model_id}\""; then
+            # Loading through chat alone can leave ctx_size absent on Lemonade
+            # 10.0, even when the server was launched with --ctx-size. Use the
+            # same explicit per-model load contract as catalog activation.
+            if ! env "ODS_WIN_LEMONADE_HELPER=$(windows_path "$helper_path")" \
+                "ODS_WIN_ENV_PATH=$(windows_path "$env_path")" \
+                "ODS_WIN_LEMONADE_PORT=$lemonade_port" \
+                "ODS_WIN_MODEL_ID=$model_id" "ODS_WIN_CONTEXT_SIZE=$target_context" \
+                "$ps_cmd" -NoProfile -ExecutionPolicy Bypass -Command '
+                    $ErrorActionPreference = "Stop"
+                    . $env:ODS_WIN_LEMONADE_HELPER
+                    $key = Get-ODSLemonadeAdminApiKey -EnvPath $env:ODS_WIN_ENV_PATH
+                    Set-ODSLemonadeLoadedModel -Port ([int]$env:ODS_WIN_LEMONADE_PORT) `
+                        -ModelId $env:ODS_WIN_MODEL_ID -ContextSize ([int]$env:ODS_WIN_CONTEXT_SIZE) `
+                        -ApiKey $key
+                ' >>"$ps_output_file" 2>&1; then
+                log "Windows Lemonade rejected the explicit model/context load; refusing promotion."
+                return 1
+            fi
             if curl -sf --max-time 240 -X POST \
                 "http://127.0.0.1:${lemonade_port}/api/v1/chat/completions" \
                 -H "Content-Type: application/json" \
@@ -2255,7 +2273,7 @@ windows_lemonade_swap_failed() {
 activate_windows_lemonade_full_model() {
     local model_id
     if ! restart_windows_lemonade_with_full_model; then
-        windows_lemonade_swap_failed "native Lemonade did not load it after swap (registration timeout)"
+        windows_lemonade_swap_failed "native Lemonade model load, completion, or context verification failed after swap; inspect the Lemonade restart log"
         return 1
     fi
     model_id="$(read_env_value LEMONADE_MODEL)"

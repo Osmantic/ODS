@@ -67,12 +67,24 @@ def selected(settings, installation, services, *, owner, install_dir):
 
 
 def state_name_allowed(name):
+    # Model changes retain their backup and completion receipts after releasing
+    # transition.json. Archive those records with the deployment, not as authority.
     return (name in RETAIN | {'installation.json', 'installation-edge.json', 'lock',
+             'model-before.json', 'model-completed.json',
+             'model-route-completed.json', 'model-promotion-completed.json',
              'service-installation.json', 'service-baseline.json', 'verified.json', 'retirement.json'}
         or re.fullmatch(r'runtime-upgrade-[a-f0-9]{64}\.completed\.json', name)
         or re.fullmatch(r'runtime-upgrade-(?:context|edge)-[a-f0-9]{64}\.json', name)
         or re.fullmatch(r'runtime-upgrade-stop-[a-f0-9]{64}-(?:candidate|previous)-(?:access|gateway|manager|operations|promoter|relay)\.json', name)
         or re.fullmatch(r'runtime-controller-repair-[a-f0-9]{64}\.json', name))
+
+
+def validate_state_names(names):
+    names = set(names)
+    if names.intersection(PENDING):
+        raise ValueError('native-retirement-transition-pending')
+    if any(not state_name_allowed(name) for name in names):
+        raise ValueError('native-retirement-unknown-protected-state')
 
 
 def command(args):
@@ -245,10 +257,7 @@ def retire(install_dir, owner_name, *, validate_only=False):
         try:
             custody._verify_fd(lock, directory=False)
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            if any(os.path.lexists(STATE / n) for n in PENDING):
-                raise ValueError('native-retirement-transition-pending')
-            if any(not state_name_allowed(n) for n in os.listdir(directory)):
-                raise ValueError('native-retirement-unknown-protected-state')
+            validate_state_names(os.listdir(directory))
             def record(path):
                 return json.loads(custody.protected_bytes(path, limit=32 * 1024 * 1024))
             settings = record(SETTINGS)

@@ -209,7 +209,7 @@ export const WORKSPACE_PREVIEW_REQUIRES_READBACK_REASON =
   "The host verified the published snapshot. The owner also requested file inspection; complete the remaining file reads alongside any other requested checks. Static publication does not prove functional behavior.";
 
 export const WORKSPACE_PREVIEW_COMPLETE_REASON =
-  "The host verified the published snapshot. Compare its delivered file list with the owner's request, complete any remaining owner-requested checks, including file reads, then give the concise final result. Publication does not establish that all requested files or work are complete, or prove functional behavior; workspace changes require a fresh publication.";
+  "The host verified the published snapshot. Compare its delivered file list with the owner's request. If requested checks are complete, give the concise final result; do not rerun completed checks after publication. Complete remaining owner-requested checks, including file reads, before claiming completion. If later work changes delivered files or publication is reported stale, finish all checks and republish the current bytes before the final answer. Publication alone does not verify source/output correspondence or functional behavior.";
 
 export const WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON =
   "Pixel is updating the most recently verified visual artifact in this chat. Read the existing file inside that exact artifact directory before editing or replacing it; do not guess its contents or create a replacement project.";

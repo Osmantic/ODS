@@ -43,6 +43,6 @@ Review the exact model terms before downloading or using it. A label such as
 "royalty-free" is not commercial permission. These model terms also do not
 establish ownership or clearance of every generated output.
 
-The manifest and generated catalog still contain the older "royalty-free"
-description; their runtime metadata correction is tracked separately in
-[the licensing review](../../../../docs/THIRD-PARTY-LICENSING.md).
+The manifest and generated catalog identify the model-weight restriction.
+See [the licensing review](../../../../docs/THIRD-PARTY-LICENSING.md) for the
+remaining source, notice and acceptance work.

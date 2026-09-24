@@ -1400,6 +1400,30 @@ then securely provisions that empty inode in place because macOS System Policy
 may refuse to unlink another account's home even to root. Any nonempty home,
 other native residue or unverified identity still fails closed; this is not
 general migration or automatic recovery support.
+
+Reinstallation after retirement verifies the retained identity before writing
+installation files. In an interactive terminal, the macOS installer permits a
+visible sudo password prompt for that read-only proof. Non-interactive and
+dry-run paths never request a password. When authorization is unavailable,
+run `sudo -v` and rerun the installer in the **same terminal**; sudo credentials
+may be scoped to that terminal. Do not run the base installer itself as root.
+An executed identity proof that rejects leftover state still blocks reinstall;
+authentication does not override ownership or recovery checks.
+
+Retirement recognizes the model coordinator's retained backup and completion
+records: `model-before.json`, `model-route-completed.json`,
+`model-promotion-completed.json`, and the legacy `model-completed.json`.
+They are archived with the old deployment under the existing protected-file
+checks. Pending access/model transitions, policy activation, runtime upgrades,
+and unknown state still block retirement before services or containers stop.
+
+The uninstaller retires native services before removing the ODS tree. It keeps
+root-protected recovery archives, stops and renames the exact owned sandbox,
+and preserves the Operations identity for verified reuse. Docker images and
+shared build cache remain cached; uninstall does not prune unrelated Docker
+resources. A completed retirement is therefore not an erasure of every cache
+or recovery copy.
+
 Successfully started auxiliary jobs may remain after a later gateway failure;
 the hold and journals remain necessary for explicit recovery.
 

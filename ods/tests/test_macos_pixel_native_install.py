@@ -50,7 +50,7 @@ def test_preflight_retained_identity_requires_root_proof(tmp_path, monkeypatch, 
     else:
         with pytest.raises(ValueError, match='existing-native-pixel'):
             module.preflight(tmp_path / 'fresh-ods')
-    assert calls == [{'empty_home': False}]
+    assert calls == [{'empty_home': False, 'prompt_for_sudo': False}]
     assert not list(tmp_path.iterdir())
 
 
@@ -86,7 +86,7 @@ def test_preflight_allows_only_root_verified_empty_retained_home(
     else:
         with pytest.raises(ValueError, match='existing-native-pixel'):
             module.preflight(tmp_path / 'fresh-ods')
-    assert calls == ([{'empty_home': True}] if receipt else [])
+    assert calls == ([{'empty_home': True, 'prompt_for_sudo': False}] if receipt else [])
 
 
 def test_retained_identity_proof_is_read_only_and_fails_closed(monkeypatch):
@@ -104,8 +104,63 @@ def test_retained_identity_proof_is_read_only_and_fails_closed(monkeypatch):
     assert module.retained_identity_only(empty_home=True) is True
     assert calls[1][0][-1] == '--verify-empty-home-only'
     monkeypatch.setattr(module.subprocess, 'run',
-        lambda *args, **kwargs: SimpleNamespace(returncode=1))
+        lambda *args, **kwargs: SimpleNamespace(returncode=os.EX_DATAERR))
     assert module.retained_identity_only() is False
+
+
+@pytest.mark.parametrize('prompt,stdin_tty,stderr_tty,interactive', [
+    (False, True, True, False), (True, False, True, False),
+    (True, True, False, False), (True, True, True, True)])
+def test_identity_prompt_requires_explicit_opt_in_and_terminal(
+        monkeypatch, prompt, stdin_tty, stderr_tty, interactive):
+    monkeypatch.setattr(module.sys.stdin, 'isatty', lambda: stdin_tty)
+    monkeypatch.setattr(module.sys.stderr, 'isatty', lambda: stderr_tty)
+    calls = []
+    monkeypatch.setattr(module.subprocess, 'run', lambda argv, **kw:
+        calls.append((argv, kw)) or SimpleNamespace(returncode=0))
+    assert module.retained_identity_only(prompt_for_sudo=prompt)
+    argv, kw = calls[0]
+    assert ('-n' not in argv) == interactive
+    assert kw['stdin'] == (None if interactive else subprocess.DEVNULL)
+    assert kw['stderr'] == (None if interactive else subprocess.PIPE)
+    assert argv[-1] == '--verify-identity-only'
+
+
+@pytest.mark.parametrize('result', [1, 127, -9])
+def test_sudo_failure_is_not_reported_as_invalid_existing_state(monkeypatch, result):
+    monkeypatch.setattr(module.subprocess, 'run',
+        lambda *args, **kw: SimpleNamespace(returncode=result))
+    with pytest.raises(ValueError, match='native-identity-authorization-required'):
+        module.retained_identity_only()
+    guidance = module.ERROR_GUIDANCE['native-identity-authorization-required']
+    assert 'sudo -v' in guidance and 'same terminal' in guidance
+
+
+@pytest.mark.parametrize('error', [OSError('missing'), subprocess.TimeoutExpired('sudo', 60)])
+def test_identity_verifier_unavailable_fails_closed(monkeypatch, error):
+    def run(*args, **kw):
+        raise error
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    with pytest.raises(ValueError, match='native-identity-verification-unavailable'):
+        module.retained_identity_only()
+
+
+@pytest.mark.parametrize('noninteractive,dryrun,prompt', [
+    ('false', 'false', True), ('true', 'false', False),
+    ('false', 'true', False), ('true', 'true', False)])
+def test_shell_preflight_prompt_policy(noninteractive, dryrun, prompt):
+    source = (ROOT / 'installers/macos/install-macos.sh').read_text()
+    start = source.index('    _pixel_install_args=(--install-dir')
+    stop = source.index('    ENABLE_HERMES=false', start)
+    block = source[start:stop].replace('/usr/bin/python3', 'fixture_python')
+    script = '''
+set -eu
+LIB_DIR=/fixture; INSTALL_DIR=/fixture/ods
+fixture_python() { printf '%s\n' "$@"; }
+''' + f'NON_INTERACTIVE={noninteractive}; DRY_RUN={dryrun}\n' + block
+    result = subprocess.run(['bash'], input=script, text=True, capture_output=True, check=True)
+    assert ('--prompt-for-sudo' in result.stdout.splitlines()) == prompt
+    assert '--preflight-only' in result.stdout.splitlines()
 
 
 @pytest.mark.parametrize('fault', [None, 'ref', 'compose', 'remote', 'project', 'services', 'image', 'probe', 'prepare', 'activate'])

@@ -135,6 +135,20 @@ runtime directory, not from the source checkout.
 
 See [`docs/WINDOWS-QUICKSTART.md`](docs/WINDOWS-QUICKSTART.md) for details.
 
+### Fresh reinstall with cached models
+
+On Linux, WSL, or native macOS, `get-ods.sh --force --keep-models` replaces an
+existing ODS installation while retaining `data/models`. All other installation
+data, configuration, and runtime files are replaced. Without `--keep-models`,
+`--force` keeps its normal full cleanup behavior. The option requires an
+identified existing installation and is consumed by the bootstrap, not `install.sh`.
+
+Preservation temporarily uses `~/.ods-models-backup`; an existing backup or a
+symlink conflict blocks replacement. Resolve that backup manually before retrying.
+If moving the models fails, remaining files stay in the original model directory
+and/or the backup for recovery. Restored models follow the ordinary installer
+validation and download path; retention does not itself verify their contents.
+
 ### Uninstall
 
 Linux/macOS:

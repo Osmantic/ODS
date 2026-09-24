@@ -61,13 +61,40 @@ _ods_readiness_external_model_available() {
 ods_readiness_model_line() {
     local llama_port="${1:-8080}" llama_health="${2:-/health}"
     local llama_container="${3:-}" litellm_port="${4:-4000}"
-    if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
+    if [[ "${ODS_MODEL_SWITCHBOARD:-}" == enabled ]]; then
+        printf 'Model route|http://127.0.0.1:%s/v1/chat/completions||http://localhost:%s/v1|model-route\n' \
+            "$litellm_port" "$litellm_port"
+    elif [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
         printf 'External LLM|%s||http://localhost:%s/v1|external-model\n' \
             "$EXTERNAL_LLM_URL" "$litellm_port"
     elif [[ "${ODS_MODE:-local}" != "cloud" ]]; then
         printf 'llama-server|http://127.0.0.1:%s%s|%s|http://localhost:%s/v1\n' \
             "$llama_port" "$llama_health" "$llama_container" "$llama_port"
     fi
+}
+
+_ods_readiness_model_route_available() {
+    local url="$1" agent_key="${ODS_AGENT_KEY:-${DASHBOARD_API_KEY:-}}"
+    [[ -n "${LITELLM_KEY:-}" ]] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+    if [[ -n "$agent_key" ]]; then
+        curl -fsS --max-time 10 -H "Authorization: Bearer $agent_key" \
+            "http://127.0.0.1:${ODS_AGENT_PORT:-7710}/v1/model/status" >/dev/null 2>&1 || true
+    fi
+    local response
+    response="$(curl -fsS --max-time 30 "$url" \
+        -H "Authorization: Bearer $LITELLM_KEY" -H 'Content-Type: application/json' \
+        -d '{"model":"ods/current","messages":[{"role":"user","content":"Say OK"}],"max_tokens":64,"temperature":0,"stream":false,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)" || return 1
+    printf '%s' "$response" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    content = data["choices"][0]["message"]["content"]
+    valid = not data.get("error") and isinstance(content, str) and bool(content.strip())
+except (ValueError, KeyError, IndexError, TypeError):
+    valid = False
+sys.exit(0 if valid else 1)
+' 2>/dev/null
 }
 
 ods_readiness_summary() {
@@ -89,7 +116,15 @@ ods_readiness_summary() {
         [[ -n "$open_url" ]] || open_url="$health_url"
 
         local http_code container_state state detail line
-        if [[ "$probe_type" == "external-model" ]]; then
+        if [[ "$probe_type" == "model-route" ]]; then
+            if _ods_readiness_model_route_available "$health_url"; then
+                state="ready"
+                detail="ods/current returned a completion"
+            else
+                state="needs attention"
+                detail="ods/current completion not verified; inspect model status and retry"
+            fi
+        elif [[ "$probe_type" == "external-model" ]]; then
             if _ods_readiness_external_model_available "$health_url"; then
                 state="ready"
                 detail="selected model available"

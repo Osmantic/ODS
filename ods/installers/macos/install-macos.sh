@@ -1197,7 +1197,11 @@ if ! $ENABLE_PIXEL && [[ -e "${INSTALL_DIR}/data/pixel-native" || -L "${INSTALL_
 fi
 
 if $ENABLE_PIXEL; then
-    /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" --install-dir "$INSTALL_DIR" \
+    _pixel_install_args=(--install-dir "$INSTALL_DIR")
+    if ! $NON_INTERACTIVE && ! $DRY_RUN; then
+        _pixel_install_args+=(--prompt-for-sudo)
+    fi
+    /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" "${_pixel_install_args[@]}" \
         --preflight-only || exit 1
     ENABLE_HERMES=false
     ENABLE_OPENCLAW=false
@@ -2952,7 +2956,7 @@ for service in (data.get("services") or {}).values():
 
     if $ENABLE_PIXEL; then
         ai "Preparing native Pixel and its Docker services..."
-        _pixel_install_args=(--install-dir "$INSTALL_DIR" --ods-source "$INSTALL_DIR")
+        _pixel_install_args+=(--ods-source "$INSTALL_DIR")
         [[ -z "${PIXEL_SOURCE_REF:-}" ]] || _pixel_install_args+=(--ref "$PIXEL_SOURCE_REF")
         for ((_pixel_i=0; _pixel_i<${#COMPOSE_FLAGS[@]}; _pixel_i+=2)); do
             [[ "${COMPOSE_FLAGS[_pixel_i]}" == -f ]] || { ai_err "Unexpected Compose selection"; exit 1; }

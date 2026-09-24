@@ -24,8 +24,9 @@ pass() {
 make_stub_bin() {
     local stub_dir="$1"
 
-    cat > "$stub_dir/docker" <<'EOF'
+cat > "$stub_dir/docker" <<'EOF'
 #!/usr/bin/env bash
+printf 'docker %s\n' "$*" >> "${UNINSTALL_COMMAND_LOG:?}"
 exit 0
 EOF
     cat > "$stub_dir/systemctl" <<'EOF'
@@ -35,8 +36,14 @@ if [[ "${1:-}" == "is-enabled" ]]; then
 fi
 exit 0
 EOF
-    cat > "$stub_dir/sudo" <<'EOF'
+cat > "$stub_dir/sudo" <<'EOF'
 #!/usr/bin/env bash
+case "$*" in
+    *pixel-native-uninstall.py*)
+        printf 'native-retire\n' >> "${UNINSTALL_COMMAND_LOG:?}"
+        exit "${RETIRE_EXIT_CODE:-0}"
+        ;;
+esac
 exit 0
 EOF
     cat > "$stub_dir/pgrep" <<'EOF'
@@ -80,6 +87,8 @@ make_install() {
     mkdir -p "$install_dir/lib"
     cp "$TARGET" "$install_dir/ods-uninstall.sh"
     cp "$ROOT_DIR/lib/safe-env.sh" "$install_dir/lib/safe-env.sh"
+    mkdir -p "$install_dir/installers/macos/lib"
+    cp "$ROOT_DIR/installers/macos/lib/pixel-native-uninstall.py" "$install_dir/installers/macos/lib/"
     touch "$install_dir/ods-cli"
 }
 
@@ -103,6 +112,8 @@ run_uninstall() {
     INSTALL_DIR="$install_dir" \
     PATH="$stub_dir:$PATH" \
     LAUNCHCTL_LOG="${LAUNCHCTL_LOG:?}" \
+    UNINSTALL_COMMAND_LOG="$out_file.commands" \
+    RETIRE_EXIT_CODE="${RETIRE_EXIT_CODE:-0}" \
     UNAME_S="${UNAME_S:-Darwin}" \
     LOADED_LABELS="${LOADED_LABELS:-}" \
     BOOTOUT_FAIL="${BOOTOUT_FAIL:-}" \
@@ -140,6 +151,8 @@ main() {
             || fail "uninstall must remove ${label}.plist"
     done
     pass "macOS uninstall boots out loaded agents and removes all ODS plists (incl. legacy)"
+    [[ "$(head -n 1 "$TMP_DIR/out1.log.commands")" == native-retire ]] \
+        || fail "native retirement must precede Docker cleanup"
 
     # ── Scenario 2: nothing installed — tolerated, no bootout, no warnings ──
     local install2="$TMP_DIR/install2" home2="$TMP_DIR/home2"
@@ -191,6 +204,22 @@ main() {
     [[ ! -s "$TMP_DIR/launchctl5.log" ]] \
         || fail "Linux uninstall must never invoke launchctl"
     pass "Linux uninstall path never touches launchctl"
+
+    # Native retirement must fail before deleting the install or stopping recovery services.
+    local install6="$TMP_DIR/install6" home6="$TMP_DIR/home6"
+    make_install "$install6"
+    make_home_with_plists "$home6" com.ods.host-agent
+    if LAUNCHCTL_LOG="$TMP_DIR/launchctl6.log" RETIRE_EXIT_CODE=1 \
+        run_uninstall "$install6" "$home6" "$stub_dir" "$TMP_DIR/out6.log"; then
+        fail "rejected native retirement must abort uninstall"
+    fi
+    [[ -d "$install6" && -f "$home6/Library/LaunchAgents/com.ods.host-agent.plist" ]] \
+        || fail "rejected retirement must retain the installation and recovery agent"
+    [[ ! -s "$TMP_DIR/launchctl6.log" ]] || fail "rejected retirement stopped recovery services"
+    if grep -q '^docker ' "$TMP_DIR/out6.log.commands"; then
+        fail "rejected retirement must not mutate Docker resources"
+    fi
+    pass "native retirement failure retains the install, agents and Docker resources"
 }
 
 main "$@"

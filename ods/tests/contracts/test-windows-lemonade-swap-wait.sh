@@ -82,7 +82,7 @@ fi
 # 3. The swap-registration-timeout failure must report real bytes + cause,
 #    not a bare zero-byte write_status "failed".
 # ---------------------------------------------------------------------------
-if grep -q 'did not load it after swap (registration timeout)' "$SCRIPT" \
+if grep -q 'model load, completion, or context verification failed after swap' "$SCRIPT" \
    && grep -Eq 'write_status "failed" 100 "\$TOTAL_BYTES" "\$TOTAL_BYTES"' "$SCRIPT"; then
     pass "swap-timeout failure reports real downloaded bytes + cause (not a 0-byte failure)"
 else

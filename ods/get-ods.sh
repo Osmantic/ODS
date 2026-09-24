@@ -26,12 +26,19 @@ fi
 BOOTSTRAP_FORCE=false
 BOOTSTRAP_NON_INTERACTIVE=false
 BOOTSTRAP_REINSTALL=false
+BOOTSTRAP_KEEP_MODELS=false
+BOOTSTRAP_HELP=false
+BOOTSTRAP_INSTALL_ARGS=()
 for _arg in "$@"; do
     case "$_arg" in
+        --keep-models) BOOTSTRAP_KEEP_MODELS=true; continue ;;
+        -h|--help) BOOTSTRAP_HELP=true ;;
         --force) BOOTSTRAP_FORCE=true ;;
         --non-interactive) BOOTSTRAP_NON_INTERACTIVE=true ;;
     esac
+    BOOTSTRAP_INSTALL_ARGS+=("$_arg")
 done
+set -- "${BOOTSTRAP_INSTALL_ARGS[@]}"
 
 # Colors
 RED='\033[0;31m'
@@ -60,6 +67,48 @@ log()     { echo -e "${CYAN}[ods]${NC} $1"; }
 success() { echo -e "${GREEN}[  ok ]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[warn ]${NC} $1"; }
 error()   { echo -e "${RED}[error]${NC} $1"; exit 1; }
+
+# This bootstrap-only option is consumed before the platform installer sees it.
+if [[ "$BOOTSTRAP_HELP" == true ]]; then
+    cat <<'HELP'
+ODS Bootstrap Installer
+Usage: get-ods.sh [--force [--keep-models]] [INSTALLER OPTIONS]
+  --force         Replace an existing, identified ODS installation.
+  --keep-models   With --force, retain data/models and restore it before install.
+                  Refuses an existing ~/.ods-models-backup; resolve it manually.
+                  Source, runtime, configuration and other user data are replaced.
+                  Restored models still use the ordinary installer validation.
+  --non-interactive  Run without interactive prompts.
+  -h, --help      Show this bootstrap help without cloning or installing.
+Other options are passed unchanged to install.sh (see install.sh --help).
+HELP
+    exit 0
+fi
+if [[ "$BOOTSTRAP_KEEP_MODELS" == true && "$BOOTSTRAP_FORCE" != true ]]; then
+    error "--keep-models requires --force and an existing ODS installation."
+fi
+
+validate_bootstrap_model_preservation() {
+    [[ "$BOOTSTRAP_KEEP_MODELS" == true ]] || return 0
+    validate_force_reinstall_target "$INSTALL_DIR" || return 1
+    [[ -n "${HOME:-}" && "$HOME" == /* ]] || return 1
+    [[ ! -e "$HOME/.ods-models-backup" && ! -L "$HOME/.ods-models-backup" ]] || return 1
+    [[ ! -L "$INSTALL_DIR/data" && ! -L "$INSTALL_DIR/data/models" ]] || return 1
+    [[ ! -e "$INSTALL_DIR/data/models" || -d "$INSTALL_DIR/data/models" ]]
+}
+
+restore_bootstrap_models() {
+    [[ "$BOOTSTRAP_KEEP_MODELS" == true ]] || return 0
+    local backup="$HOME/.ods-models-backup"
+    [[ -e "$backup" || -L "$backup" ]] || return 0
+    [[ -d "$backup" && ! -L "$backup" && ! -L "$INSTALL_DIR/data" ]] || return 1
+    [[ ! -e "$INSTALL_DIR/data/models" && ! -L "$INSTALL_DIR/data/models" ]] || return 1
+    mkdir -p "$INSTALL_DIR/data" || return 1
+    # Both Linux/WSL and native macOS use data/models. Keep the backup outside
+    # TEMP_DIR so source-copy/restore failures cannot delete retained models.
+    mv "$backup" "$INSTALL_DIR/data/models" || return 1
+    success "Restored retained model cache; normal installer validation still applies"
+}
 
 secure_pixel_catalog_sources() {
     local install_dir="$1" source
@@ -308,6 +357,10 @@ detect_os() {
 OS=$(detect_os)
 log "Detected OS: $OS"
 
+if ! validate_bootstrap_model_preservation; then
+    error "Cannot preserve models: --keep-models requires a recognized existing install, a real data/models directory, and no existing ~/.ods-models-backup. Resolve any backup or symlink conflict before retrying."
+fi
+
 case "$OS" in
     linux|wsl)
         success "Linux/WSL detected — full support"
@@ -523,6 +576,9 @@ if [[ "$BOOTSTRAP_REINSTALL" == "true" ]]; then
         || error "Requested ODS source does not contain a safe candidate uninstaller. Existing installation was not replaced."
     log "Removing the existing installation with the requested candidate uninstaller..."
     candidate_uninstall_args=(--install-dir "$INSTALL_DIR" --force)
+    if [[ "$BOOTSTRAP_KEEP_MODELS" == true ]]; then
+        candidate_uninstall_args+=(--keep-models)
+    fi
     if [[ "$BOOTSTRAP_NON_INTERACTIVE" == "true" ]]; then
         candidate_uninstall_args+=(--non-interactive)
     fi
@@ -565,6 +621,10 @@ if [[ -d "$TEMP_DIR/repo/ods" ]]; then
     fi
 else
     error "ods directory not found in repository."
+fi
+
+if ! restore_bootstrap_models; then
+    error "Could not restore retained models. Any remaining cache is at $HOME/.ods-models-backup; it was not deliberately purged. Resolve the restore conflict before retrying."
 fi
 
 # Pixel refuses group- or world-writable catalog inputs. Git and rsync preserve

@@ -8,6 +8,10 @@ on:
       - 'ods/tests/test_bridge_denied_admission.py'
       - 'ods/installers/macos/**'
       - 'ods/tests/test_macos_pixel_native_install.py'
+      - 'ods/tests/test_macos_pixel_native_uninstall.py'
+      - 'ods/tests/test_macos_pixel_ops_account.py'
+      - 'ods/tests/test-macos-uninstall-launchagents.sh'
+      - 'ods/ods-uninstall.sh'
       - 'ods/tests/test_macos_pixel_native_update.py'
       - 'ods/tests/test_macos_pixel_controller_repair.py'
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
@@ -28,6 +32,10 @@ on:
       - 'ods/tests/test_bridge_denied_admission.py'
       - 'ods/installers/macos/**'
       - 'ods/tests/test_macos_pixel_native_install.py'
+      - 'ods/tests/test_macos_pixel_native_uninstall.py'
+      - 'ods/tests/test_macos_pixel_ops_account.py'
+      - 'ods/tests/test-macos-uninstall-launchagents.sh'
+      - 'ods/ods-uninstall.sh'
       - 'ods/tests/test_macos_pixel_native_update.py'
       - 'ods/tests/test_macos_pixel_controller_repair.py'
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
@@ -57,12 +65,16 @@ jobs:
           python-version: '3.12'
       - name: Install test dependencies
         run: python -m pip install 'pytest>=8,<9' 'PyYAML>=6,<7'
+      - name: Verify native retirement precedes destructive uninstall
+        run: bash ods/tests/test-macos-uninstall-launchagents.sh
       - name: Verify bridge admission and real HTTP forwarding
         run: python -m pytest -q ods/tests/test_bridge_denied_admission.py ods/tests/test_macos_llm_bridge.py
       - name: Verify native installer, update and startup contracts
         run: >-
           python -m pytest -q
           ods/tests/test_macos_pixel_native_install.py
+          ods/tests/test_macos_pixel_native_uninstall.py
+          ods/tests/test_macos_pixel_ops_account.py
           ods/tests/test_macos_pixel_native_update.py
           ods/tests/test_macos_pixel_controller_repair.py
           ods/tests/test_macos_pixel_controller_held_proof.py

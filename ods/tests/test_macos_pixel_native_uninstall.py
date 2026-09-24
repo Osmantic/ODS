@@ -61,6 +61,23 @@ class RetirementSelection(unittest.TestCase):
             with self.subTest(name=name): self.assertFalse(retirement.state_name_allowed(name))
         self.assertTrue(retirement.state_name_allowed('runtime-upgrade-' + 'a' * 64 + '.completed.json'))
 
+    def test_completed_model_changes_allow_retirement(self):
+        names = {'installation.json', 'lock', 'model-before.json',
+                 'model-completed.json', 'model-route-completed.json',
+                 'model-promotion-completed.json'}
+        retirement.validate_state_names(names)
+        for pending in retirement.PENDING:
+            with self.subTest(pending=pending), self.assertRaisesRegex(
+                    ValueError, 'native-retirement-transition-pending'):
+                retirement.validate_state_names(names | {pending})
+
+    def test_model_record_allowlist_remains_exact(self):
+        for name in ('model-journal.json', 'model-new.json', '../model-before.json',
+                     'model-before.json.bak', 'model-route-completed.json/foreign'):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    ValueError, 'native-retirement-unknown-protected-state'):
+                retirement.validate_state_names({'model-before.json', name})
+
     def test_platform_guard_has_no_side_effects(self):
         with patch.object(retirement.sys, 'platform', 'linux'), patch.object(retirement, 'command') as command:
             with self.assertRaisesRegex(ValueError, 'macos-root-required'):

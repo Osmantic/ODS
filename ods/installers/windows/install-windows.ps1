@@ -2216,6 +2216,13 @@ if (-not $cloudMode) {
         }
     }
     if ($llmReady.Ok) {
+        $routeReady = Test-WindowsSwitchboardReadiness -EnvMap (Get-WindowsODSEnvMap -InstallDir $installDir)
+        if (-not $routeReady.Ok) {
+            $llmReady.Ok = $false
+            $llmReady.Detail = $routeReady.Detail
+        }
+    }
+    if ($llmReady.Ok) {
         Write-AISuccess "LLM serving verified (model: $($llmReady.ModelId))"
     } else {
         $allHealthy = $false

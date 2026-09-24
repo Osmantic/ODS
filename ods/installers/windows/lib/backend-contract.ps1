@@ -628,6 +628,42 @@ function Set-ODSLemonadeModernRuntimeConfig {
     return $config
 }
 
+function Set-ODSLemonadeLoadedModel {
+    # Global server options do not prove per-model options. Explicitly load the
+    # checkpoint with its context before the caller verifies health/completion.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$ModelId,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 10000000)][int]$ContextSize,
+        [string]$ApiKey = "",
+        [int]$TimeoutSec = 240
+    )
+    $headers = @{}
+    if ($ApiKey) { $headers.Authorization = "Bearer $ApiKey" }
+    $body = @{
+        model_name = $ModelId
+        ctx_size = $ContextSize
+        save_options = $true
+        llamacpp_backend = "vulkan"
+    } | ConvertTo-Json -Compress
+    $response = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/api/v1/load" `
+        -Headers $headers -ContentType "application/json" -Body $body `
+        -TimeoutSec $TimeoutSec -ErrorAction Stop
+    if ([string]$response.status -notin @("success", "ok")) {
+        throw "Lemonade did not confirm model loading."
+    }
+    $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/health" `
+        -Headers $headers -TimeoutSec 10 -ErrorAction Stop
+    $loaded = @($health.all_models_loaded | Where-Object { $_.model_name -ceq $ModelId })
+    if ($loaded.Count -ne 1) { throw "Lemonade did not prove the requested loaded model." }
+    $actualContext = $loaded[0].recipe_options.ctx_size
+    if (-not $actualContext) { $actualContext = $loaded[0].ctx_size }
+    if ([long]$actualContext -lt $ContextSize) {
+        throw "Lemonade did not prove the requested loaded context."
+    }
+}
+
 function Resolve-ODSLemonadeModelId {
     <#
     .SYNOPSIS

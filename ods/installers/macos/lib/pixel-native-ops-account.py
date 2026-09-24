@@ -230,14 +230,27 @@ def verify_empty_home_only():
     return identity
 
 
-if __name__ == '__main__':
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--verify-identity-only', action='store_true')
     parser.add_argument('--verify-empty-home-only', action='store_true')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.verify_identity_only and args.verify_empty_home_only:
         parser.error('select one verification mode')
-    result = (verify_empty_home_only() if args.verify_empty_home_only else
-              verify_identity_only() if args.verify_identity_only else provision())
+    if args.verify_empty_home_only or args.verify_identity_only:
+        try:
+            result = verify_empty_home_only() if args.verify_empty_home_only else verify_identity_only()
+        except (ValueError, OSError, subprocess.SubprocessError):
+            # Distinguish an executed proof rejecting state from sudo failing to
+            # run the proof. Do not expose private receipt contents in diagnostics.
+            print('Native Pixel Operations identity verification rejected.', file=sys.stderr)
+            return os.EX_DATAERR
+    else:
+        result = provision()
     print(json.dumps(result,
         sort_keys=True))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

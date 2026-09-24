@@ -17,6 +17,31 @@ account = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(account)
 
 
+@pytest.mark.parametrize('mode', ['identity', 'empty-home'])
+@pytest.mark.parametrize('reject', [False, True])
+def test_verification_cli_distinguishes_rejection_without_provisioning(
+        monkeypatch, capsys, mode, reject):
+    result = {'name': account.NAME, 'uid': 61000, 'gid': 61000}
+    def verify():
+        if reject:
+            raise ValueError('private-fixture-details')
+        return result
+    monkeypatch.setattr(account, 'verify_identity_only', verify)
+    monkeypatch.setattr(account, 'verify_empty_home_only', verify)
+    monkeypatch.setattr(account, 'provision', lambda: pytest.fail('verification must not provision'))
+    code = account.main(['--verify-' + mode + '-only'])
+    captured = capsys.readouterr()
+    if reject:
+        assert code == os.EX_DATAERR
+        assert captured.out == ''
+        assert 'verification rejected' in captured.err
+        assert 'private-fixture-details' not in captured.err
+    else:
+        assert code == 0
+        assert json.loads(captured.out) == result
+        assert captured.err == ''
+
+
 @pytest.fixture
 def fixture(monkeypatch):
     intent = {'schema': 1, 'name': account.NAME, 'id': 61000,

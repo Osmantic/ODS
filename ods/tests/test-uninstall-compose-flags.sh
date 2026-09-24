@@ -80,6 +80,7 @@ EOF
 #!/usr/bin/env bash
 case "${1:-}" in
     -u|-g) printf '1000\n' ;;
+    -un) printf 'fixture-owner\n' ;;
     *) exit 1 ;;
 esac
 EOF
@@ -99,6 +100,8 @@ make_install() {
     cp "$TARGET" "$install_dir/ods-uninstall.sh"
     cp "$ROOT_DIR/lib/safe-env.sh" "$install_dir/lib/safe-env.sh"
     cp "$ROOT_DIR/lib/system-uninstall.sh" "$install_dir/lib/system-uninstall.sh"
+    mkdir -p "$install_dir/installers/macos/lib"
+    cp "$ROOT_DIR/installers/macos/lib/pixel-native-uninstall.py" "$install_dir/installers/macos/lib/"
     touch "$install_dir/ods-cli"
     touch "$install_dir/docker-compose.base.yml"
     touch "$install_dir/docker-compose.cpu.yml"
@@ -207,8 +210,16 @@ main() {
     DOCKER_LOG="$log_noninteractive" \
     SUDO_LOG="$sudo_noninteractive" \
     SUDO_VALIDATE_EXIT_CODE=1 \
-        timeout 5s bash "$install_noninteractive/ods-uninstall.sh" \
-            --force --non-interactive >"$out_noninteractive" 2>&1
+        python3 - "$install_noninteractive/ods-uninstall.sh" >"$out_noninteractive" 2>&1 <<'PY'
+import subprocess
+import sys
+
+try:
+    raise SystemExit(subprocess.run(
+        ["bash", sys.argv[1], "--force", "--non-interactive"], timeout=5).returncode)
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+PY
     noninteractive_rc=$?
     set -e
     [[ "$noninteractive_rc" -ne 0 && "$noninteractive_rc" -ne 124 ]] \
