@@ -856,19 +856,32 @@ cmd_update() {
     fi
 
     # ── Step 3: migrations ────────────────────────────────────────────────────
+    # Delegate to the migration manager (migrations/README.md documents this
+    # call): it applies only scripts newer than .migration-state and no newer
+    # than the incoming release, then stamps the state so `migrate-config.sh
+    # check` stays accurate. The recorded .version still names the old release
+    # at this point — it is only rewritten after health checks pass — so the
+    # post-pull manifest.json supplies the selection bound.
     local migrations_dir="${INSTALL_DIR}/migrations"
     if [[ -d "$migrations_dir" ]]; then
         log_info "Running migrations..."
-        for migration in "$migrations_dir"/migrate-v*.sh; do
-            if [[ -f "$migration" && -x "$migration" ]]; then
-                log_info "Running: $(basename "$migration")"
-                if ! bash "$migration"; then
-                    _update_rollback "Migration failed: $(basename "$migration")." \
-                        "$snap_dir" "$compose_flags"
-                    return 1
-                fi
-            fi
-        done
+        local migrate_manager="${INSTALL_DIR}/scripts/migrate-config.sh"
+        if [[ ! -f "$migrate_manager" ]]; then
+            _update_rollback "Migration manager missing: ${migrate_manager}." \
+                "$snap_dir" "$compose_flags"
+            return 1
+        fi
+        local migrate_target_version=""
+        if [[ -f "${INSTALL_DIR}/manifest.json" ]]; then
+            migrate_target_version=$(jq -r '.ods_version // empty' "${INSTALL_DIR}/manifest.json" 2>/dev/null || true)
+        fi
+        if ! env INSTALL_DIR="$INSTALL_DIR" \
+                MIGRATE_TARGET_VERSION="$migrate_target_version" \
+                bash "$migrate_manager" migrate; then
+            _update_rollback "Configuration migration failed." \
+                "$snap_dir" "$compose_flags"
+            return 1
+        fi
     fi
 
     # ── Step 4: restart services ──────────────────────────────────────────────

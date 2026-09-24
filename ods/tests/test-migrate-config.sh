@@ -290,6 +290,81 @@ else
 fi
 
 # ============================================================================
+# Test 14: MIGRATE_TARGET_VERSION supplies the selection bound
+#
+# During `ods-update.sh update` the recorded .version still names the OLD
+# release — it is only stamped after migrations and health checks pass — so
+# the update flow passes the post-pull manifest version via
+# MIGRATE_TARGET_VERSION. On a first update there is no .version at all:
+# without the override the bound would be 0.0.0 and nothing would apply.
+# ============================================================================
+rm -f "$INSTALL_DIR/.version" "$DATA_DIR/.migration-state"
+cat > "$INSTALL_DIR/.env" <<'EOF'
+# Fixture env for migration application
+EOF
+
+migrate14_exit=0
+migrate14_output=$(MIGRATE_TARGET_VERSION="2.4.1" bash "$MIGRATE_CONFIG_SCRIPT" migrate 2>&1) || migrate14_exit=$?
+if [[ $migrate14_exit -eq 0 ]] && grep -q '^SHIELD_API_KEY=' "$INSTALL_DIR/.env"; then
+    pass "Behavioral test: MIGRATE_TARGET_VERSION applies migrations up to the incoming release"
+else
+    fail "Behavioral test: migrate with MIGRATE_TARGET_VERSION exited $migrate14_exit or skipped v2.4.1: $migrate14_output"
+fi
+
+if [[ "$(cat "$DATA_DIR/.migration-state" 2>/dev/null)" == "2.4.1" ]]; then
+    pass "Behavioral test: migrate stamps .migration-state with the target version"
+else
+    fail "Behavioral test: .migration-state was not stamped (got '$(cat "$DATA_DIR/.migration-state" 2>/dev/null)')"
+fi
+
+# Test 15: the override wins over a stale recorded .version (the mid-update
+# case: .version still says 0.0.0 but the incoming release is 2.4.1).
+rm -f "$DATA_DIR/.migration-state"
+echo "0.0.0" > "$INSTALL_DIR/.version"
+cat > "$INSTALL_DIR/.env" <<'EOF'
+# Fixture env for override precedence
+EOF
+
+migrate15_exit=0
+migrate15_output=$(MIGRATE_TARGET_VERSION="2.4.1" bash "$MIGRATE_CONFIG_SCRIPT" migrate 2>&1) || migrate15_exit=$?
+if [[ $migrate15_exit -eq 0 ]] && grep -q '^SHIELD_API_KEY=' "$INSTALL_DIR/.env"; then
+    pass "Behavioral test: MIGRATE_TARGET_VERSION wins over a stale .version"
+else
+    fail "Behavioral test: stale .version bounded selection despite the override (exit $migrate15_exit): $migrate15_output"
+fi
+
+# Test 16: a target below every bundled script applies nothing — the bound
+# that keeps a newer script bundle from writing future configuration onto
+# an older installation.
+rm -f "$DATA_DIR/.migration-state"
+cat > "$INSTALL_DIR/.env" <<'EOF'
+# Fixture env for upper-bound check
+EOF
+
+migrate16_exit=0
+migrate16_output=$(MIGRATE_TARGET_VERSION="0.1.0" bash "$MIGRATE_CONFIG_SCRIPT" migrate 2>&1) || migrate16_exit=$?
+if [[ $migrate16_exit -eq 0 ]] \
+    && ! grep -q '^SHIELD_API_KEY=' "$INSTALL_DIR/.env" \
+    && ! grep -q '^ENABLE_VOICE=' "$INSTALL_DIR/.env"; then
+    pass "Behavioral test: target below bundled scripts applies nothing"
+else
+    fail "Behavioral test: migrations above the target were applied (exit $migrate16_exit): $migrate16_output"
+fi
+
+# Test 17: check honours the override as well — .version absent and
+# .migration-state at 0.0.0 normally report "No migration needed"; with the
+# incoming release as the bound the pending migrations must surface.
+rm -f "$INSTALL_DIR/.version"
+echo "0.0.0" > "$DATA_DIR/.migration-state"
+check17_exit=0
+check17_output=$(MIGRATE_TARGET_VERSION="2.4.1" bash "$MIGRATE_CONFIG_SCRIPT" check 2>&1) || check17_exit=$?
+if [[ $check17_exit -eq 2 ]] && echo "$check17_output" | grep -q "Migration needed"; then
+    pass "Behavioral test: check reports pending migrations against MIGRATE_TARGET_VERSION"
+else
+    fail "Behavioral test: check ignored MIGRATE_TARGET_VERSION (exit $check17_exit): $check17_output"
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo ""

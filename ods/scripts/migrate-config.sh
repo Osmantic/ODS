@@ -52,6 +52,19 @@ get_current_version() {
     fi
 }
 
+# Effective selection bound. During `ods-update.sh update` the recorded
+# .version still names the OLD release — it is only stamped after migrations
+# and health checks pass — so the update flow passes the post-pull manifest
+# version via MIGRATE_TARGET_VERSION. Outside that flow the recorded
+# .version remains the bound.
+get_effective_version() {
+    if [[ -n "${MIGRATE_TARGET_VERSION:-}" ]]; then
+        echo "$MIGRATE_TARGET_VERSION"
+    else
+        get_current_version
+    fi
+}
+
 # Get last migrated version
 get_last_migrated_version() {
     if [[ -f "$MIGRATION_STATE" ]]; then
@@ -189,10 +202,10 @@ cmd_diff() {
 cmd_check() {
     local current_version
     local last_migrated
-    
-    current_version=$(get_current_version)
+
+    current_version=$(get_effective_version)
     last_migrated=$(get_last_migrated_version)
-    
+
     log_info "Current version: $current_version"
     log_info "Last migrated: $last_migrated"
     
@@ -238,10 +251,10 @@ cmd_migrate() {
     
     local current_version
     local last_migrated
-    
-    current_version=$(get_current_version)
+
+    current_version=$(get_effective_version)
     last_migrated=$(get_last_migrated_version)
-    
+
     # Create backup first
     cmd_backup >/dev/null
     
