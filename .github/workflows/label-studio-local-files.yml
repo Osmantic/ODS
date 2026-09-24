@@ -1,0 +1,24 @@
+name: Label Studio local files
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/label-studio/**'
+      - 'ods/tests/test_label_studio_local_files.py'
+      - 'ods/tests/fixtures/label-studio-local-files.py'
+      - '.github/workflows/label-studio-local-files.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest
+      - run: python -m pytest ods/tests/test_label_studio_local_files.py -q -s
+        env:
+          ODS_TEST_LABEL_STUDIO: '1'
