@@ -41,7 +41,10 @@ def test_collision_and_link_escape_never_select_arbitrary_checkpoint(tmp_path):
     data, external = registry(tmp_path)
     (data/'models/new.gguf').write_bytes(b'different model')
     assert resolve_model_file(data, 'new.gguf') is None
-    (external/'outside.gguf').symlink_to(data/'models/legacy.gguf')
+    try:
+        (external/'outside.gguf').symlink_to(data/'models/legacy.gguf')
+    except OSError:
+        pytest.skip("Windows symlink creation requires Developer Mode or administrator privileges")
     (external/'empty.gguf').touch()
     (external/'incomplete.gguf.part').write_bytes(b'partial')
     (external/'mmproj-F16.gguf').write_bytes(b'vision')
