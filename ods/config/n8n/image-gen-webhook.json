@@ -2,32 +2,380 @@
   "name": "Image Generation on Webhook",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## Image Generation on Webhook\n\nThis is an asynchronous local image API backed by ComfyUI. POST /webhook/ods-generate-image validates and queues an SDXL Lightning job, then returns HTTP 202 with a prompt id. Poll GET /webhook/ods-image-status?prompt_id=... until it returns the generated /view URL.\n\nGenerate: curl -X POST http://localhost:5678/webhook/ods-generate-image -H 'Content-Type: application/json' -d '{\"prompt\":\"A quiet observatory above the clouds\",\"width\":1024,\"height\":1024,\"enhance\":false}'\n\nStatus: curl 'http://localhost:5678/webhook/ods-image-status?prompt_id=PROMPT_ID'\n\nWidth and height must be multiples of 64 from 512 through 1536. enhance defaults to false and requires llama-server when enabled. Queue and status calls never hold a webhook open while the GPU is working.",
+        "height": 620,
+        "width": 600
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [-180, 20]
     },
     {
       "parameters": {
-        "content": "## Image Generation on Webhook\n\nThis is a template workflow for accepting a prompt via webhook, optionally enhancing with LLM, submitting to ComfyUI, and returning an image URL.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "httpMethod": "POST",
+        "path": "ods-generate-image",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "webhook-generate",
+      "name": "Generate Image Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [460, 220],
+      "webhookId": "ab5a1070-ad60-44b8-baaa-2ac5ba48e5f1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || {};\nconst prompt = String(body.prompt || '').trim();\nconst width = Number(body.width || 1024);\nconst height = Number(body.height || 1024);\nconst dimensionsValid = [width, height].every((value) =>\n  Number.isInteger(value) && value >= 512 && value <= 1536 && value % 64 === 0\n);\n\nif (!prompt) {\n  return [{ json: { valid: false, statusCode: 400, error: \"Body must include a non-empty 'prompt' field.\" } }];\n}\nif (prompt.length > 2000) {\n  return [{ json: { valid: false, statusCode: 400, error: 'Prompt exceeds the 2000-character limit.' } }];\n}\nif (!dimensionsValid) {\n  return [{ json: { valid: false, statusCode: 400, error: 'width and height must be multiples of 64 from 512 through 1536.' } }];\n}\n\nconst requestedSeed = Number(body.seed);\nconst seed = Number.isSafeInteger(requestedSeed) && requestedSeed >= 0\n  ? requestedSeed\n  : Math.floor(Math.random() * 4294967296);\nreturn [{ json: { valid: true, prompt, width, height, seed, enhance: body.enhance === true } }];"
+      },
+      "id": "code-validate",
+      "name": "Validate Image Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 220]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2},
+          "conditions": [
+            {
+              "id": "valid-request",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {"type": "boolean", "operation": "true", "singleValue": true}
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-valid",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [940, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: $json.error }) }}",
+        "options": {"responseCode": "={{ $json.statusCode }}"}
+      },
+      "id": "respond-bad-request",
+      "name": "Return Invalid Request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1180, 440]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2},
+          "conditions": [
+            {
+              "id": "enhance-prompt",
+              "leftValue": "={{ $json.enhance }}",
+              "rightValue": true,
+              "operator": {"type": "boolean", "operation": "true", "singleValue": true}
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-enhance",
+      "name": "Enhance Prompt?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1180, 140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'local-model', messages: [ { role: 'system', content: 'Rewrite the image prompt with concrete visual details about composition, lighting, lens, color, and style. Preserve the subject and intent. Return only the rewritten prompt, under 1000 characters.' }, { role: 'user', content: $json.prompt } ], temperature: 0.5, max_tokens: 400, stream: false }) }}",
+        "options": {"timeout": 120000}
+      },
+      "id": "http-enhance",
+      "name": "Enhance With llama-server",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1420, 60]
+    },
+    {
+      "parameters": {
+        "jsCode": "const request = $('Validate Image Request').first().json;\nconst enhanced = $input.first().json?.choices?.[0]?.message?.content;\nif (typeof enhanced !== 'string' || !enhanced.trim()) {\n  throw new Error('llama-server returned no enhanced prompt');\n}\nreturn [{ json: { ...request, effective_prompt: enhanced.trim().slice(0, 1000) } }];"
+      },
+      "id": "code-enhanced",
+      "name": "Use Enhanced Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1660, 60]
+    },
+    {
+      "parameters": {
+        "jsCode": "const request = $input.first().json;\nreturn [{ json: { ...request, effective_prompt: request.prompt } }];"
+      },
+      "id": "code-original",
+      "name": "Use Original Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1420, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://comfyui:8188/prompt",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ prompt: { '3': { inputs: { seed: $json.seed, steps: 4, cfg: 1.0, sampler_name: 'euler', scheduler: 'sgm_uniform', denoise: 1.0, model: ['4', 0], positive: ['6', 0], negative: ['7', 0], latent_image: ['5', 0] }, class_type: 'KSampler' }, '4': { inputs: { ckpt_name: 'sdxl_lightning_4step.safetensors' }, class_type: 'CheckpointLoaderSimple' }, '5': { inputs: { width: $json.width, height: $json.height, batch_size: 1 }, class_type: 'EmptyLatentImage' }, '6': { inputs: { text: $json.effective_prompt, clip: ['4', 1] }, class_type: 'CLIPTextEncode' }, '7': { inputs: { text: '', clip: ['4', 1] }, class_type: 'CLIPTextEncode' }, '8': { inputs: { samples: ['3', 0], vae: ['4', 2] }, class_type: 'VAEDecode' }, '9': { inputs: { filename_prefix: 'ods_n8n', images: ['8', 0] }, class_type: 'SaveImage' } }, client_id: 'ods_n8n_' + Date.now() }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {"response": {"neverError": true}}
+        }
+      },
+      "id": "http-queue",
+      "name": "Queue ComfyUI Prompt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1900, 140]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json || {};\nconst promptId = String(response.prompt_id || '').trim();\nif (!promptId) {\n  return [{ json: { queued: false, statusCode: 502, error: response.error?.message || response.error || 'ComfyUI rejected the prompt.', node_errors: response.node_errors || {} } }];\n}\nreturn [{ json: { queued: true, prompt_id: promptId, queue_number: response.number ?? null } }];"
+      },
+      "id": "code-queue-result",
+      "name": "Prepare Queue Receipt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2140, 140]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2},
+          "conditions": [
+            {
+              "id": "queued",
+              "leftValue": "={{ $json.queued }}",
+              "rightValue": true,
+              "operator": {"type": "boolean", "operation": "true", "singleValue": true}
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-queued",
+      "name": "Prompt Queued?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2380, 140]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: $json.error, node_errors: $json.node_errors }) }}",
+        "options": {"responseCode": "={{ $json.statusCode }}"}
+      },
+      "id": "respond-queue-error",
+      "name": "Return Queue Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2620, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'queued', prompt_id: $json.prompt_id, queue_number: $json.queue_number, status_path: '/webhook/ods-image-status?prompt_id=' + encodeURIComponent($json.prompt_id) }) }}",
+        "options": {"responseCode": 202}
+      },
+      "id": "respond-queued",
+      "name": "Return Queue Receipt",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2620, 60]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "ods-image-status",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-status",
+      "name": "Image Status Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [460, 680],
+      "webhookId": "4dca38a0-b6c6-4237-b646-459d7d1c9c9b"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst promptId = String(input.query?.prompt_id || '').trim();\nconst valid = /^[a-zA-Z0-9_-]{1,128}$/.test(promptId);\nreturn [{ json: valid\n  ? { valid: true, prompt_id: promptId }\n  : { valid: false, statusCode: 400, error: \"Query must include a valid 'prompt_id'.\" }\n}];"
+      },
+      "id": "code-status-id",
+      "name": "Validate Status Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 680]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2},
+          "conditions": [
+            {
+              "id": "valid-status-id",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {"type": "boolean", "operation": "true", "singleValue": true}
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-status-id",
+      "name": "Status ID Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [940, 680]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: $json.error }) }}",
+        "options": {"responseCode": "={{ $json.statusCode }}"}
+      },
+      "id": "respond-invalid-status",
+      "name": "Return Invalid Status Request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1180, 900]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'http://comfyui:8188/history/' + $json.prompt_id }}",
+        "options": {
+          "timeout": 15000,
+          "response": {"response": {"neverError": true}}
+        }
+      },
+      "id": "http-history",
+      "name": "Check ComfyUI History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "const promptId = $('Validate Status Request').first().json.prompt_id;\nconst record = $input.first().json?.[promptId] || {};\nconst images = Object.values(record.outputs || {}).flatMap((output) => output.images || []);\nconst image = images.find((item) => item && item.filename);\nconst failed = record.status?.status_str === 'error';\nconst query = image\n  ? ['filename=' + encodeURIComponent(image.filename), 'subfolder=' + encodeURIComponent(image.subfolder || ''), 'type=' + encodeURIComponent(image.type || 'output')].join('&')\n  : '';\nreturn [{ json: {\n  finished: Boolean(image) || failed,\n  success: Boolean(image),\n  statusCode: image ? 200 : failed ? 502 : 202,\n  prompt_id: promptId,\n  image_url: image ? '/view?' + query : null,\n  image,\n  error: failed ? 'ComfyUI reported a generation error.' : null\n} }];"
+      },
+      "id": "code-history",
+      "name": "Inspect Generation Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1420, 600]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2},
+          "conditions": [
+            {
+              "id": "generation-finished",
+              "leftValue": "={{ $json.finished }}",
+              "rightValue": true,
+              "operator": {"type": "boolean", "operation": "true", "singleValue": true}
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-finished",
+      "name": "Generation Finished?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1660, 600]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: $json.success, prompt_id: $json.prompt_id, image_url: $json.image_url, image: $json.image, error: $json.error }) }}",
+        "options": {"responseCode": "={{ $json.statusCode }}"}
+      },
+      "id": "respond-finished",
+      "name": "Return Generation Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1900, 520]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, status: 'processing', prompt_id: $json.prompt_id }) }}",
+        "options": {"responseCode": 202}
+      },
+      "id": "respond-processing",
+      "name": "Return Processing Status",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1900, 720]
     }
   ],
-  "connections": {},
-  "settings": {
-    "executionOrder": "v1"
+  "connections": {
+    "Generate Image Request": {"main": [[{"node": "Validate Image Request", "type": "main", "index": 0}]]},
+    "Validate Image Request": {"main": [[{"node": "Request Valid?", "type": "main", "index": 0}]]},
+    "Request Valid?": {
+      "main": [
+        [{"node": "Enhance Prompt?", "type": "main", "index": 0}],
+        [{"node": "Return Invalid Request", "type": "main", "index": 0}]
+      ]
+    },
+    "Enhance Prompt?": {
+      "main": [
+        [{"node": "Enhance With llama-server", "type": "main", "index": 0}],
+        [{"node": "Use Original Prompt", "type": "main", "index": 0}]
+      ]
+    },
+    "Enhance With llama-server": {"main": [[{"node": "Use Enhanced Prompt", "type": "main", "index": 0}]]},
+    "Use Enhanced Prompt": {"main": [[{"node": "Queue ComfyUI Prompt", "type": "main", "index": 0}]]},
+    "Use Original Prompt": {"main": [[{"node": "Queue ComfyUI Prompt", "type": "main", "index": 0}]]},
+    "Queue ComfyUI Prompt": {"main": [[{"node": "Prepare Queue Receipt", "type": "main", "index": 0}]]},
+    "Prepare Queue Receipt": {"main": [[{"node": "Prompt Queued?", "type": "main", "index": 0}]]},
+    "Prompt Queued?": {
+      "main": [
+        [{"node": "Return Queue Receipt", "type": "main", "index": 0}],
+        [{"node": "Return Queue Error", "type": "main", "index": 0}]
+      ]
+    },
+    "Image Status Request": {"main": [[{"node": "Validate Status Request", "type": "main", "index": 0}]]},
+    "Validate Status Request": {"main": [[{"node": "Status ID Valid?", "type": "main", "index": 0}]]},
+    "Status ID Valid?": {
+      "main": [
+        [{"node": "Check ComfyUI History", "type": "main", "index": 0}],
+        [{"node": "Return Invalid Status Request", "type": "main", "index": 0}]
+      ]
+    },
+    "Check ComfyUI History": {"main": [[{"node": "Inspect Generation Status", "type": "main", "index": 0}]]},
+    "Inspect Generation Status": {"main": [[{"node": "Generation Finished?", "type": "main", "index": 0}]]},
+    "Generation Finished?": {
+      "main": [
+        [{"node": "Return Generation Result", "type": "main", "index": 0}],
+        [{"node": "Return Processing Status", "type": "main", "index": 0}]
+      ]
+    }
   },
-  "meta": {
-    "templateId": "image-gen-webhook"
-  },
+  "settings": {"executionOrder": "v1"},
+  "meta": {"templateId": "image-gen-webhook"},
   "tags": []
 }
