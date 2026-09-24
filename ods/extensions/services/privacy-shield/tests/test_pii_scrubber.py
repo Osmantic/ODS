@@ -170,6 +170,46 @@ class TestCreditCardDetection:
         assert PIIDetector._luhn_check("5500000000000004") is True  # Valid MC test number
         assert PIIDetector._luhn_check("1234567890123456") is False  # Invalid
 
+    # A PAN is 13-19 digits, not 16. Amex is 15 and Diners is 14, so a
+    # 16-digit-only detector hands those card numbers to the upstream provider
+    # in cleartext — the exact leak the shield exists to stop.
+    @pytest.mark.parametrize(
+        "label,number",
+        [
+            ("amex grouped", "3782 822463 10005"),
+            ("amex plain", "378282246310005"),
+            ("amex dashed", "3782-822463-10005"),
+            ("diners grouped", "3056 930902 5904"),
+            ("diners plain", "30569309025904"),
+            ("visa 13", "4222222222222"),
+            ("visa 19", "4111111111111111110"),
+        ],
+    )
+    def test_non_sixteen_digit_pans_are_scrubbed(self, detector, label, number):
+        result = detector.scrub(f"Card: {number} on file")
+        assert number not in result, label
+        assert "<PII_credit_card_" in result, label
+
+    def test_luhn_accepts_the_whole_pan_length_range(self):
+        assert PIIDetector._luhn_check("378282246310005") is True  # 15, Amex
+        assert PIIDetector._luhn_check("30569309025904") is True  # 14, Diners
+        assert PIIDetector._luhn_check("4222222222222") is True  # 13, Visa
+        assert PIIDetector._luhn_check("4111111111111111110") is True  # 19
+        assert PIIDetector._luhn_check("378282246310004") is False  # bad checksum
+        assert PIIDetector._luhn_check("123456789012") is False  # 12, too short
+        assert PIIDetector._luhn_check("12345678901234567890") is False  # 20, too long
+
+    def test_short_digit_runs_are_not_cards(self, detector):
+        """Phone numbers and SSNs sit below the PAN length floor."""
+        for text in ("Call 555-123-4567", "SSN 123-45-6789", "Ref 1234 5678"):
+            assert "<PII_credit_card_" not in detector.scrub(text), text
+
+    def test_card_wins_over_phone_on_overlap(self, detector):
+        """A Diners PAN contains a phone-shaped run; the card must claim it."""
+        result = detector.scrub("Card: 3056 930902 5904")
+        assert "<PII_phone_" not in result
+        assert "3056" not in result
+
 
 # ── Round-trip (scrub + restore) ─────────────────────────────────────────────
 
