@@ -18,11 +18,19 @@ Enable the extension and visit `http://localhost:8098`. Sign in as `admin`, add 
 | Variable | Default | Behavior |
 | --- | --- | --- |
 | `MINIFLUX_PORT` | `8098` | Published port; listener remains `8080` |
-| `MINIFLUX_BASE_URL` | `http://localhost:8098` | Update for a custom port or protected external URL |
+| `MINIFLUX_BASE_URL` | empty; derives `http://localhost:${MINIFLUX_PORT:-8098}` | Set explicitly for a protected external hostname or URL prefix |
 | `MINIFLUX_DB_PASSWORD` | required | Must match the initialized PostgreSQL account |
 | `MINIFLUX_ADMIN_PASSWORD` | required | Creates the initial admin; does not reset an existing account |
 
 The default binding is loopback. Configure a trusted HTTPS access path before using credentials across a network. Feed fetching and outgoing integrations retain Miniflux's private-network restrictions. No authentication proxy, signup bypass, or external integration is enabled.
+
+Changing only `MINIFLUX_PORT` also updates the localhost URLs shown for the
+bookmarklet, Fever, and Google Reader integrations. An explicit nonempty
+`MINIFLUX_BASE_URL` always wins, including an existing saved value. To opt into
+the derived localhost URL on an older installation, clear that setting and
+recreate Miniflux, then copy the new bookmarklet/integration URLs. Existing
+bookmarks and external clients are not rewritten automatically. Keep an
+explicit URL for remote access; a bind address does not identify a public hostname.
 
 ## Data and upgrades
 
