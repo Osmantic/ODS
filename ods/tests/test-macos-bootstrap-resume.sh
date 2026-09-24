@@ -73,6 +73,22 @@ printf '%s\n' "$*" >> "${TEST_RESUME_LOG:?}"
 UPGRADE
 chmod +x "$install_dir/scripts/bootstrap-upgrade.sh"
 
+# Real macOS installs ship the installers tree inside $INSTALL_DIR, and the
+# native start path shells out to this helper unconditionally. Stage a stub
+# that satisfies the boundary: 'start' must produce a PID file (the CLI cats
+# it next) and 'stop' removes it.
+mkdir -p "$install_dir/installers/macos/lib"
+cat > "$install_dir/installers/macos/lib/native-llama-service.sh" <<'LLAMA'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+    start) printf '%s\n' "$$" > "$4" ;;
+    stop)  rm -f "$4" ;;
+    *) exit 2 ;;
+esac
+LLAMA
+chmod +x "$install_dir/installers/macos/lib/native-llama-service.sh"
+
 cat > "$bin_dir/docker" <<'DOCKER'
 #!/usr/bin/env bash
 set -euo pipefail
