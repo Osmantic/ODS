@@ -233,6 +233,19 @@ if grep -qF 'qualified/licensed hosts' "$REPO_ROOT/README.md"; then
     fail "Front page still calls qualified Pixel hosts licensed"
 fi
 
+model_switch_docs=(
+    "$REPO_ROOT/README.md"
+    "$ROOT_DIR/FAQ.md"
+)
+
+for file in "${model_switch_docs[@]}"; do
+    require_literal "$file" 'Dashboard' "Model download workflow"
+    require_literal "$file" 'does not download from the network' "Model swap network contract"
+    if grep -qF './scripts/pre-download.sh --tier 3' "$file"; then
+        fail "Model switch guidance invokes an unsupported pre-download tier in ${file#"$REPO_ROOT"/}"
+    fi
+done
+
 for file in "${windows_copy_paste_docs[@]}"; do
     require_literal "$file" "$WINDOWS_SOURCE_ZIP_URL" "Windows no-Git source ZIP install"
     require_literal "$file" '[guid]::NewGuid().ToString("N")' "Windows collision-free temporary source directory"

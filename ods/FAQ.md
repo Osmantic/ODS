@@ -101,10 +101,14 @@ ods model list                 # Show available tiers and models
 ods model swap T3              # Switch to Tier 3 (e.g., Qwen3 30B-A3B)
 ```
 
-The model file must already be downloaded. If it isn't, pre-fetch it first:
-```bash
-./scripts/pre-download.sh --tier 3
-```
+The model file must already be downloaded. If it isn't, open **Dashboard →
+Models**, choose the catalog model for that tier, and use **Download**. The
+Dashboard can activate it after the download, or you can rerun `ods model swap
+T3`.
+
+`ods model swap` deliberately does not download from the network. The legacy
+`scripts/pre-download.sh` caches Hugging Face Transformer snapshots for offline
+components; it does not populate the GGUF file required by a tier swap.
 
 ### Can I use my own GGUF model?
 Yes. Drop the single `.gguf` file into `data/models/`, then open Dashboard ->

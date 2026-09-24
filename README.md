@@ -368,12 +368,17 @@ ods model list                 # Show all available tiers
 ods model swap T3              # Switch to a different tier
 ```
 
-If the new model isn't downloaded yet, pre-fetch it first:
+If the new model isn't downloaded yet, open **Dashboard → Models**, choose the
+catalog model for that tier, and use **Download**. After the download completes,
+the Dashboard can activate it directly, or you can run the tier swap:
 
 ```bash
-./scripts/pre-download.sh --tier 3    # Download before switching
-ods model swap T3                    # Then swap (restarts llama-server)
+ods model swap T3                    # Activate the downloaded tier model
 ```
+
+`ods model swap` deliberately does not download from the network. The legacy
+`scripts/pre-download.sh` caches Hugging Face Transformer snapshots for offline
+components; it does not populate the GGUF file required by a tier swap.
 
 Already have a GGUF you want to use? Drop the single `.gguf` file in
 `data/models/`, then open Dashboard -> Models and load the local entry. For
