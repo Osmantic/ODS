@@ -11,13 +11,14 @@ services:
     environment:
       - GRADIO_SERVER_NAME=0.0.0.0
       - GRADIO_SERVER_PORT=7860
+      - HF_HOME=/app/models
     volumes:
       - ./data/audiocraft:/app/outputs:rw
-      - ./data/audiocraft/models:/root/.cache/audiocraft:rw
+      - ./data/audiocraft/models:/app/models:rw
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${AUDIOCRAFT_PORT:-7863}:7860"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:7860/"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -36,4 +37,3 @@ services:
 networks:
   ods-network:
     external: true
-

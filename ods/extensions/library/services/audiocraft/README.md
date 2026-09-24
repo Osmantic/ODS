@@ -1,6 +1,6 @@
 # AudioCraft
 
-Meta's generative AI for audio. Features MusicGen for text-to-music generation and AudioGen for text-to-sound effects — create royalty-free music and sound effects from text descriptions.
+Meta's generative AI for audio. Features MusicGen for text-to-music generation and AudioGen for text-to-sound effects.
 
 ## Requirements
 
@@ -9,7 +9,9 @@ Meta's generative AI for audio. Features MusicGen for text-to-music generation a
 
 ## Apple Silicon (M1/M2/M3) note
 
-This extension is configured `platform: linux/amd64` because some of its Python dependencies don't have native ARM64 wheels. On Apple Silicon, Docker Desktop runs it under QEMU x86_64 emulation — expect noticeably slower builds (typically 5–10x) and reduced runtime CPU performance (typically 2–5x) compared to native ARM64 hosts. Functional but not recommended for active iterative work on Apple Silicon.
+The image build targets `linux/amd64` because the pinned Torch/AudioCraft
+dependency set is for that architecture. Native ARM64 and Apple Silicon GPU
+execution are not validated by this extension's image test.
 
 ## Enable / Disable
 
@@ -31,7 +33,35 @@ Your data is preserved when disabling. To re-enable later: `ods enable audiocraf
 3. Use the MusicGen tab to generate music from text descriptions
 4. Use the AudioGen tab to generate sound effects
 
-Models are downloaded automatically on first use.
+Both models are loaded during server startup. The first startup needs network
+access and enough time to download their weights before the web page is ready.
+`HF_HOME=/app/models` places the Hugging Face cache in `data/audiocraft/models`;
+generated audio goes to `data/audiocraft`. The host-agent lifecycle prepares
+these directories for the image's non-root UID 1000. Direct Compose users and
+custom/rootless UID mappings must provide matching writable bind directories.
+
+Older definitions mounted the cache at an unused root-user path. Preserve any
+needed cache from the old container before removing it, or allow the standard
+weights to download again. Existing generated audio paths are unchanged.
+
+## Image validation
+
+The build pins AudioCraft 1.3.0 to its Torch 2.1/TorchAudio 2.1 ABI family, NumPy
+1.x, compatible Transformers/Hugging Face Hub/spaCy APIs, and the Gradio 4.44
+HTTP dependency set. `pip check` catches distribution conflicts; the separate
+image test imports the actual packages, constructs the shipped Gradio app,
+exercises its HTTP routes, and writes WAV files through the real audio writer.
+Only model loading/generation is replaced with a small tensor fixture in that
+test. It does not prove GPU inference or downloading the production weights.
+
+From the repository root:
+
+```bash
+docker build -t ods-audiocraft-check ods/extensions/library/services/audiocraft
+docker run --rm --network none -e GRADIO_ANALYTICS_ENABLED=False \
+  -v "$PWD/ods/tests/test-audiocraft-image.py:/tmp/smoke.py:ro" \
+  --entrypoint python ods-audiocraft-check /tmp/smoke.py
+```
 
 ## Known Issues
 

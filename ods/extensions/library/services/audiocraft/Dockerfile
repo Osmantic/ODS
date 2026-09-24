@@ -1,24 +1,43 @@
-FROM python:3.10-slim-bookworm@sha256:4efa69bf17cfbd5eb44b170e40bb8091b1c0fadf3833aeb87b655512e24268e5
+FROM python:3.10-slim-bookworm@sha256:68d914ec641a0b69267ce65184d000a2bc3a9ee2590ab702b82250ab2385735a
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     git \
     libsndfile1 \
     ffmpeg \
+    build-essential \
+    pkg-config \
+    libavformat-dev \
+    libavcodec-dev \
+    libavdevice-dev \
+    libavutil-dev \
+    libavfilter-dev \
+    libswscale-dev \
+    libswresample-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install AudioCraft and dependencies
+# AudioCraft 1.3.0 requires the Torch 2.1 / TorchAudio 2.1 ABI family.
+# Keep transitive APIs compatible with that release and Gradio 4.44.
 RUN pip install --no-cache-dir \
     audiocraft==1.3.0 \
     gradio==4.44.0 \
-    torch==2.3.0 \
-    torchaudio==2.3.0
+    torch==2.1.0 \
+    torchaudio==2.1.0 \
+    numpy==1.26.4 \
+    transformers==4.38.2 \
+    huggingface-hub==0.25.2 \
+    spacy==3.7.5 \
+    && pip check
+
+# Gradio 4.44's schema renderer predates Pydantic 2.11's boolean schemas.
+RUN pip install --no-cache-dir fastapi==0.115.6 pydantic==2.10.6 \
+    && pip check
 
 # Set working directory
 WORKDIR /app
 
 # Create simple Gradio app for MusicGen
-RUN cat > /app/app.py << 'EOF'
+RUN cat > /app/app.py <<'EOF'
 import gradio as gr
 from audiocraft.models import MusicGen, AudioGen
 from audiocraft.data.audio import audio_write
@@ -138,7 +157,7 @@ EOF
 RUN mkdir -p /app/outputs
 
 # Create non-root user
-RUN useradd -m -s /bin/bash appuser \
+RUN useradd -m -u 1000 -s /bin/bash appuser \
     && chown -R appuser:appuser /app
 
 USER appuser

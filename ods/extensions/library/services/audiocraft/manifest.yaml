@@ -5,6 +5,7 @@ service:
   name: AudioCraft
   aliases: [musicgen, audio-gen, music]
   container_name: ods-audiocraft
+  container_uid: 1000
   host_env: AUDIOCRAFT_HOST
   default_host: audiocraft
   port: 7860
@@ -20,7 +21,7 @@ service:
   description: |
     Meta's AudioCraft is a generative AI for audio. Features MusicGen for
     text-to-music generation and AudioGen for text-to-sound effects.
-    Create royalty-free music and sound effects from text descriptions.
+    Create music and sound effects from text descriptions.
 
 features:
   - id: music-generation
