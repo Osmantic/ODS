@@ -30,6 +30,10 @@ NODE_SPEC = importlib.util.spec_from_file_location('native_config_node',
     Path(__file__).with_name('pixel-native-node.py'))
 native_node = importlib.util.module_from_spec(NODE_SPEC)
 NODE_SPEC.loader.exec_module(native_node)
+INSPECTION_SPEC = importlib.util.spec_from_file_location('native_inspection_install',
+    Path(__file__).parents[2] / 'lib/pixel-preview-inspection.py')
+inspection_install = importlib.util.module_from_spec(INSPECTION_SPEC)
+INSPECTION_SPEC.loader.exec_module(inspection_install)
 
 
 def private_json(path):
@@ -83,7 +87,7 @@ def service_snapshot(root, relative, *, private=False):
     return body
 
 
-def stage_services(*, source, ref, ods_source, candidate, destination):
+def stage_services(*, source, ref, ods_source, candidate, destination, inspection_config):
     """Prepare all three service snapshots together, without privileges/jobs.
 
     The bundle manifest is an integrity record, not root authorization. The
@@ -110,7 +114,10 @@ def stage_services(*, source, ref, ods_source, candidate, destination):
         raise ValueError('native-service-broker-ref-mismatch')
     files = {'operations/broker.py': broker,
              'operations/policy.json': service_snapshot(candidate, 'operations-policy.json', private=True),
-             'helpers/extension-catalog.json': service_catalog(ods_source)}
+             'helpers/extension-catalog.json': service_catalog(ods_source),
+             'helpers/preview-inspection.json': (json.dumps(inspection_install.validate_config(inspection_config), sort_keys=True) + '\n').encode()}
+    if inspection_config['transport'] != 'docker-desktop' or inspection_config['ownerUid'] != os.getuid():
+        raise ValueError('native-inspection-owner-required')
     policy = json.loads(files['operations/policy.json'])
     if (type(policy) is not dict or type(policy.get('schemaVersion')) is not int
             or policy['schemaVersion'] not in (1, 2)):
@@ -158,7 +165,7 @@ def verified_services(root, *, expected_digest, expected_ref, expected_config_di
         raise ValueError('native-service-manifest-digest-mismatch')
     manifest = json.loads(body)
     bundle.validate_service_manifest_provenance(manifest)
-    names = set(SERVICE_SOURCES) | {'operations/broker.py', 'operations/policy.json', 'helpers/extension-catalog.json'}
+    names = set(manifest['files'])  # Exact complete/legacy set checked above.
     if (type(manifest) is not dict or type(manifest.get('schemaVersion')) is not int
             or manifest['schemaVersion'] != 1 or manifest.get('status') != 'staged'
             or manifest.get('requiresServiceQualification') is not True
@@ -180,6 +187,10 @@ def verified_services(root, *, expected_digest, expected_ref, expected_config_di
         if name.endswith('.py'): compile(snapshot, name, 'exec')
         snapshots[name] = snapshot
     policy = json.loads(snapshots['operations/policy.json'])
+    if 'helpers/preview-inspection.json' in snapshots:
+        inspection = inspection_install.validate_config(json.loads(snapshots['helpers/preview-inspection.json']))
+        if inspection['transport'] != 'docker-desktop':
+            raise ValueError('native-inspection-transport-required')
     if (type(policy) is not dict or type(policy.get('schemaVersion')) is not int
             or policy['schemaVersion'] not in (1, 2)):
         raise ValueError('native-service-policy-required')
@@ -455,6 +466,8 @@ def prepare(*, source, ref, answers, node, sandbox_image, destination, runtime,
         # This is the same loopback chat endpoint enabled by the Linux caller.
         document['gateway']['port'] = contract['gatewayPort']
         document['gateway']['http']['endpoints']['chatCompletions'] = {'enabled': True}
+        document['plugins'].setdefault('entries', {}).setdefault('pixel-ods', {}).setdefault(
+            'config', {})['workspacePreviewInspectionTransport'] = 'native'
         config.write_text(json.dumps(document, indent=2) + '\n')
         config.chmod(0o600)
         apply_runtime_budget(config, answers=snapshot, openclaw_home=home,
@@ -557,8 +570,11 @@ def services_main(argv):
         parser.add_argument('--' + name, required=True)
     args = parser.parse_args(argv)
     try:
+        inspection = inspection_install.build_config(
+            source=Path(args.ods_source) / 'extensions/services/pixel-agent/host',
+            owner_uid=os.getuid(), transport='docker-desktop')
         digest = stage_services(source=args.source, ref=args.source_ref, ods_source=args.ods_source,
-                                candidate=args.candidate, destination=args.destination)
+                                candidate=args.candidate, destination=args.destination, inspection_config=inspection)
     except (OSError, ValueError, KeyError, TypeError, SyntaxError, subprocess.SubprocessError):
         print('error: native-service-staging-failed', file=sys.stderr)
         return 1

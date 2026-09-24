@@ -55,8 +55,8 @@ def _publication_plan(*, bundle, expected_digest, expected_ref, expected_config_
         state=state, policy=json.loads(snapshots['operations/policy.json']))
     manager.render(**manager_options)
     promoter.render(**promoter_options)
-    helpers = [(root / name, body, 0o640 if name.endswith('.json') else 0o644,
-                identity['gid'] if name.endswith('.json') else 0)
+    helpers = [(root / name, body, 0o640 if name.endswith('.json') and name != 'helpers/preview-inspection.json' else 0o644,
+                identity['gid'] if name.endswith('.json') and name != 'helpers/preview-inspection.json' else 0)
                for name, body in snapshots.items() if name.startswith('helpers/')]
     publishers = []
     for name, module, options in (('manager', manager, manager_options), ('promoter', promoter, promoter_options)):
@@ -390,12 +390,30 @@ def readiness_checks(*, owner, identity, python,
                 time.sleep(0.1)
         raise ValueError('native-operations-readiness-timeout')
 
+    def inspection():
+        script = root / 'helpers/preview_inspection.py'
+        custody.protected_bytes(str(script))
+        config = json.loads(custody.protected_bytes(str(root / 'helpers/preview-inspection.json')))
+        if config.get('ownerUid') != owner_entry.pw_uid:
+            raise ValueError('native-inspection-owner-mismatch')
+        result = subprocess.run(['/usr/bin/python3', '-B', str(script), 'health'],
+            user=owner_entry.pw_uid, group=owner_entry.pw_gid, extra_groups=[], cwd='/',
+            env={'PATH': '/usr/bin:/bin', 'HOME': owner_entry.pw_dir}, stdin=subprocess.DEVNULL,
+            capture_output=True, timeout=35)
+        value = json.loads(result.stdout) if result.returncode == 0 else None
+        if not isinstance(value, dict) or value.get('schemaVersion') != 1 \
+                or value.get('kind') != 'ods-pixel-preview-inspection' or value.get('status') != 'ready' \
+                or value.get('imageId') != config.get('imageId'):
+            raise ValueError('native-inspection-readiness-failed')
+        return True
+
     return {
         'manager': lambda: client('manager', broker,
             ['client', '/private/var/lib/ods-pixel-manager/extension-manager.sock', 'list', 'all']),
         'promoter': lambda: client('promoter', owner_entry,
             ['health', '/private/var/lib/ods-pixel-artifact-promoter/promoter.sock']),
         'operations': operations,
+        'inspection': inspection,
     }
 
 

@@ -54,6 +54,7 @@ def source(tmp_path, monkeypatch):
     files.update({'operations/broker.py': b'PIXEL = 1\n',
                   'operations/policy.json': b'{"schemaVersion":1}\n',
                   'helpers/extension-catalog.json': b'{"extensions":[]}\n'})
+    files['helpers/preview-inspection.json'] = b'{"fixture":"image-identity"}\n'
     put(ods, 'extensions/services/pixel-agent/plugin/index.mjs', b'export default {};\n')
     put(ods, 'extensions/services/pixel-agent/plugin/lib/tool.mjs', b'export const tool = 1;\n')
     put(ods, 'extensions/services/pixel-agent/host/cancellable-exec.sh', b'#!/bin/sh\nexit 0\n')
@@ -77,6 +78,21 @@ def services(source):
         'pixelSourceRef': 'a' * 40, 'candidateConfigSha256': 'b' * 64,
         'files': {name: {'sha256': sha(body), 'bytes': len(body)} for name, body in source.files.items()},
         'sourceProvenance': bundle.service_source_provenance(selected, source.files)}
+
+
+def test_complete_legacy_service_bundle_remains_readable_but_partial_inspection_does_not(source):
+    manifest = services(source)
+    old = json.loads(json.dumps(manifest))
+    for name in bundle.INSPECTION_SERVICE_ARTIFACTS:
+        old['files'].pop(name)
+        old['sourceProvenance']['sourceBindings'].pop(name, None)
+        old['sourceProvenance']['generatedArtifacts'].pop(name, None)
+    assert bundle.validate_service_manifest_provenance(old)['odsSource']['commit'] == source.ref
+    for missing in bundle.INSPECTION_SERVICE_ARTIFACTS:
+        partial = json.loads(json.dumps(manifest))
+        partial['files'].pop(missing)
+        with pytest.raises(bundle.BundleError):
+            bundle.validate_service_manifest_provenance(partial)
 
 
 def staged(source, manifest=None, *, selected=None):
@@ -453,7 +469,9 @@ def test_actual_service_stage_selects_before_copy_and_embeds_provenance(source, 
         (candidate / name).chmod(0o600)
     destination = source.tmp / 'services'
     digest = config.stage_services(source=source.repository, ref=ref, ods_source=source.ods,
-        candidate=candidate, destination=destination)
+        candidate=candidate, destination=destination, inspection_config={
+            'imageId': 'sha256:' + 'a' * 64, 'docker': '/Applications/Docker.app/Contents/Resources/bin/docker',
+            'snapshotRoot': '/previews', 'ownerUid': os.getuid(), 'transport': 'docker-desktop'})
     body = (destination / 'services.json').read_bytes()
     manifest = json.loads(body)
     assert digest == sha(body)

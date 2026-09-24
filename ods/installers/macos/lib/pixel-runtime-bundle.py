@@ -38,8 +38,14 @@ ODS_SERVICE_SOURCES = {
     'promoter/pixel_macos_custody.py': 'bin/pixel_macos_custody.py',
     'helpers/extension_search.py': 'extensions/services/pixel-agent/host/extension_search.py',
     'helpers/system_observe.py': 'extensions/services/pixel-agent/host/system_observe.py',
+    'helpers/preview_inspection.py': 'extensions/services/pixel-agent/host/preview_inspection.py',
+    'helpers/preview_inspection_protocol.py': 'extensions/services/pixel-agent/host/preview_inspection_protocol.py',
+    'helpers/workspace_preview.py': 'extensions/services/pixel-agent/host/workspace_preview.py',
+    'helpers/unix_peer.py': 'extensions/services/pixel-agent/host/unix_peer.py',
 }
-GENERATED_SERVICE_ARTIFACTS = {'operations/policy.json', 'helpers/extension-catalog.json'}
+GENERATED_SERVICE_ARTIFACTS = {'operations/policy.json', 'helpers/extension-catalog.json', 'helpers/preview-inspection.json'}
+INSPECTION_SERVICE_ARTIFACTS = {'helpers/preview_inspection.py', 'helpers/preview_inspection_protocol.py',
+    'helpers/workspace_preview.py', 'helpers/unix_peer.py', 'helpers/preview-inspection.json'}
 MAX_ENTRIES = 200000
 MAX_MANIFEST = 32 * 1024 * 1024
 INSTALL_ROOT = Path('/usr/local/libexec/ods-pixel-runtimes')
@@ -126,6 +132,14 @@ def validate_service_manifest_provenance(manifest):
     keys = {'schemaVersion', 'status', 'requiresServiceQualification', 'pixelSourceRef',
             'candidateConfigSha256', 'files'}
     names = set(ODS_SERVICE_SOURCES) | GENERATED_SERVICE_ARTIFACTS | {'operations/broker.py'}
+    # Existing approved bundles remain readable for migration, rollback and
+    # uninstall. New staging always emits the complete inspection capability;
+    # partial inspection bundles are never an accepted legacy contract.
+    if isinstance(manifest, dict) and isinstance(manifest.get('files'), dict) \
+            and set(manifest['files']) == names - INSPECTION_SERVICE_ARTIFACTS:
+        names -= INSPECTION_SERVICE_ARTIFACTS
+    generated = GENERATED_SERVICE_ARTIFACTS & names
+    mapped = set(ODS_SERVICE_SOURCES) & names
     if (type(manifest) is not dict or set(manifest) not in (keys, keys | {'sourceProvenance'})
             or type(manifest['schemaVersion']) is not int or manifest['schemaVersion'] != 1
             or manifest['status'] != 'staged' or manifest['requiresServiceQualification'] is not True
@@ -145,7 +159,7 @@ def validate_service_manifest_provenance(manifest):
             or provenance['scope'] != SOURCE_SCOPE or type(provenance['odsSource']) is not dict
             or set(provenance['odsSource']) != {'state', 'commit', 'reason'}
             or type(provenance['sourceBindings']) is not dict or type(provenance['generatedArtifacts']) is not dict
-            or set(provenance['generatedArtifacts']) != GENERATED_SERVICE_ARTIFACTS):
+            or set(provenance['generatedArtifacts']) != generated):
         raise BundleError('invalid-service-source-provenance')
     for name, record in provenance['generatedArtifacts'].items():
         if record != {'sha256': manifest['files'][name]['sha256'], 'sourceState': 'unknown'}:
@@ -156,7 +170,7 @@ def validate_service_manifest_provenance(manifest):
             raise BundleError('invalid-service-source-provenance')
     elif (source['state'] != 'verified-source-bindings' or source['reason'] is not None
             or type(source['commit']) is not str or not re.fullmatch('[a-f0-9]{40}', source['commit'])
-            or set(provenance['sourceBindings']) != set(ODS_SERVICE_SOURCES)):
+            or set(provenance['sourceBindings']) != mapped):
         raise BundleError('invalid-service-source-provenance')
     for name, record in provenance['sourceBindings'].items():
         if (type(record) is not dict or set(record) != {'source', 'sha256'}

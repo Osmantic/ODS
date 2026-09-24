@@ -171,6 +171,7 @@ def test_initial_preparation_orders_stages_and_records_failures(tmp_path, monkey
         if name == 'sandbox-qualification': return {'imageId': 'sha256:' + 'b' * 64}
         return kwargs['destination'] if name in ('configuration', 'onboarding') else name + '-digest'
     config = SimpleNamespace(private_answers=lambda path: {'openclawHome': str(home / '.openclaw')},
+        inspection_install=SimpleNamespace(build_config=lambda **kw: {'imageId': 'sha256:' + 'c' * 64}),
         prepare=lambda **kw: stage('configuration', **kw),
         stage_services=lambda **kw: stage('services', **kw),
         stage_bundle=lambda **kw: stage('runtime', **kw))
@@ -287,6 +288,7 @@ def test_legacy_preparation_preserves_active_files_and_keeps_phase_receipts(tmp_
         _source_gateway=lambda *args: (document, env, None, None, runtimes / digest / 'node', runtimes / digest / 'runtime/openclaw.mjs'),
         make_migration_plan=lambda **kw: stage('joint-plan', **kw))
     config = SimpleNamespace(bootstrap=SimpleNamespace(prepare_sandbox=lambda **kw: stage('sandbox', **kw)),
+        inspection_install=SimpleNamespace(build_config=lambda **kw: {'imageId': 'sha256:' + 'c' * 64}),
         prepare=lambda **kw: stage('configuration', **kw), stage_services=lambda **kw: stage('services', **kw),
         stage_bundle=lambda **kw: stage('runtime', **kw))
     helpers = {'config': config, 'access-install': installer,

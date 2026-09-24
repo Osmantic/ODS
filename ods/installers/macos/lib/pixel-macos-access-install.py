@@ -1002,10 +1002,11 @@ def _managed_service_contract():
     broker = pwd.getpwnam('_ods_pixel_ops')
     root = Path('/usr/local/libexec/ods-pixel-services')
     names = set(_native_services.helper('config').SERVICE_SOURCES) | {
-        'operations/broker.py', 'operations/policy.json', 'helpers/extension-catalog.json',
+        'operations/broker.py', 'operations/policy.json', 'helpers/extension-catalog.json', 'helpers/preview-inspection.json',
         'operations/broker.sb', 'manager/manager.sb', 'promoter/promoter.sb'}
     result = {str(root / name): (0o640, broker.pw_gid) if name.endswith('.json') else (0o644, 0)
               for name in names}
+    result[str(root / 'helpers/preview-inspection.json')] = (0o644, 0)
     result.update({str(Path('/Library/LaunchDaemons') / ('com.ods.pixel-native-' + role + '.plist')):
         (0o644, 0) for role in ('manager', 'promoter', 'operations')})
     result[str(_launchd.ACCESS_STATE / 'service-installation.json')] = (0o600, 0)

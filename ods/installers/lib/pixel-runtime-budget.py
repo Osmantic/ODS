@@ -368,6 +368,21 @@ for permitted_tool in (
         updated_sandbox_allow.append(permitted_tool)
 updated_tools["alsoAllow"] = sorted(set(updated_also_allow))
 updated_sandbox_tools["allow"] = sorted(set(updated_sandbox_allow))
+inspection_transport = sys.argv[5] if len(sys.argv) > 5 else ''
+if inspection_transport:
+    if inspection_transport not in ('unix', 'native'):
+        raise SystemExit('invalid preview inspection transport')
+    updated_pixel_config['workspacePreviewInspectionTransport'] = inspection_transport
+inspection_enabled = updated_pixel_config.get('workspacePreviewInspectionTransport') in ('unix', 'native')
+inspection_tool = 'pixel_ods_workspace_preview_inspect'
+for tools in (updated_tools['alsoAllow'], updated_sandbox_tools['allow']):
+    if inspection_enabled and inspection_tool not in tools:
+        tools.append(inspection_tool)
+        tools.sort()
+    elif not inspection_enabled and inspection_tool in tools:
+        tools.remove(inspection_tool)
+if inspection_enabled:
+    updated_agent_tools['deny'] = [tool for tool in updated_agent_tools['deny'] if tool != inspection_tool]
 if updated == value:
     print("unchanged")
     raise SystemExit(0)
