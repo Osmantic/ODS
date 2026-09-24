@@ -35,6 +35,7 @@ jobs:
           bash tests/test-backup-restore-roundtrip.sh
 
   pixel-advice-host-stdlib:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -49,6 +50,7 @@ jobs:
         run: python -I -S tests/pixel_inference/check_advice_stdlib.py
 
   pixel-inference-contracts:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -108,6 +110,7 @@ jobs:
         run: python -m pytest -q extensions/services/pixel-agent/tests/test_preview_directory_errors.py
 
   token-spy-pricing:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -123,6 +126,7 @@ jobs:
         run: python -m pytest -q tests/test_local_upstream_pricing.py tests/test_anthropic_cumulative_usage.py tests/test_usage_report.py
 
   token-spy-postgres:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -163,6 +167,7 @@ jobs:
         run: python -m pytest tests/test_recent_events_cursor_postgres.py -v
 
   integration-smoke:
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     defaults:
       run:

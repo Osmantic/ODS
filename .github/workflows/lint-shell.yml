@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   shellcheck:
+    timeout-minutes: 10
     name: Lint shell scripts
     runs-on: ubuntu-latest
     steps:

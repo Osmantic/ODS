@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   ruff:
+    timeout-minutes: 10
     name: Lint Python with Ruff
     runs-on: ubuntu-latest
     steps:

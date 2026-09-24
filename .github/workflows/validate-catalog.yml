@@ -19,6 +19,7 @@ permissions:
 
 jobs:
   catalog-freshness:
+    timeout-minutes: 15
     name: Check catalog is up-to-date
     runs-on: ubuntu-latest
     steps:

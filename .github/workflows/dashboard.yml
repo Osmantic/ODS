@@ -9,6 +9,7 @@ on:
 
 jobs:
   frontend:
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +45,7 @@ jobs:
         run: npm run build
 
   api:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     defaults:
       run:

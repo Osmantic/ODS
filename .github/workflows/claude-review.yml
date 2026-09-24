@@ -142,6 +142,7 @@ jobs:
 
   # ─── Phase 2: Sensitive file detection ────────────────────────────
   detect-high-stakes:
+    timeout-minutes: 15
     name: Detect High-Stakes Changes
     if: github.event_name == 'pull_request' && github.event.action != 'labeled'
     runs-on: ubuntu-latest
@@ -211,6 +212,7 @@ jobs:
           fi
 
   review-summary:
+    timeout-minutes: 10
     name: Review Summary
     needs: [detect-high-stakes]
     if: |
@@ -249,6 +251,7 @@ jobs:
 
   # ─── Phase 3: Auto-fix (opt-in via 'ai-fix' label) ───────────────
   security-check:
+    timeout-minutes: 15
     name: Pre-flight Security Check
     if: |
       github.event.action == 'labeled' &&
@@ -453,6 +456,7 @@ jobs:
             });
 
   blocked-security:
+    timeout-minutes: 10
     name: Security Block Notice
     needs: security-check
     if: |

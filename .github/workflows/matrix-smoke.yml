@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   linux-smoke:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -239,6 +240,7 @@ jobs:
           exit "$status"
 
   macos-smoke:
+    timeout-minutes: 30
     runs-on: macos-latest
     defaults:
       run:

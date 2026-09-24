@@ -17,6 +17,7 @@ permissions:
 
 jobs:
   mypy:
+    timeout-minutes: 10
     name: Type check with mypy
     runs-on: ubuntu-latest
     steps:

@@ -20,6 +20,7 @@ concurrency:
 
 jobs:
   generate:
+    timeout-minutes: 15
     name: Generate Release Notes
     runs-on: ubuntu-latest
     permissions:

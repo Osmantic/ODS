@@ -9,6 +9,7 @@ on:
 
 jobs:
   env-schema:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

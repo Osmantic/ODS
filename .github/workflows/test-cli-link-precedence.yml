@@ -10,6 +10,7 @@ permissions:
   contents: read
 jobs:
   binding:
+    timeout-minutes: 15
     strategy:
       matrix:
         os: [ubuntu-latest, macos-14]

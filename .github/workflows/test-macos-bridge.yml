@@ -46,6 +46,7 @@ permissions:
 
 jobs:
   socket-contracts:
+    timeout-minutes: 15
     strategy:
       matrix:
         os: [ubuntu-latest, macos-14]
