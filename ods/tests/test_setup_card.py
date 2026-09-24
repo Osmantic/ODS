@@ -110,13 +110,14 @@ def test_cli_writes_valid_png(tmp_path):
 @pillow_required
 def test_cli_writes_factory_owner_png(tmp_path):
     out = tmp_path / "owner-card.png"
+    owner_url = "http://auth.ods.local/magic-link/" + "A" * 220
     result = subprocess.run(
         [
             sys.executable, str(SCRIPT),
             "--mode", "factory-owner",
             "--ssid", "ODS-Setup-TEST",
             "--password", "supersecret",
-            "--owner-url", "http://auth.ods.local/magic-link/owner-token",
+            "--owner-url", owner_url,
             "--device-name", "ods-test.local",
             "--output", str(out),
         ],
@@ -124,6 +125,7 @@ def test_cli_writes_factory_owner_png(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert out.exists()
+    assert out.stat().st_size > 1000
     with open(out, "rb") as f:
         assert f.read(8) == b"\x89PNG\r\n\x1a\n"
 
@@ -265,6 +267,44 @@ def test_qr_has_four_module_quiet_zone():
 # ---------------------------------------------------------------------------
 # Regression: 63-char WPA2 password must fit in the fallback column
 # ---------------------------------------------------------------------------
+
+
+@pillow_required
+def test_long_owner_url_wraps_inside_printable_fallback():
+    """Factory magic links must stay inside the card's printable value column."""
+    from PIL import ImageDraw
+
+    mod = _import_module()
+    owner_url = "http://auth.ods-test.local/magic-link/" + "A" * 220
+    card = mod.render_card(
+        ssid="ODS-Setup-TEST",
+        password="supersecret",
+        setup_url=None,
+        device_name="ods-test.local",
+        mode="factory-owner",
+        owner_url=owner_url,
+    )
+
+    draw = ImageDraw.Draw(card)
+    value_width = mod.CARD_W - mod.MARGIN - (mod.MARGIN + 240)
+    font, lines = mod._fit_text_to_width(
+        draw,
+        owner_url,
+        value_width,
+        base_size=36,
+        min_size=18,
+        monospace=True,
+    )
+
+    assert len(lines) > 1
+    assert "".join(lines) == owner_url
+    assert all(mod._text_width(draw, line, font) <= value_width for line in lines)
+
+    # The final 80 pixels are the reserved right margin. The URL rows occupy
+    # roughly y=1190..1500; no glyph may bleed into that printable margin.
+    for x in range(mod.CARD_W - mod.MARGIN, mod.CARD_W):
+        for y in range(1180, 1500):
+            assert card.getpixel((x, y)) == mod.COLOR_BG
 
 
 @pillow_required

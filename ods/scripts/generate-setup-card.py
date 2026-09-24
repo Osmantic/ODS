@@ -212,14 +212,23 @@ def render_card(
     row_y = fallback_y + 50
     for label, value in rows:
         draw.text((MARGIN, row_y), label.upper(), font=small_font, fill=COLOR_MUTED)
-        value_font = _fit_font_to_width(draw, value, value_max_width, base_size=36, min_size=18, monospace=True)
-        draw.text(
-            (value_x, row_y - 6),
+        value_font, value_lines = _fit_text_to_width(
+            draw,
             value,
-            font=value_font,
-            fill=COLOR_FG,
+            value_max_width,
+            base_size=36,
+            min_size=18,
+            monospace=True,
         )
-        row_y += 70
+        line_height = _font_line_height(draw, value_font)
+        for line_number, line in enumerate(value_lines):
+            draw.text(
+                (value_x, row_y - 6 + line_number * line_height),
+                line,
+                font=value_font,
+                fill=COLOR_FG,
+            )
+        row_y += max(70, len(value_lines) * line_height)
 
     # --- Footer / serial ---
     footer_y = CARD_H - MARGIN - 30
@@ -266,6 +275,49 @@ def _fit_font_to_width(draw, text: str, max_width: int, base_size: int = 36,
             return font
     # Floor: return the smallest size and accept the overflow as a last resort.
     return _load_font(size=min_size, monospace=monospace)
+
+
+def _text_width(draw, text: str, font) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0]
+
+
+def _fit_text_to_width(draw, text: str, max_width: int, base_size: int = 36,
+                       min_size: int = 18, monospace: bool = False):
+    """Fit a value on one line, or wrap an unbroken value at pixel boundaries."""
+    font = _fit_font_to_width(
+        draw,
+        text,
+        max_width,
+        base_size=base_size,
+        min_size=min_size,
+        monospace=monospace,
+    )
+    if _text_width(draw, text, font) <= max_width:
+        return font, [text]
+
+    lines: list[str] = []
+    remaining = text
+    while remaining:
+        low = 1
+        high = len(remaining)
+        fitted = 0
+        while low <= high:
+            midpoint = (low + high) // 2
+            if _text_width(draw, remaining[:midpoint], font) <= max_width:
+                fitted = midpoint
+                low = midpoint + 1
+            else:
+                high = midpoint - 1
+        fitted = max(1, fitted)
+        lines.append(remaining[:fitted])
+        remaining = remaining[fitted:]
+    return font, lines
+
+
+def _font_line_height(draw, font) -> int:
+    bbox = draw.textbbox((0, 0), "Ag", font=font)
+    return bbox[3] - bbox[1] + 8
 
 
 def _load_font(size: int, bold: bool = False, monospace: bool = False):
