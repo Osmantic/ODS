@@ -24,7 +24,7 @@ import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLane
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
-import { inspectionRevalidationCandidate, boundedPreviewVerification } from "./preview-revalidation.mjs";
+import { workspaceRevalidationCandidate, boundedPreviewVerification } from "./preview-revalidation.mjs";
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -6908,10 +6908,10 @@ export function createToolLoopGuard({
     if (state) {
       state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
       const selected = toolName === 'tool_call'
-        ? /^(?:openclaw:core:)?(?:exec|read)$/.test(event?.params?.id ?? '')
+        ? /^(?:openclaw:core:)?(?:exec|read|write|edit|apply_patch)$/.test(event?.params?.id ?? '')
           ? {name:event.params.id.split(':').at(-1),params:event.params.args} : undefined
         : {name:toolName,params:event?.params};
-      if (selected?.name !== 'read' && !(selected?.name === 'exec' && inspectionRevalidationCandidate(selected.params))) {
+      if (!workspaceRevalidationCandidate(selected?.name, selected?.params)) {
         state.previewRevalidationCandidate = undefined;
       }
     }
@@ -9216,11 +9216,36 @@ export function createToolLoopGuard({
     const completedCommand = pendingToolRun?.runId === runId && pendingToolRun.selectedToolName === 'exec'
       ? pendingToolRun.selectedParams?.command
       : originalExecFingerprint ? JSON.parse(originalExecFingerprint)[0] : completedExecution?.params?.command;
-    if (successfulMutation || (completedExecution && (
-        pendingToolRun?.runId !== runId || pendingToolRun.selectedToolName !== 'exec' ||
-        pendingToolRun.transport !== toolName || !inspectionRevalidationCandidate(pendingToolRun.selectedParams) ||
-        toolCallFailed(completedExecution) || completedExecution.result?.details?.exitCode !== 0 ||
-        runningExecSessionId(completedExecution)))) state.previewRevalidationCandidate = undefined;
+    // A nested core result is provisional until its exactly bound outer
+    // receipt. Never let a forged child id clear or complete an unrelated call.
+    const revalidationParents = state.previewRevalidationCandidate && toolName !== 'tool_call' &&
+      typeof toolCallId === 'string' ? [...pendingToolRuns].filter(([parentId,pending]) => {
+        if (pending.transport !== 'tool_call' || pending.runId !== runId ||
+            pending.selectedToolName !== toolName || !isDeepStrictEqual(pending.selectedParams,event.params)) return false;
+        const parent = parentId.trim().replace(/[^A-Za-z0-9_.:-]+/g,'_').slice(0,120) || 'call';
+        const prefix = `tool_search_code:${parent}:${toolName}:`;
+        return toolCallId.startsWith(prefix) && /^[1-9][0-9]*$/.test(toolCallId.slice(prefix.length));
+      }) : [];
+    if (state.previewRevalidationCandidate && revalidationParents.length !== 1) {
+      const selectedName = pendingToolRun?.selectedToolName;
+      const completed = toolName === 'tool_call'
+        ? toolSearchSelectedToolEvent(event, selectedName, 'core') : event;
+      const candidate = state.previewRevalidationCandidate;
+      const paired = pendingToolRun?.runId === runId && pendingToolRun.transport === toolName &&
+        (event?.runId === undefined || event.runId === runId) &&
+        (event?.toolCallId === undefined || event.toolCallId === toolCallId) &&
+        (event?.toolName === undefined || event.toolName === toolName) &&
+        (context?.sessionId === undefined || context.sessionId === candidate.sessionId) &&
+        (context?.sessionKey === undefined || context.sessionKey === candidate.sessionKey) &&
+        state.currentSessionId === candidate.sessionId && state.currentSessionKey === candidate.sessionKey &&
+        isDeepStrictEqual(completed?.params,pendingToolRun.selectedParams) &&
+        workspaceRevalidationCandidate(selectedName, pendingToolRun.selectedParams);
+      const terminal = paired && !failedToolOutcome(event) && completed?.result && !toolCallFailed(completed) &&
+        (selectedName !== 'exec' || (completed.result.details?.status === 'completed' &&
+          completed.result.details.exitCode === 0 && !runningExecSessionId(completed)));
+      if (terminal) state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;
+      else state.previewRevalidationCandidate = undefined;
+    }
     if (state.workspacePreview && (successfulMutation ||
         (completedExecution?.result && !toolCallFailed(completedExecution) &&
           !isLiteralEcho(completedCommand)))) {
@@ -9400,6 +9425,7 @@ export function createToolLoopGuard({
         state.workspacePreview = preview;
         state.previewRevalidationCandidate = Object.freeze({preview:Object.freeze({...preview}),
           sessionId:state.currentSessionId,sessionKey:state.currentSessionKey,workspaceRoot:state.configuredWorkspaceRoot});
+        state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;
         state.workspaceLastVerifiedPreview = Object.freeze({ ...preview });
         state.successfulWriteContentByPath.clear();
         rememberSessionPreview(state.currentSessionId, preview);
@@ -10412,6 +10438,7 @@ export function createToolLoopGuard({
     if (!candidate || state.previewRevalidationAttemptedGeneration === generation) return false;
     const valid = () => Boolean(candidate && runs.get(runId) === state && !state.workspacePreview &&
       state.previewRevalidationCandidate === candidate && state.previewVerificationGeneration === generation &&
+      state.previewRevalidationCompletedGeneration === generation &&
       context.sessionId && context.sessionId === candidate.sessionId && state.currentSessionId === candidate.sessionId &&
       context.sessionKey && context.sessionKey === candidate.sessionKey && state.currentSessionKey === candidate.sessionKey &&
       state.configuredWorkspaceRoot === candidate.workspaceRoot &&

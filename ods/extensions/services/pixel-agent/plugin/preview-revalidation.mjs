@@ -47,6 +47,16 @@ export function inspectionRevalidationCandidate(params) {
     !token.startsWith('-') && /^[A-Za-z0-9_./][A-Za-z0-9_./-]*$/.test(token));
 }
 
+// A successful synchronous core-file receipt can only request a fresh host
+// byte comparison. It does not establish task completion or new authorship.
+// Preserve the existing narrow exec eligibility: arbitrary foreground shells
+// can leave redirected or setsid descendants after their own successful exit.
+export function workspaceRevalidationCandidate(tool, params) {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return false;
+  if (['read','write','edit','apply_patch'].includes(tool)) return true;
+  return tool === 'exec' && inspectionRevalidationCandidate(params);
+}
+
 export async function boundedPreviewVerification(verify, receipt, valid, {timeoutMs=4000}={}) {
   const abort = new AbortController();
   let timer;
