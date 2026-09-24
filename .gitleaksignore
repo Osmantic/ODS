@@ -51,3 +51,62 @@ a3b26dbd450fd0dc5d0651ffa6f21fe20acb1195:archive/cookbook/voice-agent-framework/
 
 # Configuration examples (default/placeholder values)
 48a1d87d3d155359fb23d7a65d1db55b036b7508:ods/config/searxng/settings.yml:generic-api-key:3
+
+# Default-rule restoration review, 2026-09-24. Exact commit/path/rule/line only.
+
+# JDBC database URL without a password; credentials are separate required environment inputs.
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/extensions/library/services/keycloak/compose.yaml:generic-api-key:19
+
+# Descriptive broker-owned cache policy, not a cache value or credential.
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/RELEASE-MANIFEST.json:generic-api-key:306
+
+# Public npm artifact SHA-256 misidentified as a Discord token.
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/scripts/generated/release.env:discord-api-token:17
+
+# Reviewed synthetic test/evaluation inputs or PII-scrubber demonstration text; no issued credential.
+0fba8b3cd452afa3575128e427f989d90e15e142:dream-server/extensions/services/ape/tests/conftest.py:generic-api-key:19
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/security-evals/agent-comparison/task-battery-v1.json:generic-api-key:179
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/tests/test_frontier_broker.py:generic-api-key:1309
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/tests/test_mesh_peer.py:generic-api-key:2879
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/tests/test_ops_broker.py:curl-auth-header:177
+1d6038ef9679b89632f5fa4765ad1d6347786711:ods/vendor/pixel/tests/test_source_audit.py:generic-api-key:178
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/services/privacy_shield/pii_scrubber.py:generic-api-key:149
+39164d8c5bc3306dd4e7ac3e884dcc8574b9930a:ods/tests/test-perplexica-entrypoint.py:generic-api-key:203
+4b257f2ee04bd6aa4f0ec9ae98a5daee4a0dffcf:ods/extensions/services/model-router/tests/test_router.py:generic-api-key:946
+676dc575c623a32114b77d1f9c4e3252111dd673:dream-server/extensions/services/dreamforge/rust/crates/runtime/src/secret_scanner.rs:jwt:200
+6a5047fd3f7cc0369416d14289740b8c3f02dd06:dream-server/privacy-shield-offline/pii_scrubber.py:generic-api-key:146
+6a5047fd3f7cc0369416d14289740b8c3f02dd06:dream-server/privacy-shield/pii_scrubber.py:generic-api-key:149
+7963d4f799873c32756e06483022bb4d766f753b:ods/extensions/services/model-router/tests/test_router.py:generic-api-key:343
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/services/privacy_shield/pii_scrubber.py:generic-api-key:149
+bc47367431025198fcbea19a54abcde8c30847fd:dream-server/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:125
+bc47367431025198fcbea19a54abcde8c30847fd:dream-server/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:131
+bc47367431025198fcbea19a54abcde8c30847fd:dream-server/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:181
+ef5f6e60cad0bce05a965811d6dc59bfaf217649:ods/tests/pixel_inference/test_advice_process.py:generic-api-key:100
+
+# Browser localStorage names, not authentication credentials.
+24c8b714a4fa1eb022b9c5ff5a4e1109c29ef630:ods/extensions/services/dashboard/src/lib/pixelConversationWriter.test.js:generic-api-key:31
+54292586f9da910e6a3e3121781a317f69e864cc:ods/extensions/services/dashboard/src/components/PixelCommandSearch.test.jsx:generic-api-key:56
+5ed81190fb88e545fdc138b726f62279b6cc0ae4:ods/extensions/services/dashboard/src/lib/pixelConversations.js:generic-api-key:2
+bb21a9cf1fb2df67dfac195f721662f57fd230b4:ods/extensions/services/dashboard/src/pages/Pixel.legacy-history.test.jsx:generic-api-key:6
+bdd6f35727c2beb44f3952491cc57e7a07d3ded9:ods/extensions/services/dashboard/src/lib/pixelConversations.test.js:generic-api-key:11
+bdd6f35727c2beb44f3952491cc57e7a07d3ded9:ods/extensions/services/dashboard/src/lib/pixelConversations.test.js:generic-api-key:43
+c611570c493ca448bd08a45c936dd5e03ccffc86:ods/extensions/services/dashboard/src/lib/pixelSavedPrompts.js:generic-api-key:1
+
+# Literal placeholder curl headers in documentation examples.
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/workflows/comfyui/README.md:curl-auth-header:32
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/workflows/comfyui/README.md:curl-auth-header:64
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/workflows/flowise/README.md:curl-auth-header:30
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/workflows/langflow/README.md:curl-auth-header:30
+4ba4a3779264f44b247af06fbad391c1f4d38269:dream-server/extensions/services/litellm/README.md:curl-auth-header:89
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/workflows/comfyui/README.md:curl-auth-header:32
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/workflows/comfyui/README.md:curl-auth-header:64
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/workflows/flowise/README.md:curl-auth-header:30
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/workflows/langflow/README.md:curl-auth-header:30
+dd97e51445ea4d01fd6f291ce384e46988d1d584:resources/dev/extensions-library/services/gitea/README.md:curl-auth-header:36
+
+# Empty cloud-key declarations matched across the preceding Cloud API Keys comment.
+5c5151fe050ac570fb022ccb99d86bda93dfedb2:dream-server/installers/windows/lib/env-generator.ps1:generic-api-key:115
+9539512e06bef98b9276e339ef3cb2d6273e8f1f:dream-server/installers/macos/lib/env-generator.sh:generic-api-key:80
+
+# Previously published SearXNG default at this historical commit only; never reuse it. See docs/SECRET-SCANNING.md.
+48a1d87d3d155359fb23d7a65d1db55b036b7508:dream-server/config/searxng/settings.yml:generic-api-key:3
