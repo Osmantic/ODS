@@ -108,7 +108,7 @@ amd_gfx_version() {
             | sed 's/\x1b\[[0-9;]*m//g' \
             | grep "GPU\[$gpu_idx\].*GFX Version" \
             | sed 's/.*GFX Version:[[:space:]]*//' \
-            | head -1)
+            | sed -n '1p')
         [[ -n "$gfx" && "$gfx" != "N/A" ]] && echo "$gfx" && return 0
     fi
 
@@ -139,7 +139,7 @@ amd_gfx_version() {
         pci_bdf=$(readlink -f "$card_dir" | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]') || pci_bdf=""
         if [[ -n "$pci_bdf" ]]; then
             local gfx
-            gfx=$(rocminfo 2>/dev/null | grep -A10 "$pci_bdf" | grep -oP 'gfx\d+' | head -1)
+            gfx=$(rocminfo 2>/dev/null | grep -A10 "$pci_bdf" | grep -oP 'gfx\d+' | sed -n '1p')
             [[ -n "$gfx" ]] && echo "$gfx" && return 0
         fi
     fi

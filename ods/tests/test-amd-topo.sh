@@ -283,6 +283,26 @@ test_gfx_version_mixed() {
     assert_eq "GPU[1] gfx1101" "gfx1101" "$gfx1"
 }
 
+# ── Test: GFX parsing consumes large producer output under pipefail ─────────
+
+test_gfx_version_large_output_pipefail() {
+    echo -e "${BLU}Testing: amd_gfx_version handles large rocm-smi output under pipefail${NC}"
+
+    rocm-smi() {
+        local i
+        for ((i = 0; i < 20000; i++)); do
+            printf 'GPU[0] : GFX Version: gfx942\n'
+        done
+    }
+    amd-smi() { return 1; }
+
+    source "$TOPO_SCRIPT"
+
+    local gfx
+    gfx=$(set -o pipefail; amd_gfx_version "/fake" 0)
+    assert_eq "large output keeps first GFX match" "gfx942" "$gfx"
+}
+
 # ── Main test runner ───────────────────────────────────────────────────────
 
 echo -e "${MAG}=== AMD Topology Detection Tests ===${NC}\n"
@@ -302,6 +322,8 @@ echo
 test_gfx_version_parsing
 echo
 test_gfx_version_mixed
+echo
+test_gfx_version_large_output_pipefail
 
 echo -e "\n${MAG}=== Test Summary ===${NC}"
 echo -e "Tests run:    $TESTS_RUN"
