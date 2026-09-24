@@ -416,9 +416,9 @@ def get_gpu_info_windows_host() -> Optional[GPUInfo]:
         ),
         gpu_backend="amd",
         gpu_count=gpu_count,
-        memory_usage_available=bool(payload.get("memory_usage_available", False)),
-        utilization_available=bool(payload.get("utilization_available", False)),
-        temperature_available=bool(payload.get("temperature_available", False)),
+        memory_usage_available=payload.get("memory_usage_available") is True,
+        utilization_available=payload.get("utilization_available") is True,
+        temperature_available=payload.get("temperature_available") is True,
     )
 
 
@@ -451,9 +451,9 @@ def get_gpu_info_windows_host_detailed() -> Optional[list[IndividualGPU]]:
                     "unified" if item.get("memory_type") == "unified" else "discrete"
                 ),
                 assigned_services=["llama-server"],
-                memory_usage_available=bool(item.get("memory_usage_available", False)),
-                utilization_available=bool(item.get("utilization_available", False)),
-                temperature_available=bool(item.get("temperature_available", False)),
+                memory_usage_available=item.get("memory_usage_available") is True,
+                utilization_available=item.get("utilization_available") is True,
+                temperature_available=item.get("temperature_available") is True,
             ))
     except (TypeError, ValueError):
         return None

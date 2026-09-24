@@ -198,6 +198,25 @@ class TestWindowsHostGpuInfo:
         assert info is not None
         assert info.memory_type == "unified"
 
+    def test_fail_closed_on_non_boolean_capability_flags(self, monkeypatch):
+        monkeypatch.setenv("GPU_BACKEND", "amd")
+        monkeypatch.setattr("gpu._read_env_var_from_file", lambda key: "host")
+        monkeypatch.setattr("gpu.request_agent_json", lambda *args, **kwargs: {
+            "schema_version": "ods.host-gpu-metrics.v1",
+            "name": "AMD Radeon RX 9070 XT",
+            "memory_total_mb": 16368,
+            "memory_usage_available": "false",
+            "utilization_available": 1,
+            "temperature_available": [],
+        })
+
+        info = get_gpu_info_windows_host()
+
+        assert info is not None
+        assert info.memory_usage_available is False
+        assert info.utilization_available is False
+        assert info.temperature_available is False
+
     def test_maps_per_adapter_host_payload(self, monkeypatch):
         monkeypatch.setenv("GPU_BACKEND", "amd")
         monkeypatch.setattr("gpu._read_env_var_from_file", lambda key: "host")
@@ -224,6 +243,27 @@ class TestWindowsHostGpuInfo:
         assert gpus is not None
         assert [gpu.uuid for gpu in gpus] == ["luid-a", "luid-b"]
         assert [gpu.utilization_percent for gpu in gpus] == [30, 70]
+
+    def test_per_adapter_flags_require_json_booleans(self, monkeypatch):
+        monkeypatch.setenv("GPU_BACKEND", "amd")
+        monkeypatch.setattr("gpu._read_env_var_from_file", lambda key: "host")
+        monkeypatch.setattr("gpu.request_agent_json", lambda *args, **kwargs: {
+            "schema_version": "ods.host-gpu-metrics.v1",
+            "gpus": [{
+                "name": "AMD Radeon RX 7900 XTX",
+                "memory_total_mb": 24560,
+                "memory_usage_available": "false",
+                "utilization_available": 1,
+                "temperature_available": {},
+            }],
+        })
+
+        gpus = get_gpu_info_windows_host_detailed()
+
+        assert gpus is not None
+        assert gpus[0].memory_usage_available is False
+        assert gpus[0].utilization_available is False
+        assert gpus[0].temperature_available is False
 
     def test_rejects_invalid_aggregate_count(self, monkeypatch):
         monkeypatch.setenv("GPU_BACKEND", "amd")
