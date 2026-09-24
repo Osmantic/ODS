@@ -849,8 +849,18 @@ cmd_update() {
             "$snap_dir" "$compose_flags"
         return 1
     fi
-    git fetch origin
-    if ! git pull --ff-only origin "$update_branch"; then
+    # Remote git operations can run unattended (e.g. from the dashboard API):
+    # never block on credential or host-key prompts. Honor operator overrides.
+    local -a git_env=(
+        env
+        GIT_TERMINAL_PROMPT="${GIT_TERMINAL_PROMPT:-0}"
+        GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -oBatchMode=yes}"
+    )
+    if ! "${git_env[@]}" git fetch origin; then
+        _update_rollback "Git fetch failed (network unreachable or remote rejected non-interactive auth)."             "$snap_dir" "$compose_flags"
+        return 1
+    fi
+    if ! "${git_env[@]}" git pull --ff-only origin "$update_branch"; then
         _update_rollback "Git pull failed." "$snap_dir" "$compose_flags"
         return 1
     fi
