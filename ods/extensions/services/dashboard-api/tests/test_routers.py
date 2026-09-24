@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -312,6 +313,33 @@ def test_preflight_docker_authenticated(test_client):
     assert "available" in data
     if data["available"]:
         assert "version" in data
+
+
+def test_preflight_docker_timeout_reaps_subprocess(test_client, monkeypatch):
+    process = MagicMock()
+    process.returncode = None
+    process.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+
+    async def finish_wait():
+        process.returncode = -9
+        return -9
+
+    process.wait = AsyncMock(side_effect=finish_wait)
+    monkeypatch.setattr("main.os.path.exists", lambda _path: False)
+    create_process = AsyncMock(return_value=process)
+    monkeypatch.setattr("main.asyncio.create_subprocess_exec", create_process)
+
+    resp = test_client.get(
+        "/api/preflight/docker", headers=test_client.auth_headers
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "available": False,
+        "error": "Docker check timed out",
+    }
+    process.kill.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
 
 
 def test_preflight_gpu_authenticated(test_client):

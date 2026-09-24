@@ -1281,6 +1281,9 @@ async def preflight_docker():
     except FileNotFoundError:
         return {"available": False, "error": "Docker not installed"}
     except asyncio.TimeoutError:
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
         return {"available": False, "error": "Docker check timed out"}
     except OSError:
         logger.exception("Docker preflight check failed")
