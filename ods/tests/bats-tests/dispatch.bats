@@ -80,7 +80,16 @@ setup() {
 
 @test "detect_platform: treats non-gnu Linux OSTYPE values as Linux" {
     unset ODS_PLATFORM_OVERRIDE
-    OSTYPE="linux"
+    OSTYPE="linux-musl"
+    # A WSL runner has "microsoft" in its real /proc/version. This case is
+    # specifically about the OSTYPE fallback, so isolate the earlier WSL
+    # probe without weakening WSL precedence in production.
+    grep() {
+        if [[ " $* " == *" microsoft /proc/version "* ]]; then
+            return 1
+        fi
+        command grep "$@"
+    }
 
     run detect_platform
     assert_success

@@ -135,6 +135,10 @@ teardown() {
 }
 
 @test "validate_install_path: non-writable parent returns error" {
+    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+        skip "uid 0 bypasses directory mode bits; exercise this assertion as a non-root user"
+    fi
+
     local readonly_dir="$BATS_TEST_TMPDIR/readonly-parent"
     mkdir -p "$readonly_dir"
     chmod 555 "$readonly_dir"
