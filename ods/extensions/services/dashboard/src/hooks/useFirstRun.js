@@ -30,7 +30,15 @@ export function useFirstRun() {
       const resp = await fetch('/api/setup/status')
       if (!resp.ok) throw new Error(`setup-status returned ${resp.status}`)
       const data = await resp.json()
-      setFirstRun(!!data.first_run)
+      if (
+        !data ||
+        typeof data !== 'object' ||
+        Array.isArray(data) ||
+        typeof data.first_run !== 'boolean'
+      ) {
+        throw new Error('setup-status returned an invalid first_run value')
+      }
+      setFirstRun(data.first_run)
       setError(null)
     } catch (err) {
       // See the failure-mode comment above. We mark loading=false so the
