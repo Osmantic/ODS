@@ -50,7 +50,9 @@ def test_missing_or_old_agent_never_falls_back_to_vm(monkeypatch, bad):
 
 @pytest.mark.parametrize("bad", [-1, 101, float("nan"), float("inf"), True, "1"])
 def test_invalid_values_are_unavailable(monkeypatch, bad):
-    data = payload(); data["cpu"]["percent"] = bad; data["gpu"]["utilization_percent"] = bad
+    data = payload()
+    data["cpu"]["percent"] = bad
+    data["gpu"]["utilization_percent"] = bad
     data["ram"]["used_gb"] = 200
     monkeypatch.setattr(host_metrics, "request_json", lambda *a, **kw: data)
     result = host_metrics.apple_host_metrics()
