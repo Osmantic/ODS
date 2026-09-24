@@ -331,10 +331,11 @@ def _prune(store: dict) -> dict:
 
 
 def _find_by_hash(store: dict, token_hash: str) -> Optional[dict]:
+    match = None
     for record in store.get("tokens", []):
-        if record["token_hash"] == token_hash:
-            return record
-    return None
+        if secrets.compare_digest(record["token_hash"], token_hash):
+            match = record
+    return match
 
 
 # --- Rate limiting ---

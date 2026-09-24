@@ -1073,6 +1073,29 @@ def test_owner_token_survives_pruning(magic_link_module):
     assert pruned["tokens"][0]["token_type"] == "owner"
 
 
+def test_token_lookup_compares_every_hash_in_constant_time(
+    magic_link_module, monkeypatch
+):
+    records = [{"token_hash": value} for value in ("a" * 64, "b" * 64, "c" * 64)]
+    compared = []
+    real_compare_digest = magic_link_module.secrets.compare_digest
+
+    def recording_compare_digest(stored, supplied):
+        compared.append((stored, supplied))
+        return real_compare_digest(stored, supplied)
+
+    monkeypatch.setattr(
+        magic_link_module.secrets, "compare_digest", recording_compare_digest
+    )
+
+    match = magic_link_module._find_by_hash(
+        {"tokens": records}, "a" * 64
+    )
+
+    assert match is records[0]
+    assert compared == [(record["token_hash"], "a" * 64) for record in records]
+
+
 # ---------------------------------------------------------------------------
 # Rate-limit
 # ---------------------------------------------------------------------------
