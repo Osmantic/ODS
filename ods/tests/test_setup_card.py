@@ -11,6 +11,7 @@ import importlib.util
 import subprocess
 import sys
 import struct
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -76,9 +77,21 @@ def _have_pillow_and_qrcode():
         return False
 
 
+def _have_qrcode():
+    try:
+        import qrcode  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 pillow_required = pytest.mark.skipif(
     not _have_pillow_and_qrcode(),
     reason="Pillow + qrcode not installed; setup-card requires them",
+)
+qrcode_required = pytest.mark.skipif(
+    not _have_qrcode(),
+    reason="qrcode not installed; SVG setup-card requires it",
 )
 
 
@@ -146,6 +159,38 @@ def test_cli_writes_factory_owner_pdf(tmp_path):
     assert out.exists()
     with open(out, "rb") as f:
         assert f.read(4) == b"%PDF"
+
+
+@qrcode_required
+def test_cli_writes_scalable_svg_with_vector_qr_paths(tmp_path):
+    out = tmp_path / "card.svg"
+    result = subprocess.run(
+        [
+            sys.executable, str(SCRIPT),
+            "--ssid", "ODS & Friends",
+            "--password", "a<secure>password",
+            "--setup-url", "http://192.168.7.1/setup?a=1&b=2",
+            "--device-name", "ods<vector>.local",
+            "--serial", "TEST&SVG",
+            "--output", str(out),
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert out.exists()
+    assert out.read_bytes().startswith(b'<?xml version="1.0"')
+
+    root = ET.parse(out).getroot()
+    assert root.attrib["width"] == "4in"
+    assert root.attrib["height"] == "6in"
+    assert root.attrib["viewBox"] == "0 0 1200 1800"
+    namespace = {"svg": "http://www.w3.org/2000/svg"}
+    paths = root.findall(".//svg:path", namespace)
+    assert len(paths) == 2
+    assert all(len(path.attrib["d"]) > 1000 for path in paths)
+    text = out.read_text(encoding="utf-8")
+    assert "ods&lt;vector&gt;.local" in text
+    assert "TEST&amp;SVG" in text
 
 
 @pillow_required

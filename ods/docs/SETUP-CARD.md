@@ -13,7 +13,10 @@ A portrait card with:
 3. **Plain-text fallback block** - SSID, password, and URL printed verbatim for phones that will not scan the QR.
 4. **Footer** - "ODS is open-source - osmantic.com", plus an optional per-unit serial number.
 
-Card is 1200x1800 px at 300 DPI = exactly 4x6 inches. PNG is the default output; PDF is available with `--format pdf` or a `.pdf` output path.
+Card is 1200x1800 px at 300 DPI = exactly 4x6 inches. PNG is the default output;
+PDF is available with `--format pdf` or a `.pdf` output path. SVG is available
+with `--format svg` or a `.svg` path for scalable vector print workflows; both
+QR codes remain crisp vector paths and operator-provided text is XML-escaped.
 
 ## Requirements
 
@@ -60,7 +63,7 @@ Flags:
 | `--owner-url` | factory-owner mode | Owner magic-link URL created from Setup / Owner. Treat it as a physical credential. |
 | `--device-name` | no | mDNS hostname printed on the card. Defaults to `ods.local`. |
 | `--serial` | no | Optional serial / batch ID printed in the footer right corner. |
-| `--format` | no | `png` or `pdf`. If omitted, `.pdf` output paths write PDF; everything else writes PNG. |
+| `--format` | no | `png`, `pdf`, or `svg`. If omitted, `.pdf`/`.svg` output paths select that format; everything else writes PNG. |
 | `--output` / `-o` | yes | Output path. Parent directory is created if missing. |
 
 Exit codes: `0` on success, `2` for missing dependencies or invalid flags.

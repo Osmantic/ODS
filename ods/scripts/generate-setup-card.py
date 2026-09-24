@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 # Card geometry — 4×6 inches @ 300 DPI = 1200×1800px portrait.
 CARD_W = 1200
@@ -110,6 +111,128 @@ def render_qr(text: str, target_px: int):
     # antialiased version. NEAREST keeps every pixel pure black or pure
     # white, matching the source modules exactly.
     return img.resize((target_px, target_px), resample=Image.Resampling.NEAREST)
+
+
+def _svg_qr(text: str, x: int, y: int, size: int) -> str:
+    """Return a crisp vector QR group sized to the card's viewBox."""
+    import qrcode  # noqa: PLC0415
+    from qrcode.constants import ERROR_CORRECT_M  # noqa: PLC0415
+
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=ERROR_CORRECT_M,
+        box_size=1,
+        border=4,
+    )
+    qr.add_data(text)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    module = size / len(matrix)
+    commands: list[str] = []
+    for row_index, row in enumerate(matrix):
+        for column_index, filled in enumerate(row):
+            if not filled:
+                continue
+            module_x = x + column_index * module
+            module_y = y + row_index * module
+            commands.append(
+                f"M{module_x:.3f},{module_y:.3f}h{module:.3f}v{module:.3f}"
+                f"h-{module:.3f}z"
+            )
+    return (
+        f'<g shape-rendering="crispEdges">'
+        f'<rect x="{x}" y="{y}" width="{size}" height="{size}" fill="#fff"/>'
+        f'<path d="{"".join(commands)}" fill="#000"/></g>'
+    )
+
+
+def _svg_value_text(value: str, x: int, y: int, max_width: int) -> str:
+    """Fit a fallback value into its column without raster font metrics."""
+    font_size = 36
+    estimated_width = len(value) * font_size * 0.62
+    while font_size > 18 and estimated_width > max_width:
+        font_size -= 2
+        estimated_width = len(value) * font_size * 0.62
+    fit = ""
+    if estimated_width > max_width:
+        fit = f' textLength="{max_width}" lengthAdjust="spacingAndGlyphs"'
+    return (
+        f'<text x="{x}" y="{y}" fill="#e4e4e7" font-size="{font_size}" '
+        f'font-family="DejaVu Sans Mono,Consolas,monospace"{fit}>'
+        f'{escape(value)}</text>'
+    )
+
+
+def render_svg_card(
+    ssid: str,
+    password: str,
+    setup_url: str | None,
+    device_name: str,
+    security: str = "WPA",
+    serial: str | None = None,
+    mode: str = "setup",
+    owner_url: str | None = None,
+) -> str:
+    """Compose a scalable 4x6 setup card as an SVG document."""
+    if mode not in {"setup", "factory-owner"}:
+        raise ValueError("mode must be setup or factory-owner")
+    right_url = owner_url if mode == "factory-owner" else setup_url
+    if not right_url:
+        raise ValueError(
+            "--owner-url is required for factory-owner mode"
+            if mode == "factory-owner"
+            else "--setup-url is required"
+        )
+
+    right_caption = "2. OPEN ODS TALK" if mode == "factory-owner" else "2. OPEN SETUP"
+    tagline = "Scan to join. Scan to talk." if mode == "factory-owner" else "Scan to set up. Scan to chat."
+    fallback_url_label = "owner url" if mode == "factory-owner" else "then visit"
+    qr_size = (CARD_W - MARGIN * 3) // 2
+    qr_y = 400
+    fallback_y = qr_y + qr_size + 130
+    value_x = MARGIN + 240
+    value_max_width = CARD_W - MARGIN - value_x
+
+    elements = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="4in" height="6in" viewBox="0 0 {CARD_W} {CARD_H}">',
+        f'<rect width="{CARD_W}" height="{CARD_H}" fill="#0f0f13"/>',
+        f'<text x="{MARGIN}" y="{MARGIN + 70}" fill="#a78bfa" font-size="80" font-weight="700" font-family="DejaVu Sans,Arial,sans-serif">ODS</text>',
+        f'<text x="{MARGIN}" y="{MARGIN + 140}" fill="#e4e4e7" font-size="42" font-weight="700" font-family="DejaVu Sans,Arial,sans-serif">{escape(device_name)}</text>',
+        f'<text x="{MARGIN}" y="{MARGIN + 200}" fill="#8c8c96" font-size="32" font-family="DejaVu Sans,Arial,sans-serif">{escape(tagline)}</text>',
+        _svg_qr(build_wifi_qr_payload(ssid, password, security), MARGIN, qr_y, qr_size),
+        _svg_qr(right_url, MARGIN * 2 + qr_size, qr_y, qr_size),
+        f'<text x="{MARGIN}" y="{qr_y + qr_size + 60}" fill="#a78bfa" font-size="42" font-weight="700" font-family="DejaVu Sans,Arial,sans-serif">1. JOIN WI-FI</text>',
+        f'<text x="{MARGIN * 2 + qr_size}" y="{qr_y + qr_size + 60}" fill="#a78bfa" font-size="42" font-weight="700" font-family="DejaVu Sans,Arial,sans-serif">{escape(right_caption)}</text>',
+        f'<text x="{MARGIN}" y="{fallback_y}" fill="#8c8c96" font-size="24" font-family="DejaVu Sans,Arial,sans-serif">if a QR won\'t scan:</text>',
+    ]
+
+    rows = [
+        ("network", ssid),
+        ("password", password if password else "(open)"),
+        (fallback_url_label, right_url),
+    ]
+    row_y = fallback_y + 70
+    for label, value in rows:
+        elements.append(
+            f'<text x="{MARGIN}" y="{row_y}" fill="#8c8c96" font-size="24" '
+            f'font-family="DejaVu Sans,Arial,sans-serif">{escape(label.upper())}</text>'
+        )
+        elements.append(_svg_value_text(value, value_x, row_y, value_max_width))
+        row_y += 70
+
+    footer_y = CARD_H - MARGIN - 10
+    elements.append(
+        f'<text x="{MARGIN}" y="{footer_y}" fill="#8c8c96" font-size="24" '
+        f'font-family="DejaVu Sans,Arial,sans-serif">ODS is open-source — osmantic.com</text>'
+    )
+    if serial:
+        elements.append(
+            f'<text x="{CARD_W - MARGIN}" y="{footer_y}" text-anchor="end" fill="#8c8c96" '
+            f'font-size="24" font-family="DejaVu Sans,Arial,sans-serif">{escape(serial)}</text>'
+        )
+    elements.append("</svg>")
+    return "\n".join(elements) + "\n"
 
 
 def render_card(
@@ -324,8 +447,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="The mDNS name printed on the card (default ods.local)")
     parser.add_argument("--serial", default=None,
                         help="Optional serial / batch identifier printed in the footer")
-    parser.add_argument("--format", choices=["png", "pdf"], default=None,
-                        help="Output format. Defaults to PNG unless the output path ends in .pdf")
+    parser.add_argument("--format", choices=["png", "pdf", "svg"], default=None,
+                        help="Output format. Defaults from a .pdf/.svg suffix, otherwise PNG")
     parser.add_argument("--output", "-o", required=True,
                         help="Output path")
     return parser.parse_args(argv)
@@ -344,33 +467,54 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --owner-url is required in factory-owner mode", file=sys.stderr)
         return 2
 
+    out_path = Path(args.output)
+    out_format = args.format or (
+        "pdf" if out_path.suffix.lower() == ".pdf"
+        else "svg" if out_path.suffix.lower() == ".svg"
+        else "png"
+    )
+
     try:
-        import PIL  # noqa: F401, PLC0415
         import qrcode  # noqa: F401, PLC0415
+        if out_format != "svg":
+            import PIL  # noqa: F401, PLC0415
     except ImportError as exc:
         print(f"error: missing dependency: {exc.name}. "
               "Install with: pip install 'qrcode[pil]'", file=sys.stderr)
         return 2
 
-    card = render_card(
-        ssid=args.ssid,
-        password=args.password,
-        setup_url=args.setup_url,
-        device_name=args.device_name,
-        security=args.security,
-        serial=args.serial,
-        mode=args.mode,
-        owner_url=args.owner_url,
-    )
-
-    out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_format = args.format or ("pdf" if out_path.suffix.lower() == ".pdf" else "png")
-    if out_format == "pdf":
-        card.save(out_path, format="PDF", resolution=300.0)
+    if out_format == "svg":
+        out_path.write_text(
+            render_svg_card(
+                ssid=args.ssid,
+                password=args.password,
+                setup_url=args.setup_url,
+                device_name=args.device_name,
+                security=args.security,
+                serial=args.serial,
+                mode=args.mode,
+                owner_url=args.owner_url,
+            ),
+            encoding="utf-8",
+        )
     else:
-        card.save(out_path, format="PNG", dpi=(300, 300))
-    print(f"wrote {out_path} ({CARD_W}×{CARD_H} @ 300 DPI = 4×6 inches)")
+        card = render_card(
+            ssid=args.ssid,
+            password=args.password,
+            setup_url=args.setup_url,
+            device_name=args.device_name,
+            security=args.security,
+            serial=args.serial,
+            mode=args.mode,
+            owner_url=args.owner_url,
+        )
+        if out_format == "pdf":
+            card.save(out_path, format="PDF", resolution=300.0)
+        else:
+            card.save(out_path, format="PNG", dpi=(300, 300))
+    detail = "4×6-inch vector" if out_format == "svg" else f"{CARD_W}×{CARD_H} @ 300 DPI = 4×6 inches"
+    print(f"wrote {out_path} ({detail})")
     return 0
 
 
