@@ -16,6 +16,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["features"])
 
 
+def _link_hostname(host_header: str) -> str:
+    """Return a URL-ready hostname without the request port."""
+    host = host_header.split(",", 1)[0].strip()
+    if host.startswith("["):
+        closing_bracket = host.find("]")
+        if closing_bracket >= 0:
+            return host[:closing_bracket + 1]
+    if host.count(":") == 1:
+        return host.split(":", 1)[0]
+    if ":" in host:
+        return f"[{host}]"
+    return host
+
+
 def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[GPUInfo]) -> dict:
     """Calculate whether a feature can be enabled and its status."""
     gpu_vram_gb = (gpu_info.memory_total_mb / 1024) if gpu_info else 0
@@ -206,7 +220,7 @@ async def feature_enable_instructions(
             return ""
         forwarded_host = request.headers.get("x-forwarded-host")
         host_header = forwarded_host or request.headers.get("host") or "localhost"
-        hostname = host_header.rsplit(":", 1)[0] if ":" in host_header else host_header
+        hostname = _link_hostname(host_header)
         scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
         return f"{scheme}://{hostname}:{port}"
 
