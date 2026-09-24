@@ -41,6 +41,20 @@ DIAGNOSTIC = r"""function() {
   return {renderedHiddenAttributeCount:count, hiddenUntilFoundCount:untilFound};
 }"""
 
+# Catch only the browser's selector-parser failure in the isolated world. Do
+# not infer syntax from an exception string or rewrite the owner's selector.
+SELECTOR_COUNT = r"""function(selector) {
+  try { return {count:document.querySelectorAll(selector).length}; }
+  catch (error) {
+    if (error instanceof DOMException && error.name === 'SyntaxError') return {invalidSelector:true};
+    throw error;
+  }
+}"""
+
+
+class InvalidSelector(Invalid):
+    pass
+
 
 def observe_until_stable(once, wait):
     # Keep the 100ms fast path. A finite transition may need more samples,
@@ -235,10 +249,13 @@ def run_browser(bundle, playwright_factory=None):
                 if blocked:
                     raise Invalid("preview navigation or request blocked")
                 if "selector" in locator:
-                    count = evaluate(
-                        "function(s){return document.querySelectorAll(s).length}",
+                    selection = evaluate(
+                        SELECTOR_COUNT,
                         [locator["selector"]],
                     )
+                    if selection == {"invalidSelector": True}:
+                        raise InvalidSelector("invalid CSS syntax")
+                    count = selection["count"]
                     if count != 1:
                         return {"count": count}
                     node = cdp.send(
@@ -300,7 +317,14 @@ def run_browser(bundle, playwright_factory=None):
             diagnostics = evaluate(DIAGNOSTIC)
             results = []
             for index, step in enumerate(request["steps"]):
-                before, stable = observe(step["locator"])
+                try:
+                    before, stable = observe(step["locator"])
+                except InvalidSelector:
+                    # No DOM observation exists for invalid syntax. Preserve
+                    # prior evidence and the exact failing step, then stop.
+                    results.append({"index": index, **step, "stable": False,
+                                    "status": "failed", "errorCode": "invalid_selector"})
+                    break
                 item = {
                     "index": index,
                     **step,

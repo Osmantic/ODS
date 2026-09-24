@@ -25,6 +25,8 @@ export function hasVisibilityTransitionPlan(request) {
 }
 
 function transitionCoverageFeedback(request, result) {
+  const syntaxFailure = result.steps?.find(step => step.errorCode === 'invalid_selector');
+  if (syntaxFailure) return `Step ${syntaxFailure.index + 1} has invalid CSS selector syntax; that step produced no visibility measurement and later steps were not executed. Use a standard CSS selector from the actual source, or a supported role with the exact accessible name and exact:true. Text-matching extensions such as :contains() are not CSS selectors. Correct the locator and retry the inspection on the same published snapshot; do not remove the requested behavior checks. For show/hide behavior, keep assertions of opposite visibility for the same affected element around the control click. Requested behavior remains unverified.`;
   if (result.status !== 'passed') return 'Requested behavior remains unverified; a failed inspection does not establish a visibility transition.';
   if (hasVisibilityTransitionPlan(request)) return 'These steps tested opposite visibility states of the same element around a click. This does not establish every requested behavior.';
   const hasClick = request.steps.some(step => step.action === 'click');
@@ -72,6 +74,10 @@ export function validateWorkspacePreviewInspectionReceipt(value, request) {
   }
   if(!exact(value,['schemaVersion','kind','status','siteId','sha256','planSha256','viewport','steps','diagnostics','blockedRequests','scope']) || canonical(value.viewport)!==canonical(request.viewport)||!Array.isArray(value.steps)||value.steps.length<1||value.steps.length>request.steps.length||!exact(value.diagnostics,['renderedHiddenAttributeCount','hiddenUntilFoundCount'])||Object.values(value.diagnostics).some(v=>!Number.isSafeInteger(v)||v<0||v>100000)||!Array.isArray(value.blockedRequests)||value.blockedRequests.length>32||value.blockedRequests.some(v=>!['navigation','network','popup','download','websocket'].includes(v))) throw Error('invalid inspection receipt');
   value.steps.forEach((step,i)=>{
+    if(step.errorCode==='invalid_selector') {
+      if(!exact(step,['index','action','locator','stable','status','errorCode'])||step.index!==i||i!==value.steps.length-1||step.action!==request.steps[i].action||canonical(step.locator)!==canonical(request.steps[i].locator)||!exact(step.locator,['selector'])||step.stable!==false||step.status!=='failed'||value.status!=='failed') throw Error('invalid selector failure evidence');
+      return;
+    }
     const keys=['index','action','locator','before','stable','status',...(step.after===undefined?[]:['after']),...(step.errorCode===undefined?[]:['errorCode'])];
     if(!exact(step,keys)||step.index!==i||step.action!==request.steps[i].action||canonical(step.locator)!==canonical(request.steps[i].locator)||!stateValid(step.before)||typeof step.stable!=='boolean'||!['passed','failed'].includes(step.status)||(step.after!==undefined&&!stateValid(step.after))||(step.errorCode!==undefined&&!['selector_not_unique','unstable','click_failed','visibility_mismatch'].includes(step.errorCode))) throw Error('invalid action evidence');
     if(step.status==='passed' && (!step.stable||step.before.count!==1||step.errorCode!==undefined||(step.action==='click' ? step.after===undefined : step.before.visible!==(step.action==='assert-visible')))) throw Error('unsupported inspection pass');

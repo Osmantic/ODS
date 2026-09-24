@@ -30,6 +30,14 @@ after measurement. Remaining steps are not executed after a failed assertion.
 A click dispatch alone proves no resulting behavior. Verify the requested
 initial state, click, and resulting condition with separate assertions.
 
+A Chromium CSS parser `SyntaxError` produces an `invalid_selector` failed step
+bound to the exact submitted locator and index. That step has `stable: false`
+and no `before` or `after` measurement: invalid syntax does not establish a
+missing or hidden element. Earlier steps remain in the receipt and later steps
+are not executed. The caller must correct the CSS or use a supported exact
+role/name locator while retaining the requested interaction checks. Selectors
+are never translated or relaxed. Other browser failures remain unavailable.
+
 Visibility means CSS layout visibility, including opacity and ancestor CSS
 visibility. It does not prove pixel paint, clipping, occlusion, or a full
 accessibility audit. Exact role/name locators do check that accessible match.

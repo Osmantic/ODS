@@ -383,6 +383,46 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["steps"][0]["errorCode"], "selector_not_unique")
 
+    def test_invalid_css_retains_failing_step_and_recovery_checks(self):
+        html = ('<h1>Fixture events</h1><article class="event-card">'
+                '<span class="event-badge">Dawn Jazz</span></article>'
+                '<article id="midnight-concert" hidden>Sold out</article>'
+                '<button onclick="document.querySelector(\'#midnight-concert\').hidden=false">Show sold out</button>')
+        heading = {"action": "assert-visible", "locator": {
+            "role": "heading", "name": "Fixture events", "exact": True}}
+        invalid = ".event-card:has(.event-badge:contains('Dawn Jazz'))"
+        interaction = [step("assert-hidden", "#midnight-concert"),
+                       step("click", name="Show sold out"),
+                       step("assert-visible", "#midnight-concert")]
+        result = self.check(html, [heading, step("assert-visible", invalid), *interaction])
+        self.assertEqual(result["status"], "failed", result)
+        self.assertNotIn("errorCode", result)
+        self.assertEqual(len(result["steps"]), 2)
+        self.assertEqual(result["steps"][0]["status"], "passed")
+        self.assertEqual(result["steps"][1], {"index": 1,
+            **step("assert-visible", invalid), "stable": False,
+            "status": "failed", "errorCode": "invalid_selector"})
+        self.assertEqual(result["blockedRequests"], [])
+        corrected = self.check(html, [heading,
+            step("assert-visible", ".event-card:has(.event-badge)"), *interaction])
+        self.assertEqual(corrected["status"], "passed", corrected)
+        self.assertEqual(corrected["sha256"], result["sha256"])
+        self.assertEqual(len(corrected["steps"]), 5)
+
+    def test_invalid_click_selector_produces_no_measurement_or_click(self):
+        result = self.check('<button onclick="location.href=\'next.html\'">Next</button>',
+                            [step("click", "button:contains('Next')")])
+        self.assertEqual(result["steps"][0]["errorCode"], "invalid_selector")
+        self.assertNotIn("before", result["steps"][0])
+        self.assertNotIn("after", result["steps"][0])
+        self.assertEqual(result["blockedRequests"], [])
+
+    def test_author_script_cannot_spoof_selector_parser_failure(self):
+        html = ('<p id="item">visible</p><script>Document.prototype.querySelectorAll=()=>'
+                '{throw new DOMException("spoofed", "SyntaxError")};</script>')
+        result = self.check(html, [step("assert-visible", "#item")])
+        self.assertEqual(result["status"], "passed", result)
+
     def test_spoofing(self):
         html = '<p id="item" style="display:none">hidden</p><script>window.getComputedStyle=()=>({display:"block"});Element.prototype.checkVisibility=()=>true;Document.prototype.querySelectorAll=()=>[document.body];</script>'
         result = self.check(html, [step("assert-hidden", "#item")])

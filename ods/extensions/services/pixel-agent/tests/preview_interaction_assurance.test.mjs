@@ -236,6 +236,26 @@ test('later unavailable inspection revokes success, preserves preview, and does 
   guard.afterToolCall({...a.event,result:a.result},a.ctx);assert.equal(guard.verificationForRun('run').status,'failed');
   assert.equal(guard.beforeAgentFinalize({},context),undefined);
 });
+for(const wrapped of [false,true]) test(`selector syntax failure revokes proof until an actual corrected transition (${wrapped?'deferred':'direct'})`,async()=>{
+  const {guard,preview}=setup();
+  const first=inspection(guard,plan(preview));guard.afterToolCall({...first.event,result:first.result},first.ctx);
+  assert.equal(guard.verificationForRun('run').status,'passed');
+  const params=plan(preview);params.steps[0].locator={selector:'article:contains("details")'};
+  const failed=receipt(params);failed.status='failed';
+  failed.steps=[{index:0,...params.steps[0],stable:false,status:'failed',errorCode:'invalid_selector'}];
+  const name=wrapped?'tool_call':PREVIEW_INSPECTION_TOOL;
+  const args=wrapped?{id:'openclaw:pixel-ods:'+PREVIEW_INSPECTION_TOOL,args:params}:params;
+  const started=call(guard,name,args,'syntax');
+  const inner=await createWorkspacePreviewInspectTool({request:async()=>failed}).execute('syntax',params);
+  const result=wrapped?{details:{tool:{id:args.id,name:PREVIEW_INSPECTION_TOOL,source:'openclaw',sourceName:'pixel-ods'},result:inner}}:inner;
+  guard.afterToolCall({...started.event,result},started.ctx);
+  assert.equal(guard.verificationForRun('run').status,'failed');
+  assert.equal(guard.beforeAgentFinalize({},context)?.retry?.maxAttempts,1);
+  const corrected=inspection(guard,plan(preview),{wrapped,id:'corrected'});
+  guard.afterToolCall({...corrected.event,result:corrected.result},corrected.ctx);
+  assert.equal(guard.verificationForRun('run').status,'passed');
+});
+
 test('different run cannot inherit previous interaction proof',()=>{
   const {guard,preview}=setup();const a=inspection(guard,plan(preview));guard.afterToolCall({...a.event,result:a.result},a.ctx);
   guard.observeRun({...context,runId:'next'},'pixel',{prompt:owner});assert.notEqual(guard.verificationForRun('next').status,'passed');
