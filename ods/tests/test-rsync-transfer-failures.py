@@ -13,9 +13,28 @@ REAL_RSYNC = shutil.which("rsync")
 
 @unittest.skipUnless(REAL_RSYNC and shutil.which("jq"), "rsync and jq are required")
 class TransferFailures(unittest.TestCase):
+    def test_native_rsync_uses_aggregate_progress_when_supported(self):
+        supported = subprocess.run(
+            [REAL_RSYNC, "--info=progress2", "--version"], capture_output=True, check=False,
+        )
+        if supported.returncode:
+            self.skipTest("native rsync does not support progress2")
+        with tempfile.TemporaryDirectory(prefix="ods-rsync-native-") as tmp:
+            source = Path(tmp) / "named-payload.txt"
+            destination = Path(tmp) / "copied.txt"
+            source.write_text("retained data")
+            result = subprocess.run(
+                ["bash", "-c", 'source "$1"; rsync_with_progress "$2" "$3"', "test",
+                 str(ODS / "lib/rsync.sh"), str(source), str(destination)],
+                capture_output=True, text=True, check=True,
+            )
+            self.assertEqual(destination.read_bytes(), source.read_bytes())
+            self.assertIn("xfr#1", result.stdout)
+            self.assertNotIn(source.name, result.stdout)
+
     def test_transfer_status_reaches_backup_and_restore(self):
         for action in ("backup", "restore"):
-            for modern, fail in ((False, True), (True, True), (False, False)):
+            for modern, fail in ((False, True), (True, True), (False, False), (True, False)):
                 with self.subTest(action=action, modern=modern, fail=fail):
                     with tempfile.TemporaryDirectory(prefix="ods-rsync-status-") as tmp:
                         self.check_transfer(Path(tmp), action, modern, fail)
@@ -47,11 +66,18 @@ class TransferFailures(unittest.TestCase):
         wrapper.write_text("""#!/usr/bin/env python3
 import os, pathlib, sys
 if sys.argv[1:] == ['--help']:
-    print('info=progress2' if os.environ['ODS_TEST_MODERN'] == '1' else '--progress')
+    # Real modern help describes --info=FLAGS, not the literal progress2 flag.
+    print('--info=FLAGS' if os.environ['ODS_TEST_MODERN'] == '1' else '--progress')
     raise SystemExit(0)
+if sys.argv[1:] == ['--info=progress2', '--version']:
+    raise SystemExit(0 if os.environ['ODS_TEST_MODERN'] == '1' else 1)
 # Checksum verification is a read-only dry run, not a retried transfer.
 if '--dry-run' in sys.argv[1:]:
     os.execv(os.environ['ODS_TEST_REAL_RSYNC'], ['rsync', *sys.argv[1:]])
+expected = '--info=progress2' if os.environ['ODS_TEST_MODERN'] == '1' else '--progress'
+if expected not in sys.argv[1:]:
+    print('wrong progress mode: ' + repr(sys.argv), file=sys.stderr)
+    raise SystemExit(91)
 calls = pathlib.Path(os.environ['ODS_TEST_TRANSFERS'])
 first = not calls.exists()
 with calls.open('a') as stream:
