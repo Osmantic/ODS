@@ -237,8 +237,22 @@ def _ensure_store() -> dict:
     if not store_path.exists():
         return {"tokens": []}
     try:
-        return json.loads(store_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        store = json.loads(store_path.read_text(encoding="utf-8"))
+        if not isinstance(store, dict):
+            raise ValueError("store root must be an object")
+        tokens = store.get("tokens")
+        if not isinstance(tokens, list):
+            raise ValueError("store tokens must be a list")
+        valid_tokens = [record for record in tokens if isinstance(record, dict)]
+        if len(valid_tokens) != len(tokens):
+            logger.warning(
+                "Dropped %d invalid magic-link record(s) from %s",
+                len(tokens) - len(valid_tokens),
+                store_path,
+            )
+        store["tokens"] = valid_tokens
+        return store
+    except (OSError, json.JSONDecodeError, ValueError):
         # Corrupted store — start fresh rather than blocking generation.
         logger.exception("magic-link store unreadable at %s; starting fresh", store_path)
         return {"tokens": []}
