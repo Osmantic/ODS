@@ -85,6 +85,23 @@ def test_policy_endpoint_contract(make_client):
     assert "circuit_breaker" in body
 
 
+def test_unknown_policy_mode_fails_closed_at_verify_boundary(make_client):
+    client, _ = make_client(policy_yaml="""
+version: 1
+intents:
+  ReadFile: {mode: alow}
+rate_limit:
+  requests_per_minute: 10000
+""")
+
+    response = _verify(client, tool="read_file")
+
+    assert response.status_code == 200
+    assert response.json()["allowed"] is False
+    assert response.json()["decision"] == "deny"
+    assert response.json()["reason"] == "unknown policy mode 'alow' denied"
+
+
 def test_metrics_endpoint_contract(make_client):
     client, _ = make_client()
     _verify(client)

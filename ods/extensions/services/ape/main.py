@@ -708,7 +708,7 @@ def evaluate(intent: str, tool_name: str, args: dict, policy: dict) -> tuple[boo
             return True, "path is within allowed zone"
         return False, f"write to '{real}' is outside allowed paths"
 
-    return True, f"unknown mode '{mode}', defaulting to allow"
+    return False, f"unknown policy mode '{mode}' denied"
 
 
 # ── Audit log ─────────────────────────────────────────────────────────────────
