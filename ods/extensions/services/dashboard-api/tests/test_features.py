@@ -95,6 +95,21 @@ class TestApiFeaturesAppleFallback:
         data = response.json()
         assert data["gpu"]["vramGb"] == 16.0
 
+    def test_api_features_rejects_non_finite_or_negative_host_ram(self, test_client):
+        """Invalid env values must not escape as non-JSON numbers or fake capacity."""
+        for host_ram in ("nan", "inf", "-1"):
+            with patch.dict(os.environ, {"HOST_RAM_GB": host_ram}):
+                with patch("routers.features.GPU_BACKEND", "apple"):
+                    with patch("routers.features.get_gpu_info", return_value=None):
+                        with patch("helpers.get_all_services", new_callable=AsyncMock, return_value=[]):
+                            response = test_client.get(
+                                "/api/features",
+                                headers=test_client.auth_headers,
+                            )
+
+            assert response.status_code == 200
+            assert response.json()["gpu"]["vramGb"] == 0
+
 
 # --- calculate_feature_status general cases ---
 

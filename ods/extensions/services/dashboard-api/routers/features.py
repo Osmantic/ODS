@@ -1,6 +1,7 @@
 """Feature discovery endpoints."""
 
 import logging
+import math
 import os
 from typing import Optional
 
@@ -16,6 +17,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["features"])
 
 
+def _apple_host_ram_gb() -> float:
+    """Return a finite, non-negative unified-memory fallback."""
+    try:
+        value = float(os.environ.get("HOST_RAM_GB", "0") or "0")
+    except (ValueError, TypeError):
+        return 0
+    return value if math.isfinite(value) and value >= 0 else 0
+
+
 def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[GPUInfo]) -> dict:
     """Calculate whether a feature can be enabled and its status."""
     gpu_vram_gb = (gpu_info.memory_total_mb / 1024) if gpu_info else 0
@@ -25,10 +35,7 @@ def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[G
     # On Apple Silicon, when HOST_CHIP is missing (get_gpu_info_apple returned None),
     # fall back to HOST_RAM_GB. Unified memory = VRAM on Apple Silicon.
     if gpu_vram_gb == 0 and GPU_BACKEND == "apple":
-        try:
-            gpu_vram_gb = float(os.environ.get("HOST_RAM_GB", "0") or "0")
-        except (ValueError, TypeError):
-            pass
+        gpu_vram_gb = _apple_host_ram_gb()
         gpu_vram_free_gb = gpu_vram_gb  # assumes zero current usage; Docker can't measure host memory pressure
 
     req = feature["requirements"]
@@ -148,10 +155,7 @@ async def api_features(api_key: str = Depends(verify_api_key)):
 
     # Apply Apple Silicon fallback for endpoint-level GPU summary (mirrors calculate_feature_status)
     if gpu_vram_gb == 0 and GPU_BACKEND == "apple":
-        try:
-            gpu_vram_gb = float(os.environ.get("HOST_RAM_GB", "0") or "0")
-        except (ValueError, TypeError):
-            pass
+        gpu_vram_gb = _apple_host_ram_gb()
         if gpu_vram_gb == 0:
             logger.warning(
                 "Apple Silicon VRAM fallback: HOST_RAM_GB is 0 or unset; "
