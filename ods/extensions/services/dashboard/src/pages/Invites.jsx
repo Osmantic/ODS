@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import './invites.css'
 import {
   UserPlus, Copy, Check, Trash2, RefreshCw, QrCode, Share2, X,
@@ -80,6 +80,8 @@ function tokenCanRevoke(token, now = Date.now()) {
 export default function Invites() {
   const [tokens, setTokens] = useState([])
   const [now, setNow] = useState(Date.now)
+  const [query, setQuery] = useState('')
+  const [inventoryStatus, setInventoryStatus] = useState('all')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [showOwnerCreate, setShowOwnerCreate] = useState(false)
@@ -87,6 +89,7 @@ export default function Invites() {
   const [generated, setGenerated] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [ownerCardStatus, setOwnerCardStatus] = useState(null)
+  const refreshGeneration = useRef(0)
 
   useEffect(() => {
     const tick = () => setNow(Date.now())
@@ -109,6 +112,7 @@ export default function Invites() {
   }, [tokens, now])
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current
     setRefreshing(true)
     try {
       const [resp, ownerStatusResp] = await Promise.all([
@@ -117,8 +121,10 @@ export default function Invites() {
       ])
       if (!resp.ok) throw new Error(`list failed: ${resp.status}`)
       const data = await resp.json()
+      const ownerStatus = ownerStatusResp.ok ? await ownerStatusResp.json() : null
+      if (generation !== refreshGeneration.current) return
       if (ownerStatusResp.ok) {
-        setOwnerCardStatus(await ownerStatusResp.json())
+        setOwnerCardStatus(ownerStatus)
       } else {
         setOwnerCardStatus({
           ready: false,
@@ -128,18 +134,24 @@ export default function Invites() {
       setTokens(data.tokens || [])
       setError(null)
     } catch (err) {
+      if (generation !== refreshGeneration.current) return
       setOwnerCardStatus(current => current || {
         ready: false,
         reason: 'Owner-card status unavailable.',
       })
       setError(err.message)
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      if (generation === refreshGeneration.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }, [])
 
-  useEffect(() => { refresh() }, [refresh])
+  useEffect(() => {
+    refresh()
+    return () => { refreshGeneration.current += 1 }
+  }, [refresh])
 
   const handleRevoke = async (prefix) => {
     try {
@@ -168,8 +180,15 @@ export default function Invites() {
     )
   }
 
-  const ownerTokens = tokens.filter(isOwnerToken)
-  const guestTokens = tokens.filter(t => !isOwnerToken(t))
+  const filteredTokens = tokens.filter(token => {
+    const state = tokenStatus(token, now).label
+    if (inventoryStatus !== 'all' && !(inventoryStatus === 'used' ? state.startsWith('used') : state === inventoryStatus)) return false
+    const needle = query.trim().toLowerCase()
+    return !needle || [token.target_username, token.note, token.token_hash_prefix].some(value => String(value || '').toLowerCase().includes(needle))
+  })
+  const ownerTokens = filteredTokens.filter(isOwnerToken)
+  const guestTokens = filteredTokens.filter(t => !isOwnerToken(t))
+  const filtering = query.trim() || inventoryStatus !== 'all'
   const ownerCardUnavailable = ownerCardStatus?.ready === false
 
   return (
@@ -201,6 +220,16 @@ export default function Invites() {
         <div><dt>Owner cards</dt><dd>{ownerTokens.filter(token => tokenCanRevoke(token, now)).length}<span> active</span></dd></div>
         <div><dt>Guest links</dt><dd>{guestTokens.filter(t => tokenStatus(t, now).label === 'active' || (t.reusable && tokenCanRevoke(t, now))).length}<span> available</span></dd></div>
       </dl>
+
+      <div className="mb-5 flex flex-wrap items-center gap-3 text-sm text-theme-text">
+        <input aria-label="Search access links" placeholder="Search username, note or ID" value={query} onChange={event => setQuery(event.target.value)} className="rounded-lg border border-theme-border bg-theme-card p-2" />
+        <select aria-label="Access link status" value={inventoryStatus} onChange={event => setInventoryStatus(event.target.value)} className="rounded-lg border border-theme-border bg-theme-card p-2">
+          <option value="all">All statuses</option><option value="active">Unused active</option><option value="used">Used / redeemed</option><option value="expired">Expired</option><option value="revoked">Revoked</option>
+        </select>
+        <span role="status">Showing {filteredTokens.length} of {tokens.length} access links</span>
+        {filtering && <button type="button" onClick={() => { setQuery(''); setInventoryStatus('all') }} className="text-theme-accent">Clear filters</button>}
+      </div>
+
       <section className="owner-access-section" aria-labelledby="owner-cards-heading">
         <div className="owner-access-section-heading">
           <div>
@@ -229,7 +258,7 @@ export default function Invites() {
           </div>
         )}
 
-        {ownerTokens.length === 0 ? (
+        {filtering && ownerTokens.length === 0 ? <p className="mt-5 text-sm text-theme-text-muted">No owner cards match these filters.</p> : ownerTokens.length === 0 ? (
           <EmptyOwnerState />
         ) : (
           <div className="mt-5 space-y-3">
@@ -260,7 +289,7 @@ export default function Invites() {
           </button>
         </div>
 
-        {guestTokens.length === 0 ? (
+        {filtering && guestTokens.length === 0 ? <p className="mt-5 text-sm text-theme-text-muted">No guest invites match these filters.</p> : guestTokens.length === 0 ? (
           <EmptyGuestState />
         ) : (
           <div className="mt-5 space-y-3">
