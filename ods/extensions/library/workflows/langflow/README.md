@@ -67,7 +67,7 @@ curl -X POST http://localhost:5678/webhook/langflow-run \
 
 Connect Langflow to ODS's LLM:
 1. In Langflow, add an "Ollama" or "OpenAI" component
-2. Set Base URL: `http://llama-server:8000/v1`
+2. Set Base URL: `http://llama-server:8080/v1`
 3. Use local models already downloaded
 
 ## Langflow vs Flowise
