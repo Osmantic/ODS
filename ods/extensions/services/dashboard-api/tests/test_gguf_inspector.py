@@ -12,7 +12,6 @@ path and every failure mode are pinned down.
 import struct
 
 import pytest
-
 from gguf_inspector import inspect_gguf
 
 # GGUF value type ids (see gguf_inspector._GGUF_VALUE_TYPES).
@@ -360,3 +359,49 @@ def test_boolean_metadata_value_is_ignored_for_integer_fields(tmp_path):
 
     assert result["readable"] is True
     assert result["context_length"] is None
+
+
+@pytest.mark.parametrize("layers", [65, 88, 1024])
+def test_long_per_layer_kv_arrays_reach_memory_estimation(tmp_path, layers):
+    from model_memory import estimated_context_kv_gb
+
+    heads = [2 if layer % 11 == 3 else 0 for layer in range(layers)]
+    path = _write(tmp_path, "hybrid-120B.gguf", build_gguf([
+        ("general.architecture", STR, "nemotron_h_moe"),
+        ("nemotron_h_moe.block_count", U32, layers),
+        ("nemotron_h_moe.attention.head_count_kv", ARR, (I32, heads)),
+        ("nemotron_h_moe.attention.key_length", U32, 128),
+        ("nemotron_h_moe.attention.value_length", U32, 128),
+        ("tokenizer.ggml.token_type", ARR, (I32, [1] * layers)),
+    ]))
+
+    model = inspect_gguf(path)
+    assert model["readable"] is True
+    assert model["attention_head_count_kv"] == heads
+    model["params_b"] = 120
+    expected = round(sum(heads) * 256 * 2 * 32768 / 1024**3, 2)
+    assert estimated_context_kv_gb(model, 32768) == expected
+    assert len(model["metadata"]["tokenizer.ggml.token_type"]["sample"]) == 64
+
+
+def test_oversized_per_layer_array_stays_sampled(tmp_path):
+    path = _write(tmp_path, "too-many-layers.gguf", build_gguf([
+        ("llama.attention.head_count_kv", ARR, (U32, [8] * 1025)),
+    ]))
+
+    model = inspect_gguf(path)
+    assert model["readable"] is True
+    assert model["attention_head_count_kv"] is None
+    entry = model["metadata"]["llama.attention.head_count_kv"]
+    assert entry["length"] == 1025
+    assert len(entry["sample"]) <= 1024
+
+
+def test_truncated_long_per_layer_array_degrades(tmp_path):
+    blob = build_gguf([
+        ("nemotron_h_moe.attention.head_count_kv", ARR, (I32, [2] * 88)),
+    ])
+    result = inspect_gguf(_write(tmp_path, "truncated-hybrid.gguf", blob[:-4]))
+
+    assert result["readable"] is False
+    assert "ended unexpectedly" in result["error"]
