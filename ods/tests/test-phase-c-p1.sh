@@ -85,6 +85,17 @@ fi
 echo -e "${CYAN}-- C2. Setup Wizard Endpoints -------------------------------"
 
 if _ae_require_key; then
+    # A 404 body is never seen by `curl -sf`: -f makes curl exit non-zero and
+    # emit nothing, so `grep 404` below could never match and a missing route
+    # logged a PASS. Assert on the status code instead (#4174).
+    _ae_route_exists() {
+        local method="$1" url="$2" code
+        code=$(curl -s -o /dev/null -w '%{http_code}' -m "$TEST_TIMEOUT" \
+            -X "$method" "$url") || code="000"
+        # 401/403 still prove the route is mounted; only 404 means missing.
+        [[ "$code" != "404" && "$code" != "000" ]]
+    }
+
     # Test /api/setup/test endpoint
     SETUP_TEST=$(curl -sf -m $TEST_TIMEOUT -X POST "${API_URL}/api/setup/test" 2>/dev/null || echo "")
     if echo "$SETUP_TEST" | grep -qE "404|Not Found"; then
@@ -94,35 +105,31 @@ if _ae_require_key; then
     fi
 
     # Test LLM test endpoint
-    LLM_TEST=$(curl -sf -m $TEST_TIMEOUT "${API_URL}/api/test/llm" 2>/dev/null || echo "")
-    if echo "$LLM_TEST" | grep -qE "404|Not Found"; then
-        log_fail "Missing endpoint: GET /api/test/llm"
-    else
+    if _ae_route_exists GET "${API_URL}/api/test/llm"; then
         log_pass "LLM test endpoint exists"
+    else
+        log_fail "Missing endpoint: GET /api/test/llm"
     fi
 
     # Test voice test endpoint
-    VOICE_TEST=$(curl -sf -m $TEST_TIMEOUT "${API_URL}/api/test/voice" 2>/dev/null || echo "")
-    if echo "$VOICE_TEST" | grep -qE "404|Not Found"; then
-        log_fail "Missing endpoint: GET /api/test/voice"
-    else
+    if _ae_route_exists GET "${API_URL}/api/test/voice"; then
         log_pass "Voice test endpoint exists"
+    else
+        log_fail "Missing endpoint: GET /api/test/voice"
     fi
 
     # Test RAG test endpoint
-    RAG_TEST=$(curl -sf -m $TEST_TIMEOUT "${API_URL}/api/test/rag" 2>/dev/null || echo "")
-    if echo "$RAG_TEST" | grep -qE "404|Not Found"; then
-        log_fail "Missing endpoint: GET /api/test/rag"
-    else
+    if _ae_route_exists GET "${API_URL}/api/test/rag"; then
         log_pass "RAG test endpoint exists"
+    else
+        log_fail "Missing endpoint: GET /api/test/rag"
     fi
 
     # Test workflows test endpoint
-    WORKFLOWS_TEST=$(curl -sf -m $TEST_TIMEOUT "${API_URL}/api/test/workflows" 2>/dev/null || echo "")
-    if echo "$WORKFLOWS_TEST" | grep -qE "404|Not Found"; then
-        log_fail "Missing endpoint: GET /api/test/workflows"
-    else
+    if _ae_route_exists GET "${API_URL}/api/test/workflows"; then
         log_pass "Workflows test endpoint exists"
+    else
+        log_fail "Missing endpoint: GET /api/test/workflows"
     fi
 else
     WARN_COUNT=$((WARN_COUNT + 5))
