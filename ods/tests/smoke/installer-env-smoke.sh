@@ -400,6 +400,67 @@ else
     echo "  (skipped — docker compose not available)"
 fi
 
+# Exercise the complete config writer for Windows-managed inference as well.
+# Use the same isolated fixture, after the CPU assertions have finished.
+echo ""
+echo "── Windows-managed inference config ──"
+if INSTALL_DIR="$INSTALL_DIR" SCRIPT_DIR="$INSTALL_DIR" HOME="$TMPDIR_SMOKE/home" bash <<'WINDOWS_ENV_CASE'
+set -euo pipefail
+cd "$SCRIPT_DIR"
+source installers/lib/constants.sh
+source installers/lib/logging.sh
+source installers/lib/ui.sh
+source installers/lib/detection.sh
+source installers/lib/progress.sh
+source installers/lib/sudo.sh
+ods_progress() { :; }
+ai() { :; }
+ai_ok() { :; }
+ai_warn() { :; }
+ai_bad() { :; }
+chapter() { :; }
+signal() { :; }
+show_phase() { :; }
+sudo() { return 0; }
+uname() { if [[ "$*" == '-s' ]]; then echo Linux; else command uname "$@"; fi; }
+grep() { if [[ "$*" == '-qi microsoft /proc/version' ]]; then return 0; else command grep "$@"; fi; }
+docker() {
+    if [[ "${1:-}" == info && "${2:-}" == --format ]]; then
+        case "${3:-}" in '{{.MemTotal}}') echo 9349595136 ;; *) echo 4 ;; esac
+        return 0
+    fi
+    command docker "$@"
+}
+export GPU_BACKEND=amd ODS_MODE=lemonade TIER=2
+export TIER_NAME='Windows AMD (2)'
+export ENABLE_OPENCLAW=false ENABLE_HERMES=false
+export LEMONADE_EXTERNAL=false EXTERNAL_LLM_URL=''
+export AMD_INFERENCE_RUNTIME_MODE=wsl-windows-lemonade AMD_INFERENCE_RUNTIME=lemonade
+export AMD_INFERENCE_LOCATION=host AMD_INFERENCE_MANAGED=true AMD_INFERENCE_PORT=18080
+export LEMONADE_BASE_URL=http://127.0.0.1:18080
+export LEMONADE_CONTAINER_BASE_URL=http://host.docker.internal:18080
+export LEMONADE_MODEL=extra.Qwen3-1.7B-Q4_K_M.gguf LEMONADE_API_KEY=fixture-windows-key
+export ODS_WINDOWS_MODELS_PATH="$INSTALL_DIR/windows-models"
+mkdir -p "$ODS_WINDOWS_MODELS_PATH"
+source installers/phases/06-directories.sh
+source lib/safe-env.sh
+load_env_file "$INSTALL_DIR/.env"
+[[ "$AMD_INFERENCE_RUNTIME_MODE" == wsl-windows-lemonade ]]
+[[ "$AMD_INFERENCE_MANAGED" == true && "$LEMONADE_EXTERNAL" == false ]]
+[[ "$LEMONADE_MODEL" == extra.Qwen3-1.7B-Q4_K_M.gguf ]]
+[[ "$ODS_ACTIVE_MODEL_STORE" == windows-inference && -z "$EXTERNAL_LLM_URL" ]]
+[[ "$LEMONADE_CONTAINER_BASE_URL" == http://host.docker.internal:18080 ]]
+[[ "$LEMONADE_API_BASE_PATH" == /api/v1 ]]
+grep -Fq 'http://host.docker.internal:18080/api/v1' "$INSTALL_DIR/config/litellm/lemonade.yaml"
+[[ "$LITELLM_LEMONADE_API_KEY" == fixture-windows-key ]]
+bash scripts/validate-env.sh "$INSTALL_DIR/.env" "$SCRIPT_DIR/.env.schema.json"
+WINDOWS_ENV_CASE
+then
+    pass "Windows-managed runtime survives full config generation and schema validation"
+else
+    fail "Windows-managed runtime config generation failed"
+fi
+
 # ── Test 6: All function calls resolve ──
 echo ""
 echo "── Function resolution ──"

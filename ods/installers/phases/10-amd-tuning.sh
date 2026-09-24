@@ -14,6 +14,10 @@
 # ============================================================================
 
 ods_progress 70 "amd-tuning" "Tuning AMD GPU settings"
+if [[ "${AMD_INFERENCE_RUNTIME_MODE:-}" == "wsl-windows-lemonade" ]]; then
+    log "AMD inference is managed on Windows; Linux ROCm kernel tuning does not apply."
+    return 0
+fi
 if [[ "$GPU_BACKEND" == "amd" ]] && $DRY_RUN; then
     log "[DRY RUN] Would apply AMD APU system tuning:"
     log "[DRY RUN]   - Install systemd user timers (session cleanup, memory shepherd)"

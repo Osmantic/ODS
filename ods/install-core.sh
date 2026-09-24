@@ -115,6 +115,7 @@ ENABLE_RECOMMENDED=true
 # written license agreement is acknowledged. Existing ODS tools remain available.
 # OpenClaw is deprecated and remains explicit opt-in.
 ENABLE_HERMES=true
+HERMES_EXPLICIT_SELECTION=""
 ENABLE_PIXEL="${ENABLE_PIXEL:-auto}"
 PIXEL_EXPLICIT=false
 ENABLE_OPENCLAW=false
@@ -258,8 +259,8 @@ while [[ $# -gt 0 ]]; do
         --no-rag) ENABLE_RAG=false; shift ;;
         --recommended) ENABLE_RECOMMENDED=true; shift ;;
         --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
-        --hermes) ENABLE_HERMES=true; shift ;;
-        --no-hermes) ENABLE_HERMES=false; shift ;;
+        --hermes) ENABLE_HERMES=true; HERMES_EXPLICIT_SELECTION=true; shift ;;
+        --no-hermes) ENABLE_HERMES=false; HERMES_EXPLICIT_SELECTION=false; shift ;;
         --pixel) ENABLE_PIXEL=true; PIXEL_EXPLICIT=true; shift ;;
         --no-pixel) ENABLE_PIXEL=false; PIXEL_EXPLICIT=true; shift ;;
         --openclaw) ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;

@@ -104,8 +104,10 @@ _phase06_pixel_runtime_layout() {
     docker_os="$(timeout 10s "${docker_command[@]}" info --format '{{.OperatingSystem}}' 2>/dev/null)" || return 1
     [[ "$docker_os" == "Docker Desktop" ]] || return 0
     [[ -d "$wsl_mount" && "$(findmnt -n -o PROPAGATION -T "$wsl_mount")" == shared ]] || return 1
-    PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/host/wsl/ods-portal-runtime/ingress
-    PIXEL_PREVIEW_RUNTIME_DIR_VALUE=/mnt/host/wsl/ods-portal-runtime/preview
+    # Compose runs in the owner's distro. Docker Desktop translates this
+    # client-visible shared path into the daemon namespace.
+    PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-runtime/ingress
+    PIXEL_PREVIEW_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-runtime/preview
     PIXEL_RUNTIME_BIND_PROPAGATION_VALUE=rshared
 }
 
@@ -678,7 +680,28 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     OPENCLAW_TOKEN=$(_phase06_env_hex_secret OPENCLAW_TOKEN 24)
     LEMONADE_EXTERNAL_VALUE="${LEMONADE_EXTERNAL:-false}"
     [[ "${LEMONADE_EXTERNAL_VALUE,,}" == "true" ]] && LEMONADE_EXTERNAL_VALUE="true" || LEMONADE_EXTERNAL_VALUE="false"
-    if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" && -n "${LEMONADE_API_KEY:-}" ]]; then
+    source "$SCRIPT_DIR/installers/lib/windows-lemonade.sh"
+    WINDOWS_LEMONADE_VALUE=false
+    if ods_windows_lemonade_requested; then
+        ods_windows_lemonade_validate || {
+            error "The Windows-managed Lemonade configuration is incomplete or conflicts with an external runtime."
+            return 1
+        }
+        WINDOWS_LEMONADE_VALUE=true
+        [[ -d "${ODS_WINDOWS_MODELS_PATH:-}" && "${ODS_WINDOWS_MODELS_PATH:-}" == /* ]] || {
+            error "The prepared Windows model directory is not mounted in WSL."
+            return 1
+        }
+        python3 "$SCRIPT_DIR/scripts/register-model-store.py" --install-dir "$INSTALL_DIR" \
+            --id windows-inference --directory "$ODS_WINDOWS_MODELS_PATH" >> "$LOG_FILE" 2>&1 || {
+            error "Could not register the Windows inference model directory."
+            return 1
+        }
+        ODS_ACTIVE_MODEL_STORE=windows-inference
+    fi
+    LEMONADE_HOST_VALUE="$LEMONADE_EXTERNAL_VALUE"
+    [[ "$WINDOWS_LEMONADE_VALUE" == true ]] && LEMONADE_HOST_VALUE=true
+    if [[ "$LEMONADE_HOST_VALUE" == "true" && -n "${LEMONADE_API_KEY:-}" ]]; then
         LITELLM_LEMONADE_API_KEY="$LEMONADE_API_KEY"
     fi
     LEMONADE_API_BASE_PATH_VALUE="$(_env_get_explicit_first LEMONADE_API_BASE_PATH "/api/v1")"
@@ -686,7 +709,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     LEMONADE_BASE_URL_VALUE=""
     LEMONADE_CONTAINER_BASE_URL_VALUE=""
     LEMONADE_PORT_VALUE=""
-    if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
+    if [[ "$LEMONADE_HOST_VALUE" == "true" ]]; then
         LEMONADE_BASE_URL_VALUE="$(_env_get_explicit_first LEMONADE_BASE_URL "")"
         if [[ -z "$LEMONADE_BASE_URL_VALUE" ]]; then
             if LEMONADE_BASE_URL_VALUE="$(_phase06_detect_lemonade_url)"; then
@@ -722,9 +745,9 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         LEMONADE_CONTAINER_BASE_URL_VALUE="${LEMONADE_CONTAINER_BASE_URL_VALUE%/}"
     fi
     LEMONADE_API_BASE_VALUE="${LEMONADE_BASE_URL_VALUE}${LEMONADE_API_BASE_PATH_VALUE}"
-    LEMONADE_CONTAINER_API_BASE_VALUE="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${LEMONADE_CONTAINER_BASE_URL_VALUE}${LEMONADE_API_BASE_PATH_VALUE}"; else echo "http://llama-server:8080/api/v1"; fi)"
+    LEMONADE_CONTAINER_API_BASE_VALUE="$(if [[ "$LEMONADE_HOST_VALUE" == "true" ]]; then echo "${LEMONADE_CONTAINER_BASE_URL_VALUE}${LEMONADE_API_BASE_PATH_VALUE}"; else echo "http://llama-server:8080/api/v1"; fi)"
     LEMONADE_MODEL_VALUE=""
-    if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
+    if [[ "$LEMONADE_HOST_VALUE" == "true" ]]; then
         LEMONADE_MODEL_VALUE="$(_env_get_explicit_first LEMONADE_MODEL "")"
         if [[ -z "$LEMONADE_MODEL_VALUE" ]]; then
             if LEMONADE_MODEL_VALUE="$(_phase06_discover_lemonade_model "$LEMONADE_API_BASE_VALUE")"; then
@@ -1224,18 +1247,18 @@ EXTERNAL_LLM_CONTAINER_URL=${EXTERNAL_LLM_CONTAINER_URL_VALUE}
 EXTERNAL_LLM_PROVIDER=${EXTERNAL_LLM_PROVIDER_VALUE}
 EXTERNAL_LLM_MODEL=${EXTERNAL_SELECTED_MODEL}
 SKIP_MODEL_DOWNLOAD=${EXTERNAL_LLM_ACTIVE}
-AMD_INFERENCE_RUNTIME=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" || ( "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ) ]]; then echo "lemonade"; else echo ""; fi)
-AMD_INFERENCE_BACKEND=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_BACKEND:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
-AMD_INFERENCE_LOCATION=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "host"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "container"; else echo ""; fi)
-AMD_INFERENCE_PORT=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${LEMONADE_PORT_VALUE}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_API_PORT:-8080}"; else echo ""; fi)
-AMD_INFERENCE_SUPPORTED_BACKENDS=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_SUPPORTED_BACKENDS:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
-AMD_INFERENCE_RUNTIME_MODE=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "external-lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "linux-container"; else echo ""; fi)
-AMD_INFERENCE_MANAGED=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "false"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "true"; else echo ""; fi)
+AMD_INFERENCE_RUNTIME=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_HOST_VALUE" == "true" || ( "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ) ]]; then echo "lemonade"; else echo ""; fi)
+AMD_INFERENCE_BACKEND=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$WINDOWS_LEMONADE_VALUE" == "true" ]]; then echo "vulkan"; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_BACKEND:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
+AMD_INFERENCE_LOCATION=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_HOST_VALUE" == "true" ]]; then echo "host"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "container"; else echo ""; fi)
+AMD_INFERENCE_PORT=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_HOST_VALUE" == "true" ]]; then echo "${LEMONADE_PORT_VALUE}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_API_PORT:-8080}"; else echo ""; fi)
+AMD_INFERENCE_SUPPORTED_BACKENDS=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$WINDOWS_LEMONADE_VALUE" == "true" ]]; then echo "vulkan"; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_SUPPORTED_BACKENDS:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
+AMD_INFERENCE_RUNTIME_MODE=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$WINDOWS_LEMONADE_VALUE" == "true" ]]; then echo "wsl-windows-lemonade"; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "external-lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "linux-container"; else echo ""; fi)
+AMD_INFERENCE_MANAGED=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$WINDOWS_LEMONADE_VALUE" == "true" ]]; then echo "true"; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "false"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "true"; else echo ""; fi)
 LEMONADE_EXTERNAL=${LEMONADE_EXTERNAL_VALUE}
 LEMONADE_BASE_URL=$(dotenv_value "${LEMONADE_BASE_URL_VALUE}")
 LEMONADE_CONTAINER_BASE_URL=$(dotenv_value "${LEMONADE_CONTAINER_BASE_URL_VALUE}")
 LEMONADE_API_BASE_PATH=$(dotenv_value "${LEMONADE_API_BASE_PATH_VALUE}")
-LEMONADE_MODEL=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then dotenv_value "${LEMONADE_MODEL_VALUE:-}"; else echo "${LEMONADE_MODEL:-}"; fi)
+LEMONADE_MODEL=$(if [[ "$LEMONADE_HOST_VALUE" == "true" ]]; then dotenv_value "${LEMONADE_MODEL_VALUE:-}"; else echo "${LEMONADE_MODEL:-}"; fi)
 
 #=== Cloud API Keys ===
 ANTHROPIC_API_KEY=$(dotenv_value "${ANTHROPIC_API_KEY:-}")
@@ -1566,7 +1589,7 @@ ENV_EOF
             _active_gguf="$GGUF_FILE"
         fi
         _lemonade_model_id=""
-        if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
+        if [[ "$LEMONADE_HOST_VALUE" == "true" ]]; then
             _lemonade_model_id="${LEMONADE_MODEL_VALUE:-}"
         fi
         # Pass chat_template_kwargs.enable_thinking=false to Lemonade so Qwen3

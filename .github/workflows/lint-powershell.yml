@@ -138,6 +138,45 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-install-model-proof.ps1
 
+      - name: Windows Portal Entrypoint Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-portal-install-plan.ps1
+
+      - name: Windows Portal Entrypoint Contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-portal-install-plan.ps1
+
+      - name: Windows Portal Model Store Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-portal-model-store.ps1
+
+      - name: Shared Lemonade Installer Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-lemonade-runtime-install.ps1
+
+      - name: Windows Portal Runtime Preparation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-portal-runtime.ps1
+
+      - name: Windows Portal Runtime Preparation (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-portal-runtime.ps1
+
+      - name: Shared Lemonade Installer Contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-lemonade-runtime-install.ps1
+
+      - name: Windows Portal Model Store Contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-portal-model-store.ps1
+
       - name: Windows Install Model Proof (PowerShell 5.1)
         if: runner.os == 'Windows'
         shell: powershell

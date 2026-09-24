@@ -30,11 +30,12 @@ case "${LEMONADE_EXTERNAL:-false}" in
     true|TRUE|1|yes|YES|on|ON) _lemonade_external=true ;;
     *) _lemonade_external=false ;;
 esac
-if [[ "$_lemonade_external" == "true" ]]; then
+if [[ "$_lemonade_external" == "true" || "${AMD_INFERENCE_RUNTIME_MODE:-}" == "wsl-windows-lemonade" ]]; then
     # The external host owns inference. In WSL the Linux capability probe can
     # legitimately fall back to CPU even though Windows Lemonade has full NPU/
     # GPU access; pulling a dormant llama.cpp image wastes time and disk and
-    # makes the installation plan lie about which model path will run.
+    # makes the installation plan lie about which model path will run. The
+    # same placement applies to ODS-managed Windows Lemonade.
     :
 elif [[ "$GPU_BACKEND" == "amd" ]]; then
     _lemonade_image="${LEMONADE_SERVER_IMAGE:-${BACKEND_LEMONADE_CONTAINER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0}}"

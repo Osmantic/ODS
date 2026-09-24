@@ -271,7 +271,9 @@ else
 fi
 
 echo "[contract] Windows Lemonade follows the normal per-user install contract"
-if grep -q 'INSTALLDIR=' installers/windows/install-windows.ps1 \
+if grep -q 'Install-ODSLemonadeRuntime -RootPath' installers/windows/install-windows.ps1 \
+   && grep -q 'INSTALLDIR=' installers/windows/lib/backend-contract.ps1 \
+   && ! grep -q 'ALLUSERS=1' installers/windows/lib/backend-contract.ps1 \
    && ! grep -q 'ALLUSERS=1' installers/windows/install-windows.ps1 \
    && grep -q 'LOCALAPPDATA' installers/windows/lib/backend-contract.ps1 \
    && grep -q 'LOCALAPPDATA' bin/ods-host-agent.py; then
@@ -342,7 +344,7 @@ elif command -v powershell.exe >/dev/null 2>&1; then
 fi
 if ((${#_lemonade_ps_cmd[@]} > 0)); then
     _ps_tmp="${TMPDIR:-/tmp}"
-    if ROOT_DIR="$ROOT_DIR" AMD_LEMONADE_IMAGE="$AMD_LEMONADE_IMAGE" TEMP="$_ps_tmp" ProgramFiles="$_ps_tmp" USERPROFILE="$_ps_tmp" "${_lemonade_ps_cmd[@]}" -Command '
+    if WSLENV="${WSLENV:+$WSLENV:}ROOT_DIR/p:AMD_LEMONADE_IMAGE:TEMP/p:ProgramFiles/p:USERPROFILE/p" ROOT_DIR="$ROOT_DIR" AMD_LEMONADE_IMAGE="$AMD_LEMONADE_IMAGE" TEMP="$_ps_tmp" ProgramFiles="$_ps_tmp" USERPROFILE="$_ps_tmp" "${_lemonade_ps_cmd[@]}" -Command '
         $ErrorActionPreference = "Stop"
         . (Join-Path $env:ROOT_DIR "installers/windows/lib/backend-contract.ps1")
         $runtime = Get-ODSAmdLemonadeRuntime -RootPath $env:ROOT_DIR
@@ -361,6 +363,9 @@ if ((${#_lemonade_ps_cmd[@]} > 0)); then
         . (Join-Path $env:ROOT_DIR "installers/windows/lib/constants.ps1")
 
         $probeRoot = Join-Path $env:TEMP "ods-lemonade-resolver-contract"
+        $probeRoot = [IO.Path]::GetFullPath($probeRoot)
+        $tempPrefix = [IO.Path]::GetFullPath($env:TEMP).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        if (-not $probeRoot.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Test fixture escaped temporary directory" }
         Remove-Item -LiteralPath $probeRoot -Recurse -Force -ErrorAction SilentlyContinue
         $programFiles = Join-Path $probeRoot "Program Files"
         $programFilesX86 = Join-Path $probeRoot "Program Files (x86)"
@@ -498,7 +503,7 @@ if ((${#_lemonade_ps_cmd[@]} > 0)); then
             -Contract $modern -EnvPath (Join-Path $probeRoot ".env") `
             -DiagnosticLogPath (Join-Path $probeRoot "lemonade-launch.log")
         $launcherMatch = [regex]::Match($taskAction.Arguments, "-File\s+`"([^`"]+)`"")
-        if ($taskAction.Execute -ne "powershell.exe" -or -not $launcherMatch.Success) {
+        if ((Split-Path -Leaf $taskAction.Execute) -notin @("powershell.exe", "pwsh.exe") -or -not $launcherMatch.Success) {
             throw "Modern Lemonade task must use the secure PowerShell launcher file"
         }
         if ($taskAction.Arguments.Length -gt 512) {

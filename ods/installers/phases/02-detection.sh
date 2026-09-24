@@ -119,6 +119,18 @@ DISK_AVAIL=$(df -Pk "$_disk_probe_path" 2>/dev/null | tail -1 | awk '{printf "%d
 log "Available disk: ${DISK_AVAIL}GB (on filesystem: $_disk_probe_path)"
 
 # GPU Detection
+if [[ "${AMD_INFERENCE_RUNTIME_MODE:-}" == "wsl-windows-lemonade" ]]; then
+    source "$SCRIPT_DIR/installers/lib/windows-lemonade.sh"
+    ods_windows_lemonade_apply_hardware || {
+        error "Windows runtime preparation is missing valid hardware/model data. Re-run the Windows Portal installer."
+        return 1
+    }
+    HOST_ARCH=$(detect_host_arch)
+    HOST_PAGE_SIZE=$(getconf PAGESIZE)
+    resolve_compose_config
+    log "Using the prepared Windows Vulkan model with Pixel in WSL."
+    return 0
+fi
 if [[ "$GPU_BACKEND_FORCED_CPU" == "true" ]]; then
     ai "GPU_BACKEND=cpu requested - skipping GPU detection"
     apply_cpu_gpu_fallback "GPU_BACKEND=cpu was requested."

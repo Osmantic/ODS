@@ -102,6 +102,16 @@ lemonade_external = (
         and os.environ.get("AMD_INFERENCE_MANAGED", "").lower() == "false"
     )
 )
+windows_managed_lemonade = (
+    os.environ.get("AMD_INFERENCE_RUNTIME_MODE", "") == "wsl-windows-lemonade"
+    and os.environ.get("AMD_INFERENCE_RUNTIME", "") == "lemonade"
+    and os.environ.get("AMD_INFERENCE_MANAGED", "") == "true"
+    and os.environ.get("AMD_INFERENCE_LOCATION", "") == "host"
+    and gpu_backend == "amd"
+)
+# Placement and ownership are separate: an ODS-managed Windows runtime also
+# runs outside Docker, but must retain model management in the Portal.
+lemonade_on_host = lemonade_external or windows_managed_lemonade
 external_llm = bool(os.environ.get("EXTERNAL_LLM_URL", "").strip())
 
 IS_DARWIN = platform.system() == "Darwin"
@@ -116,7 +126,7 @@ primary = "docker-compose.yml"
 
 # An explicit external runtime owns inference selection, even when hardware
 # detection supplied a local CPU/AMD/NVIDIA profile to the installer.
-if lemonade_external and ods_mode == "lemonade":
+if lemonade_on_host and ods_mode == "lemonade":
     # External Lemonade is still a local, switchable runtime. The cloud
     # overlay profiles model-router out and can leave a stale router container
     # serving Pixel after reinstall. The external overlay disables only the
@@ -743,7 +753,7 @@ if ext_dir.exists():
             # cloud overlay to profile out ODS's managed llama-server, so
             # local-mode overlays that wait on `llama-server: service_healthy`
             # would point at a disabled service and break lifecycle commands.
-            if ods_mode in ("local", "hybrid", "lemonade") and tier != "CLOUD" and gpu_backend != "apple" and not lemonade_external and not external_llm:
+            if ods_mode in ("local", "hybrid", "lemonade") and tier != "CLOUD" and gpu_backend != "apple" and not lemonade_on_host and not external_llm:
                 local_mode_overlay = service_dir / "compose.local.yaml"
                 if local_mode_overlay.exists():
                     resolved.append(str(local_mode_overlay.relative_to(script_dir)))
@@ -840,7 +850,7 @@ if user_ext_dir.exists():
                         managed_local_inference = (
                             ods_mode in ("local", "hybrid")
                             and tier != "CLOUD"
-                            and not lemonade_external
+                            and not lemonade_on_host
                             and not external_llm
                         )
                         if (
@@ -866,7 +876,7 @@ if user_ext_dir.exists():
                 # overlay to disable ODS's managed llama-server, so user-local
                 # overlays must not add local llama-server health dependencies.
                 # Mirrors the same guard in the built-in loop above (PR #1004).
-                if ods_mode in ("local", "hybrid", "lemonade") and tier != "CLOUD" and gpu_backend != "apple" and not lemonade_external and not external_llm:
+                if ods_mode in ("local", "hybrid", "lemonade") and tier != "CLOUD" and gpu_backend != "apple" and not lemonade_on_host and not external_llm:
                     local_mode_overlay = service_dir / "compose.local.yaml"
                     if local_mode_overlay.exists():
                         # Same content scan as compose.yaml/gpu overlay above —

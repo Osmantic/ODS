@@ -69,6 +69,12 @@ jobs:
         run: python -m pytest tests/test_restore_archive.py -q
       - name: GPU assignment capacity contracts
         run: python -m pytest tests/test-assign-gpus.py tests/test_gpu_spare_capacity.py -q
+      - name: WSL Windows inference transport contracts
+        run: |
+          python tests/test-windows-runtime-transport.py
+          python tests/test-wsl-windows-model-activation.py
+          python tests/test-wsl-windows-compose.py
+          bash tests/test-wsl-windows-env.sh
       - name: macOS TCP bridge lifecycle contracts
         run: python -m pytest tests/test_macos_llm_bridge.py tests/test_macos_upsert_env_value.py -q
       - name: Sharing credential and owner control tests

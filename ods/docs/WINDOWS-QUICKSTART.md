@@ -2,9 +2,24 @@
 
 ## Getting Started
 
-ODS is fully supported on Windows 10 2004+ and Windows 11 (NVIDIA and AMD). The installer detects your GPU, selects the right model, downloads it, starts all Docker services, and creates a Desktop shortcut.
+The default Windows installer runs Pixel/Portal in a qualified Ubuntu or Debian
+WSL2 distribution with systemd. It checks that distribution before starting the
+installation. Hermes is not selected as a substitute when Pixel cannot start.
 
-**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend enabled. NVIDIA GPU or AMD Strix Halo recommended (CPU-only works with smaller models). 4GB+ RAM minimum, 16GB+ recommended.
+**Prerequisites:** a user WSL2 distribution supported by Pixel (Ubuntu 24.04/26.04
+or Debian 12 with systemd), and Docker available in that distribution. Docker
+Desktop's internal distribution does not replace a user Ubuntu/Debian install.
+The AMD Windows inference path also requires Docker Desktop connectivity to the
+Windows host. Keep the Windows GPU driver current.
+
+| Hardware | Agent | Inference |
+| --- | --- | --- |
+| NVIDIA | Pixel in WSL2 | Existing CUDA `llama-server` container |
+| AMD | Pixel in WSL2 | Existing Lemonade runtime on Windows with Vulkan, provisioned by ODS |
+| CPU only | Pixel in WSL2 | Existing CPU runtime, with a model that fits available memory |
+
+These are placement choices, not guarantees that every GPU/model combination
+fits. Installation and model activation must verify the actual runtime.
 
 Open a normal **PowerShell** session and run:
 
@@ -20,11 +35,28 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
 ```
 
-The installer will:
-- Detect your GPU (NVIDIA or AMD) and pick the right model tier
-- Download the AI model for your hardware (~1.5GB bootstrap, full model in background)
-- Start all Docker services
-- Run health checks and create a Desktop shortcut
+Select a specific user distribution with `-Distro Ubuntu-24.04`. For AMD, keep
+model files on a Windows drive shared with WSL, for example:
+
+```powershell
+.\install.ps1 -Distro Ubuntu-24.04 -ModelsDirectory D:\ODS\models
+```
+
+The model directory is registered with ODS so downloads and model selection use
+the shared store. An ODS-managed Windows runtime is separate from the optional
+externally managed endpoint mode; do not configure an external URL just because
+inference runs on Windows. Existing incompatible listeners produce an explicit
+error instead of being silently stopped or adopted.
+
+The Linux installation and service data live inside the selected distribution.
+Windows model storage does not relocate Docker Desktop's disk or the WSL virtual
+disk. Those are separate storage settings.
+
+## Explicit native Windows installation (without Pixel/Portal)
+
+The remaining native Windows commands apply only when you intentionally choose
+`-NativeWindows`. This mode does not provide the normal Pixel/Portal experience.
+For the default Portal installation, use the WSL path above.
 
 ### Source checkout vs runtime directory
 
@@ -39,7 +71,7 @@ on `G:`. Pass any NTFS/ReFS path with enough space:
 
 ```powershell
 $installDir = "D:\Apps\ods"
-.\install.ps1 -InstallDir $installDir
+.\install.ps1 -NativeWindows -InstallDir $installDir
 ```
 
 Do not run raw `docker compose` commands from the cloned repository after
@@ -80,7 +112,7 @@ your working tree, set `ODS_HOME` before running the installer:
 
 ```powershell
 $env:ODS_HOME = "C:\path\to\ODS\ods"
-.\install.ps1
+.\install.ps1 -NativeWindows
 ```
 
 Only use this in-place mode if you want `.env`, `data\`, logs, and downloaded

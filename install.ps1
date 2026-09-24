@@ -1,7 +1,11 @@
 # ODS Root Installer (Windows)
-# Delegates to ods/installers/windows/install-windows.ps1
+# Portal uses the existing Ubuntu/WSL installer; native mode is explicit.
 
 param(
+    [switch]$NativeWindows,
+    [string]$Distro = "",
+    [string]$ModelsDirectory = "",
+    [ValidateRange(1,65535)][int]$InferencePort = 18080,
     [switch]$DryRun,
     [switch]$Force,
     [switch]$NonInteractive,
@@ -28,6 +32,27 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+if (-not $NativeWindows) {
+    . (Join-Path $ScriptDir 'ods/installers/windows/lib/portal-install-plan.ps1')
+    $portalPlan = Get-ODSWindowsPortalInstallPlan $PSBoundParameters
+    if ($Distro) { $portalPlan.Distro = $Distro }
+    if ($ModelsDirectory) { $portalPlan.ModelsDirectory = $ModelsDirectory }
+    if ($PSBoundParameters.ContainsKey('InferencePort')) { $portalPlan.InferencePort = $InferencePort }
+    Write-Host 'Installing Portal (Pixel/OpenClaw) through Ubuntu/WSL.'
+    $global:LASTEXITCODE = 0
+    & (Join-Path $ScriptDir 'ods/installers/windows.ps1') @portalPlan
+    $portalSucceeded = $?
+    $portalExitCode = $LASTEXITCODE
+    if ($portalExitCode -ne 0) { exit $portalExitCode }
+    if (-not $portalSucceeded) { exit 1 }
+    exit 0
+}
+if ($Distro) { throw '-Distro applies only to the Portal WSL installation.' }
+if ($ModelsDirectory -or $PSBoundParameters.ContainsKey('InferencePort')) { throw '-ModelsDirectory and -InferencePort apply only to the Portal WSL installation.' }
+Write-Warning 'Native Windows mode does not install Portal. Hermes is optional; use the default WSL path for Pixel.'
+$null = $PSBoundParameters.Remove('NativeWindows')
+$null = $PSBoundParameters.Remove('Distro')
 
 # Delegate to Windows installer
 $ODSInstaller = Join-Path (Join-Path (Join-Path $ScriptDir "ods") "installers") "windows" | Join-Path -ChildPath "install-windows.ps1"

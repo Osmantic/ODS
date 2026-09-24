@@ -77,7 +77,7 @@ if ($gpuInfo.Backend -eq "amd") {
         Write-AI "  llama-server will run natively with Vulkan (not in Docker)"
     } else {
         Write-AISuccess "AMD discrete GPU detected"
-        Write-AI "  llama-server will use the Docker Vulkan overlay"
+        Write-AI "  Inference will run on Windows through Lemonade/Vulkan or native llama-server"
     }
 }
 

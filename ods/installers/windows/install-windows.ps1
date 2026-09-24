@@ -447,47 +447,18 @@ if ($dryRun) {
 
                 if ($lemonadeChoice -match "^[Yy]") {
                     Write-AI "Installing AMD Lemonade Server..."
-                    $msiPath = Join-Path $env:TEMP $script:LEMONADE_MSI_FILE
-                    $lemonadeInstallDir = Get-ODSLemonadeUserInstallDir
-                    $lemonadeMsiLog = Join-Path (Join-Path $installDir "logs") "lemonade-msi-install.log"
-                    $dlOk = Invoke-DownloadWithRetry -Url $script:LEMONADE_MSI_URL `
-                        -Destination $msiPath -Label "Downloading Lemonade Server (~3MB)"
-                    if ($dlOk) {
-                        if ([string]::IsNullOrWhiteSpace($lemonadeInstallDir)) {
-                            Write-AIWarn "Could not determine the current user's Lemonade install directory."
-                            Write-AI "  Falling back to llama-server (Vulkan)."
-                        } else {
-                            $lemonadeMsiLogDir = Split-Path -Parent $lemonadeMsiLog
-                            New-Item -ItemType Directory -Path $lemonadeMsiLogDir -Force | Out-Null
-                            Remove-Item -LiteralPath $lemonadeMsiLog -Force -ErrorAction SilentlyContinue
-                            # Keep Lemonade in its supported per-user location. ODS installs from a
-                            # normal PowerShell and must not require an all-users MSI elevation.
-                            $msiArgs = "/i `"$msiPath`" /quiet /norestart INSTALLDIR=`"$lemonadeInstallDir`" /L*V `"$lemonadeMsiLog`""
-                            $msiProc = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -NoNewWindow -PassThru
-                            $_msiExit = $(if ($msiProc) { [int]$msiProc.ExitCode } else { 0 })
-                            if ($_msiExit -eq 0) {
-                                $_resolvedLemonadeExe = Resolve-ODSLemonadeExe -ExecutableName ([string]$amdLemonadeRuntime.windows_executable)
-                                if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
-                                if (Test-Path $script:LEMONADE_EXE) {
-                                    Write-AISuccess "AMD Lemonade Server installed"
-                                    $useLemonade = $true
-                                } else {
-                                    Write-AIWarn "Lemonade MSI completed, but no Lemonade executable was found in the known install roots."
-                                    Write-AI "  Expected per-user location: $lemonadeInstallDir"
-                                    $_candidateSample = @(Get-ODSLemonadeExeCandidatePaths -ExecutableName ([string]$amdLemonadeRuntime.windows_executable) | Select-Object -First 6)
-                                    if ($_candidateSample.Count -gt 0) {
-                                        Write-AI "  Checked paths include: $($_candidateSample -join '; ')"
-                                    }
-                                    Write-AI "  Falling back to llama-server (Vulkan)."
-                                }
-                            } else {
-                                Write-AIWarn "Lemonade MSI exited with code $_msiExit."
-                                Write-AI "  Verbose MSI log: $lemonadeMsiLog"
-                                Write-AI "  Falling back to llama-server (Vulkan)."
-                            }
+                    try {
+                        $installedRuntime = Install-ODSLemonadeRuntime -RootPath $SourceRoot `
+                            -WorkDirectory (Join-Path $installDir 'logs/lemonade-install')
+                        $script:LEMONADE_EXE = $installedRuntime.ExecutablePath
+                        $useLemonade = $installedRuntime.Installed
+                        Write-AISuccess 'AMD Lemonade Server installed'
+                        if ($installedRuntime.RestartRequired) {
+                            Write-AIWarn 'The Lemonade installer requested a Windows restart; runtime readiness will still be checked.'
                         }
-                    } else {
-                        Write-AIWarn "Lemonade download failed. Falling back to llama-server (Vulkan)."
+                    } catch {
+                        Write-AIWarn $_.Exception.Message
+                        Write-AI '  Falling back to llama-server (Vulkan).'
                     }
                 } else {
                     Write-AI "Skipped Lemonade. Using llama-server (Vulkan) instead."

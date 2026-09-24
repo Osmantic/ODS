@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FEATURES_PHASE="$ROOT_DIR/installers/phases/03-features.sh"
 
 run_case() {
-    local selected="$1" source_state="$2"
+    local selected="$1" source_state="$2" hermes_choice="${3:-}"
     local test_root source_root install_root
     test_root="$(mktemp -d)"
     source_root="$test_root/source"
@@ -34,6 +34,8 @@ run_case() {
         ENABLE_WORKFLOWS=false
         ENABLE_RAG=false
         ENABLE_HERMES=false
+        HERMES_EXPLICIT_SELECTION="$hermes_choice"
+        [[ -n "$hermes_choice" ]] && INTERACTIVE=true
         ENABLE_OPENCLAW="$selected"
         ENABLE_OPENCODE=false
         ENABLE_COMFYUI=false
@@ -64,10 +66,17 @@ run_case() {
         bootline() { :; }
         signal() { :; }
         show_phase() { :; }
-        show_install_menu() { :; }
+        show_install_menu() {
+            # Simulate the preset overwriting the explicit CLI agent choice.
+            if [[ "$HERMES_EXPLICIT_SELECTION" == false ]]; then ENABLE_HERMES=true;
+            else ENABLE_HERMES=false; fi
+        }
 
         # shellcheck source=/dev/null
         source "$FEATURES_PHASE" >/dev/null
+        if [[ -n "$hermes_choice" ]]; then
+            [[ "$ENABLE_HERMES" == "$hermes_choice" ]]
+        fi
     )
 
     local expected_suffix unexpected_suffix
@@ -87,5 +96,7 @@ run_case() {
 
 run_case false ""
 run_case true ".disabled"
+run_case false "" false
+run_case false "" true
 
 echo "PASS: feature selection reconciles source and installed compose states"

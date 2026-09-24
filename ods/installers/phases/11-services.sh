@@ -318,6 +318,9 @@ else
     }
 
     _phase11_external_lemonade() {
+        # This predicate selects host placement, including an ODS-owned runtime
+        # on Windows. It does not change the persisted management policy.
+        [[ "${AMD_INFERENCE_RUNTIME_MODE:-}" == "wsl-windows-lemonade" ]] && return 0
         local external managed mode
         external="${LEMONADE_EXTERNAL:-$(_phase11_env_get LEMONADE_EXTERNAL false)}"
         managed="${AMD_INFERENCE_MANAGED:-$(_phase11_env_get AMD_INFERENCE_MANAGED "")}"
@@ -463,6 +466,8 @@ else
     }
 
     _phase11_allow_external_lemonade_firewall() {
+        # Docker Desktop reaches Windows loopback; do not open a Linux port.
+        [[ "${AMD_INFERENCE_RUNTIME_MODE:-}" == "wsl-windows-lemonade" ]] && return 0
         _phase11_external_lemonade || return 0
 
         local network_name="${1:-ods-network}"
@@ -512,7 +517,7 @@ else
             "external ${EXTERNAL_LLM_PROVIDER:-LLM}"
     }
 
-    if [[ "${GPU_BACKEND:-}" == "amd" ]] && ! amd_gpu_runtime_devices_available; then
+    if [[ "${GPU_BACKEND:-}" == "amd" && "${AMD_INFERENCE_RUNTIME_MODE:-}" != "wsl-windows-lemonade" ]] && ! amd_gpu_runtime_devices_available; then
         _amd_missing_devices="$(amd_gpu_missing_devices_csv)"
         if [[ "${GPU_BACKEND_FORCED:-false}" == "true" ]]; then
             ai_bad "GPU_BACKEND=amd was explicitly requested, but required AMD device nodes are missing."
@@ -1213,7 +1218,9 @@ MODELS_INI_EOF
     # installer refuses to launch any potentially stale image.
     _candidate_build_services=(dashboard dashboard-api model-router remote-provider-egress remote-provider-ssh-tunnel ape token-spy privacy-shield brave-search pixel-edge pixel-model-relay pixel-inference)
     [[ "$ENABLE_COMFYUI" == "true" ]] && _candidate_build_services+=(comfyui)
-    [[ "$GPU_BACKEND" == "amd" ]] && _candidate_build_services+=(llama-server)
+    if [[ "$GPU_BACKEND" == "amd" ]] && ! _phase11_external_lemonade; then
+        _candidate_build_services+=(llama-server)
+    fi
     if ! _enabled_compose_services="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --services 2>>"$LOG_FILE")"; then
         ai_bad "Could not resolve compose services before local image builds."
         ai "Inspect compose config with: $(_phase11_compose_command_text) config --services"

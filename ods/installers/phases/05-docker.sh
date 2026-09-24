@@ -219,7 +219,7 @@ fi
 # See: https://github.com/moby/moby/issues — device passthrough regression in 29.3.0
 if command -v docker &>/dev/null && ! $DRY_RUN; then
     _docker_ver="$(_docker_server_version_for_amd_downgrade || echo "0.0.0")"
-    if [[ "$_docker_ver" == 29.3.* ]] && [[ "${GPU_BACKEND:-}" == "amd" ]]; then
+    if [[ "$_docker_ver" == 29.3.* && "${GPU_BACKEND:-}" == "amd" && "${AMD_INFERENCE_RUNTIME_MODE:-}" != "wsl-windows-lemonade" ]]; then
         ai_warn "Docker $_docker_ver has a known bug with AMD GPU device passthrough."
         if ! ods_sudo_available; then
             ai_warn "Cannot downgrade Docker without privileged package access."

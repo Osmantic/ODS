@@ -136,6 +136,9 @@ _phase12_env_get() {
 }
 
 _phase12_external_lemonade() {
+    # Both host placements must prove completion through the managed gateway;
+    # Windows-owned inference has no Linux llama-server container to probe.
+    [[ "${AMD_INFERENCE_RUNTIME_MODE:-}" == "wsl-windows-lemonade" ]] && return 0
     local external managed mode
     external="${LEMONADE_EXTERNAL:-$(_phase12_env_get LEMONADE_EXTERNAL false)}"
     managed="${AMD_INFERENCE_MANAGED:-$(_phase12_env_get AMD_INFERENCE_MANAGED "")}"

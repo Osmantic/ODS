@@ -18,7 +18,7 @@ resolve_installer_target() {
             echo "$SCRIPT_DIR/install-core.sh"
             ;;
         windows)
-            echo "$SCRIPT_DIR/installers/windows/install-windows.ps1"
+            echo "$SCRIPT_DIR/installers/windows.ps1"
             ;;
         macos)
             echo "$SCRIPT_DIR/installers/macos/install-macos.sh"

@@ -78,9 +78,23 @@ setup() {
     assert_output --partial "/install-core.sh"
 }
 
+@test "resolve_installer_target: Windows shell uses the Pixel WSL installer" {
+    export ODS_PLATFORM_OVERRIDE="windows"
+
+    run resolve_installer_target
+    assert_success
+    assert_output --partial "/installers/windows.ps1"
+    refute_output --partial "/windows/install-windows.ps1"
+}
+
 @test "detect_platform: treats non-gnu Linux OSTYPE values as Linux" {
     unset ODS_PLATFORM_OVERRIDE
     OSTYPE="linux"
+    # This case simulates native Linux even when the suite runs inside WSL.
+    grep() {
+        if [[ "$*" == "-qi microsoft /proc/version" ]]; then return 1; fi
+        command grep "$@"
+    }
 
     run detect_platform
     assert_success

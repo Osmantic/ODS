@@ -281,8 +281,11 @@ function New-ODSWslRootCommand([string]$RepoRoot) {
         (ConvertTo-ODSBashArgument "$RepoRoot/installers/lib/path-utils.sh") + " && resolve_install_dir"
 }
 
-function New-ODSWslInstallerCommand([string]$RepoRoot,[string[]]$Arguments,[string]$ResolvedRoot) {
+function New-ODSWslInstallerCommand([string]$RepoRoot,[string[]]$Arguments,[string]$ResolvedRoot,[string]$EnvironmentFile = '') {
     $command="cd -- " + (ConvertTo-ODSBashArgument $RepoRoot) + " && "
+    if ($EnvironmentFile) {
+        $command += 'source lib/safe-env.sh && load_env_file ' + (ConvertTo-ODSBashArgument $EnvironmentFile) + ' && '
+    }
     if ($ResolvedRoot) { $command += "env INSTALL_DIR=" + (ConvertTo-ODSBashArgument $ResolvedRoot) + " " }
     $command += 'bash install-core.sh'
     foreach ($argument in $Arguments) { $command += ' ' + (ConvertTo-ODSBashArgument $argument) }

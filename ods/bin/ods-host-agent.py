@@ -11842,7 +11842,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             restored = load_env(env_path)
             # The running native contract can have a newer context than .env.
             # Restore that proven contract, not the stale configuration hint.
-            if pixel_transaction is not None and runtime_restart_strategy == "windows-lemonade":
+            if pixel_transaction is not None and runtime_restart_strategy in {"windows-lemonade", "wsl-windows-lemonade"}:
                 restored["CTX_SIZE"] = str(pixel_transaction.previous["contextLength"])
                 restored["MAX_CONTEXT"] = restored["CTX_SIZE"]
             return restored
@@ -11851,6 +11851,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             rollback_env = previous_runtime_env()
             if runtime_restart_strategy == "windows-lemonade":
                 _restart_windows_lemonade(rollback_env)
+            elif runtime_restart_strategy == "wsl-windows-lemonade":
+                _stage_wsl_windows_lemonade(rollback_env)
             elif runtime_restart_strategy == "windows-native-llama":
                 _restart_windows_native_llama_server(env_path, rollback_env)
             elif runtime_restart_strategy == "macos-native-llama":
@@ -12195,6 +12197,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 platform.system() == "Linux"
                 and str(gpu_backend).lower() == "amd"
                 and not windows_native_llama
+                and not _is_wsl_windows_lemonade(env_pre)
             ):
                 gpu_assignment_plan = _plan_amd_model_gpu_assignment(
                     env_pre,
@@ -12422,7 +12425,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             env = load_env(env_path)
             _in_container = bool(os.environ.get("ODS_HOST_INSTALL_DIR"))
 
-            if windows_host_lemonade:
+            if _is_wsl_windows_lemonade(env):
+                runtime_restart_strategy = "wsl-windows-lemonade"
+                _stage_wsl_windows_lemonade(env)
+            elif windows_host_lemonade:
                 if windows_lemonade_managed and not windows_lemonade_already_serving:
                     runtime_restart_strategy = "windows-lemonade"
                     _restart_windows_lemonade(env)
@@ -13128,6 +13134,69 @@ def _lemonade_runtime_base_url(env: dict) -> str:
     return f"http://127.0.0.1:{str(env.get('OLLAMA_PORT') or '8080')}"
 
 
+def _is_wsl_windows_lemonade(env: dict) -> bool:
+    return (
+        _is_wsl_linux()
+        and env.get("AMD_INFERENCE_RUNTIME_MODE") == "wsl-windows-lemonade"
+        and env.get("AMD_INFERENCE_RUNTIME") == "lemonade"
+        and env.get("AMD_INFERENCE_LOCATION") == "host"
+        and str(env.get("AMD_INFERENCE_MANAGED", "")).lower() == "true"
+        and str(env.get("GPU_BACKEND", "")).lower() == "amd"
+        and not env.get("EXTERNAL_LLM_URL")
+        and str(env.get("LEMONADE_EXTERNAL", "false")).lower() == "false"
+    )
+
+
+def _wsl_windows_lemonade_request(env: dict, method: str, path: str, *, body=None, timeout=10):
+    from model_switchboard.windows_transport import request_json
+    if not _is_wsl_windows_lemonade(env):
+        raise RuntimeError("Windows runtime management is not enabled for this installation")
+    return request_json(method, path, port=int(env.get("AMD_INFERENCE_PORT") or "8080"),
+                        api_key=str(env.get("LITELLM_LEMONADE_API_KEY") or env.get("LEMONADE_API_KEY") or ""),
+                        body=body, timeout=timeout)
+
+
+def _stage_wsl_windows_lemonade(env: dict) -> None:
+    """Load through the owned runtime API; do not restart a Linux ROCm container."""
+    filename = env.get("GGUF_FILE", "")
+    model_id = _resolve_lemonade_model_id(env, filename)
+    if not model_id:
+        raise RuntimeError("Windows Lemonade cannot see the requested installed model")
+    context = _positive_int(env.get("CTX_SIZE") or env.get("MAX_CONTEXT"))
+    if not context:
+        raise RuntimeError("A positive model context is required")
+    response = _wsl_windows_lemonade_request(env, "POST", "/api/v1/load", body={
+        "model_name": model_id, "ctx_size": context, "llamacpp_backend": "vulkan",
+    }, timeout=300)
+    if response.get("status") not in {"success", "ok"}:
+        raise RuntimeError("Windows Lemonade did not accept the model activation")
+
+
+def _wsl_windows_lemonade_readiness(env: dict, gguf_file: str, model_id: str, *, exact_context: bool) -> dict:
+    health = _wsl_windows_lemonade_request(env, "GET", "/api/v1/health")
+    loaded = health.get("all_models_loaded")
+    entry = _lemonade_loaded_model_entry(loaded, expected_gguf_file=gguf_file, expected_model_id=model_id) if isinstance(loaded, list) else None
+    if not entry or entry.get("device") != "gpu" or not isinstance(entry.get("recipe_options"), dict) or entry["recipe_options"].get("llamacpp_backend") != "vulkan":
+        return {}
+    body = json.dumps(health)
+    expected_context = _positive_int(env.get("CTX_SIZE") or env.get("MAX_CONTEXT"))
+    identity = _lemonade_loaded_model_identity(body, gguf_file, model_id, expected_context)
+    context = _lemonade_loaded_context_length(body, expected_gguf_file=gguf_file, expected_model_id=model_id)
+    if not identity or not context or not expected_context or not _runtime_context_matches_request(
+        context, expected_context, require_exact=exact_context, allow_llama_alignment_padding=False,
+    ):
+        return {}
+    completion = _wsl_windows_lemonade_request(env, "POST", "/api/v1/chat/completions", body={
+        "model": identity, "messages": [{"role": "user", "content": "Reply with ready."}],
+        "max_tokens": 32, "stream": False, "chat_template_kwargs": {"enable_thinking": False},
+    }, timeout=35)
+    if not _meaningful_completion(completion, include_reasoning=False) or not _runtime_model_identity_matches(
+        completion.get("model"), model_id=identity, gguf_file=gguf_file,
+    ):
+        return {}
+    return {"identity": identity, "contextLength": context, "contextVerified": True, "verifiedAt": _iso_now()}
+
+
 def _lemonade_catalog_values(value: object):
     """Yield string leaves from Lemonade checkpoint metadata."""
     if isinstance(value, str):
@@ -13205,6 +13274,9 @@ def _resolve_lemonade_model_id(
     filename = normalized.rsplit("/", 1)[-1]
     if not filename:
         return ""
+    if _is_wsl_windows_lemonade(env):
+        catalog = _wsl_windows_lemonade_request(env, "GET", "/api/v1/models")
+        return _lemonade_catalog_model_id(json.dumps(catalog), filename)
     stem = filename.rsplit(".", 1)[0] if "." in filename else filename
     persisted = str(env.get("LEMONADE_MODEL") or "").strip()
     persisted_matches_target = bool(
@@ -13912,6 +13984,9 @@ def _query_lemonade_runtime_context_length(
     expected_gguf_file: str,
     expected_model_id: str,
 ) -> int | None:
+    if _is_wsl_windows_lemonade(env):
+        health = _wsl_windows_lemonade_request(env, "GET", "/api/v1/health")
+        return _lemonade_loaded_context_length(json.dumps(health), expected_gguf_file=expected_gguf_file, expected_model_id=expected_model_id)
     base_url = _lemonade_runtime_base_url(env)
     if not base_url:
         return None
@@ -14278,6 +14353,11 @@ def _load_registered_lemonade_profile(env: dict, model_id: str, profile: dict) -
     payload = {"model_name": model_id, "save_options": True,
                "ctx_size": int(env.get("CTX_SIZE") or profile["contextLength"]),
                "llamacpp_backend": profile["backend"], "llamacpp_args": " ".join(profile["args"])}
+    if _is_wsl_windows_lemonade(env):
+        response = _wsl_windows_lemonade_request(env, "POST", "/api/v1/load", body=payload, timeout=300)
+        if response.get("status") not in {"success", "ok"}:
+            raise RuntimeError("Windows Lemonade did not accept the registered model profile")
+        return
     headers = {"Content-Type": "application/json"}
     api_key = str(env.get("LITELLM_LEMONADE_API_KEY") or env.get("LEMONADE_API_KEY") or "")
     if api_key:
@@ -14330,6 +14410,23 @@ def _wait_for_model_readiness(
     Legacy callers receive a boolean. Identity callers receive the concrete
     runtime identity. Adapters receive identity, actual context, and proof time.
     """
+    if _is_wsl_windows_lemonade(env):
+        from model_switchboard.windows_transport import WindowsRuntimeTransportError
+        for attempt in range(max(1, attempts)):
+            delay = initial_delay if attempt == 0 else interval
+            if cancel_event is not None:
+                if cancel_event.wait(max(0, delay)):
+                    break
+            elif delay > 0:
+                time.sleep(delay)
+            try:
+                concrete_id = lemonade_model_id or _resolve_lemonade_model_id(env, gguf_file)
+                proof = _wsl_windows_lemonade_readiness(env, gguf_file, concrete_id, exact_context=require_exact_context)
+                if proof:
+                    return proof if return_proof else proof['identity'] if return_identity else True
+            except WindowsRuntimeTransportError:
+                logger.warning("Windows inference readiness incomplete (attempt %d)", attempt + 1)
+        return {} if return_proof else "" if return_identity else False
     gpu_backend = str(env.get("GPU_BACKEND") or "nvidia").lower()
     windows_native_llama = _is_windows_host_llama_server(env)
     is_lemonade = _uses_lemonade_runtime(env)

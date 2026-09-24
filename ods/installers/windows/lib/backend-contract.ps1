@@ -171,6 +171,50 @@ function Resolve-ODSLemonadeExe {
     return $null
 }
 
+function Install-ODSLemonadeRuntime {
+    <# Reuse the declared Windows runtime for both native and Pixel/WSL installs. #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$RootPath,
+        [Parameter(Mandatory = $true)][string]$WorkDirectory,
+        [switch]$DryRun
+    )
+    $runtime = Get-ODSAmdLemonadeRuntime -RootPath $RootPath
+    $executable = Resolve-ODSLemonadeExe -ExecutableName ([string]$runtime.windows_executable)
+    if ($executable) {
+        return [pscustomobject]@{ ExecutablePath=$executable; Installed=$true; Reused=$true; RestartRequired=$false }
+    }
+    if ($DryRun) {
+        return [pscustomobject]@{ ExecutablePath=$null; Installed=$false; Reused=$false; RestartRequired=$false }
+    }
+    $version = [string]$runtime.windows_version
+    $filename = [string]$runtime.windows_msi_file
+    if ($version -notmatch '^\d+\.\d+\.\d+$' -or $filename -notmatch '^[A-Za-z0-9._-]+\.msi$') {
+        throw 'Invalid Windows Lemonade package contract.'
+    }
+    $installPath = Get-ODSLemonadeUserInstallDir
+    if ([string]::IsNullOrWhiteSpace($installPath)) { throw 'Cannot resolve the per-user Lemonade installation directory.' }
+    New-Item -ItemType Directory -Path $WorkDirectory -Force | Out-Null
+    $attempt = [guid]::NewGuid().ToString('N')
+    $package = Join-Path $WorkDirectory "lemonade-$attempt.msi"
+    $log = Join-Path $WorkDirectory "lemonade-$attempt.log"
+    $url = "https://github.com/lemonade-sdk/lemonade/releases/download/v$version/$filename"
+    if (-not (Invoke-DownloadWithRetry -Url $url -Destination $package -Label 'Downloading Lemonade Server')) {
+        throw 'Lemonade download failed; the MSI was not executed.'
+    }
+    $arguments = "/i `"$package`" /quiet /norestart INSTALLDIR=`"$installPath`" /L*V `"$log`""
+    $result = Start-Process -FilePath msiexec.exe -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+    if ($null -eq $result -or $result.ExitCode -notin @(0, 3010)) {
+        $code = if ($null -eq $result) { 'unknown' } else { [string]$result.ExitCode }
+        throw "Lemonade MSI failed (exit $code). Diagnostic log: $log"
+    }
+    $executable = Resolve-ODSLemonadeExe -ExecutableName ([string]$runtime.windows_executable)
+    if (-not $executable) { throw "Lemonade MSI finished without a discoverable executable. Diagnostic log: $log" }
+    return [pscustomobject]@{
+        ExecutablePath=$executable; Installed=$true; Reused=$false; RestartRequired=($result.ExitCode -eq 3010)
+    }
+}
+
 function Get-ODSLemonadeExecutableVersion {
     <#
     .SYNOPSIS

@@ -97,6 +97,13 @@ else
     fi
 fi
 
+# Preserve an explicit agent choice across the interactive stack presets. The
+# Windows Portal entrypoint supplies --no-hermes so the Full Stack default must
+# not silently install a different agent alongside Pixel.
+if [[ "${HERMES_EXPLICIT_SELECTION:-}" == true || "${HERMES_EXPLICIT_SELECTION:-}" == false ]]; then
+    ENABLE_HERMES="$HERMES_EXPLICIT_SELECTION"
+fi
+
 # Tier safety net: disable ComfyUI on Tier 0/1 in non-interactive mode.
 # Interactive mode has its own tier checks in the menu — this catches --non-interactive.
 if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]]; then
