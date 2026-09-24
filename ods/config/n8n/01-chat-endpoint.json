@@ -2,27 +2,186 @@
   "name": "Chat API Endpoint",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## Chat API Endpoint\n\nExpose a bounded OpenAI-compatible chat facade backed by the local llama-server:\n```bash\ncurl -X POST http://localhost:5678/webhook/ods-chat-completions \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Explain local-first AI in one sentence.\"}]}'\n```\n\nAccepted roles are `system`, `user`, and `assistant`. Requests are limited to 50 messages, 16,000 characters per message, 32,000 characters total, and 4,096 output tokens. Streaming and tool calls are intentionally outside this response-node workflow; use the direct ODS API for those features.",
+        "height": 540,
+        "width": 580
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [-220, 20]
     },
     {
       "parameters": {
-        "content": "## Chat API Endpoint\n\nThis is a template workflow for REST API chat completions.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "httpMethod": "POST",
+        "path": "ods-chat-completions",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "webhook-chat",
+      "name": "Receive Chat Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [420, 260],
+      "webhookId": "89f37ee0-d7bd-48ac-a099-c7b6618ee353"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || {};\nconst messages = body.messages;\nconst allowedRoles = new Set(['system', 'user', 'assistant']);\n\nfunction invalid(error) {\n  return [{ json: { ok: false, statusCode: 400, error } }];\n}\n\nif (!Array.isArray(messages) || messages.length < 1 || messages.length > 50) {\n  return invalid('messages must contain between 1 and 50 entries.');\n}\nif (body.stream === true) {\n  return invalid('streaming is not supported by this workflow endpoint.');\n}\n\nlet totalCharacters = 0;\nconst cleanMessages = [];\nfor (const message of messages) {\n  if (!message || typeof message !== 'object' || Array.isArray(message)) {\n    return invalid('every message must be an object.');\n  }\n  if (!allowedRoles.has(message.role)) {\n    return invalid(`unsupported message role: ${String(message.role)}`);\n  }\n  if (typeof message.content !== 'string' || !message.content.trim()) {\n    return invalid('every message must contain non-empty text content.');\n  }\n  if (message.content.length > 16000) {\n    return invalid('a message exceeds the 16000-character limit.');\n  }\n  totalCharacters += message.content.length;\n  if (totalCharacters > 32000) {\n    return invalid('message content exceeds the 32000-character request limit.');\n  }\n  cleanMessages.push({ role: message.role, content: message.content });\n}\n\nconst model = String(body.model || 'local-model').trim();\nif (!model || model.length > 200) {\n  return invalid('model must contain between 1 and 200 characters.');\n}\nconst temperature = body.temperature ?? 0.7;\nif (typeof temperature !== 'number' || !Number.isFinite(temperature) || temperature < 0 || temperature > 2) {\n  return invalid('temperature must be a number between 0 and 2.');\n}\nconst maxTokens = body.max_tokens ?? 512;\nif (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 4096) {\n  return invalid('max_tokens must be an integer between 1 and 4096.');\n}\n\nreturn [{ json: {\n  ok: true,\n  statusCode: 200,\n  model,\n  messages: cleanMessages,\n  temperature,\n  max_tokens: maxTokens,\n} }];"
+      },
+      "id": "code-validate",
+      "name": "Validate Chat Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 260]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "request-valid",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-request-valid",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [900, 260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.model, messages: $json.messages, temperature: $json.temperature, max_tokens: $json.max_tokens, stream: false }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "http-completion",
+      "name": "Complete With llama-server",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 180],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json || {};\nconst request = $('Validate Chat Request').first().json;\nconst choice = Array.isArray(response.choices) ? response.choices[0] : null;\nconst content = choice?.message?.content;\n\nif (typeof content !== 'string' || !content.trim()) {\n  return [{ json: {\n    ok: false,\n    statusCode: 502,\n    error: 'llama-server returned no assistant message.',\n  } }];\n}\n\nconst tokenCount = (value) => Number.isInteger(value) && value >= 0 ? value : null;\nconst usage = response.usage && typeof response.usage === 'object'\n  ? {\n      prompt_tokens: tokenCount(response.usage.prompt_tokens),\n      completion_tokens: tokenCount(response.usage.completion_tokens),\n      total_tokens: tokenCount(response.usage.total_tokens),\n    }\n  : null;\n\nreturn [{ json: {\n  ok: true,\n  statusCode: 200,\n  completion: {\n    id: typeof response.id === 'string' ? response.id : `chatcmpl-${Date.now()}`,\n    object: 'chat.completion',\n    created: Number.isInteger(response.created) ? response.created : Math.floor(Date.now() / 1000),\n    model: typeof response.model === 'string' ? response.model : request.model,\n    choices: [{\n      index: Number.isInteger(choice.index) ? choice.index : 0,\n      message: { role: 'assistant', content },\n      finish_reason: typeof choice.finish_reason === 'string' ? choice.finish_reason : null,\n    }],\n    usage,\n  },\n} }];"
+      },
+      "id": "code-normalize",
+      "name": "Normalize Chat Completion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1380, 180]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "completion-ready",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-completion-ready",
+      "name": "Completion Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1620, 180]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.completion) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-success",
+      "name": "Return Chat Completion",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1860, 100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: { message: $json.error, type: $json.statusCode === 400 ? 'invalid_request_error' : 'upstream_error' } }) }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode || 500 }}"
+        }
+      },
+      "id": "respond-error",
+      "name": "Return Chat Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1620, 420]
     }
   ],
-  "connections": {},
+  "connections": {
+    "Receive Chat Request": {
+      "main": [[{"node": "Validate Chat Request", "type": "main", "index": 0}]]
+    },
+    "Validate Chat Request": {
+      "main": [[{"node": "Request Valid?", "type": "main", "index": 0}]]
+    },
+    "Request Valid?": {
+      "main": [
+        [{"node": "Complete With llama-server", "type": "main", "index": 0}],
+        [{"node": "Return Chat Error", "type": "main", "index": 0}]
+      ]
+    },
+    "Complete With llama-server": {
+      "main": [[{"node": "Normalize Chat Completion", "type": "main", "index": 0}]]
+    },
+    "Normalize Chat Completion": {
+      "main": [[{"node": "Completion Ready?", "type": "main", "index": 0}]]
+    },
+    "Completion Ready?": {
+      "main": [
+        [{"node": "Return Chat Completion", "type": "main", "index": 0}],
+        [{"node": "Return Chat Error", "type": "main", "index": 0}]
+      ]
+    }
+  },
   "settings": {
     "executionOrder": "v1"
   },
