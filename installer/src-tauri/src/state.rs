@@ -13,6 +13,8 @@ pub struct InstallState {
     pub error: Option<String>,
     pub progress_pct: u8,
     pub progress_message: String,
+    #[serde(default = "legacy_progress_phase")]
+    pub progress_phase: String,
     pub reboot_pending: bool,
 }
 
@@ -58,6 +60,7 @@ impl Default for InstallState {
             error: None,
             progress_pct: 0,
             progress_message: String::new(),
+            progress_phase: "starting".into(),
             reboot_pending: false,
         }
     }
@@ -118,5 +121,49 @@ fn dirs_next() -> PathBuf {
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
                 PathBuf::from(home).join(".local/share")
             })
+    }
+}
+
+fn legacy_progress_phase() -> String {
+    "installing".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_state_without_progress_phase_remains_readable() {
+        let json = r#"{
+            "phase": "installing",
+            "install_dir": "/tmp/ods",
+            "detected_gpu": null,
+            "selected_tier": 1,
+            "selected_features": [],
+            "error": null,
+            "progress_pct": 42,
+            "progress_message": "Working",
+            "reboot_pending": false
+        }"#;
+
+        let state: InstallState = serde_json::from_str(json).unwrap();
+
+        assert_eq!(state.progress_phase, "installing");
+        assert_eq!(state.progress_pct, 42);
+    }
+
+    #[test]
+    fn progress_phase_round_trips_in_new_state() {
+        let state = InstallState {
+            progress_phase: "images".into(),
+            progress_pct: 48,
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: InstallState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.progress_phase, "images");
+        assert_eq!(restored.progress_pct, 48);
     }
 }

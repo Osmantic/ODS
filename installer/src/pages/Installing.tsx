@@ -10,12 +10,22 @@ interface Props {
 }
 
 const PHASE_LABELS: Record<string, string> = {
+  download: "Downloading ODS",
+  configuration: "Configuring installation",
+  installing: "Starting installer",
   preflight: "Running preflight checks",
   detection: "Detecting hardware",
+  features: "Selecting features",
+  requirements: "Installing system dependencies",
   docker: "Setting up Docker",
+  directories: "Preparing installation directory",
+  devtools: "Installing development tools",
   images: "Downloading container images",
+  offline: "Configuring offline mode",
+  "amd-tuning": "Tuning AMD GPU settings",
   services: "Starting services",
   health: "Checking service health",
+  summary: "Finishing up",
   complete: "Finishing up",
 };
 

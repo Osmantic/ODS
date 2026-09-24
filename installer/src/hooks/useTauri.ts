@@ -79,6 +79,7 @@ export interface InstallState {
   error: string | null;
   progress_pct: number;
   progress_message: string;
+  progress_phase: string;
   reboot_pending: boolean;
 }
 
