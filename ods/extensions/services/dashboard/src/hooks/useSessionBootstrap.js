@@ -47,9 +47,17 @@ export function useSessionBootstrap(enabled = true) {
         if (controller.signal.aborted) return
         if (verify.ok) return  // session already present
 
-        // 401 (or any non-2xx, e.g. 503 if dashboard-api is mid-restart) —
-        // try to mint a fresh session. nginx injects the API-key Authorization
-        // header, so the POST is authenticated automatically.
+        // Only an explicit authentication rejection means the browser needs
+        // a new cookie. A 5xx response can mean dashboard-api is restarting or
+        // its signer is unavailable; POSTing in that state turns one failed
+        // read into a duplicate mutation and obscures the original outage.
+        if (verify.status !== 401) {
+          console.warn('[ods-session] verify-session returned', verify.status)
+          return
+        }
+
+        // 401 — try to mint a fresh session. nginx injects the API-key
+        // Authorization header, so the POST is authenticated automatically.
         const mint = await fetch('/api/auth/admin-session', {
           method: 'POST',
           credentials: 'same-origin',
