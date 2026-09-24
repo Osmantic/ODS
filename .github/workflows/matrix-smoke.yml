@@ -288,6 +288,47 @@ jobs:
       - name: Atomic Environment Write Tests
         run: /bin/bash tests/test-atomic-env-writes.sh
 
+      - name: Set up Python for Compose resolver contracts
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Compose resolver dependencies
+        run: python3 -m pip install "PyYAML>=6.0,<7.0"
+
+      - name: Resolve modern Bash for macOS runtime contracts
+        run: |
+          for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+            if [[ -x "$candidate" ]]; then
+              echo "ODS_TEST_BASH=$candidate" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          brew install bash
+          candidate="$(brew --prefix)/bin/bash"
+          [[ -x "$candidate" ]]
+          echo "ODS_TEST_BASH=$candidate" >> "$GITHUB_ENV"
+
+      - name: macOS installer and CLI behavioral contracts
+        run: |
+          tests=(
+            tests/test-macos-bootstrap-resume.sh
+            tests/test-macos-cli-mode-routing.sh
+            tests/test-macos-cli-update-verification.sh
+            tests/test-macos-cloud-resolver.sh
+            tests/test-macos-compose-image-cache.sh
+            tests/test-macos-config-show-secret-mask.sh
+            tests/test-macos-direct-bind-bridge.sh
+            tests/test-macos-env-quote-strip.sh
+            tests/test-macos-host-agent-verification.sh
+            tests/test-macos-installer-transitions.sh
+            tests/test-macos-native-llama-launch-cwd.sh
+          )
+          for test_file in "${tests[@]}"; do
+            echo "=== ${test_file} ==="
+            "$ODS_TEST_BASH" "$test_file"
+          done
+
       - name: Bash 3.2 syntax check (catches declare -g, associative arrays, etc.)
         run: |
           echo "=== Checking installer scripts for Bash 3.2 compatibility ==="

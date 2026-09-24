@@ -281,74 +281,117 @@ assert data["agents"]["defaults"]["model"]["primary"] == "local-llama/local.gguf
 PY
 pass "OpenCode and OpenClaw routes transition without secret output"
 
-# Fake the pinned Perplexica provider/config API, including its fresh state with
-# no OpenAI provider, then exercise cloud -> local updates through production code.
-cat > "$TMP_DIR/perplexica-server.py" <<'PY'
-import json, sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-values = {
-    "version": 1,
-    "setupComplete": False,
-    "preferences": {},
-    "modelProviders": [{
-        "id": "transformers-1", "name": "Transformers", "type": "transformers",
-        "config": {}, "chatModels": [],
-        "embeddingModels": [{"key": "Xenova/all-MiniLM-L6-v2", "name": "all-MiniLM-L6-v2"}],
-    }],
+# Fake the pinned Perplexica provider/config API at the Python HTTP boundary,
+# including its fresh state with no OpenAI provider. Hosted macOS runners do
+# not reliably allow an unsigned fixture process to bind a localhost listener;
+# sitecustomize keeps the production request code intact without that socket.
+PERPLEXICA_FIXTURE_STATE="$TMP_DIR/perplexica-state.json"
+PERPLEXICA_FIXTURE_PORT=39999
+mkdir -p "$TMP_DIR/perplexica-fixture"
+cat > "$PERPLEXICA_FIXTURE_STATE" <<'JSON'
+{
+  "version": 1,
+  "setupComplete": false,
+  "preferences": {},
+  "modelProviders": [{
+    "id": "transformers-1",
+    "name": "Transformers",
+    "type": "transformers",
+    "config": {},
+    "chatModels": [],
+    "embeddingModels": [{
+      "key": "Xenova/all-MiniLM-L6-v2",
+      "name": "all-MiniLM-L6-v2"
+    }]
+  }]
 }
+JSON
+cat > "$TMP_DIR/perplexica-fixture/sitecustomize.py" <<'PY'
+import json
+import os
+from pathlib import Path
+from urllib.parse import urlsplit
+import urllib.request
 
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *_):
-        pass
-    def send_json(self, value, status=200):
-        body = json.dumps(value).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-    def body(self):
-        return json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
-    def do_GET(self):
-        if self.path == "/api/config":
-            self.send_json({"values": values, "fields": {}})
-        else:
-            self.send_json({}, 404)
-    def do_POST(self):
-        body = self.body()
-        if self.path == "/api/providers":
-            provider = {"id": "ods-openai-1", "chatModels": [], "embeddingModels": [], **body}
-            values["modelProviders"].append(provider)
-            self.send_json({"provider": provider})
-        elif self.path == "/api/config":
-            values[body["key"]] = body["value"]
-            self.send_json({"message": "ok"})
-        elif self.path == "/api/config/setup-complete":
-            values["setupComplete"] = True
-            self.send_json({"message": "ok"})
-        elif self.path.endswith("/models"):
-            provider = next(p for p in values["modelProviders"] if p["id"] in self.path)
-            provider["chatModels"].append({"key": body["key"], "name": body["name"]})
-            self.send_json({"message": "ok"})
-        else:
-            self.send_json({}, 404)
-    def do_PATCH(self):
-        body = self.body()
-        provider = next(p for p in values["modelProviders"] if p["id"] in self.path)
+_real_urlopen = urllib.request.urlopen
+_state_path = Path(os.environ["PERPLEXICA_FIXTURE_STATE"])
+_fixture_port = int(os.environ["PERPLEXICA_FIXTURE_PORT"])
+
+
+class FixtureResponse:
+    def __init__(self, value):
+        self._body = json.dumps(value).encode()
+        self.status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def fixture_urlopen(request, *args, **kwargs):
+    url = request.full_url if hasattr(request, "full_url") else str(request)
+    parsed = urlsplit(url)
+    if parsed.hostname != "localhost" or parsed.port != _fixture_port:
+        return _real_urlopen(request, *args, **kwargs)
+
+    values = json.loads(_state_path.read_text(encoding="utf-8"))
+    method = request.get_method()
+    body = json.loads(request.data or b"{}")
+    changed = False
+
+    if method == "GET" and parsed.path == "/api/config":
+        response = {"values": values, "fields": {}}
+    elif method == "POST" and parsed.path == "/api/providers":
+        provider = {
+            "id": "ods-openai-1",
+            "chatModels": [],
+            "embeddingModels": [],
+            **body,
+        }
+        values["modelProviders"].append(provider)
+        response = {"provider": provider}
+        changed = True
+    elif method == "POST" and parsed.path == "/api/config":
+        values[body["key"]] = body["value"]
+        response = {"message": "ok"}
+        changed = True
+    elif method == "POST" and parsed.path == "/api/config/setup-complete":
+        values["setupComplete"] = True
+        response = {"message": "ok"}
+        changed = True
+    elif method == "POST" and parsed.path.endswith("/models"):
+        provider_id = parsed.path.split("/")[3]
+        provider = next(p for p in values["modelProviders"] if p["id"] == provider_id)
+        provider["chatModels"].append({"key": body["key"], "name": body["name"]})
+        response = {"message": "ok"}
+        changed = True
+    elif method == "PATCH" and parsed.path.startswith("/api/providers/"):
+        provider_id = parsed.path.split("/")[3]
+        provider = next(p for p in values["modelProviders"] if p["id"] == provider_id)
         provider["name"] = body["name"]
         provider["config"] = body["config"]
-        self.send_json({"provider": provider})
+        response = {"provider": provider}
+        changed = True
+    else:
+        raise AssertionError(f"unexpected Perplexica request: {method} {parsed.path}")
 
-server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-open(sys.argv[1], "w", encoding="ascii").write(str(server.server_port))
-server.serve_forever()
+    if changed:
+        _state_path.write_text(json.dumps(values), encoding="utf-8")
+    return FixtureResponse(response)
+
+
+urllib.request.urlopen = fixture_urlopen
 PY
-"$python_cmd" "$TMP_DIR/perplexica-server.py" "$TMP_DIR/perplexica.port" &
-SERVER_PID=$!
-for _ in $(seq 1 50); do [[ -s "$TMP_DIR/perplexica.port" ]] && break; sleep 0.1; done
-[[ -s "$TMP_DIR/perplexica.port" ]] || fail "Perplexica fixture did not start"
-perplexica_port="$(cat "$TMP_DIR/perplexica.port")"
+export PERPLEXICA_FIXTURE_STATE PERPLEXICA_FIXTURE_PORT
+export PYTHONPATH="$TMP_DIR/perplexica-fixture${PYTHONPATH:+:$PYTHONPATH}"
+perplexica_port="$PERPLEXICA_FIXTURE_PORT"
+
+# Exercise fresh cloud configuration followed by a local-model transition.
 perplexica_secret="sk-perplexica-transition-secret"
 perplexica_output="$(configure_perplexica "$perplexica_port" default \
     http://litellm:4000 "$perplexica_secret" 2>&1)" \
@@ -357,9 +400,9 @@ perplexica_output="$(configure_perplexica "$perplexica_port" default \
 configure_perplexica "$perplexica_port" local.gguf \
     http://host.docker.internal:8080 no-key >/dev/null \
     || fail "Perplexica cloud-to-local transition failed"
-"$python_cmd" - "$perplexica_port" <<'PY'
-import json, sys, urllib.request
-data = json.load(urllib.request.urlopen(f"http://127.0.0.1:{sys.argv[1]}/api/config"))["values"]
+"$python_cmd" - "$PERPLEXICA_FIXTURE_STATE" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
 providers = [p for p in data["modelProviders"] if p["type"] == "openai"]
 assert len(providers) == 1
 provider = providers[0]
