@@ -1,11 +1,24 @@
 import { act, renderHook } from '@testing-library/react'
 import useExtensionInstallation, { advanceCatalogInstallation } from './useExtensionInstallation'
+import { catalogInstallCommand } from '../components/catalogInstallCommand'
 
 const receipt = (state, overrides = {}) => ({schemaVersion: 1, extensionId: 'demo', state, dispatched: state === 'pending',
   plan: {extensionId: 'demo', steps: [{extensionId: 'demo', action: state === 'succeeded' ? 'none' : 'install',
     status: state === 'succeeded' ? 'enabled' : 'not_installed'}]}, ...overrides})
 const response = value => ({ok: true, json: async () => value})
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+test('the reported inline install request dispatches the catalog coordinator once', async () => {
+  const fetcher = vi.fn().mockResolvedValue(response(receipt('succeeded')))
+  vi.stubGlobal('fetch', fetcher)
+  const view = renderHook(() => useExtensionInstallation('chat'))
+  await act(async () => view.result.current.start(
+    catalogInstallCommand('ola, instale pra mim /extensions @demo')))
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  expect(fetcher.mock.calls[0][0]).toBe('/api/extensions/demo/install-next')
+  expect(view.result.current.state).toMatchObject({target: 'demo', state: 'succeeded'})
+  view.unmount()
+})
 
 test('advances server-owned dependency steps sequentially until verified readiness', async () => {
   vi.useFakeTimers()
