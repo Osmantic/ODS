@@ -1,11 +1,11 @@
 services:
   chromadb:
-    image: chromadb/chroma:1.5.3
+    image: chromadb/chroma:1.5.3@sha256:cfd193653bd61076610730a09acae34ab85b5b6b1f5db4d944c17b5e8453658d
     container_name: ods-chromadb
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${CHROMADB_PORT:-8000}:8000"
     volumes:
-      - ./data/chromadb:/chromadb
+      - ./data/chromadb:/data
     environment:
       - CHROMA_DB_ANSI_COLOR_ENABLED=true
       - LLM_API_URL=${LLM_API_URL:-http://localhost:8000}
