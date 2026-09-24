@@ -9312,6 +9312,13 @@ export function createToolLoopGuard({
         isDeepStrictEqual(syntaxExecution.params, pendingToolRun.executedParams)) {
       pendingToolRun.pythonSyntaxGuidance = pythonSyntaxGuidance(pendingToolRun.selectedParams, syntaxExecution.result);
       pendingToolRun.pythonSyntaxExitCode = syntaxExecution.result?.details?.exitCode;
+      const completed = syntaxExecution.result?.details;
+      if (completed?.status === 'completed' && Number.isSafeInteger(completed.exitCode) &&
+          completed.exitCode >= 0 && completed.exitCode <= 255 &&
+          !Object.hasOwn(completed, 'sessionId')) {
+        pendingToolRun.execCompletionGuidance = `[ODS Pixel execution] Exec returned completed with exit code ${completed.exitCode}. ` +
+          'This result has no background session ID. Use the returned output; do not invent a session ID or poll a PID.';
+      }
     }
     if (completedExecution && pendingToolRun?.runId === runId &&
         pendingToolRun.selectedToolName === 'exec' && pendingToolRun.transport === toolName) {
@@ -10432,7 +10439,7 @@ export function createToolLoopGuard({
     const compactVerification = compactCleanVerificationResult(message, pending);
     const syntaxReceipt = pending?.transport === 'exec' ? message
       : pending?.transport === 'tool_call' ? validatedToolSearchEnvelope(message.details, 'exec', 'core')?.result : undefined;
-    const syntaxGuidance = pending?.pythonSyntaxGuidance &&
+    const executionGuidance = (pending?.pythonSyntaxGuidance || pending?.execCompletionGuidance) &&
       syntaxReceipt?.details?.status === 'completed' &&
       syntaxReceipt.details.exitCode === pending.pythonSyntaxExitCode &&
       message.role === 'toolResult' && message.toolName === pending.transport &&
@@ -10447,7 +10454,7 @@ export function createToolLoopGuard({
       (!event?.toolCallId || event.toolCallId === toolCallId) &&
       (!context?.runId || context.runId === pending.runId) &&
       (!event?.runId || event.runId === pending.runId)
-      ? pending.pythonSyntaxGuidance : undefined;
+      ? (pending.pythonSyntaxGuidance ?? (!Object.hasOwn(syntaxReceipt.details, 'sessionId') ? pending.execCompletionGuidance : undefined)) : undefined;
     const sandboxPathCorrection = pending?.sandboxPathCorrection &&
       message.role === 'toolResult' && message.toolName === pending.transport &&
       (!message.toolCallId || message.toolCallId === toolCallId) &&
@@ -10605,7 +10612,7 @@ export function createToolLoopGuard({
       !nativeFetchGuidance &&
       !previewStageInstruction &&
       !sandboxPathCorrection &&
-      !syntaxGuidance
+      !executionGuidance
     ) {
       return undefined;
     }
@@ -10623,9 +10630,9 @@ export function createToolLoopGuard({
     }
     if (sandboxPathCorrection) content.push({type:'text',text:sandboxPathCorrection});
     if (researchBudgetGuidance) content.push({type:'text',text:researchBudgetGuidance});
-    if (syntaxGuidance && !content.some(block => block?.type === 'text' &&
-        /\[ODS Pixel (?:repair|Python syntax)\]/.test(block.text)))
-      content.push({type:'text',text:syntaxGuidance});
+    if (executionGuidance && !content.some(block => block?.type === 'text' &&
+        /\[ODS Pixel (?:repair|Python syntax|execution)\]/.test(block.text)))
+      content.push({type:'text',text:executionGuidance});
     if (previewStageInstruction) {
       content.push({ type: "text", text: previewStageInstruction });
     }
