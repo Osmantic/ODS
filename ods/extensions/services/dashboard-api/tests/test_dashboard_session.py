@@ -170,7 +170,15 @@ def test_password_recovery_revokes_old_sessions_and_outstanding_links(test_clien
     assert _login(test_client, password="my replacement passphrase").status_code == 200
 
 
-@pytest.mark.parametrize("password", [None, 123, "short", "x" * 129])
+@pytest.mark.parametrize("password", ["a", "short", "x" * 11, "x" * 128])
+def test_owner_can_choose_any_nonempty_password(test_client, password):
+    result = test_client.post("/api/auth/dashboard-session/password", headers=test_client.auth_headers,
+                              json={"password": password})
+    assert result.status_code == 200
+    assert _login(test_client, password=password).status_code == 200
+
+
+@pytest.mark.parametrize("password", [None, 123, "", "x" * 129])
 def test_password_policy_preserves_existing_credential(test_client, password):
     dashboard_password.save("existing long passphrase")
     before = dashboard_password.PASSWORD_FILE.read_bytes()

@@ -194,7 +194,7 @@ function SignInScreen({ message, onSubmit, setup = false, onCancel = null }) {
   const submit = async (event) => {
     event.preventDefault()
     if (busy || !password) return
-    if (setup && (password.length < 12 || password.length > 128)) { setValidation('Use 12 to 128 characters. A memorable passphrase works well.'); return }
+    if (setup && password.length > 128) { setValidation('Use up to 128 characters.'); return }
     if (setup && password !== confirmation) { setValidation('The passwords do not match.'); return }
     setValidation('')
     setBusy(true)
@@ -209,7 +209,7 @@ function SignInScreen({ message, onSubmit, setup = false, onCancel = null }) {
         <form className="ods-signin-card" onSubmit={submit} aria-labelledby="ods-signin-title">
           <ODSLogo />
           <h1 id="ods-signin-title">{setup ? 'Choose your password' : 'Sign in to ODS'}</h1>
-          <p className="ods-signin-lede">{setup ? 'Use a memorable passphrase to sign in on your devices.' : 'Welcome back. Enter your password to continue.'}</p>
+          <p className="ods-signin-lede">{setup ? 'Choose a password to sign in on your devices.' : 'Welcome back. Enter your password to continue.'}</p>
           <div className="ods-signin-field">
             <input
               type="password"

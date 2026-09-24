@@ -139,6 +139,22 @@ describe('DashboardSignInGate', () => {
 describe('password setup and recovery', () => {
   afterEach(() => { vi.restoreAllMocks(); window.history.replaceState(null, '', '/') })
 
+  it('lets the owner save a one-character password but requires a nonempty value', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({ signedIn: true, session: false, passwordConfigured: false }))
+      .mockResolvedValueOnce(json({ signedIn: true, passwordConfigured: true }))
+    window.fetch = fetchMock
+    renderGate()
+    const password = await screen.findByLabelText('New password')
+    const save = screen.getByRole('button', { name: 'Save password' })
+    expect(save).toBeDisabled()
+    fireEvent.change(password, { target: { value: 'a' } })
+    expect(save).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'a' } })
+    fireEvent.click(save)
+    expect(await screen.findByText('Dashboard content')).toBeInTheDocument()
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ password: 'a' })
+  })
+
   it('lets the local owner choose and confirm a password before continuing', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(json({ signedIn: true, session: false, passwordConfigured: false }))
       .mockResolvedValueOnce(json({ signedIn: true, passwordConfigured: true }))
