@@ -5,6 +5,7 @@
 #
 # Usage:
 #   scripts/extension-runtime-check.sh [ODS_ROOT]
+#   scripts/extension-runtime-check.sh [--service ID ...] [ODS_ROOT]
 #   ODS_ROOT defaults to the repository root (parent of scripts/).
 #
 # Environment:
@@ -16,7 +17,32 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ODS_ROOT="$(cd "${1:-$ROOT_DIR}" && pwd)"
+ROOT_ARG=""
+TARGET_SERVICES=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --service)
+            [[ -n "${2:-}" ]] || { echo "ERROR: --service requires an extension id" >&2; exit 2; }
+            [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || { echo "ERROR: invalid extension id: $2" >&2; exit 2; }
+            TARGET_SERVICES+=("$2")
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: extension-runtime-check.sh [--service ID ...] [ODS_ROOT]"
+            exit 0
+            ;;
+        --*)
+            echo "ERROR: unknown option: $1" >&2
+            exit 2
+            ;;
+        *)
+            [[ -z "$ROOT_ARG" ]] || { echo "ERROR: multiple ODS roots provided" >&2; exit 2; }
+            ROOT_ARG="$1"
+            shift
+            ;;
+    esac
+done
+ODS_ROOT="$(cd "${ROOT_ARG:-$ROOT_DIR}" && pwd)"
 export SCRIPT_DIR="$ODS_ROOT"
 
 RED='\033[0;31m'
@@ -47,6 +73,26 @@ fi
 sr_load
 sr_resolve_ports
 
+target_selected() {
+    local sid="$1" target
+    [[ ${#TARGET_SERVICES[@]} -eq 0 ]] && return 0
+    for target in "${TARGET_SERVICES[@]}"; do
+        [[ "$sid" == "$target" ]] && return 0
+    done
+    return 1
+}
+
+for target in "${TARGET_SERVICES[@]}"; do
+    found=false
+    for sid in "${SERVICE_IDS[@]}"; do
+        [[ "$sid" == "$target" ]] && found=true && break
+    done
+    if [[ "$found" != "true" ]]; then
+        warn "Unknown extension id: $target"
+        exit 2
+    fi
+done
+
 if [[ ${#SERVICE_IDS[@]} -eq 0 ]]; then
     info "No services in registry — nothing to check"
     exit 0
@@ -68,9 +114,14 @@ command -v curl >/dev/null 2>&1 && HAVE_CURL=true
 strict="${EXTENSION_RUNTIME_CHECK_STRICT:-0}"
 had_health_fail=0
 
-info "Extension runtime check (non-core, compose enabled) — root: $ODS_ROOT"
+if [[ ${#TARGET_SERVICES[@]} -gt 0 ]]; then
+    info "Extension runtime check — target(s): ${TARGET_SERVICES[*]} — root: $ODS_ROOT"
+else
+    info "Extension runtime check (non-core, compose enabled) — root: $ODS_ROOT"
+fi
 
 for sid in "${SERVICE_IDS[@]}"; do
+    target_selected "$sid" || continue
     svc_category="${SERVICE_CATEGORIES[$sid]:-optional}"
     [[ "$svc_category" == "core" ]] && continue
 
