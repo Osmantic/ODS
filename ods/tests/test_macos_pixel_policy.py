@@ -268,4 +268,4 @@ def test_system_python_runtime_is_selected_without_ambient_sdk_override(monkeypa
     if expected is None:
         with pytest.raises(PolicyError): policy.system_python_readable_paths()
     else:
-        assert policy.system_python_readable_paths() == expected
+        assert policy.system_python_readable_paths() == (str(Path(expected[0])), *expected[1:])
