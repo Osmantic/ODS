@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appendPath, fallbackServiceUrl, serviceUrl } from './serviceUrls'
+import { appendPath, fallbackServiceUrl, serviceUrl, urlHost } from './serviceUrls'
 
 describe('service URL helpers', () => {
   it('uses configured public URLs as exact operator-facing links by default', () => {
@@ -24,5 +24,13 @@ describe('service URL helpers', () => {
   it('keeps appendPath and fallback helpers stable for root paths', () => {
     expect(appendPath('https://svc.example.test/', '/')).toBe('https://svc.example.test/')
     expect(fallbackServiceUrl(8080, '/')).toBe('http://localhost:8080')
+  })
+
+  it('brackets IPv6 dashboard hosts before a service port is appended', () => {
+    expect(urlHost('2001:db8::7')).toBe('[2001:db8::7]')
+    expect(urlHost('[2001:db8::7]')).toBe('[2001:db8::7]')
+    expect(urlHost('ods.local')).toBe('ods.local')
+    expect(fallbackServiceUrl(3005, '/dashboard', '2001:db8::7'))
+      .toBe('http://[2001:db8::7]:3005/dashboard')
   })
 })

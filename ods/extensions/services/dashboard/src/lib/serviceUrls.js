@@ -8,8 +8,14 @@ export function dashboardHost() {
   return typeof window !== 'undefined' ? window.location.hostname : 'localhost'
 }
 
-export function fallbackServiceUrl(port, path = '') {
-  return port ? appendPath(`http://${dashboardHost()}:${port}`, path) : null
+export function urlHost(hostname) {
+  const host = String(hostname || '').trim()
+  if (host.includes(':') && !host.startsWith('[')) return `[${host}]`
+  return host
+}
+
+export function fallbackServiceUrl(port, path = '', hostname = dashboardHost()) {
+  return port ? appendPath(`http://${urlHost(hostname)}:${port}`, path) : null
 }
 
 export function serviceUrl(service, path = '') {
