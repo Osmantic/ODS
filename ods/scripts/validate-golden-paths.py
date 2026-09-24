@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -179,13 +180,23 @@ def validate_scenario(issues: Issues, scenario: Any, path: str) -> str | None:
 
 
 def main(argv: list[str]) -> int:
-    path = Path(argv[0]) if argv else DEFAULT_PATH
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("path", nargs="?", type=Path, default=DEFAULT_PATH)
+    parser.add_argument("--json", action="store_true", help="emit a machine-readable validation report")
+    args = parser.parse_args(argv)
+    path = args.path
     if not path.exists():
+        if args.json:
+            print(json.dumps({"ok": False, "path": str(path), "errors": ["file not found"]}, sort_keys=True))
+            return 1
         print(f"[FAIL] golden path file not found: {path}")
         return 1
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "path": str(path), "errors": [f"invalid JSON: {exc}"]}, sort_keys=True))
+            return 1
         print(f"[FAIL] invalid JSON in {path}: {exc}")
         return 1
 
@@ -193,6 +204,9 @@ def main(argv: list[str]) -> int:
     root = as_dict(data)
     if root is None:
         issues.add("$", "must be an object")
+        if args.json:
+            print(json.dumps({"ok": False, "path": str(path), "errors": issues.items}, sort_keys=True))
+            return 1
         issues.exit_if_any()
         return 1
 
@@ -211,6 +225,9 @@ def main(argv: list[str]) -> int:
         expected_ids = {"linux-nvidia", "windows-wsl2-nvidia", "windows-wsl2-amd-lemonade", "apple-silicon"}
         issues.require(set(seen) == expected_ids, "$.scenarios", f"must define exactly {sorted(expected_ids)}")
 
+    if args.json:
+        print(json.dumps({"ok": not issues.items, "path": str(path), "errors": issues.items}, sort_keys=True))
+        return 1 if issues.items else 0
     issues.exit_if_any()
     print("[PASS] golden path contracts")
     return 0
