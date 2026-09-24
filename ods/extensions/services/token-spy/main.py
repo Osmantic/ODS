@@ -1650,7 +1650,8 @@ async def ingest_routed_telemetry(request: Request):
     if not _db_available:
         raise HTTPException(status_code=503, detail="Usage database is unavailable.")
 
-    await asyncio.to_thread(log_usage, routed_event_to_usage(event))
+    usage = routed_event_to_usage(event, cost_estimator=estimate_cost)
+    await asyncio.to_thread(log_usage, usage)
     return JSONResponse({"status": "accepted"}, status_code=202)
 
 

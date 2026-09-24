@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 
@@ -98,7 +99,13 @@ def validate_routed_event(payload: Any) -> dict[str, Any]:
     return normalized
 
 
-def routed_event_to_usage(event: dict[str, Any]) -> dict[str, Any]:
+CostEstimator = Callable[[str, int, int, int, int, str], float]
+
+
+def routed_event_to_usage(
+    event: dict[str, Any],
+    cost_estimator: CostEstimator | None = None,
+) -> dict[str, Any]:
     """Map validated metadata into the existing Token Spy usage schema."""
     provider = event["provider_name"].lower()
     is_local = provider in _LOCAL_PROVIDERS
@@ -108,11 +115,29 @@ def routed_event_to_usage(event: dict[str, Any]) -> dict[str, Any]:
     # namespace, not part of the physical model identity.
     if is_local and model.startswith("extra."):
         model = model.removeprefix("extra.")
+
+    estimated_cost = 0.0
+    if not is_local and cost_estimator is not None:
+        estimated_cost = cost_estimator(
+            model,
+            event["input_tokens"],
+            event["output_tokens"],
+            event["cache_read_tokens"],
+            event["cache_write_tokens"],
+            provider,
+        )
+    if is_local:
+        cost_source = "local_zero_cost"
+    elif estimated_cost > 0:
+        cost_source = "priced_from_tokens"
+    else:
+        cost_source = "untracked"
+
     return {
         "agent": event["agent"],
         "model": model,
         "provider_name": "local" if is_local else provider,
-        "cost_source": "local_zero_cost" if is_local else "untracked",
+        "cost_source": cost_source,
         "request_body_bytes": event["request_body_bytes"],
         "message_count": event["message_count"],
         "user_message_count": event["user_message_count"],
@@ -133,7 +158,7 @@ def routed_event_to_usage(event: dict[str, Any]) -> dict[str, Any]:
         "output_tokens": event["output_tokens"],
         "cache_read_tokens": event["cache_read_tokens"],
         "cache_write_tokens": event["cache_write_tokens"],
-        "estimated_cost_usd": 0,
+        "estimated_cost_usd": round(estimated_cost, 6),
         "duration_ms": event["duration_ms"],
         "stop_reason": event["stop_reason"] or None,
         "filter_chars_saved": 0,
