@@ -20,6 +20,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ODS_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Source service registry for port resolution
+# Declared unconditionally so the ${SERVICE_*[x]:-default} fallbacks below work
+# without the registry — unset subscripts abort under set -u before they apply.
+declare -A SERVICE_PORTS SERVICE_HEALTH SERVICE_NAMES
+declare -a SERVICE_IDS
 if [[ -f "$ODS_DIR/lib/service-registry.sh" ]]; then
     export SCRIPT_DIR="$ODS_DIR"
     . "$ODS_DIR/lib/service-registry.sh"
@@ -35,6 +39,12 @@ WHISPER_URL="${WHISPER_URL:-http://localhost:${SERVICE_PORTS[whisper]:-9000}}"
 TTS_URL="${TTS_URL:-http://localhost:${SERVICE_PORTS[tts]:-8880}}"
 QDRANT_URL="${QDRANT_URL:-http://localhost:${SERVICE_PORTS[qdrant]:-6333}}"
 EXAMPLES_DIR="$ODS_DIR/examples"
+
+# Prefer the installed model id so requests never name a checkpoint the server
+# doesn't have — llama.cpp rejects unknown model names on /v1/chat/completions.
+_detected_model="$(curl -s --max-time 5 "${LLM_URL}/v1/models" 2>/dev/null \
+    | jq -r '.data[0].id // empty' 2>/dev/null)" || _detected_model=""
+DEMO_MODEL="${DEMO_MODEL:-${_detected_model:-local}}"
 
 clear_screen() {
     printf "\033[2J\033[H"
@@ -84,7 +94,7 @@ demo_chat() {
     
     while true; do
         echo -ne "${GREEN}You: ${NC}"
-        read -r user_input
+        read -r user_input || return
         
         if [[ "${user_input,,}" == "back" ]]; then
             return
@@ -95,17 +105,21 @@ demo_chat() {
         fi
         
         echo -ne "${CYAN}AI: ${NC}"
-        
-        response=$(curl -sf "${LLM_URL}/v1/chat/completions" \
+
+        # curl and jq run as separate commands: a `curl | jq` pipeline aborts the
+        # script under pipefail on a failed request, so the error fallback would
+        # never render.
+        raw=$(curl -sf "${LLM_URL}/v1/chat/completions" \
             -H "Content-Type: application/json" \
-            -d "$(jq -n --arg msg "$user_input" '{
-                model: "local",
+            -d "$(jq -n --arg model "$DEMO_MODEL" --arg msg "$user_input" '{
+                model: $model,
                 messages: [{role: "user", content: $msg}],
                 max_tokens: 512,
                 temperature: 0.7
-            }')" 2>/dev/null | jq -r '.choices[0].message.content // "Error getting response"')
-        
-        echo "$response"
+            }')" 2>/dev/null) || raw=""
+        response=$(printf '%s' "$raw" | jq -r '.choices[0].message.content // empty' 2>/dev/null) || response=""
+
+        echo "${response:-Error getting response}"
         echo ""
     done
 }
@@ -124,10 +138,10 @@ demo_voice() {
     
     if ! check_service "$TTS_URL" "/health"; then
         echo -e "${YELLOW}Kokoro (TTS) not running. Voice output disabled.${NC}"
-        echo -e "${DIM}Enable with: docker compose ps whisper  # Voice services start with the stack${NC}"
+        echo -e "${DIM}Enable with: docker compose ps tts  # Voice services start with the stack${NC}"
         echo ""
     fi
-    
+
     # Check for example audio
     if [[ -f "$EXAMPLES_DIR/sample-audio.wav" ]]; then
         echo -e "${GREEN}Found example audio file${NC}"
@@ -135,10 +149,10 @@ demo_voice() {
         echo "To test voice-to-voice:"
         echo ""
         echo -e "  ${CYAN}# Transcribe audio${NC}"
-        echo "  curl -X POST ${WHISPER_URL}/asr -F 'audio_file=@${EXAMPLES_DIR}/sample-audio.wav'"
+        echo "  curl -X POST ${WHISPER_URL}/v1/audio/transcriptions -F 'file=@${EXAMPLES_DIR}/sample-audio.wav' -F 'model=whisper-1'"
         echo ""
         echo -e "  ${CYAN}# Generate speech${NC}"
-        echo "  curl -X POST ${TTS_URL}/synthesize -d '{\"text\": \"Hello from ODS\"}' -o output.wav"
+        echo "  curl -X POST ${TTS_URL}/v1/audio/speech -H 'Content-Type: application/json' -d '{\"model\": \"kokoro\", \"input\": \"Hello from ODS\", \"voice\": \"af_bella\", \"response_format\": \"wav\"}' -o output.wav"
     else
         echo "Voice demo requires audio recording."
         echo ""
@@ -148,15 +162,15 @@ demo_voice() {
         echo "  rec -r 16000 -c 1 test.wav trim 0 5"
         echo ""
         echo "  # Transcribe"
-        echo "  curl -X POST ${WHISPER_URL}/asr -F 'audio_file=@test.wav'"
+        echo "  curl -X POST ${WHISPER_URL}/v1/audio/transcriptions -F 'file=@test.wav' -F 'model=whisper-1'"
         echo ""
         echo "  # Text to speech"
-        echo "  curl -X POST ${TTS_URL}/synthesize -d '{\"text\": \"Your text here\"}' -o output.wav"
+        echo "  curl -X POST ${TTS_URL}/v1/audio/speech -H 'Content-Type: application/json' -d '{\"model\": \"kokoro\", \"input\": \"Your text here\", \"voice\": \"af_bella\", \"response_format\": \"wav\"}' -o output.wav"
     fi
     
     echo ""
     echo -e "${DIM}Press Enter to return to menu...${NC}"
-    read -r
+    read -r || return
 }
 
 demo_rag() {
@@ -174,10 +188,10 @@ demo_rag() {
         echo -e "${YELLOW}Qdrant not running. Enable with: docker compose ps qdrant  # RAG services start with the stack${NC}"
         echo ""
         echo -e "${DIM}Press Enter to return to menu...${NC}"
-        read -r
+        read -r || return
         return
     fi
-    
+
     # Use example doc if available
     if [[ -f "$EXAMPLES_DIR/sample-doc.txt" ]]; then
         echo -e "${GREEN}Using example document...${NC}"
@@ -203,7 +217,7 @@ demo_rag() {
     
     while true; do
         echo -ne "${GREEN}Question: ${NC}"
-        read -r question
+        read -r question || return
         
         if [[ "${question,,}" == "back" ]]; then
             return
@@ -214,21 +228,22 @@ demo_rag() {
         fi
         
         echo -ne "${CYAN}Answer: ${NC}"
-        
-        # Use document as context
-        response=$(curl -sf "${LLM_URL}/v1/chat/completions" \
+
+        # Use document as context (curl/jq split — see demo_chat for why)
+        raw=$(curl -sf "${LLM_URL}/v1/chat/completions" \
             -H "Content-Type: application/json" \
-            -d "$(jq -n --arg doc "$DOC_CONTENT" --arg q "$question" '{
-                model: "local",
+            -d "$(jq -n --arg model "$DEMO_MODEL" --arg doc "$DOC_CONTENT" --arg q "$question" '{
+                model: $model,
                 messages: [
                     {role: "system", content: "Answer questions based on the provided document. Be concise and cite relevant parts."},
                     {role: "user", content: ("Document:\n" + $doc + "\n\nQuestion: " + $q)}
                 ],
                 max_tokens: 512,
                 temperature: 0.3
-            }')" 2>/dev/null | jq -r '.choices[0].message.content // "Error getting response"')
-        
-        echo "$response"
+            }')" 2>/dev/null) || raw=""
+        response=$(printf '%s' "$raw" | jq -r '.choices[0].message.content // empty' 2>/dev/null) || response=""
+
+        echo "${response:-Error getting response}"
         echo ""
     done
 }
@@ -253,7 +268,7 @@ demo_code() {
     echo -e "  ${CYAN}[5]${NC} Generate tests"
     echo ""
     echo -ne "Select task: "
-    read -r task_choice
+    read -r task_choice || return
     
     case $task_choice in
         1) task="explain" ;;
@@ -288,24 +303,25 @@ demo_code() {
     
     prompt="Task: $task\n\nCode:\n\`\`\`\n$CODE\n\`\`\`"
     
-    response=$(curl -sf "${LLM_URL}/v1/chat/completions" \
+    raw=$(curl -sf "${LLM_URL}/v1/chat/completions" \
         -H "Content-Type: application/json" \
-        -d "$(jq -n --arg p "$prompt" '{
-            model: "local",
+        -d "$(jq -n --arg model "$DEMO_MODEL" --arg p "$prompt" '{
+            model: $model,
             messages: [
                 {role: "system", content: "You are an expert code reviewer. Provide clear, actionable feedback."},
                 {role: "user", content: $p}
             ],
             max_tokens: 2048,
             temperature: 0.3
-        }')" 2>/dev/null | jq -r '.choices[0].message.content // "Error getting response"')
-    
+        }')" 2>/dev/null) || raw=""
+    response=$(printf '%s' "$raw" | jq -r '.choices[0].message.content // empty' 2>/dev/null) || response=""
+
     echo -e "${GREEN}Result:${NC}"
-    echo "$response"
+    echo "${response:-Error getting response}"
     
     echo ""
     echo -e "${DIM}Press Enter to return to menu...${NC}"
-    read -r
+    read -r || return
 }
 
 show_status() {
@@ -335,9 +351,10 @@ show_status() {
     echo ""
     
     if command -v nvidia-smi &> /dev/null; then
-        nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader 2>/dev/null | while read -r line; do
+        # Process substitution keeps a failed nvidia-smi from tripping pipefail.
+        while read -r line; do
             echo -e "  ${CYAN}$line${NC}"
-        done
+        done < <(nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader 2>/dev/null)
     else
         echo -e "  ${DIM}nvidia-smi not available${NC}"
     fi
@@ -351,7 +368,7 @@ show_status() {
     
     echo ""
     echo -e "${DIM}Press Enter to return to menu...${NC}"
-    read -r
+    read -r || return
 }
 
 # Main loop
@@ -359,8 +376,8 @@ while true; do
     clear_screen
     print_header
     print_menu
-    
-    read -r choice
+
+    read -r choice || break
     
     case "${choice,,}" in
         1) demo_chat ;;
