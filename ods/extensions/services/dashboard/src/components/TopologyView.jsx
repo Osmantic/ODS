@@ -2,13 +2,26 @@ import { memo } from 'react'
 import { Network } from 'lucide-react'
 
 // Rank → visual style mapping
-function linkStyle(rank) {
+export function linkStyle(rank) {
   if (rank >= 100) return { bg: 'bg-green-500/20', text: 'text-green-400', dot: 'bg-green-400' }
   if (rank >= 60)  return { bg: 'bg-indigo-500/20', text: 'text-indigo-400', dot: 'bg-indigo-400' }
   if (rank >= 40)  return { bg: 'bg-yellow-500/20', text: 'text-yellow-400', dot: 'bg-yellow-400' }
   if (rank >= 20)  return { bg: 'bg-orange-500/20', text: 'text-orange-400', dot: 'bg-orange-400' }
   return           { bg: 'bg-red-500/20', text: 'text-red-400', dot: 'bg-red-400' }
 }
+
+// Legend entries carry the ACTUAL rank each interconnect type is emitted with
+// by installers/lib/{nvidia,amd}-topo.sh, so every swatch is coloured by the
+// same linkStyle() the matrix uses. The old legend hard-coded a rank of 60 for
+// PIX, which lit its swatch indigo — but real PIX links carry rank 50 and
+// render yellow in the matrix, so the legend contradicted the grid it explained.
+export const TOPOLOGY_LEGEND = [
+  { label: 'NVLink', rank: 100 },  // NV4/6/8/12/18
+  { label: 'PIX', rank: 50 },      // same PCIe switch
+  { label: 'PXB', rank: 40 },      // cross PCIe switch
+  { label: 'PHB', rank: 30 },      // PCIe host bridge
+  { label: 'SYS', rank: 10 },      // cross-NUMA
+]
 
 function buildMatrix(gpuCount, links) {
   // matrix[a][b] = link object or null
@@ -115,13 +128,7 @@ export const TopologyView = memo(function TopologyView({ topology }) {
       {/* Legend */}
       {links.length > 0 && (
         <div className="flex flex-wrap gap-3 mt-4 pt-4 border-t border-zinc-800 text-[10px] text-zinc-500">
-          {[
-            { label: 'NVLink', rank: 100 },
-            { label: 'PIX', rank: 60 },
-            { label: 'PXB', rank: 40 },
-            { label: 'PHB', rank: 20 },
-            { label: 'SYS', rank: 5 },
-          ].map(({ label, rank }) => {
+          {TOPOLOGY_LEGEND.map(({ label, rank }) => {
             const style = linkStyle(rank)
             return (
               <span key={label} className="flex items-center gap-1">
