@@ -10969,7 +10969,10 @@ export function createToolLoopGuard({
       return {status:state.completionAssurance.terminalStatus, text:state.completionAssurance.terminal};
     }
     if (state?.progressBudget.exhausted) {
-      const preview = state.workspacePreview ?? state.workspaceLastVerifiedPreview;
+      // Session history can contain an unrelated publication. Preserve it for
+      // current preview work, but do not attach it to a later research failure.
+      const preview = state.workspacePreview ?? (state.workspacePreviewRequired &&
+        !state.workspacePreviewForbidden ? state.workspaceLastVerifiedPreview : undefined);
       return {status: 'failed', text: RUN_PROGRESS_STOP_REASON + (preview
         ? `\n\n[Open last published preview](${preview.url})\n\nThis is the last verified publication, not proof that all requested work completed.` : ''),
         ...(preview ? {preview: {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', ...preview}} : {})};

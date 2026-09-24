@@ -15783,6 +15783,36 @@ test("later failed preview work retains only the same session's historical publi
   }
 });
 
+test('progress stops scope historical preview delivery to the current owner request', () => {
+  const cases = [
+    ['Today is 2026-09-24. Search the live web for at least three public events in Philadelphia happening within the next 45 days. Actually search and open sources. For each give event title, exact date, venue and a direct official source URL. Exclude undated listings and past events. Explain any unavailable result honestly. Do not create files.', false],
+    ['Search the live web to compare RTX 5070 and RX 9070 performance and current retail prices. Save the verified comparison as gpu-comparison.json in a new workspace directory.', false],
+    ['Research the current GPU prices. Do not publish a preview.', false],
+    ['Update the website you just published to improve the mobile layout.', true],
+    ['Build and publish another website in a new directory.', true],
+  ];
+  for (const [prompt, expectPreview] of cases) {
+    const guard = createToolLoopGuard();
+    const {details} = seedNamedPreview(guard);
+    const context = {agentId:'pixel', runId:'later-research', sessionId:'session-1'};
+    guard.observeRun(context, 'pixel', {prompt});
+    for (let i=0; i<4; i++) {
+      guard.toolResultPersist({message:{toolCallId:`failed-${i}`, toolName:'web_search',
+        isError:true, content:[{type:'text', text:'Search allowance exhausted.'}]}}, context);
+    }
+    const delivery = guard.deliveryVerificationForRun(context.runId);
+    assert.equal(delivery.status, 'failed', prompt);
+    assert.ok(delivery.text.startsWith(RUN_PROGRESS_STOP_REASON), prompt);
+    assert.equal(Boolean(delivery.preview), expectPreview, prompt);
+    assert.equal(delivery.text.includes(details.url), expectPreview, prompt);
+    if (expectPreview) assert.equal(delivery.preview.sha256, details.sha256);
+    // Hiding an unrelated link does not delete the session's immutable receipt.
+    const next = {agentId:'pixel', runId:'return-to-site', sessionId:'session-1'};
+    guard.observeRun(next, 'pixel', {prompt:'Update the website you just published to improve the mobile layout.'});
+    assert.equal(guard.verificationForRun(next.runId).preview.sha256, details.sha256);
+  }
+});
+
 test("historical preview cannot hide a later coding stop from the final reply", () => {
   for (const deferred of [false, true]) {
     const guard = createToolLoopGuard({ limits: { failedExecRetries: 1, failedVerificationAttempts: 1 } });
