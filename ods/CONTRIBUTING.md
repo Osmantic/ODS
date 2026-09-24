@@ -10,7 +10,8 @@ Fork, branch, build, PR. That's it.
 git checkout -b my-change
 ```
 
-No CLA. No committee. No waiting for permission. If it makes ODS better, send it.
+Original Apache-licensed ODS contributions do not require a CLA. Check the
+[component terms](#license) before contributing to Pixel or third-party material.
 
 If you're adding or extending services, read these first:
 - [docs/EXTENSIONS.md](docs/EXTENSIONS.md) — how to add a new service in 30 minutes

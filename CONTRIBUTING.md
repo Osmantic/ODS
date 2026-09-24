@@ -12,7 +12,8 @@ Thanks for wanting to contribute. ODS is open source and we welcome help from ev
 3. Make your changes, test them locally, and commit.
 4. Open a **pull request** against `main`.
 
-No CLA, no hoops.
+Original Apache-licensed ODS contributions do not require a CLA. Contributions
+to separately licensed components must follow the [component terms](#license).
 
 ## Forks and Custom Editions
 
