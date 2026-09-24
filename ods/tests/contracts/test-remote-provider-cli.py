@@ -3,7 +3,11 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
+import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -19,6 +23,81 @@ def fail(message: str) -> None:
 def require(pattern: str, text: str, message: str) -> None:
     if not re.search(pattern, text, flags=re.MULTILINE):
         fail(message)
+
+
+def bash_path(path: Path) -> str:
+    """Return a path usable by the Bash process on native or WSL hosts."""
+    posix_path = path.resolve().as_posix()
+    if os.name == "nt" and len(posix_path) > 2 and posix_path[1] == ":":
+        return f"/mnt/{posix_path[0].lower()}{posix_path[2:]}"
+    return posix_path
+
+
+def check_secret_temp_cleanup() -> None:
+    """A payload-construction failure must not retain streamed secrets."""
+    with tempfile.TemporaryDirectory() as root:
+        root_path = Path(root)
+        install_dir = root_path / "ods"
+        request_tmp = root_path / "request-tmp"
+        stub_bin = root_path / "bin"
+        install_dir.mkdir()
+        request_tmp.mkdir()
+        stub_bin.mkdir()
+        (install_dir / "docker-compose.base.yml").write_text(
+            "services: {}\n", encoding="utf-8"
+        )
+        (install_dir / ".env").write_text(
+            "DASHBOARD_API_KEY=test-dashboard-key\n", encoding="utf-8"
+        )
+        secret_file = root_path / "provider-key"
+        secret_file.write_text("provider-secret-marker\n", encoding="utf-8")
+
+        jq_stub = stub_bin / "jq"
+        jq_stub.write_text("#!/usr/bin/env bash\ncat\nexit 1\n", encoding="utf-8")
+        jq_stub.chmod(0o755)
+        curl_stub = stub_bin / "curl"
+        curl_stub.write_text("#!/usr/bin/env bash\nexit 99\n", encoding="utf-8")
+        curl_stub.chmod(0o755)
+
+        stub_path = bash_path(stub_bin)
+        command_path = (
+            f"{stub_path}:"
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        )
+        provider_args = [
+            "--base-url", "https://provider.example/v1",
+            "--model", "remote-model",
+            "--api-key-file", bash_path(secret_file),
+        ]
+        invocations = {
+            "apply": ["remote-provider", "configure", *provider_args],
+            "plan": ["remote-provider", "plan", "configure", *provider_args],
+        }
+        for label, cli_args in invocations.items():
+            command = " ".join([
+                "exec", "env",
+                f"ODS_HOME={shlex.quote(bash_path(install_dir))}",
+                f"TMPDIR={shlex.quote(bash_path(request_tmp))}",
+                f"PATH={shlex.quote(command_path)}",
+                "bash", shlex.quote(bash_path(ODS_CLI)),
+                *(shlex.quote(arg) for arg in cli_args),
+            ])
+            result = subprocess.run(
+                ["bash", "-c", command],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            if result.returncode == 0:
+                fail(f"remote-provider {label} must surface payload construction failure")
+            output = result.stdout + result.stderr
+            if "Could not build remote-provider lifecycle request" not in output:
+                fail(f"remote-provider {label} did not reach payload construction: {output}")
+            if "provider-secret-marker" in output:
+                fail(f"remote-provider {label} failure output printed the provider API key")
+            leftovers = list(request_tmp.glob("ods-remote-provider-*"))
+            if leftovers:
+                fail(f"remote-provider {label} retained temporary request data: {leftovers}")
 
 
 def main() -> int:
@@ -251,6 +330,8 @@ def main() -> int:
         body,
         "remote-provider test must treat SSH options as one-shot lifecycle probes",
     )
+
+    check_secret_temp_cleanup()
 
     print("[PASS] remote-provider CLI static contract")
     return 0

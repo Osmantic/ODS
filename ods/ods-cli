@@ -4722,10 +4722,10 @@ cmd_remote_provider() {
             local payload_file response_file http_code curl_status
             payload_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-payload.XXXXXX") || \
                 error "Could not create a remote-provider request file"
+            trap 'rm -f "$payload_file" "${response_file:-}"' EXIT INT TERM HUP
             response_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-plan.XXXXXX") || \
                 error "Could not create a remote-provider response file"
             chmod 600 "$payload_file" "$response_file"
-            trap 'rm -f "$payload_file" "$response_file"' INT TERM HUP
             _remote_provider_write_payload "$action" "$payload_file" "$@"
             if http_code="$(_remote_provider_request POST /api/remote-provider/plan "$response_file" "$payload_file" 15)"; then
                 curl_status=0
@@ -4734,17 +4734,17 @@ cmd_remote_provider() {
             fi
             rm -f "$payload_file"
             if [[ $curl_status -ne 0 ]]; then
-                rm -f "$response_file"; trap - INT TERM HUP
+                rm -f "$response_file"; trap - EXIT INT TERM HUP
                 error "Remote-provider plan request failed before Dashboard API completed"
             fi
             if [[ "$http_code" != "200" ]]; then
                 local detail
                 detail="$(_remote_provider_response_error "$response_file")"
-                rm -f "$response_file"; trap - INT TERM HUP
+                rm -f "$response_file"; trap - EXIT INT TERM HUP
                 error "Remote-provider plan failed (HTTP $http_code): $detail"
             fi
             jq . "$response_file"
-            rm -f "$response_file"; trap - INT TERM HUP
+            rm -f "$response_file"; trap - EXIT INT TERM HUP
             ;;
         enable)
             local json_mode="false" response_file http_code curl_status
@@ -4816,10 +4816,10 @@ cmd_remote_provider() {
             local payload_file response_file http_code curl_status
             payload_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-payload.XXXXXX") || \
                 error "Could not create a remote-provider request file"
+            trap 'rm -f "$payload_file" "${response_file:-}"' EXIT INT TERM HUP
             response_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-apply.XXXXXX") || \
                 error "Could not create a remote-provider response file"
             chmod 600 "$payload_file" "$response_file"
-            trap 'rm -f "$payload_file" "$response_file"' INT TERM HUP
             REMOTE_PROVIDER_JSON_MODE="false"
             _remote_provider_write_payload "$subcmd" "$payload_file" "$@"
             if http_code="$(_remote_provider_request POST /api/remote-provider/apply "$response_file" "$payload_file" 1860)"; then
@@ -4829,13 +4829,13 @@ cmd_remote_provider() {
             fi
             rm -f "$payload_file"
             if [[ $curl_status -ne 0 ]]; then
-                rm -f "$response_file"; trap - INT TERM HUP
+                rm -f "$response_file"; trap - EXIT INT TERM HUP
                 error "Remote-provider $subcmd request failed before Dashboard API completed"
             fi
             if [[ "$http_code" != "200" ]]; then
                 local detail
                 detail="$(_remote_provider_response_error "$response_file")"
-                rm -f "$response_file"; trap - INT TERM HUP
+                rm -f "$response_file"; trap - EXIT INT TERM HUP
                 error "Remote-provider $subcmd failed (HTTP $http_code): $detail"
             fi
             if [[ "${REMOTE_PROVIDER_JSON_MODE:-false}" == "true" ]]; then
@@ -4843,7 +4843,7 @@ cmd_remote_provider() {
             else
                 _remote_provider_print_apply_result "$response_file"
             fi
-            rm -f "$response_file"; trap - INT TERM HUP
+            rm -f "$response_file"; trap - EXIT INT TERM HUP
             ;;
         help|--help|-h)
             _remote_provider_usage
