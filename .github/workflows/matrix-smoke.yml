@@ -97,6 +97,19 @@ jobs:
                 return "$status"
               fi
               echo "Command failed (attempt ${attempt}/${max}): $*"
+              # A CachyOS CDN edge can serve a database/signature pair from
+              # different syncs. Retry the next bundled mirror, retaining all
+              # pacman signature checks and the original three-attempt bound.
+              mirror_file=/etc/pacman.d/cachyos-mirrorlist
+              if [ "$1" = pacman ] && [ -f "$mirror_file" ] \
+                  && [ "$(grep -c '^Server' "$mirror_file")" -gt 1 ]; then
+                mirror_tmp=$(mktemp)
+                awk '/^Server/ {if (!first) {first=$0;next}} {print} END {if (first) print first}' \
+                  "$mirror_file" > "$mirror_tmp"
+                cat "$mirror_tmp" > "$mirror_file"
+                rm -f "$mirror_tmp"
+                echo "Retrying with the next bundled CachyOS mirror; signatures remain required."
+              fi
               echo "Retrying in ${delay}s..."
               sleep "$delay"
               attempt=$((attempt + 1))
