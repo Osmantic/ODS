@@ -15,6 +15,22 @@ if ! declare -F log_error >/dev/null 2>&1; then
     log_error() { printf '[ERROR] %s\n' "$*" >&2; }
 fi
 
+_ods_pixel_inspection_cleanup() {
+    local install_dir="$1" owner_uid="$2" action="$3" helper_dir helper
+    [[ "$action" == validate-linux || "$action" == remove-linux ]] || return 1
+    # A fresh bootstrap runs this library from its reviewed candidate checkout.
+    # Use that candidate's cleanup logic, but validate the old installed bytes.
+    # Calling the installed helper here would reintroduce bugs fixed by upgrades.
+    helper_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../installers/lib" && pwd -P)" || return 1
+    helper="$helper_dir/pixel-preview-inspection.py"
+    [[ -f "$helper" && ! -L "$helper" ]] || {
+        log_error "Candidate Pixel inspection cleanup helper is missing or unsafe"
+        return 1
+    }
+    sudo /usr/bin/python3 -I -B "$helper" "$action" \
+        --source "$install_dir/extensions/services/pixel-agent/host" --owner-uid "$owner_uid"
+}
+
 _ods_pixel_validate_ingress_env() {
     local path="$1" root_uid="$2"
 
@@ -2149,8 +2165,7 @@ PY
         || -e /etc/ods-pixel-inspection.json || -L /etc/ods-pixel-inspection.json \
         || -e /usr/local/libexec/ods-pixel-inspection || -L /usr/local/libexec/ods-pixel-inspection ]]; then
         inspection_present=true
-        sudo /usr/bin/python3 "$install_dir/installers/lib/pixel-preview-inspection.py" validate-linux \
-            --source "$install_dir/extensions/services/pixel-agent/host" --owner-uid "$owner_uid" || return 1
+        _ods_pixel_inspection_cleanup "$install_dir" "$owner_uid" validate-linux || return 1
     fi
     if [[ -e "$gateway_unit" || -L "$gateway_unit" \
         || -e "$ingress_unit" || -L "$ingress_unit" \
@@ -2576,8 +2591,7 @@ PY
 
     if [[ "$root_artifacts_present" == "true" ]]; then
         if "$inspection_present"; then
-            sudo /usr/bin/python3 "$install_dir/installers/lib/pixel-preview-inspection.py" remove-linux \
-                --source "$install_dir/extensions/services/pixel-agent/host" --owner-uid "$owner_uid" || return 1
+            _ods_pixel_inspection_cleanup "$install_dir" "$owner_uid" remove-linux || return 1
         fi
         if [[ "$access_artifacts_present" == true ]]; then
             if [[ "$(_ods_pixel_access_validate_or_remove remove \
