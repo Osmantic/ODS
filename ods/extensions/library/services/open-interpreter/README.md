@@ -37,9 +37,20 @@ curl http://localhost:7805/health
 
 # Chat (non-streaming)
 curl -X POST http://localhost:7805/chat \
+  -H "Authorization: Bearer $OPEN_INTERPRETER_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"message": "What OS are we running?", "stream": false}'
+
+# Chat as Server-Sent Events
+curl -N http://localhost:7805/chat/stream \
+  -H "Authorization: Bearer $OPEN_INTERPRETER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Describe the current directory"}'
 ```
+
+Each `data:` frame contains one JSON-encoded Interpreter chunk. Clients can
+decode the frame with `JSON.parse(event.data)`; newlines within a chunk are
+escaped, and boolean and null values retain their JSON types.
 
 ### CLI Usage
 
