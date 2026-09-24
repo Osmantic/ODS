@@ -7658,6 +7658,85 @@ foreach($adapter in [OdsSensorDxgi]::Read()) {
 """
 _wsl_metrics_lock = threading.Lock()
 _wsl_metrics_cached = (0.0, None)
+_wsl_metrics_interop = None
+
+
+def _wsl_interop_identity(value):
+    """Accept only WSL-created sockets inside its protected runtime directory."""
+    if not isinstance(value, str) or not re.fullmatch(r"/run/WSL/[1-9][0-9]*_interop", value):
+        return None
+    try:
+        # lstat deliberately rejects symlinks, including WSL's 1_interop alias.
+        # Socket permissions are normally 0777; trust comes from root ownership
+        # and root-only directory writes, not the socket's connect permissions.
+        for parent in (Path("/run"), Path("/run/WSL")):
+            row = parent.lstat()
+            if not stat_mod.S_ISDIR(row.st_mode) or row.st_uid != 0 or row.st_mode & 0o022:
+                return None
+        row = Path(value).lstat()
+        if not stat_mod.S_ISSOCK(row.st_mode) or row.st_uid != 0:
+            return None
+        return (row.st_dev, row.st_ino)
+    except OSError:
+        return None
+
+
+def _wsl_sensor_run(command):
+    """Use an existing WSL session from systemd; all attempts share eight seconds."""
+    global _wsl_metrics_interop
+    deadline = time.monotonic() + 8
+    candidates = []
+    if _wsl_metrics_interop:
+        value, identity = _wsl_metrics_interop
+        if _wsl_interop_identity(value) == identity:
+            candidates.append(value)
+        else:
+            _wsl_metrics_interop = None
+    inherited = os.environ.get("WSL_INTEROP")
+    if _wsl_interop_identity(inherited):
+        candidates.append(inherited)
+    try:
+        # Enumeration is bounded even if a privileged process fills the directory.
+        with os.scandir("/run/WSL") as entries:
+            discovered = []
+            for index, entry in enumerate(entries):
+                if index >= 64:
+                    break
+                if re.fullmatch(r"[1-9][0-9]*_interop", entry.name):
+                    discovered.append(entry.path)
+            candidates.extend(sorted(discovered, key=lambda value: int(Path(value).name.split("_")[0])))
+    except OSError:
+        pass
+    candidates = list(dict.fromkeys(value for value in candidates if _wsl_interop_identity(value)))[:3]
+    for index, value in enumerate(candidates):
+        identity = _wsl_interop_identity(value)
+        remaining = deadline - time.monotonic()
+        if not identity or remaining <= 0:
+            continue
+        env = os.environ.copy()
+        env["WSL_INTEROP"] = value
+        # Leave time for a replacement when an old session hangs. A sole known
+        # session retains the original eight-second maximum for the sensor call.
+        timeout = min(remaining, 4) if index < len(candidates) - 1 else remaining
+        try:
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace", timeout=timeout, env=env)
+        except (OSError, subprocess.SubprocessError):
+            if _wsl_metrics_interop and _wsl_metrics_interop[0] == value:
+                _wsl_metrics_interop = None
+            continue
+        if result.returncode == 0:
+            # Recheck custody before reusing the session on the next sample.
+            if _wsl_interop_identity(value) == identity:
+                _wsl_metrics_interop = (value, identity)
+            return result
+        if _wsl_metrics_interop and _wsl_metrics_interop[0] == value:
+            _wsl_metrics_interop = None
+        # A failed PowerShell sensor is not an interop failure: do not repeatedly
+        # spawn Windows processes for script or provider errors.
+        if "invalid argument" not in getattr(result, "stderr", "").lower():
+            return result
+    raise OSError("No usable trusted WSL telemetry interop session")
 
 
 def _wsl_system_metrics():
@@ -7683,10 +7762,9 @@ def _wsl_system_metrics():
                 return None
             return value
         try:
-            result = subprocess.run(
+            result = _wsl_sensor_run(
                 [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
                  base64.b64encode(_WSL_SENSOR_POWERSHELL.encode("utf-16-le")).decode("ascii")],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=8,
             )
             if result.returncode != 0 or len(result.stdout) > 65536:
                 raise ValueError("Native sensor response unavailable")

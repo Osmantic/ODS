@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import types
+from contextlib import nullcontext
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -8927,6 +8928,10 @@ class TestWslNativeSystemMetrics:
         monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
         monkeypatch.setattr(_mod.platform, "release", lambda: "6.6.114-microsoft-standard-WSL2")
         monkeypatch.setattr(_mod, "_wsl_metrics_cached", (0, None))
+        monkeypatch.setattr(_mod, "_wsl_metrics_interop", None)
+        monkeypatch.setattr(_mod, "_wsl_interop_identity", lambda p: (1, 42) if p == "/run/WSL/42_interop" else None)
+        monkeypatch.setenv("WSL_INTEROP", "/run/WSL/42_interop")
+        monkeypatch.setattr(_mod.os, "scandir", lambda p: nullcontext(iter([])))
         monkeypatch.setattr(_mod.Path, "is_file", lambda p: True)
         return json.loads((Path(__file__).parent / "fixtures/wsl-windows-native-telemetry.json").read_text())
 
@@ -8936,7 +8941,8 @@ class TestWslNativeSystemMetrics:
             calls.append(args)
             assert args[0] == "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
             assert args[1:5] == ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]
-            assert kwargs["timeout"] == 8
+            assert 0 < kwargs["timeout"] <= 8
+            assert kwargs["env"]["WSL_INTEROP"] == "/run/WSL/42_interop"
             assert "shell" not in kwargs
             assert _mod.base64.b64decode(args[5]).decode("utf-16-le") == _mod._WSL_SENSOR_POWERSHELL
             return types.SimpleNamespace(returncode=0, stdout=json.dumps(native))
@@ -8973,3 +8979,130 @@ class TestWslNativeSystemMetrics:
         monkeypatch.setattr(_mod.Path, "is_file", lambda p: False)
         monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **kw: pytest.fail("must not launch"))
         assert _mod._wsl_system_metrics() is None
+
+
+class TestWslServiceInterop:
+    @pytest.fixture
+    def sockets(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_wsl_metrics_interop", None)
+        monkeypatch.delenv("WSL_INTEROP", raising=False)
+        rows = {
+            "/run": types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0),
+            "/run/WSL": types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0),
+            "/run/WSL/2_interop": types.SimpleNamespace(st_mode=stat.S_IFSOCK | 0o777, st_uid=0, st_dev=1, st_ino=2),
+            "/run/WSL/1973_interop": types.SimpleNamespace(st_mode=stat.S_IFSOCK | 0o777, st_uid=0, st_dev=1, st_ino=1973),
+        }
+        def lstat(path):
+            try:
+                return rows[str(path).replace('\\', '/')]
+            except KeyError:
+                raise FileNotFoundError(str(path))
+        monkeypatch.setattr(_mod.Path, "lstat", lstat)
+        def entries(path):
+            assert path == "/run/WSL"
+            return nullcontext(iter(types.SimpleNamespace(path=name, name=name.rsplit('/', 1)[-1])
+                                    for name in rows if name.endswith('_interop')))
+        monkeypatch.setattr(_mod.os, "scandir", entries)
+        return rows
+
+    @pytest.mark.parametrize("path", [None, "", "/tmp/1973_interop", "/run/WSL/../1973_interop", "/run/WSL/01_interop", "/run/WSL/1973_interop/other"])
+    def test_rejects_noncanonical_socket_paths(self, sockets, path):
+        assert _mod._wsl_interop_identity(path) is None
+
+    @pytest.mark.parametrize("path,change", [
+        ("/run", {"st_mode": stat.S_IFLNK | 0o777}),
+        ("/run/WSL", {"st_mode": stat.S_IFDIR | 0o775}),
+        ("/run/WSL", {"st_uid": 1000}),
+        ("/run/WSL/1973_interop", {"st_mode": stat.S_IFLNK | 0o777}),
+        ("/run/WSL/1973_interop", {"st_mode": stat.S_IFREG | 0o600}),
+        ("/run/WSL/1973_interop", {"st_uid": 1000}),
+    ])
+    def test_rejects_untrusted_custody(self, sockets, path, change):
+        for key, value in change.items():
+            setattr(sockets[path], key, value)
+        assert _mod._wsl_interop_identity("/run/WSL/1973_interop") is None
+
+    def test_service_discovers_working_root_socket_and_reuses_it(self, monkeypatch, sockets):
+        calls = []
+        def run(command, **kwargs):
+            calls.append(kwargs)
+            okay = kwargs['env']['WSL_INTEROP'].endswith('/1973_interop')
+            return types.SimpleNamespace(returncode=0 if okay else 1, stdout='{}', stderr='' if okay else 'Invalid argument')
+        monkeypatch.setattr(_mod.subprocess, 'run', run)
+        assert _mod._wsl_sensor_run(['powershell.exe']).returncode == 0
+        assert [row['env']['WSL_INTEROP'] for row in calls] == ['/run/WSL/2_interop', '/run/WSL/1973_interop']
+        assert _mod._wsl_sensor_run(['powershell.exe']).returncode == 0
+        assert calls[-1]['env']['WSL_INTEROP'] == '/run/WSL/1973_interop'
+        assert len(calls) == 3
+        assert 'WSL_INTEROP' not in os.environ
+
+    def test_stale_cached_socket_is_revalidated(self, monkeypatch, sockets):
+        monkeypatch.setattr(_mod, '_wsl_metrics_interop', ('/run/WSL/1973_interop', (1, 1973)))
+        sockets['/run/WSL/1973_interop'].st_mode = stat.S_IFLNK | 0o777
+        calls = []
+        monkeypatch.setattr(_mod.subprocess, 'run', lambda command, **kw: (calls.append(kw['env']['WSL_INTEROP']) or types.SimpleNamespace(returncode=0)))
+        _mod._wsl_sensor_run(['powershell.exe'])
+        assert calls == ['/run/WSL/2_interop']
+
+    def test_failed_sensors_do_not_trigger_more_windows_processes(self, monkeypatch, sockets):
+        calls = []
+        monkeypatch.setattr(_mod.subprocess, 'run', lambda command, **kw: (calls.append(command) or types.SimpleNamespace(returncode=1, stderr='CIM provider unavailable')))
+        assert _mod._wsl_sensor_run(['powershell.exe']).returncode == 1
+        assert len(calls) == 1
+
+    def test_hung_sessions_share_eight_second_budget(self, monkeypatch, sockets):
+        now = [100.0]
+        monkeypatch.setattr(_mod.time, 'monotonic', lambda: now[0])
+        calls = []
+        def run(command, **kwargs):
+            calls.append(kwargs['timeout'])
+            now[0] += kwargs['timeout']
+            raise subprocess.TimeoutExpired(command, kwargs['timeout'])
+        monkeypatch.setattr(_mod.subprocess, 'run', run)
+        with pytest.raises(OSError, match='No usable trusted'):
+            _mod._wsl_sensor_run(['powershell.exe'])
+        assert calls == [4, 4]
+        assert now[0] == 108
+
+    def test_no_trusted_socket_never_executes(self, monkeypatch, sockets):
+        sockets['/run/WSL'].st_mode = stat.S_IFDIR | 0o777
+        monkeypatch.setenv('WSL_INTEROP', '/tmp/untrusted_interop')
+        monkeypatch.setattr(_mod.subprocess, 'run', lambda *a, **kw: pytest.fail('must not execute'))
+        with pytest.raises(OSError, match='No usable trusted'):
+            _mod._wsl_sensor_run(['powershell.exe'])
+
+    def test_failed_launches_are_limited_to_three_sessions(self, monkeypatch, sockets):
+        for number in range(3, 12):
+            sockets[f'/run/WSL/{number}_interop'] = types.SimpleNamespace(
+                st_mode=stat.S_IFSOCK | 0o777, st_uid=0, st_dev=1, st_ino=number)
+        calls = []
+        monkeypatch.setattr(_mod.subprocess, 'run', lambda command, **kw: (
+            calls.append(kw['env']['WSL_INTEROP']) or types.SimpleNamespace(returncode=1, stderr='Invalid argument')))
+        with pytest.raises(OSError, match='No usable trusted'):
+            _mod._wsl_sensor_run(['powershell.exe'])
+        assert calls == ['/run/WSL/2_interop', '/run/WSL/3_interop', '/run/WSL/4_interop']
+
+    def test_replaced_cached_inode_is_not_preferred(self, monkeypatch, sockets):
+        monkeypatch.setattr(_mod, '_wsl_metrics_interop', ('/run/WSL/1973_interop', (1, 999)))
+        calls = []
+        monkeypatch.setattr(_mod.subprocess, 'run', lambda command, **kw: (
+            calls.append(kw['env']['WSL_INTEROP']) or types.SimpleNamespace(returncode=0)))
+        _mod._wsl_sensor_run(['powershell.exe'])
+        assert calls == ['/run/WSL/2_interop']
+
+    def test_hung_cached_socket_clears_cache_and_uses_alternate(self, monkeypatch, sockets):
+        monkeypatch.setattr(_mod, '_wsl_metrics_interop', ('/run/WSL/1973_interop', (1, 1973)))
+        now = [100.0]
+        monkeypatch.setattr(_mod.time, 'monotonic', lambda: now[0])
+        calls = []
+        def run(command, **kwargs):
+            calls.append(kwargs['env']['WSL_INTEROP'])
+            if len(calls) == 1:
+                now[0] += kwargs['timeout']
+                raise subprocess.TimeoutExpired(command, kwargs['timeout'])
+            assert kwargs['timeout'] == 4
+            return types.SimpleNamespace(returncode=0)
+        monkeypatch.setattr(_mod.subprocess, 'run', run)
+        _mod._wsl_sensor_run(['powershell.exe'])
+        assert calls == ['/run/WSL/1973_interop', '/run/WSL/2_interop']
+        assert _mod._wsl_metrics_interop == ('/run/WSL/2_interop', (1, 2))
