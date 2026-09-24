@@ -1,9 +1,17 @@
-# ODS V3 (3.0.0) release notes
+# ODS V3 Pre-Release (3.0.0) release notes
 
-Status: [published source release](https://github.com/Osmantic/ODS/releases/tag/v3.0.0)
+V3 is in **public testing and refinement ahead of the official V3 launch**.
+We welcome feedback as we validate fresh installs, improve everyday workflows,
+and resolve remaining issues before launch.
+
+Source snapshot: [V3 Pre-Release (`v3.0.0`)](https://github.com/Osmantic/ODS/releases/tag/v3.0.0), published
 on September 24, 2026, at 13:20:25 UTC. The immutable `v3.0.0` tag points to
 [`bec0c42e7c9885a5aecd419a166a6a81e0d37236`](https://github.com/Osmantic/ODS/commit/bec0c42e7c9885a5aecd419a166a6a81e0d37236).
 Full fleet qualification remains in progress; no full fleet green is claimed.
+
+The pre-release name describes this public testing phase. The existing Git tag,
+numeric product versions, and GitHub update-discovery metadata are unchanged.
+The GitHub Latest label does not mark the official V3 launch.
 
 ODS V3 brings the accumulated Portal/Pixel, installer, lifecycle, model-routing,
 and dashboard work into one product version. See the [changelog](../CHANGELOG.md)

@@ -1,8 +1,10 @@
 <div align="center">
 
-# ODS V3
+# ODS V3 Pre-Release
 
 **Osmantic Deployment System**
+
+**Public testing and refinement ahead of the official V3 launch.**
 
 <p align="center">
   <a href="https://osmantic.com" target="_blank" rel="noopener noreferrer">
@@ -17,8 +19,8 @@ It should feel that way for everyone.
 
 [![License: Apache 2.0 + Pixel ODS-only](https://img.shields.io/badge/License-Apache%202.0%20%2B%20Pixel%20ODS--only-blue.svg)](ods/LICENSING.md)
 [![GitHub Stars](https://img.shields.io/github/stars/Osmantic/ODS)](https://github.com/Osmantic/ODS/stargazers)
-[![ODS V3](https://img.shields.io/badge/ODS-V3-blue)](ods/docs/RELEASE_NOTES_3.0.0.md)
-[![Release](https://img.shields.io/badge/release-v3.0.0-blue)](https://github.com/Osmantic/ODS/releases/tag/v3.0.0)
+[![ODS V3 Pre-Release](https://img.shields.io/badge/ODS-V3%20Pre--Release-orange)](ods/docs/RELEASE_NOTES_3.0.0.md)
+[![Source tag: v3.0.0](https://img.shields.io/badge/source%20tag-v3.0.0-blue)](https://github.com/Osmantic/ODS/releases/tag/v3.0.0)
 
 [![Watch the demo](https://img.shields.io/badge/Demo-Watch%20on%20YouTube-red?logo=youtube)](https://youtu.be/nO8xFNHX-HA)
 
@@ -42,9 +44,11 @@ full-model capabilities, lifecycle recovery, and the final User Green gate. See
 [Release Validation](ods/docs/RELEASE_VALIDATION.md) for what a green
 run proves.
 
-**ODS V3 published:** [ODS V3 (`v3.0.0`)](https://github.com/Osmantic/ODS/releases/tag/v3.0.0)
-is available as a pinned source release. Full fleet qualification is incomplete; see the
-[V3 notes](ods/docs/RELEASE_NOTES_3.0.0.md) and the
+**ODS V3 Pre-Release:** V3 is in public testing and refinement ahead of its
+official launch. Try it, share feedback, and help us improve the experience.
+The [pinned source snapshot (`v3.0.0`)](https://github.com/Osmantic/ODS/releases/tag/v3.0.0)
+is available for reproducibility. Full fleet qualification is incomplete; see the
+[V3 Pre-Release notes](ods/docs/RELEASE_NOTES_3.0.0.md) and the
 [promotion record](ods/docs/PUBLIC_BETA_PROMOTION_2026-09.md) for known task
 limitations, available evidence, and remaining release gates.
 
@@ -53,8 +57,9 @@ security policy, GitHub workflows, and project coordination docs. The
 `ods/` directory is the product runtime: services, installer phases,
 compose overlays, dashboard, CLI, tests, and operator docs.
 
-**Release consumption:** `v3.0.0` is the latest published source release. Its
-GitHub Latest designation does not establish full fleet qualification. `main`
+**Release consumption:** `v3.0.0` is the source tag for V3 Pre-Release. Its
+GitHub Latest designation does not mark the official V3 launch or establish full
+fleet qualification. `main`
 continues receiving fixes; pin a tag or audited commit and retain its validation
 receipt when reproducibility matters. V3 fixes land on `main`; `release/2.6.x`
 is the older 2.6 maintenance lane. See

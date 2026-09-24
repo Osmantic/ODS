@@ -3,13 +3,19 @@
 ODS moves quickly because installer, hardware, model, and service
 ecosystems move quickly. Treat each ref intentionally.
 
-## Published ODS V3
+## ODS V3 Pre-Release
 
-The latest published source release is `v3.0.0`, named **ODS V3** on GitHub.
+V3 is in **public testing and refinement ahead of the official V3 launch**.
+The published source snapshot is `v3.0.0`, named **ODS V3 Pre-Release** on GitHub.
 It pins commit `bec0c42e7c9885a5aecd419a166a6a81e0d37236` on September 24, 2026.
 The tag is immutable. Full fleet qualification is still in progress: publication
-and the GitHub Latest label do not certify user journeys or operational recovery.
-See [V3 release notes](RELEASE_NOTES_3.0.0.md) for the acceptance boundaries.
+and the GitHub Latest label do not mark the official V3 launch or certify user
+journeys or operational recovery. See [V3 Pre-Release notes](RELEASE_NOTES_3.0.0.md)
+for the acceptance boundaries.
+
+This presentation change preserves the existing tag, numeric product versions,
+and GitHub release classification used by update discovery. The public
+pre-release phase is described by the release name and these notes.
 
 `main` also identifies as `3.0.0` and continues receiving qualification fixes.
 The manifest's `release.stable_version` records the published non-prerelease
@@ -21,7 +27,7 @@ qualification campaign is incomplete.
 
 | Channel | Use it for | Expectation |
 |---|---|---|
-| `v3.0.0` | Reproducing the published V3 source snapshot | Read its qualification limitations; later main fixes are not included. |
+| `v3.0.0` | Reproducing the V3 Pre-Release source snapshot | Read its qualification limitations; later main fixes are not included. |
 | `main` | Active development, V3 fixes and validation candidates | Can change many times per day. Bind tests to the exact commit. |
 | `release/2.6.x` | Patch-only maintenance for the older 2.6 line | Narrow security or operator-continuity fixes for deployments remaining on 2.6. |
 | `release/2.5.x` | Older 2.5 maintenance baseline | Critical security or operator-continuity fixes only. |
@@ -32,7 +38,7 @@ qualification campaign is incomplete.
 ## Default Guidance
 
 - New users can follow the README quickstart, which tracks `main`.
-- Pin `v3.0.0` to reproduce the published V3 source, or an audited later commit
+- Pin `v3.0.0` to reproduce the V3 Pre-Release source, or an audited later commit
   to include subsequent fixes. Do not relabel earlier tests as a later-head pass.
 - V3 fixes target `main`. No `release/3.x` branch is implied by the new tag.
 - Only fixes specifically needed on the older 2.6 line should target

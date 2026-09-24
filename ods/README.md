@@ -1,6 +1,10 @@
-# ODS V3
+# ODS V3 Pre-Release
 
 **Osmantic Deployment System**
+
+**Public testing and refinement ahead of the official V3 launch.**
+Try it, share feedback, and help us improve the experience. See the
+[V3 Pre-Release notes](docs/RELEASE_NOTES_3.0.0.md) for current qualification status.
 
 [![License: Apache 2.0 + Pixel ODS-only](https://img.shields.io/badge/License-Apache%202.0%20%2B%20Pixel%20ODS--only-blue.svg)](LICENSING.md)
 [![Docker](https://img.shields.io/badge/Docker-Required-2496ED?logo=docker)](https://docs.docker.com/get-docker/)
