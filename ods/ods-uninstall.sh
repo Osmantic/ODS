@@ -25,7 +25,10 @@ ods_uninstall_systemctl_user() {
     local user_uid user_runtime_dir user_bus_address
     user_uid="$(id -u)"
     user_runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$user_uid}"
-    user_bus_address="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$user_runtime_dir/bus}"
+    # The systemd user manager always listens on the runtime-dir bus. A
+    # login-session DBUS_SESSION_BUS_ADDRESS can point at a per-session bus
+    # that is not the manager (or at a stale one), so derive the address.
+    user_bus_address="unix:path=$user_runtime_dir/bus"
     env XDG_RUNTIME_DIR="$user_runtime_dir" \
         DBUS_SESSION_BUS_ADDRESS="$user_bus_address" \
         systemctl --user "$@"
@@ -356,8 +359,15 @@ SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 _ods_uninstall_uid="$(id -u)"
 _ods_uninstall_runtime_dir="/run/user/$_ods_uninstall_uid"
 if [[ -d "$_ods_uninstall_runtime_dir" && -S "$_ods_uninstall_runtime_dir/bus" ]]; then
-    ods_uninstall_systemctl_user stop ods-model-upgrade.service 2>/dev/null || true
-    ods_uninstall_systemctl_user reset-failed ods-model-upgrade.service 2>/dev/null || true
+    # The transient upgrade unit lives on the owner's user manager, which may
+    # differ from this login session's bus; reach it by the derived runtime
+    # path rather than any inherited session variables.
+    env XDG_RUNTIME_DIR="$_ods_uninstall_runtime_dir" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$_ods_uninstall_runtime_dir/bus" \
+        systemctl --user stop ods-model-upgrade.service 2>/dev/null || true
+    env XDG_RUNTIME_DIR="$_ods_uninstall_runtime_dir" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$_ods_uninstall_runtime_dir/bus" \
+        systemctl --user reset-failed ods-model-upgrade.service 2>/dev/null || true
 fi
 for unit in opencode-web.service openclaw-session-cleanup.timer \
             memory-shepherd-workspace.timer memory-shepherd-memory.timer \
