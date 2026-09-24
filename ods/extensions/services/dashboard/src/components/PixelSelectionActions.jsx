@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { appendComposerText } from '../lib/pixelComposerText'
 
 const actions = [['Explain','Explain'], ['Improve','Improve'], ['Shorten','Shorten'], ['Tone','Change the tone of'], ['Grammar','Fix the grammar in']]
-export default function PixelSelectionActions({ disabled, conversationId, onInsert }) {
+export default function PixelSelectionActions({ disabled, conversationId, onInsert, input = '', limit = 12000 }) {
   const [selection, setSelection] = useState(null)
   const toolbar = useRef(null)
   useEffect(() => { setSelection(null) }, [disabled, conversationId])
@@ -39,11 +40,17 @@ export default function PixelSelectionActions({ disabled, conversationId, onInse
     }
   }, [disabled])
   if (!selection || disabled) return null
+  const choices = actions.map(([label, prompt]) => {
+    const text = `${prompt} this passage:\n\n“${selection.text}”\n\n`
+    return {label, text, fits:appendComposerText(input, text).length <= limit}
+  })
   return createPortal(<div ref={toolbar} className="pixel-selection-actions" role="toolbar" aria-label="Actions for selected response text" style={{left:selection.x,top:selection.y}} onPointerDown={event => event.preventDefault()}>
-    {actions.map(([label, prompt]) => <button key={label} type="button" onClick={() => {
-      onInsert(`${prompt} this passage:\n\n“${selection.text}”\n\n`)
+    {choices.map(({label, text, fits}) => <button key={label} type="button" disabled={!fits} className="disabled:cursor-not-allowed disabled:opacity-40" onClick={() => {
+      if (!fits) return
+      onInsert(text)
       window.getSelection()?.removeAllRanges()
       setSelection(null)
     }}>{label}</button>)}
+    {choices.some(choice => !choice.fits) && <p role="status" className="w-full px-2 py-1">Some actions exceed the draft limit. Shorten the selection or draft to use them.</p>}
   </div>, document.body)
 }
