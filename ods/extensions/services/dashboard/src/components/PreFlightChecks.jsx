@@ -135,15 +135,6 @@ export function PreFlightChecks({ onComplete, onIssuesFound }) {
         return { status: 'success', message: `${ports.length} ports available` }
       }
 
-      // Ports in use by ODS services are expected, not conflicts
-      // If all "conflicts" are our own services, treat as success
-      const odsPorts = new Set(ports.map(p => p.port))
-      const allOurs = conflicts.every(c => odsPorts.has(c.port))
-
-      if (allOurs) {
-        return { status: 'success', message: `${conflicts.length} services already running` }
-      }
-
       const conflictList = conflicts.map(c => `Port ${c.port} (${c.service})`).join(', ')
       return {
         status: 'warning',
