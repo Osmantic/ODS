@@ -83,6 +83,19 @@ class TestFetchContainerStats:
             result = _fetch_container_stats()
         assert result == containers
 
+    def test_malformed_response_shapes_are_rejected(self):
+        for payload in ([], {"containers": {}}, {"containers": [None, "bad"]}):
+            with patch("routers.resources.request_agent_json", return_value=payload):
+                assert _fetch_container_stats() == []
+
+    def test_malformed_entries_do_not_hide_valid_stats(self):
+        valid = {"container_name": "ods-llama", "cpu_percent": 45.0}
+        with patch(
+            "routers.resources.request_agent_json",
+            return_value={"containers": [None, valid, 7]},
+        ):
+            assert _fetch_container_stats() == [valid]
+
     def test_host_agent_unreachable(self):
         """URLError (host agent unreachable) returns empty list."""
         with patch(
