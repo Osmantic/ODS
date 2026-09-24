@@ -116,6 +116,17 @@ https://osmantic.com/get/ods.sh
 https://osmantic.com/get/ods/main
 https://osmantic.com/get/ods/main.sh
 EOF
+
+bash "$VERIFIER" --list-endpoints > "$TMP_DIR/listed-default-endpoints"
+cmp -s "$TMP_DIR/expected-default-endpoints" "$TMP_DIR/listed-default-endpoints" \
+    || fail "--list-endpoints drifted from the verifier's active default aliases."
+
+if bash "$VERIFIER" --list-endpoints unexpected >"$TMP_DIR/list-extra.log" 2>&1; then
+    fail "--list-endpoints accepted an unrelated argument."
+fi
+grep -qF "Usage:" "$TMP_DIR/list-extra.log" \
+    || fail "invalid list invocation did not return usage guidance."
+
 cmp -s "$TMP_DIR/expected-default-endpoints" "$TMP_DIR/default-trace" \
     || fail "Verifier defaults do not cover all twelve active Worker aliases."
 

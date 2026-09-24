@@ -45,12 +45,22 @@ header_value() {
     ' "$headers_file"
 }
 
+if [[ "${1:-}" == "--list-endpoints" ]]; then
+    if [[ $# -ne 1 ]]; then
+        echo "Usage: $0 --list-endpoints" >&2
+        exit 2
+    fi
+    printf '%s\n' "${DEFAULT_ENDPOINTS[@]}"
+    exit 0
+fi
+
 [[ -n "$REPO_ROOT" ]] || fail "Run this verifier from an ODS Git checkout."
 command -v curl >/dev/null 2>&1 || fail "curl is required."
 command -v cmp >/dev/null 2>&1 || fail "cmp is required."
 
 if [[ $# -lt 1 ]]; then
     echo "Usage: $0 EXPECTED_GIT_REF [ENDPOINT ...]" >&2
+    echo "       $0 --list-endpoints" >&2
     echo "Example: $0 \"\$(git rev-parse HEAD)\"" >&2
     exit 2
 fi
