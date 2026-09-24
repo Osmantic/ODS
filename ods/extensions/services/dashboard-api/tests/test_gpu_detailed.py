@@ -412,6 +412,64 @@ class TestGpuHistoryBuffer:
             for item in saved:
                 gpu_mod._GPU_HISTORY.append(item)
 
+    def test_history_query_returns_recent_downsampled_window(
+        self, test_client
+    ):
+        import routers.gpu as gpu_mod
+        saved = list(gpu_mod._GPU_HISTORY)
+        gpu_mod._GPU_HISTORY.clear()
+        try:
+            for index in range(10):
+                gpu_mod._GPU_HISTORY.append({
+                    "timestamp": f"2026-09-04T00:00:{index:02d}Z",
+                    "gpus": {
+                        "0": {
+                            "utilization": index,
+                            "memory_percent": index + 10,
+                            "temperature": index + 20,
+                            "power_w": index + 30,
+                        },
+                        **({
+                            "1": {
+                                "utilization": index + 40,
+                                "memory_percent": index + 50,
+                                "temperature": index + 60,
+                                "power_w": None,
+                            }
+                        } if index == 9 else {}),
+                    },
+                })
+
+            response = test_client.get(
+                "/api/gpu/history?samples=5&step=2",
+                headers=test_client.auth_headers,
+            )
+
+            assert response.status_code == 200
+            body = response.json()
+            assert body["timestamps"] == [
+                "2026-09-04T00:00:05Z",
+                "2026-09-04T00:00:07Z",
+                "2026-09-04T00:00:09Z",
+            ]
+            assert body["gpus"]["0"]["utilization"] == [5, 7, 9]
+            assert body["gpus"]["1"]["utilization"] == [None, None, 49]
+        finally:
+            gpu_mod._GPU_HISTORY.clear()
+            for item in saved:
+                gpu_mod._GPU_HISTORY.append(item)
+
+    def test_history_query_rejects_unbounded_controls(self, test_client):
+        too_many = test_client.get(
+            "/api/gpu/history?samples=61", headers=test_client.auth_headers
+        )
+        zero_step = test_client.get(
+            "/api/gpu/history?step=0", headers=test_client.auth_headers
+        )
+
+        assert too_many.status_code == 422
+        assert zero_step.status_code == 422
+
 
 # ============================================================================
 # _get_raw_gpus — Apple Silicon dispatch (routers/gpu.py)

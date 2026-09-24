@@ -9,9 +9,9 @@ import urllib.error
 import urllib.request
 from collections import deque
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from security import verify_api_key
 
@@ -35,7 +35,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["gpu"])
 
 # Rolling history buffer — 60 samples max (5 min at 5 s intervals)
-_GPU_HISTORY: deque = deque(maxlen=60)
+_HISTORY_MAX_SAMPLES = 60
+_GPU_HISTORY: deque = deque(maxlen=_HISTORY_MAX_SAMPLES)
 _HISTORY_POLL_INTERVAL = 5.0
 
 # Simple per-endpoint TTL caches
@@ -497,15 +498,21 @@ async def amd_runtime():
 
 
 @router.get("/api/gpu/history", dependencies=[Depends(verify_api_key)])
-async def gpu_history():
-    """Rolling 5-minute per-GPU metrics history sampled every 5 s."""
+async def gpu_history(
+    samples: Annotated[int, Query(ge=1, le=_HISTORY_MAX_SAMPLES)] = _HISTORY_MAX_SAMPLES,
+    step: Annotated[int, Query(ge=1, le=_HISTORY_MAX_SAMPLES)] = 1,
+):
+    """Return a recent, optionally downsampled GPU metrics window."""
     if not _GPU_HISTORY:
         return {"timestamps": [], "gpus": {}}
 
-    timestamps = [s["timestamp"] for s in _GPU_HISTORY]
+    window = list(_GPU_HISTORY)[-samples:]
+    latest_aligned_start = (len(window) - 1) % step
+    selected = window[latest_aligned_start::step]
+    timestamps = [sample["timestamp"] for sample in selected]
 
     gpu_keys: set[str] = set()
-    for sample in _GPU_HISTORY:
+    for sample in selected:
         gpu_keys.update(sample["gpus"].keys())
 
     gpus_data: dict[str, dict] = {}
@@ -516,7 +523,7 @@ async def gpu_history():
             "temperature": [],
             "power_w": [],
         }
-        for sample in _GPU_HISTORY:
+        for sample in selected:
             g = sample["gpus"].get(gpu_key, {})
             gpus_data[gpu_key]["utilization"].append(g.get("utilization"))
             gpus_data[gpu_key]["memory_percent"].append(g.get("memory_percent"))
