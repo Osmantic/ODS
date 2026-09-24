@@ -1108,6 +1108,33 @@ class TestNetworkHandlers:
         }
         assert body["networks"][1]["ssid"] == "Guest"
 
+    def test_wifi_connect_passes_64_hex_character_psk_to_nmcli(self, monkeypatch):
+        psk = "0123456789abcdef" * 4
+        calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        handler = _FakeHandler(json.dumps({
+            "ssid": "Raw PSK",
+            "password": psk,
+        }).encode("utf-8"))
+
+        _mod.AgentHandler._handle_network_wifi_connect(handler)
+
+        assert handler.response_code == 200
+        assert calls == [[
+            "nmcli", "device", "wifi", "connect", "Raw PSK",
+            "password", psk,
+        ]]
+
     def test_wifi_forget_refuses_non_wifi_profile(self, monkeypatch):
         calls = []
 

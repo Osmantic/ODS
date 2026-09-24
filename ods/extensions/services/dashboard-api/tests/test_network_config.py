@@ -118,13 +118,29 @@ def test_wifi_connect_rejects_oversized_ssid(test_client):
     assert resp.status_code == 422
 
 
-def test_wifi_connect_rejects_oversized_password(test_client):
+def test_wifi_connect_rejects_non_hex_64_character_password(test_client):
     resp = test_client.post(
         "/api/setup/wifi-connect",
         json={"ssid": "ok", "password": "x" * 64},
         headers=test_client.auth_headers,
     )
     assert resp.status_code == 422
+
+
+def test_wifi_connect_accepts_64_hex_character_psk(test_client):
+    psk = "0123456789abcdef" * 4
+    with patch(
+        "routers.setup.request_agent_json",
+        return_value={"success": True, "ssid": "Raw PSK"},
+    ) as request_agent:
+        resp = test_client.post(
+            "/api/setup/wifi-connect",
+            json={"ssid": "Raw PSK", "password": psk},
+            headers=test_client.auth_headers,
+        )
+
+    assert resp.status_code == 200
+    assert request_agent.call_args.kwargs["payload"]["password"] == psk
 
 
 def test_wifi_connect_rejects_control_chars_in_ssid(test_client):

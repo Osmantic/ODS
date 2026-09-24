@@ -257,7 +257,7 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
 
 class WifiConnectRequest(BaseModel):
     ssid: str = Field(..., min_length=1, max_length=32)
-    password: str = Field(default="", max_length=63)
+    password: str = Field(default="", max_length=64)
 
     @field_validator("ssid")
     @classmethod
@@ -271,6 +271,8 @@ class WifiConnectRequest(BaseModel):
     def _password_no_control_chars(cls, v: str) -> str:
         if any(c in v for c in ("\n", "\r", "\0")):
             raise ValueError("password contains invalid characters")
+        if len(v) == 64 and re.fullmatch(r"[0-9A-Fa-f]{64}", v) is None:
+            raise ValueError("64-character password must be a hexadecimal PSK")
         return v
 
 

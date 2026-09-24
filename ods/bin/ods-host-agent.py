@@ -9187,9 +9187,17 @@ class AgentHandler(BaseHTTPRequestHandler):
         if any(c in ssid for c in ("\n", "\r", "\0")):
             json_response(self, 400, {"error": "ssid contains invalid characters"})
             return
-        if not isinstance(password, str) or len(password) > 63:
-            # WPA2 PSK max is 63 chars. Open networks pass empty string.
-            json_response(self, 400, {"error": "password must be 0-63 chars"})
+        valid_raw_psk = (
+            isinstance(password, str)
+            and len(password) == 64
+            and re.fullmatch(r"[0-9A-Fa-f]{64}", password) is not None
+        )
+        if not isinstance(password, str) or (len(password) > 63 and not valid_raw_psk):
+            # WPA-PSK accepts an 8-63 character passphrase or a raw 64-hex key.
+            # Open and legacy networks may pass shorter values through to nmcli.
+            json_response(self, 400, {
+                "error": "password must be 0-63 chars or a 64-character hexadecimal PSK",
+            })
             return
         if any(c in password for c in ("\n", "\r", "\0")):
             json_response(self, 400, {"error": "password contains invalid characters"})
