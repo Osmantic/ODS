@@ -1,4 +1,5 @@
 import {createAgentSkillTool} from './agent-skills.mjs';
+import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
 import {createRuntimeIdentity} from './runtime-identity.mjs';
 import {fileURLToPath} from 'node:url';
 import {createActivityTool, ACTIVITY_CONTRACT} from './activity-display.mjs';
@@ -260,6 +261,7 @@ export default definePluginEntry({
       createTools: createOpenClawCodingTools, resolveSandbox: resolveSandboxContext,
       execControl: () => execCancellationControl, runtimeVersion: OPENCLAW_VERSION,
       hooksAllowed: api.config?.plugins?.entries?.["pixel-ods"]?.hooks?.allowConversationAccess === true});
+    registerBootstrapCapabilities(api);
     const managedRuntime = managedRuntimeRegistry.register(api, accessRuntime);
     if (managedRuntime) currentManagedRuntime = managedRuntime;
     contextCompaction ??= createContextCompaction({agentId:AGENT_ID,
