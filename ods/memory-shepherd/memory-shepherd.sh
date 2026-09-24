@@ -1,6 +1,15 @@
 #!/bin/bash
 # memory-shepherd.sh — Periodic memory baseline reset for LLM agents
 # Usage: memory-shepherd.sh [agent-name|all]
+
+# Require Bash 4+ (associative array used for the parsed config)
+if (( BASH_VERSINFO[0] < 4 )); then
+    echo "ERROR: $(basename "$0") requires Bash 4.0+ (you have $BASH_VERSION)" >&2
+    echo "  macOS ships Bash 3.2 due to licensing. Install a modern version:" >&2
+    echo "    brew install bash" >&2
+    exit 1
+fi
+
 set -euo pipefail
 
 # Cross-platform stat helpers — BSD (Darwin) / GNU diverge on -c vs -f
@@ -21,7 +30,9 @@ _stat_size() {
 }
 
 TIMESTAMP=$(date '+%Y-%m-%d_%H%M')
-LOCKFILE=/tmp/memory-shepherd.lock
+# Overridable so tests can exercise the locking protocol without touching the
+# real lockfile.
+LOCKFILE="${MEMORY_SHEPHERD_LOCKFILE:-/tmp/memory-shepherd.lock}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Logging ────────────────────────────────────────────────────────────
@@ -31,7 +42,6 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [memory-shepherd] $1"; }
 # ── Lock Management ────────────────────────────────────────────────────
 
 cleanup_lock() { rm -f "$LOCKFILE"; }
-trap cleanup_lock EXIT
 
 if [ -f "$LOCKFILE" ]; then
     lock_age=$(( $(date +%s) - $(_stat_mtime "$LOCKFILE") ))
@@ -44,6 +54,12 @@ if [ -f "$LOCKFILE" ]; then
     fi
 fi
 echo $$ > "$LOCKFILE"
+
+# Arm the cleanup only now that this process owns the lock. Arming it before
+# the check above meant the "another reset running" branch deleted the *other*
+# run's lockfile on its way out, so the next invocation found no lock and
+# started alongside the run that was still going.
+trap cleanup_lock EXIT
 
 # ── Config Parser ──────────────────────────────────────────────────────
 

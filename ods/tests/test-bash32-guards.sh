@@ -52,6 +52,7 @@ assert_guard_before_declare "$ROOT_DIR/lib/progress.sh" sourced "lib/progress.sh
 assert_guard_before_declare "$ROOT_DIR/installers/phases/03-features.sh" sourced "03-features.sh"
 assert_guard_before_declare "$ROOT_DIR/scripts/pre-download.sh" direct "pre-download.sh"
 assert_guard_before_declare "$ROOT_DIR/scripts/ods-test-functional.sh" direct "ods-test-functional.sh"
+assert_guard_before_declare "$ROOT_DIR/memory-shepherd/memory-shepherd.sh" direct "memory-shepherd.sh"
 
 if grep -q '"$BASH" "$INSTALL_DIR/scripts/validate-env.sh"' "$ROOT_DIR/ods-cli"; then
     pass "ods-cli config validate runs validate-env.sh through active Bash"

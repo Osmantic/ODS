@@ -289,6 +289,11 @@ jobs:
           bash tests/test-ods-doctor.sh
           bash tests/test-doctor-native-lifecycle.sh
 
+      - name: Memory Shepherd Lock Tests
+        run: |
+          bash tests/test-memory-shepherd-lock.sh
+          bash tests/test-bash32-guards.sh
+
       - name: Windows Report Command Tests
         run: bash tests/test-windows-report-command.sh
 

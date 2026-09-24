@@ -135,6 +135,9 @@ test: ## Run unit and contract tests
 	@bash tests/test-bash32-guards.sh
 	@bash tests/test-ods-doctor-bash32-guard.sh
 	@echo ""
+	@echo "=== memory-shepherd locking protocol ==="
+	@bash tests/test-memory-shepherd-lock.sh
+	@echo ""
 	@echo "=== CLI update post-verification ==="
 	@bash tests/test-cli-update-verification.sh
 	@echo ""
