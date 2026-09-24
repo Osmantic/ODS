@@ -211,6 +211,7 @@ jobs:
         run: |
           python3 scripts/audit-extensions.py --project-dir .
           bash tests/test-extension-audit.sh
+          python3 -m pytest -q tests/test_extension_audit_library.py
 
       - name: Extension Runtime Check Tests
         run: bash tests/test-extension-runtime-check.sh
@@ -252,7 +253,7 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
 
       - name: Pixel Native Integration Contracts
-        run: python3 -m pytest -q tests/test_pixel_macos_apps.py tests/test_pixel_native_compose_live.py tests/test_pixel_onboarding.py tests/test_pixel_open_app_handler.py tests/test_pixel_runtime_budget.py
+        run: python3 -m pytest -q tests/test_pixel_macos_apps.py tests/test_pixel_native_compose_live.py tests/test_pixel_onboarding.py tests/test_pixel_open_app_handler.py tests/test_pixel_runtime_budget.py tests/test_macos_snapshot_definition.py
 
       - name: Service Registry Tests
         run: |
@@ -336,6 +337,9 @@ jobs:
       - name: Validate Env Tests
         run: bash tests/test-validate-env.sh
 
+      - name: Installer Log Safety Tests
+        run: bash tests/test-installer-log-safety.sh
+
       - name: Safe Env Loading Tests
         run: bash tests/test-safe-env.sh
 
@@ -344,6 +348,13 @@ jobs:
 
       - name: Dotenv Serializer Tests
         run: bash tests/test-dotenv-serializer.sh
+
+      # Static source checks (grep/awk only), so they run on Linux even though
+      # they protect macOS. `make test` runs them, but no workflow does.
+      - name: Bash 3.2 Guard Placement
+        run: |
+          bash tests/test-bash32-guards.sh
+          bash tests/test-ods-doctor-bash32-guard.sh
 
       - name: Mode Switch Tests
         run: bash tests/test-mode-switch-status.sh
@@ -453,6 +464,7 @@ jobs:
           bash tests/test-linux-install-preflight.sh
           bash tests/test-preflight-dashboard-port.sh
           bash tests/test-wsl-broken-docker-shim.sh
+          bash tests/test-pixel-wsl-runtime-layout.sh
 
       - name: Installer Simulation Harness
         run: |
