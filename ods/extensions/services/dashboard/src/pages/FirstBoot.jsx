@@ -84,6 +84,7 @@ export default function FirstBoot({ onComplete }) {
   const [finishing, setFinishing] = useState(false)
   const [finishError, setFinishError] = useState(null)
   const [invite, setInvite] = useState(null)
+  const [pendingInvite, setPendingInvite] = useState(null)
   const [ownerCardStatus, setOwnerCardStatus] = useState(null)
 
   // Persist progress whenever the user moves forward.
@@ -139,7 +140,7 @@ export default function FirstBoot({ onComplete }) {
         throw new Error('The selected stack is no longer available. Go back and choose another option.')
       }
 
-      if (selectedStack.templateId) {
+      if (!pendingInvite && selectedStack.templateId) {
         const applyResp = await fetch(`/api/templates/${selectedStack.templateId}/apply`, {
           method: 'POST',
         })
@@ -175,8 +176,8 @@ export default function FirstBoot({ onComplete }) {
         }
       }
 
-      let inviteData = null
-      if (!ownerCardUnavailable) {
+      let inviteData = pendingInvite
+      if (!inviteData && !ownerCardUnavailable) {
         // Generate the owner magic-link for the named user. Reuses the same
         // backend the Setup / Owner page consumes.
         const genResp = await fetch('/api/auth/magic-link/generate', {
@@ -195,6 +196,9 @@ export default function FirstBoot({ onComplete }) {
           throw new Error(body.detail || `generate failed: ${genResp.status}`)
         }
         inviteData = await genResp.json()
+        // The credential has already been issued. Retain it before the next
+        // request can fail, and never mint another card on completion retry.
+        setPendingInvite(inviteData)
       }
 
       // Flip the server-side sentinel so this device is "configured".
@@ -295,6 +299,7 @@ export default function FirstBoot({ onComplete }) {
               {step === 4 && (
                 <ConfirmStep
                   deviceName={deviceName}
+                  pendingInvite={pendingInvite}
                   username={username}
                   stack={stack}
                   onBack={prev}
@@ -516,6 +521,7 @@ function StackStep({ stack, setStack, onNext, onBack }) {
 
 function ConfirmStep({
   deviceName,
+  pendingInvite,
   username,
   stack,
   onBack,
@@ -557,6 +563,15 @@ function ConfirmStep({
         </div>
       )}
 
+      {pendingInvite && <div className="mb-6 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
+        <p>Your owner card was generated. Save this link before leaving the page. Finish retries setup completion using this same card.</p>
+        <label className="mt-3 block">Generated owner link
+          <input readOnly value={typeof pendingInvite.url === 'string' ? pendingInvite.url : ''}
+            onFocus={event => event.currentTarget.select()}
+            className="mt-1 w-full rounded border border-theme-border bg-theme-bg p-2 text-theme-text" />
+        </label>
+      </div>}
+
       {error && (
         <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm flex items-start gap-2">
           <AlertCircle size={18} className="flex-shrink-0 mt-0.5" />
@@ -568,7 +583,7 @@ function ConfirmStep({
         <button
           onClick={onBack}
           aria-label="Back"
-          disabled={finishing}
+          disabled={finishing || Boolean(pendingInvite)}
           className="flex items-center justify-center gap-2 bg-theme-card border border-theme-border text-theme-text py-4 px-5 rounded-xl disabled:opacity-50"
         >
           <ChevronLeft size={18} />
