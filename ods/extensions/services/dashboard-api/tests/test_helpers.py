@@ -377,12 +377,12 @@ class TestGetCpuMetrics:
         result = get_cpu_metrics()
         assert "percent" in result
         assert "temp_c" in result
-        assert isinstance(result["percent"], (int, float))
+        assert result["percent"] is None or isinstance(result["percent"], (int, float))
 
     def test_returns_defaults_on_unsupported_platform(self, monkeypatch):
         monkeypatch.setattr("helpers.platform.system", lambda: "UnknownOS")
         result = get_cpu_metrics()
-        assert result == {"percent": 0, "temp_c": None}
+        assert result == {"percent": None, "temp_c": None}
 
     def test_linux_cpu_metrics_handles_corrupt_sensor(self, monkeypatch):
         from unittest.mock import mock_open
@@ -392,7 +392,7 @@ class TestGetCpuMetrics:
         from helpers import _get_cpu_metrics_linux
         res = _get_cpu_metrics_linux()
         assert res["temp_c"] is None
-        assert 0.0 <= res["percent"] <= 100.0
+        assert res["percent"] is None
 
 
 class TestGetRamMetrics:
@@ -406,7 +406,7 @@ class TestGetRamMetrics:
     def test_returns_defaults_on_unsupported_platform(self, monkeypatch):
         monkeypatch.setattr("helpers.platform.system", lambda: "UnknownOS")
         result = get_ram_metrics()
-        assert result == {"used_gb": 0, "total_gb": 0, "percent": 0}
+        assert result == {"used_gb": None, "total_gb": None, "percent": None}
 
     def test_linux_ram_metrics_clamps_bounds(self, monkeypatch):
         from unittest.mock import mock_open

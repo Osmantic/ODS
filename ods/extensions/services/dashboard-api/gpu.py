@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from host_metrics import apple_host_metrics
 from env_values import parse_env_value
 from models import GPUInfo, IndividualGPU
 from host_agent_client import AgentClientError, request_json as request_agent_json
@@ -270,7 +271,7 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
 
 
 def get_gpu_info_apple() -> Optional[GPUInfo]:
-    """Get GPU metrics for Apple Silicon via system_profiler (native) or env vars (container)."""
+    """Read Apple counters through the native host agent when containerized."""
     gpu_backend = os.environ.get("GPU_BACKEND", "").lower()
 
     if platform.system() == "Darwin":
@@ -325,46 +326,21 @@ def get_gpu_info_apple() -> Optional[GPUInfo]:
             return None
 
     elif gpu_backend == "apple":
-        # Linux container path (Docker Desktop on macOS): use HOST_RAM_GB env var
-        host_ram_gb_str = os.environ.get("HOST_RAM_GB", "")
-        if not host_ram_gb_str:
+        payload = apple_host_metrics()["gpu"]
+        if payload is None:
             return None
-        try:
-            host_ram_gb_float = float(host_ram_gb_str)
-        except ValueError:
-            return None
-        if host_ram_gb_float <= 0:
-            return None
-        total_mb = int(host_ram_gb_float * 1024)
-        # Use /proc/meminfo for used memory (best available proxy inside container)
-        # Note: used_mb reflects Docker Desktop VM memory pressure, not the host Mac's.
-        # Total is correctly overridden by HOST_RAM_GB. See issue #102 for a future
-        # host-metrics collector that would fix used_mb.
-        used_mb = 0
-        try:
-            with open("/proc/meminfo") as f:
-                meminfo = {}
-                for line in f:
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        meminfo[parts[0].rstrip(":")] = int(parts[1])
-            avail = meminfo.get("MemAvailable", 0)
-            total_kb = meminfo.get("MemTotal", 0)
-            used_mb = (total_kb - avail) // 1024
-        except OSError:
-            pass
+        total_mb = payload["memory_total_mb"]
+        used_mb = payload["memory_used_mb"]
+        utilization = payload["utilization_percent"]
         return GPUInfo(
-            name=f"Apple M-Series ({int(host_ram_gb_float)} GB Unified)",
-            memory_used_mb=used_mb,
+            name=payload["name"],
+            memory_used_mb=int(used_mb or 0),
             memory_total_mb=total_mb,
-            memory_percent=round(used_mb / total_mb * 100, 1) if total_mb > 0 else 0,
-            utilization_percent=0,
-            temperature_c=0,
-            power_w=None,
-            memory_type="unified",
-            gpu_backend="apple",
-            memory_usage_available=False,
-            utilization_available=False,
+            memory_percent=round(used_mb / total_mb * 100, 1) if used_mb is not None else 0,
+            utilization_percent=int(utilization or 0),
+            temperature_c=0, power_w=None, memory_type="unified", gpu_backend="apple",
+            memory_usage_available=used_mb is not None,
+            utilization_available=utilization is not None,
             temperature_available=False,
         )
 

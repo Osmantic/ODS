@@ -430,38 +430,26 @@ class TestGetGpuInfoAmd:
 
 class TestGetGpuInfoAppleContainer:
 
-    def test_host_ram_gb_returns_gpu_info(self, monkeypatch):
-        """Linux container with GPU_BACKEND=apple and HOST_RAM_GB=64."""
+    def test_native_host_counters_override_static_capacity(self, monkeypatch):
         monkeypatch.setattr("gpu.platform.system", lambda: "Linux")
-        monkeypatch.setattr("gpu.os.environ", {
-            "GPU_BACKEND": "apple",
-            "HOST_RAM_GB": "64",
-        })
-
+        monkeypatch.setenv("GPU_BACKEND", "apple")
+        monkeypatch.setenv("HOST_RAM_GB", "64")
+        monkeypatch.setattr("gpu.apple_host_metrics", lambda: {"gpu": {
+            "name": "Apple M4", "memory_total_mb": 16384,
+            "memory_used_mb": 8428, "utilization_percent": 99}})
         info = get_gpu_info_apple()
-        assert info is not None
-        assert info.memory_total_mb == 64 * 1024
-        assert info.memory_type == "unified"
-        assert info.gpu_backend == "apple"
-        assert "64" in info.name
+        assert info.memory_total_mb == 16384
+        assert info.memory_used_mb == 8428
+        assert info.utilization_percent == 99
+        assert info.memory_type == "unified" and info.gpu_backend == "apple"
+        assert info.memory_usage_available and info.utilization_available
+        assert not info.temperature_available
 
-    def test_no_host_ram_returns_none(self, monkeypatch):
-        """Linux container with GPU_BACKEND=apple but no HOST_RAM_GB."""
+    def test_unavailable_host_does_not_report_vm_as_mac(self, monkeypatch):
         monkeypatch.setattr("gpu.platform.system", lambda: "Linux")
-        monkeypatch.setattr("gpu.os.environ", {
-            "GPU_BACKEND": "apple",
-        })
-
-        assert get_gpu_info_apple() is None
-
-    def test_invalid_host_ram_returns_none(self, monkeypatch):
-        """Linux container with GPU_BACKEND=apple and invalid HOST_RAM_GB."""
-        monkeypatch.setattr("gpu.platform.system", lambda: "Linux")
-        monkeypatch.setattr("gpu.os.environ", {
-            "GPU_BACKEND": "apple",
-            "HOST_RAM_GB": "not-a-number",
-        })
-
+        monkeypatch.setenv("GPU_BACKEND", "apple")
+        monkeypatch.setenv("HOST_RAM_GB", "64")
+        monkeypatch.setattr("gpu.apple_host_metrics", lambda: {"gpu": None})
         assert get_gpu_info_apple() is None
 
 

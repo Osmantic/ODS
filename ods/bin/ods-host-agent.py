@@ -7596,6 +7596,76 @@ def _run_update_script(action: str, *args: str, timeout: int | None) -> subproce
     )
 
 
+# Native telemetry is sampled once for simultaneous dashboard CPU/RAM/GPU calls.
+_darwin_metrics_lock = threading.Lock()
+_darwin_metrics_cached = (0.0, None)
+
+
+def _darwin_system_metrics():
+    """Read physical Mac counters without sudo or privileged temperature probes."""
+    global _darwin_metrics_cached
+    if platform.system() != "Darwin":
+        return None
+    with _darwin_metrics_lock:
+        now = time.monotonic()
+        if _darwin_metrics_cached[1] is not None and now - _darwin_metrics_cached[0] < 3:
+            return _darwin_metrics_cached[1]
+
+        deadline = time.monotonic() + 4
+
+        def read(args):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return ""
+            try:
+                result = subprocess.run(args, capture_output=True, text=True, timeout=min(2, remaining))
+                return result.stdout if result.returncode == 0 else ""
+            except (OSError, subprocess.SubprocessError):
+                return ""
+
+        cpu = {"percent": None, "temp_c": None, "scope": "host", "source": "macos-top"}
+        ram = {"used_gb": None, "total_gb": None, "percent": None,
+               "scope": "host", "source": "macos-vm-stat"}
+        samples = re.findall(r"CPU usage:\s+([\d.]+)%\s+user.*?([\d.]+)%\s+sys",
+                             read(["/usr/bin/top", "-l", "2", "-s", "1", "-n", "0", "-stats", "cpu"]))
+        if samples:
+            value = sum(float(v) for v in samples[-1])
+            if math.isfinite(value) and 0 <= value <= 100:
+                cpu["percent"] = round(value, 1)
+        total_text = read(["/usr/sbin/sysctl", "-n", "hw.memsize"]).strip()
+        total = int(total_text) if total_text.isdigit() else 0
+        vm = read(["/usr/bin/vm_stat"])
+        size = re.search(r"page size of (\d+) bytes", vm)
+        pages = dict(re.findall(r"^([^:\n]+):\s+(\d+)", vm, re.M))
+        keys = ("Pages active", "Pages wired down", "Pages occupied by compressor")
+        if total > 0:
+            ram["total_gb"] = round(total / 1024**3, 1)
+            if size and all(key in pages for key in keys):
+                used = sum(int(pages[key]) for key in keys) * int(size.group(1))
+                if 0 <= used <= total:
+                    ram.update(used_gb=round(used / 1024**3, 1), percent=round(used / total * 100, 1))
+        chip = read(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"]).strip()
+        ioreg = read(["/usr/sbin/ioreg", "-r", "-c", "AGXAccelerator", "-l"])
+        # Only AGX's named device counters: driver allocations and renderer/tiler
+        # utilization are different measurements and must not be substituted.
+        def counter(name):
+            match = re.search(r'"' + re.escape(name) + r'"\s*=\s*(\d+)', ioreg)
+            return int(match.group(1)) if match else None
+        usage = counter("Device Utilization %")
+        memory = counter("In use system memory")
+        gpu = {"name": chip or "Apple Silicon", "memory_total_mb": total // 1024**2,
+               "memory_used_mb": None, "utilization_percent": None,
+               "temperature_c": None, "source": "macos-agx-ioreg"}
+        if usage is not None and 0 <= usage <= 100:
+            gpu["utilization_percent"] = usage
+        if memory is not None and total > 0 and 0 <= memory <= total:
+            gpu["memory_used_mb"] = memory // 1024**2
+        payload = {"schema_version": "ods.host-system-metrics.v1", "platform": "Darwin",
+                   "cpu": cpu, "ram": ram, "gpu": gpu}
+        _darwin_metrics_cached = (time.monotonic(), payload)
+        return payload
+
+
 class AgentHandler(BaseHTTPRequestHandler):
     # Dashboard API keeps a small connection pool to avoid exhausting macOS
     # ephemeral ports when requests traverse the private Colima TCP bridge.
@@ -7621,6 +7691,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return
             json_response(self, 200 if value is not None else 404,
                           {'operation': value} if value is not None else {'error': 'Operation not found'})
+        elif path == "/v1/system/metrics":
+            self._handle_system_metrics()
         elif path == "/v1/gpu/metrics":
             self._handle_gpu_metrics()
         elif path == "/v1/llm/status":
@@ -8160,6 +8232,16 @@ class AgentHandler(BaseHTTPRequestHandler):
                 json_response(self, 503, {"error": "Host inference telemetry is unavailable"})
             return
         json_response(self, 200, status)
+
+    def _handle_system_metrics(self):
+        """Expose physical host counters to authenticated VM/container clients."""
+        if not check_auth(self):
+            return
+        metrics = _darwin_system_metrics()
+        if metrics is None:
+            json_response(self, 503, {"error": "Host system telemetry is unavailable"})
+            return
+        json_response(self, 200, metrics)
 
     def _handle_gpu_metrics(self):
         """Return host GPU counters that Docker Desktop cannot expose."""

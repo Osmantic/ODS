@@ -8680,6 +8680,9 @@ class TestObservabilityWire:
         monkeypatch.setattr(_mod, "_windows_gpu_metrics", lambda: {
             "schema_version": "ods.host-gpu-metrics.v1", "name": "GPU",
         })
+        monkeypatch.setattr(_mod, "_darwin_system_metrics", lambda: {
+            "schema_version": "ods.host-system-metrics.v1", "platform": "Darwin",
+        })
         monkeypatch.setattr(_mod, "_windows_llm_status", lambda: {
             "schema_version": "ods.host-llm-status.v1", "health": {"status": "ok"},
         })
@@ -8698,6 +8701,7 @@ class TestObservabilityWire:
 
             expected = {
                 "/v1/gpu/metrics": "ods.host-gpu-metrics.v1",
+                "/v1/system/metrics": "ods.host-system-metrics.v1",
                 "/v1/llm/status": "ods.host-llm-status.v1",
                 "/v1/service/health": "ods.host-service-health.v1",
             }
@@ -8849,3 +8853,69 @@ def test_install_operation_http_observation_is_authenticated_and_bound(tmp_path,
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+class TestDarwinSystemMetrics:
+    def test_native_sample_and_missing_sensors(self, monkeypatch):
+        fixture = json.loads((Path(__file__).parent / "fixtures/mac-native-telemetry.json").read_text())
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(_mod, "_darwin_metrics_cached", (0, None))
+        commands = []
+        def run(args, **kwargs):
+            commands.append(args)
+            assert 0 < kwargs["timeout"] <= 2
+            name = Path(args[0]).name
+            key = {"top": "top", "vm_stat": "vm_stat", "ioreg": "ioreg"}.get(name)
+            if name == "sysctl": key = "memory" if args[-1] == "hw.memsize" else "chip"
+            return types.SimpleNamespace(returncode=0, stdout=fixture[key])
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        data = _mod._darwin_system_metrics()
+        assert data["cpu"] == {"percent": 7.6, "temp_c": None, "scope": "host", "source": "macos-top"}
+        assert data["ram"]["total_gb"] == 16
+        assert data["ram"]["used_gb"] == 13.1
+        assert data["gpu"]["utilization_percent"] == 99
+        assert data["gpu"]["memory_used_mb"] == 8428
+        assert data["gpu"]["temperature_c"] is None
+        assert _mod._darwin_system_metrics() is data
+        assert len(commands) == 5
+        # Failure is not zero usage, nor a fabricated thermal reading.
+        monkeypatch.setattr(_mod, "_darwin_metrics_cached", (0, None))
+        monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(subprocess.TimeoutExpired(a[0], 4)))
+        failed = _mod._darwin_system_metrics()
+        assert failed["cpu"]["percent"] is None
+        assert failed["ram"]["used_gb"] is None
+        assert failed["gpu"]["utilization_percent"] is None
+
+    def test_other_hosts_and_auth_do_not_probe(self, monkeypatch):
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **kw: pytest.fail("must not execute"))
+        assert _mod._darwin_system_metrics() is None
+        monkeypatch.setattr(_mod, "check_auth", lambda h: False)
+        monkeypatch.setattr(_mod, "_darwin_system_metrics", lambda: pytest.fail("unauthorized probe"))
+        _mod.AgentHandler._handle_system_metrics(object())
+
+    def test_system_endpoint_unavailable(self, monkeypatch):
+        responses = []
+        monkeypatch.setattr(_mod, "check_auth", lambda h: True)
+        monkeypatch.setattr(_mod, "_darwin_system_metrics", lambda: None)
+        monkeypatch.setattr(_mod, "json_response", lambda h, status, data: responses.append(status))
+        _mod.AgentHandler._handle_system_metrics(object())
+        assert responses == [503]
+
+
+def test_darwin_system_metrics_has_one_total_command_budget(monkeypatch):
+    monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_mod, "_darwin_metrics_cached", (0, None))
+    now = [100.0]
+    monkeypatch.setattr(_mod.time, "monotonic", lambda: now[0])
+    calls = []
+    def run(args, **kwargs):
+        calls.append(args)
+        now[0] += kwargs["timeout"]
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    data = _mod._darwin_system_metrics()
+    assert len(calls) == 2
+    assert now[0] == 104
+    assert data["cpu"]["percent"] is None
+    assert data["ram"]["used_gb"] is None

@@ -19,6 +19,7 @@ import httpx
 
 from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, read_live_env_value
 from env_values import parse_env_value
+from host_metrics import apple_host_metrics, linux_scope
 from host_agent_client import AgentClientError, async_request_json as request_agent_json
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
 from service_health_dns import ServiceHealthResolver
@@ -1090,7 +1091,7 @@ def get_uptime() -> int:
 
 def _get_cpu_metrics_linux() -> dict:
     """Get CPU usage from /proc/stat (Linux only)."""
-    result = {"percent": 0, "temp_c": None}
+    result = {"percent": None, "temp_c": None}
     try:
         with open("/proc/stat") as f:
             line = f.readline()
@@ -1105,7 +1106,7 @@ def _get_cpu_metrics_linux() -> dict:
             get_cpu_metrics._prev = (idle, total)
             if d_total > 0:
                 result["percent"] = max(0.0, min(100.0, round((1 - d_idle / d_total) * 100, 1)))
-    except OSError as e:
+    except (OSError, ValueError) as e:
         logger.debug("Failed to read /proc/stat: %s", e)
 
     try:
@@ -1138,7 +1139,7 @@ def _get_cpu_metrics_linux() -> dict:
 
 def _get_cpu_metrics_darwin() -> dict:
     """Get CPU usage on macOS via host_processor_info."""
-    result = {"percent": 0, "temp_c": None}
+    result = {"percent": None, "temp_c": None}
     try:
         import subprocess
         out = subprocess.run(
@@ -1159,15 +1160,17 @@ def get_cpu_metrics() -> dict:
     """Get CPU usage percentage and temperature (cross-platform)."""
     _system = platform.system()
     if _system == "Linux":
-        return _get_cpu_metrics_linux()
+        if os.environ.get("GPU_BACKEND", "").lower() == "apple":
+            return apple_host_metrics()["cpu"]
+        return {**_get_cpu_metrics_linux(), "scope": linux_scope(), "source": "linux-procfs"}
     elif _system == "Darwin":
-        return _get_cpu_metrics_darwin()
-    return {"percent": 0, "temp_c": None}
+        return {**_get_cpu_metrics_darwin(), "scope": "host", "source": "macos-top"}
+    return {"percent": None, "temp_c": None}
 
 
 def _get_ram_metrics_linux() -> dict:
     """Get RAM usage from /proc/meminfo (Linux only)."""
-    result = {"used_gb": 0, "total_gb": 0, "percent": 0}
+    result = {"used_gb": None, "total_gb": None, "percent": None}
     try:
         meminfo = {}
         with open("/proc/meminfo") as f:
@@ -1176,31 +1179,22 @@ def _get_ram_metrics_linux() -> dict:
                 if len(parts) >= 2:
                     meminfo[parts[0].rstrip(":")] = int(parts[1])
         total = meminfo.get("MemTotal", 0)
-        available = meminfo.get("MemAvailable", 0)
+        if total <= 0 or "MemAvailable" not in meminfo:
+            return result
+        available = meminfo["MemAvailable"]
         used = max(0, total - available)
         result["total_gb"] = round(total / (1024 * 1024), 1)
         result["used_gb"] = round(used / (1024 * 1024), 1)
         if total > 0:
             result["percent"] = max(0.0, min(100.0, round(used / total * 100, 1)))
-        # On Apple Silicon, override total_gb with the host's actual RAM
-        host_ram_gb_str = os.environ.get("HOST_RAM_GB", "")
-        gpu_backend = os.environ.get("GPU_BACKEND", "").lower()
-        if gpu_backend == "apple" and host_ram_gb_str:
-            try:
-                host_ram_gb = float(host_ram_gb_str)
-                if host_ram_gb > 0:
-                    result["total_gb"] = round(host_ram_gb, 1)
-                    result["percent"] = max(0.0, min(100.0, round(used / (host_ram_gb * 1024 * 1024) * 100, 1)))
-            except ValueError:
-                pass
-    except OSError as e:
+    except (OSError, ValueError) as e:
         logger.debug("Failed to read /proc/meminfo: %s", e)
     return result
 
 
 def _get_ram_metrics_sysctl() -> dict:
     """Get RAM usage on macOS via sysctl."""
-    result = {"used_gb": 0, "total_gb": 0, "percent": 0}
+    result = {"used_gb": None, "total_gb": None, "percent": None}
     try:
         import subprocess
         out = subprocess.run(
@@ -1209,6 +1203,8 @@ def _get_ram_metrics_sysctl() -> dict:
         )
         if out.returncode == 0:
             total_bytes = int(out.stdout.strip())
+            if total_bytes <= 0:
+                return result
             total_gb = total_bytes / (1024 ** 3)
             result["total_gb"] = round(total_gb, 1)
             # vm_stat for used memory
@@ -1222,11 +1218,13 @@ def _get_ram_metrics_sysctl() -> dict:
                     match = re.match(r"(.+?):\s+(\d+)", line)
                     if match:
                         pages[match.group(1).strip()] = int(match.group(2))
-                page_size = 16384  # default on Apple Silicon
+                page_size = None
                 ps_match = re.search(r"page size of (\d+) bytes", vm.stdout)
                 if ps_match:
                     page_size = int(ps_match.group(1))
-                active = pages.get("Pages active", 0)
+                if page_size is None or not all(key in pages for key in ("Pages active", "Pages wired down", "Pages occupied by compressor")):
+                    return result
+                active = pages["Pages active"]
                 wired = pages.get("Pages wired down", 0)
                 compressed = pages.get("Pages occupied by compressor", 0)
                 used_bytes = (active + wired + compressed) * page_size
@@ -1242,10 +1240,12 @@ def get_ram_metrics() -> dict:
     """Get RAM usage (cross-platform)."""
     _system = platform.system()
     if _system == "Linux":
-        return _get_ram_metrics_linux()
+        if os.environ.get("GPU_BACKEND", "").lower() == "apple":
+            return apple_host_metrics()["ram"]
+        return {**_get_ram_metrics_linux(), "scope": linux_scope(), "source": "linux-procfs"}
     elif _system == "Darwin":
-        return _get_ram_metrics_sysctl()
-    return {"used_gb": 0, "total_gb": 0, "percent": 0}
+        return {**_get_ram_metrics_sysctl(), "scope": "host", "source": "macos-vm-stat"}
+    return {"used_gb": None, "total_gb": None, "percent": None}
 
 
 def string_extract_domain_names_safe(text: str) -> list:
