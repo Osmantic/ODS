@@ -54,7 +54,7 @@ from helpers import (
     get_llama_metrics, get_loaded_model, get_llama_context_size,
     _get_httpx_client, shutdown_service_health_client, shutdown_llm_client,
 )
-from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
+from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT, is_context_sufficient
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
@@ -544,8 +544,8 @@ def _build_model_readiness_payload(
 ) -> dict[str, Any]:
     configured_context = model_info.context_length if model_info else None
     effective_context = runtime_context or configured_context
-    meets_hermes_minimum = bool(effective_context and effective_context >= HERMES_MIN_CONTEXT)
-    meets_hermes_target = bool(effective_context and effective_context >= HERMES_TARGET_CONTEXT)
+    meets_hermes_minimum = is_context_sufficient(effective_context or 0, HERMES_MIN_CONTEXT)
+    meets_hermes_target = is_context_sufficient(effective_context or 0, HERMES_TARGET_CONTEXT)
     has_loaded_model = bool(loaded_model)
     ready = has_loaded_model and meets_hermes_minimum
 
