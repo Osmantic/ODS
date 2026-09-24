@@ -25,15 +25,26 @@ export function requestsBehaviorPreservation(text) {
     /\b(?:preserve|retain|keep|maintain)\b[^.!?;\n]{0,160}\b(?:behaviou?r|functionality|interactions?)\b/i.test(clause));
 }
 
-export function boundVisibilityInspection(params, result, preview) {
+function boundInspection(params, result, preview, acceptsPlan) {
   try {
     if (!preview || result?.isError || !result?.details) return undefined;
     const request = normalizeWorkspacePreviewInspectionParams(params);
     if (request.siteId !== preview.siteId || request.sha256 !== preview.sha256) return undefined;
     const receipt = validateWorkspacePreviewInspectionReceipt(result.details, request);
-    if (receipt.status !== 'passed' || !hasVisibilityTransitionPlan(request)) return undefined;
+    if (receipt.status !== 'passed' || !acceptsPlan(request)) return undefined;
     return Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256, planSha256: receipt.planSha256});
   } catch { return undefined; }
+}
+
+export function boundVisibilityInspection(params, result, preview) {
+  return boundInspection(params, result, preview, hasVisibilityTransitionPlan);
+}
+
+// A read-only inspection may preserve existing interaction evidence. It cannot
+// establish that evidence, and a click plan without a transition is not static.
+export function boundStaticPreviewInspection(params, result, preview) {
+  return boundInspection(params, result, preview,
+    request => request.steps.every(step => step.action !== 'click'));
 }
 
 export function visibilityInspectionMatches(proof, preview) {

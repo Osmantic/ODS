@@ -25,7 +25,7 @@ import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLane
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
-import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection,
+import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
   visibilityInspectionMatches, visibilityInspectionInstruction } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, completedPreviewInspection, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
@@ -6657,6 +6657,15 @@ export function createToolLoopGuard({
     while (pendingToolRuns.size >= MAX_TRACKED_RUNS * 4) {
       pendingToolRuns.delete(pendingToolRuns.keys().next().value);
     }
+    const state = runs.get(runId);
+    const priorVisibilityInspection = selectedToolName === PREVIEW_INSPECTION_TOOL
+      ? state?.workspaceVisibilityInspection : undefined;
+    // Keep the previous proof with this exact pending call. Until its receipt
+    // validates, neither unfinished nor mismatched inspections retain a pass.
+    if (selectedToolName === PREVIEW_INSPECTION_TOOL && state) {
+      state.workspaceVisibilityInspection = undefined;
+      state.workspaceInspectionGeneration = (state.workspaceInspectionGeneration ?? 0) + 1;
+    }
     pendingToolRuns.set(toolCallId, {
       runId,
       selectedToolName,
@@ -6665,6 +6674,8 @@ export function createToolLoopGuard({
       executedParams: selectedToolName === 'exec' ? structuredClone(selectedParams) : undefined,
       inspectionSessionId: runs.get(runId)?.currentSessionId,
       inspectionSessionKey: runs.get(runId)?.currentSessionKey,
+      priorVisibilityInspection,
+      inspectionGeneration: state?.workspaceInspectionGeneration,
       verificationFingerprint,
       transport,
       selectedToolTarget,
@@ -9128,6 +9139,7 @@ export function createToolLoopGuard({
     const pendingToolRun = pendingToolRuns.get(toolCallId);
     if (workspacePreviewInspectionAvailable && pendingToolRun?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
         pendingToolRun.runId === runId && pendingToolRun.transport === toolName &&
+        pendingToolRun.inspectionGeneration === state.workspaceInspectionGeneration &&
         pendingToolRun.inspectionSessionId === state.currentSessionId &&
         pendingToolRun.inspectionSessionKey === state.currentSessionKey &&
         (!context?.sessionId || context.sessionId === state.currentSessionId) &&
@@ -9138,11 +9150,18 @@ export function createToolLoopGuard({
       const inspected = toolName === PREVIEW_INSPECTION_TOOL ? event
         : toolSearchEventEnvelope(event, PREVIEW_INSPECTION_TOOL, 'pixel-ods');
       if (inspected && isDeepStrictEqual(inspected.params, pendingToolRun.selectedParams)) {
-        // Even a later failed inspection replaces prior success for this run.
+        // A successful read-only check of the same snapshot does not erase an
+        // earlier interaction check. Failed or unbound receipts still revoke it.
         const proof = !failedToolOutcome(event)
           ? boundVisibilityInspection(inspected.params, inspected.result, state.workspacePreview) : undefined;
+        const priorProof = pendingToolRun.priorVisibilityInspection;
+        const retainInteraction = !failedToolOutcome(event) &&
+          visibilityInspectionMatches(priorProof, state.workspacePreview) &&
+          priorProof.sessionId === state.currentSessionId && priorProof.sessionKey === state.currentSessionKey &&
+          boundStaticPreviewInspection(inspected.params, inspected.result, state.workspacePreview);
         state.workspaceVisibilityInspection = proof ? Object.freeze({...proof,
-          sessionId: state.currentSessionId, sessionKey: state.currentSessionKey}) : undefined;
+          sessionId: state.currentSessionId, sessionKey: state.currentSessionKey})
+          : retainInteraction ? priorProof : undefined;
         state.workspaceVisibilityInspectionUnavailable =
           inspected.result?.details?.errorCode === 'unavailable';
       }

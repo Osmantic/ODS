@@ -326,3 +326,54 @@ test('bounded session preview eviction also evicts the associated obligation',()
   const next=revisePublishedSite(guard,preview);
   assert.doesNotMatch(guard.verificationForRun(next.ctx.runId).text,/show\/hide interaction/);
 });
+
+for (const wrapped of [false,true]) for (const fault of [
+  'none','no-prior-proof','failed','unavailable','inner-error','outer-error','receipt-sha','receipt-plan',
+  'params','session','session-key','source','changed-bytes','incomplete-click',
+]) test(`static inspection preserves only existing bound interaction: wrapped=${wrapped}, fault=${fault}`,()=>{
+  const {guard,preview}=setup();
+  if (fault!=='no-prior-proof') {
+    const first=inspection(guard,plan(preview),{wrapped,id:'mobile-transition'});
+    guard.afterToolCall({...first.event,result:first.result},first.ctx);
+    assert.equal(guard.verificationForRun('run').status,'passed');
+  }
+  if (fault==='changed-bytes') call(guard,'write',{path:'site/index.html',content:'<!doctype html><h1>Changed</h1>'},'changed-write',{content:[{type:'text',text:'Successfully wrote file.'}]});
+  const params={...plan(preview),viewport:{width:1024,height:768},steps:[
+    {action:'assert-visible',locator:{selector:'button'}},
+    {action:'assert-hidden',locator:{selector:'#details'}},
+  ]};
+  if (fault==='incomplete-click') params.steps.push({action:'click',locator:{role:'button',name:'Show details',exact:true}});
+  const next=inspection(guard,params,{wrapped,id:'desktop-static'});
+  const result=structuredClone(next.result),event={...next.event},ctx={...next.ctx};
+  const inner=wrapped?result.details.result:result;
+  if (fault==='failed') {inner.details.status='failed';inner.details.steps[0].status='failed';}
+  if (fault==='unavailable') {inner.isError=true;inner.details={errorCode:'unavailable'};}
+  if (fault==='inner-error') inner.isError=true;
+  if (fault==='outer-error') result.isError=true;
+  if (fault==='receipt-sha') inner.details.sha256='a'.repeat(64);
+  if (fault==='receipt-plan') inner.details.planSha256='b'.repeat(64);
+  if (fault==='params') event.params=wrapped?{...event.params,args:{...params,viewport:{width:1025,height:768}}}:{...params,viewport:{width:1025,height:768}};
+  if (fault==='session') ctx.sessionId='other';
+  if (fault==='session-key') ctx.sessionKey='other';
+  if (fault==='source') { if (wrapped) result.details.tool.sourceName='foreign'; else event.toolName='foreign'; }
+  guard.afterToolCall({...event,result},ctx);
+  assert.equal(guard.verificationForRun('run').status,fault==='none'?'passed':'failed');
+  if (fault==='none') assert.equal(guard.beforeAgentFinalize({},context),undefined);
+});
+
+for (const wrapped of [false,true]) test(`unfinished or stale static receipt cannot restore proof after a newer failure: wrapped=${wrapped}`,()=>{
+  const {guard,preview}=setup();
+  const first=inspection(guard,plan(preview),{wrapped,id:'transition'});
+  guard.afterToolCall({...first.event,result:first.result},first.ctx);
+  assert.equal(guard.verificationForRun('run').status,'passed');
+  const params={...plan(preview),steps:[{action:'assert-visible',locator:{selector:'button'}}]};
+  const older=inspection(guard,params,{wrapped,id:'pending-static'});
+  assert.equal(guard.verificationForRun('run').status,'failed');
+  const newer=inspection(guard,params,{wrapped,id:'newer-static'});
+  const inner=wrapped?newer.result.details.result:newer.result;
+  inner.isError=true;
+  guard.afterToolCall({...newer.event,result:newer.result},newer.ctx);
+  assert.equal(guard.verificationForRun('run').status,'failed');
+  guard.afterToolCall({...older.event,result:older.result},older.ctx);
+  assert.equal(guard.verificationForRun('run').status,'failed');
+});
