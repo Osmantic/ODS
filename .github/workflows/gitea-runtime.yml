@@ -1,0 +1,33 @@
+name: Gitea runtime contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/gitea-runtime.yml'
+      - 'ods/extensions/library/services/gitea/**'
+      - 'ods/tests/test_gitea_rootless_state.py'
+  push:
+    branches: [main, public-beta]
+    paths:
+      - '.github/workflows/gitea-runtime.yml'
+      - 'ods/extensions/library/services/gitea/**'
+      - 'ods/tests/test_gitea_rootless_state.py'
+
+permissions:
+  contents: read
+
+jobs:
+  gitea-state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'pytest>=8,<9' 'httpx>=0.27,<0.29' 'PyYAML>=6,<7'
+      - name: Fresh state, legacy configuration migration, and private repository persistence
+        working-directory: ods
+        env:
+          ODS_TEST_GITEA_DOCKER: '1'
+        run: python -m pytest -q tests/test_gitea_rootless_state.py
