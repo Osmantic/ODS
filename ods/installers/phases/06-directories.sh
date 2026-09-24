@@ -670,6 +670,22 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         return 1
     fi
 
+    # Every service port the .env template writes must survive a rerun:
+    # explicit install-time env wins, then the previous .env value, then the
+    # manifest default. Hardcoding the default here rewrote customized ports
+    # back to stock values on every reinstall.
+    WEBUI_PORT_VALUE="$(_env_get_explicit_first WEBUI_PORT "3000")"
+    SEARXNG_PORT_VALUE="$(_env_get_explicit_first SEARXNG_PORT "8888")"
+    PERPLEXICA_PORT_VALUE="$(_env_get_explicit_first PERPLEXICA_PORT "3004")"
+    TTS_PORT_VALUE="$(_env_get_explicit_first TTS_PORT "8880")"
+    N8N_PORT_VALUE="$(_env_get_explicit_first N8N_PORT "5678")"
+    QDRANT_PORT_VALUE="$(_env_get_explicit_first QDRANT_PORT "6333")"
+    QDRANT_GRPC_PORT_VALUE="$(_env_get_explicit_first QDRANT_GRPC_PORT "6334")"
+    EMBEDDINGS_PORT_VALUE="$(_env_get_explicit_first EMBEDDINGS_PORT "8090")"
+    LITELLM_PORT_VALUE="$(_env_get_explicit_first LITELLM_PORT "4000")"
+    OPENCLAW_PORT_VALUE="$(_env_get_explicit_first OPENCLAW_PORT "7860")"
+    HERMES_PROXY_PORT_VALUE="$(_env_get_explicit_first HERMES_PROXY_PORT "9120")"
+
     # Secrets: reuse existing values, generate only if missing
     WEBUI_SECRET=$(_phase06_env_hex_secret WEBUI_SECRET 32)
     N8N_PASS=$(_env_get N8N_PASS "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
@@ -1376,17 +1392,17 @@ fi)
 
 #=== Ports ===
 OLLAMA_PORT=$(dotenv_value "${OLLAMA_PORT_VALUE}")
-WEBUI_PORT=3000
-SEARXNG_PORT=8888
-PERPLEXICA_PORT=3004
+WEBUI_PORT=$(dotenv_value "${WEBUI_PORT_VALUE}")
+SEARXNG_PORT=$(dotenv_value "${SEARXNG_PORT_VALUE}")
+PERPLEXICA_PORT=$(dotenv_value "${PERPLEXICA_PORT_VALUE}")
 WHISPER_PORT=$(dotenv_value "${WHISPER_PORT_VALUE}")
-TTS_PORT=8880
-N8N_PORT=5678
-QDRANT_PORT=6333
-QDRANT_GRPC_PORT=6334
-EMBEDDINGS_PORT=8090
-LITELLM_PORT=4000
-OPENCLAW_PORT=7860
+TTS_PORT=$(dotenv_value "${TTS_PORT_VALUE}")
+N8N_PORT=$(dotenv_value "${N8N_PORT_VALUE}")
+QDRANT_PORT=$(dotenv_value "${QDRANT_PORT_VALUE}")
+QDRANT_GRPC_PORT=$(dotenv_value "${QDRANT_GRPC_PORT_VALUE}")
+EMBEDDINGS_PORT=$(dotenv_value "${EMBEDDINGS_PORT_VALUE}")
+LITELLM_PORT=$(dotenv_value "${LITELLM_PORT_VALUE}")
+OPENCLAW_PORT=$(dotenv_value "${OPENCLAW_PORT_VALUE}")
 LANGFUSE_PORT=$(dotenv_value "${LANGFUSE_PORT}")
 
 #=== Hermes Agent ===
@@ -1400,7 +1416,7 @@ LANGFUSE_PORT=$(dotenv_value "${LANGFUSE_PORT}")
 HERMES_LLM_BASE_URL=$(dotenv_value "${HERMES_LLM_BASE_URL_VALUE}")
 HERMES_LLM_API_KEY=$(dotenv_value "${HERMES_LLM_API_KEY_VALUE}")
 HERMES_LANGUAGE=${HERMES_LANGUAGE:-en}
-HERMES_PROXY_PORT=${HERMES_PROXY_PORT:-9120}
+HERMES_PROXY_PORT=$(dotenv_value "${HERMES_PROXY_PORT_VALUE}")
 HERMES_PROXY_UPSTREAM=${HERMES_PROXY_UPSTREAM:-ods-hermes:9119}
 ODS_AUTH_UPSTREAM=${ODS_AUTH_UPSTREAM:-ods-dashboard-api:3002}
 
