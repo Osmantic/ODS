@@ -5,6 +5,7 @@ service:
   name: Jupyter
   aliases: [jupyter-notebook, notebook]
   container_name: ods-jupyter
+  container_uid: 1000
   host_env: JUPYTER_HOST
   default_host: jupyter
   port: 8888
