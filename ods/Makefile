@@ -50,6 +50,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-preflight-dashboard-port.sh
 	@bash tests/test-wsl-broken-docker-shim.sh
 	@bash tests/test-ui-missing-container-fast-fail.sh
+	@bash tests/test-preflight-log-writable.sh
 	@echo ""
 	@echo "=== ods-doctor rootless subordinate IDs ==="
 	@bash tests/test-ods-doctor-rootless-subid.sh

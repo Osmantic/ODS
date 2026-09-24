@@ -92,7 +92,14 @@ pass() { log "${GREEN}✓${NC} $1"; PASS=$((PASS+1)); }
 fail() { log "${RED}✗${NC} $1"; FAIL=$((FAIL+1)); }
 warn() { log "${YELLOW}⚠${NC} $1"; WARN=$((WARN+1)); }
 
-echo "" > "$LOG_FILE"
+# Name the problem instead of dying on the bare redirect: under `set -e` an
+# unwritable install dir exits here with a status and no actionable context.
+if ! : > "$LOG_FILE"; then
+    echo "ERROR: cannot create the preflight log: $LOG_FILE" >&2
+    echo "       $ODS_DIR is not writable by $(id -un). Fix ownership and re-run:" >&2
+    echo "       sudo chown -R \"$(id -un):$(id -gn)\" \"$ODS_DIR\"" >&2
+    exit 1
+fi
 log "========================================"
 log "ODS Pre-flight Check"
 log "Started: $(date)"
