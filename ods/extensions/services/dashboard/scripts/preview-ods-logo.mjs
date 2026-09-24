@@ -8,6 +8,7 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const entry = `import React,{useState,useEffect} from 'react';
 import {createRoot} from 'react-dom/client';
 import ODSLogo from '/src/components/ODSLogo.jsx';
+import {LayoutDashboard,Cpu,Settings} from 'lucide-react';
 import {WALLPAPERS} from '/src/lib/wallpapers.js';
 import '/src/index.css';import '/src/pixel-workspace.css';import '/src/wallpaper-themes.css';
 function Preview(){
@@ -22,7 +23,7 @@ function Preview(){
  {[...WALLPAPERS,{id:'bright',name:'Bright contrast'},{id:'dark',name:'Dark contrast'},{id:'colorful',name:'Colorful contrast'}].map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
  </select></label><button onClick={()=>setCollapsed(!collapsed)} style={{padding:8,border:'1px solid #ffffff40',borderRadius:6}}>{collapsed?'Expand sidebar':'Collapse sidebar'}</button>
  <span style={{fontSize:12}}>Isolated logo preview — no live services or preferences</span></div>
- <div className="pixel-app"><aside className={'pixel-sidebar '+(collapsed?'is-collapsed':'')} aria-label="ODS navigation"><div className="pixel-brand ods-brand"><a href="#" aria-label="ODS home"><ODSLogo/></a></div><nav className="pixel-nav"><a className="pixel-nav-item is-active" href="#">Dashboard</a><a className="pixel-nav-item" href="#">Models</a><a className="pixel-nav-item" href="#">Settings</a></nav></aside><main className="pixel-workspace dashboard-market-shell" style={{padding:'130px 40px'}}><h1 style={{fontSize:28,color:'var(--pixel-text)'}}>Frosted OS mark</h1><p style={{marginTop:16,color:'var(--pixel-muted)',maxWidth:520}}>The original silhouette and responsive size remain unchanged. Wallpaper color passes through its translucent surface.</p></main></div></>
+ <div className={'pixel-app flex min-h-screen bg-theme-bg text-theme-text relative '+(collapsed?'sidebar-collapsed':'')}><aside className={'pixel-sidebar '+(collapsed?'is-collapsed':'')} aria-label="ODS navigation"><div className="pixel-brand ods-brand"><a href="#" aria-label="ODS home"><ODSLogo/></a></div><nav className="pixel-nav"><a className="pixel-nav-item is-active" href="#" aria-label="Dashboard"><LayoutDashboard size={16}/><span>Dashboard</span></a><a className="pixel-nav-item" href="#" aria-label="Models"><Cpu size={16}/><span>Models</span></a><a className="pixel-nav-item" href="#" aria-label="Settings"><Settings size={16}/><span>Settings</span></a></nav></aside><main className="pixel-workspace dashboard-market-shell" style={{padding:'130px 40px'}}><h1 style={{fontSize:28,color:'var(--pixel-text)'}}>Frosted OS mark</h1><p style={{marginTop:16,color:'var(--pixel-muted)',maxWidth:520}}>The original silhouette and responsive size remain unchanged. Wallpaper color passes through its translucent surface.</p></main></div></>
 }
 createRoot(document.getElementById('root')).render(<Preview/>);`
 const server=await createServer({root,appType:'custom',server:{host:'127.0.0.1',port:4178,strictPort:true},plugins:[{

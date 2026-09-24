@@ -35,6 +35,19 @@
   --ods-logo-fill:rgb(var(--theme-text,228 228 231) / .22);
   --ods-logo-base:rgb(var(--theme-text,228 228 231) / .46);
 }
+/* Fine strokes need a little more contrast at the 40px navigation size. */
+:root .pixel-sidebar.is-collapsed .ods-frosted-logo {
+  --ods-logo-highlight:rgb(var(--theme-text,228 228 231) / .85);
+  --ods-logo-fill:rgb(var(--theme-text,228 228 231) / .5);
+  --ods-logo-base:rgb(var(--theme-text,228 228 231) / .65);
+}
+@media (max-width:639px) {
+  :root .pixel-sidebar .ods-frosted-logo {
+    --ods-logo-highlight:rgb(var(--theme-text,228 228 231) / .85);
+    --ods-logo-fill:rgb(var(--theme-text,228 228 231) / .5);
+    --ods-logo-base:rgb(var(--theme-text,228 228 231) / .65);
+  }
+}
 @media (prefers-reduced-transparency:reduce) {
   .ods-frosted-logo[data-mask-ready] .ods-frosted-mark {
     background:rgb(var(--theme-text,228 228 231));
