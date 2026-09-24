@@ -60,6 +60,15 @@ class TestReadGpuTopology:
         monkeypatch.setenv("ODS_INSTALL_DIR", str(tmp_path))
         assert read_gpu_topology() is None
 
+    def test_returns_none_on_invalid_payload_shape(self, monkeypatch, tmp_path):
+        topo_file = tmp_path / "config" / "gpu-topology.json"
+        topo_file.parent.mkdir()
+        monkeypatch.setenv("ODS_INSTALL_DIR", str(tmp_path))
+
+        for payload in ([], {"gpus": {}}, {"gpus": [None]}):
+            topo_file.write_text(json.dumps(payload), encoding="utf-8")
+            assert read_gpu_topology() is None
+
 
 # ============================================================================
 # decode_gpu_assignment
@@ -110,6 +119,19 @@ class TestDecodeGpuAssignment:
         bad = base64.b64encode(b"not valid json {").decode()
         monkeypatch.setenv("GPU_ASSIGNMENT_JSON_B64", bad)
         assert decode_gpu_assignment() is None
+
+    def test_returns_none_on_invalid_payload_shape(self, monkeypatch):
+        invalid_payloads = (
+            [],
+            {},
+            {"gpu_assignment": []},
+            {"gpu_assignment": {"services": []}},
+            {"gpu_assignment": {"services": {"llama": None}}},
+        )
+
+        for payload in invalid_payloads:
+            monkeypatch.setenv("GPU_ASSIGNMENT_JSON_B64", _make_assignment_b64(payload))
+            assert decode_gpu_assignment() is None
 
     def test_live_empty_assignment_does_not_fall_back_to_stale_container_env(
         self,
