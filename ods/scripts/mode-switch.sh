@@ -25,8 +25,21 @@ success() { echo -e "${GREEN}✓${NC} $1"; }
 warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 error() { echo -e "${RED}✗${NC} $1" >&2; exit 1; }
 
-# Update or add a key=value in .env
-# Uses awk index() instead of sed to avoid delimiter collisions
+# Match Docker Compose's last-value precedence for duplicate .env keys.
+env_get_last() {
+    local key="$1"
+    [[ -f "$ENV_FILE" ]] || return 0
+    awk -v key="$key" '
+        index($0, key "=") == 1 {
+            value = substr($0, length(key) + 2)
+            found = 1
+        }
+        END { if (found) print value }
+    ' "$ENV_FILE" | tr -d '"\047\r'
+}
+
+# Update or add a key=value in .env.
+# Uses awk index() instead of sed to avoid delimiter collisions.
 env_set() {
     local key="$1" val="$2"
     # Probe with the same literal-prefix test awk uses below — a regex treats
@@ -48,10 +61,7 @@ env_set() {
 show_status() {
     local current=""
     if [[ -f "$ENV_FILE" ]]; then
-        # `grep` exits 1 when the key is absent and the script runs under
-        # `set -euo pipefail`, so a bare pipeline here aborted the whole script
-        # before the default below could apply — status printed nothing at all.
-        current=$(grep -m1 "^ODS_MODE=" "$ENV_FILE" | cut -d= -f2- | tr -d '"\047\r' || true)
+        current="$(env_get_last ODS_MODE)"
     else
         warn ".env not found at $ENV_FILE — showing defaults"
     fi
@@ -75,7 +85,7 @@ switch_mode() {
     [[ -f "$ENV_FILE" ]] || error ".env not found at $ENV_FILE"
 
     local configured_backend
-    configured_backend=$(grep -m1 "^LLM_BACKEND=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+    configured_backend="$(env_get_last LLM_BACKEND)"
     if [[ "${configured_backend,,}" == "external" ]]; then
         error "External LLM routing is installer-managed. Run './install.sh --no-external-llm' first, then retry the mode switch."
     fi
