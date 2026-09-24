@@ -5,14 +5,18 @@ on:
     branches: [main]
     paths:
       - 'ods/extensions/library/services/*/manifest.yaml'
+      - 'ods/extensions/services/*/manifest.yaml'
       - 'ods/scripts/generate-extensions-catalog.py'
       - 'ods/config/extensions-catalog.json'
+      - '.github/workflows/validate-catalog.yml'
   pull_request:
     branches: [main]
     paths:
       - 'ods/extensions/library/services/*/manifest.yaml'
+      - 'ods/extensions/services/*/manifest.yaml'
       - 'ods/scripts/generate-extensions-catalog.py'
       - 'ods/config/extensions-catalog.json'
+      - '.github/workflows/validate-catalog.yml'
 
 permissions:
   contents: read
