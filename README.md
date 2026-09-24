@@ -20,7 +20,7 @@ It should feel that way for everyone.
 [![License: Apache 2.0 + Pixel ODS-only](https://img.shields.io/badge/License-Apache%202.0%20%2B%20Pixel%20ODS--only-blue.svg)](ods/LICENSING.md)
 [![GitHub Stars](https://img.shields.io/github/stars/Osmantic/ODS)](https://github.com/Osmantic/ODS/stargazers)
 [![ODS V3 Pre-Release](https://img.shields.io/badge/ODS-V3%20Pre--Release-orange)](ods/docs/RELEASE_NOTES_3.0.0.md)
-[![Source tag: v3.0.0](https://img.shields.io/badge/source%20tag-v3.0.0-blue)](https://github.com/Osmantic/ODS/releases/tag/v3.0.0)
+[![Release](https://img.shields.io/badge/release-v3.0.0-blue)](https://github.com/Osmantic/ODS/releases/tag/v3.0.0)
 
 [![Watch the demo](https://img.shields.io/badge/Demo-Watch%20on%20YouTube-red?logo=youtube)](https://youtu.be/nO8xFNHX-HA)
 
@@ -57,7 +57,8 @@ security policy, GitHub workflows, and project coordination docs. The
 `ods/` directory is the product runtime: services, installer phases,
 compose overlays, dashboard, CLI, tests, and operator docs.
 
-**Release consumption:** `v3.0.0` is the source tag for V3 Pre-Release. Its
+**Release consumption:** `v3.0.0` is the latest published source release,
+presented as V3 Pre-Release during public testing and refinement. Its
 GitHub Latest designation does not mark the official V3 launch or establish full
 fleet qualification. `main`
 continues receiving fixes; pin a tag or audited commit and retain its validation

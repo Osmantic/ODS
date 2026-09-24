@@ -6,7 +6,7 @@ ecosystems move quickly. Treat each ref intentionally.
 ## ODS V3 Pre-Release
 
 V3 is in **public testing and refinement ahead of the official V3 launch**.
-The published source snapshot is `v3.0.0`, named **ODS V3 Pre-Release** on GitHub.
+The latest published source release is `v3.0.0`, named **ODS V3 Pre-Release** on GitHub.
 It pins commit `bec0c42e7c9885a5aecd419a166a6a81e0d37236` on September 24, 2026.
 The tag is immutable. Full fleet qualification is still in progress: publication
 and the GitHub Latest label do not mark the official V3 launch or certify user
