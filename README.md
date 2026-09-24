@@ -17,7 +17,7 @@ It should feel that way for everyone.
 
 [![License: Apache 2.0 + Pixel ODS-only](https://img.shields.io/badge/License-Apache%202.0%20%2B%20Pixel%20ODS--only-blue.svg)](ods/LICENSING.md)
 [![GitHub Stars](https://img.shields.io/github/stars/Osmantic/ODS)](https://github.com/Osmantic/ODS/stargazers)
-[![ODS V3](https://img.shields.io/badge/ODS-V3%20candidate-blue)](ods/docs/RELEASE_NOTES_3.0.0.md)
+[![ODS V3](https://img.shields.io/badge/ODS-V3-blue)](ods/docs/RELEASE_NOTES_3.0.0.md)
 [![Release](https://img.shields.io/github/v/release/Osmantic/ODS)](https://github.com/Osmantic/ODS/releases)
 
 [![Watch the demo](https://img.shields.io/badge/Demo-Watch%20on%20YouTube-red?logo=youtube)](https://youtu.be/nO8xFNHX-HA)
@@ -42,8 +42,8 @@ full-model capabilities, lifecycle recovery, and the final User Green gate. See
 [Release Validation](ods/docs/RELEASE_VALIDATION.md) for what a green
 run proves.
 
-**ODS V3 candidate:** `main` now identifies as `3.0.0`, including the accumulated
-Portal and platform changes. Full fleet qualification is incomplete; see the
+**ODS V3 published:** [ODS V3 (`v3.0.0`)](https://github.com/Osmantic/ODS/releases/tag/v3.0.0)
+is available as a pinned source release. Full fleet qualification is incomplete; see the
 [V3 notes](ods/docs/RELEASE_NOTES_3.0.0.md) and the
 [promotion record](ods/docs/PUBLIC_BETA_PROMOTION_2026-09.md) for known task
 limitations, available evidence, and remaining release gates.
@@ -53,11 +53,11 @@ security policy, GitHub workflows, and project coordination docs. The
 `ods/` directory is the product runtime: services, installer phases,
 compose overlays, dashboard, CLI, tests, and operator docs.
 
-**Stable consumption:** `v2.6.0` is the current stable release. `main` moves
-quickly; use it for active development and validation candidates. For forks,
-appliances, labs, or production-like installs, pin a tagged release or audited
-commit and keep your own validation receipt. Stable patch fixes land on
-`release/2.6.x` before being merged forward. See
+**Release consumption:** `v3.0.0` is the latest published source release. Its
+GitHub Latest designation does not establish full fleet qualification. `main`
+continues receiving fixes; pin a tag or audited commit and retain its validation
+receipt when reproducibility matters. V3 fixes land on `main`; `release/2.6.x`
+is the older 2.6 maintenance lane. See
 [Release Channels](ods/docs/RELEASE_CHANNELS.md),
 [Installer Trust](ods/docs/INSTALLER_TRUST.md), and
 [Forkability](ods/docs/FORKABILITY.md).
@@ -480,8 +480,8 @@ Other tools get you part of the way. ODS gets you the whole way.
 | [Headless Setup](ods/docs/HEADLESS-SETUP.md) | QR onboarding, first-boot setup, AP mode, mDNS, and local agent access |
 | [Support Matrix](ods/docs/SUPPORT-MATRIX.md) | Current platform and GPU support status |
 | [Release Validation](ods/docs/RELEASE_VALIDATION.md) | User Green gates and the release-grade fleet/distro validation policy |
-| [V3 Candidate Notes](ods/docs/RELEASE_NOTES_3.0.0.md) | Current V3 version identity and qualification boundaries |
-| [2.6.0 Release Notes](ods/docs/RELEASE_NOTES_2.6.0.md) | Current stable release notes, validation receipt, and known validation boundaries |
+| [V3 Release Notes](ods/docs/RELEASE_NOTES_3.0.0.md) | Published V3 source identity and qualification boundaries |
+| [2.6.0 Release Notes](ods/docs/RELEASE_NOTES_2.6.0.md) | Historical 2.6 release notes, validation receipt, and known validation boundaries |
 | [Validation Matrix](ods/docs/VALIDATION-MATRIX.md) | Sanitized CI, distro lab, and real-hardware fleet release-readiness evidence |
 | [Validation Reproducibility](ods/docs/VALIDATION_REPRODUCIBILITY.md) | How forks and operators can reproduce the validation story on their own hardware |
 | [Offline And Mirroring](ods/docs/OFFLINE_AND_MIRRORING.md) | Pinning, mirroring, and preserving release artifacts for independent operation |

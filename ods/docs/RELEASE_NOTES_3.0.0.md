@@ -1,6 +1,9 @@
-# ODS V3 (3.0.0) candidate notes
+# ODS V3 (3.0.0) release notes
 
-Status: development candidate on `main`; not a published stable release.
+Status: [published source release](https://github.com/Osmantic/ODS/releases/tag/v3.0.0)
+on September 24, 2026, at 13:20:25 UTC. The immutable `v3.0.0` tag points to
+[`bec0c42e7c9885a5aecd419a166a6a81e0d37236`](https://github.com/Osmantic/ODS/commit/bec0c42e7c9885a5aecd419a166a6a81e0d37236).
+Full fleet qualification remains in progress; no full fleet green is claimed.
 
 ODS V3 brings the accumulated Portal/Pixel, installer, lifecycle, model-routing,
 and dashboard work into one product version. See the [changelog](../CHANGELOG.md)
@@ -20,8 +23,14 @@ model-switching qualification. Fresh installs and all remaining release gates
 must then pass against the same final commit. Source tests and CI alone do not
 establish this acceptance.
 
-The published stable baseline remains `v2.6.0`. The `v3.0.0` tag is reserved for
-the final qualified commit and must not be moved after publication. This change
-does not create a Git tag, publish a GitHub release, or claim installed upgrade,
-backup, rollback, or reboot acceptance. Pin an audited commit while evaluating
-V3; normal bootstrap commands follow moving `main`.
+At publication, zero of the six required machines had completed qualification
+against one common head. The GitHub Latest designation records publication,
+not successful Pixel/Portal, model-switching, installed upgrade, backup,
+rollback, or reboot acceptance. Later fixes and test receipts belong to their
+own commits; this tag will not move to absorb them.
+
+Normal bootstrap commands continue following moving `main`. Use `ODS_REF=v3.0.0`
+or the exact tagged commit for reproducibility, and read the qualification
+boundaries before relying on a deployment. Publishing the release can advertise
+an available update to older versions; it does not automatically install one.
+The existing native source-update and recovery restrictions still apply.

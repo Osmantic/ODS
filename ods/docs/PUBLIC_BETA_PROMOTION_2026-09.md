@@ -9,8 +9,9 @@ acceptance below. This record does not assert a new physical-fleet result.
 
 This record accompanies [promotion PR #6515](https://github.com/Osmantic/ODS/pull/6515).
 It describes a move into the development `main` branch, not a stable release,
-new version number, or change to `release/2.6.x`. The current stable tag remains
-`v2.6.0`; see [Release Channels](RELEASE_CHANNELS.md).
+new version number, or change to `release/2.6.x`. At promotion, the published
+stable tag was `v2.6.0`. The subsequent [V3 publication](RELEASE_NOTES_3.0.0.md)
+is a separate event; see [Release Channels](RELEASE_CHANNELS.md).
 
 ## Candidate and user impact
 
@@ -22,7 +23,7 @@ Evidence from the initial candidate must not be relabeled as a later-head pass.
 
 The promotion includes the bundled Portal assistant and its Pixel runtime,
 dashboard and model-routing changes, expanded native platform handling, and
-installer/lifecycle fixes. See [V3 candidate changelog](../CHANGELOG.md#300---2026-09-24).
+installer/lifecycle fixes. See [V3 changelog](../CHANGELOG.md#300---2026-09-24).
 Native Windows does not install the Portal host runtime; qualifying WSL
 installations use the Linux path. Platform eligibility is not a guarantee of
 agent task quality.
@@ -68,7 +69,7 @@ These restrictions expose unsupported operations rather than claiming a
 successful upgrade or complete backup. Native update and disaster recovery
 remain release acceptance gaps. At promotion, the version remained `2.6.0`, so the stable
 release checker did not advertise this branch promotion as a version upgrade.
-The subsequent [V3 development stamp](RELEASE_NOTES_3.0.0.md) is a separate
+The subsequent [V3 publication](RELEASE_NOTES_3.0.0.md) is a separate
 change and does not retroactively qualify this promotion.
 
 ## Evidence available

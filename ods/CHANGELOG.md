@@ -8,8 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [3.0.0] - 2026-09-24
 
-ODS V3 development candidate. This version stamp does not publish a stable tag
-or establish fleet qualification. See [V3 notes](docs/RELEASE_NOTES_3.0.0.md).
+ODS V3 was published as `v3.0.0` on September 24, 2026. Full fleet
+qualification remains incomplete. See [V3 notes](docs/RELEASE_NOTES_3.0.0.md)
+for the immutable source commit and acceptance boundaries.
 
 ### Added
 - Bundled Portal assistant, powered by Pixel, with dashboard conversations,
@@ -54,8 +55,8 @@ or establish fleet qualification. See [V3 notes](docs/RELEASE_NOTES_3.0.0.md).
   context limits cover additional native and WSL installation paths.
 
 ### Validation boundaries
-- This accumulated public-beta promotion is a development candidate, not a new
-  stable tag. Pixel/Portal task quality, full model-switchboard qualification,
+- V3 source publication does not establish full fleet acceptance. Pixel/Portal
+  task quality, full model-switchboard qualification,
   and installed update/rollback/reboot acceptance remain incomplete. See the
   [promotion record](docs/PUBLIC_BETA_PROMOTION_2026-09.md) for evidence and
   known limitations; source and CI passes do not imply full fleet acceptance.

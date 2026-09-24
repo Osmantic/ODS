@@ -9,11 +9,11 @@ REPO_ROOT="$(cd "$ROOT_DIR/.." && pwd)"
 CANONICAL_ENDPOINT="https://install.osmantic.com/ods.sh"
 CANONICAL_REPO_URL="https://github.com/Osmantic/ODS.git"
 WINDOWS_SOURCE_ZIP_URL="https://github.com/Osmantic/ODS/archive/refs/heads/main.zip"
-STABLE_VERSION="$(
+PUBLISHED_VERSION="$(
     python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["release"]["stable_version"])' \
         "$ROOT_DIR/manifest.json"
 )"
-STABLE_TAG="v$STABLE_VERSION"
+PUBLISHED_TAG="v$PUBLISHED_VERSION"
 
 fail() {
     echo "[FAIL] $*"
@@ -270,13 +270,13 @@ require_literal "$trust_doc" 'five minutes' "Hosted cache freshness guidance"
 require_literal "$trust_doc" 'AUDITED_COMMIT_SHA/ods/get-ods.sh' "Immutable bootstrap URL guidance"
 require_literal "$trust_doc" 'ods/main.sh' "Hosted main-channel guidance"
 require_literal "$trust_doc" 'verify-hosted-bootstrap.sh' "Hosted bootstrap deployment verification"
-require_literal "$REPO_ROOT/README.md" "\`$STABLE_TAG\` is the current stable release" "README stable release"
-require_literal "$release_doc" "current stable release is \`$STABLE_TAG\`" "Release channel stable release"
-require_literal "$trust_doc" "--branch $STABLE_TAG $CANONICAL_REPO_URL" "Manual stable clone"
-require_literal "$trust_doc" "ODS_REF=$STABLE_TAG" "Stable bootstrap ref guidance"
+require_literal "$REPO_ROOT/README.md" "\`$PUBLISHED_TAG\` is the latest published source release" "README published release"
+require_literal "$release_doc" "latest published source release is \`$PUBLISHED_TAG\`" "Release channel published release"
+require_literal "$trust_doc" "--branch $PUBLISHED_TAG $CANONICAL_REPO_URL" "Manual published-tag clone"
+require_literal "$trust_doc" "ODS_REF=$PUBLISHED_TAG" "Published bootstrap ref guidance"
 
-if grep -qF "Do not pass \`$STABLE_TAG\` through \`ODS_REF\`" "$trust_doc"; then
-    fail "$STABLE_TAG must be documented as compatible with the sparse-checkout bootstrap"
+if grep -qF "Do not pass \`$PUBLISHED_TAG\` through \`ODS_REF\`" "$trust_doc"; then
+    fail "$PUBLISHED_TAG must be documented as compatible with the sparse-checkout bootstrap"
 fi
 
 hosted_verifier="$ROOT_DIR/scripts/verify-hosted-bootstrap.sh"

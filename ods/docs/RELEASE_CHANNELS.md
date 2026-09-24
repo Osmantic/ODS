@@ -3,82 +3,50 @@
 ODS moves quickly because installer, hardware, model, and service
 ecosystems move quickly. Treat each ref intentionally.
 
-## ODS V3 development candidate
+## Published ODS V3
 
-`main` identifies as `3.0.0` (ODS V3). The version stamp is separate from
-publication: `v3.0.0` is reserved for the exact commit that completes release
-qualification. Do not infer fleet acceptance from a displayed version or CI pass.
-See [V3 candidate notes](RELEASE_NOTES_3.0.0.md).
+The latest published source release is `v3.0.0`, named **ODS V3** on GitHub.
+It pins commit `bec0c42e7c9885a5aecd419a166a6a81e0d37236` on September 24, 2026.
+The tag is immutable. Full fleet qualification is still in progress: publication
+and the GitHub Latest label do not certify user journeys or operational recovery.
+See [V3 release notes](RELEASE_NOTES_3.0.0.md) for the acceptance boundaries.
 
-## Current Stable
-
-The current stable release is `v2.6.0`.
-
-Use `v2.6.0` for normal installs, downstream appliance baselines, lab images,
-and forks that want a known-good starting point. Use `release/2.6.x` only for
-patches that should preserve the `v2.6.0` user experience while fixing a
-stable-user problem. The prior `release/2.5.x` line remains available only for
-critical fixes that must stay on the superseded 2.5 baseline.
+`main` also identifies as `3.0.0` and continues receiving qualification fixes.
+The manifest's `release.stable_version` records the published non-prerelease
+version used by documentation checks; it does not select a maintenance branch
+or prove fleet acceptance. `release.channel` remains `development` while this
+qualification campaign is incomplete.
 
 ## Channels
 
 | Channel | Use it for | Expectation |
 |---|---|---|
-| `main` | Active development, contributor work, rapid fixes, validation candidates | Can change many times per day. Read diffs and run focused validation before using it for an appliance or fork release. |
-| `release/2.6.x` | Patch-only maintenance for the current stable line | Only accepts stable hotfixes, security fixes, and docs that clarify current stable behavior. No new feature work. |
-| `release/2.5.x` | Superseded stable baseline | Critical security or operator-continuity fixes only. Prefer upgrading to `v2.6.0`. |
-| Tagged releases | Stable installs, downstream forks, lab images, appliance baselines | Preferred source for users and downstream operators who want a reproducible starting point. |
-| Pinned commits | Security reviews, internal mirrors, release candidates, emergency hotfix baselines | Valid when the commit and validation receipt are recorded together. |
-| Downstream forks | Custom hardware images, labs, private extensions, offline mirrors | Should record upstream ref, downstream changes, and local validation results. |
+| `v3.0.0` | Reproducing the published V3 source snapshot | Read its qualification limitations; later main fixes are not included. |
+| `main` | Active development, V3 fixes and validation candidates | Can change many times per day. Bind tests to the exact commit. |
+| `release/2.6.x` | Patch-only maintenance for the older 2.6 line | Narrow security or operator-continuity fixes for deployments remaining on 2.6. |
+| `release/2.5.x` | Older 2.5 maintenance baseline | Critical security or operator-continuity fixes only. |
+| Tagged releases | Reproducible source snapshots | Publication alone does not establish an acceptance result; inspect each release's receipt. |
+| Pinned commits | Security reviews, internal mirrors, candidates and hotfix baselines | Record the commit with its validation receipt. |
+| Downstream forks | Custom hardware images, labs, private extensions and offline mirrors | Record upstream ref, downstream changes and local validation results. |
 
 ## Default Guidance
 
-- New users can follow the README quickstart.
-- Operators who want reproducibility should pin a release tag. Today that means
-  `v2.6.0` unless a newer stable release has been published.
-- Stable hotfixes should target `release/2.6.x` first, then be merged forward
-  or cherry-picked into `main`.
-- Forks should either fork-and-pin or fork-and-mirror.
-- Hardware builders should treat upstream release receipts as evidence, then add
-  their own validation receipt for local changes.
-- Do not treat `main` as a frozen API or appliance channel.
+- New users can follow the README quickstart, which tracks `main`.
+- Pin `v3.0.0` to reproduce the published V3 source, or an audited later commit
+  to include subsequent fixes. Do not relabel earlier tests as a later-head pass.
+- V3 fixes target `main`. No `release/3.x` branch is implied by the new tag.
+- Only fixes specifically needed on the older 2.6 line should target
+  `release/2.6.x`; merge applicable fixes forward into `main`.
+- Hardware builders and downstream operators must add their own validation
+  receipts for local changes. Do not treat moving `main` as a frozen API.
 
-## Stable Patch Policy
+## Older-Line Patch Policy
 
-Use the stable patch lane when the change fixes a real problem for users on the
-current stable release. Good candidates include:
-
-- installer, bootstrap, reinstall, restart, or doctor regressions
-- security exposure, credential, auth, or network-binding fixes
-- dashboard, ODS Talk, model download, model swap, or lifecycle breakage in a
-  supported default path
-- docs that prevent current stable users from taking the wrong action
-
-Do not target `release/2.6.x` for:
-
-- new bundled services or changed default services
-- broad installer, CLI, manifest, or compose refactors
-- new model-routing policy unless the current policy is broken
-- dependency churn that is not required for a stable fix
-- speculative polish that can wait for the next minor release
-
-The stable branch should stay boring. If a change needs a product debate, a new
-capability, or broad retesting outside the broken surface, it belongs on `main`
-or the next minor release train first.
-
-## Triage Questions
-
-Before opening or reviewing a PR, classify the lane:
-
-1. Is this broken for users on the current stable release?
-2. Does it affect install, lifecycle, security, model download/swap, GPU
-   routing, dashboard proxy, ODS Talk, or data safety?
-3. Does it change a default behavior?
-4. Can it wait for the next minor release?
-
-If the answer to the first question is yes and the fix is narrow, consider
-`release/2.6.x`. If the answer is no, use `main`. If the change is broad or
-feature-shaped, use the next minor milestone.
+Use an older maintenance lane for narrow installer, lifecycle, security,
+model-routing or data-safety fixes affecting that line. New capabilities,
+changed defaults, broad refactors and speculative changes belong on `main`.
+Choose the lane based on the affected installed version, and preserve the
+upstream/downstream evidence for every backport.
 
 ## Fork-And-Pin
 

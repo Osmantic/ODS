@@ -55,6 +55,7 @@ class VersionConsistencyTests(unittest.TestCase):
         path.write_text(json.dumps(data), encoding="utf-8")
 
     def test_current_candidate_and_published_baseline_can_differ(self):
+        self.update_json("ods/manifest.json", lambda d: d["release"].update(stable_version="2.6.0"))
         self.run_gate(0)
 
     def test_package_lock_root_drift_is_detected(self):
@@ -73,7 +74,7 @@ class VersionConsistencyTests(unittest.TestCase):
         self.assertIn("Cargo.lock", self.run_gate(1))
 
     def test_stable_channel_cannot_claim_an_older_published_version(self):
-        self.update_json("ods/manifest.json", lambda d: d["release"].update(channel="stable"))
+        self.update_json("ods/manifest.json", lambda d: d["release"].update(channel="stable", stable_version="2.6.0"))
         self.assertIn("stable channel", self.run_gate(1))
 
     def test_stable_version_cannot_exceed_candidate(self):
