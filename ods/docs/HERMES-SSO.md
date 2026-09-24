@@ -16,7 +16,7 @@ When owner-card gating is explicitly enabled:
 - Hermes itself binds **internal-only** (no host port).
 - The proxy binds the LAN-facing port (default `9120`) — that's what users browse to.
 - Every request to the proxy is verified via `forward_auth` against dashboard-api's `/api/auth/verify-session` endpoint — which HMAC-validates the `ods-session` cookie's signature against `ODS_SESSION_SECRET`.
-- Verified (HTTP 200 from the verify endpoint) → traffic is forwarded to `ods-hermes:9119`. Hermes's own [per-process session token model](HERMES.md#security-posture) then handles per-request `/api/` auth.
+- Verified (HTTP 200 from the verify endpoint) → traffic is forwarded to `ods-hermes:9119`. Hermes's own [provider session authentication](HERMES.md#security-posture) then handles per-request API and WebSocket access.
 - Not verified (HTTP 401 — missing cookie, bad signature, or expired) → 303 redirect to a static "you need an owner card" page.
 
 ## Historical original SSO design (before Hermes 0.21.5)

@@ -6,7 +6,7 @@ When enabled, Hermes runs in a container alongside the rest of the stack, serves
 
 ## What you get
 
-Hermes ships its own complete web UI — ODS is just packaging it. After `ods enable hermes` + `ods enable hermes-proxy`, you can browse to `http://<device>:9120` (or `hermes.<device>.local:9120` once mDNS announcement lands — see "Roadmap" below). The proxy is the entry point and opens Hermes directly by default, without an owner card. Set `HERMES_REQUIRE_OWNER_CARD=true` to require an ODS signed session before forwarding to Hermes's internal port 9119. See [docs/HERMES-SSO.md](HERMES-SSO.md) for the full auth flow. Once past the proxy you find pages for:
+Hermes ships its own complete web UI — ODS is just packaging it. After `ods enable hermes` + `ods enable hermes-proxy`, you can browse to `http://<device>:9120` (or `hermes.<device>.local:9120` once mDNS announcement lands — see "Roadmap" below). The proxy is the entry point. Open Hermes from the authenticated ODS dashboard to use `/auth/ods`, or use the native Hermes login for operator-configured authentication. Set `HERMES_REQUIRE_OWNER_CARD=true` to require an ODS signed session before forwarding to Hermes's internal port 9119. See [docs/HERMES-SSO.md](HERMES-SSO.md) for the full auth flow. Once past the proxy you find pages for:
 
 - **Chat** — conversational interface with streaming responses + inline tool calls
 - **Sessions** — list, switch between, prune past conversations
