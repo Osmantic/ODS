@@ -46,8 +46,8 @@ def verify(password: str) -> bool:
 
 
 def save(password: str) -> None:
-    if not isinstance(password, str) or not 12 <= len(password) <= 128:
-        raise HTTPException(422, "Use a password or passphrase with 12 to 128 characters.")
+    if not isinstance(password, str) or not 6 <= len(password) <= 128:
+        raise HTTPException(422, "Use a password or passphrase with 6 to 128 characters.")
     salt = secrets.token_bytes(32)
     value = {"version": 1, "iterations": _ITERATIONS, "salt": salt.hex(),
              "digest": hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _ITERATIONS).hex(),

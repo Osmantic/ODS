@@ -140,7 +140,7 @@ def test_logout_clears_the_session_cookie(test_client):
 
 
 def test_password_setup_requires_owner_authority_and_hashes_at_rest(test_client):
-    password = "my chosen long passphrase"
+    password = "abcdef"
     assert test_client.post("/api/auth/dashboard-session/password", json={"password": password}).status_code == 401
     result = test_client.post("/api/auth/dashboard-session/password", headers=test_client.auth_headers,
                               json={"password": password})
@@ -161,13 +161,13 @@ def test_password_recovery_revokes_old_sessions_and_outstanding_links(test_clien
     signed_in = _login(test_client, token=recovery["token"])
     assert signed_in.status_code == 200 and signed_in.json()["passwordSetup"] is True
     result = test_client.post("/api/auth/dashboard-session/password", headers=test_client.auth_headers,
-                              json={"password": "my replacement passphrase"})
+                              json={"password": "uvwxyz"})
     assert result.status_code == 200
     assert not ds.session_is_valid(old)
     assert ds.session_is_valid(_set_cookies(result)[COOKIE].value)
     assert _login(test_client, token=link["token"]).status_code == 401
     assert _login(test_client, password="the original passphrase").status_code == 401
-    assert _login(test_client, password="my replacement passphrase").status_code == 200
+    assert _login(test_client, password="uvwxyz").status_code == 200
 
 
 @pytest.mark.parametrize("password", [None, 123, "short", "x" * 129])

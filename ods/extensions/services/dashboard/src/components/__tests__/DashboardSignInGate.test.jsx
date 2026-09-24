@@ -137,6 +137,26 @@ describe('DashboardSignInGate', () => {
 
 
 describe('password setup and recovery', () => {
+  it.each([false, true])('accepts six characters during setup or recovery (%s)', async recovery => {
+    window.history.replaceState(null, '', recovery ? '/#ods-login=abcdefghijklmnopqrstuvwx' : '/')
+    const fetchMock = vi.fn().mockResolvedValueOnce(json(recovery
+      ? { signedIn: true, passwordSetup: true }
+      : { signedIn: true, session: false, passwordConfigured: false }))
+      .mockResolvedValueOnce(json({ signedIn: true, passwordConfigured: true }))
+    window.fetch = fetchMock
+    renderGate()
+    const password = await screen.findByLabelText('New password')
+    fireEvent.change(password, { target: { value: 'abcde' } })
+    fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'abcde' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save password' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Use 6 to 128 characters.')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    fireEvent.change(password, { target: { value: 'abcdef' } })
+    fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'abcdef' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save password' }))
+    expect(await screen.findByText('Dashboard content')).toBeInTheDocument()
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ password: 'abcdef' })
+  })
   afterEach(() => { vi.restoreAllMocks(); window.history.replaceState(null, '', '/') })
 
   it('lets the local owner choose and confirm a password before continuing', async () => {

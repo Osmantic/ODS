@@ -194,7 +194,7 @@ function SignInScreen({ message, onSubmit, setup = false, onCancel = null }) {
   const submit = async (event) => {
     event.preventDefault()
     if (busy || !password) return
-    if (setup && (password.length < 12 || password.length > 128)) { setValidation('Use 12 to 128 characters. A memorable passphrase works well.'); return }
+    if (setup && (password.length < 6 || password.length > 128)) { setValidation('Use 6 to 128 characters. A memorable passphrase works well.'); return }
     if (setup && password !== confirmation) { setValidation('The passwords do not match.'); return }
     setValidation('')
     setBusy(true)
