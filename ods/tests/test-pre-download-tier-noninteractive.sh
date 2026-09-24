@@ -24,13 +24,15 @@ pass() { echo "[PASS] $*"; }
 
 [[ -f "$TARGET" ]] || fail "missing $TARGET"
 
-# Stub python3/pip3 so check_dependencies passes without a real install and
-# download_model's snapshot_download heredoc does nothing but succeed. No
+# Isolate the install dir so nothing touches the real ~/ods, and stub
+# python3/pip3 + curl: the LLM GGUF downloads via curl (creates the -o
+# target), while the optional voice path still uses snapshot_download. No
 # network, no pip, no Hugging Face access.
+export INSTALL_DIR="$TMP_DIR/install"
 BIN="$TMP_DIR/bin"; mkdir -p "$BIN"
 cat > "$BIN/python3" <<'EOF'
 #!/bin/sh
-# `-c "import ..."` probes (check_dependencies) and the download heredoc on
+# `-c "import ..."` probes (ensure_hf_python) and the download heredoc on
 # stdin both just succeed; nothing is downloaded.
 if [ "$1" = "-c" ]; then exit 0; fi
 cat >/dev/null 2>&1 || true
@@ -41,7 +43,24 @@ cat > "$BIN/pip3" <<'EOF'
 #!/bin/sh
 exit 0
 EOF
-chmod +x "$BIN/python3" "$BIN/pip3"
+cat > "$BIN/curl" <<'EOF'
+#!/bin/sh
+# Stub curl: create the -o target so the .part rename succeeds.
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        *)  shift ;;
+    esac
+done
+[ -n "$out" ] && { mkdir -p "$(dirname "$out")"; : > "$out"; }
+exit 0
+EOF
+chmod +x "$BIN/python3" "$BIN/pip3" "$BIN/curl"
+
+# MODEL_PROFILE=qwen keeps tier 1 on a model without a pinned sha256, so no
+# checksum tooling is needed for the stubbed download.
+export MODEL_PROFILE=qwen
 
 out="$TMP_DIR/out.txt"
 set +e
