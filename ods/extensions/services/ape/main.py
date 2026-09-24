@@ -722,6 +722,13 @@ def write_audit(entry: dict) -> None:
         logger.warning("Audit write failed: %s", e)
 
 
+_PRIMARY_DECISION_KEYS = (
+    "allowed",
+    "denied",
+    "rate_limited",
+    "require_approval",
+)
+
 _decision_counts = {
     "allowed": 0,
     "denied": 0,
@@ -1090,7 +1097,8 @@ async def metrics(api_key: str = Depends(verify_api_key)):
             _state["breaker"].get("tripped_until", 0.0) > time.time()
         )
     return {"decisions": _decision_counts,
-            "total": sum(_decision_counts.values()),
+            "total": sum(_decision_counts[key]
+                         for key in _PRIMARY_DECISION_KEYS),
             "pending_approvals": pending,
             "pending_grants": pending_grants,
             "circuit_breaker_open": breaker_open}

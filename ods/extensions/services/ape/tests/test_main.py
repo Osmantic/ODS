@@ -98,6 +98,31 @@ def test_metrics_endpoint_contract(make_client):
     assert "circuit_breaker_open" in body
 
 
+def test_metrics_total_counts_each_verify_decision_once(make_client):
+    client, _ = make_client(policy_yaml=LOW_LIMIT_POLICY)
+    action = dict(
+        tool="web_fetch",
+        args={"url": "http://x"},
+        session="metrics-total",
+    )
+
+    for _ in range(3):
+        assert _verify(client, **action).json()["decision"] == "allow"
+    escalated = _verify(client, **action).json()
+    assert escalated["decision"] == "require_approval"
+    assert client.post(
+        "/approve",
+        json={"approval_token": escalated["approval_token"]},
+    ).json()["granted"] is True
+    assert _verify(client, **action).json()["decision"] == "allow"
+
+    metrics = client.get("/metrics").json()
+
+    assert metrics["total"] == 5
+    assert metrics["decisions"]["approvals_granted"] == 1
+    assert metrics["decisions"]["grants_consumed"] == 1
+
+
 def test_audit_endpoint_contract(make_client):
     client, _ = make_client()
     _verify(client)
