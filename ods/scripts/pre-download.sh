@@ -53,6 +53,8 @@ MODEL_SIZES_GB[cluster]="40"
 # Optional components
 STT_MODEL="Systran/faster-whisper-large-v3"
 TTS_MODEL="hexgrad/Kokoro-82M"
+STT_SIZE_GB="3"
+TTS_SIZE_GB="0.2"
 
 #=============================================================================
 # Utility Functions
@@ -74,6 +76,16 @@ log() { echo -e "${BLUE}[INFO]${NC} $1"; }
 success() { echo -e "${GREEN}[OK]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
+
+json_escape() {
+    local value="${1-}"
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    value=${value//$'\n'/\\n}
+    value=${value//$'\r'/\\r}
+    value=${value//$'\t'/\\t}
+    printf '%s' "$value"
+}
 
 check_dependencies() {
     local missing=()
@@ -208,6 +220,54 @@ EOF
 #=============================================================================
 # Main Functions
 #=============================================================================
+
+plan_download() {
+    local tier="$1"
+    local include_voice="$2"
+    local json_output="$3"
+    local selection="$4"
+
+    if [[ -z "${TIER_MODELS[$tier]:-}" ]]; then
+        error "Unknown tier: $tier"
+        echo "Available tiers: nano, edge, pro, cluster" >&2
+        return 1
+    fi
+
+    local model="${TIER_MODELS[$tier]}"
+    local size="${MODEL_SIZES_GB[$tier]}"
+    local ram vram total_size
+    ram=$(detect_ram_gb)
+    vram=$(detect_vram_gb)
+    total_size="$size"
+    if [[ "$include_voice" == "true" ]]; then
+        total_size=$(awk -v llm="$size" -v stt="$STT_SIZE_GB" -v tts="$TTS_SIZE_GB" \
+            'BEGIN { printf "%.1f", llm + stt + tts }')
+    fi
+
+    if [[ "$json_output" == "true" ]]; then
+        printf '{"schema_version":"1","kind":"model-download-plan","tier":"%s",' "$(json_escape "$tier")"
+        printf '"selection":"%s","include_voice":%s,"estimated_download_gb":%s,' \
+            "$(json_escape "$selection")" "$include_voice" "$total_size"
+        printf '"hardware":{"ram_gb":%s,"vram_gb":%s},"components":[' "$ram" "$vram"
+        printf '{"kind":"llm","model":"%s","size_gb":%s}' "$(json_escape "$model")" "$size"
+        if [[ "$include_voice" == "true" ]]; then
+            printf ',{"kind":"stt","model":"%s","size_gb":%s}' "$(json_escape "$STT_MODEL")" "$STT_SIZE_GB"
+            printf ',{"kind":"tts","model":"%s","size_gb":%s}' "$(json_escape "$TTS_MODEL")" "$TTS_SIZE_GB"
+        fi
+        printf ']}\n'
+        return 0
+    fi
+
+    echo "Model pre-download plan"
+    echo "  Tier: $tier ($selection)"
+    echo "  LLM:  $model (~${size}GB)"
+    if [[ "$include_voice" == "true" ]]; then
+        echo "  STT:  $STT_MODEL (~${STT_SIZE_GB}GB)"
+        echo "  TTS:  $TTS_MODEL (~${TTS_SIZE_GB}GB)"
+    fi
+    echo "  Estimated download: ~${total_size}GB"
+    echo "  Detected hardware: ${ram}GB RAM, ${vram}GB VRAM"
+}
 
 list_models() {
     echo -e "\n${BOLD}Available Models by Tier:${NC}\n"
@@ -358,6 +418,8 @@ Usage: $0 [options]
 Options:
   --tier TIER      Download models for specific tier (nano/edge/pro/cluster)
   --with-voice     Also download STT and TTS models
+  --plan           Preview the selected artifacts without downloading
+  --json           Emit --plan as machine-readable JSON
   --list           List available models and sizes
   --verify         Check which models are already cached
   --help           Show this help message
@@ -366,6 +428,7 @@ Examples:
   $0                      # Interactive mode (auto-detect tier)
   $0 --tier pro           # Download pro tier models
   $0 --tier edge --with-voice  # Download edge tier + voice models
+  $0 --plan --tier edge --with-voice --json
   $0 --verify             # Check cache status
 EOF
 }
@@ -374,16 +437,27 @@ main() {
     local tier=""
     local include_voice="false"
     local action="interactive"
+    local plan_mode="false"
+    local json_output="false"
     
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --tier)
-                tier="$2"
+                tier="${2:-}"
+                [[ -n "$tier" ]] || { error "--tier requires a value"; exit 2; }
                 action="download"
                 shift 2
                 ;;
             --with-voice)
                 include_voice="true"
+                shift
+                ;;
+            --plan)
+                plan_mode="true"
+                shift
+                ;;
+            --json)
+                json_output="true"
                 shift
                 ;;
             --list)
@@ -405,6 +479,20 @@ main() {
                 ;;
         esac
     done
+
+    if [[ "$json_output" == "true" && "$plan_mode" != "true" ]]; then
+        error "--json requires --plan"
+        exit 2
+    fi
+
+    local selection="requested"
+    if [[ "$plan_mode" == "true" ]]; then
+        action="plan"
+        if [[ -z "$tier" ]]; then
+            tier=$(recommend_tier)
+            selection="auto"
+        fi
+    fi
     
     case "$action" in
         interactive)
@@ -423,6 +511,9 @@ main() {
             print_banner
             check_dependencies
             verify_cache
+            ;;
+        plan)
+            plan_download "$tier" "$include_voice" "$json_output" "$selection"
             ;;
     esac
 }
