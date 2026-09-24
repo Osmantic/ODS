@@ -40,6 +40,8 @@
   box-shadow:none;
 }
 :root[data-wallpaper] .portal-chat { background:transparent; }
+:root[data-wallpaper][data-wallpaper-fit=contain] #root > .pixel-app { background-size:cover,contain; background-repeat:no-repeat; background-color:#080c12; }
+:root[data-wallpaper-kind=image][data-wallpaper-fit=contain] .pixel-workspace.dashboard-market-shell { background-size:cover,cover,contain; background-repeat:no-repeat; background-color:#080c12; }
 :root[data-wallpaper] .pixel-original-sections :is(summary,.rail-empty),
 :root[data-wallpaper] .pixel-applications summary { color:#a9b2ba; }
 :root[data-wallpaper] .pixel-chat-header,
