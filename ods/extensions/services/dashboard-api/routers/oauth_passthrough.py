@@ -174,6 +174,16 @@ def _credential_status(provider: dict) -> tuple[bool, list[str]]:
             continue
         for root in _credential_roots():
             candidate = root / filename
+            try:
+                candidate.resolve(strict=False).relative_to(
+                    root.resolve(strict=False)
+                )
+            except (OSError, ValueError):
+                logger.warning(
+                    "Ignoring OAuth credential path outside configured root: %s",
+                    filename,
+                )
+                break
             if candidate.is_file():
                 found.append(f"{root.name}/{filename}")
                 break
