@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Dashboard from './Dashboard' // eslint-disable-line no-unused-vars
 
@@ -112,6 +112,45 @@ describe('Dashboard system overview', () => {
     delete document.documentElement.dataset.theme
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('keeps auxiliary telemetry polls single-flight', async () => {
+    vi.useFakeTimers()
+    const featuresDeferred = createDeferred()
+    const resourcesDeferred = createDeferred()
+    fetch.mockImplementation(url => {
+      if (String(url).includes('/api/features')) return featuresDeferred.promise
+      if (String(url).includes('/api/services/resources')) return resourcesDeferred.promise
+      throw new Error(`Unmocked fetch: ${url}`)
+    })
+
+    render(<Dashboard status={baseStatus} loading={false} />)
+    const countCalls = path => fetch.mock.calls.filter(([url]) => String(url).includes(path)).length
+    expect(countCalls('/api/features')).toBe(1)
+    expect(countCalls('/api/services/resources')).toBe(1)
+
+    await act(async () => {
+      vi.advanceTimersByTime(30000)
+      await Promise.resolve()
+    })
+
+    expect(countCalls('/api/features')).toBe(1)
+    expect(countCalls('/api/services/resources')).toBe(1)
+
+    featuresDeferred.resolve({
+      ok: true,
+      json: async () => ({ features: [], suggestions: [], summary: { progress: 0 } }),
+    })
+    resourcesDeferred.resolve({ ok: true, json: async () => mockResources })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      vi.advanceTimersByTime(15000)
+    })
+
+    expect(countCalls('/api/features')).toBe(2)
+    expect(countCalls('/api/services/resources')).toBe(2)
   })
 
   it('renders the system overview panel and both telemetry charts', async () => {
