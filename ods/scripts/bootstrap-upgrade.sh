@@ -446,24 +446,42 @@ acquire_upgrade_lock() {
     local lock_dir="$tmp_root/ods-bootstrap-upgrade-${lock_key}.lock"
     local pid_file="$lock_dir/pid"
     local existing_pid=""
+    local missing_pid_seen=0
+    local stale_dir=""
 
     mkdir -p "$(dirname "$lock_dir")"
     while ! mkdir "$lock_dir" 2>/dev/null; do
         existing_pid=""
         if [[ -f "$pid_file" ]]; then
             existing_pid="$(tr -dc '0-9' < "$pid_file" 2>/dev/null || true)"
-        fi
+            missing_pid_seen=0
 
-        if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
-            log "Another bootstrap model upgrade is already running (pid $existing_pid); leaving it in control."
-            if [[ ! -f "$STATUS_FILE" ]] || grep -q 'Another bootstrap model upgrade is already running' "$STATUS_FILE" 2>/dev/null; then
-                write_existing_upgrade_status "$existing_pid"
+            if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
+                log "Another bootstrap model upgrade is already running (pid $existing_pid); leaving it in control."
+                if [[ ! -f "$STATUS_FILE" ]] || grep -q 'Another bootstrap model upgrade is already running' "$STATUS_FILE" 2>/dev/null; then
+                    write_existing_upgrade_status "$existing_pid"
+                fi
+                exit 0
             fi
-            exit 0
+        else
+            # A lock with no pid file may belong to an owner that has not
+            # finished writing its pid yet; give it a few beats before
+            # treating the directory as orphaned.
+            missing_pid_seen=$((missing_pid_seen + 1))
+            if (( missing_pid_seen < 3 )); then
+                sleep 1
+                continue
+            fi
         fi
 
-        log "Removing stale bootstrap model upgrade lock: $lock_dir"
-        rm -rf "$lock_dir"
+        # Take the stale lock over atomically: only one contender can rename
+        # the stale directory away, so a rm-then-mkdir pair can no longer
+        # delete a lock that a peer acquired in between.
+        stale_dir="$lock_dir.stale.$$"
+        if mv "$lock_dir" "$stale_dir" 2>/dev/null; then
+            log "Removing stale bootstrap model upgrade lock: $lock_dir"
+            rm -rf "$stale_dir"
+        fi
     done
 
     UPGRADE_LOCK_DIR="$lock_dir"
