@@ -2,9 +2,9 @@
 """Local-image build coverage contract.
 
 Every service that can only exist as a locally built image must appear in each
-installer's local-build list, or the installer runs ``docker compose up
---no-build --pull never`` against an image that was never built and fails with
-"No such image" on a fresh host.
+installer's local-build list and the ODS CLI rebuild list. Otherwise a fresh
+install can reach ``docker compose up --no-build --pull never`` without an
+image, or ``ods update --rebuild-images`` can silently omit contributor edits.
 
 This is the negative self-test for the model-router fleet regression
 (build-only core service missing from the hardcoded installer build lists):
@@ -39,6 +39,7 @@ EXTENSIONS = ROOT / "extensions" / "services"
 LINUX = ROOT / "installers" / "phases" / "11-services.sh"
 MACOS = ROOT / "installers" / "macos" / "install-macos.sh"
 WINDOWS = ROOT / "installers" / "windows" / "install-windows.ps1"
+CLI = ROOT / "ods-cli"
 
 # An image reference that no registry can serve. Compose started with
 # `--pull never` can only satisfy these from a local build.
@@ -141,9 +142,18 @@ def main() -> int:
         windows.update(re.findall(r'"([a-z0-9-]+)"', m.group(1)))
     windows.update(re.findall(r'\$_buildServices \+= "([a-z0-9-]+)"', win_text))
 
+    # ODS CLI: candidate_services=(...) plus conditional += lines.
+    cli_text = CLI.read_text(encoding="utf-8")
+    cli = set()
+    m = re.search(r"candidate_services=\(([^)]*)\)", cli_text, re.DOTALL)
+    if m:
+        cli.update(re.findall(r"[a-z0-9][a-z0-9-]+", m.group(1)))
+    cli.update(re.findall(r"candidate_services\+=\(([a-z0-9-]+)\)", cli_text))
+
     for name, present in (("Linux 11-services.sh", linux),
                           ("macOS install-macos.sh", macos),
-                          ("Windows install-windows.ps1", windows)):
+                          ("Windows install-windows.ps1", windows),
+                          ("ods-cli --rebuild-images", cli)):
         missing = required - present
         if missing:
             errors.append(f"{name}: build-only services not in build list: {sorted(missing)}")

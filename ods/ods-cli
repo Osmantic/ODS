@@ -1186,15 +1186,39 @@ _check_docker_access() {
 #=============================================================================
 _ods_cli_rebuild_images() {
     local flags=("$@")
-    local svcs=(dashboard dashboard-api ape token-spy privacy-shield)
+    local candidate_services=(
+        dashboard dashboard-api model-router remote-provider-egress
+        remote-provider-ssh-tunnel ape token-spy privacy-shield brave-search
+    )
     # Mirror phases/11-services.sh conditional builds: ComfyUI when enabled
     # and llama-server on AMD (Lemonade builds the binary in the container).
     # Other GPU backends pull pre-built images.
-    [[ "${ENABLE_COMFYUI:-}" == "true" ]] && svcs+=(comfyui)
-    [[ "${GPU_BACKEND:-}" == "amd" ]] && svcs+=(llama-server)
+    [[ "${ENABLE_COMFYUI:-}" == "true" ]] && candidate_services+=(comfyui)
+    [[ "${GPU_BACKEND:-}" == "amd" ]] && candidate_services+=(llama-server)
     _check_docker_access
+
+    local enabled_services
+    if ! enabled_services=$(docker compose "${flags[@]}" config --services); then
+        error "Could not resolve enabled Compose services for local image rebuilds."
+    fi
+
+    local -a build_services=()
+    local service
+    for service in "${candidate_services[@]}"; do
+        if [[ $'\n'"$enabled_services"$'\n' == *$'\n'"$service"$'\n'* ]]; then
+            build_services+=("$service")
+        else
+            log "Skipping local image rebuild for disabled service: $service"
+        fi
+    done
+
+    if (( ${#build_services[@]} == 0 )); then
+        success "No enabled local images require rebuilding"
+        return 0
+    fi
+
     log "Rebuilding local-built images (--rebuild-images)..."
-    if ! docker compose "${flags[@]}" build --no-cache "${svcs[@]}"; then
+    if ! docker compose "${flags[@]}" build --no-cache "${build_services[@]}"; then
         warn "One or more images failed to rebuild (continuing — see compose output above)"
     fi
 }
