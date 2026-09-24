@@ -110,9 +110,17 @@ grep -q 'DBUS_SESSION_BUS_ADDRESS=unix:path=$_upgrade_runtime_dir/bus' "$linux_p
     || fail "linux phase 11: service launch must reconstruct the owner user-bus address"
 grep -q "trap .*exit 75.*HUP TERM INT" "$ROOT_DIR/scripts/bootstrap-upgrade.sh" \
     || fail "bootstrap upgrade must identify session interruption as supervisor-retryable"
-grep -q 'DBUS_SESSION_BUS_ADDRESS="unix:path=$_ods_uninstall_runtime_dir/bus"' "$uninstaller" \
-    || fail "uninstaller: model-upgrade cleanup must reach the owner user manager without login-session variables"
-grep -q 'systemctl --user stop ods-model-upgrade.service' "$uninstaller" \
+# The cleanup now routes through ods_uninstall_systemctl_user(), which
+# rebuilds XDG_RUNTIME_DIR and the bus address from the owner UID before
+# running `systemctl --user`. Assert the helper's reconstruction and the
+# call site with grep -F (literals contain ${...}, not regex).
+grep -qF 'user_runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$user_uid}"' "$uninstaller" \
+    || fail "uninstaller: user-manager helper must reconstruct the owner runtime dir"
+grep -qF 'DBUS_SESSION_BUS_ADDRESS="$user_bus_address"' "$uninstaller" \
+    || fail "uninstaller: user-manager helper must reconstruct the owner bus address"
+grep -qF 'systemctl --user "$@"' "$uninstaller" \
+    || fail "uninstaller: user-manager helper must invoke systemctl --user"
+grep -qF 'ods_uninstall_systemctl_user stop ods-model-upgrade.service' "$uninstaller" \
     || fail "uninstaller: transient model upgrade service must stop before install-tree removal"
 systemd_line="$(grep -n 'systemd-run --user --unit=' "$linux_phase" | head -1 | cut -d: -f1)"
 nohup_line="$(grep -n 'exec nohup bash "$SCRIPT_DIR/scripts/bootstrap-upgrade.sh"' "$linux_phase" | tail -1 | cut -d: -f1)"
