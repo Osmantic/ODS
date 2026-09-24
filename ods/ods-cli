@@ -3404,7 +3404,9 @@ META
                 trap 'exit 143' TERM
                 # Finish privately before replacing an existing public file.
                 chmod 600 "$staged_archive" || exit 1
-                tar czf "$staged_archive" "$name" 2>/dev/null || exit 1
+                # COPYFILE_DISABLE stops macOS bsdtar adding AppleDouble `._*`
+                # members, which it hides from its own listing but importers see.
+                COPYFILE_DISABLE=1 tar czf "$staged_archive" "$name" 2>/dev/null || exit 1
                 [[ ! -d "$output" ]] || exit 1
                 mv -f -- "$staged_archive" "$output"
             ); then
@@ -3431,7 +3433,11 @@ META
 
             # Validate archive structure
             local archive_name
-            archive_name=$(tar tzf "$archive" 2>/dev/null | sed -n '1p' | cut -d/ -f1)
+            # Take the first real member, skipping AppleDouble `._*` entries: an
+            # archive exported from macOS before the guard above leads with
+            # `._<name>`, which GNU tar lists, and the preset name would otherwise
+            # resolve to `._<name>` and fail validation.
+            archive_name=$(tar tzf "$archive" 2>/dev/null | awk '!/(^|\/)\._/ { print; exit }' | cut -d/ -f1)
             [[ -z "$archive_name" ]] && error "Invalid archive structure"
 
             # Check if preset already exists
