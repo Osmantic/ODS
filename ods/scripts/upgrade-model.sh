@@ -12,6 +12,7 @@
 #   ./upgrade-model.sh --rollback            # Rollback to previous model
 #   ./upgrade-model.sh --list                # List available models
 #   ./upgrade-model.sh --current             # Show current model
+#   ./upgrade-model.sh --dry-run <model>     # Preview without changing state
 #
 #=============================================================================
 
@@ -428,6 +429,42 @@ cmd_current() {
     fi
 }
 
+cmd_preview() {
+    local new_model="$1"
+    local model_path="$MODELS_DIR/$new_model"
+
+    if [[ ! -d "$model_path" || ! -f "$model_path/config.json" ]]; then
+        if [[ -d "$new_model" && -f "$new_model/config.json" ]]; then
+            model_path="$new_model"
+            new_model=$(basename "$new_model")
+        else
+            echo "[ERROR] Model not found: $new_model" >&2
+            return 1
+        fi
+    fi
+
+    local current_model
+    current_model=$(get_current_model)
+
+    echo "Model upgrade preview (no changes will be made)"
+    echo "  Current model: ${current_model:-<none>}"
+    echo "  Target model:  $new_model"
+    echo "  Model path:    $model_path"
+    if [[ "$current_model" == "$new_model" ]]; then
+        echo "  Action:        none (target is already active)"
+        return 0
+    fi
+
+    cat <<EOF
+  Lifecycle:
+    1. Stop llama-server
+    2. Save current/previous model state
+    3. Set LLM_MODEL=$model_path in $ODS_DIR/.env
+    4. Start llama-server
+    5. Verify health and inference; roll back on failure
+EOF
+}
+
 cmd_upgrade() {
     local new_model="$1"
     
@@ -546,12 +583,17 @@ main() {
         --rollback|-r)
             cmd_rollback
             ;;
+        --dry-run)
+            [[ $# -eq 2 ]] || { echo "Usage: $0 --dry-run <model-name>" >&2; exit 2; }
+            cmd_preview "$2"
+            ;;
         --help|-h)
             cat << EOF
 ODS Model Upgrade
 
 Usage:
   $0 <model-name>        Upgrade to specified model
+  $0 --dry-run <model>   Preview the upgrade lifecycle without changes
   $0 --list              List available models
   $0 --current           Show current model
   $0 --rollback          Rollback to previous model
@@ -564,6 +606,7 @@ Note:
 
 Examples:
   $0 Qwen2.5-32B-Instruct-AWQ
+  $0 --dry-run Qwen2.5-32B-Instruct-AWQ
   $0 /path/to/model
   $0 --rollback
 
@@ -585,7 +628,11 @@ EOF
             exit 1
             ;;
         *)
-            cmd_upgrade "$1"
+            if [[ "${2:-}" == "--dry-run" && $# -eq 2 ]]; then
+                cmd_preview "$1"
+            else
+                cmd_upgrade "$1"
+            fi
             ;;
     esac
 }
