@@ -154,6 +154,9 @@ test: ## Run unit and contract tests
 	@bash tests/test-cli-preset-restore-user-extensions.sh
 	@bash tests/test-preset-export-permissions.sh
 	@echo ""
+	@echo "=== CLI preset name boundary ==="
+	@bash tests/test-preset-name-boundary.sh
+	@echo ""
 	@echo "=== bootstrap OpenClaw compose-guard regression ==="
 	@bash tests/test-bootstrap-openclaw-compose-guard.sh
 	@echo ""

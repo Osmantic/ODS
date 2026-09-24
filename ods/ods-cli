@@ -3192,6 +3192,18 @@ cmd_list() {
 #=============================================================================
 PRESETS_DIR="${INSTALL_DIR}/presets"
 
+# Preset names are directory names, not paths. Keep every preset operation
+# confined to PRESETS_DIR while preserving spaces and other valid characters.
+validate_preset_name() {
+    local name="$1"
+
+    if [[ "$name" == "." || "$name" == ".." ||
+          "$name" == */* || "$name" == *\\* ||
+          "$name" =~ [[:cntrl:]] ]]; then
+        error "Invalid preset name: use a single path segment without slashes or control characters"
+    fi
+}
+
 # Validate preset compatibility with current system
 validate_preset_compatibility() {
     local preset_dir="$1"
@@ -3235,6 +3247,7 @@ cmd_preset() {
     case "$action" in
         save|s)
             [[ -z "$name" ]] && { log "Usage: ods preset save <name>"; exit 1; }
+            validate_preset_name "$name"
             local preset_dir="${PRESETS_DIR}/${name}"
             mkdir -p "$preset_dir"
 
@@ -3271,6 +3284,7 @@ META
 
         load|l)
             [[ -z "$name" ]] && { log "Usage: ods preset load <name>"; exit 1; }
+            validate_preset_name "$name"
             local preset_dir="${PRESETS_DIR}/${name}"
             [[ -d "$preset_dir" ]] || error "Preset not found: $name"
 
@@ -3365,6 +3379,7 @@ META
 
         delete|rm)
             [[ -z "$name" ]] && { log "Usage: ods preset delete <name>"; exit 1; }
+            validate_preset_name "$name"
             local preset_dir="${PRESETS_DIR}/${name}"
             [[ -d "$preset_dir" ]] || error "Preset not found: $name"
 
@@ -3380,6 +3395,7 @@ META
             [[ -z "$name" ]] && { log "Usage: ods preset export <name> <output.tar.gz>"; exit 1; }
             local output="${3:-}"
             [[ -z "$output" ]] && { log "Usage: ods preset export <name> <output.tar.gz>"; exit 1; }
+            validate_preset_name "$name"
             local preset_dir="${PRESETS_DIR}/${name}"
             [[ -d "$preset_dir" ]] || error "Preset not found: $name"
 
@@ -3473,6 +3489,8 @@ META
             if [[ -z "$preset1" ]] || [[ -z "$preset2" ]]; then
                 error "Usage: ods preset diff <preset1> <preset2>"
             fi
+            validate_preset_name "$preset1"
+            validate_preset_name "$preset2"
 
             local dir1="$PRESETS_DIR/$preset1"
             local dir2="$PRESETS_DIR/$preset2"
