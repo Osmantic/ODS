@@ -37,18 +37,45 @@ curl http://localhost:7805/health
 
 # Chat (non-streaming)
 curl -X POST http://localhost:7805/chat \
+  -H "Authorization: Bearer $OPEN_INTERPRETER_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"message": "What OS are we running?", "stream": false}'
 ```
 
+Set `OPEN_INTERPRETER_API_KEY` in this terminal to the extension's configured
+HTTP key. This key authenticates callers of the wrapper; it is separate from
+the model provider's credential.
+
+### Model connection
+
+ODS supplies the runtime origin through `LLM_API_URL` and its API path through
+`LLM_API_BASE_PATH` (`/v1` for llama-server, `/api/v1` for a direct Lemonade
+runtime). The wrapper combines them when the URL has no path. If the URL already
+contains an API path, that explicit path wins; trailing slashes are normalized.
+
+Set `OPEN_INTERPRETER_MODEL` to the provider's model identifier, including the
+`openai/` prefix for OpenAI-compatible servers. Set
+`OPEN_INTERPRETER_LLM_API_KEY` to that provider's credential when authentication
+is required. For an authenticated ODS LiteLLM gateway, use the configured
+gateway key and a model alias it actually exposes; the placeholder defaults
+`openai/x` and `fake_key` only suit a direct local server that accepts them.
+Recreate the extension after changing these values. Both HTTP chat routes pass
+the same connection settings to Open Interpreter, with auto-run still disabled
+unless explicitly enabled.
+
 ### CLI Usage
+
+The Compose service starts the HTTP wrapper. For the upstream interactive CLI,
+run the image's `interpreter` executable explicitly. From the ODS install directory:
 
 ```bash
 # Interactive session
-docker compose run --rm open-interpreter
+docker compose --project-directory . -f data/user-extensions/open-interpreter/compose.yaml \
+  run --rm --entrypoint interpreter open-interpreter
 
 # Single command
-docker compose run --rm open-interpreter -y "Create a file called test.txt"
+docker compose --project-directory . -f data/user-extensions/open-interpreter/compose.yaml \
+  run --rm --entrypoint interpreter open-interpreter "Describe the files in this project"
 ```
 
 ## Configuration
@@ -56,3 +83,8 @@ docker compose run --rm open-interpreter -y "Create a file called test.txt"
 | Variable | Description | Default |
 |----------|------------|---------|
 | `OPEN_INTERPRETER_API_KEY` | API key for authentication | _(required)_ |
+| `OPEN_INTERPRETER_MODEL` | Model identifier passed to Open Interpreter | `openai/x` |
+| `OPEN_INTERPRETER_LLM_API_KEY` | Outbound model provider credential | `fake_key` |
+
+The upstream CLI has its own model/configuration options; the wrapper-specific
+connection settings above apply to `/chat` and `/chat/stream`.

@@ -22,6 +22,14 @@ service:
       required: true
       secret: true
       description: API key for authentication
+    - key: OPEN_INTERPRETER_MODEL
+      required: false
+      default: openai/x
+      description: Interpreter model identifier; use the openai/ prefix for compatible gateways
+    - key: OPEN_INTERPRETER_LLM_API_KEY
+      required: false
+      secret: true
+      description: Outbound model provider credential, separate from the Interpreter HTTP API key
   description: |
     Open Interpreter lets LLMs run code locally (Python, JavaScript, Shell, etc.).
     It provides a ChatGPT-like interface in your terminal and can control Chrome,
