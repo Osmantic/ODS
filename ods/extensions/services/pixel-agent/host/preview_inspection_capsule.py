@@ -112,6 +112,8 @@ def run_browser(bundle, playwright_factory=None):
             frame_id = next(child['frame']['id'] for child in tree.get('childFrames',[]) if child['frame'].get('name') == 'inspection')
             world = cdp.send('Page.createIsolatedWorld', {'frameId':frame_id,'worldName':'ods-inspection','grantUniveralAccess':False})['executionContextId']
             def evaluate(function, arguments=None):
+                if blocked:
+                    raise Invalid('preview navigation or request blocked')
                 result = cdp.send('Runtime.callFunctionOn', {'executionContextId':world,'functionDeclaration':function,'arguments':[{'value':arg} for arg in (arguments or [])],'returnByValue':True})
                 if result.get('exceptionDetails'):
                     raise Invalid('invalid selector')
@@ -120,6 +122,8 @@ def run_browser(bundle, playwright_factory=None):
             # inconclusive, never an automatically green assertion.
             document_id = cdp.send('Runtime.evaluate', {'expression':'document','contextId':world})['result']['objectId']
             def once(locator):
+                if blocked:
+                    raise Invalid('preview navigation or request blocked')
                 if 'selector' in locator:
                     count = evaluate('function(s){return document.querySelectorAll(s).length}', [locator['selector']])
                     if count != 1:
@@ -155,6 +159,8 @@ def run_browser(bundle, playwright_factory=None):
                 elif step['action'] == 'click':
                     try:
                         (frame.locator('css=' + step['locator']['selector']) if 'selector' in step['locator'] else frame.get_by_role(step['locator']['role'],name=step['locator']['name'],exact=True)).click(timeout=2000)
+                        if blocked:
+                            raise Invalid('preview navigation or request blocked')
                         after, after_stable = observe(step['locator'])
                         item.update(after=after, stable=after_stable, status='passed' if after_stable else 'failed')
                     except Exception:

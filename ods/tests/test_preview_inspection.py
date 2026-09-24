@@ -78,7 +78,21 @@ class ProtocolTests(unittest.TestCase):
             with self.assertRaises(publisher.PreviewError):broker.snapshot_bundle(previews,request)
 @unittest.skipUnless(os.environ.get('ODS_PREVIEW_BROWSER_TESTS')=='1','real Chromium opt in')
 class BrowserTests(unittest.TestCase):
-    def check(self,html,steps):return capsule.run_browser(bundle(html,steps))
+    def check(self,html,steps):
+        # Fixture browsers get a separate process group and deadline too. The
+        # production caller uses the stricter Docker capsule, never this path.
+        import subprocess, signal
+        script = str(Path(capsule.__file__).resolve())
+        child=subprocess.Popen([sys.executable,script],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        try:
+            output,error=child.communicate(protocol.canonical(bundle(html,steps)),timeout=20)
+            self.assertEqual(child.returncode,0,error.decode(errors='replace'))
+            return protocol.strict_json(output)
+        finally:
+            try:os.killpg(child.pid,signal.SIGKILL)
+            except ProcessLookupError:pass
+            child.wait(timeout=5)
+
     def test_hidden_flex(self):
         html='<style>.card{display:flex}</style><article hidden class="card" id="item">Sold out</article>'
         result=self.check(html,[step('assert-hidden','#item')]);self.assertEqual(result['status'],'failed');self.assertTrue(result['steps'][0]['before']['visible']);self.assertEqual(result['diagnostics']['renderedHiddenAttributeCount'],1)
