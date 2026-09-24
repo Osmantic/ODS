@@ -1,0 +1,42 @@
+name: Native installer contracts
+
+on:
+  pull_request:
+    paths:
+      - 'installer/src-tauri/**'
+      - 'installer/native-tests/**'
+      - '.github/workflows/installer-native-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'installer/src-tauri/**'
+      - 'installer/native-tests/**'
+      - '.github/workflows/installer-native-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: installer/native-tests
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: '1.96.0'
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.13'
+      - name: Check dependency parity with the application
+        run: python check_lock.py
+      - name: Run production installer module tests
+        run: cargo test --locked
