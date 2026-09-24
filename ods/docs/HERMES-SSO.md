@@ -122,15 +122,15 @@ What this catches:
 
 What this does NOT do:
 - Identify which user is behind a request — the cookie is opaque (the random-id is not a username)
-- Track per-cookie revocation. Today's only revocation mechanism is rotating `ODS_SESSION_SECRET`, which invalidates every issued cookie. A future PR could add a revocation list keyed on the random-id; the cookie format reserves space for it.
+- List active sessions. The store records opaque random ids only after they are revoked.
 
-For the ODS trust model (single home, trusted LAN, family-scale users), this gives real signature-based gating without a session store. The proxy explicitly says "**gating**, not identification."
+For the ODS trust model (single home, trusted LAN, family-scale users), this gives real signature-based gating without an identity-bearing session database. The proxy explicitly says "**gating**, not identification."
 
 ## Known limitations
 
 1. **No real multi-user.** All authed users share one Hermes — same memories, skills, persona, sessions. Mom can see Dad's chats and vice-versa. Treat Hermes as "the family's agent."
 
-2. **Stolen cookies are valid until expiry or secret rotation.** The cookie is signed, but if it's exfiltrated (malicious browser extension, leaked screenshot, etc.) the attacker can use it until the 12h expiry passes or the operator rotates `ODS_SESSION_SECRET`. There's no per-cookie revocation today. The signed format reserves the random-id field for a future revocation list.
+2. **A copied cookie stays valid until logout, expiry, or secret rotation.** `POST /api/auth/logout` persists the current random id in the server-side revocation store and immediately blocks replay. An operator who cannot submit the stolen cookie itself can still rotate `ODS_SESSION_SECRET` to invalidate every session.
 
 3. **No per-request user identification.** The proxy doesn't add an `X-ODS-User` header to forwarded requests. Hermes can't know "this request is from Alice" — only "this request is from someone with a valid signed cookie."
 

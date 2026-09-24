@@ -52,6 +52,8 @@ Environment variables (set in `.env`):
 | `GET` | `/status` | Yes | Full system status (all above combined) |
 | `GET` | `/api/status` | Yes | Dashboard-formatted status with inference metrics |
 | `GET` | `/api/host-agent/diagnostics` | Yes | Host-agent URL, gateway, auth, and live probe diagnostics |
+| `GET` | `/api/auth/verify-session` | Session cookie | Verify a signed, non-revoked browser session |
+| `POST` | `/api/auth/logout` | Session cookie | Revoke the current session and clear its cookie |
 
 ### Preflight
 

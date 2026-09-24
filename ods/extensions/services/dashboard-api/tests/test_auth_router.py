@@ -8,12 +8,19 @@ It validates the ods-session cookie via session_signer and returns
 import pytest
 
 import session_signer
+from routers import auth as auth_router
+from session_revocations import RevocationStore
 
 
 @pytest.fixture(autouse=True)
-def _set_secret():
+def _set_secret(monkeypatch, tmp_path):
     """Install a known signing secret for each test."""
     session_signer._set_secret_for_tests("test-secret-for-verify-endpoint")
+    monkeypatch.setattr(
+        auth_router,
+        "_REVOCATIONS",
+        RevocationStore(tmp_path / "session-revocations.json"),
+    )
     yield
     session_signer._set_secret_for_tests("")
 
@@ -202,3 +209,51 @@ class TestAdminSession:
             v for k, v in resp.headers.raw if k.lower() == b"set-cookie"
         ).lower()
         assert b"domain=kitchen.local" in cookie_blob
+
+
+class TestLogout:
+
+    def test_revokes_current_cookie_at_server_boundary(self, test_client):
+        cookie = session_signer.issue(ttl_seconds=60)
+        test_client.cookies.set("ods-session", cookie)
+
+        response = test_client.post("/api/auth/logout")
+
+        assert response.status_code == 200
+        assert response.json()["revoked"] is True
+        assert "ods-session=" in response.headers["set-cookie"]
+        assert "Max-Age=0" in response.headers["set-cookie"]
+
+        # Replay the copied cookie after the browser deletion. Server-side
+        # revocation, rather than cookie clearing alone, must reject it.
+        test_client.cookies.set("ods-session", cookie)
+        replay = test_client.get("/api/auth/verify-session")
+        assert replay.status_code == 401
+
+    def test_revocation_survives_store_reload(self, test_client, tmp_path, monkeypatch):
+        path = tmp_path / "persisted-revocations.json"
+        monkeypatch.setattr(auth_router, "_REVOCATIONS", RevocationStore(path))
+        cookie = session_signer.issue(ttl_seconds=60)
+        test_client.cookies.set("ods-session", cookie)
+        assert test_client.post("/api/auth/logout").status_code == 200
+
+        monkeypatch.setattr(auth_router, "_REVOCATIONS", RevocationStore(path))
+        test_client.cookies.set("ods-session", cookie)
+        assert test_client.get("/api/auth/verify-session").status_code == 401
+
+    def test_invalid_cookie_cannot_create_revocation(self, test_client, tmp_path):
+        test_client.cookies.set("ods-session", "not.a.valid-cookie")
+        response = test_client.post("/api/auth/logout")
+        assert response.status_code == 401
+        assert not list(tmp_path.rglob("session-revocations.json"))
+
+    def test_corrupt_revocation_store_fails_closed(self, test_client, tmp_path, monkeypatch):
+        path = tmp_path / "corrupt.json"
+        path.write_text("not-json", encoding="utf-8")
+        monkeypatch.setattr(auth_router, "_REVOCATIONS", RevocationStore(path))
+        test_client.cookies.set("ods-session", session_signer.issue(ttl_seconds=60))
+
+        response = test_client.get("/api/auth/verify-session")
+
+        assert response.status_code == 503
+        assert "temporarily unavailable" in response.json()["detail"]

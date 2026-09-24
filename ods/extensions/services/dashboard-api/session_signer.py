@@ -19,11 +19,9 @@ Why this shape:
     request session-store lookup.
   * Tamper-evident — a leaked cookie can't have its expiry extended;
     that would invalidate the signature.
-  * Revocation is bounded by expiry — if a cookie leaks, the operator
-    rotates ODS_SESSION_SECRET (which invalidates every issued cookie)
-    or waits for natural expiry. Adding a per-cookie revocation list is
-    a follow-up if needed; the cookie format reserves room (the random-
-    id field is what a revocation list would key on).
+  * Revocation is checked by the API boundary against a persistent store keyed
+    by the random-id. The signer stays responsible only for cookie integrity
+    and expiry, so it remains reusable by tests and non-HTTP callers.
   * No identity in the cookie — the random-id is opaque. The magic-link
     redemption records the target user separately (via the
     `ods-target-user` cookie or server-side audit log). Putting the
