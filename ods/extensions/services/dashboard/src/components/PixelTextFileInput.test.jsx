@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import PixelTextFileInput from './PixelTextFileInput'
 
 const upload = file => fireEvent.change(screen.getByLabelText('Choose text file'), {target:{files:[file]}})
@@ -54,4 +54,44 @@ it('drops a pending local read when the conversation unmounts', () => {
     expect(reader.onload).toBeNull()
     expect(insert).not.toHaveBeenCalled()
   } finally { vi.unstubAllGlobals() }
+})
+
+it.each(['cancel', 'deadline'])('releases a stalled read on %s and ignores its late callbacks', async reason => {
+  const readers = [], insert = vi.fn()
+  vi.useFakeTimers()
+  vi.stubGlobal('FileReader', class {
+    constructor() { readers.push(this) }
+    readAsArrayBuffer() {}
+    abort = vi.fn()
+  })
+  try {
+    render(<PixelTextFileInput {...props} onInsert={insert}/>)
+    upload(new File(['old'], 'old.txt'))
+    const first = readers[0], lateLoad = first.onload, lateError = first.onerror
+    expect(screen.getByRole('button', {name:'Add text file'})).toBeDisabled()
+    if (reason === 'cancel') fireEvent.click(screen.getByRole('button', {name:'Cancel file read'}))
+    else {
+      act(() => { vi.advanceTimersByTime(30000) })
+      expect(screen.getByRole('alert')).toHaveTextContent('took too long')
+    }
+    expect(first.abort).toHaveBeenCalledOnce()
+    expect(first.onload).toBeNull()
+    expect(first.onerror).toBeNull()
+    expect(screen.getByRole('button', {name:'Add text file'})).toBeEnabled()
+    expect(insert).not.toHaveBeenCalled()
+    if (reason === 'cancel') expect(screen.getByRole('button', {name:'Add text file'})).toHaveFocus()
+    upload(new File(['new'], 'new.txt'))
+    act(() => { lateLoad(); lateError() })
+    expect(screen.getByRole('status')).toHaveTextContent('Reading local file')
+    const second = readers[1]
+    second.result = new TextEncoder().encode('new').buffer
+    act(() => { second.onload() })
+    act(() => { vi.advanceTimersByTime(30000) })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('group', {name:'Review text file'})).toHaveTextContent('new.txt')
+    fireEvent.click(screen.getByRole('button', {name:'Insert file text'}))
+    expect(insert).toHaveBeenCalledOnce()
+    expect(insert.mock.calls[0][0]).toContain('new.txt')
+    expect(insert.mock.calls[0][0]).not.toContain('old')
+  } finally { vi.useRealTimers(); vi.unstubAllGlobals() }
 })
