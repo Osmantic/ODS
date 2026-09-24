@@ -7,6 +7,7 @@ injects provider credentials from a private file at the final egress boundary.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,6 +68,10 @@ PROBE_TIMEOUT_SECONDS = float(
         str(DEFAULT_PROBE_TIMEOUT_SECONDS),
     )
 )
+MAX_DIRECT_CLIENTS = max(
+    1,
+    int(os.environ.get("ODS_REMOTE_PROVIDER_MAX_DIRECT_CLIENTS", "4")),
+)
 app = FastAPI(title="ODS Remote Provider Egress", docs_url=None, redoc_url=None, openapi_url=None)
 
 _HOP_BY_HOP_RESPONSE_HEADERS = {
@@ -105,9 +110,24 @@ def _http_client(connection_key: str = "") -> httpx.AsyncClient:
             clients = {}
             app.state.direct_http_clients = clients
         client = clients.get(connection_key)
-        if client is None or client.is_closed:
-            client = httpx.AsyncClient(follow_redirects=False, trust_env=False)
-            clients[connection_key] = client
+        if client is not None and not client.is_closed:
+            # Refresh LRU ordering: move to end
+            clients[connection_key] = clients.pop(connection_key)
+            return client
+
+        # Evict oldest entries if at or exceeding capacity
+        while len(clients) >= MAX_DIRECT_CLIENTS:
+            old_key, old_client = next(iter(clients.items()))
+            del clients[old_key]
+            if old_client and not old_client.is_closed:
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(old_client.aclose())
+                except RuntimeError:
+                    pass
+
+        client = httpx.AsyncClient(follow_redirects=False, trust_env=False)
+        clients[connection_key] = client
         return client
     client = getattr(app.state, "http", None)
     if client is None or client.is_closed:
@@ -435,8 +455,11 @@ async def _startup() -> None:
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
-    await app.state.http.aclose()
+    http_client = getattr(app.state, "http", None)
+    if http_client is not None and not http_client.is_closed:
+        await http_client.aclose()
     clients = getattr(app.state, "direct_http_clients", {})
-    for client in clients.values():
-        await client.aclose()
+    for client in list(clients.values()):
+        if not client.is_closed:
+            await client.aclose()
     clients.clear()
