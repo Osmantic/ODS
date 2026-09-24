@@ -193,6 +193,48 @@ else
     fail "STRICT=1: expected [BAD] line in output, got: $(echo "$out_strict" | tail -5)"
 fi
 
+# JSON mode keeps stdout parseable and reports the same failing probe.
+set +e
+json_out=$(PATH="$MOCK_BIN:$PATH" EXTENSION_RUNTIME_CHECK_STRICT=1 bash "$CHK" --json "$FIXTURE_DIR")
+json_code=$?
+set -e
+
+if [[ $json_code -eq 1 ]]; then
+    pass "JSON + STRICT=1 preserves the health-failure exit code"
+else
+    fail "JSON + STRICT=1: expected exit 1, got $json_code"
+fi
+
+if JSON_REPORT="$json_out" python3 - <<'PY'
+import json
+import os
+
+report = json.loads(os.environ["JSON_REPORT"])
+assert report["schema_version"] == "1"
+assert report["kind"] == "extension-runtime-check"
+assert report["strict"] is True
+assert report["environment"] == {"docker": "available", "curl": "available"}
+assert report["summary"] == {
+    "checked": 1,
+    "healthy": 0,
+    "unhealthy": 1,
+    "skipped": 0,
+}
+assert report["checks"] == [{
+    "service_id": "test-svc",
+    "name": "Test Service",
+    "status": "unhealthy",
+    "container": "ods-test-svc",
+    "url": "http://127.0.0.1:19999/health",
+    "message": "HTTP health probe failed",
+}]
+PY
+then
+    pass "JSON mode emits the documented service-level report"
+else
+    fail "JSON mode emitted an invalid report: $json_out"
+fi
+
 rm -rf "$MOCK_BIN"
 
 echo ""
