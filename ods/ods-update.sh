@@ -307,13 +307,20 @@ snapshot_pre_update() {
         files_saved=$(( files_saved + 1 ))
     fi
 
+    # Pre-pull HEAD — lets rollback revert the source tree, not just configs.
+    # Without this the "rollback" leaves the checkout at the pulled commit.
+    local git_head=""
+    git_head=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || true)
+
     # Snapshot metadata
     jq -n \
         --arg ts  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg ver "$(get_current_version)" \
         --argjson fc "$files_saved" \
         --arg dir "$INSTALL_DIR" \
-        '{type:"pre-update", timestamp:$ts, version:$ver, files_count:$fc, install_dir:$dir}' \
+        --arg head "$git_head" \
+        '{type:"pre-update", timestamp:$ts, version:$ver, files_count:$fc, install_dir:$dir}
+         + (if $head == "" then {} else {git_head:$head} end)' \
         > "${snap_dir}/snapshot.json"
 
     # Integrity check: verify metadata is valid JSON before declaring success
@@ -358,6 +365,27 @@ _restore_snapshot() (
     done
 
     log_info "Restoring from rollback snapshot: $(basename "${snap_dir}")"
+
+    # Revert the source tree when the snapshot recorded the pre-update HEAD.
+    # A failed update already moved the checkout via `git pull --ff-only`;
+    # restoring configs alone leaves the new (failing) code running against
+    # old configuration. Reset first so restored tracked files (compose
+    # files, extension configs) land on top of the reverted tree. Snapshots
+    # live under gitignored data/, so they survive the reset. Legacy
+    # snapshots and general backups carry no git_head — skip them.
+    local git_head=""
+    git_head=$(jq -r '.git_head // empty' "${snap_dir}/snapshot.json" 2>/dev/null || true)
+    if [[ -n "$git_head" ]]; then
+        if ! git -C "$INSTALL_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            log_error "Snapshot recorded git revision ${git_head} but ${INSTALL_DIR} is not a git checkout."
+            return 1
+        fi
+        if ! git -C "$INSTALL_DIR" reset --hard "$git_head" >/dev/null 2>&1; then
+            log_error "Could not revert source tree to ${git_head}; leaving configuration untouched."
+            return 1
+        fi
+        log_info "  Source tree reverted to ${git_head:0:12}"
+    fi
 
     # A subshell owns shell options and traps even when callers use `if !`.
     # Stage every item before touching live files; keep displaced originals
