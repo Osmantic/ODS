@@ -6,7 +6,7 @@ When enabled, Hermes runs in a container alongside the rest of the stack, serves
 
 ## What you get
 
-Hermes ships its own complete web UI — ODS is just packaging it. After `ods enable hermes` + `ods enable hermes-proxy`, you can browse to `http://<device>:9120` (or `hermes.<device>.local:9120` once mDNS announcement lands — see "Roadmap" below). The proxy is the LAN-facing entry; it gates access on ODS's magic-link cookie before forwarding to Hermes's internal port 9119. See [docs/HERMES-SSO.md](HERMES-SSO.md) for the full auth flow. Once past the proxy you find pages for:
+Hermes ships its own complete web UI — ODS is just packaging it. After `ods enable hermes` + `ods enable hermes-proxy`, you can browse to `http://<device>:9120` (or `hermes.<device>.local:9120` once mDNS announcement lands — see "Roadmap" below). The proxy is the entry point and opens Hermes directly by default, without an owner card. Set `HERMES_REQUIRE_OWNER_CARD=true` to require an ODS signed session before forwarding to Hermes's internal port 9119. See [docs/HERMES-SSO.md](HERMES-SSO.md) for the full auth flow. Once past the proxy you find pages for:
 
 - **Chat** — conversational interface with streaming responses + inline tool calls
 - **Sessions** — list, switch between, prune past conversations
@@ -22,7 +22,7 @@ Hermes ships its own complete web UI — ODS is just packaging it. After `ods en
 
 The ODS dashboard exposes two separate Hermes entry points:
 
-- **Hermes Agent** opens the authenticated Hermes runtime through `hermes-proxy` on port 9120. It must never link to a raw inference endpoint such as llama-server or LiteLLM.
+- **Hermes Agent** opens the Hermes runtime through `hermes-proxy` on port 9120. It must never link to a raw inference endpoint such as llama-server or LiteLLM.
 - **Hermes Single Sign-On** opens the dashboard's **Setup / Owner** page at `/invites`, where operators manage owner cards and temporary support magic links. It is an access-management surface, not a second link to the Hermes runtime.
 
 Hermes readiness is provider-neutral. A healthy local `llama-server` or a healthy LiteLLM route can satisfy the inference dependency, so the same feature contract works for local, cloud, and external-provider installations on Linux, macOS, Windows, and WSL.
@@ -35,7 +35,7 @@ Hermes readiness is provider-neutral. A healthy local `llama-server` or a health
      ▼
   ┌─────────────────────────────────────┐
   │  ods-hermes-proxy                 │
-  │    forward_auth → dashboard-api     │
+  │    optional auth → dashboard-api     │
   │    reverse_proxy → ods-hermes     │
   └─────────────────────────────────────┘
                  │
@@ -93,7 +93,7 @@ ods status llama-server
 ods enable hermes
 ods enable hermes-proxy
 
-# 3. Open the auth-gated dashboard:
+# 3. Open Hermes directly (no owner card required by default):
 xdg-open http://localhost:9120
 ```
 
@@ -111,7 +111,7 @@ The first start takes a minute — image is ~3GB, Hermes runs its `skills_sync.p
 - **Model name:** `qwen3.5-9b` (ODS's default LLM — to switch models, edit `model.default` in `data/hermes/config.yaml` after first start; there is no env-var hook for this)
 - **Persona (`SOUL.md`):** a generalist ODS-aware persona (see `extensions/services/hermes/SOUL.md.template`)
 - **Messaging gateways DISABLED:** Telegram / Discord / Slack / WhatsApp / Signal / Teams / Google Chat / Matrix / Mattermost / SMS — all off by default. ODS owner-card users reach Hermes through the ODS Talk mobile portal, while advanced users can still open the full Hermes web dashboard. WhatsApp is pre-seeded as disabled with `bridge_port: 3010` so upstream's default `3000` bridge does not collide with Open WebUI when users intentionally enable it. To enable any platform, see [upstream messaging docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/).
-- **Network exposure:** Hermes is **not directly LAN-reachable**. Once the `hermes-proxy` extension is enabled (see [docs/HERMES-SSO.md](HERMES-SSO.md)), the proxy at port 9120 fronts Hermes and gates access on ODS's magic-link cookie. Hermes's own port 9119 is internal-only. To restore direct access (e.g. for testing without auth), re-add a `ports:` binding to `extensions/services/hermes/compose.yaml`.
+- **Network exposure:** Hermes is **not directly LAN-reachable**. Once the `hermes-proxy` extension is enabled (see [docs/HERMES-SSO.md](HERMES-SSO.md)), the proxy at port 9120 fronts Hermes without requiring an owner card by default. `HERMES_REQUIRE_OWNER_CARD=true` enables the signed-session gate. Hermes's own port 9119 remains internal-only; keep `BIND_ADDRESS` limited to the intended trusted network.
 - **Resource caps:** 4 CPUs / 4GB RAM hard limit, 0.5 CPU / 1GB reservation. Hermes's playwright + ML deps can be hungry; adjust in `extensions/services/hermes/compose.yaml` if needed.
 
 ## Configuration
@@ -119,7 +119,7 @@ The first start takes a minute — image is ~3GB, Hermes runs its `skills_sync.p
 Three layers, highest to lowest precedence:
 
 1. **Edit `data/hermes/config.yaml`** directly — Hermes's own config file, copied from our template on first start. Survives container restarts. Reset by deleting and restarting. **The model name lives here**, not in env.
-2. **Set env vars in ODS's `.env`** — `HERMES_LLM_BASE_URL`, `HERMES_LLM_API_KEY`, `HERMES_LANGUAGE`, optional `WHATSAPP_*` gateway settings, and the `HERMES_PROXY_*` proxy settings. Hermes itself has no host-port env knob in the auth-gated stack; the LAN-facing port is `HERMES_PROXY_PORT`.
+2. **Set env vars in ODS's `.env`** — `HERMES_LLM_BASE_URL`, `HERMES_LLM_API_KEY`, `HERMES_LANGUAGE`, optional `WHATSAPP_*` gateway settings, and the `HERMES_PROXY_*` proxy settings. Hermes itself has no host-port env knob in the proxy stack; the LAN-facing port is `HERMES_PROXY_PORT`.
 3. **Fall back to ODS's defaults** — defined in `extensions/services/hermes/cli-config.yaml.template`.
 
 `HERMES_DASHBOARD_SESSION_TOKEN` is installer-managed internal state. Do not
@@ -133,11 +133,11 @@ For local backends, keep `model.context_length` and `auxiliary.compression.conte
 
 ## Security posture
 
-- **`--insecure` is enabled inside the container.** Hermes's dashboard refuses non-loopback binds without it. ODS accepts that trade-off only because port 9119 is not host-bound in the default stack; the LAN-facing entry is the magic-link-gated proxy on port 9120. Do not add a public 9119 host binding.
-- **Hermes's internal dashboard token is independent of ODS authentication.** The installer stores `HERMES_DASHBOARD_SESSION_TOKEN` in the mode-600 `.env`; the browser receives it from Hermes only after the ODS session gate permits the page request. The token is stable across restarts but is not a substitute for the outer proxy gate.
+- **`--insecure` is enabled inside the container.** Hermes's dashboard refuses non-loopback binds without it. ODS accepts that trade-off only because port 9119 is not host-bound in the default stack; the entry is the proxy on port 9120, controlled by `BIND_ADDRESS`. Enable `HERMES_REQUIRE_OWNER_CARD=true` when the additional signed-session gate is needed. Do not add a public 9119 host binding.
+- **Hermes's internal dashboard token is independent of ODS authentication.** The installer stores `HERMES_DASHBOARD_SESSION_TOKEN` in the mode-600 `.env`; the browser receives it from Hermes with the page. The token is stable across restarts and remains required for Hermes API/WebSocket requests. With the default direct-access mode, anyone who can reach the proxy can open the shared Hermes instance; use the optional owner-card gate for untrusted access.
 - **The container runs as a non-root user** (UID 10000 by default, remappable via `HERMES_UID`). The entrypoint drops privileges via `gosu` before any agent code runs.
 - **The container has full network access** within ODS's bridge net — Hermes can make outbound HTTP requests for tools like `web_search`. If you want to restrict this, add an iptables firewall rule on the host or run Hermes behind a forward proxy.
-- **No APE policy enforcement yet.** Hermes's 70+ tools include shell + file write. The base config defaults toward less-risky tools, but Hermes can still execute shell commands inside its sandbox container. APE policy wrapping is a planned follow-up; until then, the trust model is "the user authenticated to Hermes is trusted to use the local container."
+- **No APE policy enforcement yet.** Hermes's 70+ tools include shell + file write. The base config defaults toward less-risky tools, but Hermes can still execute shell commands inside its sandbox container. APE policy wrapping is a planned follow-up; until then, the trust model is "the user with access to Hermes is trusted to use the local container."
 
 ## How to bump the image pin
 
@@ -177,7 +177,7 @@ docker manifest inspect nousresearch/hermes-agent:<new-tag> >/dev/null
 These were in the original integration plan but cut once we discovered Hermes ships a complete browser surface:
 
 - **mDNS announcement** — register `hermes.<device>.local` in the ODS mDNS announcer. ✅ shipped as [#1167](https://github.com/Osmantic/ODS/pull/1167) (stacked on [#1152](https://github.com/Osmantic/ODS/pull/1152)).
-- **Magic-link SSO** — magic-link cookie gates access to Hermes via the new `hermes-proxy` Caddy sidecar. ✅ shipped — see [docs/HERMES-SSO.md](HERMES-SSO.md). Known limitation: single shared Hermes for all users; real per-user isolation would require per-user containers.
+- **Magic-link SSO** — optional magic-link cookie gating (`HERMES_REQUIRE_OWNER_CARD=true`) controls access to Hermes via the new `hermes-proxy` Caddy sidecar. ✅ shipped — see [docs/HERMES-SSO.md](HERMES-SSO.md). Known limitation: single shared Hermes for all users; real per-user isolation would require per-user containers.
 - **APE policy integration** — route Hermes's tool calls through APE for allow/deny + audit. APE is already in the stack; needs a small adapter inside or in front of Hermes.
 - **Voice in/out from ODS's whisper + kokoro** — Hermes has its own audio pipeline (the image bundles ffmpeg + playwright); verify whether it already proxies to local TTS/STT services or whether we need to wire that ourselves.
 - **ODS-side status panel** — surface Hermes's session count + skill inventory in the ODS dashboard. Lower priority since Hermes has its own `AnalyticsPage`.

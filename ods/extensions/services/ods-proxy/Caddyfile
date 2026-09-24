@@ -27,7 +27,7 @@
 #   * Proxy is the LAN-facing surface; everything behind it stays
 #     loopback-bound on the host.
 #   * Trust is delegated to each backend's existing checks: dashboard-
-#     api's API-key, Open WebUI's WEBUI_AUTH, hermes-proxy's forward_auth.
+#     api's API-key, Open WebUI's WEBUI_AUTH, and optional Hermes session gating.
 #   * For exposure beyond the trusted LAN, put this behind Tailscale.
 #     Don't publish to the public internet without TLS + extra auth.
 

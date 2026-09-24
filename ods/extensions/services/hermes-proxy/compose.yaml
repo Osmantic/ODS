@@ -15,6 +15,8 @@ services:
       # for the brief window).
       - dashboard-api
     environment:
+      # Owner-card gating is opt-in; default installs open the core app directly.
+      - HERMES_REQUIRE_OWNER_CARD=${HERMES_REQUIRE_OWNER_CARD:-false}
       # Override the upstream from .env if the operator's wiring differs.
       - HERMES_PROXY_UPSTREAM=${HERMES_PROXY_UPSTREAM:-ods-hermes:9119}
       # Where forward_auth sends its session-verify sub-request. Defaults

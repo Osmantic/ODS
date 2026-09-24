@@ -53,8 +53,8 @@
     "hermes-proxy": {
       "risk": "autonomous-agent-gateway",
       "lan_exposure": "operator-controlled",
-      "auth_required": true,
-      "notes": "Caddy forward_auth gate in front of Hermes."
+      "auth_required": false,
+      "notes": "Hermes opens directly by default on the configured BIND_ADDRESS. Set HERMES_REQUIRE_OWNER_CARD=true for signed ODS-session gating. Internal Hermes API/session-token checks remain enabled."
     },
     "langfuse": {
       "risk": "observability-data-ui",

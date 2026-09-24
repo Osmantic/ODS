@@ -51,7 +51,7 @@ services:
       - HERMES_DASHBOARD_HOST=0.0.0.0
       - HERMES_DASHBOARD_PORT=9119
       # Keep the upstream dashboard token stable across container restarts.
-      # The public-facing proxy still requires an ODS session independently.
+      # Optional owner-card gating is controlled by HERMES_REQUIRE_OWNER_CARD.
       - HERMES_DASHBOARD_SESSION_TOKEN=${HERMES_DASHBOARD_SESSION_TOKEN:?installer must generate HERMES_DASHBOARD_SESSION_TOKEN}
       # --insecure equivalent: dashboard refuses non-loopback binds without
       # this since it stores API keys. The trusted-LAN posture is the v1
@@ -78,12 +78,9 @@ services:
       # Skills / etc. but has no way to actually start a conversation.
       # Upstream defaults this off because PTY = shell access; we flip
       # it on because (a) Hermes is the agent we ship — chat is the
-      # point — and (b) the surface is gated end-to-end:
-      #   * hermes container is internal-only (compose `expose:`)
-      #   * hermes-proxy in front does forward_auth against
-      #     dashboard-api/api/auth/verify-session
-      #   * a magic-link session OR admin-session bootstrap (#1222) is
-      #     required before Caddy lets the request through
+      # point. Hermes is internal-only (compose `expose:`); its proxy
+      # follows BIND_ADDRESS and optionally requires an ODS session when
+      # HERMES_REQUIRE_OWNER_CARD=true. Keep network access trusted.
       - HERMES_DASHBOARD_TUI=1
     volumes:
       # Persistent state: Hermes's HERMES_HOME. Sessions, skills, memories,
