@@ -45,16 +45,20 @@ def validate(request):
     require(isinstance(request, dict) and set(request) == {'files', 'mappingPath', 'outputRoot'}, "invalid-request")
     files = request['files']
     require(isinstance(files, list) and 1 <= len(files) <= 32, "invalid-file-count")
-    parts(request['mappingPath']); parts(request['outputRoot'])
+    parts(request['mappingPath'])
+    parts(request['outputRoot'])
     sources, outputs, keys = set(), {request['mappingPath'].casefold()}, set()
     for item in files:
         require(isinstance(item, dict) and set(item) == {'source', 'key', 'copyTo'}, "invalid-file")
-        parts(item['source']); parts(item['copyTo'])
+        parts(item['source'])
+        parts(item['copyTo'])
         require(isinstance(item['key'], str) and 0 < len(item['key']) <= 256
                 and not any(ord(c) < 32 for c in item['key']), "invalid-key")
         require(item['key'] not in keys and item['source'].casefold() not in sources
                 and item['copyTo'].casefold() not in outputs, "duplicate-path-or-key")
-        keys.add(item['key']); sources.add(item['source'].casefold()); outputs.add(item['copyTo'].casefold())
+        keys.add(item['key'])
+        sources.add(item['source'].casefold())
+        outputs.add(item['copyTo'].casefold())
     all_paths = sorted(outputs)
     require(not any(b.startswith(a + '/') for a, b in zip(all_paths, all_paths[1:])), "nested-file-path")
     return files
@@ -74,7 +78,8 @@ def parent(root, relative, create=False):
                 except FileExistsError:
                     pass
             child = os.open(component, FLAGS | os.O_DIRECTORY, dir_fd=fd)
-            os.close(fd); fd = child
+            os.close(fd)
+            fd = child
         return fd
     except BaseException:
         os.close(fd)
@@ -154,7 +159,8 @@ def atomic_write(root, name, data):
             require(bool(chunk), "staged-readback-failed")
             observed.extend(chunk)
         require(bytes(observed) == data, "staged-readback-failed")
-        os.close(fd); fd = None
+        os.close(fd)
+        fd = None
         rebound = parent(root, name)
         try:
             current_parent, original_parent = os.fstat(rebound), os.fstat(directory)

@@ -58,7 +58,8 @@ class WorkspaceBundleTest(unittest.TestCase):
         original = B.os.link
         def race(source, destination, **kwargs):
             fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=kwargs['dst_dir_fd'])
-            os.write(fd, b'owner concurrent bytes'); os.close(fd)
+            os.write(fd, b'owner concurrent bytes')
+            os.close(fd)
             return original(source, destination, **kwargs)
         with patch.object(B.os, 'link', side_effect=race):
             result = self.execute()
@@ -111,7 +112,8 @@ class WorkspaceBundleTest(unittest.TestCase):
         for kind in ['symlink', 'hardlink', 'fifo', 'invalid-utf8', 'large']:
             with self.subTest(kind=kind):
                 if self.source.exists() or self.source.is_symlink(): self.source.unlink()
-                other = self.root / 'other'; other.write_bytes(b'private')
+                other = self.root / 'other'
+                other.write_bytes(b'private')
                 if kind == 'symlink': self.source.symlink_to(other)
                 elif kind == 'hardlink': os.link(other, self.source)
                 elif kind == 'fifo': os.mkfifo(self.source)
@@ -122,7 +124,8 @@ class WorkspaceBundleTest(unittest.TestCase):
     def test_path_escape_duplicate_keys_and_outputs_rejected(self):
         for field in ['outputRoot', 'mappingPath']:
             for bad in ['../outside', '/tmp/outside', 'project/../outside', 'project\\outside', 'project/./file']:
-                request = json.loads(json.dumps(self.request)); request[field] = bad
+                request = json.loads(json.dumps(self.request))
+                request[field] = bad
                 with self.subTest(field=field, path=bad), self.assertRaises(B.BundleError): B.validate(request)
         for fault in ['duplicate-key', 'duplicate-output', 'case-collision']:
             request = json.loads(json.dumps(self.request))
@@ -134,7 +137,8 @@ class WorkspaceBundleTest(unittest.TestCase):
             with self.subTest(fault=fault), self.assertRaises(B.BundleError): B.validate(request)
 
     def test_symlink_output_root_never_traversed(self):
-        outside = self.root / 'outside'; outside.mkdir()
+        outside = self.root / 'outside'
+        outside.mkdir()
         (self.root / 'project/public').symlink_to(outside, target_is_directory=True)
         self.assertEqual(self.execute()['status'], 'failed')
         self.assertEqual(list(outside.iterdir()), [])
@@ -148,7 +152,9 @@ class WorkspaceBundleTest(unittest.TestCase):
             if not swapped:
                 swapped = True
                 generation = next((self.root / 'project/public').iterdir())
-                parent = generation / 'raw'; parent.rename(generation / 'retained'); parent.mkdir()
+                parent = generation / 'raw'
+                parent.rename(generation / 'retained')
+                parent.mkdir()
         with patch.object(B.os, 'fsync', side_effect=swap): result = self.execute()
         self.assertEqual(result['error'], 'output-parent-changed')
         self.assertEqual(result['written'], [])
