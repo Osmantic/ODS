@@ -792,6 +792,107 @@ def test_hermes_bridge_slow_open_does_not_block_other_keys(monkeypatch):
     assert _run_with_one_loop(main)
 
 
+def test_hermes_bridge_cancelled_connect_closes_http_session(monkeypatch):
+    """Client disconnects cancel the bridge task.  If cancellation lands while
+    ws_connect is pending, the newly allocated aiohttp session must not leak.
+    """
+    import asyncio as _asyncio
+    import hermes_bridge
+
+    class FakeHTTP:
+        closed = False
+
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        async def close(self):
+            self.closed = True
+
+    created = []
+
+    def fake_client_session(*, timeout):
+        session = FakeHTTP(timeout=timeout)
+        created.append(session)
+        return session
+
+    async def main():
+        connect_started = _asyncio.Event()
+
+        async def blocked_connect(_session):
+            connect_started.set()
+            await _asyncio.Event().wait()
+
+        monkeypatch.setattr(hermes_bridge.aiohttp, "ClientSession", fake_client_session)
+        monkeypatch.setattr(hermes_bridge, "_connect_ws", blocked_connect)
+
+        task = _asyncio.create_task(hermes_bridge._open_connection("cancel-connect"))
+        await connect_started.wait()
+        task.cancel()
+        with pytest.raises(_asyncio.CancelledError):
+            await task
+
+    _run_with_one_loop(main)
+    assert len(created) == 1
+    assert created[0].closed is True
+
+
+def test_hermes_bridge_cancelled_session_create_closes_ws_and_http(monkeypatch):
+    """Cancellation after ws_connect succeeds must release both resources."""
+    import asyncio as _asyncio
+    import hermes_bridge
+
+    class FakeHTTP:
+        closed = False
+
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        async def close(self):
+            self.closed = True
+
+    class FakeWS:
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    created_http = []
+    created_ws = []
+
+    def fake_client_session(*, timeout):
+        session = FakeHTTP(timeout=timeout)
+        created_http.append(session)
+        return session
+
+    async def fake_connect(_session):
+        ws = FakeWS()
+        created_ws.append(ws)
+        return ws
+
+    async def main():
+        create_started = _asyncio.Event()
+
+        async def blocked_create(_ws, *, timeout):
+            create_started.set()
+            await _asyncio.Event().wait()
+
+        monkeypatch.setattr(hermes_bridge.aiohttp, "ClientSession", fake_client_session)
+        monkeypatch.setattr(hermes_bridge, "_connect_ws", fake_connect)
+        monkeypatch.setattr(hermes_bridge, "_create_session_on_ws", blocked_create)
+
+        task = _asyncio.create_task(hermes_bridge._open_connection("cancel-create"))
+        await create_started.wait()
+        task.cancel()
+        with pytest.raises(_asyncio.CancelledError):
+            await task
+
+    _run_with_one_loop(main)
+    assert len(created_http) == 1
+    assert len(created_ws) == 1
+    assert created_http[0].closed is True
+    assert created_ws[0].closed is True
+
+
 def test_hermes_bridge_transparent_retry_on_send_reset(monkeypatch):
     """Most insidious dead-WS pattern: ``ws.closed`` reports False, but the
     next ``send_str`` raises ClientConnectionResetError because the upstream

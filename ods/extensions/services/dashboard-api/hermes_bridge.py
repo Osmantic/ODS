@@ -227,11 +227,18 @@ async def _open_connection(session_key: str) -> _HermesConnection:
     http_session = aiohttp.ClientSession(timeout=timeout)
     try:
         ws = await _connect_ws(http_session)
+    except asyncio.CancelledError:
+        await http_session.close()
+        raise
     except Exception:
         await http_session.close()
         raise
     try:
         session_id = await _create_session_on_ws(ws, timeout=30)
+    except asyncio.CancelledError:
+        await ws.close()
+        await http_session.close()
+        raise
     except Exception:
         await ws.close()
         await http_session.close()
