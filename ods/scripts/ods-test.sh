@@ -14,6 +14,7 @@
 #   ./ods-test.sh --quick          # Fast mode (~30s, no inference)
 #   ./ods-test.sh --json           # JSON output for automation
 #   ./ods-test.sh --service llm     # Test specific service
+#   ./ods-test.sh -s llm,whisper -s tts  # Test an ordered service subset
 #
 # Exit codes:
 #   0 - All critical tests passed
@@ -74,7 +75,7 @@ START_TIME=0
 # Mode flags
 JSON_OUTPUT=false
 QUICK_MODE=false
-SPECIFIC_SERVICE=""
+SELECTED_SERVICES=()
 VERBOSE=false
 
 # Results storage
@@ -656,7 +657,7 @@ USAGE:
 OPTIONS:
     --quick, -q        Fast mode (~30s, no inference tests)
     --json, -j         Output results as JSON
-    --service, -s      Test specific service only
+    --service, -s LIST Test one or more services (repeatable or comma-separated)
     --verbose, -v      Show detailed output
     --help, -h         Show this help
 
@@ -669,6 +670,7 @@ EXAMPLES:
     ods-test.sh --quick            # Fast health check
     ods-test.sh --json > results.json
     ods-test.sh --service llm      # Test LLM only
+    ods-test.sh -s llm,whisper -s tts
 
 EXIT CODES:
     0 - All tests passed
@@ -695,9 +697,7 @@ run_all_tests() {
 
 run_specific_service() {
     local service="$1"
-    
-    print_header
-    
+
     case "$service" in
         docker)          test_docker ;;
         gpu)             test_gpu ;;
@@ -717,6 +717,55 @@ run_specific_service() {
     esac
 }
 
+select_services() {
+    local selection="$1" service existing duplicate
+    local -a requested=()
+
+    if [[ -z "$selection" || "$selection" == ,* || "$selection" == *, || "$selection" == *,,* ]]; then
+        echo "Service selection cannot contain an empty name." >&2
+        exit 2
+    fi
+
+    IFS=',' read -r -a requested <<< "$selection"
+    for service in "${requested[@]}"; do
+        if [[ -z "$service" ]]; then
+            echo "Service selection cannot contain an empty name." >&2
+            exit 2
+        fi
+
+        case "$service" in
+            docker|gpu|llm|tool-calling|whisper|tts|embeddings|voice-roundtrip|privacy-shield|livekit) ;;
+            *)
+                echo "Unknown service: $service" >&2
+                echo "Available: docker, gpu, llm, tool-calling, whisper, tts, embeddings, voice-roundtrip, privacy-shield, livekit" >&2
+                exit 2
+                ;;
+        esac
+
+        duplicate=false
+        for existing in "${SELECTED_SERVICES[@]}"; do
+            if [[ "$existing" == "$service" ]]; then
+                duplicate=true
+                break
+            fi
+        done
+        if [[ "$duplicate" == "false" ]]; then
+            SELECTED_SERVICES+=("$service")
+        fi
+    done
+}
+
+run_selected_services() {
+    local service
+
+    print_header
+    for service in "${SELECTED_SERVICES[@]}"; do
+        if ! run_specific_service "$service"; then
+            log "Service suite '$service' reported a failed check; continuing the selected set"
+        fi
+    done
+}
+
 main() {
     START_TIME=$(date +%s)
     
@@ -733,7 +782,11 @@ main() {
                 shift
                 ;;
             --service|-s)
-                SPECIFIC_SERVICE="$2"
+                if [[ $# -lt 2 || "$2" == -* ]]; then
+                    echo "Option $1 requires a service list." >&2
+                    exit 2
+                fi
+                select_services "$2"
                 shift 2
                 ;;
             --verbose|-v)
@@ -756,8 +809,8 @@ main() {
     load_env
     
     # Run tests
-    if [[ -n "$SPECIFIC_SERVICE" ]]; then
-        run_specific_service "$SPECIFIC_SERVICE"
+    if [[ ${#SELECTED_SERVICES[@]} -gt 0 ]]; then
+        run_selected_services
     else
         run_all_tests
     fi
