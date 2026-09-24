@@ -16,10 +16,19 @@ ENV_FILE="${INSTALL_DIR}/.env"
 
 [[ -f "$ENV_FILE" ]] || { echo "Migration v2.4.1: no .env at $ENV_FILE — skipping"; exit 0; }
 
-# Empty-or-missing check: matches both "key not present" and "key="
-existing=$(grep -E '^SHIELD_API_KEY=' "$ENV_FILE" 2>/dev/null | sed -n '1p' | cut -d= -f2- | tr -d '\r' || true)
-if [[ -z "$existing" ]]; then
-    new_key=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')
+# Skip when ANY SHIELD_API_KEY line already carries a non-empty value.
+# Reading only the first line mishandles duplicates: an empty line shadowed by
+# a later real value would pass the old check, and the awk rewrite below would
+# then clobber the real key with a fresh random one.
+if ! grep -qE '^SHIELD_API_KEY=[^[:space:]]' "$ENV_FILE" 2>/dev/null; then
+    # od is POSIX and always available; xxd is not. Whatever produced the key,
+    # it must be 64 hex chars — a silent empty key would leave Privacy Shield
+    # authentication broken while reporting migration success.
+    new_key=$(openssl rand -hex 32 2>/dev/null || od -An -tx1 -N32 /dev/urandom 2>/dev/null | tr -d ' \n')
+    if [[ ! "$new_key" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "Migration v2.4.1: could not generate a SHIELD_API_KEY (no usable random source) — aborting" >&2
+        exit 1
+    fi
     if grep -qE '^SHIELD_API_KEY=' "$ENV_FILE" 2>/dev/null; then
         # Update empty value in place. Use awk to dodge sed delimiter pitfalls.
         awk -v v="$new_key" '
