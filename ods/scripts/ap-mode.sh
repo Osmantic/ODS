@@ -167,7 +167,10 @@ interface_supports_ap() {
     log "WARNING: 'iw' not available — skipping AP-capability check"
     return 0
   fi
-  if ! iw list 2>/dev/null | grep -A20 "Supported interface modes" | grep -q "\* AP"; then
+  # The final matcher must consume its input. With pipefail, grep -q can close
+  # the pipe as soon as it sees AP and turn a successful, large `iw list`
+  # response into SIGPIPE (141) upstream.
+  if ! iw list 2>/dev/null | grep -A20 "Supported interface modes" | grep "\* AP" >/dev/null; then
     err "interface does not advertise AP mode in 'iw list' output"
     err "this driver may not support hostapd"
     return 1

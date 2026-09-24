@@ -41,4 +41,19 @@ assert_fails "short AP password" require_password
 ODS_AP_PASSWORD="unique-device-pass"
 require_password >/dev/null
 
+# A real `iw list` can include a large capability dump after the interface
+# modes. The AP match must remain successful under pipefail even when the
+# producer writes more than one pipe buffer after the match.
+iw() {
+  printf '%s\n' \
+    'Supported interface modes:' \
+    '         * managed' \
+    '         * AP'
+  local i
+  for ((i = 0; i < 20000; i++)); do
+    printf 'capability-%05d\n' "$i"
+  done
+}
+interface_supports_ap >/dev/null
+
 printf 'AP mode helper checks passed\n'
