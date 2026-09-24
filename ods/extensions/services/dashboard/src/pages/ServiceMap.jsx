@@ -328,6 +328,7 @@ export default function ServiceMap({ compact = false }) {
   const [actualSize, setActualSize] = useState(false)
   const [error, setError] = useState(null)
   const activeRequest = useRef(null)
+  const retryButtonRef = useRef(null)
 
   const fetchTopology = useCallback(async () => {
     if (document.hidden || activeRequest.current) return
@@ -377,6 +378,10 @@ export default function ServiceMap({ compact = false }) {
     }
   }, [fetchTopology])
 
+  useEffect(() => {
+    if (!loading && error && !topology.nodes.length) retryButtonRef.current?.focus()
+  }, [error, loading, topology.nodes.length])
+
   const { nodes, edges, capturedAt } = topology
   const { positions, layerY, svgWidth, svgHeight } = useMemo(() => computeLayout(nodes), [nodes])
   const counts = useMemo(() => ({
@@ -392,7 +397,7 @@ export default function ServiceMap({ compact = false }) {
   }
 
   if (error && !nodes.length) {
-    return <div role="alert" className="text-sm text-red-400">Topology data unavailable: {error}<button className="ml-3" onClick={fetchTopology}>Retry</button></div>
+    return <div role="alert" className="text-sm text-red-400">Topology data unavailable: {error}<button ref={retryButtonRef} className="ml-3" onClick={fetchTopology}>Retry</button></div>
   }
 
   if (compact) return <CompactIntegrations nodes={nodes} edges={edges} capturedAt={capturedAt} refresh={fetchTopology} error={error} />

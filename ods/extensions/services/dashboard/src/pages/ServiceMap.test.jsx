@@ -1,8 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import ServiceMap, { buildTopology } from './ServiceMap'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+
+it('moves focus to Retry when the initial topology request times out', async () => {
+  vi.useFakeTimers()
+  vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+  try {
+    render(<ServiceMap />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+    expect(screen.getByRole('button', { name: 'Retry' })).toHaveFocus()
+  } finally {
+    vi.useRealTimers()
+  }
+})
 
 it('fits the map initially, offers actual size, and opens details by keyboard', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => statusPayload }))
