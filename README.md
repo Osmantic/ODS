@@ -268,7 +268,7 @@ See the [macOS Quickstart](ods/docs/MACOS-QUICKSTART.md) for details.
 
 ### Agents & Automation
 - **Portal** — bundled core conversational assistant on Apple Silicon macOS and qualified Ubuntu 24.04/26.04 or Debian 12 systemd hosts, including qualified WSL2 installations through the Linux installer. No private repository access or separate license flag is required; available in the Dashboard and through a compatible Open WebUI model route. The native PowerShell installer does not install the Portal host runtime.
-- **Hermes Agent** — independent general-purpose agent, available alongside Portal; includes memory, skills, and a magic-link-gated proxy
+- **Hermes Agent** — independent general-purpose agent, available alongside Portal; includes memory, skills, and a proxy with optional owner-card gating; direct access by default
 - **OpenClaw** — deprecated legacy autonomous agent, still opt-in during the migration window
 - **n8n** — workflow automation with 400+ integrations (Slack, email, databases, APIs)
 - **APE** — Agent Policy Engine for auditing and governing autonomous tool calls
