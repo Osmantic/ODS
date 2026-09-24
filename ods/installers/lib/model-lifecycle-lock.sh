@@ -54,20 +54,41 @@ ods_model_lifecycle_lock_acquire() {
         _ods_model_lifecycle_log "Refusing model lifecycle lock directory not owned by this user: $(dirname "$lock_file")"
         return 1
     fi
-    if ! exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>"$lock_file"; then
+    # Append mode: opening the lock file must not truncate it, or a waiting
+    # process would erase the recorded holder identity before timing out.
+    if ! exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>>"$lock_file"; then
         ODS_MODEL_LIFECYCLE_LOCK_FD=""
         _ods_model_lifecycle_log "Cannot open model lifecycle lock for $actor: $lock_file"
         return 1
     fi
 
     if ! flock -xn "$ODS_MODEL_LIFECYCLE_LOCK_FD"; then
+        local wait_seconds="${ODS_MODEL_LIFECYCLE_LOCK_WAIT_SECONDS:-3600}"
+        [[ "$wait_seconds" =~ ^[0-9]+$ ]] || wait_seconds=3600
         _ods_model_lifecycle_log "Waiting for another model lifecycle operation before $actor..."
-        if ! flock -x "$ODS_MODEL_LIFECYCLE_LOCK_FD"; then
-            exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&- 2>/dev/null || true
+        # Bound the wait: a wedged holder must not block this operation
+        # forever. 3600s covers even very slow full-model downloads; operators
+        # can tune via ODS_MODEL_LIFECYCLE_LOCK_WAIT_SECONDS.
+        if ! flock -x -w "$wait_seconds" "$ODS_MODEL_LIFECYCLE_LOCK_FD"; then
+            local holder=""
+            holder="$(tail -n 1 "$lock_file" 2>/dev/null || true)"
+            # The redirect must be scoped to the group: a bare
+            # `exec fd>&- 2>/dev/null` would silence stderr permanently.
+            { exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; } 2>/dev/null || true
             ODS_MODEL_LIFECYCLE_LOCK_FD=""
+            if [[ -n "$holder" ]]; then
+                _ods_model_lifecycle_log "Timed out after ${wait_seconds}s waiting for $actor; last lock holder: $holder"
+            else
+                _ods_model_lifecycle_log "Timed out after ${wait_seconds}s waiting for $actor."
+            fi
             return 1
         fi
     fi
+
+    # Record the holder so a later waiter (or post-mortem) can identify who
+    # blocked the lifecycle lock. One short line per acquisition.
+    printf 'pid=%s actor=%s at=%s\n' "$$" "$actor" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        >>"$lock_file" 2>/dev/null || true
 
     ODS_MODEL_LIFECYCLE_LOCK_FILE="$lock_file"
     _ods_model_lifecycle_log "Acquired model lifecycle lock for $actor."
@@ -77,7 +98,7 @@ ods_model_lifecycle_lock_release() {
     [[ -n "${ODS_MODEL_LIFECYCLE_LOCK_FD:-}" ]] || return 0
 
     flock -u "$ODS_MODEL_LIFECYCLE_LOCK_FD" 2>/dev/null || true
-    exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&- 2>/dev/null || true
+    { exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; } 2>/dev/null || true
     ODS_MODEL_LIFECYCLE_LOCK_FD=""
     ODS_MODEL_LIFECYCLE_LOCK_FILE=""
 }
