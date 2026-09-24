@@ -10,22 +10,71 @@ tmp_dir="$(mktemp -d)"
 install_dir="$tmp_dir/install"
 bin_dir="$tmp_dir/bin"
 docker_log="$tmp_dir/docker.log"
-trap 'rm -rf "$tmp_dir"' EXIT
 
-mkdir -p "$install_dir/data" "$bin_dir"
+cleanup() {
+    local pid_file="$install_dir/data/.llama-server.pid"
+    if [[ -f "$pid_file" ]]; then
+        kill "$(cat "$pid_file")" 2>/dev/null || true
+    fi
+    rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+mkdir -p "$install_dir/data/models" "$install_dir/bin" "$bin_dir"
 cp "$root_dir/docker-compose.base.yml" "$install_dir/docker-compose.base.yml"
 printf '%s\n' '-f docker-compose.base.yml' > "$install_dir/.compose-flags"
+# A bare `restart` also restarts the native llama-server on macOS, which
+# resolves the active model and requires an executable runtime. The fixture
+# provides both so the native leg can complete instead of dying at model
+# resolution.
+: > "$install_dir/data/models/Qwen3.5-9B-Q4_K_M.gguf"
 printf '%s\n' \
     'ODS_VERSION=2.6.0' \
     'ODS_MODE=local' \
     'GPU_BACKEND=apple' \
     'GPU_COUNT=1' \
     'TIER=1' \
+    'GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf' \
+    'ODS_NATIVE_LLAMA_PORT=18347' \
     'LLAMA_CPU_LIMIT=8.0' \
     'LLAMA_CPU_RESERVATION=2.0' \
     'HERMES_CPU_LIMIT=4.0' \
     'HERMES_CPU_RESERVATION=0.5' \
     > "$install_dir/.env"
+
+cat > "$install_dir/bin/llama-server" <<'LLAMA_STUB'
+#!/usr/bin/env bash
+# Minimal llama-server stand-in: honour --host/--port and answer /health.
+set -euo pipefail
+host="127.0.0.1"
+port="8080"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --host) host="$2"; shift 2 ;;
+        --port) port="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+exec python3 - "$host" "$port" <<'PYEOF'
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("content-length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *_args):
+        pass
+
+
+HTTPServer((sys.argv[1], int(sys.argv[2])), Handler).serve_forever()
+PYEOF
+LLAMA_STUB
+chmod +x "$install_dir/bin/llama-server"
 
 printf '%s\n' '#!/usr/bin/env bash' \
     'set -euo pipefail' \
