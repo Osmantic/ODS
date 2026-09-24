@@ -540,7 +540,7 @@ def _compute_env_apply_plan(
     services_list = sorted(services)
     inactive_list = sorted(inactive_services)
     manual_list = sorted(set(manual_keys))
-    if not changed_keys or (not services_list and not manual_list):
+    if not changed_keys or (not services_list and not manual_list and not inactive_list):
         status = "none"
     elif services_list and (manual_list or inactive_list):
         status = "partial"
