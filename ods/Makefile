@@ -120,6 +120,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== ods-cli pipefail tolerance ==="
 	@bash tests/test-ods-cli-pipefail-tolerance.sh
+	@bash tests/test-host-logical-cpus.sh
 	@bash tests/test-cli-prompts-noninteractive.sh
 	@bash tests/test-agent-restart-nonfatal.sh
 	@bash tests/test-unix-restart-recreate-env.sh
