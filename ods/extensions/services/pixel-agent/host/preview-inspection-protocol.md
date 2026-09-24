@@ -38,6 +38,14 @@ the measurement APIs. Visible elements bearing `hidden` produce a diagnostic;
 they fail only an explicit hidden assertion. Intentional CSS overrides are not
 rewritten or rejected at publication.
 
+Stable sampling requires two identical observations 100 ms apart. If they
+disagree, sampling continues for at most 1.5 seconds per observation, allowing
+ordinary finite transitions to finish. Persistent disagreement fails as
+`unstable`; timeout never substitutes for a visibility verdict. The page's
+animations and styles are never paused, sought, or changed. This is sampled
+stability, not proof of continuous visibility between or after observations.
+The overall 45-second capsule deadline remains unchanged.
+
 ## Host custody and isolation
 
 Linux/WSL uses `/run/ods-pixel-inspection/control.sock`, a root-controlled 0750

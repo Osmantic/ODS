@@ -5,6 +5,7 @@ import http.server
 import mimetypes
 import sys
 import threading
+import time
 import urllib.parse
 from preview_inspection_protocol import (
     CSP,
@@ -39,6 +40,25 @@ DIAGNOSTIC = r"""function() {
   }
   return {renderedHiddenAttributeCount:count, hiddenUntilFoundCount:untilFound};
 }"""
+
+
+def observe_until_stable(once, wait):
+    # Keep the 100ms fast path. A finite transition may need more samples,
+    # but changing observations never become a passing assertion on timeout.
+    # The broker's independent 45s capsule deadline still bounds all steps.
+    deadline = time.monotonic() + 1.5
+    previous = once()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining < 0.1:
+            return previous, False
+        wait(100)
+        current = once()
+        if time.monotonic() > deadline:
+            return current, False
+        if current == previous:
+            return current, True
+        previous = current
 
 
 def run_browser(bundle, playwright_factory=None):
@@ -205,8 +225,8 @@ def run_browser(bundle, playwright_factory=None):
                     raise Invalid("invalid selector")
                 return result["result"].get("value")
 
-            # Small stable sampling window; animation/mutation disagreement is
-            # inconclusive, never an automatically green assertion.
+            # Sample in the isolated world; disagreement gets a bounded chance
+            # to settle without changing page styles or animation state.
             document_id = cdp.send(
                 "Runtime.evaluate", {"expression": "document", "contextId": world}
             )["result"]["objectId"]
@@ -272,10 +292,9 @@ def run_browser(bundle, playwright_factory=None):
                     cdp.send("Runtime.releaseObject", {"objectId": node})
 
             def observe(locator):
-                first = once(locator)
-                page.wait_for_timeout(100)
-                second = once(locator)
-                return second, first == second
+                return observe_until_stable(
+                    lambda: once(locator), page.wait_for_timeout
+                )
 
             page.wait_for_timeout(100)
             diagnostics = evaluate(DIAGNOSTIC)

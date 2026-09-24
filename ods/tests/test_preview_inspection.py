@@ -49,6 +49,48 @@ def bundle(html, steps=None):
     }
 
 
+class ObservationTests(unittest.TestCase):
+    def sample(self, values, evaluation_cost=0):
+        clock = [0.0]
+        waits = []
+        samples = iter(values)
+
+        def once():
+            clock[0] += evaluation_cost
+            return next(samples)
+
+        def wait(milliseconds):
+            waits.append(milliseconds)
+            clock[0] += milliseconds / 1000
+
+        with patch.object(capsule.time, "monotonic", side_effect=lambda: clock[0]):
+            result = capsule.observe_until_stable(once, wait)
+        return result, waits, clock[0]
+
+    def test_stable_fast_path(self):
+        result, waits, elapsed = self.sample([{"opacity": "1"}] * 2)
+        self.assertEqual(result, ({"opacity": "1"}, True))
+        self.assertEqual(waits, [100])
+        self.assertEqual(elapsed, .1)
+
+    def test_disagreement_requires_new_identical_pair(self):
+        values = [{"visible": True, "opacity": str(v)} for v in (.1, .4, 1, 1)]
+        result, waits, _ = self.sample(values)
+        self.assertEqual(result, (values[-1], True))
+        self.assertEqual(waits, [100] * 3)
+
+    def test_perpetual_change_stops_within_budget(self):
+        result, waits, elapsed = self.sample([{"opacity": str(v)} for v in range(30)])
+        self.assertFalse(result[1])
+        self.assertLessEqual(elapsed, 1.5)
+        self.assertLessEqual(len(waits), 15)
+
+    def test_late_matching_result_does_not_pass(self):
+        result, _, elapsed = self.sample([{"visible": True}] * 2, evaluation_cost=.8)
+        self.assertGreater(elapsed, 1.5)
+        self.assertFalse(result[1])
+
+
 class ProtocolTests(unittest.TestCase):
     def test_production_frame_contract(self):
         import workspace_preview as publisher
@@ -256,6 +298,36 @@ class BrowserTests(unittest.TestCase):
             except ProcessLookupError:
                 pass
             child.wait(timeout=5)
+
+    def fade_fixture(self, animation):
+        return (
+            '<style>@keyframes reveal{from{opacity:.1}to{opacity:1}}'
+            '@keyframes disappear{from{opacity:1}to{opacity:0}}'
+            f'.revealed{{animation:{animation}}}</style>'
+            '<article id="item" hidden>Sold out</article>'
+            '<button onclick="const e=document.querySelector(\'#item\');'
+            'e.hidden=false;e.className=\'revealed\'">Reveal</button>'
+        )
+
+    def reveal_steps(self):
+        return [step("assert-hidden", "#item"), step("click", name="Reveal"),
+                step("assert-visible", "#item")]
+
+    def test_finite_reveal_fade_settles(self):
+        result = self.check(self.fade_fixture("reveal .6s linear forwards"), self.reveal_steps())
+        self.assertEqual(result["status"], "passed", result)
+        self.assertEqual(result["steps"][-1]["before"]["opacity"], "1")
+
+    def test_infinite_fade_remains_unstable(self):
+        result = self.check(self.fade_fixture("reveal 20s linear infinite alternate"), self.reveal_steps())
+        self.assertEqual(result["status"], "failed", result)
+        self.assertEqual(result["steps"][-1]["errorCode"], "unstable")
+
+    def test_fade_to_hidden_is_not_visible(self):
+        result = self.check(self.fade_fixture("disappear .6s linear forwards"), self.reveal_steps())
+        self.assertEqual(result["status"], "failed", result)
+        self.assertEqual(result["steps"][-1]["errorCode"], "visibility_mismatch")
+        self.assertFalse(result["steps"][-1]["before"]["visible"])
 
     def test_hidden_flex(self):
         html = '<style>.card{display:flex}</style><article hidden class="card" id="item">Sold out</article>'
