@@ -7,7 +7,7 @@ beforeEach(() => {
   localStorage.clear()
   vi.stubGlobal('fetch', vi.fn(async () => ({ok:true,json:async () => ({available:true,model:'pixel/default'})})))
 })
-afterEach(() => {vi.unstubAllGlobals(); vi.restoreAllMocks()})
+afterEach(() => {vi.unstubAllGlobals(); vi.restoreAllMocks(); delete HTMLDialogElement.prototype.showModal; delete HTMLDialogElement.prototype.close})
 
 it('retains an oversized unsent draft across reload and permits editing it back under the send limit', async () => {
   const text = 'x'.repeat(16384) + '\nDo not lose this ending.'
@@ -36,4 +36,22 @@ it('retains the complete oversized draft when selecting an existing conversation
   act(() => window.dispatchEvent(new CustomEvent(SELECT_EVENT, {detail:'large'})))
   expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue(text)
   expect(screen.getByTitle('Send')).toBeDisabled()
+})
+
+it('imports the complete oversized draft and keeps sending blocked until it is shortened', async () => {
+  HTMLDialogElement.prototype.showModal=function () {this.open=true}
+  HTMLDialogElement.prototype.close=function () {this.open=false}
+  const draft = 'x'.repeat(16384) + '\nKeep the ending.'
+  render(<Pixel/> )
+  await screen.findByText('Available')
+  const archive = {schemaVersion:1,kind:'ods-pixel-conversation',conversation:{schema:1,messages:[],draft}}
+  fireEvent.change(screen.getByLabelText('Choose conversation export'),{target:{files:[new File([JSON.stringify(archive)],'draft.json')]}})
+  await screen.findByText('0 messages and an unsent draft')
+  fireEvent.click(screen.getByRole('button',{name:'Import as new conversation'}))
+  expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue(draft)
+  expect(screen.getByTitle('Send')).toBeDisabled()
+  expect(screen.getByText(/Message too long/)).toBeVisible()
+  fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'Shortened draft'}})
+  expect(screen.getByTitle('Send')).toBeEnabled()
+  expect(fetch.mock.calls.some(([url]) => url === '/api/pixel/chat')).toBe(false)
 })
