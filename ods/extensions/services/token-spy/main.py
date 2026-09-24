@@ -748,13 +748,13 @@ async def _handle_streaming(client, raw_body, headers, model, sys_analysis,
                             continue
 
                         if current_event == "message_start":
-                            msg_usage = (data.get("message", {}).get("usage", {}))
+                            msg_usage = data.get("message", {}).get("usage") or {}
                             usage["input_tokens"] = msg_usage.get("input_tokens", 0)
                             usage["cache_read_tokens"] = msg_usage.get("cache_read_input_tokens", 0)
                             usage["cache_write_tokens"] = msg_usage.get("cache_creation_input_tokens", 0)
 
                         elif current_event == "message_delta":
-                            delta_usage = data.get("usage", {})
+                            delta_usage = data.get("usage") or {}
                             # Anthropic deltas carry cumulative counters, including
                             # revised input/cache usage. Omitted fields retain
                             # the last observation; explicit zero is authoritative.
@@ -821,7 +821,7 @@ async def _handle_non_streaming(client, raw_body, headers, model, sys_analysis,
         log.warning("Failed to parse Anthropic response JSON — token usage will be recorded as zero")
         data = {}
 
-    resp_usage = data.get("usage", {})
+    resp_usage = data.get("usage") or {}
     usage = {
         "input_tokens": resp_usage.get("input_tokens", 0),
         "output_tokens": resp_usage.get("output_tokens", 0),
@@ -993,7 +993,7 @@ async def _handle_openai_streaming(client, raw_body, headers, model, sys_analysi
                     if chunk_usage:
                         usage["input_tokens"] = chunk_usage.get("prompt_tokens", 0)
                         usage["output_tokens"] = chunk_usage.get("completion_tokens", 0)
-                        usage["cache_read_tokens"] = chunk_usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
+                        usage["cache_read_tokens"] = (chunk_usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
 
                     choices = data.get("choices", [])
                     if choices:
@@ -1046,11 +1046,11 @@ async def _handle_openai_non_streaming(client, raw_body, headers, model, sys_ana
         log.warning("Failed to parse OpenAI response JSON — token usage will be recorded as zero")
         data = {}
 
-    resp_usage = data.get("usage", {})
+    resp_usage = data.get("usage") or {}
     usage = {
         "input_tokens": resp_usage.get("prompt_tokens", 0),
         "output_tokens": resp_usage.get("completion_tokens", 0),
-        "cache_read_tokens": resp_usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
+        "cache_read_tokens": (resp_usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
         "cache_write_tokens": 0,
         "stop_reason": (data.get("choices", [{}])[0].get("finish_reason") if data.get("choices") else None),
     }
