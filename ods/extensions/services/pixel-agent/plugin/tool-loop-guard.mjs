@@ -42,6 +42,8 @@ import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
   requestedTextDeliveryNote } from './requested-literals.mjs';
 import { escapedLineBreakScan, escapedLineBreakText, ESCAPED_LINE_BREAK_WRITE_NEXT } from './python-syntax-guidance.mjs';
+import { editMissError, editPairs, editRecovery, mergeHeldHunks, mergedEditNote, sha256Hex,
+  withoutMismatchHead } from './edit-recovery.mjs';
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -7003,6 +7005,80 @@ export function createToolLoopGuard({
       : `${DERIVED_MAP_WRITE_REASON} Repeated files: ${files}.`;
   }
 
+  // Edit-miss recovery (edit-recovery.mjs). A rejected edit whose other edits
+  // matched leaves at most one hold per file for this run, bound to the file's
+  // sha256. The next identified edit of that file consumes it: the held edits
+  // join that call only when the bytes are unchanged. A write, a patch or a
+  // command naming the file drops it; so does the end of the run.
+  function mergeHeldEdits(state, params, callId) {
+    if (!state?.heldEdits?.size || typeof callId !== "string" || !callId ||
+        callId.startsWith("tool_search_code:")) return undefined;
+    const file = derivedWorkspacePath(normalizeWorkspaceFilePath(params?.path));
+    const hold = file ? state.heldEdits.get(file) : undefined;
+    if (!hold) return undefined;
+    state.heldEdits.delete(file);
+    const own = editPairs(params);
+    if (!own || own.some((pair) => !pair.oldText)) return undefined;
+    const bytes = readWorkspaceBytes(state.configuredWorkspaceRoot, file);
+    if (!bytes || sha256Hex(bytes) !== hold.sha256) return undefined;
+    let content;
+    try { content = STRICT_UTF8.decode(bytes); } catch { return undefined; }
+    const merged = mergeHeldHunks(content, own, hold.hunks);
+    if (!merged) return undefined;
+    const { oldText: _oldText, newText: _newText, ...rest } = params;
+    return { params: { ...rest, edits: merged.edits }, merge: { own: own.length, indices: merged.held } };
+  }
+
+  function dropHeldEdits(state, mutation, command) {
+    if (!state?.heldEdits?.size) return;
+    if (mutation) {
+      for (const file of workspaceMutationFiles(mutation.name, mutation.event?.params)) {
+        const held = derivedWorkspacePath(normalizeWorkspaceFilePath(file));
+        if (held) state.heldEdits.delete(held);
+      }
+    }
+    if (typeof command === "string") {
+      for (const file of [...state.heldEdits.keys()]) {
+        if (command.includes(file.split("/").at(-1))) state.heldEdits.delete(file);
+      }
+    }
+  }
+
+  // The recovery note for this exact edit receipt: the closest current text
+  // for a missed edit, and a new hold when its other edits matched; or, for a
+  // merged call that succeeded, what was applied. Nested Tool Search results
+  // are folded into their outer receipt, which carries the note.
+  function observeEditOutcome(state, runId, toolName, toolCallId, event, pending) {
+    if (typeof toolCallId !== "string" || !toolCallId || toolCallId.startsWith("tool_search_code:") ||
+        pending?.runId !== runId || pending.selectedToolName !== "edit" || pending.transport !== toolName ||
+        (event?.runId && event.runId !== runId) || (event?.toolCallId && event.toolCallId !== toolCallId)) return;
+    const receipt = toolName === "tool_call" ? toolSearchEventEnvelope(event, "edit", "core") : event;
+    const executed = toolName === "tool_call" ? receipt?.params ?? event?.params?.args : event?.params;
+    if (!isDeepStrictEqual(executed, pending.selectedParams)) return;
+    const file = derivedWorkspacePath(normalizeWorkspaceFilePath(pending.selectedParams?.path));
+    const merge = pending.heldEditMerge;
+    if (!file) return;
+    if (!toolCallFailed(event) && receipt?.result && !toolCallFailed(receipt)) {
+      if (merge) pending.fileRecoveryNote = mergedEditNote(merge.own, merge.indices);
+      return;
+    }
+    const texts = (result) => Array.isArray(result?.content)
+      ? result.content.flatMap((block) => block?.type === "text" && typeof block.text === "string" ? [block.text] : []) : [];
+    const error = editMissError(receipt?.result?.details?.error, event?.result?.details?.error,
+      typeof event?.error === "string" ? event.error : undefined, ...texts(receipt?.result), ...texts(event?.result));
+    const edits = editPairs(pending.selectedParams);
+    if (!error || !edits) return;
+    const bytes = readWorkspaceBytes(state.configuredWorkspaceRoot, file);
+    let content;
+    try { content = bytes ? STRICT_UTF8.decode(bytes) : undefined; } catch { content = undefined; }
+    const recovery = content === undefined ? undefined
+      : editRecovery(content, edits, merge ? { held: { own: merge.own, indices: merge.indices } } : undefined);
+    if (!recovery) return;
+    pending.fileRecoveryNote = recovery.note;
+    pending.stripMismatchHead = true;
+    if (recovery.hold && !merge) (state.heldEdits ??= new Map()).set(file, { sha256: sha256Hex(bytes), hunks: recovery.hold });
+  }
+
   // Write-time escaped line breaks (python-syntax-guidance.mjs): scan the
   // bytes this exact write left on disk. Identical re-writes of those bytes
   // are refused with the same text (see the repeated-write refusal).
@@ -8082,7 +8158,7 @@ export function createToolLoopGuard({
       toolName === "tool_call" && typeof selectedToolTarget === "string"
         ? selectedToolTarget.split(":").at(-1)
         : selectedToolTarget;
-    const selectedParams =
+    let selectedParams =
       toolName === "tool_call" &&
       pendingParams?.args &&
       typeof pendingParams.args === "object" &&
@@ -8226,6 +8302,16 @@ export function createToolLoopGuard({
         state.codingTerminalBlocks = 1;
         return { block: true, blockReason: FOCUSED_EDIT_RETRY_EXHAUSTED_REASON };
       }
+      // Held edits from this run's rejected call (edit-recovery.mjs) join the
+      // next edit of the same unchanged file, before the pending run records
+      // what executes. OpenClaw still applies the whole set, or none of it.
+      const heldMerge = selectedToolName === "edit"
+        ? mergeHeldEdits(state, selectedParams, context?.toolCallId ?? event?.toolCallId) : undefined;
+      if (heldMerge) {
+        selectedParams = heldMerge.params;
+        if (toolName === "tool_call") pendingParams = {...pendingParams, args: selectedParams};
+        else normalizedParams = pendingParams = selectedParams;
+      }
       rememberToolRun(
         context?.toolCallId ?? event?.toolCallId,
         runId,
@@ -8237,6 +8323,10 @@ export function createToolLoopGuard({
         toolName,
         selectedToolTarget
       );
+      if (heldMerge) {
+        const pendingEdit = pendingToolRuns.get(context?.toolCallId ?? event?.toolCallId);
+        if (pendingEdit) pendingEdit.heldEditMerge = heldMerge.merge;
+      }
       if (
         selectedToolName !== SYNCHRONOUS_HOST_OBSERVE_TOOL &&
         selectedToolName !== SYNCHRONOUS_HOST_COMMAND_TOOL &&
@@ -10190,8 +10280,11 @@ export function createToolLoopGuard({
       }
     }
 
-    // Escaped line breaks in a Python file this exact receipt wrote; see the
-    // helper above.
+    // Recovery notes for this exact receipt (edit misses, held edits, and
+    // escaped line breaks in a written Python file); see the helpers above.
+    dropHeldEdits(state, successfulMutation?.name === "edit" ? undefined : successfulMutation,
+      completedExecution ? completedCommand : undefined);
+    observeEditOutcome(state, runId, toolName, toolCallId, event, pendingToolRun);
     observePythonWrite(state, runId, toolName, toolCallId, successfulMutation, pendingToolRun, completedWritePath);
     const completedRead =
       toolName === "read" && event?.result && typeof event.result === "object"
@@ -11241,7 +11334,7 @@ export function createToolLoopGuard({
     const failedToolResult = message.isError === true || Boolean(compactNativeVerification) ||
       compactCoreResult?.details?.result?.isError === true ||
       validatedToolSearchEnvelope(message.details, WORKSPACE_PREVIEW_TOOL, "pixel-ods")?.result?.isError === true;
-    // Python-write recovery notes, bound to this exact receipt. A
+    // Edit and Python-write recovery notes, bound to this exact receipt. A
     // written file that still needs its escaped line breaks repaired gets that
     // one step, not the ordinary next-file or publication coaching.
     const fileRecoveryNote = typeof pending?.fileRecoveryNote === "string" &&
@@ -11421,7 +11514,10 @@ export function createToolLoopGuard({
     ) {
       return undefined;
     }
-    const compactMessage = compactNativeVerification ?? compactVerification ?? compactCoreResult ?? compactWebResult ?? compactNativeWebResult ?? nativeFetchGuidance ?? message;
+    const projectedMessage = compactNativeVerification ?? compactVerification ?? compactCoreResult ?? compactWebResult ?? compactNativeWebResult ?? nativeFetchGuidance ?? message;
+    // The closest-text note replaces OpenClaw's 800-character file head.
+    const compactMessage = fileRecoveryNote && pending.stripMismatchHead
+      ? withoutMismatchHead(projectedMessage) : projectedMessage;
     const content = hostEvidence
       ? [{
         type: "text",
