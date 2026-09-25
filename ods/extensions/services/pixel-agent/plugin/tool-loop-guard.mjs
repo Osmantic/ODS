@@ -32,7 +32,7 @@ import { assistantMessageText, composeProgressFinalization, composeReadPages, cr
   PROGRESS_FINALIZATION_INSTRUCTION } from "./progress-finalization.mjs";
 import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisRequest } from "./stop-synthesis.mjs";
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
-import { OUTPUT_LIMIT_INSTRUCTION, OUTPUT_LIMIT_REASON, OUTPUT_LIMIT_UNRECOVERED_TEXT, outputLimitReply } from "./output-limit-recovery.mjs";
+import { OUTPUT_LIMIT_UNRECOVERED_TEXT, outputLimitReply } from "./output-limit-recovery.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
@@ -9328,6 +9328,7 @@ export function createToolLoopGuard({
       takeOwnerCancellation(state, runId, context, agentId);
       if (currentUserText(event?.messages, event?.prompt)) {
         state.ownerIntentObserved = true;
+        state.ownerInteractiveRun = ownerInteractiveTurn(context, agentId);
         state.workspacePreviewForbidden = ownerForbidsWorkspacePreview(event?.messages, event?.prompt);
         const previousPreview = typeof sessionId === "string" && sessionId
           ? sessionPreviews.get(sessionId)
@@ -11724,15 +11725,6 @@ export function createToolLoopGuard({
       });
     }
     if (state?.recursiveDeleteDenied || state?.progressBudget.exhausted || state?.clientCancelled || state?.webLoopAborted) return undefined;
-    // A reply cut at the output limit never ran its unfinished tool call.
-    // OpenClaw 2026.6.33 skips this hook when such a reply is the whole turn
-    // (incompleteTerminalAssistant); when it does run, grant one pass.
-    if (state?.outputLimitStop && !state.outputLimitRetried && state.ownerIntentObserved &&
-        !state.managedTeamWorker && ownerInteractiveTurn(context, agentId)) {
-      state.outputLimitRetried = true;
-      return {action: 'revise', reason: OUTPUT_LIMIT_REASON, retry: {
-        instruction: OUTPUT_LIMIT_INSTRUCTION, idempotencyKey: 'ods-output-limit-recovery', maxAttempts: 1}};
-    }
     // A silent sentinel is never an answer to an owner-authored chat message.
     // One revision pass; the harness still refuses it after side effects.
     if (state?.ownerIntentObserved && !state.managedTeamWorker && !state.silentOwnerReplyRetried &&
@@ -11768,18 +11760,29 @@ export function createToolLoopGuard({
     };
   }
 
+  // The ingress accepts suppressStaleExecWarning only with status none or
+  // passed; a failed receipt that carries it is rejected (HTTP 502).
+  function failedVerification(verification, text) {
+    const {suppressStaleExecWarning: _passedOnly, ...rest} = verification;
+    return {...rest, status:'failed', text};
+  }
+
   function verificationForRun(runId) {
     let verification = mixedTaskVerificationForRun(runId);
-    // Delivery reports a final reply cut at the output limit whether or not
-    // before_agent_finalize ran, instead of a generic "try again".
-    if (runs.get(runId)?.outputLimitStop) {
-      verification = {...verification, status:'failed',
-        text:[OUTPUT_LIMIT_UNRECOVERED_TEXT, verification.text].filter(Boolean).join('\n\n')};
+    const state = runs.get(runId);
+    // An owner's workspace task whose final reply was cut at the output limit:
+    // the unfinished write never ran (OpenClaw 2026.6.33 skips finalize for
+    // it). Say why. Text answers keep their partial reply unchanged.
+    if (state?.outputLimitStop && state.ownerInteractiveRun && !state.managedTeamWorker &&
+        state.workspaceTaskRequested) {
+      const text = [OUTPUT_LIMIT_UNRECOVERED_TEXT, verification.text].filter(Boolean).join('\n\n');
+      verification = failedVerification(verification,
+        text.length > MAX_INGRESS_VERIFICATION_TEXT ? OUTPUT_LIMIT_UNRECOVERED_TEXT : text);
     }
-    const stopped = runs.get(runId)?.progressBudget.exhaustedLanes ?? [];
+    const stopped = state?.progressBudget.exhaustedLanes ?? [];
     if (!stopped.length) return verification;
-    return {...verification,status:'failed',
-      text:[verification.text,...stopped.map(progressLaneStopReason)].filter(Boolean).join('\n\n')};
+    return failedVerification(verification,
+      [verification.text,...stopped.map(progressLaneStopReason)].filter(Boolean).join('\n\n'));
   }
 
   function mixedTaskVerificationForRun(runId) {
