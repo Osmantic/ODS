@@ -1299,9 +1299,15 @@ if onboarding.exists():
                                             # with this complete fixed source inventory. Keep
                                             # older v10 records valid, but never accept a
                                             # partial, linked or writable inspection bundle.
+                                            inspection_names = (
+                                                "preview_inspection.py", "preview_inspection_protocol.py", "preview_inspection_capsule.py")
+                                            document_names = (
+                                                "preview_inspection_document.py", "preview_inspection_lease.py", "preview_inspection_leases.py")
+                                            if any(workspace_preview_source.with_name(name).exists()
+                                                   or workspace_preview_source.with_name(name).is_symlink() for name in document_names):
+                                                inspection_names += document_names
                                             inspection_sources = tuple(workspace_preview_source.with_name(name) for name in (
-                                                "preview_inspection.py", "preview_inspection_protocol.py", "preview_inspection_capsule.py",
-                                                "Dockerfile.inspection", "preview-inspection.requirements.lock", "pixel-preview-inspection.service"))
+                                                *inspection_names, "Dockerfile.inspection", "preview-inspection.requirements.lock", "pixel-preview-inspection.service"))
                                             if any(source.exists() or source.is_symlink() for source in inspection_sources):
                                                 for source in inspection_sources:
                                                     info = regular(source, owner_uid, 2 * 1024 * 1024)
