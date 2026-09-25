@@ -108,6 +108,20 @@ describe('Dashboard system overview', () => {
     localStorage.clear()
   })
 
+  it('shows a retry action when feature metadata fails', async () => {
+    mockFeatures = [{ id: 'chat', name: 'Chat', icon: 'MessageSquare', description: 'Chat', status: 'ready' }]
+    fetch.mockImplementationOnce(async url => {
+      if (String(url).includes('/api/features')) return { ok: false, status: 503, json: async () => ({}) }
+      return { ok: true, json: async () => ({ services: [] }) }
+    })
+
+    render(<Dashboard status={baseStatus} loading={false} />)
+    expect(await screen.findByText('Feature metadata is unavailable.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('heading', { name: 'Chat' })).toBeInTheDocument()
+  })
+
   afterEach(() => {
     delete document.documentElement.dataset.theme
     vi.restoreAllMocks()
