@@ -22,13 +22,22 @@ eval "$function_source"
 
 run_fixture() (
     local github_status="$1" docker_status="$2" transport_failure="${3:-false}"
-    export OFFLINE_MODE=false
+    export OFFLINE_MODE=false ODS_PREFLIGHT_NETWORK_RETRY_DELAY=0
+    local attempts_file
+    attempts_file="$(mktemp)"
     # These mocks are invoked by the function extracted and evaluated above;
     # ShellCheck cannot resolve that dynamic call graph.
     # shellcheck disable=SC2317
     curl() {
-        local url="${*: -1}"
-        [[ "$transport_failure" == "false" ]] || return 7
+        local url="${*: -1}" attempts
+        attempts=$(( $(wc -l < "$attempts_file") + 1 ))
+        echo "$url" >> "$attempts_file"
+        # "transient" fails only the first call, like a momentary DNS miss.
+        if [[ "$transport_failure" == "transient" ]]; then
+            [[ "$attempts" -gt 1 ]] || return 6
+        elif [[ "$transport_failure" != "false" ]]; then
+            return 7
+        fi
         if [[ "$url" == "https://github.com" ]]; then
             printf '%s' "$github_status"
         else
@@ -51,5 +60,10 @@ if run_fixture 200 401 true > /dev/null 2>&1; then
     echo '[FAIL] transport failure was accepted as reachable' >&2
     exit 1
 fi
+if ! run_fixture 200 401 transient > /dev/null 2>&1; then
+    echo '[FAIL] one transient DNS failure aborted the preflight instead of retrying' >&2
+    exit 1
+fi
+grep -q 'for attempt in 1 2 3' "$SOURCE"
 
 echo '[PASS] Phase 01 network preflight is bounded and offline-aware'
