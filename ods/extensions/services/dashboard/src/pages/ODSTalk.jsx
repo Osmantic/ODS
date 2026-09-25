@@ -39,6 +39,52 @@ const welcomeMessage = {
 
 const TALK_STATUS_RETRY_MS = 1000
 
+// Known, expected state: the active model is not supported in Talk. The
+// catalog's per-entry `reason` is an internal fleet-QA note and is never
+// rendered here; the API's top-level `reason` is user copy only when
+// `reasonCode` says so, otherwise this fallback is shown.
+const MODEL_NOT_SUPPORTED_CODE = 'model_not_supported'
+const MODEL_NOT_SUPPORTED_MESSAGE = "This model isn't supported in ODS Talk yet. Switch to a recommended model to use ODS Talk."
+const TALK_BLOCKING_COMPATIBILITY_STATUSES = new Set([
+  'blocked',
+  'incompatible',
+  'not_agent_viable',
+  'not_recommended',
+  'not_supported',
+  'unsupported',
+  'unsupported_until_revalidated',
+])
+
+function getModelCompatibilityNotice(data) {
+  const compatibility = data?.modelCompatibility || {}
+  const coded = data?.reasonCode === MODEL_NOT_SUPPORTED_CODE
+  const blocked = coded
+    // Older APIs sent a compatibility block as a bare `reason` string.
+    || (!data?.reasonCode && Boolean(data?.reason))
+    || ['hermesTalk', 'agentViability'].some(key =>
+      TALK_BLOCKING_COMPATIBILITY_STATUSES.has(String(compatibility[key]?.status || '').toLowerCase()))
+  if (!blocked) return null
+  const message = coded && typeof data.reason === 'string' && data.reason.trim()
+    ? data.reason.trim()
+    : MODEL_NOT_SUPPORTED_MESSAGE
+  const recommended = compatibility.recommendedModel
+  return {
+    message,
+    recommendedModel: typeof recommended?.name === 'string' && recommended.name.trim()
+      ? recommended.name.trim()
+      : null,
+  }
+}
+
+// Talk can be served from talk.<device>.local, where every path renders Talk;
+// the model picker lives on the matching dashboard host.
+function modelsPageUrl() {
+  if (typeof window === 'undefined') return '/models'
+  const { protocol, hostname, port } = window.location
+  if (!hostname.startsWith('talk.')) return '/models'
+  return `${protocol}//dashboard.${hostname.slice('talk.'.length)}${port ? `:${port}` : ''}/models`
+}
+
 function makeId(prefix) {
   if (globalThis.crypto?.randomUUID) return `${prefix}-${globalThis.crypto.randomUUID()}`
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -54,6 +100,7 @@ export default function ODSTalk() {
   const [input, setInput] = useState('')
   const [status, setStatus] = useState('loading')
   const [statusText, setStatusText] = useState('Connecting to ODS Talk...')
+  const [compatibilityNotice, setCompatibilityNotice] = useState(null)
   const [retryStatusRefresh, setRetryStatusRefresh] = useState(false)
   // Advances after every offline retry so the polling effect re-arms; a
   // repeated failure otherwise leaves every dependency unchanged.
@@ -131,18 +178,28 @@ export default function ODSTalk() {
       if (!resp.ok) throw new Error(await parseError(resp, 'ODS Talk is not ready.'))
       const data = await resp.json()
       const capabilities = data.capabilities || {}
-      const compatibilityReason = data.reason || data.modelCompatibility?.hermesTalk?.reason || ''
       setVoiceState({
         tts: Boolean(capabilities.tts),
         audioMessage: Boolean(capabilities.audio_message),
         liveMic: Boolean(liveMicSupported && capabilities.audio_message),
       })
       if (!capabilities.text_chat) {
+        const notice = getModelCompatibilityNotice(data)
+        if (notice) {
+          // Expected, known state rather than an outage: no polling, no alarm.
+          setCompatibilityNotice(notice)
+          setStatus('unsupported')
+          setStatusText('Model not supported in Talk')
+          setRetryStatusRefresh(false)
+          return
+        }
+        setCompatibilityNotice(null)
         setStatus('offline')
-        setStatusText(compatibilityReason || 'ODS Talk text chat is not available.')
-        setRetryStatusRefresh(!compatibilityReason)
+        setStatusText('ODS Talk text chat is not available.')
+        setRetryStatusRefresh(true)
         return
       }
+      setCompatibilityNotice(null)
       setStatus('ready')
       setStatusText('Ready')
       setRetryStatusRefresh(false)
@@ -493,6 +550,9 @@ export default function ODSTalk() {
         throw new Error('Session expired.')
       }
       if (!resp.ok || !resp.body) {
+        // 409: the active model changed and is not supported in Talk. The
+        // detail is user copy; refresh so the notice replaces the composer.
+        if (resp.status === 409) refreshStatus()
         throw new Error(await parseError(resp, 'Hermes did not answer.'))
       }
 
@@ -594,7 +654,7 @@ export default function ODSTalk() {
       }
       setSending(false)
     }
-  }, [sending, speak, status])
+  }, [refreshStatus, sending, speak, status])
 
   const sendAudioFile = useCallback(async (file) => {
     if (!file || sending || status === 'expired') return
@@ -620,7 +680,10 @@ export default function ODSTalk() {
         setStatusText('Session expired. Scan the owner card again.')
         throw new Error('Session expired.')
       }
-      if (!resp.ok) throw new Error(await parseError(resp, 'Voice message could not be sent.'))
+      if (!resp.ok) {
+        if (resp.status === 409) refreshStatus()
+        throw new Error(await parseError(resp, 'Voice message could not be sent.'))
+      }
       const data = await resp.json()
       const reply = data.text || 'I did not get a response back.'
       setMessages(items => items.map(item => {
@@ -638,7 +701,7 @@ export default function ODSTalk() {
     } finally {
       setSending(false)
     }
-  }, [sending, speak, status])
+  }, [refreshStatus, sending, speak, status])
 
   const startRecording = async () => {
     if (!voiceState.liveMic || recording || sending) return
@@ -719,7 +782,7 @@ export default function ODSTalk() {
               <div className="mt-1 flex items-center gap-1.5 text-xs text-zinc-500">
                 {status === 'ready' ? <CheckCircle2 size={13} className="text-emerald-600" /> : null}
                 {status === 'loading' ? <Loader2 size={13} className="animate-spin" /> : null}
-                {status === 'offline' || status === 'expired' ? <AlertCircle size={13} className="text-theme-text-secondary" /> : null}
+                {status === 'offline' || status === 'expired' || status === 'unsupported' ? <AlertCircle size={13} className="text-theme-text-secondary" /> : null}
                 <span>{statusText}</span>
               </div>
             </div>
@@ -764,6 +827,27 @@ export default function ODSTalk() {
         {status === 'expired' && (
           <div className="mx-4 mb-3 rounded-lg border border-theme-border bg-theme-card/80 px-3 py-2 text-sm text-theme-text-secondary">
             This owner session ended. Scan the owner card again to continue.
+          </div>
+        )}
+
+        {status === 'unsupported' && compatibilityNotice && (
+          <div
+            role="status"
+            data-testid="talk-model-notice"
+            className="mx-4 mb-3 rounded-lg border border-theme-border bg-theme-card/80 px-3 py-2 text-sm text-theme-text-secondary"
+          >
+            <p>{compatibilityNotice.message}</p>
+            {compatibilityNotice.recommendedModel && (
+              <p className="mt-1">
+                Recommended: <span className="font-medium text-theme-text">{compatibilityNotice.recommendedModel}</span>
+              </p>
+            )}
+            <a
+              href={modelsPageUrl()}
+              className="mt-2 inline-block font-medium text-theme-text underline decoration-zinc-400 underline-offset-2"
+            >
+              Choose a model
+            </a>
           </div>
         )}
 

@@ -828,6 +828,7 @@ function ModelTableRow({
   const isRuntimeManaged = model.metadata?.source === 'runtime'
   const memory = getMemoryMeta(model, gpu)
   const compatibility = getCompatibilityMeta(model, memory, pixelMinimumContext)
+  const compatibilityNotes = getCompatibilityNotes(model)
   const speed = getSpeedDisplay(model)
   const tags = getModelTags(model, hermesMinimumContext)
   const iconTone = getIconTone(model, compatibility)
@@ -851,7 +852,7 @@ function ModelTableRow({
       <PrimaryAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} downloadBusy={downloadBusy} downloadStarting={downloadStarting} runDisabledReason={runDisabledReason} hermesMinimumContext={hermesMinimumContext} onDownload={onDownload} onLoad={onLoad} onBenchmark={onBenchmark}/>
       {isLoaded && !isRuntimeManaged && <button aria-label={`Configure context for ${model.name}`} title={`Configure context for ${model.name}`} disabled={activationBusy} onClick={onLoad}><MetalMetricIcon icon={SlidersHorizontal} size={14}/></button>}
       <DeleteAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} onDelete={onDelete}/>
-    </div><details className="model-entry-details"><summary>Details <ChevronRight size={12}/></summary><div><p>{model.description || 'No description available.'}</p><p>{tags.join(' · ')}</p>{performanceBadge && <p>{performanceBadge.label}</p>}<p>{compatibility.label}: {compatibility.detail}</p>{runDisabledReason && <p>{runDisabledReason}</p>}</div></details></footer>
+    </div><details className="model-entry-details"><summary>Details <ChevronRight size={12}/></summary><div><p>{model.description || 'No description available.'}</p><p>{tags.join(' · ')}</p>{performanceBadge && <p>{performanceBadge.label}</p>}<p>{compatibility.label}: {compatibility.detail}</p>{compatibilityNotes.map(note => <p key={note}>{note}</p>)}{runDisabledReason && <p>{runDisabledReason}</p>}</div></details></footer>
   </article>
 
   return (
@@ -942,7 +943,7 @@ function ModelTableRow({
         {formatContext(model.contextLength)}
       </div>
 
-      <div className="col-span-2 self-center lg:col-span-1">
+      <div className="col-span-2 self-center lg:col-span-1" title={compatibilityNotes.join(' ') || undefined}>
         <MobileMetricLabel>Compatibility</MobileMetricLabel>
         <Badge tone={compatibility.tone}>{compatibility.label}</Badge>
         <p className="mt-1 text-[10px] text-theme-text-muted">{compatibility.detail}</p>
@@ -1829,6 +1830,18 @@ function getAgentViabilityCompatibility(model) {
 
 function getPixelAgentCompatibility(model) {
   return model?.appCompatibility?.pixelAgent || null
+}
+
+// User copy for each blocked app. Only `userMessage` may be rendered: the
+// entry's `reason` is an internal fleet-QA note (run IDs, harness jargon).
+function getCompatibilityNotes(model) {
+  const notes = []
+  for (const entry of Object.values(model?.appCompatibility || {})) {
+    if (!entry || typeof entry !== 'object' || !isAgentViabilityBlocked(entry)) continue
+    const message = typeof entry.userMessage === 'string' ? entry.userMessage.trim() : ''
+    if (message && !notes.includes(message)) notes.push(message)
+  }
+  return notes
 }
 
 function getBlockedAppCompatibility(model) {

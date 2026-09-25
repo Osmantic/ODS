@@ -383,10 +383,105 @@ def _fresh_compatibility_override(raw: dict[str, Any]) -> bool:
     return expiry.tzinfo is not None and expiry > datetime.now(timezone.utc)
 
 
+# User-facing compatibility copy.
+#
+# Catalog ``app_compatibility.<app>.reason`` and ``evidence`` are internal
+# fleet-QA notes (run IDs, host names, harness vocabulary). They stay in the
+# catalog and in API payloads for operators and tooling, but no UI may render
+# them. UIs render ``userMessage`` instead: an optional per-entry catalog
+# ``userNote`` when one is written, otherwise generic copy keyed by app and
+# status. Status values and their semantics are unchanged.
+COMPATIBILITY_BLOCKING_STATUSES = frozenset({
+    "blocked",
+    "incompatible",
+    "not_agent_viable",
+    "not_recommended",
+    "not_supported",
+    "unsupported",
+    "unsupported_until_revalidated",
+})
+_COMPATIBILITY_VERIFIED_STATUSES = frozenset({
+    "agent_viable",
+    "pixel_agent_viable",
+    "supported",
+    "verified",
+})
+_USER_NOTE_MAX_CHARS = 280
+_COMPATIBILITY_USER_COPY = {
+    "hermesTalk": {
+        "blocked": "This model isn't supported in ODS Talk yet. Switch to a recommended model to use ODS Talk.",
+        "verified": "Verified with ODS Talk.",
+        "unknown": "Not yet tested with ODS Talk.",
+    },
+    "agentViability": {
+        "blocked": "Not verified for agent tasks, so responses may fail. Switch to a recommended model for agent features.",
+        "verified": "Verified for agent tasks.",
+        "unknown": "Not yet tested for agent tasks.",
+    },
+    "pixelAgent": {
+        "blocked": "Not verified for Portal agent tasks, so tool use may be unreliable.",
+        "verified": "Verified for Portal agent tasks.",
+        "unknown": "Not yet tested for Portal agent tasks.",
+    },
+    "openaiChat": {
+        "blocked": "This model isn't supported for chat yet. Switch to a recommended model to chat.",
+        "verified": "Verified for chat.",
+        "unknown": "Not yet tested for chat.",
+    },
+}
+_COMPATIBILITY_APP_NAMES = {
+    "litellm": "LiteLLM",
+    "openWebui": "Open WebUI",
+    "openclaw": "OpenClaw",
+    "opencode": "OpenCode",
+    "perplexica": "Perplexica",
+}
+
+
+def _compatibility_status_group(status: Any) -> str:
+    normalized = normalize_key(status).replace("-", "_")
+    if normalized in COMPATIBILITY_BLOCKING_STATUSES:
+        return "blocked"
+    if normalized in _COMPATIBILITY_VERIFIED_STATUSES:
+        return "verified"
+    return "unknown"
+
+
+def _compatibility_app_name(app_key: str) -> str:
+    if app_key in _COMPATIBILITY_APP_NAMES:
+        return _COMPATIBILITY_APP_NAMES[app_key]
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(app_key or "")).split()
+    return " ".join(word[:1].upper() + word[1:] for word in words) or "this app"
+
+
+def compatibility_user_message(app_key: str, status: Any, user_note: Any = None) -> str:
+    """Return end-user copy for one app compatibility verdict.
+
+    ``app_key`` is the camelCase payload key (``hermesTalk``, ``perplexica``).
+    A catalog ``userNote`` wins when present; the internal ``reason`` is never
+    used here.
+    """
+    if isinstance(user_note, str):
+        note = " ".join(user_note.split())
+        if note and len(note) <= _USER_NOTE_MAX_CHARS:
+            return note
+    group = _compatibility_status_group(status)
+    copy = _COMPATIBILITY_USER_COPY.get(app_key)
+    if copy:
+        return copy[group]
+    name = _compatibility_app_name(app_key)
+    if group == "blocked":
+        return f"This model isn't supported in {name} yet. Switch to a recommended model to use {name}."
+    if group == "verified":
+        return f"Verified with {name}."
+    return f"Not yet tested with {name}."
+
+
 def _app_compatibility_entry(
     raw: Any,
     default_label: str,
     runtime_context: Optional[dict[str, Any]] = None,
+    app_key: str = "",
 ) -> dict[str, Any]:
     if isinstance(raw, dict):
         # A fresh positive result on one host must not erase an older negative
@@ -411,13 +506,16 @@ def _app_compatibility_entry(
             "status": "unknown",
             "label": default_label,
             "reason": "",
+            "userMessage": compatibility_user_message(app_key, "unknown"),
         }
 
+    user_note = None
     if isinstance(raw, dict):
         status = str(raw.get("status") or "unknown").strip() or "unknown"
         label = str(raw.get("label") or default_label).strip() or default_label
         reason = str(raw.get("reason") or "").strip()
         evidence = str(raw.get("evidence") or "").strip()
+        user_note = raw.get("userNote", raw.get("user_note"))
     elif isinstance(raw, str) and raw.strip():
         status = raw.strip()
         label = default_label
@@ -429,10 +527,13 @@ def _app_compatibility_entry(
         reason = ""
         evidence = ""
 
+    normalized_status = normalize_key(status).replace("-", "_") or "unknown"
     payload = {
-        "status": normalize_key(status).replace("-", "_") or "unknown",
+        "status": normalized_status,
         "label": label,
+        # Internal fleet-QA note. Kept for operators and tooling; never render.
         "reason": reason,
+        "userMessage": compatibility_user_message(app_key, normalized_status, user_note),
     }
     if evidence:
         payload["evidence"] = evidence
@@ -480,6 +581,10 @@ def _exact_performance_agent_block(performance: Optional[dict[str, Any]]) -> dic
 
     return {
         "tokensPerSec": round(tokens_per_sec, 1),
+        "userSpeed": (
+            f"{tokens_per_sec:.1f} tokens/sec measured, "
+            f"{_AGENT_MIN_LOCAL_TOKENS_PER_SEC:.0f}+ needed"
+        ),
         "reason": (
             f"Local measured throughput is {tokens_per_sec:.1f} tok/s, below the "
             f"{_AGENT_MIN_LOCAL_TOKENS_PER_SEC:.1f} tok/s floor for ODS Talk and "
@@ -494,12 +599,18 @@ def model_app_compatibility(
     runtime_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     raw = model.get("app_compatibility") if isinstance(model.get("app_compatibility"), dict) else {}
-    hermes_talk = _app_compatibility_entry(raw.get("hermes_talk"), "ODS Talk untested", runtime_context)
+    hermes_talk = _app_compatibility_entry(
+        raw.get("hermes_talk"), "ODS Talk untested", runtime_context, "hermesTalk"
+    )
     compatibility = {
-        "openaiChat": _app_compatibility_entry(raw.get("openai_chat"), "Direct chat untested", runtime_context),
+        "openaiChat": _app_compatibility_entry(
+            raw.get("openai_chat"), "Direct chat untested", runtime_context, "openaiChat"
+        ),
         "hermesTalk": hermes_talk,
         "agentViability": _agent_viability_entry(raw.get("agent_viability"), hermes_talk, runtime_context),
-        "pixelAgent": _app_compatibility_entry(raw.get("pixel_agent"), "Portal agent untested", runtime_context),
+        "pixelAgent": _app_compatibility_entry(
+            raw.get("pixel_agent"), "Portal agent untested", runtime_context, "pixelAgent"
+        ),
     }
     for raw_key, raw_value in raw.items():
         payload_key = _app_compatibility_payload_key(raw_key)
@@ -509,23 +620,31 @@ def model_app_compatibility(
             raw_value,
             _app_compatibility_default_label(raw_key),
             runtime_context,
+            payload_key,
         )
     exact_speed_block = _exact_performance_agent_block(performance)
     if exact_speed_block:
+        speed = exact_speed_block["userSpeed"]
         compatibility["hermesTalk"] = {
             "status": "unsupported_until_revalidated",
             "label": "Too slow for ODS Talk",
             "reason": exact_speed_block["reason"],
+            "userMessage": (
+                f"This model is too slow on this machine for ODS Talk ({speed}). "
+                "Switch to a smaller or faster model to use ODS Talk."
+            ),
         }
         compatibility["agentViability"] = {
             "status": "not_agent_viable",
             "label": "Too slow for agents",
             "reason": exact_speed_block["reason"],
+            "userMessage": f"Too slow on this machine for agent tasks ({speed}).",
         }
         compatibility["pixelAgent"] = {
             "status": "not_agent_viable",
             "label": "Too slow for Portal",
             "reason": exact_speed_block["reason"],
+            "userMessage": f"Too slow on this machine for Portal agent tasks ({speed}).",
         }
     return compatibility
 
@@ -536,7 +655,7 @@ def _agent_viability_entry(
     runtime_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     if raw:
-        return _app_compatibility_entry(raw, "Agent viability untested", runtime_context)
+        return _app_compatibility_entry(raw, "Agent viability untested", runtime_context, "agentViability")
 
     hermes_status = str((hermes_talk or {}).get("status") or "unknown").strip().lower()
     hermes_reason = str((hermes_talk or {}).get("reason") or "").strip()
@@ -553,6 +672,7 @@ def _agent_viability_entry(
             "status": "not_agent_viable",
             "label": "Agent viability blocked",
             "reason": hermes_reason or "This model is not currently viable for agent-required ODS workflows.",
+            "userMessage": compatibility_user_message("agentViability", "not_agent_viable"),
         }
         if hermes_evidence:
             payload["evidence"] = hermes_evidence
@@ -562,6 +682,7 @@ def _agent_viability_entry(
             "status": "agent_viable",
             "label": "Agent viable",
             "reason": hermes_reason,
+            "userMessage": compatibility_user_message("agentViability", "agent_viable"),
         }
         if hermes_evidence:
             payload["evidence"] = hermes_evidence
@@ -570,6 +691,7 @@ def _agent_viability_entry(
         "status": "unknown",
         "label": "Agent viability untested",
         "reason": "",
+        "userMessage": compatibility_user_message("agentViability", "unknown"),
     }
 
 

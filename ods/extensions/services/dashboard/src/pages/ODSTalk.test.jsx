@@ -51,6 +51,9 @@ const sseResponse = (frames, { status = 200, chunks, holdOpen = false } = {}) =>
   }
 }
 
+const TALK_NOT_SUPPORTED_COPY = "This model isn't supported in ODS Talk yet. Switch to a recommended model to use ODS Talk."
+const FLEET_NOTE = 'Fleet model-UI run 2026-07-16T18-10Z on windows-laptop loaded this model successfully and the runtime reported granite3.3-2b-instruct-q4, but ODS Talk returned a Hermes websocket closed error and then fetch failed during the streamed verification prompt; keep it out of agent-required release coverage until revalidated.'
+
 describe('ODSTalk', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false })
@@ -98,16 +101,16 @@ describe('ODSTalk', () => {
     expect(await screen.findByText('I can help from this ODS.')).toBeInTheDocument()
   })
 
-  test('shows model compatibility reason and disables send when text chat is blocked', async () => {
+  test('shows a neutral model notice instead of the internal fleet note and disables send', async () => {
     const fetchMock = vi.fn(async (url) => {
       if (url === '/api/talk/status') {
         return response({
-          reason: 'Phi direct chat works, but ODS Talk is not revalidated.',
+          reason: TALK_NOT_SUPPORTED_COPY,
+          reasonCode: 'model_not_supported',
           modelCompatibility: {
-            hermesTalk: {
-              status: 'unsupported_until_revalidated',
-              reason: 'Phi direct chat works, but ODS Talk is not revalidated.',
-            },
+            agentViability: { status: 'not_agent_viable', reason: FLEET_NOTE, userMessage: 'Not verified for agent tasks.' },
+            hermesTalk: { status: 'unsupported_until_revalidated', reason: FLEET_NOTE, userMessage: TALK_NOT_SUPPORTED_COPY },
+            recommendedModel: { id: 'qwen3.5-9b-q4', name: 'Qwen 3.5 9B' },
           },
           capabilities: {
             text_chat: false,
@@ -122,12 +125,80 @@ describe('ODSTalk', () => {
 
     render(<ODSTalk />)
 
-    expect((await screen.findAllByText('Phi direct chat works, but ODS Talk is not revalidated.')).length).toBeGreaterThan(0)
+    const notice = await screen.findByTestId('talk-model-notice')
+    expect(notice).toHaveTextContent(TALK_NOT_SUPPORTED_COPY)
+    expect(notice).toHaveTextContent('Recommended: Qwen 3.5 9B')
+    expect(notice.className).not.toMatch(/red/)
+    expect(screen.getByRole('link', { name: 'Choose a model' })).toHaveAttribute('href', '/models')
+    expect(screen.getByText('Model not supported in Talk')).toBeInTheDocument()
+    expect(screen.queryByText(/Fleet model-UI run/)).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/revalidated|release coverage|windows-laptop/)
+
     fireEvent.change(screen.getByPlaceholderText('Message ODS'), {
       target: { value: 'hello' },
     })
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    // A known compatibility state is not an outage: no status polling.
+    await new Promise(resolve => setTimeout(resolve, 1200))
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  test('never renders an older API\'s internal compatibility reason', async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (url === '/api/talk/status') {
+        return response({
+          reason: FLEET_NOTE,
+          modelCompatibility: {
+            hermesTalk: { status: 'unsupported_until_revalidated', reason: FLEET_NOTE },
+          },
+          capabilities: { text_chat: false, tts: false, audio_message: false },
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ODSTalk />)
+
+    expect(await screen.findByTestId('talk-model-notice')).toHaveTextContent(TALK_NOT_SUPPORTED_COPY)
+    expect(screen.queryByText(/Recommended:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Fleet model-UI run/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+  })
+
+  test('switches to the model notice when a send is rejected for model compatibility', async () => {
+    let blocked = false
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') {
+        return response(blocked
+          ? {
+              reason: TALK_NOT_SUPPORTED_COPY,
+              reasonCode: 'model_not_supported',
+              modelCompatibility: { hermesTalk: { status: 'unsupported_until_revalidated', reason: FLEET_NOTE } },
+              capabilities: { text_chat: false, tts: false, audio_message: false },
+            }
+          : { capabilities: { text_chat: true, tts: false, audio_message: false } })
+      }
+      if (url === '/api/talk/message/stream' && options.method === 'POST') {
+        blocked = true
+        return response({ detail: TALK_NOT_SUPPORTED_COPY }, 409)
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ODSTalk />)
+
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), {
+      target: { value: 'hello' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    expect(await screen.findByTestId('talk-model-notice')).toHaveTextContent(TALK_NOT_SUPPORTED_COPY)
+    expect(screen.getByText('Model not supported in Talk')).toBeInTheDocument()
+    expect(screen.queryByText(/Fleet model-UI run/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
   })
 
   test('refreshes transient offline status until text chat becomes ready', async () => {
@@ -186,6 +257,7 @@ describe('ODSTalk', () => {
         return response({
           capabilities: { text_chat: false, tts: false, audio_message: false },
           reason: 'Model does not support tool calling.',
+          reasonCode: 'model_not_supported',
         })
       }
       throw new Error(`unexpected request: ${url}`)
