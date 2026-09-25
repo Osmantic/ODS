@@ -137,6 +137,26 @@ class TestAPIKeyDetection:
         result = detector.scrub(text)
         assert result == text
 
+    @pytest.mark.parametrize("label", ["API Key", "api key", "Api-Key", "api.key", "APIKEY"])
+    def test_label_separators(self, detector, label):
+        """`API Key: ...` is how a person writes it — every spelling must redact."""
+        text = f"{label}: sk-abc123xyz789abcdef"
+        result = detector.scrub(text)
+        assert "sk-abc123xyz789abcdef" not in result
+        assert "<PII_api_key_" in result
+
+    def test_prose_mentioning_an_api_key_is_untouched(self, detector):
+        """No `=`/`:` value follows, so there is nothing to redact."""
+        text = "Rotate the API key before you ship."
+        assert detector.scrub(text) == text
+
+    def test_builtin_demo_text_has_no_plaintext_secret(self, detector):
+        """Regression for the sample in pii_scrubber.__main__."""
+        text = "    API Key: sk-abc123xyz789abcdef\n"
+        result = detector.scrub(text)
+        assert "sk-abc123xyz789abcdef" not in result
+        assert detector.restore(result) == text
+
 
 # ── Credit card detection ────────────────────────────────────────────────────
 
