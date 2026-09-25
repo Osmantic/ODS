@@ -58,7 +58,7 @@ FLEET_PLAN = [
 ]
 
 
-def bundle(html, steps=None, files=None):
+def bundle(html, steps=None, files=None, texts=None):
     # files: {path: bytes} for a multi-file site; html alone is index.html.
     files = sorted((files or {"index.html": html.encode()}).items())
     digest = hashlib.sha256()
@@ -75,6 +75,7 @@ def bundle(html, steps=None, files=None):
             "sha256": digest,
             "viewport": {"width": 375, "height": 812},
             "steps": steps or [step("assert-visible", "#item")],
+            **({"texts": texts} if texts else {}),
         },
         "files": [{"path": name, "base64": base64.b64encode(data).decode()}
                   for name, data in files],
@@ -356,11 +357,13 @@ class ScriptedBrowser:
     while handling a click, as an author's page would. The real browser path
     is covered by the opt-in BrowserTests and DockerCapsuleTests below."""
 
-    def __init__(self, load_errors=(), click_errors=(), palette=None):
+    def __init__(self, load_errors=(), click_errors=(), palette=None, text=None):
         self.load_errors, self.click_errors = list(load_errors), list(click_errors)
         self.handlers, self.calls, self.revealed = {}, [], False
         # Without a screenshot the capture fails and the palette is omitted.
         self.palette = palette or PaletteDouble(None)
+        # The requested-text check has its own desktop context (TextDouble).
+        self.text = text
 
     def __call__(self):
         return self
@@ -384,6 +387,10 @@ class ScriptedBrowser:
             self.calls.append("new_context:palette")
             self.palette.kwargs, self.palette.site = kwargs, self.site
             return self.palette
+        if self.text is not None and kwargs.get("viewport") == capsule.TEXT_VIEWPORT:
+            self.calls.append("new_context:text")
+            self.text.kwargs, self.text.site = kwargs, self.site
+            return self.text
         return self
 
     def route(self, *_):
@@ -513,6 +520,88 @@ class PaletteDouble:
 
     def close(self):
         self.calls.append("close")
+
+
+class TextDouble(PaletteDouble):
+    """The requested-text context and page: a separate desktop load whose
+    isolated world answers each measurement with the next scripted sample,
+    {text: observation}, and records every scroll, element reveal and
+    animation query. `moved` answers each reveal, `animations` each query."""
+
+    def __init__(self, samples, max_scroll=0, error=None, moved=False, animations=0, **kwargs):
+        super().__init__(None, **kwargs)
+        self.samples, self.max_scroll, self.check_error = list(samples), max_scroll, error
+        self.moved, self.animations = moved, animations
+        self.asked, self.scrolls, self.waits, self.world = [], [], [], None
+        self.reveals, self.animation_asks = [], []
+
+    def wait_for_timeout(self, milliseconds):
+        self.waits.append(milliseconds)
+
+    def new_cdp_session(self, _):
+        return self
+
+    def observe(self, texts):
+        sample = self.samples.pop(0) if len(self.samples) > 1 else self.samples[0]
+        return [sample[text] for text in texts]
+
+    def send(self, method, params=None):
+        params = params or {}
+        if method == "Page.getFrameTree":
+            return {"frameTree": {"childFrames": [{"frame": {"id": "T", "name": "inspection"}}]}}
+        if method == "Page.createIsolatedWorld":
+            self.world = params
+            return {"executionContextId": 11}
+        function = params["functionDeclaration"]
+        argument = params["arguments"][0]["value"]
+        if function == capsule.SCROLL_TO:
+            self.scrolls.append(argument)
+            return {"result": {"value": argument}}
+        if function == capsule.REVEAL_TEXT:
+            self.reveals.append(argument)
+            return {"result": {"value": self.moved(argument) if callable(self.moved) else self.moved}}
+        if function == capsule.TEXT_ANIMATIONS:
+            self.animation_asks.append(argument)
+            return {"result": {"value": self.animations(argument) if callable(self.animations) else self.animations}}
+        assert function == capsule.REQUESTED_TEXT, function
+        self.asked.append(argument)
+        if self.check_error:
+            raise self.check_error
+        return {"result": {"value": {"results": self.observe(argument), "viewport": 720, "maxScroll": self.max_scroll}}}
+
+
+class TimedTextDouble(TextDouble):
+    """A page with a clock that only the check's waits advance. A text is
+    hidden (`hidden[text]`) until the clock reaches `visible_at[text]`, or
+    until its element is scrolled into view when it is in `on_reveal` (a
+    scroll-triggered reveal inside a scroll container, which window scrolling
+    never triggers). `running[text]` is when a finite animation on it ends."""
+
+    def __init__(self, hidden, visible_at=None, on_reveal=(), running=None, max_scroll=0):
+        super().__init__([], max_scroll=max_scroll, moved=lambda text: text in on_reveal,
+                         animations=lambda texts: max([0] + [(self.running.get(t, 0) - self.clock) for t in texts]))
+        self.hidden, self.visible_at, self.on_reveal = hidden, visible_at or {}, set(on_reveal)
+        self.running, self.clock, self.shown = running or {}, 0, set()
+
+    def wait_for_timeout(self, milliseconds):
+        super().wait_for_timeout(milliseconds)
+        self.clock += milliseconds
+
+    def send(self, method, params=None):
+        answer = super().send(method, params)
+        if (params or {}).get("functionDeclaration") == capsule.REVEAL_TEXT and answer["result"]["value"]:
+            self.shown.add(params["arguments"][0]["value"])
+        return answer
+
+    def observe(self, texts):
+        return [VISIBLE if text in self.shown or self.clock >= self.visible_at.get(text, float("inf"))
+                else self.hidden[text] for text in texts]
+
+
+VISIBLE = {"status": "visible"}
+ABSENT = {"status": "absent"}
+FOOTER_HIDDEN = {"status": "hidden", "element": "p", "reason": "display-none", "culprit": "div#soldOutSection"}
+FADED = {"status": "hidden", "element": "section.reveal", "reason": "transparent"}
 
 
 class PageErrorTests(unittest.TestCase):
@@ -1034,6 +1123,317 @@ class PaletteCaptureTests(unittest.TestCase):
             self.assertEqual(broker.inspect_request(request, config), receipt)
 
 
+# Fleet round 087 (tower1, ODS 074db9bf): the owner asked for "a visible footer
+# 'FLEET-eaa39f42e9 edited successfully'". The model put it inside the sold-out
+# section, which is display:none until "Show sold out" is clicked, and answered
+# that the footer was visible. The published bytes (sha256 e634cc7a…) are kept.
+TOWER1_R087 = Path(__file__).resolve().parent / "fixtures/preview-requested-text/tower1-r087"
+R087_FOOTER = "FLEET-eaa39f42e9 edited successfully"
+R087_TITLE = "Night Garden FLEET-eaa39f42e9 Revised"
+R087_PLAN = [step("assert-hidden", "#soldOutSection"), role_step("click", "button", "Show sold out"),
+             step("assert-visible", "#soldOutSection")]
+
+
+class RequestedTextTests(unittest.TestCase):
+    def run_scripted(self, text, texts=(R087_FOOTER, R087_TITLE), palette=None, checkpoint=None):
+        browser = ScriptedBrowser(palette=palette, text=text)
+        data = bundle("<p id=item hidden></p><button id=show>Show</button>", [
+            step("assert-hidden", "#item"), step("click", "#show"), step("assert-visible", "#item")],
+            texts=list(texts))
+        browser.site = data["request"]["siteId"]
+        return browser, data["request"], capsule.run_browser(data, playwright_factory=browser, checkpoint=checkpoint)
+
+    def test_texts_are_validated_bounded_and_outside_the_plan_hash(self):
+        request = bundle("hi", texts=[R087_FOOTER, "Café – “quoted”"])["request"]
+        protocol.validate_request(request)
+        plan = {key: value for key, value in request.items() if key != "texts"}
+        self.assertEqual(protocol.plan_hash(request), protocol.plan_hash(plan))
+        for texts in ([], ["a"] * 2, ["x"] * 13, [" padded"], ["tab\tstop"], ["‮flip"], ["x" * 121],
+                      ["é" * 121], [7], "text", None, [["nested"]]):
+            with self.subTest(texts=texts), self.assertRaises(ValueError):
+                protocol.validate_request({**plan, "texts": texts})
+        protocol.validate_request({**plan, "texts": ["x" * 120] * 1})
+        with self.assertRaises(ValueError):
+            protocol.validate_request({**plan, "steps": [step("click", "#" + "s" * 250)] * 12,
+                                       "texts": [f"{i}" + "t" * 119 for i in range(12)]})
+
+    def test_publisher_export_never_receives_the_texts(self):
+        data = bundle("hi", texts=[R087_FOOTER])
+        request = data["request"]
+        plan = {key: value for key, value in request.items() if key != "texts"}
+        exported = {**data, "request": plan}
+        receipt = {"schemaVersion": 1, "kind": protocol.KIND, "status": "passed",
+                   "siteId": request["siteId"], "sha256": request["sha256"],
+                   "planSha256": protocol.plan_hash(request), "viewport": request["viewport"],
+                   "steps": [], "diagnostics": {}, "blockedRequests": [], "scope": protocol.SCOPE}
+        bodies = {}
+
+        def process(argv, body, *_args, **_kwargs):
+            if "exec" in argv:
+                bodies["export"] = protocol.strict_json(body)
+                return protocol.canonical(exported)
+            if "run" in argv:
+                bodies["capsule"] = protocol.strict_json(body)
+                return protocol.canonical(receipt)
+            return b""
+
+        config = {"docker": "/usr/bin/docker", "imageId": "sha256:" + "a" * 64,
+                  "ownerUid": os.getuid(), "transport": "native", "snapshotRoot": "/owned"}
+        with (
+            patch.object(broker, "docker_prefix", return_value=["/usr/bin/docker"]),
+            patch.object(broker, "bounded_process", side_effect=process),
+        ):
+            self.assertEqual(broker.inspect_request(request, config), receipt)
+        self.assertEqual(bodies["export"], plan)
+        self.assertEqual(bodies["capsule"]["request"], request)
+
+    def test_visible_at_load_needs_one_measurement_and_no_scroll(self):
+        text = TextDouble([{R087_FOOTER: VISIBLE, R087_TITLE: VISIBLE}], max_scroll=4000)
+        browser, _, result = self.run_scripted(text)
+        self.assertEqual(result["requestedText"], {"viewport": {"width": 1280, "height": 720}, "scrolled": False,
+                                                   "texts": [{"text": R087_FOOTER, "status": "visible"},
+                                                             {"text": R087_TITLE, "status": "visible"}]})
+        self.assertEqual(text.asked, [[R087_FOOTER, R087_TITLE]])
+        self.assertEqual(text.scrolls, [])
+        self.assertEqual(text.waits, [capsule.TEXT_SETTLE_MS])
+        self.assertEqual(text.kwargs, {"viewport": {"width": 1280, "height": 720},
+                                       "service_workers": "block", "accept_downloads": False})
+        self.assertEqual(text.world["worldName"], "ods-requested-text")
+        self.assertFalse(text.world["grantUniveralAccess"])
+        # Same guard, no page-error listener; the step context closed first,
+        # then the palette, then this context, which is closed too.
+        self.assertTrue({"on:page", "on:download", "on:websocket"} <= set(text.calls))
+        self.assertNotIn("on:pageerror", text.calls)
+        self.assertLess(browser.calls.index("new_context:palette"), browser.calls.index("new_context:text"))
+        self.assertLess(browser.calls.index("close"), browser.calls.index("new_context:palette"))
+        self.assertEqual(text.calls[-1], "close")
+        self.assertEqual(result["status"], "passed")
+
+    def assertObservedUntilMinimum(self, wait):
+        # Measured from load on the wall clock, which the double barely advances.
+        self.assertLessEqual(wait, capsule.TEXT_MIN_OBSERVE_MS)
+        self.assertGreater(wait, capsule.TEXT_MIN_OBSERVE_MS - 500)
+
+    def test_scroll_triggered_reveal_counts_as_visible(self):
+        # Revealed by the page's scroll position, not by its own element.
+        text = TextDouble([{"Our story": FADED}, {"Our story": FADED}, {"Our story": VISIBLE}], max_scroll=2000)
+        _, _, result = self.run_scripted(text, texts=["Our story"])
+        self.assertEqual(result["requestedText"]["texts"], [{"text": "Our story", "status": "visible"}])
+        self.assertTrue(result["requestedText"]["scrolled"])
+        # Its element first (nothing moved, no wait), then 80% of the 720 px
+        # view per step; it stops once the text is seen visible.
+        self.assertEqual(text.reveals, ["Our story"])
+        self.assertEqual(text.animation_asks, [["Our story"]])
+        self.assertEqual(text.scrolls, [576])
+        self.assertEqual(text.waits, [capsule.TEXT_SETTLE_MS, capsule.TEXT_SCROLL_WAIT_MS])
+
+    def test_each_hidden_text_is_scrolled_into_view_with_its_scroll_containers(self):
+        # PR #6723 review B3: html and body clip, main scrolls. The page itself
+        # never scrolls (maxScroll 0), so only scrolling the element's own
+        # scroll container fires its reveal. The same holds for a long page
+        # whose window steps would skip past a small reveal.
+        for max_scroll in (0, 13280):
+            with self.subTest(max_scroll=max_scroll):
+                text = TimedTextDouble({"Our story": FADED, "Later": FADED}, on_reveal={"Our story", "Later"},
+                                       max_scroll=max_scroll)
+                _, _, result = self.run_scripted(text, texts=["Our story", "Later"])
+                self.assertEqual(result["requestedText"]["texts"], [{"text": "Our story", "status": "visible"},
+                                                                    {"text": "Later", "status": "visible"}])
+                self.assertEqual(text.reveals, ["Our story", "Later"])
+                self.assertEqual(text.scrolls, [], "no page step was needed")
+                self.assertEqual(text.waits, [capsule.TEXT_SETTLE_MS] + [capsule.TEXT_SCROLL_WAIT_MS] * 2)
+
+    def test_a_delayed_entrance_on_a_one_screen_page_gets_to_finish(self):
+        # PR #6723 review B2: `animation: up .8s ease 1.2s forwards` on a page
+        # that fits one screen. Its opacity leaves 0 at 1.2 s, and it is running
+        # (in its delay) from load, ending at 2.0 s.
+        text = TimedTextDouble({"Book a table": FADED}, visible_at={"Book a table": 1250},
+                               running={"Book a table": 2000})
+        _, _, result = self.run_scripted(text, texts=["Book a table"])
+        self.assertEqual(result["requestedText"]["texts"], [{"text": "Book a table", "status": "visible"}])
+        self.assertEqual(text.scrolls, [])
+        self.assertEqual(text.waits, [capsule.TEXT_SETTLE_MS, 2000 - capsule.TEXT_SETTLE_MS])
+        # Waits for animations share one budget for the whole check.
+        text = TimedTextDouble({"Book a table": FADED, "Open daily": FADED},
+                               running={"Book a table": 60000, "Open daily": 60000})
+        _, _, result = self.run_scripted(text, texts=["Book a table", "Open daily"])
+        self.assertEqual([t["status"] for t in result["requestedText"]["texts"]], ["hidden", "hidden"])
+        self.assertEqual(text.animation_asks, [["Book a table"], ["Open daily"], ["Book a table", "Open daily"]])
+        self.assertEqual(text.waits[:2], [capsule.TEXT_SETTLE_MS, capsule.TEXT_ANIMATION_WAIT_MS])
+        self.assertEqual(len(text.waits), 3, "the spent budget allows no further animation wait")
+        self.assertObservedUntilMinimum(text.waits[2])
+
+    def test_a_one_screen_page_is_observed_as_long_as_a_long_one(self):
+        # PR #6723 review B2: a preloader adds body.ready 600 ms after load and
+        # fades in over 0.5 s. No animation runs yet when the check starts.
+        text = TimedTextDouble({"Night Garden": FADED}, visible_at={"Night Garden": 1100})
+        _, _, result = self.run_scripted(text, texts=["Night Garden"])
+        self.assertEqual(result["requestedText"]["texts"], [{"text": "Night Garden", "status": "visible"}])
+        self.assertEqual(text.scrolls, [])
+        self.assertEqual(len(text.waits), 2)
+        self.assertObservedUntilMinimum(text.waits[1])
+
+    def test_text_hidden_through_the_whole_pass_is_reported_with_its_reason(self):
+        text = TextDouble([{R087_FOOTER: FOOTER_HIDDEN, R087_TITLE: VISIBLE}, {R087_FOOTER: FOOTER_HIDDEN}],
+                          max_scroll=500)
+        _, _, result = self.run_scripted(text)
+        self.assertEqual(result["requestedText"], {"viewport": {"width": 1280, "height": 720}, "scrolled": True,
+                                                   "texts": [{"text": R087_FOOTER, **FOOTER_HIDDEN},
+                                                             {"text": R087_TITLE, "status": "visible"}]})
+        # Only the pending text is measured again: after its element's reveal
+        # (a display:none element never moves), one page step, the final
+        # observation, and back at the top.
+        self.assertEqual(text.asked, [[R087_FOOTER, R087_TITLE]] + [[R087_FOOTER]] * 4)
+        self.assertEqual(text.reveals, [R087_FOOTER])
+        self.assertEqual(text.animation_asks, [[R087_FOOTER]] * 2)
+        self.assertEqual(text.scrolls, [500, 0])
+        self.assertEqual([text.waits[i] for i in (0, 1, 3)], [capsule.TEXT_SETTLE_MS, capsule.TEXT_SCROLL_WAIT_MS,
+                                                              capsule.TEXT_SCROLL_WAIT_MS])
+        self.assertObservedUntilMinimum(text.waits[2])
+        # Separate evidence: the steps and status are those of a run without it.
+        _, _, without = self.run_scripted(None, texts=())
+        self.assertEqual({k: v for k, v in result.items() if k != "requestedText"}, without)
+
+    def test_a_later_absent_sample_never_erases_a_hidden_one(self):
+        text = TextDouble([{"Note": FADED}, {"Note": ABSENT}], max_scroll=0)
+        _, _, result = self.run_scripted(text, texts=["Note"])
+        self.assertEqual(result["requestedText"]["texts"], [{"text": "Note", **FADED}])
+        # A one-screen page is not scrolled, but is observed until the minimum.
+        self.assertEqual(text.scrolls, [])
+        self.assertEqual(text.waits[0], capsule.TEXT_SETTLE_MS)
+        self.assertObservedUntilMinimum(text.waits[1])
+
+    def test_scroll_pass_is_bounded_in_steps_and_time(self):
+        text = TextDouble([{"Note": FADED}], max_scroll=10 ** 7)
+        _, _, result = self.run_scripted(text, texts=["Note"])
+        self.assertEqual(result["requestedText"]["texts"][0]["status"], "hidden")
+        self.assertEqual(len(text.scrolls), capsule.TEXT_SCROLL_STEPS + 1)
+        self.assertEqual(text.scrolls[-2:], [10 ** 7, 0])
+        # Even a late start ends inside the capsule deadline: the scroll budget
+        # (plus one step started before it ran out and the final wait) and the
+        # minimum observation overlap; animation waits have their own budget.
+        worst = (capsule.TEXT_START_BUDGET_S + capsule.TEXT_TIMEOUT_MS / 1000 + capsule.TEXT_SETTLE_MS / 1000 +
+                 max(capsule.TEXT_SCROLL_BUDGET_S + (capsule.TEXT_SCROLL_WAIT_MS + capsule.TEXT_FINAL_WAIT_MS) / 1000,
+                     capsule.TEXT_MIN_OBSERVE_MS / 1000) +
+                 (capsule.TEXT_ANIMATION_WAIT_MS + capsule.TEXT_SCROLL_WAIT_MS) / 1000)
+        self.assertLess(worst, capsule.EVIDENCE_DEADLINE_S)
+        with patch.object(capsule, "TEXT_SCROLL_BUDGET_S", -1):
+            text = TextDouble([{"Note": FADED}], max_scroll=10 ** 7)
+            self.run_scripted(text, texts=["Note"])
+        self.assertEqual(text.scrolls, [], "no scroll step starts past the pass budget")
+        self.assertEqual(text.reveals, [], "nor any element reveal")
+
+    def test_requested_text_is_omitted_when_the_check_fails_or_is_blocked(self):
+        cases = {
+            "isolated world error": TextDouble([{}], error=RuntimeError("target closed")),
+            "invalid observation": TextDouble([{R087_FOOTER: {"status": "shown"}, R087_TITLE: VISIBLE}]),
+            "unknown reason": TextDouble([{R087_FOOTER: {**FOOTER_HIDDEN, "reason": "tiny"}, R087_TITLE: VISIBLE}]),
+            "malformed element name": TextDouble([{R087_FOOTER: {**FOOTER_HIDDEN, "element": 'p "quoted"'},
+                                                   R087_TITLE: VISIBLE}]),
+            "malformed color": TextDouble([{R087_FOOTER: {**FOOTER_HIDDEN, "reason": "same-color",
+                                                          "colors": ["#NaNNaN", "#ffffff"]}, R087_TITLE: VISIBLE}]),
+            "colors without same-color": TextDouble([{R087_FOOTER: {**FOOTER_HIDDEN, "colors": ["#ffffff", "#ffffff"]},
+                                                      R087_TITLE: VISIBLE}]),
+            "foreign request": TextDouble([{R087_FOOTER: VISIBLE, R087_TITLE: VISIBLE}],
+                                          during_load=[("http://203.0.113.9/font.woff2", False)]),
+            "frame moved": TextDouble([{R087_FOOTER: VISIBLE, R087_TITLE: VISIBLE}],
+                                      frame_url="http://127.0.0.1:9/other/"),
+            "malformed reveal answer": TextDouble([{R087_FOOTER: FOOTER_HIDDEN, R087_TITLE: VISIBLE}], moved="yes"),
+            "negative animation answer": TextDouble([{R087_FOOTER: FOOTER_HIDDEN, R087_TITLE: VISIBLE}], animations=-1),
+            "boolean animation answer": TextDouble([{R087_FOOTER: FOOTER_HIDDEN, R087_TITLE: VISIBLE}], animations=True),
+        }
+        for label, text in cases.items():
+            with self.subTest(label):
+                _, _, result = self.run_scripted(text)
+                self.assertNotIn("requestedText", result)
+                self.assertEqual(result["status"], "passed", result)
+                self.assertEqual(result["blockedRequests"], [], "text-check blocks never reach step evidence")
+                self.assertEqual(text.calls[-1], "close")
+
+    def test_finished_evidence_is_checkpointed_before_the_browser_closes(self):
+        saved = []
+        text = TextDouble([{R087_FOOTER: FOOTER_HIDDEN, R087_TITLE: VISIBLE}, {R087_FOOTER: FOOTER_HIDDEN}])
+        _, _, result = self.run_scripted(text, checkpoint=lambda value: saved.append(copy.deepcopy(value)))
+        self.assertEqual(saved[-1], result)
+        self.assertIn("requestedText", saved[-1])
+        self.assertNotIn("requestedText", saved[0], "the first checkpoint is the step receipt")
+
+    def test_no_texts_or_a_late_start_runs_no_check(self):
+        text = TextDouble([{R087_FOOTER: VISIBLE, R087_TITLE: VISIBLE}])
+        _, _, result = self.run_scripted(text, texts=())
+        self.assertNotIn("requestedText", result)
+        self.assertIsNone(text.kwargs, "no requested-text context without texts")
+        with patch.object(capsule, "TEXT_START_BUDGET_S", 0):
+            _, _, late = self.run_scripted(text)
+        self.assertNotIn("requestedText", late)
+        self.assertIsNone(text.kwargs)
+
+    def test_capsule_and_protocol_share_the_vocabulary(self):
+        self.assertEqual(capsule.REQUESTED_TEXT_STATUSES, ("visible", "hidden", "absent", "unmeasured"))
+        for reason in capsule.REQUESTED_TEXT_REASONS:
+            self.assertIn(f"reason: '{reason}'", capsule.REQUESTED_TEXT)
+        self.assertEqual(len(set(capsule.REQUESTED_TEXT_REASONS)), 9)
+        # The measurement is read-only apart from the explicit scroll step.
+        for mutation in ("classList.add", "setAttribute", ".style.", "innerHTML", "scrollTo", "scrollIntoView"):
+            self.assertNotIn(mutation, capsule.REQUESTED_TEXT)
+        self.assertIn("behavior: 'instant'", capsule.SCROLL_TO)
+
+
+class ReceiptDeadlineTests(unittest.TestCase):
+    SCRIPT = (
+        "import sys, time\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import preview_inspection_capsule as capsule\n"
+        "capsule.EVIDENCE_BUDGET_S = 0.5\n"
+        "def stalled(bundle, checkpoint=None):\n"
+        "    request = bundle['request']\n"
+        "    receipt = {'schemaVersion': 1, 'kind': capsule.KIND, 'status': 'passed', 'siteId': request['siteId'],\n"
+        "               'sha256': request['sha256'], 'planSha256': capsule.plan_hash(request), 'steps': [],\n"
+        "               'scope': capsule.SCOPE}\n"
+        "    checkpoint(receipt)\n"
+        "    receipt['renderedColors'] = 'unfinished'\n"
+        "    time.sleep(float(sys.argv[2]))\n"
+        "    if sys.argv[3:] == ['raise']:\n"
+        "        raise RuntimeError('browser close failed')\n"
+        "    return {**receipt, 'requestedText': 'finished'}\n"
+        "capsule.run_browser = stalled\n"
+        "capsule.main()\n"
+    )
+
+    def run_capsule(self, stall, *mode):
+        import subprocess
+
+        host = str(Path(capsule.__file__).resolve().parent)
+        started = time.monotonic()
+        output = subprocess.run(
+            [sys.executable, "-c", self.SCRIPT, host, str(stall), *mode],
+            input=protocol.canonical(bundle("hi", texts=[R087_FOOTER])),
+            capture_output=True, timeout=30, check=True,
+        ).stdout
+        return output, time.monotonic() - started
+
+    def test_a_stalled_evidence_load_still_delivers_the_final_step_receipt(self):
+        output, elapsed = self.run_capsule(20)
+        self.assertLess(elapsed, 10)
+        self.assertEqual(output.count(b"\n"), 1)
+        receipt = protocol.strict_json(output)
+        self.assertEqual(receipt["status"], "passed")
+        self.assertNotIn("renderedColors", receipt, "the checkpoint is a copy of the final step receipt")
+        self.assertNotIn("requestedText", receipt)
+
+    def test_an_error_after_the_final_step_receipt_keeps_that_receipt(self):
+        output, _ = self.run_capsule(0, "raise")
+        self.assertEqual(output.count(b"\n"), 1)
+        receipt = protocol.strict_json(output)
+        self.assertEqual(receipt["status"], "passed", receipt)
+        self.assertNotIn("renderedColors", receipt, "the final step receipt as checkpointed")
+
+    def test_a_finished_run_writes_its_own_receipt_once(self):
+        output, _ = self.run_capsule(0)
+        self.assertEqual(output.count(b"\n"), 1)
+        self.assertEqual(protocol.strict_json(output)["requestedText"], "finished")
+
+
 def palette_names(result):
     return [color["name"] for color in result["renderedColors"]["colors"]]
 
@@ -1049,7 +1449,7 @@ TOWER1_PLAN = [step("assert-hidden", "#midnight-concert-card"), role_step("click
     os.environ.get("ODS_PREVIEW_BROWSER_TESTS") == "1", "real Chromium opt in"
 )
 class BrowserTests(unittest.TestCase):
-    def check(self, html, steps, files=None):
+    def check(self, html, steps, files=None, texts=None):
         # Fixture browsers get a separate process group and deadline too. The
         # production caller uses the stricter Docker capsule, never this path.
         import subprocess
@@ -1065,7 +1465,7 @@ class BrowserTests(unittest.TestCase):
         )
         try:
             output, error = child.communicate(
-                protocol.canonical(bundle(html, steps, files)), timeout=20
+                protocol.canonical(bundle(html, steps, files, texts)), timeout=20
             )
             self.assertEqual(child.returncode, 0, error.decode(errors="replace"))
             return protocol.strict_json(output)
@@ -1431,6 +1831,97 @@ class BrowserTests(unittest.TestCase):
         self.assertGreaterEqual(palette_share(result, "blue"), 95, result)
         self.assertFalse({"red", "amber"} & set(palette_names(result)), result)
 
+    def visibility(self, html, texts, files=None):
+        result = self.check(html, [step("assert-visible", "body")], files, texts)
+        self.assertEqual(result["status"], "passed", result)
+        return result["requestedText"]
+
+    def test_fade_in_on_scroll_is_visible_after_one_scroll_pass(self):
+        html = ('<style>.reveal{opacity:0;transform:translateY(40px);transition:opacity .6s,transform .6s}'
+                '.reveal.in{opacity:1;transform:none}</style><div style="height:2400px">Intro</div>'
+                '<section class="reveal"><h2>Our story begins here</h2></section>'
+                '<script>const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){'
+                "e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.2});"
+                "document.querySelectorAll('.reveal').forEach(el=>io.observe(el));</script>")
+        evidence = self.visibility(html, ["Our story begins here"])
+        self.assertTrue(evidence["scrolled"])
+        self.assertEqual(evidence["texts"], [{"text": "Our story begins here", "status": "visible"}])
+
+    def test_permanent_opacity_zero_is_not_visible(self):
+        evidence = self.visibility('<style>.ghost{opacity:0}</style><footer class="ghost"><p>Always faded</p></footer>',
+                                   ["Always faded"])
+        self.assertEqual(evidence["texts"], [{"text": "Always faded", "status": "hidden", "element": "p",
+                                              "reason": "transparent", "culprit": "footer.ghost"}])
+
+    def test_display_none_ancestor_is_not_visible(self):
+        evidence = self.visibility('<div id="later" style="display:none"><footer class="site-footer"><p>Inside hidden</p>'
+                                   '</footer></div>', ["Inside hidden"])
+        self.assertEqual(evidence["texts"], [{"text": "Inside hidden", "status": "hidden", "element": "p",
+                                              "reason": "display-none", "culprit": "div#later"}])
+
+    def test_white_on_white_is_not_visible(self):
+        evidence = self.visibility('<style>body{background:#fff}footer{color:#fff}</style><main>Hi</main>'
+                                   '<footer class="note">Ghost footer</footer>', ["Ghost footer"])
+        self.assertEqual(evidence["texts"], [{"text": "Ghost footer", "status": "hidden", "element": "footer.note",
+                                              "reason": "same-color", "culprit": "body",
+                                              "colors": ["#ffffff", "#ffffff"]}])
+
+    def test_normal_below_the_fold_text_is_visible_without_scrolling(self):
+        evidence = self.visibility('<div style="height:2400px">Intro</div><footer>Bottom line</footer>', ["Bottom line"])
+        self.assertEqual(evidence, {"viewport": {"width": 1280, "height": 720}, "scrolled": False,
+                                    "texts": [{"text": "Bottom line", "status": "visible"}]})
+
+    def test_painted_text_that_only_looks_risky_stays_visible(self):
+        cases = {
+            "gradient text": '<h1 style="background:linear-gradient(90deg,#f00,#00f);-webkit-background-clip:text;'
+                             'background-clip:text;color:transparent">Painted</h1>',
+            "white on a sibling backdrop": '<section style="position:relative;height:300px"><div style="position:absolute;'
+                                           'inset:0;background:#123"></div><h1 style="position:relative;color:#fff">'
+                                           'Painted</h1></section>',
+            "white on a dark gradient": '<body style="background:linear-gradient(#111,#222);color:#fff"><h1>Painted</h1>',
+            "fade-in on load": '<style>@keyframes f{from{opacity:0}to{opacity:1}}h1{animation:f .8s ease both}</style>'
+                               '<h1>Painted</h1>',
+            "inner scroll container": '<style>html,body{height:100%;margin:0;overflow:hidden}main{height:100%;'
+                                      'overflow-y:auto}</style><main><div style="height:3000px"></div><p>Painted</p></main>',
+            "split across inline elements": '<h1>Pain<span style="color:#c00">ted</span></h1>',
+        }
+        for label, html in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.visibility(html, ["Painted"])["texts"], [{"text": "Painted", "status": "visible"}])
+
+    def test_other_hiding_techniques_are_named(self):
+        cases = {
+            "visibility": ('<div style="visibility:hidden"><span>Gone</span></div>', "visibility-hidden"),
+            "screen-reader only": ('<span style="position:absolute;width:1px;height:1px;overflow:hidden;'
+                                   'clip:rect(0,0,0,0)">Gone</span>', "clipped"),
+            "off canvas": ('<nav style="position:fixed;top:0;left:0;width:300px;transform:translateX(-110%)">Gone</nav>',
+                           "off-page"),
+            "closed details": ('<details><summary>Question</summary><p>Gone</p></details>', "content-hidden"),
+            "no size": ('<p style="font-size:0">Gone</p>', "zero-size"),
+            "clear ink": ('<p style="color:transparent">Gone</p>', "transparent-text"),
+        }
+        for label, (html, reason) in cases.items():
+            with self.subTest(label):
+                [entry] = self.visibility(html, ["Gone"])["texts"]
+                self.assertEqual((entry["status"], entry["reason"]), ("hidden", reason), entry)
+
+    def test_round087_footer_inside_the_hidden_sold_out_section(self):
+        files = {"index.html": (TOWER1_R087 / "index.html").read_bytes()}
+        result = self.check(None, R087_PLAN, files, [R087_FOOTER, R087_TITLE])
+        self.assertEqual(result["status"], "passed", "the show/hide steps still pass")
+        self.assertEqual(result["requestedText"]["texts"], [
+            {"text": R087_FOOTER, "status": "hidden", "element": "p", "reason": "display-none",
+             "culprit": "div#soldOutSection"},
+            {"text": R087_TITLE, "status": "visible"}])
+        # The repair: the same footer after the sold-out section is visible.
+        page = files["index.html"].decode()
+        footer = page[page.index('      <footer class="site-footer">'):page.index("</footer>") + len("</footer>\n")]
+        repaired = page.replace(footer, "").replace("  </div>\n\n  <script>", footer + "  </div>\n\n  <script>")
+        self.assertNotEqual(repaired, page)
+        again = self.check(None, R087_PLAN, {"index.html": repaired.encode()}, [R087_FOOTER, R087_TITLE])
+        self.assertEqual(again["status"], "passed", again)
+        self.assertEqual([t["status"] for t in again["requestedText"]["texts"]], ["visible", "visible"], again)
+
     def test_palette_load_errors_are_not_step_evidence(self):
         html = ('<p id="item" style="background:#4caf50;height:600px">visible</p>'
                 '<script>sessionStorage.getItem("seen")</script>')
@@ -1442,7 +1933,7 @@ class BrowserTests(unittest.TestCase):
     os.environ.get("ODS_INSPECTION_TEST_IMAGE"), "isolated Docker image test opt in"
 )
 class DockerCapsuleTests(unittest.TestCase):
-    def invoke(self, html, steps, cancel=False, files=None):
+    def invoke(self, html, steps, cancel=False, files=None, texts=None):
         import workspace_preview as publisher
         import threading
         import subprocess
@@ -1463,7 +1954,7 @@ class DockerCapsuleTests(unittest.TestCase):
             receipt = publisher.publish_snapshot(
                 workspace, previews, "site", os.getuid()
             )
-            request = bundle(html, steps, files)["request"]
+            request = bundle(html, steps, files, texts)["request"]
             request.update(siteId=receipt["siteId"], sha256=receipt["sha256"])
             config = {
                 "docker": "/usr/bin/docker",
@@ -1567,6 +2058,13 @@ class DockerCapsuleTests(unittest.TestCase):
         repaired = self.invoke(None, TOWER1_PLAN, files=tower1_files(**AMBER_REPAIR))
         self.assertEqual(repaired["status"], "passed", repaired)
         self.assertGreaterEqual(palette_share(repaired, "amber"), 10, repaired)
+
+    def test_real_capsule_round087_requested_text_replay(self):
+        files = {"index.html": (TOWER1_R087 / "index.html").read_bytes()}
+        result = self.invoke(None, R087_PLAN, files=files, texts=[R087_FOOTER, R087_TITLE])
+        self.assertEqual(result["status"], "passed", result)
+        self.assertEqual(result["requestedText"]["texts"][0]["reason"], "display-none", result)
+        self.assertEqual(result["requestedText"]["texts"][1]["status"], "visible", result)
 
 if __name__ == "__main__":
     unittest.main()

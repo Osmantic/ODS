@@ -261,6 +261,9 @@ def inspect_request(request, config, cancelled=None):
     if config["transport"] == "local":
         bundle = snapshot_bundle(config["snapshotRoot"], request, config["ownerUid"])
     else:
+        # The publisher exports bytes by snapshot identity only. Requested
+        # texts never reach it, so its own image need not know the field.
+        plan = {key: value for key, value in request.items() if key != "texts"}
         raw = bounded_process(
             [
                 *docker_prefix(config),
@@ -271,15 +274,16 @@ def inspect_request(request, config, cancelled=None):
                 "/source/preview_inspection.py",
                 "export",
             ],
-            canonical(request),
+            canonical(plan),
             timeout=15,
             limit=MAX_BUNDLE,
             cancelled=cancelled,
         )
         bundle = strict_json(raw)
         bound, _files = validate_bundle(bundle)
-        if bound != request:
+        if bound != plan:
             raise Invalid("snapshot mismatch")
+        bundle["request"] = request
     name = "ods-preview-inspection-" + uuid.uuid4().hex
     try:
         raw = bounded_process(

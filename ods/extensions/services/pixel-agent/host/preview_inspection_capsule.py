@@ -5,6 +5,7 @@ import collections
 import http.server
 import itertools
 import mimetypes
+import os
 import re
 import struct
 import sys
@@ -620,6 +621,461 @@ def capture_palette(browser, origin, prefix):
         context.close()
 
 
+# Requested text: whether each text the owner asked for is visible when the
+# page loads, anywhere on the page (not only the first viewport). A fresh load
+# at the fixed desktop viewport, in its own context, like the palette. One
+# measurement right after load decides it when every located text is visible.
+# Otherwise each hidden text's own element is scrolled into view (with every
+# scroll container around it), then the page is scrolled through once, so
+# scroll-triggered reveals get their chance. The last sample comes at least
+# TEXT_MIN_OBSERVE_MS after load on any page height, and finite CSS
+# animations or transitions still running on a hidden text's elements (a
+# delayed entrance) may finish first, within TEXT_ANIMATION_WAIT_MS for the
+# whole check. A text counts as visible if any later sample shows it.
+TEXT_VIEWPORT = {"width": 1280, "height": 720}
+TEXT_SETTLE_MS = 100
+TEXT_TIMEOUT_MS = 3000
+TEXT_SCROLL_STEPS = 12
+TEXT_SCROLL_WAIT_MS = 150
+TEXT_FINAL_WAIT_MS = 400
+TEXT_MIN_OBSERVE_MS = 1500
+TEXT_ANIMATION_WAIT_MS = 2000
+TEXT_SCROLL_BUDGET_S = 3
+TEXT_START_BUDGET_S = 30
+REQUESTED_TEXT_STATUSES = ("visible", "hidden", "absent", "unmeasured")
+REQUESTED_TEXT_REASONS = (
+    "display-none", "visibility-hidden", "content-hidden", "transparent", "zero-size",
+    "clipped", "off-page", "same-color", "transparent-text",
+)
+
+# Runs in the isolated world. Each text is folded like the plugin's
+# canonicalText (NFKC, quotes, dashes, whitespace) and matched caselessly
+# against rendered DOM text: text nodes, joined and space-separated at element
+# boundaries, plus button input values. Script, style, form-option, media and
+# embedded-frame content is never searched. A text found nowhere is "absent";
+# past the traversal bounds it is "unmeasured". Neither is a visibility claim.
+# Each deepest element containing the text is judged in turn; the first
+# visible one decides, otherwise the first one found is reported with the
+# first reason that applies. Element names are tag, id or up to two classes,
+# restricted to [A-Za-z0-9_-]: page data, never instructions.
+REQUESTED_TEXT = r"""function(texts) {
+  const MAX_ELEMENTS = 20000, MAX_CHARS = 4000000, MAX_DEPTH = 256, MAX_OCCURRENCES = 8, MAX_OVERLAP_SCAN = 5000;
+  const SKIP = new Set(('script style template noscript title head select datalist option optgroup textarea ' +
+    'canvas object embed iframe video audio desc metadata').split(' '));
+  const CLIPS = /^(?:hidden|clip)$/, SCROLLS = /^(?:auto|scroll)$/, HIDDEN = /^(?:hidden|collapse)$/;
+  const HTML = 'http://www.w3.org/1999/xhtml';
+  const fold = s => s.normalize('NFKC').replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, '')
+    .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'").replace(/[\u201C-\u201F\u2033\u00AB\u00BB]/g, '"')
+    .replace(/[\u2010-\u2015\u2212]/g, '-').replace(/\s+/g, ' ').trim().toLowerCase();
+  const wanted = texts.map(fold), found = wanted.map(() => []);
+  let elements = 0, chars = 0, over = false;
+  const visit = (e, depth) => {
+    if (++elements > MAX_ELEMENTS || depth > MAX_DEPTH) { over = true; return ['', '', 0]; }
+    let joined = '', spaced = '', below = 0;
+    if (e.localName === 'input' && /^(?:button|submit|reset)$/i.test(e.type)) joined = spaced = e.value || '';
+    for (let n = e.firstChild; n && !over; n = n.nextSibling) {
+      if (n.nodeType === 3) { joined += n.data; spaced += n.data; }
+      else if (n.nodeType === 1 && !SKIP.has(n.localName)) {
+        const [j, s, m] = visit(n, depth + 1);
+        joined += j; spaced += ' ' + s + ' '; below |= m;
+      }
+    }
+    chars += joined.length + spaced.length;
+    if (over || chars > MAX_CHARS) { over = true; return ['', '', 0]; }
+    const a = fold(joined), b = fold(spaced);
+    let mask = 0;
+    wanted.forEach((w, i) => {
+      if (!w || (!a.includes(w) && !b.includes(w))) return;
+      mask |= 1 << i;
+      if (!(below & (1 << i)) && found[i].length < MAX_OCCURRENCES) found[i].push(e);
+    });
+    return [joined, spaced, mask];
+  };
+  if (document.body) visit(document.body, 0);
+
+  const root = document.documentElement, body = document.body;
+  const style = (el, pseudo) => getComputedStyle(el, pseudo);
+  const up = el => el.parentElement || (el.parentNode && el.parentNode.host) || null;
+  const lineage = el => { const out = []; for (let x = el; x && out.length < 1024; x = up(x)) out.push(x); return out; };
+  const describe = el => {
+    const name = String(el.localName || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 32);
+    const tag = /^[a-z]/.test(name) ? name : 'element', id = el.getAttribute('id') || '';
+    if (/^[A-Za-z_-][A-Za-z0-9_-]{0,63}$/.test(id)) return tag + '#' + id;
+    return tag + [...el.classList].filter(c => /^[A-Za-z_-][A-Za-z0-9_-]{0,63}$/.test(c)).slice(0, 2).map(c => '.' + c).join('');
+  };
+  const rgba = value => {
+    const m = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+)(%?))?\s*\)$/.exec(value || '');
+    if (!m) return null;
+    const a = m[4] === undefined ? 1 : parseFloat(m[4]) / (m[5] ? 100 : 1);
+    return {r: +m[1], g: +m[2], b: +m[3], a};
+  };
+  const blend = (top, under) => ({r: top.r * top.a + under.r * (1 - top.a), g: top.g * top.a + under.g * (1 - top.a),
+    b: top.b * top.a + under.b * (1 - top.a), a: 1});
+  const hex = c => '#' + [c.r, c.g, c.b].map(v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0')).join('');
+  const luminance = c => [c.r, c.g, c.b].map(v => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; })
+    .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+  const contrast = (x, y) => { const a = luminance(x), b = luminance(y); return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05); };
+  const paintsPseudo = el => ['::before', '::after'].some(p => {
+    const s = style(el, p);
+    return s.content !== 'none' && s.content !== 'normal' && (s.backgroundImage !== 'none' || (rgba(s.backgroundColor) || {a: 1}).a > 0);
+  });
+  const rootStyle = style(root), propagated = rootStyle.overflowX === 'visible' && rootStyle.overflowY === 'visible';
+  const viewportStyle = propagated && body ? style(body) : rootStyle;
+  const scroller = document.scrollingElement || root;
+
+  // Anything other than its own ancestors that paints where the text is makes
+  // its backdrop unknown: an image, a background, or a decorated pseudo-element.
+  const overlapped = (chain, rects) => {
+    const all = body ? body.getElementsByTagName('*') : [];
+    if (all.length > MAX_OVERLAP_SCAN) return true;
+    const own = new Set(chain);
+    const [x0, y0, x1, y1] = rects.reduce((u, r) => [Math.min(u[0], r[0]), Math.min(u[1], r[1]),
+      Math.max(u[2], r[2]), Math.max(u[3], r[3])], [Infinity, Infinity, -Infinity, -Infinity]);
+    for (const x of all) {
+      if (own.has(x)) continue;
+      const box = x.getBoundingClientRect();
+      if (box.width < 1 || box.height < 1 || box.right <= x0 || box.left >= x1 || box.bottom <= y0 || box.top >= y1) continue;
+      const s = style(x);
+      if ((/^(?:img|svg|video|canvas|picture|iframe|object|embed|input)$/.test(x.localName) || s.backgroundImage !== 'none' ||
+          (rgba(s.backgroundColor) || {a: 1}).a > 0 || paintsPseudo(x)) &&
+          x.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})) return true;
+    }
+    return false;
+  };
+
+  // null when the text in e is visible; otherwise the first reason that applies.
+  const verdict = e => {
+    const chain = lineage(e);
+    if (style(e).display !== 'contents' && !e.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})) {
+      const none = chain.find(x => style(x).display === 'none');
+      if (none) return {reason: 'display-none', culprit: none};
+      if (HIDDEN.test(style(e).visibility)) {
+        let origin = e;
+        for (const x of chain.slice(1)) { if (HIDDEN.test(style(x).visibility)) origin = x; else break; }
+        return {reason: 'visibility-hidden', culprit: origin};
+      }
+      const clear = chain.find(x => parseFloat(style(x).opacity) === 0);
+      if (clear) return {reason: 'transparent', culprit: clear};
+      return {reason: 'content-hidden', culprit: chain.find(x => style(x).contentVisibility === 'hidden' ||
+        (x !== e && x.localName === 'details' && !x.open)) || e};
+    }
+    let opacity = 1, faint = e, faintest = 2;
+    for (const x of chain) {
+      const o = parseFloat(style(x).opacity);
+      if (!(o >= 0)) continue;
+      opacity *= o;
+      if (o < faintest) { faintest = o; faint = x; }
+    }
+    if (opacity <= 0.05) return {reason: 'transparent', culprit: faint};
+    let rects;
+    if (e.localName === 'input') rects = [...e.getClientRects()];
+    else { const range = document.createRange(); range.selectNodeContents(e); rects = [...range.getClientRects()]; }
+    rects = rects.filter(r => r.width >= 1 && r.height >= 1).map(r => [r.left, r.top, r.right, r.bottom]);
+    if (!rects.length) return {reason: 'zero-size', culprit: e};
+    for (const x of chain) {
+      if (x === root || (x === body && propagated)) continue;
+      const s = style(x), box = x.getBoundingClientRect();
+      let l = -Infinity, t = -Infinity, r = Infinity, b = Infinity;
+      if (x.namespaceURI === HTML && !/^(?:inline|contents)$/.test(s.display)) {
+        if (CLIPS.test(s.overflowX)) { l = box.left + x.clientLeft; r = l + x.clientWidth; }
+        if (CLIPS.test(s.overflowY)) { t = box.top + x.clientTop; b = t + x.clientHeight; }
+      }
+      if (/^(?:absolute|fixed)$/.test(s.position) && /^rect\(/.test(s.clip)) {
+        const v = s.clip.slice(5, -1).split(/[\s,]+/).filter(Boolean);
+        if (v.length === 4) {
+          const at = (k, base, auto) => v[k] === 'auto' ? auto : base + parseFloat(v[k]);
+          l = Math.max(l, at(3, box.left, box.left)); t = Math.max(t, at(0, box.top, box.top));
+          r = Math.min(r, at(1, box.left, box.right)); b = Math.min(b, at(2, box.top, box.bottom));
+        }
+      }
+      const inset = /^inset\(([^)]*)\)/.exec(s.clipPath || '');
+      const sides = inset ? inset[1].split(/\s+round\s+/)[0].trim().split(/\s+/) : [];
+      if (sides.length >= 1 && sides.length <= 4 && sides.every(p => /^-?[\d.]+(?:px|%)?$/.test(p))) {
+        const [T, R = T, B = T, L = R] = sides;
+        const size = (p, whole) => p.endsWith('%') ? parseFloat(p) / 100 * whole : parseFloat(p);
+        l = Math.max(l, box.left + size(L, box.width)); r = Math.min(r, box.right - size(R, box.width));
+        t = Math.max(t, box.top + size(T, box.height)); b = Math.min(b, box.bottom - size(B, box.height));
+      }
+      if (l !== -Infinity || t !== -Infinity || r !== Infinity || b !== Infinity) {
+        rects = rects.map(([x0, y0, x1, y1]) => [Math.max(x0, l), Math.max(y0, t), Math.min(x1, r), Math.min(y1, b)])
+          .filter(([x0, y0, x1, y1]) => x1 - x0 >= 2 && y1 - y0 >= 2);
+        if (!rects.length) return {reason: 'clipped', culprit: x};
+      }
+      // Scrolling a container brings its content into the container's box.
+      if (x.namespaceURI === HTML && (SCROLLS.test(s.overflowX) || SCROLLS.test(s.overflowY)) &&
+          x.clientWidth >= 2 && x.clientHeight >= 2) {
+        const left = box.left + x.clientLeft, top = box.top + x.clientTop;
+        rects = [[left, top, left + x.clientWidth, top + x.clientHeight]];
+      }
+    }
+    // Text inside its own scroll container is reachable by scrolling it.
+    if (!chain.some(x => x !== root && x !== body && (SCROLLS.test(style(x).overflowX) || SCROLLS.test(style(x).overflowY)))) {
+      const fixed = chain.some(x => style(x).position === 'fixed');
+      const width = CLIPS.test(viewportStyle.overflowX) ? innerWidth : Math.max(scroller.scrollWidth, innerWidth);
+      const height = CLIPS.test(viewportStyle.overflowY) ? innerHeight : Math.max(scroller.scrollHeight, innerHeight);
+      const [dx, dy, w, h] = fixed ? [0, 0, innerWidth, innerHeight] : [scrollX, scrollY, width, height];
+      if (!rects.some(([x0, y0, x1, y1]) => x1 + dx > 1 && y1 + dy > 1 && x0 + dx < w - 1 && y0 + dy < h - 1))
+        return {reason: 'off-page', culprit: chain.find(x => style(x).transform !== 'none') ||
+          chain.find(x => style(x).position !== 'static') || e};
+    }
+    const own = style(e), fill = rgba(own.webkitTextFillColor) || rgba(own.color);
+    const stroked = parseFloat(own.webkitTextStrokeWidth) > 0 && (rgba(own.webkitTextStrokeColor) || {a: 1}).a > 0;
+    const shadowed = own.textShadow !== 'none';
+    if (!fill) return null;
+    if (fill.a <= 0.05) {
+      const painted = chain.slice(0, 8).some(x => { const s = style(x);
+        return (s.backgroundClip === 'text' || s.webkitBackgroundClip === 'text') && s.backgroundImage !== 'none'; });
+      return painted || stroked || shadowed ? null : {reason: 'transparent-text', culprit: e};
+    }
+    if (fill.a < 0.5 || stroked || shadowed) return null;
+    // Same color: only a plain backdrop of solid ancestor backgrounds is judged.
+    const layers = [];
+    for (const x of chain) {
+      const s = style(x);
+      if (s.backgroundImage !== 'none' || s.filter !== 'none' || s.mixBlendMode !== 'normal' ||
+          (s.backdropFilter || 'none') !== 'none' || /\binset\b/.test(s.boxShadow || '') || paintsPseudo(x)) return null;
+      const bg = rgba(s.backgroundColor);
+      if (!bg) return null;
+      if (bg.a > 0) { layers.push([bg, x]); if (bg.a >= 0.99) break; }
+    }
+    // With no opaque background the page shows the default white canvas,
+    // unless it asks for a dark color scheme.
+    if (!layers.some(([bg]) => bg.a >= 0.99) && (/dark/.test(rootStyle.colorScheme || '') ||
+        [...document.querySelectorAll('meta[name="color-scheme" i]')].some(m => /dark/i.test(m.content || '')))) return null;
+    let backdrop = {r: 255, g: 255, b: 255, a: 1};
+    for (const [bg] of layers.slice().reverse()) backdrop = blend(bg, backdrop);
+    const ink = blend(fill, backdrop);
+    if (contrast(ink, backdrop) >= 1.05 || overlapped(chain, rects)) return null;
+    return {reason: 'same-color', culprit: layers.length ? layers[0][1] : root, colors: [hex(ink), hex(backdrop)]};
+  };
+
+  const results = wanted.map((_, i) => {
+    if (!found[i].length) return {status: over ? 'unmeasured' : 'absent'};
+    let first = null;
+    for (const e of found[i]) {
+      const v = verdict(e);
+      if (!v) return {status: 'visible'};
+      first = first || {status: 'hidden', element: describe(e), reason: v.reason,
+        ...(v.culprit && v.culprit !== e ? {culprit: describe(v.culprit)} : {}), ...(v.colors ? {colors: v.colors} : {})};
+    }
+    return first;
+  });
+  // Kept in this isolated world, out of the page's reach, for REVEAL_TEXT
+  // and TEXT_ANIMATIONS until the next measurement replaces them.
+  self.odsTextCandidates = new Map(texts.map((text, i) => [text, found[i]]));
+  return {results, viewport: innerHeight,
+    maxScroll: CLIPS.test(viewportStyle.overflowY) ? 0 : Math.max(0, Math.floor(scroller.scrollHeight - innerHeight))};
+}"""
+
+# Instant, so a page's smooth scroll-behavior cannot stretch the pass.
+SCROLL_TO = r"""function(top) { window.scrollTo({top, left: 0, behavior: 'instant'}); return scrollY; }"""
+
+# Scrolls the first laid-out element the last measurement found for `text`
+# into the middle of the view, which scrolls every scroll container around it
+# too (a full-height main, a scroll-snap deck, a scrolling body). True when
+# that moved it; a display:none element has no box and never moves.
+REVEAL_TEXT = r"""function(text) {
+  const list = (self.odsTextCandidates && self.odsTextCandidates.get(text)) || [];
+  const e = list.find(x => x.isConnected && x.getClientRects().length > 0);
+  if (!e) return false;
+  const before = e.getBoundingClientRect();
+  e.scrollIntoView({block: 'center', inline: 'nearest', behavior: 'instant'});
+  const after = e.getBoundingClientRect();
+  return before.top !== after.top || before.left !== after.left;
+}"""
+
+# Milliseconds until the finite CSS animations and transitions now running on
+# the found elements for `texts`, or on their ancestors, end (0 when none).
+# A delayed entrance is running during its delay; an infinite one never ends
+# and is not waited for.
+TEXT_ANIMATIONS = r"""function(texts) {
+  const chain = new Set();
+  for (const text of texts) {
+    for (const e of (self.odsTextCandidates && self.odsTextCandidates.get(text)) || []) {
+      for (let x = e, n = 0; x && n < 1024; x = x.parentElement || (x.parentNode && x.parentNode.host) || null, n++) chain.add(x);
+    }
+  }
+  let wait = 0;
+  for (const a of document.getAnimations()) {
+    const target = a.effect && a.effect.target;
+    if (!target || !chain.has(target) || a.playState !== 'running' || !(a.playbackRate > 0)) continue;
+    const t = a.effect.getComputedTiming();
+    if (Number.isFinite(t.endTime) && Number.isFinite(t.localTime)) wait = Math.max(wait, (t.endTime - t.localTime) / a.playbackRate);
+  }
+  return Math.min(60000, Math.max(0, Math.ceil(wait)));
+}"""
+
+
+ELEMENT_NAME = re.compile(
+    r"[a-z][a-z0-9-]{0,31}(?:#[A-Za-z_-][A-Za-z0-9_-]{0,63}|(?:\.[A-Za-z_-][A-Za-z0-9_-]{0,63}){0,2})"
+)
+
+
+def requested_text_entry(text, observed):
+    """One receipt entry from an isolated-world observation, shape-checked so
+    a malformed observation voids only this evidence, never the receipt."""
+    status = observed.get("status") if isinstance(observed, dict) else None
+    if status not in REQUESTED_TEXT_STATUSES:
+        raise Invalid("invalid text observation")
+    if status != "hidden":
+        return {"text": text, "status": status}
+    entry = {"text": text, "status": status, "element": observed.get("element"), "reason": observed.get("reason")}
+    for key in ("culprit", "colors"):
+        if key in observed:
+            entry[key] = observed[key]
+    names = [entry["element"], *([entry["culprit"]] if "culprit" in entry else [])]
+    colors = entry.get("colors")
+    if (
+        entry["reason"] not in REQUESTED_TEXT_REASONS
+        or not all(isinstance(name, str) and ELEMENT_NAME.fullmatch(name) for name in names)
+        or (entry["reason"] == "same-color") != (colors is not None)
+        or (
+            colors is not None
+            and not (
+                isinstance(colors, list)
+                and len(colors) == 2
+                and all(isinstance(c, str) and re.fullmatch("#[0-9a-f]{6}", c) for c in colors)
+            )
+        )
+    ):
+        raise Invalid("invalid text observation")
+    return entry
+
+
+def check_requested_text(browser, origin, prefix, texts):
+    """Requested-text visibility of a fresh desktop load across the whole
+    page, or None. Its own context: the steps and their page-error listener
+    never see this load, and a request blocked here voids only this check."""
+    blocked = []
+    context = browser.new_context(
+        viewport=dict(TEXT_VIEWPORT), service_workers="block", accept_downloads=False
+    )
+    try:
+        page = context.new_page()
+        page.set_default_timeout(TEXT_TIMEOUT_MS)
+        guard_requests(context, page, origin, prefix, blocked)
+        page.goto(
+            origin + "/__ods_inspection__.html", wait_until="load", timeout=TEXT_TIMEOUT_MS
+        )
+        loaded = time.monotonic()
+        frame = page.frame(name="inspection")
+        if frame is None or frame.url != origin + prefix:
+            return None
+        cdp = context.new_cdp_session(page)
+        tree = cdp.send("Page.getFrameTree")["frameTree"]
+        frame_id = next(
+            child["frame"]["id"]
+            for child in tree.get("childFrames", [])
+            if child["frame"].get("name") == "inspection"
+        )
+        world = cdp.send(
+            "Page.createIsolatedWorld",
+            {"frameId": frame_id, "worldName": "ods-requested-text", "grantUniveralAccess": False},
+        )["executionContextId"]
+
+        def call(function, argument):
+            if blocked:
+                raise Invalid("preview navigation or request blocked")
+            result = cdp.send(
+                "Runtime.callFunctionOn",
+                {
+                    "executionContextId": world,
+                    "functionDeclaration": function,
+                    "arguments": [{"value": argument}],
+                    "returnByValue": True,
+                },
+            )
+            if result.get("exceptionDetails"):
+                raise Invalid("requested text check failed")
+            return result["result"].get("value")
+
+        page.wait_for_timeout(TEXT_SETTLE_MS)
+        first = call(REQUESTED_TEXT, list(texts))
+        outcome = [requested_text_entry(t, o) for t, o in zip(texts, first["results"])]
+        if len(outcome) != len(texts):
+            raise Invalid("invalid text observation")
+        pending = [i for i, entry in enumerate(outcome) if entry["status"] == "hidden"]
+
+        def sample():
+            observed = call(REQUESTED_TEXT, [texts[i] for i in pending])["results"]
+            for i, value in zip(list(pending), observed):
+                entry = requested_text_entry(texts[i], value)
+                # A later "absent" never erases a text already seen hidden.
+                if entry["status"] in ("visible", "hidden"):
+                    outcome[i] = entry
+            pending[:] = [i for i in pending if outcome[i]["status"] == "hidden"]
+
+        animation_budget = [TEXT_ANIMATION_WAIT_MS]
+
+        def finish_animations(waiting):
+            # Finite animations still running on these texts' elements (a
+            # delayed entrance, a reveal under way) end before they are judged
+            # again, within one budget for the whole check.
+            remaining = call(TEXT_ANIMATIONS, [texts[i] for i in waiting])
+            if (
+                isinstance(remaining, bool)
+                or not isinstance(remaining, (int, float))
+                or not 0 <= remaining <= 60000
+            ):
+                raise Invalid("invalid animation observation")
+            wait = int(min(remaining, animation_budget[0]))
+            if wait > 0:
+                animation_budget[0] -= wait
+                page.wait_for_timeout(wait)
+                sample()
+
+        scrolled = bool(pending)
+        if pending:
+            deadline, moved = time.monotonic() + TEXT_SCROLL_BUDGET_S, False
+            # Each hidden text's own element first, with every scroll
+            # container around it, so its scroll-triggered reveal can run.
+            for i in list(pending):
+                if i not in pending:
+                    continue
+                if time.monotonic() > deadline:
+                    break
+                revealed = call(REVEAL_TEXT, texts[i])
+                if not isinstance(revealed, bool):
+                    raise Invalid("invalid reveal observation")
+                if revealed:
+                    moved = True
+                    page.wait_for_timeout(TEXT_SCROLL_WAIT_MS)
+                sample()
+                if i in pending:
+                    finish_animations([i])
+            # Then the page itself, for reveals keyed to its scroll position.
+            maximum, height = int(first["maxScroll"]), int(first["viewport"])
+            step = max(height * 0.8, maximum / TEXT_SCROLL_STEPS, 1)
+            tops, top = [], 0
+            while top < maximum and len(tops) < TEXT_SCROLL_STEPS:
+                top = min(maximum, top + step)
+                tops.append(round(top))
+            for top in tops:
+                if not pending or time.monotonic() > deadline:
+                    break
+                call(SCROLL_TO, top)
+                moved = True
+                page.wait_for_timeout(TEXT_SCROLL_WAIT_MS)
+                sample()
+            # Load-time reveals get the same time on a one-screen page as on
+            # a long one: the last sample is TEXT_MIN_OBSERVE_MS after load.
+            if pending:
+                elapsed = (time.monotonic() - loaded) * 1000
+                page.wait_for_timeout(max(TEXT_FINAL_WAIT_MS, round(TEXT_MIN_OBSERVE_MS - elapsed)))
+                sample()
+            if pending:
+                finish_animations(pending)
+            if pending and moved:
+                call(SCROLL_TO, 0)
+                page.wait_for_timeout(TEXT_SCROLL_WAIT_MS)
+                sample()
+        if blocked:
+            return None
+        return {"viewport": dict(TEXT_VIEWPORT), "scrolled": scrolled, "texts": outcome}
+    finally:
+        context.close()
+
+
 def observe_until_stable(once, wait):
     # Keep the 100ms fast path. A finite transition may need more samples,
     # but changing observations never become a passing assertion on timeout.
@@ -639,8 +1095,9 @@ def observe_until_stable(once, wait):
         previous = current
 
 
-def run_browser(bundle, playwright_factory=None):
+def run_browser(bundle, playwright_factory=None, checkpoint=None):
     started = time.monotonic()
+    checkpoint = checkpoint or (lambda _result: None)
     request, files = validate_bundle(bundle)
     prefix = "/" + request["siteId"] + "/"
     blocked = []
@@ -972,6 +1429,7 @@ def run_browser(bundle, playwright_factory=None):
                 "scope": SCOPE,
             }
             context.close()
+            checkpoint(result)
             # After the step context is closed, so its receipt is final. The
             # palette is separate evidence: it never changes a step or status,
             # and it is omitted (as by older capsules) when capture fails.
@@ -983,6 +1441,20 @@ def run_browser(bundle, playwright_factory=None):
                     pass
             if palette:
                 result["renderedColors"] = palette
+                checkpoint(result)
+            # Requested-text visibility is separate evidence too: it never
+            # changes a step or the receipt status, and it is omitted when the
+            # request names no text or the check fails.
+            visibility = None
+            if request.get("texts") and time.monotonic() - started < TEXT_START_BUDGET_S:
+                try:
+                    visibility = check_requested_text(browser, origin, prefix, request["texts"])
+                except Exception:
+                    pass
+            if visibility:
+                result["requestedText"] = visibility
+                # Finished evidence survives a slow browser close.
+                checkpoint(result)
             browser.close()
             return result
     finally:
@@ -990,21 +1462,81 @@ def run_browser(bundle, playwright_factory=None):
         server.server_close()
 
 
+# Once the step receipt is final, the palette and requested-text loads can only
+# add evidence. Page script can stall them (a scroll handler that never
+# returns blocks every isolated-world call), so by this deadline the capsule
+# writes the last final receipt without the unfinished evidence and exits,
+# instead of losing the receipt to the broker's 45-second limit.
+EVIDENCE_DEADLINE_S = 40
+EVIDENCE_BUDGET_S = 12
+
+
+class ReceiptOutput:
+    """Writes exactly one receipt line: the finished result, or at the
+    evidence deadline the latest final receipt that run_browser checkpointed."""
+
+    def __init__(self, stream, started):
+        self.stream, self.started = stream, started
+        self.lock, self.timer, self.saved, self.written = threading.Lock(), None, None, False
+
+    def emit(self, result, request):
+        encoded = canonical(result)
+        if len(encoded) > MAX_RESULT:
+            encoded = canonical(failure("output_limit", request))
+        self.stream.write(encoded + b"\n")
+        self.stream.flush()
+        self.written = True
+
+    def checkpoint(self, result, request):
+        with self.lock:
+            self.saved = copy_json(result)
+            if self.timer is None:
+                now = time.monotonic()
+                delay = min(self.started + EVIDENCE_DEADLINE_S, now + EVIDENCE_BUDGET_S) - now
+                self.timer = threading.Timer(max(0.0, delay), self.expire, (request,))
+                self.timer.daemon = True
+                self.timer.start()
+
+    def expire(self, request):
+        with self.lock:
+            if self.written:
+                return
+            self.emit(self.saved, request)
+            # The main thread may be blocked inside the browser; the capsule
+            # container ends with this process.
+            os._exit(0)
+
+    def write(self, result, request):
+        with self.lock:
+            if self.timer is not None:
+                self.timer.cancel()
+            if not self.written:
+                self.emit(result, request)
+
+
+def copy_json(value):
+    return strict_json(canonical(value))
+
+
 def main():
     request = None
+    output = ReceiptOutput(sys.stdout.buffer, time.monotonic())
     try:
         raw = sys.stdin.buffer.read(MAX_BUNDLE + 1)
         if len(raw) > MAX_BUNDLE:
             raise Invalid("bundle too large")
         bundle = strict_json(raw)
         request, _ = validate_bundle(bundle)
-        result = run_browser(bundle)
+        result = run_browser(
+            bundle, checkpoint=lambda value: output.checkpoint(value, request)
+        )
     except Exception:
-        result = failure("unavailable", request)
-    encoded = canonical(result)
-    if len(encoded) > MAX_RESULT:
-        encoded = canonical(failure("output_limit", request))
-    sys.stdout.buffer.write(encoded + b"\n")
+        # An error after the step receipt was final (closing the browser, for
+        # example) does not void that receipt.
+        with output.lock:
+            saved = output.saved
+        result = saved if saved is not None else failure("unavailable", request)
+    output.write(result, request)
 
 
 if __name__ == "__main__":

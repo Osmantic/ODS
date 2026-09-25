@@ -753,6 +753,8 @@ export default definePluginEntry({
     if (["unix", "native"].includes(api.pluginConfig?.workspacePreviewInspectionTransport)) {
       registerTool(api, createWorkspacePreviewInspectTool({
         transport: api.pluginConfig.workspacePreviewInspectionTransport,
+        // Owner-requested text is checked for visibility when the page loads.
+        requestedTexts: params => toolLoopGuard.requestedTextsForInspection(params),
       }), { names: ["pixel_ods_workspace_preview_inspect"] });
     }
 

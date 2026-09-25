@@ -16,7 +16,10 @@ const roles = new Set(['button','link','checkbox','radio','textbox','combobox','
 const exact = (v,keys) => v && typeof v==='object' && !Array.isArray(v) && Object.keys(v).sort().join(',')===[...keys].sort().join(',');
 const printable = (v,max) => typeof v==='string' && Array.from(v).length>0 && Array.from(v).length<=max && Buffer.byteLength(v)<=max*4 && !/[\p{C}\u2028\u2029]/u.test(v);
 const canonical = v => JSON.stringify(v && typeof v==='object' ? Array.isArray(v) ? v.map(x=>JSON.parse(canonical(x))) : Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])) : v);
-export const inspectionPlanHash = value => createHash('sha256').update(canonical(value)).digest('hex');
+// Requested texts are evidence inputs the plugin adds, not the inspected plan;
+// the receipt echoes each one in requestedText instead.
+const planOf = value => { if (!value || typeof value !== 'object' || Array.isArray(value)) return value; const {texts, ...plan} = value; return plan; };
+export const inspectionPlanHash = value => createHash('sha256').update(canonical(planOf(value))).digest('hex');
 
 export function hasVisibilityTransitionPlan(request) {
   // A click dispatch or an unchanged button does not prove its effect.
@@ -85,6 +88,60 @@ export function renderedColorsLine(renderedColors) {
     colors.map(c=>NEUTRAL_COLOR_NAMES.includes(c.name) ? `${c.name} ${c.percent}%` : `${c.name} ${c.hex} ${c.percent}%`).join(', ') +
     '. Colors under 1% of the view and hover/focus-only styles are not listed.';
 }
+// Requested text (capsule-computed): whether each owner-requested text is
+// visible when the page loads, across the whole page of a fresh desktop load,
+// after one scroll through it when needed. Separate from the steps; it never
+// changes a step, the receipt status or interaction proof.
+export const MAX_REQUESTED_TEXTS = 12, MAX_REQUESTED_TEXT_CHARS = 120;
+export const REQUESTED_TEXT_REASONS = Object.freeze(['display-none','visibility-hidden','content-hidden','transparent','zero-size','clipped','off-page','same-color','transparent-text']);
+// Tag, then an id or up to two classes, as the capsule names page elements.
+export const ELEMENT_NAME = /^[a-z][a-z0-9-]{0,31}(?:#[A-Za-z_-][A-Za-z0-9_-]{0,63}|(?:\.[A-Za-z_-][A-Za-z0-9_-]{0,63}){0,2})$/;
+const elementName = v => typeof v === 'string' && ELEMENT_NAME.test(v);
+const requestedTextValid = t => printable(t,MAX_REQUESTED_TEXT_CHARS) && t===t.trim();
+const requestedTextEvidenceValid = (r,texts) => exact(r,['viewport','scrolled','texts']) && exact(r.viewport,['width','height']) &&
+  Object.values(r.viewport).every(v=>Number.isSafeInteger(v)&&v>=240&&v<=1920) && typeof r.scrolled==='boolean' &&
+  Array.isArray(texts) && texts.length>=1 && texts.length<=MAX_REQUESTED_TEXTS && texts.every(requestedTextValid) && new Set(texts).size===texts.length &&
+  Array.isArray(r.texts) && r.texts.length===texts.length && r.texts.every((entry,i)=>entry?.text===texts[i] && (entry.status==='hidden'
+    ? exact(entry,['text','status','element','reason',...(entry.culprit===undefined?[]:['culprit']),...(entry.colors===undefined?[]:['colors'])]) &&
+      elementName(entry.element) && REQUESTED_TEXT_REASONS.includes(entry.reason) && (entry.culprit===undefined||elementName(entry.culprit)) &&
+      ((entry.reason==='same-color')===(entry.colors!==undefined)) &&
+      (entry.colors===undefined||(Array.isArray(entry.colors)&&entry.colors.length===2&&entry.colors.every(c=>typeof c==='string'&&/^#[0-9a-f]{6}$/.test(c))))
+    : exact(entry,['text','status']) && ['visible','absent','unmeasured'].includes(entry.status)));
+const onElement = entry => entry.culprit ?? 'the element itself';
+const HIDDEN_TEXT_REASONS = {
+  'display-none': entry => `display:none on ${onElement(entry)}`,
+  'visibility-hidden': entry => `visibility:hidden on ${onElement(entry)}`,
+  'content-hidden': entry => `inside collapsed content (${onElement(entry)})`,
+  transparent: entry => `fully transparent, opacity on ${onElement(entry)}`,
+  'zero-size': () => 'rendered with no size',
+  clipped: entry => `clipped away by overflow or clip on ${onElement(entry)}`,
+  'off-page': entry => `positioned outside the page (${onElement(entry)})`,
+  'same-color': entry => `text color ${entry.colors[0]} on the same background ${entry.colors[1]}${entry.culprit ? ` of ${entry.culprit}` : ''}`,
+  'transparent-text': () => 'transparent text color',
+};
+// Which text, which element, and why; element names are page data.
+export const hiddenTextDescription = entry =>
+  `${JSON.stringify(entry.text)} in ${entry.element} (${HIDDEN_TEXT_REASONS[entry.reason](entry)})`;
+export function requestedTextLine({viewport:{width,height},scrolled,texts}) {
+  const hidden = texts.filter(t=>t.status==='hidden'), visible = texts.filter(t=>t.status==='visible');
+  const where = `desktop ${width}x${height}, whole page${scrolled ? ', after one scroll through it' : ''}`;
+  return [
+    hidden.length && `Requested text not visible when the page loads (${where}): ${hidden.map(hiddenTextDescription).join('; ')}. ` +
+      'Make it visible without a click, then republish and inspect the new snapshot.',
+    visible.length && `Requested text visible when the page loads (${where}): ${visible.map(t=>JSON.stringify(t.text)).join(', ')}.`,
+  ].filter(Boolean).join(' ');
+}
+// Adds the owner's requested texts to a normalized request, dropping any that
+// could not cross the protocol and trailing ones that would not fit its size.
+function withRequestedTexts(request, texts) {
+  let list = [];
+  try { list = [...new Set((Array.isArray(texts) ? texts : []).filter(requestedTextValid))].slice(0,MAX_REQUESTED_TEXTS); } catch { list = []; }
+  while (list.length && Buffer.byteLength(canonical({...request,texts:list}))>8191) list = list.slice(0,-1);
+  return list.length ? {...request,texts:list} : request;
+}
+// A broker installed before requested-text checks rejects the field before
+// any browser runs, with an unbound failure.
+const legacyRejection = v => exact(v,['schemaVersion','kind','status','errorCode','scope']) && v.kind===INSPECTION_KIND && v.status==='failed' && v.errorCode==='unavailable';
 const INPUT_HINTS = new Map([
   ['invalid preview inspection fields','Provide only siteId, sha256, viewport and steps.'],
   ['invalid preview inspection digest','sha256 must be the full 64-character lowercase snapshot digest from the publication receipt; never the shortened site suffix or a file digest.'],
@@ -123,10 +180,11 @@ export function validateWorkspacePreviewInspectionReceipt(value, request) {
     if(!exact(value,['schemaVersion','kind','status','errorCode','siteId','sha256','planSha256','scope'])||value.status!=='failed'||!['unavailable','output_limit','timeout','cancelled'].includes(value.errorCode)) throw Error('invalid inspection failure');
     return value;
   }
-  // pageErrors and renderedColors are optional: absent when none was observed
-  // or captured, or when an older capsule produced the receipt. Present, each
-  // must be exactly bounded.
-  if(!exact(value,['schemaVersion','kind','status','siteId','sha256','planSha256','viewport','steps','diagnostics','blockedRequests',...(value.pageErrors===undefined?[]:['pageErrors']),...(value.renderedColors===undefined?[]:['renderedColors']),'scope']) || (value.pageErrors!==undefined&&!pageErrorsValid(value.pageErrors)) || (value.renderedColors!==undefined&&!renderedColorsValid(value.renderedColors)) || canonical(value.viewport)!==canonical(request.viewport)||!Array.isArray(value.steps)||value.steps.length<1||value.steps.length>request.steps.length||!exact(value.diagnostics,['renderedHiddenAttributeCount','hiddenUntilFoundCount'])||Object.values(value.diagnostics).some(v=>!Number.isSafeInteger(v)||v<0||v>100000)||!Array.isArray(value.blockedRequests)||value.blockedRequests.length>32||value.blockedRequests.some(v=>!['navigation','network','popup','download','websocket'].includes(v))) throw Error('invalid inspection receipt');
+  // pageErrors, renderedColors and requestedText are optional: absent when
+  // none was observed, captured or requested, or when an older capsule
+  // produced the receipt. Present, each must be exactly bounded, and
+  // requestedText must echo exactly the texts that were sent.
+  if(!exact(value,['schemaVersion','kind','status','siteId','sha256','planSha256','viewport','steps','diagnostics','blockedRequests',...(value.pageErrors===undefined?[]:['pageErrors']),...(value.renderedColors===undefined?[]:['renderedColors']),...(value.requestedText===undefined?[]:['requestedText']),'scope']) || (value.pageErrors!==undefined&&!pageErrorsValid(value.pageErrors)) || (value.renderedColors!==undefined&&!renderedColorsValid(value.renderedColors)) || (value.requestedText!==undefined&&!requestedTextEvidenceValid(value.requestedText,request.texts)) || canonical(value.viewport)!==canonical(request.viewport)||!Array.isArray(value.steps)||value.steps.length<1||value.steps.length>request.steps.length||!exact(value.diagnostics,['renderedHiddenAttributeCount','hiddenUntilFoundCount'])||Object.values(value.diagnostics).some(v=>!Number.isSafeInteger(v)||v<0||v>100000)||!Array.isArray(value.blockedRequests)||value.blockedRequests.length>32||value.blockedRequests.some(v=>!['navigation','network','popup','download','websocket'].includes(v))) throw Error('invalid inspection receipt');
   value.steps.forEach((step,i)=>{
     if(step.errorCode==='invalid_selector') {
       if(!exact(step,['index','action','locator','stable','status','errorCode'])||step.index!==i||i!==value.steps.length-1||step.action!==request.steps[i].action||canonical(step.locator)!==canonical(request.steps[i].locator)||!exact(step.locator,['selector'])||step.stable!==false||step.status!=='failed'||value.status!=='failed') throw Error('invalid selector failure evidence');
@@ -163,7 +221,9 @@ function nativeRequest(payload,{signal}={}) {
     child.stdin.on('error',()=>{}); child.stdin.end(JSON.stringify(payload));
   });
 }
-export function createWorkspacePreviewInspectTool({request,transport='unix'}={}) {
+// requestedTexts(params) returns the owner-requested texts bound to this
+// inspection call (the plugin's guard supplies them); never model input.
+export function createWorkspacePreviewInspectTool({request,transport='unix',requestedTexts}={}) {
   if(!['unix','native'].includes(transport))throw Error('invalid inspection transport');
   request??=transport==='unix'?unixRequest:nativeRequest;
   return {name:'pixel_ods_workspace_preview_inspect',
@@ -183,18 +243,25 @@ export function createWorkspacePreviewInspectTool({request,transport='unix'}={})
       }
       try {
         signal?.throwIfAborted();
-        const result=validateWorkspacePreviewInspectionReceipt(await request(normalized,{signal}),normalized);
+        let texts;
+        try { texts=requestedTexts?.(params); } catch { texts=undefined; }
+        let sent=withRequestedTexts(normalized,texts);
+        let raw=await request(sent,{signal});
+        if(sent!==normalized&&legacyRejection(raw)) { signal?.throwIfAborted(); sent=normalized; raw=await request(sent,{signal}); }
+        const result=validateWorkspacePreviewInspectionReceipt(raw,sent);
         signal?.throwIfAborted();
         const pageErrors=inspectionPageErrors(result);
         // Quote page text once, labelled; the evidence copy keeps only the count.
         const summary=pageErrors
           ? `Preview inspection ${result.status==='passed'?'steps passed, but':'failed, and'} ${pageErrorFeedback(pageErrors)}`
           : `Preview inspection ${result.status}. ${transitionCoverageFeedback(normalized, result)}`;
-        // The palette is stated once, as its fixed line; the evidence copy omits it.
-        const {renderedColors,...rest}=result;
+        // The palette and requested text are each stated once, as their own
+        // line; the evidence copy omits them.
+        const {renderedColors,requestedText,...rest}=result;
+        const textLine=requestedText?requestedTextLine(requestedText):'';
         const palette=renderedColors?` ${renderedColorsLine(renderedColors)}`:'';
         const evidence=pageErrors?{...rest,pageErrors:{count:pageErrors.count}}:rest;
-        return {content:[{type:'text',text:`${summary} ${INSPECTION_SCOPE}${palette} Evidence: ${JSON.stringify(evidence)}`}],details:result,...(result.status==='failed'?{isError:true}:{})};
+        return {content:[{type:'text',text:`${summary}${textLine?` ${textLine}`:''} ${INSPECTION_SCOPE}${palette} Evidence: ${JSON.stringify(evidence)}`}],details:result,...(result.status==='failed'?{isError:true}:{})};
       } catch {
         return {content:[{type:'text',text:'Preview inspection unavailable or invalid. Requested behavior remains unverified; retain the published artifact and do not claim these checks passed.'}],details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:signal?.aborted?'cancelled':'unavailable',scope:INSPECTION_SCOPE},isError:true};
       }

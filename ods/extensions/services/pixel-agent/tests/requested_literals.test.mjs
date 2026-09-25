@@ -6,7 +6,12 @@ import os from 'node:os';
 import path from 'node:path';
 import {createToolLoopGuard, WORKSPACE_PREVIEW_COMPLETE_REASON} from '../plugin/tool-loop-guard.mjs';
 import {extractRequestedLiterals, missingRequestedText, requestedTextCheck, requestedTextInstruction,
-  requestedTextRevisionInstruction, requestedTextDeliveryNote, MAX_REQUESTED_LITERALS} from '../plugin/requested-literals.mjs';
+  requestedTextRevisionInstruction, requestedTextDeliveryNote, MAX_REQUESTED_LITERALS, requestedLoadTexts,
+  withHiddenRequestedText, REQUESTED_VISIBLE_TEXT_REVISION_INSTRUCTION, withInspectedTextEvidence,
+  REQUESTED_UNVERIFIED_TEXT_REVISION_INSTRUCTION} from '../plugin/requested-literals.mjs';
+import {PREVIEW_INSPECTION_TOOL} from '../plugin/preview-interaction-assurance.mjs';
+import {INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash, normalizeWorkspacePreviewInspectionParams}
+  from '../plugin/workspace-preview-inspect.mjs';
 
 // Owner prompts from ODS main qualification r049 (tower2 round 058).
 const FLEET_CREATE = 'Create a polished responsive static event website in a new workspace directory fleet-qualification-4704eac67f72. Actually write files and publish a verified Pixel workspace preview. Page title and one h1 must be exactly "Night Garden FLEET-068aa1af7e". Include three event cards: Dawn jazz, River lantern walk, and Midnight sold-out concert. Initially hide the entire Midnight sold-out concert card. Provide an accessible button named exactly "Show sold out" that reveals that card when clicked. Mobile width 375px must not overflow horizontally. Use semantic HTML, attractive CSS, working JavaScript, no external libraries, no localStorage dependency. Include the preview URL in your final response. Do the work now.';
@@ -335,4 +340,271 @@ test('requests without required literals keep the existing publication outcome',
   assert.doesNotMatch(published, /Requested text/);
   assert.equal(guard.verificationForRun('run').status, 'passed');
   assert.equal(guard.beforeAgentFinalize({}, context), undefined);
+});
+
+// Browser inspection: requested text on the page but not visible when it loads.
+test('only page copy the owner did not ask to start hidden is checked for visibility at load', () => {
+  assert.deepEqual(requestedLoadTexts(FLEET_CREATE, extractRequestedLiterals(FLEET_CREATE)),
+    ['Night Garden FLEET-068aa1af7e', 'Dawn jazz', 'River lantern walk'],
+    'the card the owner asked to hide, and the button described by what it reveals, are not required at load');
+  assert.deepEqual(requestedLoadTexts(FLEET_EDIT, extractRequestedLiterals(FLEET_EDIT)),
+    ['Night Garden FLEET-068aa1af7e Revised', 'FLEET-068aa1af7e edited successfully']);
+  const load = text => requestedLoadTexts(text, extractRequestedLiterals(text));
+  assert.deepEqual(load('Set the page title to exactly "Tab Title Only".'), [], 'a browser tab title is never page copy');
+  assert.deepEqual(load('Create a directory named site with index.html, app.js and styles.css.'), [], 'file names are not page copy');
+  assert.deepEqual(load('Add a testimonial carousel with three testimonials: Ana, Bruno, Carla.'), []);
+  assert.deepEqual(load('Crie um site com três cartões: Samba, Forró e Frevo. Esconda o cartão Frevo até clicar no botão.'), ['Samba', 'Forró']);
+  assert.deepEqual(load('Add a banner that says "No hidden fees".'), ['No hidden fees'], 'words inside the literal are not cues');
+  assert.deepEqual(load('Add an FAQ answer that says "Refunds take 5 days", collapsed until clicked.'), []);
+  // The check loads a desktop page: small-screen-only text and tab panels are not required there.
+  assert.deepEqual(load('Build a restaurant landing page. On mobile only, show a sticky bottom bar with a button labeled ' +
+    'exactly "Call now". Add a hamburger menu button labeled "Menu" for small screens.'), []);
+  assert.deepEqual(load('Create a page with three tabs: Overview, Pricing, FAQ. The Pricing tab must say exactly "Starts at $10 per month".'), []);
+  assert.deepEqual(load('Adicione um botão “Ligar agora” visível apenas no celular.'), []);
+  // ...but a browser tab title, a new tab or a responsive request is no such cue.
+  assert.deepEqual(load('The tab title and the h1 must be exactly "Night Garden".'), ['Night Garden']);
+  assert.deepEqual(load('Set the browser tab title and the h1 to exactly "Night Garden".'), ['Night Garden']);
+  assert.deepEqual(load('Add a link labeled "Docs" that opens in a new tab.'), ['Docs']);
+  assert.deepEqual(load('Make the hero heading exactly "Fresh bread daily" and make sure it reads well on small screens.'),
+    ['Fresh bread daily']);
+  assert.deepEqual(requestedLoadTexts(FLEET_EDIT, []), []);
+});
+
+const HIDDEN_FOOTER = {text: 'FLEET-068aa1af7e edited successfully', status: 'hidden', element: 'p', reason: 'display-none',
+  culprit: 'div#soldOutSection'};
+const HIDDEN_NOTE = '"FLEET-068aa1af7e edited successfully" in p (display:none on div#soldOutSection)';
+test('hidden requested text is a snapshot-bound miss with which text, which element and why', () => {
+  const preview = {siteId: `site-${'a'.repeat(24)}`, sha256: 'a'.repeat(64), relativeDirectory: DIRECTORY};
+  const renamed = {siteId: preview.siteId, sha256: preview.sha256, missing: [{text: 'Dawn jazz'}]};
+  const check = withHiddenRequestedText(renamed, preview, [HIDDEN_FOOTER]);
+  assert.deepEqual(check.missing, [{text: 'Dawn jazz'}, {text: HIDDEN_FOOTER.text, hidden: HIDDEN_FOOTER}]);
+  assert.equal(requestedTextInstruction(preview, check),
+    "Requested text not found: \"Dawn jazz\". Use the owner's exact wording, republish and re-inspect. " +
+    `Requested text is on the page but not visible when it loads: ${HIDDEN_NOTE}. Make each one visible without a click ` +
+    '(not inside hidden, collapsed or transparent content, and not the color of its background), then republish and re-inspect.');
+  assert.equal(requestedTextRevisionInstruction(preview, withHiddenRequestedText(undefined, preview, [HIDDEN_FOOTER])),
+    REQUESTED_VISIBLE_TEXT_REVISION_INSTRUCTION.join('["FLEET-068aa1af7e edited successfully"]'));
+  assert.equal(requestedTextDeliveryNote(preview, withHiddenRequestedText(undefined, preview, [HIDDEN_FOOTER])),
+    `The published page contains requested text that is not visible when it loads: ${HIDDEN_NOTE}. ` +
+    'The preview is available, but that requirement is not met.');
+  // A later inspection of the same snapshot replaces the hidden misses only.
+  assert.deepEqual(withHiddenRequestedText(check, preview, []).missing, [{text: 'Dawn jazz'}]);
+  assert.equal(withHiddenRequestedText(undefined, preview, []), undefined);
+  assert.equal(withHiddenRequestedText(renamed, preview, undefined), renamed, 'no evidence changes nothing');
+  // Evidence for another snapshot never attaches to a stale check.
+  const other = {...preview, sha256: 'b'.repeat(64), siteId: `site-${'b'.repeat(24)}`};
+  assert.deepEqual(withHiddenRequestedText(renamed, other, [HIDDEN_FOOTER]),
+    {siteId: other.siteId, sha256: other.sha256, missing: [{text: HIDDEN_FOOTER.text, hidden: HIDDEN_FOOTER}]});
+  assert.equal(requestedTextInstruction(preview, withHiddenRequestedText(renamed, other, [HIDDEN_FOOTER])), undefined);
+  for (const [entry, why] of [
+    [{reason: 'same-color', colors: ['#ffffff', '#ffffff'], culprit: 'body'}, 'text color #ffffff on the same background #ffffff of body'],
+    [{reason: 'transparent', culprit: 'section.reveal'}, 'fully transparent, opacity on section.reveal'],
+    [{reason: 'clipped'}, 'clipped away by overflow or clip on the element itself'],
+    [{reason: 'off-page', culprit: 'nav'}, 'positioned outside the page (nav)'],
+    [{reason: 'zero-size'}, 'rendered with no size'],
+    [{reason: 'visibility-hidden', culprit: 'div'}, 'visibility:hidden on div'],
+    [{reason: 'content-hidden', culprit: 'details'}, 'inside collapsed content (details)'],
+    [{reason: 'transparent-text'}, 'transparent text color'],
+  ]) {
+    const note = requestedTextDeliveryNote(preview, withHiddenRequestedText(undefined, preview,
+      [{text: 'X', status: 'hidden', element: 'p', ...entry}]));
+    assert.ok(note.includes(`"X" in p (${why})`), note);
+  }
+});
+
+// Fleet round 087 (tower1, ODS 074db9bf): the edit run put the requested footer
+// inside the sold-out section, display:none until "Show sold out" is clicked.
+// The inspection passed its show/hide steps and the run was delivered as done.
+const PLAN = [{action: 'assert-hidden', locator: {selector: '#midnight-concert-card'}},
+  {action: 'click', locator: {role: 'button', name: 'Show sold out', exact: true}},
+  {action: 'assert-visible', locator: {selector: '#midnight-concert-card'}}];
+function inspection(guard, preview, id, texts, runContext) {
+  const params = {siteId: preview.siteId, sha256: preview.sha256, viewport: {width: 375, height: 812}, steps: PLAN};
+  const {event, ctx} = call(guard, PREVIEW_INSPECTION_TOOL, params, id, undefined, runContext);
+  const sent = guard.requestedTextsForInspection(structuredClone(params));
+  const request = {...normalizeWorkspacePreviewInspectionParams(params), ...(sent.length ? {texts: sent} : {})};
+  const observed = state => ({count: 1, visible: state, display: state ? 'block' : 'none', visibility: 'visible', opacity: '1',
+    hidden: !state, hiddenUntilFound: false, rectCount: state ? 1 : 0});
+  const details = {schemaVersion: 1, kind: INSPECTION_KIND, status: 'passed', siteId: preview.siteId, sha256: preview.sha256,
+    planSha256: inspectionPlanHash(request), viewport: params.viewport,
+    steps: PLAN.map((step, index) => ({index, ...step, before: observed(index !== 0), stable: true, status: 'passed',
+      ...(step.action === 'click' ? {after: observed(true)} : {})})),
+    diagnostics: {renderedHiddenAttributeCount: 0, hiddenUntilFoundCount: 0}, blockedRequests: [],
+    requestedText: {viewport: {width: 1280, height: 720}, scrolled: true, texts: sent.map(text => texts[text] ?? {text, status: 'visible'})},
+    scope: INSPECTION_SCOPE};
+  const result = {content: [{type: 'text', text: 'Preview inspection passed.'}], details};
+  guard.afterToolCall({...event, result}, ctx);
+  return {sent, note: text(persist(guard, PREVIEW_INSPECTION_TOOL, id, result, runContext))};
+}
+
+test('round 087: requested text hidden at load is reported by inspection, withheld once, and cleared by a visible republish', t => {
+  const revised = 'Night Garden FLEET-068aa1af7e Revised', footer = 'FLEET-068aa1af7e edited successfully';
+  const original = {'index.html': eventPage({dawn: 'Dawn jazz'}), 'script.js': SCRIPT};
+  const root = workspace(original);
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const guard = createToolLoopGuard({workspacePreviewInspectionAvailable: true});
+  guard.observeRun(context, 'pixel', {prompt: FLEET_CREATE}, {workspaceRoot: root});
+  const first = publishSite(guard, original, 'publish');
+  assert.deepEqual(inspection(guard, first, 'inspect-create', {}).sent,
+    ['Night Garden FLEET-068aa1af7e', 'Dawn jazz', 'River lantern walk'], 'the card the owner asked to hide is not sent');
+  const edit = {...context, runId: 'edit'};
+  guard.observeRun(edit, 'pixel', {prompt: FLEET_EDIT}, {workspaceRoot: root});
+  const indexPath = `${DIRECTORY}/index.html`;
+  call(guard, 'read', {path: indexPath}, 'edit-read', {content: [{type: 'text', text: original['index.html']}]}, edit);
+  const page = footerHtml => eventPage({dawn: 'Dawn jazz', title: revised})
+    .replace('<h3 class="event-title">Midnight Sold-Out Concert</h3>', `<h3 class="event-title">Midnight Sold-Out Concert</h3>${footerHtml}`);
+  const hiddenPage = page(`<footer class="site-footer"><p>${footer}</p></footer>`);
+  call(guard, 'write', {path: indexPath, content: hiddenPage}, 'edit-write', written, edit);
+  const hidden = snapshot({...original, 'index.html': hiddenPage});
+  call(guard, 'pixel_ods_workspace_preview', {relativeDirectory: DIRECTORY}, 'edit-publish', {details: hidden}, edit);
+  const published = text(persist(guard, 'pixel_ods_workspace_preview', 'edit-publish', {content: [{type: 'text', text: 'published'}], details: hidden}, edit));
+  assert.doesNotMatch(published, /Requested text/, 'the bytes contain every requested text');
+  const entry = {text: footer, status: 'hidden', element: 'p', reason: 'display-none', culprit: 'article#midnight-concert-card'};
+  const {sent, note} = inspection(guard, hidden, 'edit-inspect', {[footer]: entry}, edit);
+  assert.deepEqual(sent, [revised, footer]);
+  assert.ok(note.includes('[ODS Pixel next step] Requested text is on the page but not visible when it loads: ' +
+    `"${footer}" in p (display:none on article#midnight-concert-card). Make each one visible without a click`), note);
+  const withheld = guard.verificationForRun('edit');
+  assert.equal(withheld.status, 'failed', 'no completion claim while the requested footer is invisible');
+  assert.equal(withheld.preview.sha256, hidden.sha256, 'the published preview stays available');
+  assert.match(withheld.text, /contains requested text that is not visible when it loads: "FLEET-068aa1af7e edited successfully" in p/);
+  const retry = guard.beforeAgentFinalize({}, edit)?.retry;
+  assert.equal(retry?.idempotencyKey, 'pixel-ods-workspace-preview-requested-text');
+  assert.equal(retry?.instruction, REQUESTED_VISIBLE_TEXT_REVISION_INSTRUCTION.join(JSON.stringify([footer])));
+  // The repair: the same footer outside the hidden card, then a new inspection.
+  const visiblePage = page('').replace('</main>', `</main><footer class="site-footer"><p>${footer}</p></footer>`);
+  call(guard, 'write', {path: indexPath, content: visiblePage}, 'repair-write', written, edit);
+  const repaired = snapshot({...original, 'index.html': visiblePage});
+  call(guard, 'pixel_ods_workspace_preview', {relativeDirectory: DIRECTORY}, 'repair-publish', {details: repaired}, edit);
+  const repairNote = text(persist(guard, 'pixel_ods_workspace_preview', 'repair-publish', {content: [{type: 'text', text: 'published'}], details: repaired}, edit));
+  assert.ok(repairNote.includes(`and this snapshot has not been inspected: ${JSON.stringify([footer])}. Inspect it with ` +
+    'pixel_ods_workspace_preview_inspect'), repairNote);
+  assert.equal(guard.verificationForRun('edit').status, 'failed', 'the republish is unverified until it is inspected');
+  const after = inspection(guard, repaired, 'repair-inspect', {}, edit);
+  assert.doesNotMatch(after.note, /not visible when it loads|has not been inspected/);
+  assert.equal(guard.verificationForRun('edit').status, 'passed');
+  assert.equal(guard.beforeAgentFinalize({}, edit), undefined);
+  // Only the newest pending call with exactly these arguments gets texts.
+  assert.deepEqual(guard.requestedTextsForInspection({siteId: repaired.siteId, sha256: repaired.sha256}), []);
+});
+
+// PR #6723 review: republishing must not clear hidden-text evidence. The
+// revision itself asks for a republish, so a republish alone cannot pass.
+const FOOTER = 'FLEET-068aa1af7e edited successfully';
+const FOOTER_ONLY = `Update that same website: add a visible footer "${FOOTER}". Publish the updated preview and provide its new URL.`;
+function hiddenFooterRun(t, prompt) {
+  const original = {'index.html': eventPage({dawn: 'Dawn jazz'}), 'script.js': SCRIPT};
+  const root = workspace(original);
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const guard = createToolLoopGuard({workspacePreviewInspectionAvailable: true});
+  const edit = {...context, runId: 'edit'};
+  guard.observeRun(edit, 'pixel', {prompt}, {workspaceRoot: root});
+  const indexPath = `${DIRECTORY}/index.html`;
+  call(guard, 'read', {path: indexPath}, 'edit-read', {content: [{type: 'text', text: original['index.html']}]}, edit);
+  const page = (footerHtml, after = '') => eventPage({dawn: 'Dawn jazz', title: prompt === FLEET_EDIT ? `Night Garden FLEET-068aa1af7e Revised` : undefined})
+    .replace('<h3 class="event-title">Midnight Sold-Out Concert</h3>', `<h3 class="event-title">Midnight Sold-Out Concert</h3>${footerHtml}`)
+    .replace('</main>', `${after}</main>`);
+  const hiddenPage = page(`<footer class="site-footer"><p>${FOOTER}</p></footer>`);
+  const entry = {text: FOOTER, status: 'hidden', element: 'p', reason: 'display-none', culprit: 'article#midnight-concert-card'};
+  let n = 0;
+  const publish = html => {
+    const id = `publish-${++n}`;
+    call(guard, 'write', {path: indexPath, content: html}, `${id}-write`, written, edit);
+    const preview = snapshot({...original, 'index.html': html});
+    call(guard, 'pixel_ods_workspace_preview', {relativeDirectory: DIRECTORY}, id, {details: preview}, edit);
+    return {preview, note: text(persist(guard, 'pixel_ods_workspace_preview', id,
+      {content: [{type: 'text', text: 'published'}], details: preview}, edit))};
+  };
+  const inspect = (preview, hidden) => inspection(guard, preview, `inspect-${++n}`, hidden ? {[FOOTER]: entry} : {}, edit);
+  return {guard, edit, page, hiddenPage, publish, inspect};
+}
+
+for (const [label, prompt] of [['footer-only prompt', FOOTER_ONLY], ['fleet edit prompt', FLEET_EDIT]]) {
+  test(`republishing the identical snapshot keeps its hidden requested text (${label})`, t => {
+    const {guard, edit, hiddenPage, publish, inspect} = hiddenFooterRun(t, prompt);
+    const first = publish(hiddenPage);
+    assert.ok(first.note.includes(WORKSPACE_PREVIEW_COMPLETE_REASON), 'the bytes contain every requested text');
+    assert.ok(inspect(first.preview, true).sent.includes(FOOTER));
+    assert.equal(guard.verificationForRun('edit').status, 'failed');
+    // The same bytes again, with no new inspection.
+    const again = publish(hiddenPage);
+    assert.equal(again.preview.sha256, first.preview.sha256);
+    // The inspection result just carried the same instruction, so coaching
+    // dedupe leaves it off; what matters is that no completion step replaces it.
+    assert.ok(!again.note.includes(WORKSPACE_PREVIEW_COMPLETE_REASON), again.note);
+    assert.doesNotMatch(again.note, /\[ODS Pixel next step\] (?!Requested text is on the page but not visible)/);
+    const outcome = guard.verificationForRun('edit');
+    assert.equal(outcome.status, 'failed');
+    assert.match(outcome.text, /contains requested text that is not visible when it loads: "FLEET-068aa1af7e edited successfully" in p/);
+    assert.match(outcome.text, /that requirement is not met/);
+    const retry = guard.beforeAgentFinalize({}, edit)?.retry;
+    assert.equal(retry?.instruction, REQUESTED_VISIBLE_TEXT_REVISION_INSTRUCTION.join(JSON.stringify([FOOTER])));
+    // With the one revision spent, the honest failure stands.
+    assert.equal(guard.beforeAgentFinalize({}, edit)?.action, 'finalize');
+    assert.equal(guard.verificationForRun('edit').status, 'failed');
+  });
+}
+
+test('a changed snapshot stays unverified until it is inspected, then its own inspection decides', t => {
+  const {guard, edit, page, hiddenPage, publish, inspect} = hiddenFooterRun(t, FOOTER_ONLY);
+  const first = publish(hiddenPage);
+  inspect(first.preview, true);
+  // Changed bytes, footer still inside the hidden card, no new inspection.
+  const touched = publish(page(`<footer class="site-footer"><p>${FOOTER}</p></footer>`, '<!-- touched -->'));
+  assert.notEqual(touched.preview.sha256, first.preview.sha256);
+  assert.ok(touched.note.includes('[ODS Pixel next step] Requested text was not visible when an earlier snapshot loaded, and this ' +
+    `snapshot has not been inspected: ${JSON.stringify([FOOTER])}. Inspect it with pixel_ods_workspace_preview_inspect`), touched.note);
+  assert.ok(!touched.note.includes(WORKSPACE_PREVIEW_COMPLETE_REASON));
+  let outcome = guard.verificationForRun('edit');
+  assert.equal(outcome.status, 'failed');
+  assert.ok(outcome.text.includes('Requested text that was not visible when an earlier snapshot loaded has not been checked on ' +
+    `the published page: "${FOOTER}". The preview is available, but that requirement is unverified.`), outcome.text);
+  assert.equal(guard.beforeAgentFinalize({}, edit)?.retry?.instruction,
+    REQUESTED_UNVERIFIED_TEXT_REVISION_INSTRUCTION.join(JSON.stringify([FOOTER])));
+  // Its own inspection still finds the footer hidden.
+  const still = inspect(touched.preview, true);
+  assert.ok(still.note.includes('not visible when it loads'), still.note);
+  assert.equal(guard.verificationForRun('edit').status, 'failed');
+  assert.match(guard.verificationForRun('edit').text, /not visible when it loads: "FLEET-068aa1af7e edited successfully" in p/);
+  // A real repair, inspected: the footer is visible, so the run passes.
+  const fixed = publish(page('', `<footer class="site-footer"><p>${FOOTER}</p></footer>`));
+  assert.equal(guard.verificationForRun('edit').status, 'failed', 'not before its inspection');
+  inspect(fixed.preview, false);
+  outcome = guard.verificationForRun('edit');
+  assert.equal(outcome.status, 'passed', outcome.text);
+  // The last inspected snapshot showed every text; later republishes are not held.
+  const later = publish(page('', `<footer class="site-footer"><p>${FOOTER}</p></footer><!-- later -->`));
+  assert.doesNotMatch(later.note, /Requested text/);
+  assert.equal(guard.verificationForRun('edit').status, 'passed');
+});
+
+test('inspection evidence carried to a republish: hidden on the same bytes, unverified on new ones', () => {
+  const preview = {siteId: `site-${'a'.repeat(24)}`, sha256: 'a'.repeat(64), relativeDirectory: DIRECTORY};
+  const other = {siteId: `site-${'b'.repeat(24)}`, sha256: 'b'.repeat(64), relativeDirectory: DIRECTORY};
+  const evidence = {siteId: preview.siteId, sha256: preview.sha256, hidden: [HIDDEN_FOOTER]};
+  const clean = {siteId: preview.siteId, sha256: preview.sha256, missing: []};
+  assert.deepEqual(withInspectedTextEvidence(clean, preview, evidence).missing,
+    [{text: HIDDEN_FOOTER.text, hidden: HIDDEN_FOOTER}]);
+  assert.deepEqual(withInspectedTextEvidence(undefined, preview, evidence).missing,
+    [{text: HIDDEN_FOOTER.text, hidden: HIDDEN_FOOTER}], 'unbound bytes still carry the browser evidence');
+  const moved = withInspectedTextEvidence({...clean, siteId: other.siteId, sha256: other.sha256}, other, evidence);
+  assert.deepEqual(moved.missing, [{text: HIDDEN_FOOTER.text, unverified: HIDDEN_FOOTER}]);
+  assert.equal(requestedTextInstruction(other, moved),
+    `Requested text was not visible when an earlier snapshot loaded, and this snapshot has not been inspected: ` +
+    `${JSON.stringify([HIDDEN_FOOTER.text])}. Inspect it with pixel_ods_workspace_preview_inspect; if the text is still not ` +
+    'visible, show it without a click, then republish and re-inspect.');
+  // Text the new bytes lack is reported as not found, once.
+  const dropped = {siteId: other.siteId, sha256: other.sha256, missing: [{text: HIDDEN_FOOTER.text}]};
+  assert.equal(withInspectedTextEvidence(dropped, other, evidence), dropped);
+  assert.match(requestedTextDeliveryNote(other, withInspectedTextEvidence(dropped, other, evidence)),
+    /does not contain text the owner requested: "FLEET-068aa1af7e edited successfully"\. The preview is available, but that requirement is not met\.$/);
+  // Mixed misses keep the stronger closing sentence.
+  const mixed = withInspectedTextEvidence({siteId: other.siteId, sha256: other.sha256, missing: [{text: 'Dawn jazz'}]}, other, evidence);
+  assert.match(requestedTextDeliveryNote(other, mixed), /has not been checked on the published page: "FLEET-068aa1af7e edited successfully"\. The preview is available, but that requirement is not met\.$/);
+  // Evidence without hidden text, or none at all, changes nothing.
+  assert.equal(withInspectedTextEvidence(clean, preview, {...evidence, hidden: []}), clean);
+  assert.equal(withInspectedTextEvidence(clean, preview, undefined), clean);
+  // A new inspection of that snapshot replaces the unverified entry.
+  assert.deepEqual(withHiddenRequestedText(moved, other, []).missing, []);
+  assert.deepEqual(withHiddenRequestedText(moved, other, [HIDDEN_FOOTER]).missing, [{text: HIDDEN_FOOTER.text, hidden: HIDDEN_FOOTER}]);
 });

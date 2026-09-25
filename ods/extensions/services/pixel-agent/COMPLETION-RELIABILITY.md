@@ -224,6 +224,27 @@ generates"). The names bind to the published directory's name and are checked
 against the receipt's complete published path list.
 `tests/requested_published_files.test.mjs` replays that case.
 
+Requested text can also be in the page bytes but not visible when the page
+loads (tower1 round 087: the owner asked for "a visible footer 'FLEET-...
+edited successfully'", the model put it inside the sold-out section, which is
+`display:none` until "Show sold out" is clicked, and the reply called the
+footer visible). When `pixel_ods_workspace_preview_inspect` runs, the plugin
+adds the current owner message's requested page text to the request (never a
+title for the browser tab alone, a file name, or text whose sentence asks for
+it to start hidden, collapsed, revealed on click or rotating). The inspector
+reports which of it is visible across the whole page of a fresh desktop load
+(see "Requested text" in `host/preview-inspection-protocol.md`). Text found but
+not visible is reported through the same note, revision and delivery, with the
+text, the element and the reason (for example `display:none on
+div#soldOutSection`), so completion is not claimed while it remains. Text the
+inspector cannot locate as rendered text is never reported. A later inspection
+of the same snapshot replaces this evidence. A republish does not clear it,
+because the revision itself asks for one: republishing the same snapshot keeps
+the text reported as not visible, and a changed snapshot keeps it reported as
+unverified (and asks for an inspection) until an inspection of that snapshot
+reports on it. The requested-text tests in `tests/requested_literals.test.mjs`
+replay that case, including republishing without a fix.
+
 ## Saved project delivery
 
 A model can successfully write an HTML project and then stop without calling

@@ -14,6 +14,9 @@ MAX_FILES = 128
 MAX_FILE = 4 * 1024 * 1024
 MAX_TOTAL = 16 * 1024 * 1024
 MAX_STEPS = 12
+# Owner-requested text the capsule checks for visibility when the page loads.
+MAX_TEXTS = 12
+MAX_TEXT_CHARS = 120
 CSP = (
     "default-src 'self' data: blob:; connect-src 'self'; img-src 'self' data: blob:; "
     "media-src 'self'; font-src 'self'; script-src 'self' 'unsafe-inline'; "
@@ -56,7 +59,10 @@ def canonical(value):
 
 
 def plan_hash(request):
-    return hashlib.sha256(canonical(request)).hexdigest()
+    # The owner's requested texts are evidence inputs chosen by the plugin,
+    # not the inspected plan: the receipt echoes each one in requestedText.
+    plan = {key: value for key, value in request.items() if key != "texts"}
+    return hashlib.sha256(canonical(plan)).hexdigest()
 
 
 def printable(value, chars, size):
@@ -72,8 +78,24 @@ def printable(value, chars, size):
     )
 
 
+def validate_texts(texts):
+    if (
+        not isinstance(texts, list)
+        or not 1 <= len(texts) <= MAX_TEXTS
+        or not all(
+            printable(text, MAX_TEXT_CHARS, 4 * MAX_TEXT_CHARS) and text == text.strip()
+            for text in texts
+        )
+        or len(set(texts)) != len(texts)
+    ):
+        raise Invalid("invalid texts")
+
+
 def validate_request(value):
-    exact(value, ("schemaVersion", "action", "siteId", "sha256", "viewport", "steps"))
+    optional = ("texts",) if isinstance(value, dict) and "texts" in value else ()
+    exact(value, ("schemaVersion", "action", "siteId", "sha256", "viewport", "steps", *optional))
+    if optional:
+        validate_texts(value["texts"])
     if (
         type(value["schemaVersion"]) is not int
         or value["schemaVersion"] != 1
