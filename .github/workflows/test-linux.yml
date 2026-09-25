@@ -278,6 +278,11 @@ jobs:
       - name: Local Image Build Coverage
         run: python3 tests/test-local-image-build-coverage.py
 
+      - name: Extension Build Context Materialization
+        run: |
+          python3 tests/test-extension-build-context-materialization.py
+          python3 tests/test-install-footprint-contract.py
+
       - name: Validate Manifests Tests
         run: |
           bash tests/test-validate-manifests.sh

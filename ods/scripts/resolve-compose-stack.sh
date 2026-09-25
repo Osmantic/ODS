@@ -392,14 +392,44 @@ def _extension_build_context(compose_path, build):
     return str(resolved)
 
 
-def _scan_user_compose_content(compose_path):
+# The only extra_hosts entry a curated library recipe may declare. Mirrors
+# dashboard-api _scan_compose_content(allowed_trusted_extra_hosts): GAIA needs
+# it to reach a host-run Lemonade Server on Linux Docker.
+_TRUSTED_LIBRARY_EXTRA_HOSTS = {"host.docker.internal:host-gateway"}
+
+
+def _library_recipe_trusted(extension_dir):
+    """Mirror dashboard-api's install-time trust decision for one extension.
+
+    ``_staged_library_extension`` treats a library recipe as curated unless
+    its upstream.json records ``origin: github-proposal`` (an imported GitHub
+    recipe). An upstream.json that is a link, oversized or unreadable was not
+    written by that install path, so it fails closed.
+    """
+    upstream_path = extension_dir / "upstream.json"
+    if upstream_path.is_symlink():
+        return False
+    if not upstream_path.exists():
+        return True
+    try:
+        if not upstream_path.is_file() or upstream_path.stat().st_size > 524288:
+            return False
+        upstream = json.loads(upstream_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return not (isinstance(upstream, dict) and upstream.get("origin") == "github-proposal")
+
+
+def _scan_user_compose_content(compose_path, trusted_library=False):
     """Reject compose fragments containing dangerous directives.
 
     Mirrors dashboard-api/routers/extensions.py:_scan_compose_content (without
     the FastAPI HTTPException dependency). Returns ``(ok, warnings)``: ``ok``
     is False on any rejection, ``warnings`` is a list of human-readable
-    messages. User-extension contexts are always untrusted at the resolver
-    layer — no ``trusted=True`` exemption.
+    messages. User-extension contexts are untrusted at the resolver layer; the
+    single exemption is the dashboard's own: with ``trusted_library`` (see
+    ``_library_recipe_trusted``) an ``extra_hosts`` list may contain exactly
+    ``host.docker.internal:host-gateway``.
     """
     try:
         data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
@@ -485,8 +515,14 @@ def _scan_user_compose_content(compose_path):
                 vol_parts = vol_str.split(":")
                 if len(vol_parts) >= 2 and vol_parts[0].startswith("/"):
                     reject(f"service '{svc_name}' bind-mounts absolute host path '{vol_parts[0]}'")
-        if svc_def.get("extra_hosts"):
-            reject(f"service '{svc_name}' declares extra_hosts")
+        extra_hosts = svc_def.get("extra_hosts")
+        if extra_hosts:
+            if not trusted_library:
+                reject(f"service '{svc_name}' declares extra_hosts")
+            elif not isinstance(extra_hosts, list) or any(
+                    not isinstance(entry, str) or entry.strip() not in _TRUSTED_LIBRARY_EXTRA_HOSTS
+                    for entry in extra_hosts):
+                reject(f"service '{svc_name}' declares unsupported extra_hosts")
         if svc_def.get("sysctls"):
             reject(f"service '{svc_name}' declares sysctls")
         labels = svc_def.get("labels", [])
@@ -827,7 +863,10 @@ if user_ext_dir.exists():
                 # resolver runs every `ods` invocation, so a tampered-with
                 # compose dropped under data/user-extensions without going
                 # through the install API would otherwise bypass scanning.
-                ok, warnings = _scan_user_compose_content(compose_path)
+                # Curated library recipes keep the dashboard's one narrow
+                # exemption (host.docker.internal:host-gateway) in every file.
+                trusted_library = _library_recipe_trusted(service_dir)
+                ok, warnings = _scan_user_compose_content(compose_path, trusted_library)
                 for w in warnings:
                     print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
                 if not ok:
@@ -838,7 +877,7 @@ if user_ext_dir.exists():
                 if service_dir.name.lower() not in skip_gpu_overlays and gpu_overlay.exists():
                     # Fixed filename so traversal isn't possible, but the same
                     # security checks apply to the overlay's content.
-                    ok, warnings = _scan_user_compose_content(gpu_overlay)
+                    ok, warnings = _scan_user_compose_content(gpu_overlay, trusted_library)
                     for w in warnings:
                         print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
                     if ok:
@@ -878,7 +917,7 @@ if user_ext_dir.exists():
                         # without it, a malicious user extension can put
                         # privileged: true / docker.sock mounts in compose.local.yaml
                         # and reach the host since ODS_MODE defaults to "local".
-                        ok, warnings = _scan_user_compose_content(local_mode_overlay)
+                        ok, warnings = _scan_user_compose_content(local_mode_overlay, trusted_library)
                         for w in warnings:
                             print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
                         if ok:
@@ -890,7 +929,7 @@ if user_ext_dir.exists():
                     if multi_gpu_overlay.exists():
                         # Fixed filename, but same content scan applies — see
                         # the gpu/local-mode overlay scans above.
-                        ok, warnings = _scan_user_compose_content(multi_gpu_overlay)
+                        ok, warnings = _scan_user_compose_content(multi_gpu_overlay, trusted_library)
                         for w in warnings:
                             print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
                         if ok:

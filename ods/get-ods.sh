@@ -665,23 +665,35 @@ fi
 
 # Move ods to install location (exclude dev-only files)
 if [[ -d "$TEMP_DIR/repo/ods" ]]; then
-    # Use rsync to exclude development files not needed at runtime
+    # Use rsync to exclude development files not needed at runtime.
+    # Development-only paths are anchored to the product root ('/tests/', not
+    # 'tests/'): an unanchored rsync pattern matches a basename at any depth.
+    # That stripped every nested *.md, tests/, docs/ and examples/ path,
+    # including files extension recipes COPY at build time (mapshaper and
+    # blockbench ship their README.md in the image), so their one-click
+    # installs failed with '"/README.md": not found'. This bootstrap tree is
+    # also the extension library source for bootstrap installs (phase 06).
+    # The macOS and Windows installers anchor the same way.
+    # tests/test-extension-build-context-materialization.py replays this list
+    # against every extension build context.
+    _ods_bootstrap_copy_filters=(
+        --exclude='/tests/'
+        --exclude='/docs/'
+        --exclude='/examples/'
+        --exclude='/.github/'
+        --exclude='/*.md'
+        --exclude='/.shellcheckrc'
+        --exclude='/PSScriptAnalyzerSettings.psd1'
+        --exclude='/test-stack.sh'
+        --exclude='/.gitignore'
+        --exclude='__pycache__/'
+        --exclude='*.pyc'
+        --exclude='.pytest_cache/'
+        --exclude='node_modules/'
+        --include='LICENSE'
+    )
     if command -v rsync >/dev/null 2>&1; then
-        rsync -a \
-            --exclude='tests/' \
-            --exclude='docs/' \
-            --exclude='examples/' \
-            --exclude='.github/' \
-            --exclude='*.md' \
-            --exclude='.shellcheckrc' \
-            --exclude='PSScriptAnalyzerSettings.psd1' \
-            --exclude='test-stack.sh' \
-            --exclude='.gitignore' \
-            --exclude='__pycache__/' \
-            --exclude='*.pyc' \
-            --exclude='.pytest_cache/' \
-            --exclude='node_modules/' \
-            --include='LICENSE' \
+        rsync -a "${_ods_bootstrap_copy_filters[@]}" \
             "$TEMP_DIR/repo/ods/" "$INSTALL_DIR/"
     else
         # Fallback to cp if rsync not available

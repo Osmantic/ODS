@@ -1,7 +1,13 @@
 """Real curated recipes must survive the actual library installation boundary."""
 
 import json
+import os
+import pathlib
 import re
+import shlex
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -52,6 +58,141 @@ def test_curated_recipe_can_be_staged(recipe, tmp_path, monkeypatch):
             assert all(feature["launch"]["type"] == "none" for feature in manifest["features"])
     assert not staged.exists()
     assert not destination.exists()  # staging must never install/start anything
+
+
+def _recipe_files(root):
+    return {path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*") if path.is_file() and not path.is_symlink()}
+
+
+@pytest.mark.parametrize("recipe", sorted(path.parent for path in LIBRARY.glob("*/compose.yaml")),
+                         ids=lambda path: path.name)
+def test_library_staging_keeps_every_recipe_file(recipe, tmp_path, monkeypatch):
+    """The staged copy is the image build context, so no shipped file may be left out.
+
+    Dockerfiles COPY recipe files such as README.md (mapshaper, blockbench)
+    and read .dockerignore; only compose.yaml's build context is rewritten.
+    """
+    monkeypatch.setattr(extensions, "EXTENSIONS_LIBRARY_DIR", LIBRARY)
+    monkeypatch.setattr(extensions, "USER_EXTENSIONS_DIR", tmp_path / "user")
+    shipped = _recipe_files(recipe)
+    with extensions._staged_library_extension(recipe.name, tmp_path / "user" / recipe.name) as (staged, _):
+        installed = _recipe_files(staged)
+    assert sorted(installed) == sorted(shipped)
+    changed = sorted(path for path in shipped if installed[path] != shipped[path])
+    assert changed in ([], ["compose.yaml"])
+
+
+def test_library_staging_copies_nested_and_dot_files_but_not_links(tmp_path, monkeypatch):
+    """Unit test of the staging copy: every regular file survives; links do not."""
+    library = tmp_path / "library"
+    recipe = library / "mapshaper"
+    shutil.copytree(LIBRARY / "mapshaper", recipe)
+    extra = {
+        "docs/notes.md": b"nested docs\n",
+        "tests/fixture.json": b"{}\n",
+        "examples/sample.geojson": b"{}\n",
+        ".gitignore": b"*.tmp\n",
+        "assets/deep/README.md": b"deep\n",
+    }
+    for relative, content in extra.items():
+        (recipe / relative).parent.mkdir(parents=True, exist_ok=True)
+        (recipe / relative).write_bytes(content)
+    try:
+        (recipe / "linked.md").symlink_to(recipe / "README.md")
+    except OSError:
+        pass  # Unprivileged Windows cannot create links; the copy is still checked.
+    monkeypatch.setattr(extensions, "EXTENSIONS_LIBRARY_DIR", library)
+    monkeypatch.setattr(extensions, "USER_EXTENSIONS_DIR", tmp_path / "user")
+    with extensions._staged_library_extension("mapshaper", tmp_path / "user" / "mapshaper") as (staged, _):
+        installed = _recipe_files(staged)
+        assert not (staged / "linked.md").exists()
+        compose = yaml.safe_load((staged / "compose.yaml").read_text(encoding="utf-8"))
+        context = Path(compose["services"]["mapshaper"]["build"]["context"])
+        assert context == (tmp_path / "user" / "mapshaper").resolve()
+    assert sorted(installed) == sorted(_recipe_files(recipe))
+    for relative in (*extra, "README.md", ".dockerignore", "Dockerfile"):
+        assert installed[relative] == (recipe / relative).read_bytes()
+
+
+RESOLVER = ODS / "scripts/resolve-compose-stack.sh"
+INSTALLABLE = sorted(path.parent for path in LIBRARY.glob("*/compose.yaml"))
+
+
+def _install_root(tmp_path, monkeypatch):
+    """An install root whose user-extensions are written by the real library install."""
+    root = tmp_path / "ods"
+    (root / "config").mkdir(parents=True)
+    shutil.copy2(ODS / "config/core-service-ids.json", root / "config/core-service-ids.json")
+    (root / "docker-compose.base.yml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(extensions, "EXTENSIONS_LIBRARY_DIR", LIBRARY)
+    monkeypatch.setattr(extensions, "USER_EXTENSIONS_DIR", root / "data/user-extensions")
+    return root
+
+
+def _resolver_scan(root):
+    """The compose resolver's own user-extension scan (Python inside the Bash script)."""
+    source = RESOLVER.read_text(encoding="utf-8")
+    start = source.index("_LOOPBACK_VAR_DEFAULT_RE = re.compile(")
+    end = source.index("def _extension_base_path(", start)
+    namespace = {"script_dir": root, "pathlib": pathlib, "re": re, "os": os, "json": json, "yaml": yaml}
+    exec(compile(source[start:end], str(RESOLVER), "exec"), namespace)
+    return namespace["_scan_user_compose_content"], namespace["_library_recipe_trusted"]
+
+
+# The resolver never grants user extensions accelerator devices, so it drops
+# these overlays (the service still starts, without the device). That policy
+# is separate from install success; any other overlay rejection is a failure.
+_DEVICE_OVERLAY_REJECTION = re.compile(
+    r"service '[^']+' (requests GPU passthrough via deploy\.resources\.reservations\.devices"
+    r"|declares devices)$")
+
+
+@pytest.mark.parametrize("recipe", INSTALLABLE, ids=lambda path: path.name)
+def test_installed_library_recipe_passes_the_compose_resolver(recipe, tmp_path, monkeypatch):
+    """dashboard-api accepting a recipe is not enough: every `ods` command and the
+    host agent's install build resolve the stack through resolve-compose-stack.sh,
+    which drops a user extension whose compose its own scan rejects (gaia's
+    extra_hosts made the install fail with "Invalid installation Compose
+    dependency graph")."""
+    root = _install_root(tmp_path, monkeypatch)
+    extensions._install_from_library(recipe.name)
+    installed = root / "data/user-extensions" / recipe.name
+    scan, trusted = _resolver_scan(root)
+    library_trust = trusted(installed)
+    ok, warnings = scan(installed / "compose.yaml", library_trust)
+    assert ok and not warnings, f"compose.yaml: {warnings}"
+    for overlay in sorted(installed.glob("compose.*.yaml")):
+        ok, warnings = scan(overlay, library_trust)
+        unexpected = [item for item in warnings if not _DEVICE_OVERLAY_REJECTION.match(item)]
+        assert not unexpected, f"{overlay.name}: {unexpected}"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="the resolver is a Bash script")
+@pytest.mark.parametrize("backend", ["nvidia", "amd", "cpu"])
+def test_resolver_keeps_every_installed_library_recipe(backend, tmp_path, monkeypatch):
+    """End to end: install every recipe, run the real resolver, and find each one."""
+    root = _install_root(tmp_path, monkeypatch)
+    expected = []
+    for recipe in INSTALLABLE:
+        extensions._install_from_library(recipe.name)
+        manifest = yaml.safe_load((recipe / "manifest.yaml").read_text(encoding="utf-8"))
+        backends = manifest["service"].get("gpu_backends", ["all"])
+        if backend in backends or "all" in backends or "none" in backends:
+            expected.append(f"data/user-extensions/{recipe.name}/compose.yaml")
+    assert "data/user-extensions/gaia/compose.yaml" in expected
+    env = {"PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],
+           "HOME": str(root), "ODS_MODE": "local"}
+    result = subprocess.run(["bash", str(RESOLVER), "--script-dir", str(root),
+                             "--gpu-backend", backend, "--tier", "1"],
+                            env=env, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    files = shlex.split(result.stdout)[1::2]
+    assert [path for path in expected if path not in files] == [], result.stderr
+    unexpected = [line for line in result.stderr.splitlines()
+                  if line.startswith("WARNING")
+                  and not _DEVICE_OVERLAY_REJECTION.match(line.split(": ", 2)[-1])]
+    assert not unexpected, result.stderr
 
 
 def test_curated_recipes_have_distinct_projects_and_available_ports():

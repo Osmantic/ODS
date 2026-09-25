@@ -161,3 +161,71 @@ def test_resolver_rejects_tampered_recipe_provenance(resolver_recipe, backend):
     files, diagnostics = resolve_recipe(resolver_recipe, backend, tampered=True)
     assert not any('user-extensions/distribution/' in path for path in files)
     assert 'installed source recipe changed' in diagnostics
+
+
+HOST_GATEWAY = 'host.docker.internal:host-gateway'
+
+
+def scanner(tmp_path):
+    """The resolver's user-extension compose scan and library trust decision."""
+    source = SCRIPT.read_text(encoding='utf-8')
+    start = source.index('_LOOPBACK_VAR_DEFAULT_RE = re.compile(')
+    end = source.index('def _extension_base_path(', start)
+    namespace = {'script_dir': tmp_path, 'pathlib': pathlib, 're': re, 'os': os, 'json': json, 'yaml': yaml}
+    exec(compile(ast.parse(source[start:end]), str(SCRIPT), 'exec'), namespace)
+    extension = tmp_path / 'data/user-extensions/gaia'
+    extension.mkdir(parents=True)
+    compose = extension / 'compose.yaml'
+    return namespace['_scan_user_compose_content'], namespace['_library_recipe_trusted'], extension, compose
+
+
+def write_extra_hosts(compose, extra_hosts):
+    compose.write_text(yaml.safe_dump({'services': {'gaia': {'image': 'example:fixture',
+                                                             'extra_hosts': extra_hosts}}}))
+
+
+@pytest.mark.parametrize('upstream, trusted', [
+    (None, True),  # curated recipe without provenance file (gaia)
+    ({'repository': 'https://github.com/amd/gaia', 'license': 'MIT'}, True),
+    ({'origin': 'github-proposal', 'repository': 'https://github.com/owner/project'}, False),
+    ('{not json', False),
+])
+def test_resolver_library_trust_mirrors_dashboard_install(tmp_path, upstream, trusted):
+    scan, library_trusted, extension, compose = scanner(tmp_path)
+    if upstream is not None:
+        (extension / 'upstream.json').write_text(upstream if isinstance(upstream, str) else json.dumps(upstream))
+    assert library_trusted(extension) is trusted
+    write_extra_hosts(compose, [HOST_GATEWAY])
+    ok, warnings = scan(compose, library_trusted(extension))
+    assert ok is trusted and bool(warnings) is not trusted, warnings
+
+
+def test_resolver_linked_provenance_is_untrusted(tmp_path):
+    _, library_trusted, extension, _ = scanner(tmp_path)
+    (tmp_path / 'elsewhere.json').write_text('{}')
+    try:
+        (extension / 'upstream.json').symlink_to(tmp_path / 'elsewhere.json')
+    except OSError:
+        pytest.skip('symlink privilege unavailable')
+    assert library_trusted(extension) is False
+
+
+@pytest.mark.parametrize('extra_hosts', [
+    ['metadata.internal:169.254.169.254'],
+    [HOST_GATEWAY, 'registry.example:10.0.0.1'],
+    ['host.docker.internal=host-gateway'],
+    {'host.docker.internal': 'host-gateway'},
+])
+def test_resolver_trusted_library_allows_only_the_host_gateway_entry(tmp_path, extra_hosts):
+    scan, _, _, compose = scanner(tmp_path)
+    write_extra_hosts(compose, extra_hosts)
+    ok, warnings = scan(compose, True)
+    assert not ok and any('unsupported extra_hosts' in item for item in warnings), warnings
+
+
+def test_resolver_untrusted_compose_keeps_rejecting_extra_hosts(tmp_path):
+    """The override file and imported recipes never get the exemption."""
+    scan, _, _, compose = scanner(tmp_path)
+    write_extra_hosts(compose, [HOST_GATEWAY])
+    ok, warnings = scan(compose)
+    assert not ok and any('declares extra_hosts' in item for item in warnings), warnings
