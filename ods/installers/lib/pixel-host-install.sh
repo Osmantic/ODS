@@ -4513,6 +4513,7 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-compaction-resume.json" \
         && -f "$plugin_root/host/openclaw-read-range.json" \
         && -f "$plugin_root/host/openclaw-tool-result-projection.json" \
+        && -f "$plugin_root/host/openclaw-precheck-route.json" \
         && -f "$plugin_root/host/openclaw-image-envelope.json" \
         && -f "$plugin_root/host/pixel-ops-broker-ods.conf" \
         && -f "$plugin_root/host/cancellable-exec.sh" \
@@ -4823,7 +4824,7 @@ ods_pixel_install_default_agent() {
         --restore-foreign "$home/.openclaw/ods-runtime-patches" \
         --known tool-recovery completion-recovery image-envelope compaction-export \
             compaction-idle compaction-resume read-range tool-result-projection \
-            compaction-budget \
+            precheck-route compaction-budget \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restore OpenClaw runtime patches left by another ODS build. See $pixel_log."
         return 1
@@ -4910,6 +4911,18 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/tool-result-projection" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's tool result delivery repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Recover an owner-turn context overflow by trimming old tool output when
+    # that alone fits the budget. The pinned route test prices tool-result text
+    # at the prose rate and summarizes the history instead (21-114 s per event
+    # on recorded fleet journeys).
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --precheck-route \
+        --state-dir "$home/.openclaw/ods-runtime-patches/precheck-route" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's context overflow route repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     # Honor the configured compaction budget on slow local providers.
