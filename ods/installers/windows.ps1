@@ -10,6 +10,7 @@ param(
     [switch]$SkipDockerCheck,
     [string]$Distro = "",
     [string]$InstallRoot = "",
+    [switch]$OpenPortal,
     [string]$ReportPath = "$env:TEMP\\ods-windows-preflight.json",
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$PassthroughArgs
@@ -223,10 +224,23 @@ $installerExitCode = $LASTEXITCODE
 if ($installerExitCode -eq 0 -and $lifetimeRequired -and '--pixel' -cin $PassthroughArgs) {
     $verifyPath = Convert-ToWslPath (Join-Path $PSScriptRoot 'verify-wsl-portal.sh')
     $verifyCommand = 'bash ' + (ConvertTo-ODSBashArgument $verifyPath) + ' ' + (ConvertTo-ODSBashArgument $linuxInstallRoot)
-    & wsl.exe --distribution $Distro --exec bash -lc $verifyCommand
+    # Capture stdout only (stderr stays on the console) to read the Portal URL.
+    $verifyOutput = @(& wsl.exe --distribution $Distro --exec bash -lc $verifyCommand)
     $installerExitCode = $LASTEXITCODE
+    $verifyOutput | Where-Object { $_ -notmatch '^ODS_PORTAL_URL=' } | ForEach-Object { Write-Host $_ }
     if ($installerExitCode -ne 0) {
         Write-Warning 'Pixel/Portal verification failed. ODS is not ready; inspect the reported service or endpoint and rerun the same install command. No Hermes fallback was started.'
+    } elseif ($OpenPortal) {
+        $portalUrl = @($verifyOutput | ForEach-Object { if ($_ -match '^ODS_PORTAL_URL=(http://localhost:[0-9]{1,5}/pixel)$') { $Matches[1] } } | Select-Object -Last 1)
+        if ($portalUrl.Count -eq 1) {
+            $desktopFolder = [Environment]::GetFolderPath('Desktop')
+            if ($desktopFolder) {
+                Set-Content -LiteralPath (Join-Path $desktopFolder 'ODS Portal.url') -Value @('[InternetShortcut]', "URL=$($portalUrl[0])") -Encoding ASCII
+                Write-Host "Created the desktop shortcut 'ODS Portal'."
+            }
+            Write-Host "Opening Portal: $($portalUrl[0])"
+            Start-Process $portalUrl[0]
+        }
     }
 }
 if ($installerExitCode -ne 0 -and $lifetimeRequired) {

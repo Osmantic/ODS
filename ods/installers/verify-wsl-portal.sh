@@ -32,3 +32,4 @@ if ! curl --fail --silent --show-error --max-time 15 "http://127.0.0.1:$dashboar
 fi
 python3 "$(dirname -- "${BASH_SOURCE[0]}")/verify-portal-api.py" "$install_root"
 printf 'Pixel ingress, Portal API and dashboard are reachable. Open http://localhost:%s/pixel and send a message to verify your selected model.\n' "$dashboard_port"
+printf 'ODS_PORTAL_URL=http://localhost:%s/pixel\n' "$dashboard_port"
