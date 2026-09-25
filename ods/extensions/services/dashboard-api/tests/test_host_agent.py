@@ -403,6 +403,9 @@ def _isolate_opencode_config(monkeypatch, tmp_path):
         "_opencode_config_paths",
         lambda: (config_dir / "opencode.json", config_dir / "config.json"),
     )
+    # Status responses carry runtime.placement read from the live runtime;
+    # keep the developer's Docker and GPU out of unrelated tests.
+    monkeypatch.setattr(_mod, "_current_model_placement", lambda: None)
 
 
 def _backend_projection(url):
@@ -4923,6 +4926,7 @@ class TestModelActivationOwnership:
         assert response == {
             "status": "idle", "activeAgentViable": False,
             "modelTransactionPending": False,
+            "runtime": {"placement": None},
         }
         assert "runtimeModelId" not in response
         assert "capabilities" not in response
@@ -4953,6 +4957,7 @@ class TestModelActivationOwnership:
             "activeAgentViable": True,
             "activeRuntime": {"source": "remote-provider", **runtime},
             "modelTransactionPending": False,
+            "runtime": {"placement": None},
         }
 
     def test_model_status_applies_new_pixel_specific_revocation(
@@ -7827,6 +7832,7 @@ class TestModelDownloadFileIntegrity:
         assert handler.response_code == 200
         assert handler.parse_response() == {
             "status": "idle", "modelTransactionPending": False,
+            "runtime": {"placement": None},
         }
         assert readiness_calls == []
         assert scheduled == ["model-status"]
@@ -7869,6 +7875,7 @@ class TestModelDownloadFileIntegrity:
         assert handler.response_code == 200
         assert handler.parse_response() == {
             "status": "idle", "modelTransactionPending": False,
+            "runtime": {"placement": None},
         }
         assert scheduled == ["model-status"]
 

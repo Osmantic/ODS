@@ -1635,6 +1635,9 @@ restart_windows_native_llama_server_with_full_model() {
     ODS_WIN_CACHE_TYPE_K="$(read_env_value LLAMA_ARG_CACHE_TYPE_K)" \
     ODS_WIN_CACHE_TYPE_V="$(read_env_value LLAMA_ARG_CACHE_TYPE_V)" \
     ODS_WIN_N_CPU_MOE="$(read_env_value LLAMA_ARG_N_CPU_MOE)" \
+    ODS_WIN_UBATCH="$(read_env_value LLAMA_ARG_UBATCH)" \
+    ODS_WIN_FIT_TARGET="$(read_env_value LLAMA_ARG_FIT_TARGET)" \
+    ODS_WIN_THREADS="$(read_env_value LLAMA_THREADS)" \
     ODS_WIN_PARALLEL="$(read_env_value LLAMA_PARALLEL)" \
     ODS_WIN_CHECKPOINT_EVERY_N_TOKENS="$(windows_native_checkpoint_interval "$llama_exe" "$(read_env_value LLAMA_ARG_CHECKPOINT_EVERY_NT)")" \
     ODS_WIN_NO_CACHE_PROMPT="$(read_env_value LLAMA_ARG_NO_CACHE_PROMPT)" \
@@ -1707,6 +1710,9 @@ restart_windows_native_llama_server_with_full_model() {
             if ($env:ODS_WIN_CACHE_TYPE_K) { $args += @("--cache-type-k", $env:ODS_WIN_CACHE_TYPE_K) }
             if ($env:ODS_WIN_CACHE_TYPE_V) { $args += @("--cache-type-v", $env:ODS_WIN_CACHE_TYPE_V) }
             if ($env:ODS_WIN_N_CPU_MOE) { $args += @("--n-cpu-moe", $env:ODS_WIN_N_CPU_MOE) }
+            if ($env:ODS_WIN_UBATCH) { $args += @("--ubatch-size", $env:ODS_WIN_UBATCH) }
+            if ($env:ODS_WIN_FIT_TARGET) { $args += @("--fit-target", $env:ODS_WIN_FIT_TARGET) }
+            if ($env:ODS_WIN_THREADS) { $args += @("--threads", $env:ODS_WIN_THREADS) }
             if ($env:ODS_WIN_PARALLEL) { $args += @("--parallel", $env:ODS_WIN_PARALLEL) }
             if ($env:ODS_WIN_CHECKPOINT_EVERY_N_TOKENS) { $args += @("--checkpoint-every-n-tokens", $env:ODS_WIN_CHECKPOINT_EVERY_N_TOKENS) }
             if ($env:ODS_WIN_NO_CACHE_PROMPT -and $env:ODS_WIN_NO_CACHE_PROMPT -notin @("0", "false", "off", "no")) { $args += @("--no-cache-prompt") }
@@ -3657,6 +3663,9 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _n_cpu_moe=$(grep '^LLAMA_ARG_N_CPU_MOE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+            _ubatch=$(grep '^LLAMA_ARG_UBATCH=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+            _fit_target=$(grep '^LLAMA_ARG_FIT_TARGET=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+            _threads=$(grep '^LLAMA_THREADS=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _gpu_layers=$(grep '^N_GPU_LAYERS=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")
             [[ -z "$_gpu_layers" ]] && _gpu_layers="auto"
             _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
@@ -3671,6 +3680,9 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             [[ -n "$_cache_type_k" ]] && _llama_args+=(--cache-type-k "$_cache_type_k")
             [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")
             [[ -n "$_n_cpu_moe" ]] && _llama_args+=(--n-cpu-moe "$_n_cpu_moe")
+            [[ -n "$_ubatch" ]] && _llama_args+=(--ubatch-size "$_ubatch")
+            [[ -n "$_fit_target" ]] && _llama_args+=(--fit-target "$_fit_target")
+            [[ -n "$_threads" ]] && _llama_args+=(--threads "$_threads")
             [[ -n "$_spec_type" ]] && _llama_args+=(--spec-type "$_spec_type")
             _llama_args+=(${_llama_tuning_args[@]+"${_llama_tuning_args[@]}"})
 

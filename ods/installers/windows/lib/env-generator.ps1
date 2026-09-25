@@ -1076,6 +1076,9 @@ LLAMA_ARG_CACHE_TYPE_K=$(Get-EnvOrNew "LLAMA_ARG_CACHE_TYPE_K" "$(if ($TierConfi
 LLAMA_ARG_CACHE_TYPE_V=$(Get-EnvOrNew "LLAMA_ARG_CACHE_TYPE_V" "$(if ($TierConfig.LLAMA_ARG_CACHE_TYPE_V) { $TierConfig.LLAMA_ARG_CACHE_TYPE_V } else { "f16" })")
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
 $(if ($TierConfig.LLAMA_ARG_N_CPU_MOE) { "LLAMA_ARG_N_CPU_MOE=$($TierConfig.LLAMA_ARG_N_CPU_MOE)" })
+# Full GPU residency controls from the selected runtime profile.
+$(if ($TierConfig.LLAMA_ARG_UBATCH) { "LLAMA_ARG_UBATCH=$($TierConfig.LLAMA_ARG_UBATCH)" })
+$(if ($TierConfig.LLAMA_ARG_FIT_TARGET) { "LLAMA_ARG_FIT_TARGET=$($TierConfig.LLAMA_ARG_FIT_TARGET)" })
 $(if ($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT) { "LLAMA_ARG_NO_CACHE_PROMPT=$($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT)" })
 $(if ($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_NT) { "LLAMA_ARG_CHECKPOINT_EVERY_NT=$($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_NT)" })
 # NVIDIA/CPU llama.cpp images default to lossless n-gram speculation (ngram-mod).

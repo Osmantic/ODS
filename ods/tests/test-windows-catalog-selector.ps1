@@ -67,7 +67,7 @@ try {
     }
     @{ models = @($phi) } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $configDir "model-library.json")
     foreach ($backend in @("nvidia", "amd", "sycl")) {
-        foreach ($case in @(@(4, 8192), @(8, 32768), @(16, 65536), @(24, 128000))) {
+        foreach ($case in @(@(6, 16384), @(8, 32768), @(16, 65536), @(24, 128000))) {
             $gpu.Backend = $backend
             $gpu.VramMB = $case[0] * 1024
             $resolved = Resolve-CatalogModelRecommendation -TierConfig $tierConfig.Clone() -Tier "1" -GpuInfo $gpu -SystemRamGB 32 -SourceRoot $tempRoot
@@ -75,6 +75,26 @@ try {
                 throw "Wrong Phi4 context on $backend with $($case[0]) GiB: $($resolved.MaxContext)"
             }
         }
+        # A 4GB card cannot hold Phi-4 mini's weights, KV cache and compute
+        # buffer after the WDDM reserve at any context: never pick a model
+        # that would run partly on the CPU.
+        $gpu.Backend = $backend
+        $gpu.VramMB = 4096
+        $spilled = $false
+        try {
+            $null = Resolve-CatalogModelRecommendation -TierConfig $tierConfig.Clone() -Tier "1" -GpuInfo $gpu -SystemRamGB 32 -SourceRoot $tempRoot
+        } catch {
+            if ($_.Exception.Message -notlike "*No catalog model fits*") { throw }
+            $spilled = $true
+        }
+        if (-not $spilled) { throw "A 4GB $backend card was offered a model that cannot stay on the GPU" }
+    }
+    # The 8GB result keeps every layer on the GPU with a q8_0 KV cache.
+    $gpu.Backend = "nvidia"
+    $gpu.VramMB = 8192
+    $resolved = Resolve-CatalogModelRecommendation -TierConfig $tierConfig.Clone() -Tier "1" -GpuInfo $gpu -SystemRamGB 32 -SourceRoot $tempRoot
+    if ($resolved.LLAMA_ARG_CACHE_TYPE_K -ne "q8_0" -or $resolved.LLAMA_ARG_UBATCH -ne "256" -or $resolved.LLAMA_ARG_FIT_TARGET -ne "512" -or $resolved.LLAMA_ARG_FLASH_ATTN -ne "on") {
+        throw "Phi4 on 8GB lacks its GPU residency settings: $($resolved.LLAMA_ARG_CACHE_TYPE_K)/$($resolved.LLAMA_ARG_UBATCH)/$($resolved.LLAMA_ARG_FIT_TARGET)"
     }
     if ($phi.context_length -ne 128000) { throw "Context selection mutated the catalog" }
     $gpu.VramMB = 1024

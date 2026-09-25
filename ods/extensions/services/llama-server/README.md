@@ -15,7 +15,7 @@ All other services that perform AI inference — Open WebUI, LiteLLM, Privacy Sh
 - **GPU acceleration**: CUDA (NVIDIA) and ROCm/HIP (AMD) backends
 - **Configurable context window**: Token limit tunable via `CTX_SIZE`
 - **Prometheus metrics**: `/metrics` endpoint for throughput and token stats
-- **Memory-aware GPU offload**: llama.cpp selects the safe layer count by default; operators can override it with `N_GPU_LAYERS`
+- **Full GPU residency**: ODS chooses settings that keep every layer on the GPU (a smaller `LLAMA_ARG_UBATCH`, a 512 MiB `LLAMA_ARG_FIT_TARGET` instead of llama.cpp's 1024 MiB default, or a quantized KV cache) and reads the load log after each model activation. A model that lands partly on the CPU is relaunched once with corrected settings, then rolled back. `N_GPU_LAYERS` stays `auto` so llama.cpp never runs out of memory; a numeric value that limits GPU layers fails activation. MoE expert offload that a runtime profile declares (`LLAMA_ARG_N_CPU_MOE`) is the only allowed exception
 - **Hardware-tier model selection**: Installer auto-selects model size based on detected VRAM
 
 ## Configuration

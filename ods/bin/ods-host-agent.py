@@ -585,6 +585,16 @@ def _model_lifecycle_conflict(requested_operation: str, active: dict) -> dict:
     return payload
 
 
+def _attach_runtime_placement(data: dict) -> None:
+    """Add ``runtime.placement`` (where llama.cpp put the running model)."""
+    try:
+        placement = _current_model_placement()
+    except Exception:
+        logger.exception("Could not observe model placement for status")
+        placement = None
+    data["runtime"] = {"placement": placement}
+
+
 def _model_lifecycle_status() -> dict:
     """Return the currently-owned model lifecycle operation, if any."""
     with _model_lifecycle_state_lock:
@@ -11021,6 +11031,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             data.update(_model_lifecycle_status())
             _verify_switchboard_route_for_status(data, "model-status")
             _project_switchboard_agent_viability(data)
+            _attach_runtime_placement(data)
             json_response(self, 200, data)
             return
         try:
@@ -11029,12 +11040,14 @@ class AgentHandler(BaseHTTPRequestHandler):
             data.update(_model_lifecycle_status())
             _verify_switchboard_route_for_status(data, "model-status")
             _project_switchboard_agent_viability(data)
+            _attach_runtime_placement(data)
             json_response(self, 200, data)
         except (json.JSONDecodeError, OSError):
             data = {"status": "idle"}
             data.update(_model_lifecycle_status())
             _verify_switchboard_route_for_status(data, "model-status")
             _project_switchboard_agent_viability(data)
+            _attach_runtime_placement(data)
             json_response(self, 200, data)
 
     def _handle_external_model_observation(self):
@@ -12237,6 +12250,11 @@ class AgentHandler(BaseHTTPRequestHandler):
         previous_pixel_context: int | None = None
         router_target_published = False
         previous_router_active = {}
+        residency_preflight: dict | None = None
+        residency_overrides: dict[str, str] = {}
+        residency_placement: dict | None = None
+        residency_adjustment: dict | None = None
+        container_override_image = ""
 
         def restore_backups():
             if env_snapshot is not None:
@@ -12654,6 +12672,68 @@ class AgentHandler(BaseHTTPRequestHandler):
                     runtime_profile=runtime_profile,
                 )
 
+            # Full GPU residency: plan a configuration that keeps every layer
+            # on the GPU given memory other processes hold right now, and
+            # refuse before touching the running model when the exact memory
+            # estimate proves no allowed configuration fits.
+            if (
+                str(gpu_backend).lower() == "nvidia"
+                and not lemonade_runtime
+                and not windows_native_llama
+                and not local_runtime_profile
+                and not gpu_assignment_plan
+            ):
+                try:
+                    residency_preflight = _gpu_residency_preflight(
+                        env_pre,
+                        model,
+                        target,
+                        launch_env=(
+                            {**_UNPROFILED_RUNTIME_ENV, **runtime_env}
+                            if runtime_profile
+                            else dict(_UNPROFILED_RUNTIME_ENV)
+                        ),
+                        context_length=int(context_length),
+                        allow_context_reduction=(
+                            requested_context_length is None and memory_fit is None
+                        ),
+                    )
+                except Exception:
+                    logger.exception("GPU residency preflight failed; relying on load verification")
+                    residency_preflight = None
+                if residency_preflight is not None:
+                    if residency_preflight["refuse"]:
+                        json_response(
+                            self,
+                            409,
+                            {
+                                "error": _gpu_residency_refusal(
+                                    str(model.get("name") or llm_model_name),
+                                    residency_preflight,
+                                ),
+                                "code": "model_not_gpu_resident",
+                                "requestedModelId": model_id,
+                                "gpuResidency": {
+                                    "requiredMiB": residency_preflight["residency"]["projection"]["totalMiB"],
+                                    "budgetMiB": residency_preflight["residency"]["budgetMiB"],
+                                    "otherUsedMiB": residency_preflight["otherUsedMiB"],
+                                    "fitTargetMiB": residency_preflight["residency"]["fitTargetMiB"],
+                                    "contextLength": residency_preflight["contextLength"],
+                                },
+                            },
+                        )
+                        return
+                    if residency_preflight["fits"]:
+                        residency_overrides = dict(residency_preflight["overrides"])
+                        if int(residency_preflight["contextLength"]) != int(context_length):
+                            context_length = int(residency_preflight["contextLength"])
+                        if residency_preflight["steps"]:
+                            logger.info(
+                                "GPU residency preflight for %s: %s",
+                                model_id,
+                                ", ".join(residency_preflight["steps"]),
+                            )
+
             # Capture every mutable file and service state before the first write.
             env_snapshot = _snapshot_text_file(env_path)
             # A malformed install can leave models.ini as a directory; repair it
@@ -12782,19 +12862,30 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "LLAMA_ARG_CHECKPOINT_EVERY_NT",
                     "LLAMA_ARG_SPEC_TYPE",
                     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
+                    "LLAMA_ARG_UBATCH",
+                    "LLAMA_ARG_FIT_TARGET",
                 }
                 if runtime_profile:
                     for key, value in runtime_env.items():
                         if key in runtime_keys and value is not None:
                             updates[key] = str(value)
                 else:
-                    updates.update({
-                        "LLAMA_PARALLEL": "1",
-                        "LLAMA_ARG_FLASH_ATTN": "auto",
-                        "LLAMA_ARG_CACHE_TYPE_K": "f16",
-                        "LLAMA_ARG_CACHE_TYPE_V": "f16",
-                    })
+                    updates.update(_UNPROFILED_RUNTIME_ENV)
+                # Settings the residency preflight chose so every layer fits.
+                updates.update({
+                    key: str(value)
+                    for key, value in residency_overrides.items()
+                    if key in runtime_keys
+                })
+                if _model_memory.runtime_memory_settings(runtime_profile)["intentionalOffload"]:
+                    # Declared MoE expert offload keeps work on the CPU: use
+                    # the performance cores, not compose's fixed 4 threads.
+                    performance_cores = _model_memory.performance_core_count()
+                    if performance_cores:
+                        updates["LLAMA_THREADS"] = str(performance_cores)
                 remove_keys = {
+                    "LLAMA_ARG_UBATCH",
+                    "LLAMA_ARG_FIT_TARGET",
                     "LLAMA_ARG_N_CPU_MOE",
                     "LLAMA_ARG_NO_CACHE_PROMPT",
                     "LLAMA_ARG_CHECKPOINT_EVERY_NT",
@@ -12881,6 +12972,119 @@ class AgentHandler(BaseHTTPRequestHandler):
                     **_activation_readiness_cadence(),
                 )
 
+            def restart_runtime_for_residency(retry_env: dict) -> None:
+                if runtime_restart_strategy == "windows-native-llama":
+                    _restart_windows_native_llama_server(env_path, retry_env)
+                elif runtime_restart_strategy == "macos-native-llama":
+                    _restart_macos_native_llama_server(
+                        env_path, apple_llama_bin, apple_llama_log, apple_pid_file,
+                    )
+                elif runtime_restart_strategy == "container-llama":
+                    _recreate_llama_server(retry_env, override_image=container_override_image)
+                elif runtime_restart_strategy == "compose-llama":
+                    _compose_restart_llama_server(retry_env)
+                else:
+                    raise RuntimeError(
+                        f"GPU residency retry is unsupported for runtime {runtime_restart_strategy}"
+                    )
+
+            def enforce_gpu_residency() -> dict:
+                """Verify every layer landed on the GPU; retry once, else fail.
+
+                Reads llama.cpp's load log for the model that just proved
+                readiness. A partial load (layers or KV cache in system
+                memory) that the runtime profile did not declare triggers one
+                relaunch with a configuration planned from llama.cpp's own
+                projection. A second partial load fails the activation so the
+                existing rollback restores the previous model.
+                """
+                nonlocal context_length, switchboard_run, residency_adjustment
+                current_env = load_env(env_path)
+                placement = _observe_llama_placement(current_env, gguf_file=gguf_file)
+                if placement.get("status") not in {"partial", "cpu_only"}:
+                    return placement
+                layer_limit = _explicit_gpu_layer_limit(current_env)
+                if layer_limit is not None and layer_limit < int(placement.get("layersTotal") or 0):
+                    raise ModelNotGpuResidentError(
+                        f"{gguf_file} loaded {placement.get('layersOnGpu')}/"
+                        f"{placement.get('layersTotal')} layers on the GPU because "
+                        f"N_GPU_LAYERS={layer_limit} in .env limits GPU layers; set "
+                        f"N_GPU_LAYERS=auto so the model stays fully on the GPU",
+                        placement,
+                    )
+                plan = _residency_retry_plan(
+                    placement,
+                    current_env,
+                    context_length=int(context_length),
+                    allow_context_reduction=(
+                        requested_context_length is None and memory_fit is None
+                    ),
+                )
+                if plan is None:
+                    raise ModelNotGpuResidentError(
+                        f"{gguf_file} is not fully on the GPU ({placement.get('reason')}) "
+                        f"and no allowed configuration fits; choose a smaller model or "
+                        f"context, or free GPU memory",
+                        placement,
+                    )
+                logger.warning(
+                    "Model %s loaded partially (%s); relaunching once with %s",
+                    gguf_file,
+                    placement.get("reason"),
+                    ", ".join(plan["steps"]),
+                )
+                for key, value in plan["changes"].items():
+                    _upsert_env_value(env_path, key, str(value))
+                new_context = int(plan["contextLength"])
+                if new_context != int(context_length):
+                    context_length = new_context
+                    _atomic_write_text(
+                        models_ini,
+                        f"[{llm_model_name}]\n"
+                        f"filename = {gguf_file}\n"
+                        f"load-on-startup = true\n"
+                        f"n-ctx = {context_length}\n",
+                    )
+                retry_env = load_env(env_path)
+                restart_runtime_for_residency(retry_env)
+                retry_proof = _wait_for_model_readiness(
+                    retry_env,
+                    model_id=model_id,
+                    gguf_file=gguf_file,
+                    llm_model_name=llm_model_name,
+                    lemonade_model_id=lemonade_model_id,
+                    return_proof=True,
+                    require_exact_context=True,
+                    **_activation_readiness_cadence(),
+                )
+                if not retry_proof:
+                    raise ModelNotGpuResidentError(
+                        f"{gguf_file} did not become ready after the GPU residency "
+                        f"relaunch ({', '.join(plan['steps'])})",
+                        placement,
+                    )
+                if switchboard_run is not None:
+                    switchboard_run = {
+                        **switchboard_run,
+                        "identity": retry_proof.get("identity"),
+                        "contextLength": retry_proof.get("contextLength"),
+                        "contextVerified": retry_proof.get("contextVerified"),
+                        "verifiedAt": retry_proof.get("verifiedAt"),
+                    }
+                retried = _observe_llama_placement(retry_env, gguf_file=gguf_file)
+                residency_adjustment = {
+                    "steps": list(plan["steps"]),
+                    "changes": dict(plan["changes"]),
+                    "firstPlacement": placement,
+                }
+                if retried.get("status") in {"partial", "cpu_only"}:
+                    raise ModelNotGpuResidentError(
+                        f"{gguf_file} is still not fully on the GPU after relaunching "
+                        f"with {', '.join(plan['steps'])}: {retried.get('reason')}",
+                        retried,
+                    )
+                return retried
+
             # Restart llama-server with the new model.
             # Three strategies depending on platform / agent location:
             # - apple (macOS): llama-server runs natively via Metal, not Docker.
@@ -12951,6 +13155,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     )
                 )
                 runtime_restart_strategy = "container-llama"
+                container_override_image = override_image
                 if _switchboard_adapters is not None and not lemonade_runtime:
                     _sb_override = override_image
                     switchboard_adapter = _switchboard_adapters.ContainerLlamaAdapter(
@@ -13038,6 +13243,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 healthy = bool(runtime_identity)
 
             if healthy:
+                residency_placement = enforce_gpu_residency()
                 if lemonade_runtime:
                     _upsert_env_value(env_path, "LEMONADE_MODEL", lemonade_model_id)
                     env["LEMONADE_MODEL"] = lemonade_model_id
@@ -13325,11 +13531,26 @@ class AgentHandler(BaseHTTPRequestHandler):
                             else {"changed": False}
                         ),
                         "consumers": consumers,
+                        "placement": residency_placement,
+                        "residencyAdjustment": residency_adjustment,
+                        "residencyPreflight": (
+                            {
+                                "steps": list(residency_preflight.get("steps") or []),
+                                "overrides": dict(residency_preflight.get("overrides") or {}),
+                                "otherUsedMiB": residency_preflight.get("otherUsedMiB"),
+                                "headroomMiB": residency_preflight["residency"].get("headroomMiB"),
+                                "platform": residency_preflight.get("platform"),
+                            }
+                            if residency_preflight
+                            else None
+                        ),
                         "verifiedAt": str(final_runtime_proof.get("verifiedAt") or _iso_now()),
                         **({'modelTransactionId':pixel_transaction.id} if pixel_transaction is not None else {}),
                     },
                 )
                 committed = True  # system state is committed before the response write
+                if residency_placement is not None:
+                    _write_model_placement_record(residency_placement)
                 if pixel_transaction is not None:
                     # Keep both admission gates until the durable activation
                     # receipt and every consumer's proof are committed.
@@ -13389,6 +13610,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "context_length": int(context_length),
                         "gpu_assignment_changed": bool(gpu_assignment_plan),
                         "consumers": consumers,
+                        "placement": residency_placement,
+                        "residencyAdjustment": residency_adjustment,
                     },
                 )
             else:
@@ -13439,6 +13662,23 @@ class AgentHandler(BaseHTTPRequestHandler):
             if switchboard_run and not switchboard_run.get("ok"):
                 payload["failure_phase"] = switchboard_run.get("phase")
                 payload["failure_detail"] = switchboard_run.get("detail")
+            if isinstance(exc, ModelNotGpuResidentError):
+                payload.setdefault("code", "model_not_gpu_resident")
+                payload["placement"] = exc.placement
+                try:
+                    restored_env = load_env(env_path)
+                    _write_model_placement_record(
+                        _observe_llama_placement(restored_env) if rolled_back else None,
+                        rejected={
+                            "modelId": model_id,
+                            "ggufFile": gguf_file,
+                            "reason": str(exc),
+                            "placement": exc.placement,
+                            "at": _iso_now(),
+                        },
+                    )
+                except Exception:
+                    logger.exception("Could not record the rejected model placement")
             json_response(self, 500, payload)
 
     def _handle_model_delete(self):
@@ -17356,6 +17596,536 @@ def _system_ram_gb() -> int:
         return 0
 
 
+# ---------------------------------------------------------------------------
+# Full GPU residency: preflight, post-load verification, and status
+# ---------------------------------------------------------------------------
+#
+# A model that llama.cpp silently splits between GPU and CPU runs several times
+# slower (29/33 layers decoded at 10 tok/s instead of 31 at 60K context on the
+# 8GB laptop). ODS therefore treats "every layer on the GPU" as an activation
+# invariant: activation plans a configuration that should fit, verifies what
+# llama.cpp actually did from its load log, retries once with a corrected
+# configuration, and otherwise fails and rolls back. MoE expert offload that a
+# runtime profile declares is the only accepted exception.
+
+_LLAMA_SERVER_CONTAINER = "ods-llama-server"
+_MODEL_PLACEMENT_FILE = "model-placement.json"
+# Bytes of llama-server log read per observation; only placement lines are kept.
+_PLACEMENT_LOG_LIMIT_BYTES = 256 * 1024 * 1024
+_PLACEMENT_LOG_TIMEOUT_SECONDS = 30.0
+_PLACEMENT_REFRESH_SECONDS = 15.0
+# Settings the host agent writes for a model without a runtime profile.
+_UNPROFILED_RUNTIME_ENV = {
+    "LLAMA_PARALLEL": "1",
+    "LLAMA_ARG_FLASH_ATTN": "auto",
+    "LLAMA_ARG_CACHE_TYPE_K": "f16",
+    "LLAMA_ARG_CACHE_TYPE_V": "f16",
+}
+# When the driver cannot attribute GPU memory per process (WSL and Windows
+# report no compute processes), the running llama-server's footprint is its
+# logged buffers plus this allowance for its CUDA context and the flash-
+# attention pool that converts a quantized KV cache to f16 as context fills.
+# Measured beyond the logged buffers: 612 MiB on native Linux (RTX 5090,
+# f16 KV), 411-445 MiB under WSL (RTX 5070 Laptop, q8_0 KV at 41K-60K).
+# Overestimating keeps the preflight optimistic; post-load verification is
+# authoritative.
+_LLAMA_RUNTIME_ALLOWANCE_MIB = {"linux": 900, "wsl": 512, "windows": 512, "macos": 0}
+_model_placement_cache_lock = threading.Lock()
+_model_placement_cache: dict = {"at": 0.0, "value": None}
+
+
+class ModelNotGpuResidentError(RuntimeError):
+    """The activated model could not be made fully GPU-resident."""
+
+    def __init__(self, message: str, placement: dict | None = None):
+        super().__init__(message)
+        self.placement = dict(placement or {})
+
+
+def _placement_runtime_kind(env: dict) -> str:
+    """How the configured llama.cpp runtime is managed, for placement reads."""
+    if _uses_lemonade_runtime(env):
+        return "lemonade"
+    backend = str(env.get("GPU_BACKEND") or "nvidia").strip().lower()
+    if backend in {"cpu", "none"}:
+        return "cpu"
+    if _is_windows_host_llama_server(env) or backend == "apple":
+        return "native"
+    return "container"
+
+
+def _llama_container_state() -> tuple[bool, int, str]:
+    """(running, host PID, StartedAt) of the llama-server container."""
+    try:
+        inspected = subprocess.run(
+            [
+                "docker", "inspect", "-f", "{{.State.Running}} {{.State.Pid}} {{.State.StartedAt}}",
+                _LLAMA_SERVER_CONTAINER,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False, 0, ""
+    parts = str(inspected.stdout or "").split()
+    if inspected.returncode != 0 or len(parts) != 3 or parts[0] != "true":
+        return False, 0, ""
+    try:
+        pid = int(parts[1])
+    except ValueError:
+        pid = 0
+    return True, pid, parts[2]
+
+
+def _native_llama_run_marker() -> str:
+    try:
+        pid = (INSTALL_DIR / "data" / ".llama-server.pid").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return f"pid:{pid}" if pid else ""
+
+
+def _collect_placement_lines(stream, *, stop_when_ready: bool) -> tuple[list[str], bool]:
+    """Keep only placement lines from a llama-server log byte stream.
+
+    Returns the kept lines and whether the server reported it was ready (the
+    load section is then complete). A server start line begins a new run, so
+    an appended native log yields only its newest run. Reading stops at the
+    ready line when ``stop_when_ready`` is set, or after
+    ``_PLACEMENT_LOG_LIMIT_BYTES``.
+    """
+    kept: list[str] = []
+    ready = False
+    consumed = 0
+    deadline = time.monotonic() + _PLACEMENT_LOG_TIMEOUT_SECONDS
+    for raw in stream:
+        consumed += len(raw)
+        line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        if _model_memory.is_llama_start_line(line):
+            kept.clear()
+            ready = False
+        if _model_memory.is_placement_log_line(line):
+            kept.append(line.rstrip("\r\n"))
+        if _model_memory.is_llama_ready_line(line):
+            ready = True
+            if stop_when_ready:
+                break
+        if consumed >= _PLACEMENT_LOG_LIMIT_BYTES or time.monotonic() > deadline:
+            break
+    return kept, ready
+
+
+def _read_llama_runtime_log(env: dict, *, runtime_kind: str | None = None) -> tuple[str, str, bool]:
+    """Return the placement lines of the current llama-server run.
+
+    Returns ``(text, run marker, complete)``. The marker is empty when no
+    llama-server run is observable (container missing or stopped, no native
+    log). ``complete`` means the server finished loading, so a log without a
+    placement line will not gain one later. Only placement lines are kept, so
+    a long-running server's request log costs one bounded streaming read.
+    """
+    kind = runtime_kind or _placement_runtime_kind(env)
+    if kind == "native":
+        candidates = [INSTALL_DIR / "data" / "llama-server.log"]
+        if platform.system() == "Darwin":
+            # The macOS LaunchAgent (native-llama-service.sh) logs here.
+            candidates.insert(0, Path.home() / "Library" / "Logs" / "ODS" / "llama-server.log")
+        existing = [path for path in candidates if path.is_file()]
+        if not existing:
+            return "", "", False
+        log_path = max(existing, key=lambda path: path.stat().st_mtime)
+        try:
+            size = log_path.stat().st_size
+            with log_path.open("rb") as handle:
+                # Appended across runs: parse_llama_placement picks the most
+                # recent load of the expected model from the kept lines.
+                if size > _PLACEMENT_LOG_LIMIT_BYTES:
+                    handle.seek(size - _PLACEMENT_LOG_LIMIT_BYTES)
+                lines, ready = _collect_placement_lines(handle, stop_when_ready=False)
+        except OSError:
+            return "", "", False
+        return "\n".join(lines), _native_llama_run_marker() or f"log:{size}", ready
+    if kind != "container":
+        return "", "", False
+    running, _pid, started = _llama_container_state()
+    if not running or not started:
+        return "", "", False
+    try:
+        process = subprocess.Popen(
+            ["docker", "logs", "--since", started, _LLAMA_SERVER_CONTAINER],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    except OSError:
+        return "", started, False
+    try:
+        lines, ready = _collect_placement_lines(process.stdout, stop_when_ready=True)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        try:
+            process.wait(timeout=10)
+        except subprocess.SubprocessError:
+            pass
+        if process.stdout is not None:
+            process.stdout.close()
+    return "\n".join(lines), started, ready
+
+
+def _observe_llama_placement(
+    env: dict,
+    *,
+    gguf_file: str | None = None,
+    runtime_kind: str | None = None,
+) -> dict:
+    """Observe where llama.cpp placed the configured model.
+
+    Returns the ``runtime.placement`` record shared with the dashboard, the
+    doctor and the fleet gate: layersOnGpu, layersTotal, cpuWeightMiB,
+    fullyResident, intentionalOffload, plus status/reason and the fit numbers
+    llama.cpp logged.
+    """
+    kind = runtime_kind or _placement_runtime_kind(env)
+    settings = _model_memory.runtime_memory_settings(None, env)
+    expected = str(gguf_file or env.get("GGUF_FILE") or "")
+    context = _positive_int(env.get("CTX_SIZE") or env.get("MAX_CONTEXT"))
+    common = {
+        "runtime": kind,
+        "observedAt": _iso_now(),
+        "contextLength": context,
+        "cacheTypeK": settings["cacheTypeK"],
+        "cacheTypeV": settings["cacheTypeV"],
+        "ubatch": settings["ubatch"],
+        "configuredFitTargetMiB": settings["fitTargetMiB"],
+        "nGpuLayers": str(env.get("N_GPU_LAYERS") or "auto"),
+    }
+    if kind in {"cpu", "lemonade"}:
+        return {
+            "schema": _model_memory.PLACEMENT_SCHEMA,
+            "source": kind,
+            "modelFile": expected or None,
+            "layersOnGpu": None,
+            "layersTotal": None,
+            "cpuWeightMiB": None,
+            "fullyResident": None,
+            "intentionalOffload": bool(settings["intentionalOffload"]),
+            "status": "not_applicable" if kind == "cpu" else "unverified",
+            "reason": (
+                "The CPU runtime does not use a GPU."
+                if kind == "cpu"
+                else "Lemonade manages GPU placement itself and does not report "
+                "layer offload; it requests every layer on the GPU."
+            ),
+            "runtimeStartedAt": "",
+            **common,
+        }
+    try:
+        text, marker, complete = _read_llama_runtime_log(env, runtime_kind=kind)
+    except Exception:  # placement observation must never break activation
+        logger.exception("Could not read the llama-server log for placement")
+        text, marker, complete = "", "", False
+    placement = _model_memory.parse_llama_placement(
+        text,
+        expected_model_file=expected or None,
+        intentional_offload=bool(settings["intentionalOffload"]),
+    )
+    placement.update(common)
+    placement["runtimeStartedAt"] = marker
+    # Final once placement is known or the server finished loading without
+    # reporting it; otherwise the status path observes the run again.
+    placement["observationComplete"] = bool(
+        placement.get("layersTotal") is not None or (marker and complete)
+    )
+    if not marker and placement.get("status") == "unverified":
+        placement["reason"] = "No running llama-server log was found."
+    return placement
+
+
+def _model_placement_path() -> Path:
+    return INSTALL_DIR / "data" / _MODEL_PLACEMENT_FILE
+
+
+def _read_model_placement_record() -> dict:
+    try:
+        value = json.loads(_model_placement_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _write_model_placement_record(
+    placement: dict | None = None,
+    *,
+    rejected: dict | None = None,
+) -> None:
+    """Persist the running model's placement (and the last rejected attempt)."""
+    record = _read_model_placement_record()
+    record["schema"] = _model_memory.PLACEMENT_SCHEMA
+    if placement is not None:
+        record["placement"] = placement
+    if rejected is not None:
+        record["lastRejected"] = rejected
+    try:
+        _atomic_write_json(_model_placement_path(), record)
+    except OSError:
+        logger.exception("Could not persist model placement")
+        return
+    with _model_placement_cache_lock:
+        _model_placement_cache["at"] = time.monotonic()
+        _model_placement_cache["value"] = record.get("placement")
+
+
+def _current_model_placement() -> dict | None:
+    """Placement of the running model for ``/v1/model/status``.
+
+    Observes the llama-server log again when the server restarted, the
+    configured model changed, or the last observation ran before the load
+    finished, so installer loads, reboots and restart-policy restarts are
+    covered, not only dashboard activations. Never refreshes while a model
+    lifecycle operation owns the runtime.
+    """
+    now = time.monotonic()
+    with _model_placement_cache_lock:
+        if now - _model_placement_cache["at"] < _PLACEMENT_REFRESH_SECONDS:
+            return _model_placement_cache["value"]
+    record = _read_model_placement_record()
+    placement = record.get("placement") if isinstance(record.get("placement"), dict) else None
+    with _model_lifecycle_state_lock:
+        busy = _model_lifecycle_operation is not None
+    if not busy:
+        try:
+            env = load_env(INSTALL_DIR / ".env")
+        except (OSError, UnicodeError):
+            env = {}
+        kind = _placement_runtime_kind(env) if env else ""
+        configured = str(env.get("GGUF_FILE") or "").casefold()
+        stale = (
+            placement is None
+            or str(placement.get("modelFile") or "").casefold() != configured
+            or placement.get("runtime") != kind
+            or not placement.get("observationComplete")
+        )
+        if kind == "container":
+            running, _pid, started = _llama_container_state()
+            if running and started and (stale or started != placement.get("runtimeStartedAt")):
+                placement = _observe_llama_placement(env)
+                _write_model_placement_record(placement)
+        elif kind == "native":
+            marker = _native_llama_run_marker()
+            if stale or (marker and marker != placement.get("runtimeStartedAt")):
+                observed = _observe_llama_placement(env)
+                if observed.get("runtimeStartedAt"):
+                    placement = observed
+                    _write_model_placement_record(placement)
+        elif kind in {"lemonade", "cpu"} and stale:
+            placement = _observe_llama_placement(env, runtime_kind=kind)
+    with _model_placement_cache_lock:
+        _model_placement_cache["at"] = time.monotonic()
+        _model_placement_cache["value"] = placement
+    return placement
+
+
+def _nvidia_gpu_memory_snapshot() -> dict | None:
+    """Total/used memory of the visible NVIDIA GPUs (MiB), or None."""
+    nvidia_smi = _nvidia_smi_binary()
+    if not nvidia_smi:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                nvidia_smi,
+                "--query-gpu=memory.total,memory.used",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    rows = []
+    for line in str(result.stdout or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            rows.append((float(parts[0]), float(parts[1])))
+        except ValueError:
+            continue
+    if not rows:
+        return None
+    return {
+        "gpus": len(rows),
+        "totalMiB": sum(total for total, _used in rows),
+        "usedMiB": sum(used for _total, used in rows),
+    }
+
+
+def _nvidia_compute_app_usage() -> dict[int, float] | None:
+    """GPU memory per compute process (MiB, summed over GPUs), or None.
+
+    WSL and Windows WDDM drivers list no compute processes; None then means
+    "not attributable", not "nothing running".
+    """
+    nvidia_smi = _nvidia_smi_binary()
+    if not nvidia_smi:
+        return None
+    try:
+        result = subprocess.run(
+            [nvidia_smi, "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    usage: dict[int, float] = {}
+    for line in str(result.stdout or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) != 2:
+            continue
+        try:
+            pid, used = int(parts[0]), float(parts[1])
+        except ValueError:
+            continue
+        usage[pid] = usage.get(pid, 0.0) + used
+    return usage or None
+
+
+def _other_gpu_usage_mib(env: dict, snapshot: dict, gpu_platform: str) -> float:
+    """GPU memory held by anything other than the running llama-server.
+
+    ComfyUI, Whisper, a desktop session or any other process is budgeted; the
+    llama-server about to be replaced is not. Native Linux attributes memory
+    per process, so the running server's own usage is subtracted exactly.
+    Otherwise its logged buffers plus a runtime allowance are subtracted, and
+    when even those are unknown nothing is assumed held so the post-load
+    check decides instead of a guess.
+    """
+    used = max(float(snapshot.get("usedMiB") or 0.0), 0.0)
+    running, pid, _started = _llama_container_state()
+    if not running:
+        return used
+    per_process = _nvidia_compute_app_usage()
+    if per_process and pid in per_process:
+        return max(used - per_process[pid], 0.0)
+    try:
+        text, _marker, _complete = _read_llama_runtime_log(env, runtime_kind="container")
+    except Exception:
+        text = ""
+    current = _model_memory.parse_llama_placement(
+        text, expected_model_file=str(env.get("GGUF_FILE") or "") or None,
+    )
+    if current.get("layersTotal") is None:
+        return 0.0
+    footprint = (
+        float(current.get("gpuWeightMiB") or 0.0)
+        + float(current.get("gpuKvMiB") or 0.0)
+        + float(current.get("gpuComputeMiB") or 0.0)
+        + _LLAMA_RUNTIME_ALLOWANCE_MIB.get(gpu_platform, 900)
+    )
+    return max(used - footprint, 0.0)
+
+
+def _gpu_residency_preflight(
+    env: dict,
+    model: dict,
+    target: Path,
+    *,
+    launch_env: dict,
+    context_length: int,
+    allow_context_reduction: bool,
+) -> dict | None:
+    """Plan a fully GPU-resident launch on a single NVIDIA GPU.
+
+    Uses measured free memory (nvidia-smi minus the llama-server being
+    replaced) so ComfyUI, Whisper, a desktop, or another process holding VRAM
+    is budgeted. Returns None when it cannot measure; activation then relies
+    on post-load verification alone.
+    """
+    snapshot = _nvidia_gpu_memory_snapshot()
+    if not snapshot or snapshot["gpus"] != 1 or snapshot["totalMiB"] <= 0:
+        return None
+    gpu_platform = _model_memory.detect_gpu_platform()
+    other = _other_gpu_usage_mib(env, snapshot, gpu_platform)
+    config = _model_memory.resident_configuration(
+        model,
+        total_vram_mb=snapshot["totalMiB"],
+        env=launch_env,
+        context_length=int(context_length),
+        gpu_platform=gpu_platform,
+        gpu_count=1,
+        other_used_mib=other,
+        weight_size_mb=_model_weight_size_mb(model, target),
+        allow_context_reduction=allow_context_reduction,
+    )
+    residency = config["residency"]
+    basis = residency["projection"]["basis"]
+    return {
+        **config,
+        # Refuse up front only when the memory estimate is exact; otherwise
+        # launch and let the observed placement decide.
+        "refuse": (not config["fits"]) and basis in {"measured", "gguf"},
+        "otherUsedMiB": round(other, 2),
+        "platform": gpu_platform,
+    }
+
+
+def _gpu_residency_refusal(model_name: str, preflight: dict) -> str:
+    residency = preflight["residency"]
+    projection = residency["projection"]
+    return (
+        f"{model_name} cannot stay fully on the GPU at {projection['contextLength']} "
+        f"context: llama.cpp needs about {projection['totalMiB'] / 1024:.1f} GB of "
+        f"GPU memory, but {max(residency['budgetMiB'], 0) / 1024:.1f} GB is available "
+        f"after the {residency['reserveMiB']} MiB driver/runtime reserve, "
+        f"{residency['otherUsedMiB']:.0f} MiB used by other processes, and "
+        f"llama.cpp's {residency['fitTargetMiB']} MiB safety margin. Running it "
+        f"would move layers to the CPU and make it several times slower; choose "
+        f"a smaller model or context, or free GPU memory."
+    )
+
+
+def _residency_retry_plan(
+    placement: dict,
+    env: dict,
+    *,
+    context_length: int,
+    allow_context_reduction: bool,
+) -> dict | None:
+    """Correct a partial load using llama.cpp's own logged fit numbers."""
+    required = placement.get("projectedDeviceMiB")
+    available = placement.get("freeDeviceMiB")
+    if required is None or available is None:
+        return None
+    settings = _model_memory.runtime_memory_settings(None, env)
+    if placement.get("fitTargetMiB"):
+        settings = {**settings, "fitTargetMiB": int(placement["fitTargetMiB"])}
+    plan = _model_memory.plan_residency_fallback(
+        required_mib=float(required),
+        available_mib=float(available),
+        settings=settings,
+        kv_mib=float(placement.get("kvMiB") or 0.0),
+        compute_mib=float(placement.get("gpuComputeMiB") or 0.0),
+        context_length=int(context_length),
+        allow_context_reduction=allow_context_reduction,
+        context_floor=min(_model_memory.RESIDENCY_CONTEXT_FLOOR, int(context_length)),
+    )
+    if plan is None or not plan.get("changes"):
+        return None
+    return plan
+
+
+def _explicit_gpu_layer_limit(env: dict) -> int | None:
+    value = str(env.get("N_GPU_LAYERS") or "").strip().lower()
+    return int(value) if value.isdigit() else None
+
+
 def _nvidia_vram_gb() -> float:
     nvidia_smi = _nvidia_smi_binary()
     if not nvidia_smi:
@@ -17723,6 +18493,9 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         "LLAMA_ARG_FLASH_ATTN": "--flash-attn",
         "LLAMA_ARG_CACHE_TYPE_K": "--cache-type-k",
         "LLAMA_ARG_CACHE_TYPE_V": "--cache-type-v",
+        "LLAMA_ARG_UBATCH": "--ubatch-size",
+        "LLAMA_ARG_FIT_TARGET": "--fit-target",
+        "LLAMA_THREADS": "--threads",
         "LLAMA_ARG_N_CPU_MOE": "--n-cpu-moe",
         "LLAMA_ARG_SPEC_TYPE": "--spec-type",
         "LLAMA_ARG_SPEC_DRAFT_N_MAX": "--spec-draft-n-max",
@@ -17954,6 +18727,9 @@ def _refresh_llama_cmd(command: list[str], env: dict) -> list[str]:
         "--ctx-size": str(env.get("CTX_SIZE") or env.get("MAX_CONTEXT") or "32768"),
         "--parallel": str(env.get("LLAMA_PARALLEL") or "1"),
     }
+    threads = str(env.get("LLAMA_THREADS") or "").strip()
+    if threads.isdigit() and int(threads) > 0:
+        replacements["--threads"] = threads
     refreshed = []
     index = 0
     while index < len(command):

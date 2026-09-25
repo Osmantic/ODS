@@ -11,6 +11,15 @@
       "size_bytes": 1280835840,
       "size_mb": 1281,
       "vram_required_gb": 3,
+      "gpu_residency": {
+        "basis": "gguf",
+        "gpu_weights_mib": 1221.5,
+        "kv_bytes_per_token_f16": 12288,
+        "recurrent_state_mib": 50.25,
+        "vocab_size": 248320,
+        "embedding_length": 2048,
+        "source": "GGUF header of the pinned artifact: 6 full-attention layers x 2 KV heads x (256+256) dims; tied embeddings keep the output copy on the GPU; recurrent state bounded by the measured Qwen3.5 4B/9B value"
+      },
       "context_length": 65536,
       "max_context_length": 262144,
       "quantization": "Q4_K_M",
@@ -69,6 +78,15 @@
       "size_bytes": 1932698048,
       "size_mb": 1933,
       "vram_required_gb": 3,
+      "gpu_residency": {
+        "basis": "gguf",
+        "gpu_weights_mib": 1753.16,
+        "kv_bytes_per_token_f16": 1024,
+        "recurrent_state_mib": 12,
+        "vocab_size": 65536,
+        "embedding_length": 2560,
+        "source": "GGUF header of the pinned artifact: 2 of 28 blocks are attention (1 KV head x (128+128) dims), 26 Mamba blocks hold ~12 MiB state; 90 MiB token embedding stays in system memory"
+      },
       "context_length": 65536,
       "max_context_length": 262144,
       "quantization": "Q4_K_M",
@@ -131,6 +149,15 @@
       "size_bytes": 2491874272,
       "size_mb": 2490,
       "vram_required_gb": 4,
+      "gpu_residency": {
+        "basis": "gguf",
+        "gpu_weights_mib": 2376.44,
+        "kv_bytes_per_token_f16": 131072,
+        "recurrent_state_mib": 0,
+        "vocab_size": 200064,
+        "embedding_length": 3072,
+        "source": "GGUF header of the pinned artifact: 32 blocks x 8 KV heads x (128+128) dims; tied embeddings keep the output copy on the GPU"
+      },
       "context_length": 128000,
       "block_count": 32,
       "embedding_length": 3072,
@@ -409,6 +436,15 @@
       "size_bytes": 4230976352,
       "size_mb": 4231,
       "vram_required_gb": 8,
+      "gpu_residency": {
+        "basis": "gguf",
+        "gpu_weights_mib": 4034.97,
+        "kv_bytes_per_token_f16": 8192,
+        "recurrent_state_mib": 56,
+        "vocab_size": 100352,
+        "embedding_length": 1536,
+        "source": "GGUF header of the pinned artifact: 4 of 40 blocks are attention (4 KV heads x (128+128) dims), 36 Mamba2 blocks hold ~56 MiB state; tied embeddings keep the output copy on the GPU"
+      },
       "context_length": 131072,
       "quantization": "Q4_K_M",
       "specialty": "Chat",
@@ -1003,6 +1039,15 @@
       "size_bytes": 5198911904,
       "size_mb": 5199,
       "vram_required_gb": 7,
+      "gpu_residency": {
+        "basis": "gguf",
+        "gpu_weights_mib": 4670.07,
+        "kv_bytes_per_token_f16": 139264,
+        "recurrent_state_mib": 0,
+        "vocab_size": 131072,
+        "embedding_length": 4096,
+        "source": "GGUF header of the pinned artifact: 34 blocks x 8 KV heads x (128+128) dims; 288 MiB token embedding stays in system memory"
+      },
       "context_length": 262144,
       "quantization": "Q4_K_M",
       "specialty": "Agentic Multilingual",
@@ -1292,6 +1337,15 @@
       "size_bytes": 2497281120,
       "size_mb": 2497,
       "vram_required_gb": 5,
+      "gpu_residency": {
+        "basis": "gguf",
+        "gpu_weights_mib": 2381.59,
+        "kv_bytes_per_token_f16": 147456,
+        "recurrent_state_mib": 0,
+        "vocab_size": 151936,
+        "embedding_length": 2560,
+        "source": "GGUF header of the pinned artifact: 36 blocks x 8 KV heads x (128+128) dims; tied embeddings keep the output copy on the GPU"
+      },
       "context_length": 262144,
       "quantization": "Q4_K_M",
       "specialty": "Chat",
@@ -1654,6 +1708,15 @@
       "size_bytes": 4942873344,
       "size_mb": 4943,
       "vram_required_gb": 8,
+      "gpu_residency": {
+        "basis": "gguf",
+        "gpu_weights_mib": 4713.89,
+        "kv_bytes_per_token_f16": 163840,
+        "recurrent_state_mib": 0,
+        "vocab_size": 49159,
+        "embedding_length": 4096,
+        "source": "GGUF header of the pinned artifact: 40 blocks x 8 KV heads x (128+128) dims; tied embeddings keep the output copy on the GPU"
+      },
       "context_length": 128000,
       "quantization": "Q4_K_M",
       "specialty": "Enterprise",
@@ -1732,6 +1795,15 @@
       "size_bytes": 2740937888,
       "size_mb": 2741,
       "vram_required_gb": 5,
+      "gpu_residency": {
+        "basis": "measured",
+        "gpu_weights_mib": 2603.5,
+        "kv_bytes_per_token_f16": 32768,
+        "recurrent_state_mib": 50.25,
+        "vocab_size": 248320,
+        "embedding_length": 2560,
+        "source": "llama.cpp b9014 load log on windows-laptop-wsl-beta (RTX 5070 Laptop, WSL), 2026-09-25; see ODS-Fleet-Qualification perf/laptop-gpu-residency-bench.md"
+      },
       "context_length": 262144,
       "quantization": "Q4_K_M",
       "specialty": "Balanced",
@@ -1881,6 +1953,15 @@
       "gguf_sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
       "size_mb": 5760,
       "vram_required_gb": 8,
+      "gpu_residency": {
+        "basis": "measured",
+        "gpu_weights_mib": 4861.28,
+        "kv_bytes_per_token_f16": 32768,
+        "recurrent_state_mib": 50.25,
+        "vocab_size": 248320,
+        "embedding_length": 4096,
+        "source": "llama.cpp b9014 load log on windows-laptop-wsl-beta (RTX 5070 Laptop, WSL), 2026-09-25; see ODS-Fleet-Qualification perf/laptop-gpu-residency-bench.md"
+      },
       "context_length": 65536,
       "quantization": "Q4_K_M",
       "specialty": "General",
@@ -1925,13 +2006,16 @@
           "system_ram_min_gb": 15,
           "context_length": 65536,
           "estimated_required_gb": 7.2,
+          "gpu_residency_evidence": "33/33 layers on the GPU at 65536 context with ubatch 256 and a 512 MiB fit target; llama.cpp projected 6246 MiB against 6860 MiB CUDA-free on windows-laptop-wsl-beta, 1111 MiB still free at 60K tokens (perf/laptop-gpu-residency-bench.md, V1f, 2026-09-25). The previous ubatch 512 / 1024 MiB default loaded 29/33 layers.",
           "fit_label": "64K 8GB Q8 KV interactive-agent profile",
           "env": {
             "LLAMA_PARALLEL": "1",
             "LLAMA_ARG_FLASH_ATTN": "on",
             "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
             "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
-            "LLAMA_SERVER_MEMORY_LIMIT": "12G"
+            "LLAMA_SERVER_MEMORY_LIMIT": "12G",
+            "LLAMA_ARG_UBATCH": "256",
+            "LLAMA_ARG_FIT_TARGET": "512"
           }
         },
         {
@@ -1951,7 +2035,9 @@
             "LLAMA_ARG_FLASH_ATTN": "on",
             "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
             "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
-            "LLAMA_SERVER_MEMORY_LIMIT": "12G"
+            "LLAMA_SERVER_MEMORY_LIMIT": "12G",
+            "LLAMA_ARG_UBATCH": "256",
+            "LLAMA_ARG_FIT_TARGET": "512"
           }
         }
       ]
@@ -1965,6 +2051,15 @@
       "gguf_sha256": "009aba717c09d4a35890c7d35eb59d54e1dba884c7c526e7197d9c13ab5911d9",
       "size_mb": 9050,
       "vram_required_gb": 11,
+      "gpu_residency": {
+        "basis": "gguf",
+        "gpu_weights_mib": 8358.1,
+        "kv_bytes_per_token_f16": 204800,
+        "recurrent_state_mib": 0,
+        "vocab_size": 100352,
+        "embedding_length": 5120,
+        "source": "GGUF header of the pinned artifact: 40 blocks x 10 KV heads x (128+128) dims; 276 MiB token embedding stays in system memory"
+      },
       "context_length": 16384,
       "quantization": "Q4_K_M",
       "specialty": "General",
@@ -2035,6 +2130,15 @@
       "gguf_sha256": "84b5f7f112156d63836a01a69dc3f11a6ba63b10a23b8ca7a7efaf52d5a2d806",
       "size_mb": 16700,
       "vram_required_gb": 20,
+      "gpu_residency": {
+        "basis": "measured",
+        "gpu_weights_mib": 15272.77,
+        "kv_bytes_per_token_f16": 65536,
+        "recurrent_state_mib": 149.62,
+        "vocab_size": 248320,
+        "embedding_length": 5120,
+        "source": "llama.cpp b9014 load log on tower1 and tower3 (RTX 5090, native Linux), 2026-09-25"
+      },
       "context_length": 32768,
       "quantization": "Q4_K_M",
       "specialty": "Quality",
@@ -2275,6 +2379,15 @@
       "gguf_sha256": "952ff479c48ac3ece81fb6d9a5a03bfeac215e6caac780fbe91ff8cb0e05bcf3",
       "size_mb": 42500,
       "vram_required_gb": 48,
+      "gpu_residency": {
+        "basis": "gguf",
+        "gpu_weights_mib": 39987.37,
+        "kv_bytes_per_token_f16": 327680,
+        "recurrent_state_mib": 0,
+        "vocab_size": 128256,
+        "embedding_length": 8192,
+        "source": "GGUF header of the pinned artifact: 80 blocks x 8 KV heads x (128+128) dims; 564 MiB token embedding stays in system memory"
+      },
       "context_length": 32768,
       "quantization": "Q4_K_M",
       "specialty": "Reasoning",

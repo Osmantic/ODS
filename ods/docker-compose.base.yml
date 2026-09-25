@@ -59,6 +59,13 @@ services:
       # Optional MoE expert CPU offload. Do not default to an empty value:
       # llama.cpp parses this as an integer and exits if it is blank.
       - LLAMA_ARG_N_CPU_MOE
+      # Full GPU residency: llama.cpp keeps LLAMA_ARG_FIT_TARGET MiB free
+      # (default 1024) and moves layers to the CPU when the model does not
+      # fit under it. Runtime profiles and the host agent's residency planner
+      # set a smaller ubatch/margin where that keeps every layer on the GPU.
+      # Passed through only when set; both are integers.
+      - LLAMA_ARG_UBATCH
+      - LLAMA_ARG_FIT_TARGET
       # Optional long-context runtime flags. Leave unset unless a model
       # profile explicitly requires them. llama.cpp reads
       # LLAMA_ARG_NO_CACHE_PROMPT through its negated-flag compatibility path:

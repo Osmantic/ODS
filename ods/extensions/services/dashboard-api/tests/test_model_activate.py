@@ -66,6 +66,12 @@ def _isolate_opencode_config(monkeypatch, tmp_path):
         lambda: {"system": _mod.platform.system(), "active": False},
     )
     monkeypatch.setattr(_mod, "_opencode_installed", lambda: False)
+    # GPU residency preflight and placement read the live GPU and Docker;
+    # keep activation tests hermetic unless a test opts in.
+    monkeypatch.setattr(_mod, "_nvidia_gpu_memory_snapshot", lambda: None)
+    monkeypatch.setattr(_mod, "_nvidia_compute_app_usage", lambda: None)
+    monkeypatch.setattr(_mod, "_llama_container_state", lambda: (False, 0, ""))
+    monkeypatch.setattr(_mod, "_read_llama_runtime_log", lambda _env, **_kwargs: ("", "", False))
 
 
 @pytest.fixture(autouse=True)
@@ -9216,3 +9222,487 @@ def test_router_publication_rejects_unverified_context(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="unverified"):
         _mod._publish_activation_route({}, "target", {"identity": "target", "contextVerified": False}, {})
     assert not (tmp_path / "data/model-state.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Full GPU residency: post-load verification, one corrected retry, preflight
+# ---------------------------------------------------------------------------
+
+
+_real_read_llama_runtime_log = _mod._read_llama_runtime_log
+_real_llama_container_state = _mod._llama_container_state
+_real_nvidia_compute_app_usage = _mod._nvidia_compute_app_usage
+
+
+def _residency_load_log(model_file, on, total, *, cpu_kv=0.0, projected=6492, free=6860, target=1024):
+    fit = (
+        f"common_params_fit_impl: will leave {free - projected} >= {target} MiB of free device memory, no changes needed"
+        if projected + target <= free
+        else f"common_params_fit_impl: cannot meet free memory target of {target} MiB, need to reduce device memory by {projected + target - free} MiB"
+    )
+    lines = [
+        f"common_params_fit_impl: projected to use {projected} MiB of device memory vs. {free} MiB of free device memory",
+        fit,
+        f"llama_model_loader: loaded meta data with 46 key-value pairs and 427 tensors from /models/{model_file} (version GGUF V3 (latest))",
+        "print_info: n_embd                = 4096",
+        "print_info: n_vocab               = 248320",
+        f"load_tensors: offloaded {on}/{total} layers to GPU",
+        "load_tensors:   CPU_Mapped model buffer size =  545.62 MiB",
+        "load_tensors:        CUDA0 model buffer size =  4861.28 MiB",
+    ]
+    if cpu_kv:
+        lines.append(f"llama_kv_cache:        CPU KV buffer size =   {cpu_kv:.2f} MiB")
+    lines += [
+        f"llama_kv_cache:      CUDA0 KV buffer size =  {1088 - cpu_kv:.2f} MiB",
+        "sched_reserve:      CUDA0 compute buffer size =   493.00 MiB",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _laptop_like_runtime_log(env, **_kwargs):
+    """llama.cpp b9014 on the 8GB laptop: 29/33 until ubatch/margin shrink."""
+    model_file = env.get("GGUF_FILE") or "old-model.gguf"
+    if env.get("LLAMA_ARG_UBATCH") == "256" and env.get("LLAMA_ARG_FIT_TARGET") == "512":
+        return _residency_load_log(model_file, 33, 33, projected=6246, target=512), "started-2", True
+    return _residency_load_log(model_file, 29, 33, cpu_kv=136), "started-1", True
+
+
+class TestGpuResidencyActivation:
+    @pytest.fixture(autouse=True)
+    def _activation_env(self, tmp_path, monkeypatch):
+        install_dir, env_path, env_text, models_ini, ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        self.install_dir = install_dir
+        self.env_path = env_path
+        self.env_text = env_text
+        self.models_ini = models_ini
+        self.restarts = []
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(
+            _mod,
+            "_compose_restart_llama_server",
+            lambda env: self.restarts.append(
+                (env["GGUF_FILE"], env.get("LLAMA_ARG_UBATCH"), env.get("LLAMA_ARG_FIT_TARGET"))
+            ),
+        )
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        monkeypatch.setattr(_mod, "_reconcile_ods_managed_pixel_model", lambda *a, **k: "not_installed")
+        monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_container_exists", lambda _container: False)
+        monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
+        monkeypatch.setattr(_mod, "_verify_hermes_dashboard_ready", lambda: None)
+        with _mod._model_placement_cache_lock:
+            _mod._model_placement_cache.update(at=0.0, value=None)
+
+    def _activate(self, **kwargs):
+        handler = _ResponseHandler()
+        _mod.AgentHandler._do_model_activate(handler, "target-model", **kwargs)
+        return handler.response_code, handler.parse_response()
+
+    def test_partial_load_is_relaunched_once_with_the_planned_fix(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_read_llama_runtime_log", _laptop_like_runtime_log)
+
+        code, payload = self._activate(requested_context_length=65536)
+
+        assert code == 200, payload
+        assert self.restarts == [
+            ("new-model.gguf", None, None),
+            ("new-model.gguf", "256", "512"),
+        ]
+        env = _mod.load_env(self.env_path)
+        assert env["LLAMA_ARG_UBATCH"] == "256"
+        assert env["LLAMA_ARG_FIT_TARGET"] == "512"
+        assert env["CTX_SIZE"] == "65536"  # an explicit context is never traded
+        assert payload["placement"]["status"] == "fully_resident"
+        assert payload["placement"]["layersOnGpu"] == payload["placement"]["layersTotal"] == 33
+        assert payload["residencyAdjustment"]["steps"] == ["ubatch 256", "fit target 512 MiB"]
+        assert payload["residencyAdjustment"]["firstPlacement"]["layersOnGpu"] == 29
+        receipt = json.loads(
+            (self.install_dir / "data" / "model-activation-receipt.json").read_text(encoding="utf-8")
+        )
+        assert receipt["placement"]["fullyResident"] is True
+        assert receipt["residencyAdjustment"]["changes"] == {
+            "LLAMA_ARG_UBATCH": "256",
+            "LLAMA_ARG_FIT_TARGET": "512",
+        }
+        record = json.loads((self.install_dir / "data" / "model-placement.json").read_text(encoding="utf-8"))
+        assert record["schema"] == "ods.model-placement.v1"
+        assert record["placement"]["modelFile"] == "new-model.gguf"
+        assert record["placement"]["fullyResident"] is True
+
+    def test_still_partial_after_the_retry_fails_and_rolls_back(self, monkeypatch):
+        monkeypatch.setattr(
+            _mod,
+            "_read_llama_runtime_log",
+            lambda env, **_k: (
+                _residency_load_log(env.get("GGUF_FILE"), 29, 33, cpu_kv=136, projected=6246, target=512),
+                "started",
+                True,
+            ),
+        )
+
+        code, payload = self._activate(requested_context_length=65536)
+
+        assert code == 500
+        assert payload["rolled_back"] is True
+        assert payload["code"] == "model_not_gpu_resident"
+        assert payload["placement"]["layersOnGpu"] == 29
+        assert "not fully on the GPU" in payload["error"]
+        assert self.restarts[0][0] == "new-model.gguf"
+        assert self.restarts[-1][0] == "old-model.gguf"
+        assert self.env_path.read_text(encoding="utf-8") == self.env_text
+        record = json.loads((self.install_dir / "data" / "model-placement.json").read_text(encoding="utf-8"))
+        assert record["lastRejected"]["ggufFile"] == "new-model.gguf"
+
+    def test_retry_that_still_spills_fails_after_exactly_one_relaunch(self, monkeypatch):
+        loads = []
+
+        def always_partial(env, **_kwargs):
+            loads.append(env.get("LLAMA_ARG_UBATCH"))
+            return _residency_load_log(env.get("GGUF_FILE"), 29, 33, cpu_kv=136), "started", True
+
+        monkeypatch.setattr(_mod, "_read_llama_runtime_log", always_partial)
+
+        code, payload = self._activate(requested_context_length=65536)
+
+        assert code == 500 and payload["code"] == "model_not_gpu_resident"
+        new_model_launches = [item for item in self.restarts if item[0] == "new-model.gguf"]
+        assert len(new_model_launches) == 2
+        assert "still not fully on the GPU" in payload["error"]
+
+    def test_operator_gpu_layer_limit_fails_without_a_retry(self, monkeypatch):
+        self.env_path.write_text(self.env_text + "N_GPU_LAYERS=20\n", encoding="utf-8")
+        monkeypatch.setattr(_mod, "_read_llama_runtime_log", _laptop_like_runtime_log)
+
+        code, payload = self._activate(requested_context_length=65536)
+
+        assert code == 500 and payload["code"] == "model_not_gpu_resident"
+        assert "N_GPU_LAYERS=20" in payload["error"]
+        assert [item[0] for item in self.restarts] == ["new-model.gguf", "old-model.gguf"]
+
+    def test_unobservable_placement_does_not_block_activation(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_read_llama_runtime_log", lambda env, **_k: ("", "", False))
+
+        code, payload = self._activate(requested_context_length=65536)
+
+        assert code == 200, payload
+        assert payload["placement"]["status"] == "unverified"
+        assert payload["placement"]["fullyResident"] is None
+        assert len(self.restarts) == 1
+
+    def _residency_catalog(self):
+        library = self.install_dir / "config" / "model-library.json"
+        catalog = json.loads(library.read_text(encoding="utf-8"))
+        catalog["models"][0].update({
+            "name": "Target 9B",
+            "context_length": 65536,
+            "size_mb": 5760,
+            "gpu_residency": {
+                "basis": "measured",
+                "gpu_weights_mib": 4861.28,
+                "kv_bytes_per_token_f16": 32768,
+                "recurrent_state_mib": 50.25,
+                "vocab_size": 248320,
+                "embedding_length": 4096,
+            },
+        })
+        library.write_text(json.dumps(catalog), encoding="utf-8")
+
+    def test_preflight_refuses_before_touching_the_running_model(self, monkeypatch):
+        self._residency_catalog()
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "wsl")
+        monkeypatch.setattr(
+            _mod,
+            "_nvidia_gpu_memory_snapshot",
+            lambda: {"gpus": 1, "totalMiB": 8151.0, "usedMiB": 3000.0},
+        )
+        # No llama-server is running: everything in use belongs to others.
+        monkeypatch.setattr(_mod, "_read_llama_runtime_log", lambda env, **_k: ("", "", False))
+
+        code, payload = self._activate(requested_context_length=65536)
+
+        assert code == 409
+        assert payload["code"] == "model_not_gpu_resident"
+        assert "cannot stay fully on the GPU" in payload["error"]
+        assert payload["gpuResidency"]["otherUsedMiB"] == 3000.0
+        assert self.restarts == []
+        assert self.env_path.read_text(encoding="utf-8") == self.env_text
+
+    def test_preflight_plans_a_resident_configuration_around_other_gpu_users(self, monkeypatch):
+        self._residency_catalog()
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "wsl")
+        monkeypatch.setattr(
+            _mod,
+            "_nvidia_gpu_memory_snapshot",
+            lambda: {"gpus": 1, "totalMiB": 8151.0, "usedMiB": 400.0},
+        )
+        # No llama-server is running yet (the fixture default), so all 400 MiB
+        # in use belongs to other processes.
+        monkeypatch.setattr(
+            _mod,
+            "_read_llama_runtime_log",
+            lambda env, **_k: (
+                _residency_load_log("new-model.gguf", 33, 33, projected=5734, target=512), "started", True,
+            ),
+        )
+
+        code, payload = self._activate(requested_context_length=65536)
+
+        assert code == 200, payload
+        env = _mod.load_env(self.env_path)
+        # f16 at 64K spills with 400 MiB held elsewhere; q4_0 KV fits.
+        assert env["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
+        assert env["LLAMA_ARG_CACHE_TYPE_V"] == "q4_0"
+        assert env["LLAMA_ARG_FLASH_ATTN"] == "on"
+        assert env["LLAMA_ARG_UBATCH"] == "256"
+        assert env["CTX_SIZE"] == "65536"
+        receipt = json.loads(
+            (self.install_dir / "data" / "model-activation-receipt.json").read_text(encoding="utf-8")
+        )
+        assert receipt["residencyPreflight"]["otherUsedMiB"] == 400.0
+        assert "KV cache q4_0" in receipt["residencyPreflight"]["steps"]
+        assert len(self.restarts) == 1
+
+
+def test_running_llama_footprint_is_not_counted_as_another_gpu_user(monkeypatch):
+    log = _residency_load_log("old-model.gguf", 29, 33, cpu_kv=136)
+    monkeypatch.setattr(_mod, "_llama_container_state", lambda: (True, 4242, "started"))
+    monkeypatch.setattr(_mod, "_nvidia_compute_app_usage", lambda: None)
+    monkeypatch.setattr(_mod, "_read_llama_runtime_log", lambda env, **_k: (log, "started", True))
+    # WSL lists no compute processes. The laptop after a 29/33 load: 6228 MiB
+    # used, 5817 MiB of llama buffers plus its CUDA context and FA pool.
+    other = _mod._other_gpu_usage_mib(
+        {"GGUF_FILE": "old-model.gguf"}, {"usedMiB": 6228.0}, "wsl",
+    )
+    assert other == 0.0
+    # Whisper holding 1.5 GB next to it is budgeted.
+    busy = _mod._other_gpu_usage_mib(
+        {"GGUF_FILE": "old-model.gguf"}, {"usedMiB": 6228.0 + 1536.0}, "wsl",
+    )
+    assert busy == pytest.approx(6228.0 + 1536.0 - (4861.28 + 952.0 + 493.0 + 512.0))
+    monkeypatch.setattr(_mod, "_llama_container_state", lambda: (False, 0, ""))
+    assert _mod._other_gpu_usage_mib({}, {"usedMiB": 6014.0}, "wsl") == 6014.0
+
+
+def test_native_linux_attributes_gpu_memory_per_process(monkeypatch):
+    monkeypatch.setattr(_mod, "_llama_container_state", lambda: (True, 4242, "started"))
+    monkeypatch.setattr(_mod, "_nvidia_compute_app_usage", lambda: {4242: 20624.0, 999: 3000.0})
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("per-process accounting must not need the log")
+
+    monkeypatch.setattr(_mod, "_read_llama_runtime_log", unexpected)
+    # Used includes a desktop session the compute list does not show.
+    other = _mod._other_gpu_usage_mib({}, {"usedMiB": 20624.0 + 3000.0 + 400.0}, "linux")
+    assert other == 3400.0
+
+
+def test_compute_app_usage_sums_each_process_across_gpus(monkeypatch):
+    monkeypatch.setattr(_mod, "_nvidia_compute_app_usage", _real_nvidia_compute_app_usage)
+    monkeypatch.setattr(_mod, "_nvidia_smi_binary", lambda: "nvidia-smi")
+    monkeypatch.setattr(
+        _mod.subprocess,
+        "run",
+        lambda args, **_k: subprocess.CompletedProcess(args, 0, "3117354, 27358\n3117354, 25392\n77, 512\n", ""),
+    )
+    assert _mod._nvidia_compute_app_usage() == {3117354: 52750.0, 77: 512.0}
+    monkeypatch.setattr(
+        _mod.subprocess, "run", lambda args, **_k: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    assert _mod._nvidia_compute_app_usage() is None
+
+
+class _FakeLogProcess:
+    def __init__(self, lines):
+        self.read = 0
+        self.killed = False
+
+        def stream():
+            for line in lines:
+                self.read += 1
+                yield line.encode()
+
+        self.stdout = _FakeStream(stream())
+
+    def poll(self):
+        return None
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        return 0
+
+
+class _FakeStream:
+    def __init__(self, iterator):
+        self._iterator = iterator
+
+    def __iter__(self):
+        return self._iterator
+
+    def close(self):
+        pass
+
+
+def test_container_placement_reads_only_the_current_run(monkeypatch):
+    monkeypatch.setattr(_mod, "_read_llama_runtime_log", _real_read_llama_runtime_log)
+    monkeypatch.setattr(_mod, "_llama_container_state", _real_llama_container_state)
+    calls = []
+    log = _residency_load_log("model.gguf", 33, 33, projected=6246, target=512).splitlines(keepends=True)
+    served = log + ["main: server is listening on http://0.0.0.0:8080\n"] + [
+        f"srv  log_server_r: request {index}: POST /v1/chat/completions 127.0.0.1 200\n"
+        for index in range(1000)
+    ]
+    processes = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        assert args[:2] == ["docker", "inspect"]
+        return subprocess.CompletedProcess(args, 0, "true 4242 2026-09-25T13:49:48.374Z\n", "")
+
+    def fake_popen(args, **kwargs):
+        calls.append(args)
+        assert kwargs.get("stderr") is subprocess.STDOUT
+        processes.append(_FakeLogProcess(served))
+        return processes[-1]
+
+    monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(_mod.subprocess, "Popen", fake_popen)
+    placement = _mod._observe_llama_placement(
+        {"GPU_BACKEND": "nvidia", "GGUF_FILE": "model.gguf", "CTX_SIZE": "65536"},
+    )
+
+    assert calls[1] == [
+        "docker", "logs", "--since", "2026-09-25T13:49:48.374Z", "ods-llama-server",
+    ]
+    assert placement["status"] == "fully_resident"
+    assert placement["observationComplete"] is True
+    assert placement["runtimeStartedAt"] == "2026-09-25T13:49:48.374Z"
+    assert placement["contextLength"] == 65536
+    for key in ("layersOnGpu", "layersTotal", "cpuWeightMiB", "fullyResident", "intentionalOffload"):
+        assert key in placement
+    # Streaming stops once the server reports ready; the request log that
+    # follows is never read.
+    assert processes[0].read == len(log) + 1
+    assert processes[0].killed is True
+
+
+def test_placement_observed_while_loading_is_not_final(monkeypatch):
+    monkeypatch.setattr(_mod, "_read_llama_runtime_log", lambda env, **_k: ("", "started", False))
+    loading = _mod._observe_llama_placement({"GPU_BACKEND": "nvidia", "GGUF_FILE": "m.gguf"})
+    assert loading["status"] == "unverified"
+    assert loading["observationComplete"] is False
+    # A build that never logs placement is final once the server is ready.
+    monkeypatch.setattr(_mod, "_read_llama_runtime_log", lambda env, **_k: ("", "started", True))
+    silent = _mod._observe_llama_placement({"GPU_BACKEND": "nvidia", "GGUF_FILE": "m.gguf"})
+    assert silent["status"] == "unverified"
+    assert silent["observationComplete"] is True
+
+
+def test_lemonade_placement_is_reported_as_unverified():
+    placement = _mod._observe_llama_placement(
+        {"GPU_BACKEND": "amd", "LLM_BACKEND": "lemonade", "GGUF_FILE": "m.gguf"},
+        runtime_kind="lemonade",
+    )
+    assert placement["status"] == "unverified"
+    assert placement["fullyResident"] is None
+
+
+def test_status_placement_refreshes_after_a_container_restart(tmp_path, monkeypatch):
+    (tmp_path / "data").mkdir()
+    (tmp_path / ".env").write_text("GPU_BACKEND=nvidia\nGGUF_FILE=model.gguf\n", encoding="utf-8")
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    with _mod._model_placement_cache_lock:
+        _mod._model_placement_cache.update(at=0.0, value=None)
+    starts = iter(["T1", "T1", "T1", "T2"])
+    monkeypatch.setattr(_mod, "_llama_container_state", lambda: (True, 4242, next(starts)))
+    observed = []
+    complete = iter([False, True, True])
+
+    def observe(env, **_kwargs):
+        observed.append(env["GGUF_FILE"])
+        start = "T1" if len(observed) < 3 else "T2"
+        return {"modelFile": "model.gguf", "runtime": "container", "status": "fully_resident",
+                "fullyResident": True, "runtimeStartedAt": start,
+                "observationComplete": next(complete)}
+
+    monkeypatch.setattr(_mod, "_observe_llama_placement", observe)
+
+    def poll():
+        with _mod._model_placement_cache_lock:
+            _mod._model_placement_cache["at"] = 0.0
+        return _mod._current_model_placement()
+
+    assert poll()["observationComplete"] is False  # still loading
+    assert poll()["observationComplete"] is True  # same run, observed again
+    assert poll()["runtimeStartedAt"] == "T1"  # complete: no re-read
+    assert poll()["runtimeStartedAt"] == "T2"  # restarted
+    assert observed == ["model.gguf", "model.gguf", "model.gguf"]
+
+
+def test_native_launcher_forwards_residency_settings(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "GGUF_FILE=m.gguf\nCTX_SIZE=65536\nLLAMA_ARG_UBATCH=256\n"
+        "LLAMA_ARG_FIT_TARGET=512\nLLAMA_THREADS=6\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "data" / "models").mkdir(parents=True)
+    llama_bin = tmp_path / "bin" / "llama-server"
+    llama_bin.parent.mkdir(parents=True)
+    llama_bin.write_text("", encoding="utf-8")
+    launched = []
+
+    class _Proc:
+        pid = 4242
+
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **_k: launched.append(args) or _Proc())
+    _launch_native_llama_server(
+        env_path, llama_bin, tmp_path / "data" / "llama-server.log",
+        tmp_path / "data" / ".llama-server.pid",
+    )
+    args = launched[0]
+    assert args[args.index("--ubatch-size") + 1] == "256"
+    assert args[args.index("--fit-target") + 1] == "512"
+    assert args[args.index("--threads") + 1] == "6"
+
+
+def test_container_recreate_refreshes_threads_only_when_configured():
+    command = ["--model", "/models/a.gguf", "--threads", "4", "--ctx-size", "8192"]
+    assert _mod._refresh_llama_cmd(command, {"GGUF_FILE": "b.gguf"})[3] == "4"
+    refreshed = _mod._refresh_llama_cmd(command, {"GGUF_FILE": "b.gguf", "LLAMA_THREADS": "6"})
+    assert refreshed[refreshed.index("--threads") + 1] == "6"
+
+
+def test_appended_native_log_yields_only_the_newest_run():
+    import io
+
+    older = (
+        "main: loading model\n"
+        + _residency_load_log("m.gguf", 29, 33, cpu_kv=136)
+        + "main: server is listening on http://127.0.0.1:8080\n"
+    )
+    newer_loading = (
+        "main: loading model\n"
+        "common_params_fit_impl: projected to use 6246 MiB of device memory vs. 6860 MiB of free device memory\n"
+    )
+    lines, ready = _mod._collect_placement_lines(
+        io.BytesIO((older + newer_loading).encode()), stop_when_ready=False,
+    )
+    # The restarted server has not loaded yet: the previous run's 29/33 must
+    # not be reported as the current placement.
+    assert ready is False
+    assert not any("offloaded" in line for line in lines)
+    assert _mod._model_memory.parse_llama_placement("\n".join(lines))["status"] == "unverified"
+    finished = newer_loading + _residency_load_log("m.gguf", 33, 33, projected=6246, target=512) + (
+        "main: server is listening on http://127.0.0.1:8080\n"
+    )
+    lines, ready = _mod._collect_placement_lines(
+        io.BytesIO((older + finished).encode()), stop_when_ready=False,
+    )
+    assert ready is True
+    assert _mod._model_memory.parse_llama_placement("\n".join(lines))["status"] == "fully_resident"

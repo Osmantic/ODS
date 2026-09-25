@@ -579,6 +579,111 @@ function Get-CatalogModelFittingContext {
     return $Model
 }
 
+# ---------------------------------------------------------------------------
+# Full GPU residency (mirrors extensions/services/dashboard-api/model_memory.py)
+# ---------------------------------------------------------------------------
+# llama.cpp keeps --fit-target MiB (default 1024) free per GPU and otherwise
+# moves layers to the CPU without failing. Catalog entries with exact
+# gpu_residency metadata are held to "every layer on the GPU" on discrete
+# GPUs: the chosen configuration may use a smaller ubatch, a 512 MiB margin,
+# a quantized KV cache, or a context no lower than the 64K agent floor.
+
+function Get-CatalogKvTypeBytes {
+    param([string]$CacheType)
+    switch ("$CacheType".ToLowerInvariant()) {
+        "f32" { return 4.0 }
+        "q8_0" { return 34.0 / 32.0 }
+        "q5_1" { return 24.0 / 32.0 }
+        "q5_0" { return 22.0 / 32.0 }
+        "q4_1" { return 20.0 / 32.0 }
+        "q4_0" { return 18.0 / 32.0 }
+        "iq4_nl" { return 18.0 / 32.0 }
+        default { return 2.0 }
+    }
+}
+
+function Test-CatalogDiscreteGpu {
+    param([hashtable]$GpuInfo)
+    $backend = "$($GpuInfo.Backend)".ToLowerInvariant()
+    $memoryType = "$($GpuInfo.MemoryType)".ToLowerInvariant()
+    if ($backend -in @("", "apple", "cpu", "none", "unknown", "cloud")) { return $false }
+    if ($memoryType -eq "unified") { return $false }
+    return ([double]$GpuInfo.VramMB -gt 0)
+}
+
+function Get-CatalogGpuResidencyReserveMB {
+    param([double]$VramMB)
+    # platform_reserve_mib() for WDDM: driver reserve, the new llama.cpp
+    # process's CUDA context, and memory Windows withholds from CUDA.
+    # Calibrated on an RTX 5070 Laptop: 8151 MiB total, 6860 MiB CUDA-free.
+    return [Math]::Ceiling(322.0 + 0.00325 * $VramMB + 1000.0)
+}
+
+function Get-CatalogResidencyProjectionMiB {
+    param([object]$Residency, [int]$ContextLength, [string]$CacheTypeK, [string]$CacheTypeV, [int]$Ubatch)
+    $kvFactor = ((Get-CatalogKvTypeBytes -CacheType $CacheTypeK) + (Get-CatalogKvTypeBytes -CacheType $CacheTypeV)) / 4.0
+    $kvMiB = [double]$Residency.kv_bytes_per_token_f16 * [double]$ContextLength * $kvFactor / 1048576.0
+    $computeMiB = [double]$Ubatch * 4.0 * ([double]$Residency.vocab_size + [double]$Residency.embedding_length) / 1048576.0
+    return [double]$Residency.gpu_weights_mib + $kvMiB + [double]$Residency.recurrent_state_mib + $computeMiB
+}
+
+function Get-CatalogResidentConfiguration {
+    param([object]$Model, [object]$RuntimeProfile = $null, [double]$VramMB, [int]$ContextLength)
+
+    # $null: no exact metadata, so the capacity fit stays the only check.
+    if (-not $Model.PSObject.Properties["gpu_residency"] -or -not $Model.gpu_residency) { return $null }
+    $residency = $Model.gpu_residency
+    if (-not $residency.gpu_weights_mib -or -not $residency.kv_bytes_per_token_f16) { return $null }
+
+    $profileEnv = if ($RuntimeProfile -and $RuntimeProfile.env) { $RuntimeProfile.env } else { $null }
+    $cacheK = if ($profileEnv -and $profileEnv.LLAMA_ARG_CACHE_TYPE_K) { [string]$profileEnv.LLAMA_ARG_CACHE_TYPE_K } else { "f16" }
+    $cacheV = if ($profileEnv -and $profileEnv.LLAMA_ARG_CACHE_TYPE_V) { [string]$profileEnv.LLAMA_ARG_CACHE_TYPE_V } else { "f16" }
+    $ubatch = if ($profileEnv -and $profileEnv.LLAMA_ARG_UBATCH) { [int]$profileEnv.LLAMA_ARG_UBATCH } else { 512 }
+    $fitTarget = if ($profileEnv -and $profileEnv.LLAMA_ARG_FIT_TARGET) { [int]$profileEnv.LLAMA_ARG_FIT_TARGET } else { 1024 }
+    $available = $VramMB - (Get-CatalogGpuResidencyReserveMB -VramMB $VramMB)
+    $context = $ContextLength
+    $overrides = [ordered]@{}
+    $steps = @()
+
+    $projection = Get-CatalogResidencyProjectionMiB -Residency $residency -ContextLength $context -CacheTypeK $cacheK -CacheTypeV $cacheV -Ubatch $ubatch
+    if ($projection -le ($available - $fitTarget)) {
+        return @{ Fits = $true; Overrides = $overrides; Steps = $steps; ContextLength = $context; ProjectedMiB = $projection; BudgetMiB = ($available - $fitTarget) }
+    }
+
+    # Planner steps (plan_residency_fallback): keep a 64 MiB guard.
+    $guard = 64.0
+    if ($ubatch -gt 256) { $ubatch = 256; $overrides["LLAMA_ARG_UBATCH"] = "256"; $steps += "ubatch 256" }
+    if ($fitTarget -gt 512) { $fitTarget = 512; $overrides["LLAMA_ARG_FIT_TARGET"] = "512"; $steps += "fit target 512 MiB" }
+    $ladder = @()
+    $currentBytes = [Math]::Max((Get-CatalogKvTypeBytes -CacheType $cacheK), (Get-CatalogKvTypeBytes -CacheType $cacheV))
+    if ($currentBytes -gt (34.0 / 32.0)) { $ladder += "q8_0" }
+    $floor = [Math]::Min(65536, $context)
+    $contexts = @(262144, 131072, 65536, 32768, 16384, 8192) | Where-Object { $_ -lt $context -and $_ -ge $floor }
+    $plan = @()
+    $plan += ,@("settings", $null)
+    foreach ($kv in $ladder) { $plan += ,@("kv", $kv) }
+    foreach ($ctx in $contexts) { $plan += ,@("context", $ctx) }
+    if ($currentBytes -gt (18.0 / 32.0)) { $plan += ,@("kv", "q4_0") }
+    foreach ($step in $plan) {
+        if ($step[0] -eq "kv") {
+            $cacheK = $step[1]; $cacheV = $step[1]
+            $overrides["LLAMA_ARG_CACHE_TYPE_K"] = $step[1]
+            $overrides["LLAMA_ARG_CACHE_TYPE_V"] = $step[1]
+            # A quantized V cache requires flash attention in llama.cpp.
+            $overrides["LLAMA_ARG_FLASH_ATTN"] = "on"
+            $steps += "KV cache $($step[1])"
+        } elseif ($step[0] -eq "context") {
+            $context = [int]$step[1]
+            $steps += "context $context"
+        }
+        $projection = Get-CatalogResidencyProjectionMiB -Residency $residency -ContextLength $context -CacheTypeK $cacheK -CacheTypeV $cacheV -Ubatch $ubatch
+        if (($projection + $guard) -le ($available - $fitTarget)) {
+            return @{ Fits = $true; Overrides = $overrides; Steps = $steps; ContextLength = $context; ProjectedMiB = $projection; BudgetMiB = ($available - $fitTarget) }
+        }
+    }
+    return @{ Fits = $false; Overrides = [ordered]@{}; Steps = @(); ContextLength = $ContextLength; ProjectedMiB = $projection; BudgetMiB = ($available - $fitTarget) }
+}
+
 function Get-CatalogModelScore {
     param(
         [object]$Model,
@@ -709,6 +814,7 @@ function Resolve-CatalogModelRecommendation {
         }
     }
 
+    $discreteGpu = Test-CatalogDiscreteGpu -GpuInfo $GpuInfo
     $candidates = @()
     foreach ($model in $catalog.models) {
         if (-not (Test-CatalogModelSourceAllowed -Model $model)) { continue }
@@ -720,11 +826,46 @@ function Resolve-CatalogModelRecommendation {
         $model = Get-CatalogModelFittingContext -Model $model -CapacityGB $capacityGb -RuntimeProfile $runtimeProfile
         $requiredGb = Get-CatalogModelSelectorRequiredGB -Model $model -RuntimeProfile $runtimeProfile
         if ($requiredGb -gt ($capacityGb + 0.25)) { continue }
+        $residencyConfig = $null
+        if ($discreteGpu) {
+            $candidateContext = if ($runtimeProfile -and $runtimeProfile.context_length) { [int]$runtimeProfile.context_length } else { [int]$model.context_length }
+            $residencyConfig = Get-CatalogResidentConfiguration -Model $model -RuntimeProfile $runtimeProfile -VramMB ([double]$GpuInfo.VramMB) -ContextLength $candidateContext
+            # A model that would spill layers to the CPU is not a fit.
+            if ($residencyConfig -and -not $residencyConfig.Fits) { continue }
+        }
         $candidates += [pscustomobject]@{
             Model = $model
             RuntimeProfile = $runtimeProfile
             Score = Get-CatalogModelScore -Model $model -CapacityGB $capacityGb -ModelProfileName $modelProfileName -RuntimeProfile $runtimeProfile
             RequiredGB = $requiredGb
+            Residency = $residencyConfig
+        }
+    }
+    if ($candidates.Count -eq 0 -and $discreteGpu) {
+        # Every capacity fit would spill layers to the CPU (for example on a
+        # 4GB card): offer the best model that stays fully on the GPU.
+        foreach ($model in $catalog.models) {
+            if (-not (Test-CatalogModelSourceAllowed -Model $model)) { continue }
+            if (-not $model.gguf_url) { continue }
+            if (-not (Test-CatalogModelInstallRecommendationAllowed -Model $model)) { continue }
+            if (-not (Test-CatalogModelFamilyAllowed -Model $model -ModelProfileName $modelProfileName)) { continue }
+            $runtimeProfile = Get-CatalogRuntimeProfile -Model $model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB
+            if (-not $runtimeProfile -and (Get-CatalogRuntimeProfile -Model $model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -IgnoreRamMinimum)) { continue }
+            $candidateContext = if ($runtimeProfile -and $runtimeProfile.context_length) { [int]$runtimeProfile.context_length } else { [int]$model.context_length }
+            $residencyConfig = Get-CatalogResidentConfiguration -Model $model -RuntimeProfile $runtimeProfile -VramMB ([double]$GpuInfo.VramMB) -ContextLength $candidateContext
+            if (-not $residencyConfig -or -not $residencyConfig.Fits) { continue }
+            $residentModel = $model
+            if ($residencyConfig.ContextLength -ne $candidateContext -and -not $runtimeProfile) {
+                $residentModel = $model.PSObject.Copy()
+                $residentModel.context_length = [int]$residencyConfig.ContextLength
+            }
+            $candidates += [pscustomobject]@{
+                Model = $residentModel
+                RuntimeProfile = $runtimeProfile
+                Score = Get-CatalogModelScore -Model $residentModel -CapacityGB $capacityGb -ModelProfileName $modelProfileName -RuntimeProfile $runtimeProfile
+                RequiredGB = Get-CatalogModelSelectorRequiredGB -Model $residentModel -RuntimeProfile $runtimeProfile
+                Residency = $residencyConfig
+            }
         }
     }
     if ($candidates.Count -eq 0) {
@@ -742,7 +883,9 @@ function Resolve-CatalogModelRecommendation {
     }) -join ";"
     $confidence = if ($capacityGb -gt 0 -and $GpuInfo.Backend -and $GpuInfo.Backend -ne "unknown") { "high" } else { "medium" }
     $selectedRuntimeProfile = $ranked[0].RuntimeProfile
+    $selectedResidency = $ranked[0].Residency
     $selectedContext = if ($selectedRuntimeProfile -and $selectedRuntimeProfile.context_length) { [int]$selectedRuntimeProfile.context_length } else { [int]$selected.context_length }
+    if ($selectedResidency -and $selectedResidency.Fits) { $selectedContext = [int]$selectedResidency.ContextLength }
     $contextK = [int]($selectedContext / 1024)
     $selectedRequiredGb = Get-CatalogModelSelectorRequiredGB -Model $selected -RuntimeProfile $selectedRuntimeProfile
     if ($selectedRuntimeProfile) {
@@ -771,6 +914,16 @@ function Resolve-CatalogModelRecommendation {
         }
     } elseif ($selected.llama_server_image) {
         $TierConfig["LlamaServerImage"] = $selected.llama_server_image
+    }
+    if ($selectedResidency -and $selectedResidency.Fits) {
+        # Settings that keep every layer on the GPU (smaller ubatch/margin or
+        # a quantized KV cache); they win over the profile's own values.
+        foreach ($key in $selectedResidency.Overrides.Keys) {
+            $TierConfig[$key] = [string]$selectedResidency.Overrides[$key]
+        }
+        if ($selectedResidency.Steps.Count -gt 0) {
+            $reason += " Stays fully on the GPU with: $($selectedResidency.Steps -join ', ')."
+        }
     }
     $TierConfig["RecommendationSource"] = if ($selectedRuntimeProfile) { "catalog_runtime_profile_pre_download" } else { "catalog_fit_pre_download" }
     $TierConfig["RecommendationPolicy"] = "context-aware-largest-capable-general-v1"

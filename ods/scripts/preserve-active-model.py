@@ -29,6 +29,8 @@ RUNTIME_KEYS = (
     "LLAMA_ARG_CACHE_TYPE_K",
     "LLAMA_ARG_CACHE_TYPE_V",
     "LLAMA_ARG_N_CPU_MOE",
+    "LLAMA_ARG_UBATCH",
+    "LLAMA_ARG_FIT_TARGET",
     "LLAMA_ARG_NO_CACHE_PROMPT",
     "LLAMA_ARG_CHECKPOINT_EVERY_NT",
     "LLAMA_ARG_SPEC_TYPE",
@@ -50,6 +52,9 @@ PORTABLE_STATE_RECOVERY_KEYS = {
     "LLAMA_ARG_FLASH_ATTN",
     "LLAMA_ARG_CACHE_TYPE_K",
     "LLAMA_ARG_CACHE_TYPE_V",
+    # Catalog-owned memory controls that keep the profile fully GPU-resident.
+    "LLAMA_ARG_UBATCH",
+    "LLAMA_ARG_FIT_TARGET",
 }
 
 
@@ -339,6 +344,10 @@ def valid_runtime_value(key: str, value: str) -> bool:
         return bool(re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", value))
     if key == "LLAMA_ARG_N_CPU_MOE":
         return value.isdigit() and int(value) <= 4096
+    if key == "LLAMA_ARG_UBATCH":
+        return value.isdigit() and 1 <= int(value) <= 65536
+    if key == "LLAMA_ARG_FIT_TARGET":
+        return value.isdigit() and 512 <= int(value) <= 1048576
     if key == "LLAMA_ARG_NO_CACHE_PROMPT":
         return value.lower() in {"", "on", "off", "true", "false", "0", "1"}
     if key == "LLAMA_ARG_CHECKPOINT_EVERY_NT":

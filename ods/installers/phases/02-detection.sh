@@ -582,6 +582,7 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
                     --tier "${TIER:-1}" \
                     --max-size-mb "$_selector_max_size_mb" \
                     --host-arch "${HOST_ARCH:-unknown}" \
+                    --gpu-count "${GPU_COUNT:-1}" \
                     --installable-only \
                     "$@" \
                     --env
@@ -657,6 +658,7 @@ if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${T
                 unset LLAMA_CPP_RELEASE_TAG_OVERRIDE LLAMA_CPP_SERVER_BINARY
                 unset LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
                 unset LLAMA_ARG_N_CPU_MOE LLAMA_ARG_NO_CACHE_PROMPT
+                unset LLAMA_ARG_UBATCH LLAMA_ARG_FIT_TARGET
                 unset LLAMA_ARG_CHECKPOINT_EVERY_NT LLAMA_ARG_SPEC_TYPE
                 unset LLAMA_ARG_SPEC_DRAFT_N_MAX LLAMA_ARG_SPLIT_MODE LLAMA_ARG_TENSOR_SPLIT
                 load_model_selector_env_from_output <<< "$_preserved_model_env"
