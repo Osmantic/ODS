@@ -641,6 +641,7 @@ async function responseError(resp, label) {
 
 function GeneratedTokenModal({ record, onClose }) {
   const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState(false)
   const [qrDataUrl, setQrDataUrl] = useState(null)
   const [qrError, setQrError] = useState(null)
   const owner = record.token_type === 'owner'
@@ -667,10 +668,11 @@ function GeneratedTokenModal({ record, onClose }) {
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(record.url)
+      setCopyError(false)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch {
-      // Fallback: select the visible input manually.
+      setCopyError(true)
     }
   }
 
@@ -745,9 +747,10 @@ function GeneratedTokenModal({ record, onClose }) {
               title="Copy link"
             >
               {copied ? <Check size={16} className="text-green-400" /> : <Copy size={16} />}
-              {copied ? 'Copied' : 'Copy'}
+              {copied ? 'Copied' : copyError ? 'Copy failed' : 'Copy'}
             </button>
           </div>
+          {copyError && <p role="alert" className="mt-2 text-xs text-amber-300">Clipboard access was denied. Select the link above and copy it manually.</p>}
         </label>
 
         <div className="flex justify-between items-center gap-4">
