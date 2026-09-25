@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { isIP } from "node:net";
 import { isDeepStrictEqual } from "node:util";
-import { pythonSyntaxGuidance } from './python-syntax-guidance.mjs';
+import { pythonSyntaxGuidance, escapedLineBreakDiagnosis } from './python-syntax-guidance.mjs';
 import { captureNativeWebSearchResult, projectNativeWebSearchResult, projectWebResult,
   successfulTruncatedFetch, projectNativeFetchGuidance, TRUNCATED_FETCH_EXTRACTION_GUIDANCE } from "./web-result-projection.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
@@ -7826,7 +7826,9 @@ export function createToolLoopGuard({
         ) {
           // Refuse this no-op, not a subsequent corrective action. Persisted
           // failed tool results and model rounds feed the shared run budget.
-          return {block: true, blockReason: REPEATED_WRITE_REQUIRES_PATCH_REASON};
+          const diagnosis = state.escapedLineBreakDiagnoses?.get(writePath);
+          return {block: true, blockReason: diagnosis?.content === newContent
+            ? `${REPEATED_WRITE_REQUIRES_PATCH_REASON} ${diagnosis.text}` : REPEATED_WRITE_REQUIRES_PATCH_REASON};
         }
       }
       if (selectedToolName === "edit" && noOpEdit(selectedParams)) {
@@ -9492,7 +9494,13 @@ export function createToolLoopGuard({
           Number.isSafeInteger(syntaxExecution.result.details.exitCode) &&
           syntaxExecution.result.details.exitCode > 0 && syntaxExecution.result.details.exitCode <= 255)) &&
         isDeepStrictEqual(syntaxExecution.params, pendingToolRun.executedParams)) {
-      pendingToolRun.pythonSyntaxGuidance = pythonSyntaxGuidance(pendingToolRun.selectedParams, syntaxExecution.result);
+      // A traceback bound to recorded run-written bytes gets the exact diagnosis;
+      // repeated identical writes of those bytes cite it in their refusal.
+      const escapedLineBreak = escapedLineBreakDiagnosis(syntaxExecution.result,
+        state.successfulWriteContentByPath, state.configuredWorkspaceRoot);
+      if (escapedLineBreak) (state.escapedLineBreakDiagnoses ??= new Map()).set(escapedLineBreak.file, escapedLineBreak);
+      pendingToolRun.pythonSyntaxGuidance = escapedLineBreak?.text ??
+        pythonSyntaxGuidance(pendingToolRun.selectedParams, syntaxExecution.result);
       pendingToolRun.pythonSyntaxExitCode = syntaxExecution.result?.details?.exitCode;
       const completed = syntaxExecution.result?.details;
       if (completed?.status === 'completed' && Number.isSafeInteger(completed.exitCode) &&
