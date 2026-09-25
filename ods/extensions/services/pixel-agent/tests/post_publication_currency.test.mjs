@@ -1,4 +1,4 @@
-// Replays Tower2 fleet runs (rounds 060 and 061) against the real host
+// Replays Tower2 fleet runs (rounds 060, 061 and 092) against the real host
 // snapshot code: publish, later tool calls, final answer. The host re-derives
 // the published directory's digest; only real byte changes may make it stale.
 import test from 'node:test';
@@ -160,6 +160,9 @@ const ROUND061 = JSON.parse(readFileSync(new URL('./post-publication-tower2-roun
 // strixy-wsl-beta round 069 (main 76706b5f, #6681 installed): coding-v1 published
 // through the deferred tool_call wrapper, then ran one exit-0 CLI smoke test.
 const ROUND069 = JSON.parse(readFileSync(new URL('./post-publication-strixy-round069.json', import.meta.url), 'utf8'));
+// Tower2 round 092 (main 04f0a835): website-create ran a read-only grep after
+// its last publication, then a passing transition inspection of that snapshot.
+const ROUND092 = JSON.parse(readFileSync(new URL('./post-publication-tower2-round092.json', import.meta.url), 'utf8'));
 // A publication, direct or through Tool Search (bare or qualified id).
 const publication = call => call.tool === 'pixel_ods_workspace_preview'
   ? {relativeDirectory: call.args.relativeDirectory, details: call.result.details}
@@ -176,8 +179,8 @@ async function replay(t, run, {wrapped}) {
     ...(wrapped ? {execControl: EXEC_CONTROL} : {})});
   guard.observeRun(context, 'pixel', {prompt: run.prompt}, {workspaceRoot: workspace, executionHost: 'sandbox', privateBrowserAccess: false});
   // The sandbox mounts the workspace at /workspace, its cwd, and a private tmpfs at /tmp.
-  const sandboxed = command => command.replace(/(^|[\s'"=(>])\/(workspace|tmp)\//g,
-    (_, before, mount) => `${before}${mount === 'workspace' ? workspace : scratch}/`);
+  const sandboxed = command => command.replace(/(^|[\s'"=(>])\/(workspace|tmp)(?=[/\s;&|)'"]|$)/g,
+    (_, before, mount) => `${before}${mount === 'workspace' ? workspace : scratch}`);
   // Performs the model's call on the workspace (production wraps exec only
   // for cancellation); returns the recorded receipt.
   const perform = (id, tool, args, recorded) => {
@@ -187,11 +190,15 @@ async function replay(t, run, {wrapped}) {
       writeFileSync(join(workspace, args.path), args.content, {mode: 0o600});
     } else if (tool === 'edit') {
       let text = readFileSync(join(workspace, args.path), 'utf8');
-      for (const {oldText, newText} of args.edits) {
-        assert.equal(text.split(oldText).length, 2, `${id}: edit must match once`);
-        text = text.replace(oldText, () => newText);
+      // A recorded edit failure changed nothing; the replayed bytes must reproduce it.
+      if (recorded.isError) assert.ok(args.edits.some(({oldText}) => text.split(oldText).length !== 2), `${id}: edit must still fail`);
+      else {
+        for (const {oldText, newText} of args.edits) {
+          assert.equal(text.split(oldText).length, 2, `${id}: edit must match once`);
+          text = text.replace(oldText, () => newText);
+        }
+        writeFileSync(join(workspace, args.path), text);
       }
-      writeFileSync(join(workspace, args.path), text);
     } else if (tool === 'exec') {
       const done = spawnSync('sh', ['-c', `umask 022\n${sandboxed(args.command)}`], {cwd: workspace, encoding: 'utf8'});
       assert.equal(done.status, recorded.details.exitCode, `${id}: ${done.stderr}`);
@@ -203,6 +210,10 @@ async function replay(t, run, {wrapped}) {
     } else assert.ok(['read', 'pixel_ods_workspace_preview_inspect'].includes(tool), tool);
     return result;
   };
+  // OpenClaw 2026.6.33 merges before_tool_call params over the model's
+  // arguments (mergeParamsWithApprovalOverrides) and reports the merged
+  // params to after_tool_call; e.g. a recorded exec workdir survives wrapping.
+  const executed = (params, decision) => decision?.params ? {...params, ...decision.params} : params;
   let nested = 0;
   for (const call of run.calls) {
     const ctx = {...context, toolName: call.tool, toolCallId: call.id};
@@ -219,12 +230,12 @@ async function replay(t, run, {wrapped}) {
       const child = guard.beforeToolCall({toolName: tool, params: args, toolCallId: childId}, childCtx);
       assert.notEqual(child?.block, true, child?.blockReason);
       const inner = perform(childId, tool, call.args.args ?? {}, call.result.details.result);
-      guard.afterToolCall({toolName: tool, params: child?.params ?? args, result: inner,
+      guard.afterToolCall({toolName: tool, params: executed(args, child), result: inner,
         ...(inner.isError ? {error: resultText(inner)} : {}), toolCallId: childId}, childCtx);
       result.details.result = inner;
     } else if (!call.blocked) result = perform(call.id, call.tool, call.args, call.result);
     // As OpenClaw reports it: a refused call keeps the model's params.
-    guard.afterToolCall({toolName: call.tool, params: call.blocked ? call.args : prepared?.params ?? call.args, result,
+    guard.afterToolCall({toolName: call.tool, params: call.blocked ? call.args : executed(call.args, prepared), result,
       ...(result.isError ? {error: resultText(result)} : {}), toolCallId: call.id}, ctx);
     guard.toolResultPersist({toolName: call.tool, toolCallId: call.id, message: {role: 'toolResult', toolName: call.tool, toolCallId: call.id, ...result}}, ctx);
   }
@@ -236,7 +247,12 @@ async function replay(t, run, {wrapped}) {
 }
 const PREVIEW_READY = /\n\nYour preview is ready\.\n\n\[Open preview\]\((http:\/\/[^)]+)\)/;
 
-for (const wrapped of [false, true]) for (const [fleet, runs] of [['tower2 round 061', ROUND061.runs], ['strixy round 069', ROUND069.runs]])
+const REPLAYS = [['tower2 round 061', ROUND061.runs, [false, true]], ['strixy round 069', ROUND069.runs, [false, true]],
+  // Production always wraps exec for cancellation (index.js). These execs pass
+  // workdir "/workspace", which OpenClaw keeps in the executed params; the
+  // guard models that merge on its exec-wrapper path, so replay only that.
+  ['tower2 round 092', ROUND092.runs, [true]]];
+for (const wrapped of [false, true]) for (const [fleet, runs, modes] of REPLAYS) if (modes.includes(wrapped))
 for (const [name, run] of Object.entries(runs)) {
   test(`${fleet} ${name} replay delivers the model's verified answer (wrapped exec=${wrapped})`,
     {skip: !python && 'python3 unavailable'}, async t => {

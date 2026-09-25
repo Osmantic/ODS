@@ -6806,6 +6806,22 @@ export function createToolLoopGuard({
       proof.sessionId === state.currentSessionId && proof.sessionKey === state.currentSessionKey;
   }
 
+  // The snapshot an inspection receipt binds to. A settled later call (tower2
+  // round 092: a grep) removes the preview from currency only until the
+  // end-of-turn host byte comparison, which restores exactly the pending
+  // snapshot if no published byte changed. Inspection renders that immutable
+  // snapshot, so its receipt binds to it meanwhile; the proof then counts only
+  // once that exact snapshot is current again (above). An ineligible call or
+  // explicit invalidation drops the pending snapshot, and another session or
+  // workspace root never matches it; a receipt then binds nothing.
+  function inspectionPreview(state) {
+    if (state.workspacePreview) return state.workspacePreview;
+    const candidate = state.previewRevalidationCandidate;
+    return candidate && candidate.sessionId === state.currentSessionId &&
+      candidate.sessionKey === state.currentSessionKey && candidate.workspaceRoot === state.configuredWorkspaceRoot
+      ? candidate.preview : undefined;
+  }
+
   function rememberSessionDownload(sessionId, jobId) {
     if (typeof sessionId !== "string" || !sessionId || !OPS_JOB_ID.test(jobId)) return;
     const jobs = sessionDownloadJobs.get(sessionId) ?? new Set();
@@ -9778,13 +9794,14 @@ export function createToolLoopGuard({
       if (inspected && isDeepStrictEqual(inspected.params, pendingToolRun.selectedParams)) {
         // A successful read-only check of the same snapshot does not erase an
         // earlier interaction check. Failed or unbound receipts still revoke it.
+        const inspectedPreview = inspectionPreview(state);
         const proof = !failedToolOutcome(event)
-          ? boundVisibilityInspection(inspected.params, inspected.result, state.workspacePreview) : undefined;
+          ? boundVisibilityInspection(inspected.params, inspected.result, inspectedPreview) : undefined;
         const priorProof = pendingToolRun.priorVisibilityInspection;
         const retainInteraction = !failedToolOutcome(event) &&
-          visibilityInspectionMatches(priorProof, state.workspacePreview) &&
+          visibilityInspectionMatches(priorProof, inspectedPreview) &&
           priorProof.sessionId === state.currentSessionId && priorProof.sessionKey === state.currentSessionKey &&
-          boundStaticPreviewInspection(inspected.params, inspected.result, state.workspacePreview);
+          boundStaticPreviewInspection(inspected.params, inspected.result, inspectedPreview);
         state.workspaceVisibilityInspection = proof ? Object.freeze({...proof,
           sessionId: state.currentSessionId, sessionKey: state.currentSessionKey})
           : retainInteraction ? priorProof : undefined;
@@ -9792,7 +9809,7 @@ export function createToolLoopGuard({
           inspected.result?.details?.errorCode === 'unavailable';
         // Selects the repair instruction only; bound to this exact snapshot.
         state.workspaceInspectionPageErrors = !event?.error
-          ? boundInspectionPageErrors(inspected.params, inspected.result, state.workspacePreview) : undefined;
+          ? boundInspectionPageErrors(inspected.params, inspected.result, inspectedPreview) : undefined;
       }
     }
     const refusedCall = state.previewRevalidationRefusedCalls?.delete(toolCallId) === true && failedToolOutcome(event);
