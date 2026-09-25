@@ -42,7 +42,7 @@ import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehavio
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
-  requestedTextDeliveryNote, requestedLoadTexts, withHiddenRequestedText } from './requested-literals.mjs';
+  requestedTextDeliveryNote, requestedLoadTexts, withHiddenRequestedText, withInspectedTextEvidence } from './requested-literals.mjs';
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -9799,8 +9799,13 @@ export function createToolLoopGuard({
         // requested-text miss of this snapshot; completion waits on it.
         const hiddenText = !event?.error
           ? boundHiddenRequestedText(inspected.params, inspected.result, state.workspacePreview) : undefined;
-        if (hiddenText) state.workspaceRequestedTextCheck =
-          withHiddenRequestedText(state.workspaceRequestedTextCheck, state.workspacePreview, hiddenText);
+        if (hiddenText) {
+          state.workspaceRequestedTextCheck =
+            withHiddenRequestedText(state.workspaceRequestedTextCheck, state.workspacePreview, hiddenText);
+          // The newest such evidence in this run; a republish carries it.
+          state.workspaceRequestedTextEvidence = Object.freeze({siteId: state.workspacePreview.siteId,
+            sha256: state.workspacePreview.sha256, hidden: hiddenText});
+        }
       }
     }
     const refusedCall = state.previewRevalidationRefusedCalls?.delete(toolCallId) === true && failedToolOutcome(event);
@@ -10212,9 +10217,12 @@ export function createToolLoopGuard({
         state.workspacePreviewModelAuthored = workspacePreviewAuthorshipMatches(state, preview);
         state.workspacePreview = preview;
         // Bound to this snapshot's bytes; checked before tracked content clears.
-        state.workspaceRequestedTextCheck = requestedTextCheck(state.requestedLiterals, preview, {
+        // Text this run's last inspection found not visible stays reported:
+        // hidden on the same snapshot, unverified on a changed one until it
+        // is inspected. A republish alone never clears it.
+        state.workspaceRequestedTextCheck = withInspectedTextEvidence(requestedTextCheck(state.requestedLiterals, preview, {
           receipt: previewEvent.result?.details, trackedContent: state.successfulWriteContentByPath,
-          workspaceRoot: state.configuredWorkspaceRoot});
+          workspaceRoot: state.configuredWorkspaceRoot}), preview, state.workspaceRequestedTextEvidence);
         state.previewRevalidationCandidate = Object.freeze({preview:Object.freeze({...preview}),
           sessionId:state.currentSessionId,sessionKey:state.currentSessionKey,workspaceRoot:state.configuredWorkspaceRoot});
         state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;

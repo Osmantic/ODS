@@ -32,7 +32,7 @@ jobs:
       - name: Verify preview interactions and isolation in Chromium
         env:
           NODE_PATH: ${{ runner.temp }}/preview-browser/node_modules
-        run: node --test --test-timeout=120000 ods/extensions/services/pixel-agent/tests/preview_browser.test.cjs
+        run: node --test --test-timeout=120000 ods/extensions/services/pixel-agent/tests/preview_browser.test.cjs ods/extensions/services/pixel-agent/tests/preview_requested_text_browser.test.cjs
   compaction-lock:
     strategy:
       fail-fast: false

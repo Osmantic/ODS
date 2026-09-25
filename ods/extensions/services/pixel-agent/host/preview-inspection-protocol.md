@@ -196,16 +196,35 @@ its ancestors), `zero-size`, `clipped` (overflow `hidden`/`clip`, `clip` or an
 `transparent-text`, or `same-color` (text color within a 1.05 contrast ratio of
 a backdrop made only of solid ancestor backgrounds, with nothing else painted
 there). Gradient-clipped, stroked and shadowed text, backgrounds with images,
-filters or blending, and dark color schemes without a background are never
-judged by color. The page's own position below the first viewport is not a
+inset shadows, filters or blending, and dark color schemes without a
+background are never judged by color. The page's own position below the first viewport is not a
 reason.
 
-When every located text is visible, that single measurement decides. Otherwise
-the page is scrolled through once (instant scrolls of 80% of the view, at most
-12 steps and 3 seconds, 150 ms apart), then allowed 400 ms for finite
-transitions, then returned to the top, measuring only the texts still hidden.
-A text seen visible in any sample is visible, so scroll-triggered reveals and
-load animations pass. Page styles and animations are never changed.
+When every located text is visible, that single measurement decides. Otherwise,
+measuring only the texts still hidden after each move or wait:
+
+- each hidden text's first laid-out element is scrolled to the middle of the
+  view (instant `scrollIntoView`, which also scrolls every scroll container
+  around it: a full-height `main`, a scroll-snap deck, a scrolling `body`),
+  with 150 ms for its reveal when that moved it;
+- the page is scrolled through once (instant scrolls of 80% of the view, at
+  most 12 steps, 150 ms apart); neither starts a step after 3 seconds;
+- the last sample comes at least 1.5 seconds after `load` (and at least 400 ms
+  after the scroll pass), whatever the page height;
+- when a hidden text's elements or their ancestors still run a finite CSS
+  animation or transition (a delayed entrance is running during its delay),
+  it may finish before the text is measured again, within 2 seconds for the
+  whole check; infinite animations are not waited for;
+- when anything scrolled, the page returns to the top for one more sample.
+
+A text seen visible in any sample is visible, so scroll-triggered reveals,
+delayed entrances and load animations pass. Page styles and animations are
+never changed. A text is still reported hidden when it appears only after a
+longer timer, and "visible" is not proof that the owner can see it: covering
+by another element, other clip-path shapes, filters and near-background colors
+above the 1.05 ratio are not judged, and the desktop viewport does not show
+small-screen-only content (the plugin does not send text the owner asked to
+show only on small screens or in a tab panel).
 
 The receipt carries `requestedText: {viewport, scrolled, texts}` with one entry
 per sent text, in order: `{text, status}` for `visible`, `absent` (not found as
@@ -222,7 +241,9 @@ Once the step receipt is final, the capsule keeps a copy. If the palette or
 requested-text load stalls (a page script that never yields blocks every
 isolated-world call), the capsule writes that final receipt without the
 unfinished evidence 12 seconds later, and never later than 40 seconds after it
-started, then exits.
+started, then exits. Finished requested-text evidence is kept the same way
+before the browser closes, and an error after the final step receipt writes
+that receipt instead of an `unavailable` failure.
 
 ## Host custody and isolation
 
@@ -277,6 +298,11 @@ protocol, ownership, paths, immutable bytes, subprocess bounds, cleanup,
 page-error receipt shaping through a scripted browser double, the PNG decoder
 and palette buckets, the separate palette capture, the requested-text scroll
 pass, and the stalled-evidence deadline.
+`node --test tests/preview_requested_text_browser.test.cjs` (with Playwright;
+CI's `preview-browser` job runs it) drives the capsule's own in-page
+requested-text functions and timings in real Chromium through fixture pages:
+reveals in scroll containers and on very long pages, delayed entrances and a
+preloader on one-screen pages, text that stays hidden, and fleet round 087.
 Set `ODS_PREVIEW_BROWSER_TESTS=1` only for the fixture Chromium suite; it also
 checks the hidden-inclusive role/name matcher against Playwright's own
 `includeHidden` engine, replays the fleet round 069 page

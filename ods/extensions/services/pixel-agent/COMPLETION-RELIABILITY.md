@@ -238,8 +238,12 @@ not visible is reported through the same note, revision and delivery, with the
 text, the element and the reason (for example `display:none on
 div#soldOutSection`), so completion is not claimed while it remains. Text the
 inspector cannot locate as rendered text is never reported. A later inspection
-of the same snapshot replaces this evidence; a republish starts clean. The
-requested-text tests in `tests/requested_literals.test.mjs` replay that case.
+of the same snapshot replaces this evidence. A republish does not clear it,
+because the revision itself asks for one: republishing the same snapshot keeps
+the text reported as not visible, and a changed snapshot keeps it reported as
+unverified (and asks for an inspection) until an inspection of that snapshot
+reports on it. The requested-text tests in `tests/requested_literals.test.mjs`
+replay that case, including republishing without a fix.
 
 ## Saved project delivery
 

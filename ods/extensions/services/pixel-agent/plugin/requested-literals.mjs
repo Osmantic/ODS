@@ -10,7 +10,8 @@
 // File names the owner lists for a named, published directory are checked
 // against the receipt's complete published path list. A browser inspection of
 // the snapshot adds requested text that is on the page but not visible when
-// it loads, reported the same way.
+// it loads, reported the same way until an inspection of a republished
+// snapshot shows it.
 import {createHash} from 'node:crypto';
 import * as fs from 'node:fs';
 import path from 'node:path';
@@ -268,12 +269,17 @@ export function extractRequestedLiterals(ownerText) {
 }
 
 // Text the owner asked to start hidden, collapsed, revealed on click or
-// rotating is not required to be visible when the page loads.
+// rotating is not required to be visible when the page loads. Neither is text
+// in a tab panel or shown only on small screens: the check loads the page at
+// a desktop size.
+const SMALL_SCREEN = String.raw`(?:mobile|phones?|small(?:er)?\s+screens?)`;
 const REVEAL_CUE = words(String.raw`hid(?:e|es|den|ing)|collaps(?:e|es|ed|ing|ible)|reveal(?:s|ed|ing)?|toggl(?:e|es|ed|ing)|` +
   String.raw`expand(?:s|ed|ing|able)?|accordions?|drop-?downs?|modals?|pop-?ups?|dialogs?|tooltips?|carousels?|sliders?|` +
   String.raw`slideshows?|rotat(?:e|es|ed|ing)|on\s+(?:click|hover|scroll)|when\s+(?:clicked|pressed|hovered|scrolled)|` +
   String.raw`after\s+(?:clicking|pressing|scrolling)|escond\p{L}*|ocult\p{L}*|recolh\p{L}*|revel\p{L}*|expand\p{L}*|` +
-  String.raw`carross\p{L}*|ao\s+clicar`);
+  String.raw`carross\p{L}*|ao\s+clicar|(?<!(?:browser|new)\s+)tabs?(?!\s+titles?${E})|tabbed|mobile[-\s]only|` +
+  String.raw`(?:on|for)\s+${SMALL_SCREEN}\s+only|only\s+(?:on|for)\s+${SMALL_SCREEN}|hamburger|` +
+  String.raw`(?:apenas|s[óo]|somente)\s+(?:no|em)\s+(?:celular|telas?\s+pequenas)`);
 
 // The requested texts a browser inspection checks for visibility when the
 // page loads: page copy only (never file names, nor a title for the browser
@@ -592,21 +598,40 @@ export function requestedTextCheck(literals, preview, {receipt, trackedContent, 
 // Browser evidence for this snapshot replaces its earlier hidden-text misses:
 // each entry is {text, element, reason, culprit?, colors?} from an inspection
 // receipt bound to the same site and snapshot. An empty list clears them.
-export function withHiddenRequestedText(check, preview, hidden) {
+// With `unverified`, the entries come from an earlier snapshot's inspection
+// and mark text this snapshot must still be inspected for.
+export function withHiddenRequestedText(check, preview, hidden, {unverified = false} = {}) {
   if (!Array.isArray(hidden) || !preview || !/^[a-f0-9]{64}$/.test(preview.sha256 ?? '')) return check;
   const bound = check?.siteId === preview.siteId && check.sha256 === preview.sha256 ? check : undefined;
   if (!bound && !hidden.length) return check;
+  const kind = unverified ? 'unverified' : 'hidden';
   return Object.freeze({siteId: preview.siteId, sha256: preview.sha256, missing: Object.freeze([
-    ...(bound?.missing ?? []).filter(miss => !miss.hidden),
-    ...hidden.map(entry => Object.freeze({text: entry.text, hidden: Object.freeze({...entry})})),
+    ...(bound?.missing ?? []).filter(miss => !miss.hidden && !miss.unverified),
+    ...hidden.map(entry => Object.freeze({text: entry.text, [kind]: Object.freeze({...entry})})),
   ])});
 }
 
-const absent = check => check.missing.filter(miss => !miss.heading && !miss.unheaded && !miss.file && !miss.hidden);
+// A republish does not erase this run's last inspection evidence, which is
+// {siteId, sha256, hidden} for the snapshot it inspected. The same snapshot
+// keeps its hidden-text misses; a changed one keeps those texts unverified
+// until an inspection of it reports on them. Text the new bytes lack is
+// already reported as not found.
+export function withInspectedTextEvidence(check, preview, evidence) {
+  if (!Array.isArray(evidence?.hidden) || !evidence.hidden.length || !preview) return check;
+  const same = evidence.siteId === preview.siteId && evidence.sha256 === preview.sha256;
+  const bound = check?.siteId === preview.siteId && check.sha256 === preview.sha256 ? check : undefined;
+  const notFound = new Set((bound?.missing ?? []).filter(miss => !miss.hidden && !miss.unverified).map(miss => miss.text));
+  const carried = evidence.hidden.filter(entry => !notFound.has(entry.text));
+  return carried.length ? withHiddenRequestedText(check, preview, carried, {unverified: !same}) : check;
+}
+
+const absent = check => check.missing.filter(miss => !miss.heading && !miss.unheaded && !miss.file && !miss.hidden &&
+  !miss.unverified);
 const inHeadings = check => check.missing.filter(miss => miss.heading);
 const unheaded = check => check.missing.filter(miss => miss.unheaded);
 const unpublished = check => check.missing.filter(miss => miss.file);
 const invisible = check => check.missing.filter(miss => miss.hidden);
+const unchecked = check => check.missing.filter(miss => miss.unverified);
 const invisibleList = misses => misses.map(miss => hiddenTextDescription(miss.hidden)).join('; ');
 const missingList = misses => misses
   .map(miss => JSON.stringify(miss.text) + (miss.target ? ` (${miss.target})` : '')).join(', ');
@@ -620,11 +645,15 @@ const sentences = parts => parts.filter(Boolean).join(' ');
 export function requestedTextInstruction(preview, check) {
   if (!boundMisses(preview, check)) return undefined;
   const missing = absent(check), names = unheaded(check), files = unpublished(check), hidden = invisible(check);
+  const recheck = unchecked(check);
   return sentences([
     missing.length && `Requested text not found: ${missingList(missing)}. Use the owner's exact wording, republish and re-inspect.`,
     hidden.length && `Requested text is on the page but not visible when it loads: ${invisibleList(hidden)}. ` +
       'Make each one visible without a click (not inside hidden, collapsed or transparent content, ' +
       'and not the color of its background), then republish and re-inspect.',
+    recheck.length && `Requested text was not visible when an earlier snapshot loaded, and this snapshot has not been inspected: ` +
+      `${nameList(recheck)}. Inspect it with pixel_ods_workspace_preview_inspect; if the text is still not visible, ` +
+      'show it without a click, then republish and re-inspect.',
     ...inHeadings(check).map(miss => `${JSON.stringify(miss.text)} appears only inside a longer heading ` +
       `(${JSON.stringify(miss.heading)}); use the exact name as the heading, then republish and re-inspect.`),
     names.length && `Requested names are on the page but not as headings, while other listed items are: ${nameList(names)}. ` +
@@ -671,13 +700,22 @@ export const REQUESTED_VISIBLE_TEXT_REVISION_INSTRUCTION = [
   'from its background), republish with pixel_ods_workspace_preview, inspect the new snapshot, and keep everything else unchanged.',
 ];
 
+// The same for a republished snapshot not yet inspected for text that an
+// earlier snapshot's inspection found not visible when it loads.
+export const REQUESTED_UNVERIFIED_TEXT_REVISION_INSTRUCTION = [
+  'Requested text that was not visible when an earlier snapshot loaded has not been checked on the published page: ',
+  '. Inspect the current snapshot with pixel_ods_workspace_preview_inspect; if it is still not visible, show it without a click, ' +
+  'republish with pixel_ods_workspace_preview and inspect the new snapshot, and keep everything else unchanged.',
+];
+
 export function requestedTextRevisionInstruction(preview, check) {
   if (!boundMisses(preview, check)) return undefined;
   const missing = absent(check), headings = inHeadings(check), names = unheaded(check), files = unpublished(check);
-  const hidden = invisible(check);
+  const hidden = invisible(check), recheck = unchecked(check);
   return sentences([
     missing.length && REQUESTED_TEXT_REVISION_INSTRUCTION.join(nameList(missing)),
     hidden.length && REQUESTED_VISIBLE_TEXT_REVISION_INSTRUCTION.join(nameList(hidden)),
+    recheck.length && REQUESTED_UNVERIFIED_TEXT_REVISION_INSTRUCTION.join(nameList(recheck)),
     headings.length && REQUESTED_HEADING_REVISION_INSTRUCTION.join(nameList(headings)),
     names.length && REQUESTED_ITEM_HEADING_REVISION_INSTRUCTION.join(nameList(names)),
     files.length && REQUESTED_FILE_REVISION_INSTRUCTION.join(nameList(files)),
@@ -687,14 +725,17 @@ export function requestedTextRevisionInstruction(preview, check) {
 export function requestedTextDeliveryNote(preview, check) {
   if (!boundMisses(preview, check)) return undefined;
   const missing = absent(check), headings = inHeadings(check), names = unheaded(check), files = unpublished(check);
-  const hidden = invisible(check);
+  const hidden = invisible(check), recheck = unchecked(check);
   return sentences([
     missing.length && `The published page does not contain text the owner requested: ${missingList(missing)}.`,
     hidden.length && `The published page contains requested text that is not visible when it loads: ${invisibleList(hidden)}.`,
+    recheck.length && 'Requested text that was not visible when an earlier snapshot loaded has not been checked on the ' +
+      `published page: ${missingList(recheck)}.`,
     headings.length && 'The published page uses requested names only inside longer headings: ' +
       `${headings.map(miss => `${JSON.stringify(miss.text)} (${JSON.stringify(miss.heading)})`).join(', ')}.`,
     names.length && `The published page shows requested names, but not as headings like the other listed items: ${missingList(names)}.`,
     files.length && `The published directory does not contain files the owner requested: ${missingList(files)}.`,
-    'The preview is available, but that requirement is not met.',
+    recheck.length === check.missing.length ? 'The preview is available, but that requirement is unverified.'
+      : 'The preview is available, but that requirement is not met.',
   ]);
 }

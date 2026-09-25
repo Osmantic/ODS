@@ -625,14 +625,21 @@ def capture_palette(browser, origin, prefix):
 # page loads, anywhere on the page (not only the first viewport). A fresh load
 # at the fixed desktop viewport, in its own context, like the palette. One
 # measurement right after load decides it when every located text is visible.
-# Otherwise the page is scrolled through once so scroll-triggered reveals get
-# their chance, and a text counts as visible if any later sample shows it.
+# Otherwise each hidden text's own element is scrolled into view (with every
+# scroll container around it), then the page is scrolled through once, so
+# scroll-triggered reveals get their chance. The last sample comes at least
+# TEXT_MIN_OBSERVE_MS after load on any page height, and finite CSS
+# animations or transitions still running on a hidden text's elements (a
+# delayed entrance) may finish first, within TEXT_ANIMATION_WAIT_MS for the
+# whole check. A text counts as visible if any later sample shows it.
 TEXT_VIEWPORT = {"width": 1280, "height": 720}
 TEXT_SETTLE_MS = 100
 TEXT_TIMEOUT_MS = 3000
 TEXT_SCROLL_STEPS = 12
 TEXT_SCROLL_WAIT_MS = 150
 TEXT_FINAL_WAIT_MS = 400
+TEXT_MIN_OBSERVE_MS = 1500
+TEXT_ANIMATION_WAIT_MS = 2000
 TEXT_SCROLL_BUDGET_S = 3
 TEXT_START_BUDGET_S = 30
 REQUESTED_TEXT_STATUSES = ("visible", "hidden", "absent", "unmeasured")
@@ -657,9 +664,9 @@ REQUESTED_TEXT = r"""function(texts) {
     'canvas object embed iframe video audio desc metadata').split(' '));
   const CLIPS = /^(?:hidden|clip)$/, SCROLLS = /^(?:auto|scroll)$/, HIDDEN = /^(?:hidden|collapse)$/;
   const HTML = 'http://www.w3.org/1999/xhtml';
-  const fold = s => s.normalize('NFKC').replace(/[​-‍⁠﻿­]/g, '')
-    .replace(/[‘’‚‛′]/g, "'").replace(/[“-‟″«»]/g, '"')
-    .replace(/[‐-―−]/g, '-').replace(/\s+/g, ' ').trim().toLowerCase();
+  const fold = s => s.normalize('NFKC').replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, '')
+    .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'").replace(/[\u201C-\u201F\u2033\u00AB\u00BB]/g, '"')
+    .replace(/[\u2010-\u2015\u2212]/g, '-').replace(/\s+/g, ' ').trim().toLowerCase();
   const wanted = texts.map(fold), found = wanted.map(() => []);
   let elements = 0, chars = 0, over = false;
   const visit = (e, depth) => {
@@ -826,7 +833,7 @@ REQUESTED_TEXT = r"""function(texts) {
     for (const x of chain) {
       const s = style(x);
       if (s.backgroundImage !== 'none' || s.filter !== 'none' || s.mixBlendMode !== 'normal' ||
-          (s.backdropFilter || 'none') !== 'none' || paintsPseudo(x)) return null;
+          (s.backdropFilter || 'none') !== 'none' || /\binset\b/.test(s.boxShadow || '') || paintsPseudo(x)) return null;
       const bg = rgba(s.backgroundColor);
       if (!bg) return null;
       if (bg.a > 0) { layers.push([bg, x]); if (bg.a >= 0.99) break; }
@@ -853,12 +860,50 @@ REQUESTED_TEXT = r"""function(texts) {
     }
     return first;
   });
+  // Kept in this isolated world, out of the page's reach, for REVEAL_TEXT
+  // and TEXT_ANIMATIONS until the next measurement replaces them.
+  self.odsTextCandidates = new Map(texts.map((text, i) => [text, found[i]]));
   return {results, viewport: innerHeight,
     maxScroll: CLIPS.test(viewportStyle.overflowY) ? 0 : Math.max(0, Math.floor(scroller.scrollHeight - innerHeight))};
 }"""
 
 # Instant, so a page's smooth scroll-behavior cannot stretch the pass.
 SCROLL_TO = r"""function(top) { window.scrollTo({top, left: 0, behavior: 'instant'}); return scrollY; }"""
+
+# Scrolls the first laid-out element the last measurement found for `text`
+# into the middle of the view, which scrolls every scroll container around it
+# too (a full-height main, a scroll-snap deck, a scrolling body). True when
+# that moved it; a display:none element has no box and never moves.
+REVEAL_TEXT = r"""function(text) {
+  const list = (self.odsTextCandidates && self.odsTextCandidates.get(text)) || [];
+  const e = list.find(x => x.isConnected && x.getClientRects().length > 0);
+  if (!e) return false;
+  const before = e.getBoundingClientRect();
+  e.scrollIntoView({block: 'center', inline: 'nearest', behavior: 'instant'});
+  const after = e.getBoundingClientRect();
+  return before.top !== after.top || before.left !== after.left;
+}"""
+
+# Milliseconds until the finite CSS animations and transitions now running on
+# the found elements for `texts`, or on their ancestors, end (0 when none).
+# A delayed entrance is running during its delay; an infinite one never ends
+# and is not waited for.
+TEXT_ANIMATIONS = r"""function(texts) {
+  const chain = new Set();
+  for (const text of texts) {
+    for (const e of (self.odsTextCandidates && self.odsTextCandidates.get(text)) || []) {
+      for (let x = e, n = 0; x && n < 1024; x = x.parentElement || (x.parentNode && x.parentNode.host) || null, n++) chain.add(x);
+    }
+  }
+  let wait = 0;
+  for (const a of document.getAnimations()) {
+    const target = a.effect && a.effect.target;
+    if (!target || !chain.has(target) || a.playState !== 'running' || !(a.playbackRate > 0)) continue;
+    const t = a.effect.getComputedTiming();
+    if (Number.isFinite(t.endTime) && Number.isFinite(t.localTime)) wait = Math.max(wait, (t.endTime - t.localTime) / a.playbackRate);
+  }
+  return Math.min(60000, Math.max(0, Math.ceil(wait)));
+}"""
 
 
 ELEMENT_NAME = re.compile(
@@ -912,6 +957,7 @@ def check_requested_text(browser, origin, prefix, texts):
         page.goto(
             origin + "/__ods_inspection__.html", wait_until="load", timeout=TEXT_TIMEOUT_MS
         )
+        loaded = time.monotonic()
         frame = page.frame(name="inspection")
         if frame is None or frame.url != origin + prefix:
             return None
@@ -959,15 +1005,51 @@ def check_requested_text(browser, origin, prefix, texts):
                     outcome[i] = entry
             pending[:] = [i for i in pending if outcome[i]["status"] == "hidden"]
 
+        animation_budget = [TEXT_ANIMATION_WAIT_MS]
+
+        def finish_animations(waiting):
+            # Finite animations still running on these texts' elements (a
+            # delayed entrance, a reveal under way) end before they are judged
+            # again, within one budget for the whole check.
+            remaining = call(TEXT_ANIMATIONS, [texts[i] for i in waiting])
+            if (
+                isinstance(remaining, bool)
+                or not isinstance(remaining, (int, float))
+                or not 0 <= remaining <= 60000
+            ):
+                raise Invalid("invalid animation observation")
+            wait = int(min(remaining, animation_budget[0]))
+            if wait > 0:
+                animation_budget[0] -= wait
+                page.wait_for_timeout(wait)
+                sample()
+
         scrolled = bool(pending)
         if pending:
+            deadline, moved = time.monotonic() + TEXT_SCROLL_BUDGET_S, False
+            # Each hidden text's own element first, with every scroll
+            # container around it, so its scroll-triggered reveal can run.
+            for i in list(pending):
+                if i not in pending:
+                    continue
+                if time.monotonic() > deadline:
+                    break
+                revealed = call(REVEAL_TEXT, texts[i])
+                if not isinstance(revealed, bool):
+                    raise Invalid("invalid reveal observation")
+                if revealed:
+                    moved = True
+                    page.wait_for_timeout(TEXT_SCROLL_WAIT_MS)
+                sample()
+                if i in pending:
+                    finish_animations([i])
+            # Then the page itself, for reveals keyed to its scroll position.
             maximum, height = int(first["maxScroll"]), int(first["viewport"])
             step = max(height * 0.8, maximum / TEXT_SCROLL_STEPS, 1)
             tops, top = [], 0
             while top < maximum and len(tops) < TEXT_SCROLL_STEPS:
                 top = min(maximum, top + step)
                 tops.append(round(top))
-            deadline, moved = time.monotonic() + TEXT_SCROLL_BUDGET_S, False
             for top in tops:
                 if not pending or time.monotonic() > deadline:
                     break
@@ -975,10 +1057,14 @@ def check_requested_text(browser, origin, prefix, texts):
                 moved = True
                 page.wait_for_timeout(TEXT_SCROLL_WAIT_MS)
                 sample()
-            # Finite load and reveal transitions get time to finish.
+            # Load-time reveals get the same time on a one-screen page as on
+            # a long one: the last sample is TEXT_MIN_OBSERVE_MS after load.
             if pending:
-                page.wait_for_timeout(TEXT_FINAL_WAIT_MS)
+                elapsed = (time.monotonic() - loaded) * 1000
+                page.wait_for_timeout(max(TEXT_FINAL_WAIT_MS, round(TEXT_MIN_OBSERVE_MS - elapsed)))
                 sample()
+            if pending:
+                finish_animations(pending)
             if pending and moved:
                 call(SCROLL_TO, 0)
                 page.wait_for_timeout(TEXT_SCROLL_WAIT_MS)
@@ -1367,6 +1453,8 @@ def run_browser(bundle, playwright_factory=None, checkpoint=None):
                     pass
             if visibility:
                 result["requestedText"] = visibility
+                # Finished evidence survives a slow browser close.
+                checkpoint(result)
             browser.close()
             return result
     finally:
@@ -1443,7 +1531,11 @@ def main():
             bundle, checkpoint=lambda value: output.checkpoint(value, request)
         )
     except Exception:
-        result = failure("unavailable", request)
+        # An error after the step receipt was final (closing the browser, for
+        # example) does not void that receipt.
+        with output.lock:
+            saved = output.saved
+        result = saved if saved is not None else failure("unavailable", request)
     output.write(result, request)
 
 
