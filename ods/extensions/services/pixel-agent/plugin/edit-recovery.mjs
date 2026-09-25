@@ -1,4 +1,4 @@
-// Edit-miss recovery: a closest-text note, and one held retry.
+// Edit-miss recovery: a closest-text note for each missed edit.
 //
 // Fleet evidence (round 078, Mac mini, Qwen3.5-9B, website_edit): a ten-edit
 // batch failed only because edits[8] indented `<footer>` by four spaces where
@@ -6,8 +6,11 @@
 // find edits[8]"), and its single-edit error shows the first 800 characters
 // of the file, so the model re-read the file and rewrote all of it (3,138
 // generated tokens). This module names the closest current text for each
-// missed edit, and keeps the edits that matched so that the retry is one
-// corrected edit instead of the whole batch or the whole file.
+// missed edit and says which edits matched, so that the retry is the same
+// edit call with the miss corrected instead of a rewrite of the whole file.
+// It keeps no state between calls: OpenClaw may run the tool calls of one
+// model message in parallel, and every note describes the file as it is when
+// its own call completes.
 //
 // Matching mirrors OpenClaw 2026.6.33 src/agents/sessions/tools/edit.ts and
 // its diff helpers (MIT, Copyright (c) 2026 OpenClaw Foundation): BOM strip,
@@ -15,11 +18,7 @@
 // It only classifies. Every change still runs through OpenClaw's own edit
 // tool, all edits of one call together or none.
 
-import { createHash } from 'node:crypto';
-
 export const EDIT_NOTE_PREFIX = '[ODS Pixel edit]';
-export const MAX_HELD_HUNKS = 32;
-export const MAX_HELD_BYTES = 64 * 1024;
 const MAX_NOTED_MISSES = 3;
 const MAX_EXCERPT_LINES = 12;
 const MAX_EXCERPT_CHARS = 1000;
@@ -44,10 +43,6 @@ export function normalizeForFuzzyMatch(text) {
 const stripBom = content => content.startsWith('\uFEFF') ? content.slice(1) : content;
 const fileText = content => normalizeToLF(stripBom(content));
 const occurrences = (haystack, needle) => needle ? haystack.split(needle).length - 1 : 0;
-
-export function sha256Hex(bytes) {
-  return createHash('sha256').update(bytes).digest('hex');
-}
 
 // The failed edit's error text, from a direct receipt, a Tool Search
 // envelope or an SDK error. Undefined unless it is an OpenClaw not-found miss.
@@ -278,151 +273,47 @@ function missSentences(lines, content, hunk, edit, label, single) {
   return sentences;
 }
 
-// Recovery for one failed edit call against the current file content.
-// `held` describes hunks Pixel added from an earlier rejected call (appended
-// after the model's `own` edits). With `retainable` (the file is unchanged
-// and this was their first merged attempt) they stay held for one more
-// attempt when only the model's own edits missed; otherwise they are
-// reported as no longer held. Returns {note, hold, retained}: hold lists the
-// model's matched edits to keep, retained says the held edits stay held.
-export function editRecovery(content, edits, {held} = {}) {
+/// Recovery for one failed edit call against the current file content: the
+// closest current text for up to three missed edits, and what to send next.
+// Nothing is kept between calls. OpenClaw applies the edits of one call
+// together or not at all, so the retry is the same call with the misses
+// corrected; the note says so when other edits of the call matched.
+export function editRecovery(content, edits) {
   if (typeof content !== 'string' || !Array.isArray(edits) || !edits.length) return undefined;
   const lines = fileText(content).split('\n');
   const {hunks} = classifyEditHunks(content, edits);
-  const ownCount = held ? held.own : edits.length;
-  const own = hunks.slice(0, ownCount);
-  const single = ownCount === 1;
-  const problems = own.filter(hunk => !['match', 'noop'].includes(hunk.status));
+  const single = edits.length === 1;
+  const problems = hunks.filter(hunk => !['match', 'noop'].includes(hunk.status));
   if (!problems.length) return undefined;
-  const sentences = [held ? `${EDIT_NOTE_PREFIX} Nothing was changed; your ${single ? 'edit' : 'edits'} and the held edits apply together or not at all.`
-    : single ? `${EDIT_NOTE_PREFIX} Nothing was changed.`
-      : `${EDIT_NOTE_PREFIX} Nothing was changed; edits in one call apply together or not at all.`];
+  const sentences = [single ? `${EDIT_NOTE_PREFIX} Nothing was changed.`
+    : `${EDIT_NOTE_PREFIX} Nothing was changed; edits in one call apply together or not at all.`];
   for (const hunk of problems.slice(0, MAX_NOTED_MISSES)) {
     sentences.push(...missSentences(lines, content, hunk, edits[hunk.index], single ? 'The oldText' : `edits[${hunk.index}]`, single));
   }
   if (problems.length > MAX_NOTED_MISSES) {
     sentences.push(`${plural(problems.length - MAX_NOTED_MISSES, 'more edit')} also did not match: ${indexRanges(problems.slice(MAX_NOTED_MISSES).map(hunk => hunk.index))}.`);
   }
-  const matched = own.filter(hunk => hunk.status === 'match');
-  const toFix = problems.filter(hunk => hunk.status === 'missing' || hunk.status === 'ambiguous' || hunk.status === 'empty' || hunk.status === 'overlap');
-  const correctable = toFix.filter(hunk => !(hunk.status === 'missing' && alreadyAppliedLines(content, edits[hunk.index].oldText, edits[hunk.index].newText)));
-  if (held) {
-    const count = held.indices.length, one = count === 1;
-    const retained = Boolean(held.retainable) && correctable.length > 0 &&
-      hunks.slice(ownCount).every(hunk => hunk.status === 'match');
-    if (retained) {
-      const fix = single ? 'a corrected oldText' : `a corrected ${indexRanges(correctable.map(hunk => hunk.index))}`;
-      sentences.push(`The ${plural(count, 'held edit')} from the earlier call ${one ? 'was' : 'were'} included and not applied; ` +
-        `${one ? 'it is' : 'they are'} still held for one more attempt. Send one edit for this file with ${fix}` +
-        `${matched.length ? ' and your other edits from this call' : ''}, copying oldText from the current file; ` +
-        `Pixel applies the held ${one ? 'edit' : 'edits'} with it. Do not rewrite the whole file.`);
-    } else {
-      sentences.push(`The ${plural(count, 'held edit')} from the earlier call ${one ? 'was' : 'were'} included and not applied; ${one ? 'it is' : 'they are'} no longer held, so include ${one ? 'it' : 'them'} again with your corrected edit. Do not rewrite the whole file.`);
-    }
-    return {note: sentences.join('\n'), hold: undefined, retained};
-  }
-  const heldBytes = matched.reduce((size, hunk) => size + Buffer.byteLength(edits[hunk.index].oldText) + Buffer.byteLength(edits[hunk.index].newText), 0);
-  const hold = matched.length && correctable.length && !problems.some(hunk => hunk.status === 'overlap') &&
-    matched.length <= MAX_HELD_HUNKS && heldBytes <= MAX_HELD_BYTES
-    ? matched.map(hunk => ({index: hunk.index, oldText: edits[hunk.index].oldText, newText: edits[hunk.index].newText}))
-    : undefined;
-  if (hold) {
-    const fix = indexRanges(correctable.map(hunk => hunk.index));
-    sentences.push(`The other ${plural(hold.length, 'edit')} match${hold.length === 1 ? 'es' : ''} the current file and ${hold.length === 1 ? 'is' : 'are'} held. ` +
-      `Send one edit for this file with only a corrected ${fix}, copying oldText from the lines above; ` +
-      `Pixel applies the ${plural(hold.length, 'held edit')} with it in the same all-or-nothing edit. Do not rewrite the whole file.`);
-  } else if (correctable.length) {
-    sentences.push(single ? 'Copy oldText exactly from the current file and retry this one edit. Do not rewrite the whole file.'
-      : 'Retry one edit with corrected oldText copied from the current file. Do not rewrite the whole file.');
+  // A missing edit whose newText is already in the file is left out, not corrected.
+  const applied = problems.filter(hunk => hunk.status === 'missing' &&
+    alreadyAppliedLines(content, edits[hunk.index].oldText, edits[hunk.index].newText));
+  const correctable = problems.filter(hunk => !applied.includes(hunk));
+  const others = edits.length - problems.length;
+  if (single) {
+    sentences.push(correctable.length ? 'Copy oldText exactly from the current file and retry this one edit. Do not rewrite the whole file.'
+      : 'Do not rewrite the whole file.');
+  } else if (!others) {
+    sentences.push(correctable.length ? 'Retry the edit with corrected oldText copied from the current file. Do not rewrite the whole file.'
+      : 'Do not rewrite the whole file.');
   } else {
-    sentences.push('Do not rewrite the whole file.');
+    const changes = [
+      ...(correctable.length ? [`a corrected ${indexRanges(correctable.map(hunk => hunk.index))}, copying oldText from the current file`] : []),
+      ...(applied.length ? [`without ${indexRanges(applied.map(hunk => hunk.index))}`] : []),
+    ];
+    const one = others === 1;
+    sentences.push(`The other ${plural(others, 'edit')} match${one ? 'es' : ''} the current file but ${one ? 'was' : 'were'} not applied. ` +
+      `Send one edit for this file again with ${one ? 'it' : 'all of them'} unchanged and ${changes.join(' and ')}. Do not rewrite the whole file.`);
   }
-  return {note: sentences.join('\n'), hold, retained: false};
-}
-
-// The text an edit adds: its newText without the leading and trailing lines
-// it shares with its oldText, whitespace collapsed.
-const flatten = text => text.normalize('NFKC').replace(/\s+/g, ' ').trim();
-const MIN_DUPLICATE_CHARS = 12;
-function insertedText(oldText, newText) {
-  const before = normalizeToLF(oldText).split('\n'), after = normalizeToLF(newText).split('\n');
-  let head = 0;
-  while (head < before.length && head < after.length && squash(before[head]) === squash(after[head])) head++;
-  let tail = 0;
-  while (tail < before.length - head && tail < after.length - head &&
-    squash(before[before.length - 1 - tail]) === squash(after[after.length - 1 - tail])) tail++;
-  return flatten(after.slice(head, after.length - tail).join('\n'));
-}
-// The model's own edit adds what a held edit adds (re-anchored elsewhere),
-// so applying both would insert it twice.
-function addsSameText(held, own) {
-  const added = insertedText(held.oldText, held.newText);
-  return added.length >= MIN_DUPLICATE_CHARS && flatten(own.newText).includes(added) && !flatten(own.oldText).includes(added);
-}
-
-// The next edit of the same file in the same run, with the held edits added
-// after the model's own. The new edit always wins; a held edit is left out
-// when the new call re-sends its oldText (resent), when one of the new edits
-// already adds the same text elsewhere (duplicate), or when it no longer
-// matches alone and uniquely in the merged call, for example because a new
-// edit overlaps its region (overlap). `edits` is undefined when no held edit
-// remains.
-export function mergeHeldHunks(content, ownEdits, held) {
-  if (typeof content !== 'string' || !Array.isArray(ownEdits) || !ownEdits.length || !Array.isArray(held) || !held.length) return undefined;
-  const resent = new Set(ownEdits.map(edit => normalizeToLF(edit.oldText)));
-  const duplicate = [], overlap = [];
-  let kept = [];
-  for (const hunk of held) {
-    if (resent.has(normalizeToLF(hunk.oldText))) continue;
-    if (ownEdits.some(edit => addsSameText(hunk, edit))) duplicate.push(hunk.index);
-    else kept.push(hunk);
-  }
-  for (let pass = 0; pass <= held.length && kept.length; pass++) {
-    const {hunks} = classifyEditHunks(content, [...ownEdits, ...kept]);
-    const next = kept.filter((_, index) => hunks[ownEdits.length + index].status === 'match');
-    if (next.length === kept.length) break;
-    overlap.push(...kept.filter(hunk => !next.includes(hunk)).map(hunk => hunk.index));
-    kept = next;
-  }
-  const byIndex = (left, right) => left - right;
-  return {edits: kept.length ? [...ownEdits.map(edit => ({oldText: edit.oldText, newText: edit.newText})),
-    ...kept.map(hunk => ({oldText: hunk.oldText, newText: hunk.newText}))] : undefined,
-  held: kept.map(hunk => hunk.index), duplicate: duplicate.sort(byIndex), overlap: overlap.sort(byIndex)};
-}
-
-// Held edits the merge left out because of the new call (see mergeHeldHunks).
-// An overlapped one is lost unless the model's own edit carries its change.
-export function heldEditsSkipped({duplicate = [], overlap = []} = {}) {
-  const sentences = [];
-  const verb = indices => indices.length === 1 ? 'was' : 'were';
-  if (overlap.length) {
-    sentences.push(`Held ${indexRanges(overlap)} ${verb(overlap)} not applied because your edit changes the same text; ` +
-      `re-send ${overlap.length === 1 ? 'it' : 'them'} if still needed.`);
-  }
-  if (duplicate.length) sentences.push(`Held ${indexRanges(duplicate)} ${verb(duplicate)} not applied because your edit already adds the same text.`);
-  return sentences.length ? sentences.join(' ') : undefined;
-}
-
-export function mergedEditNote(ownCount, heldIndices, skipped) {
-  const total = ownCount + heldIndices.length;
-  const rest = heldEditsSkipped(skipped);
-  return `${EDIT_NOTE_PREFIX} Applied ${plural(total, 'replacement')} in one edit: yours plus ${heldIndices.length} held from the rejected call (its ${indexRanges(heldIndices)}).${rest ? ` ${rest}` : ''}`;
-}
-
-// A hold that ended without being applied: the file's bytes changed (or can
-// no longer be read) since the rejected call. `file` names it on the result
-// of a call other than an edit of that file.
-export function heldEditsChangedNote(count, file) {
-  const one = count === 1;
-  return `${EDIT_NOTE_PREFIX} The ${plural(count, 'held edit')}${file ? ` for ${file}` : ''} ${one ? 'was' : 'were'} not applied (file changed); ` +
-    `re-send ${one ? 'it' : 'them'} if still needed.`;
-}
-
-// A merged call that failed for a reason the miss analysis cannot explain.
-export function heldEditsDroppedNote(count) {
-  const one = count === 1;
-  return `${EDIT_NOTE_PREFIX} The ${plural(count, 'held edit')} from the earlier call ${one ? 'was' : 'were'} included and not applied; ` +
-    `${one ? 'it is' : 'they are'} no longer held. Re-send ${one ? 'it' : 'them'} if still needed.`;
+  return {note: sentences.join('\n')};
 }
 
 // OpenClaw's single-edit miss appends the first 800 characters of the file.

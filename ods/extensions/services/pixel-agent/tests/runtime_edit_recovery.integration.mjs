@@ -1,14 +1,16 @@
 // OPENCLAW_PACKAGE_DIR must be an absolute path to the pinned runtime package.
 // The pinned runtime's own edit tool agrees with the test double that the
-// edit-recovery replays use (tests/fixtures/openclaw-edit-2026.6.33.mjs), and
-// it applies the merged call that Pixel builds from held edits.
+// edit-recovery replays use (tests/fixtures/openclaw-edit-2026.6.33.mjs), it
+// applies the corrected call that the closest-text note asks for, and it
+// queues parallel edits of one file in the order they start, as the guard
+// replays of one model message assume.
 import test, {after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {classifyEditHunks, editRecovery, mergeHeldHunks} from '../plugin/edit-recovery.mjs';
+import {classifyEditHunks, editRecovery} from '../plugin/edit-recovery.mjs';
 import {executeOpenClawEdit} from './fixtures/openclaw-edit-2026.6.33.mjs';
 
 const packageDir = process.env.OPENCLAW_PACKAGE_DIR;
@@ -55,29 +57,34 @@ test('the recorded Mac batch fails in the runtime exactly as in the double, and 
   assert.match(single.error, /\nCurrent file contents:\n<!DOCTYPE html>/);
 });
 
-test('the runtime applies the merged call built from held edits, byte for byte as the double', async () => {
-  const {hold} = editRecovery(MAC.content, MAC.batch);
-  const merged = mergeHeldHunks(MAC.content, [CORRECTED], hold);
+test('the runtime applies the corrected call that the note asks for, byte for byte as the double', async () => {
+  assert.match(editRecovery(MAC.content, MAC.batch).note, /Send one edit for this file again with all of them unchanged and a corrected edits\[8\]/);
+  const intended = MAC.batch.map((edit, index) => index === 8 ? CORRECTED : edit);
   const root = workspace(MAC.content), doubleRoot = workspace(MAC.content);
-  const runtime = await runtimeEdit(root, {path: MAC.path, edits: merged.edits});
+  const runtime = await runtimeEdit(root, {path: MAC.path, edits: intended});
   assert.equal(runtime.text, `Successfully replaced 10 block(s) in ${MAC.path}.`);
-  assert.match(executeOpenClawEdit(doubleRoot, {path: MAC.path, edits: merged.edits}).content[0].text, /Successfully replaced 10 block\(s\)/);
+  assert.match(executeOpenClawEdit(doubleRoot, {path: MAC.path, edits: intended}).content[0].text, /Successfully replaced 10 block\(s\)/);
   assert.equal(read(root), read(doubleRoot));
   assert.ok(read(root).includes(CORRECTED.newText));
 });
 
-test('the recorded Mac retry merged with the held edits fails in the runtime on its own edit only, leaving the bytes', async () => {
-  // Pixel keeps the hold for one more attempt only when this holds.
-  const {hold} = editRecovery(MAC.content, MAC.batch);
-  const merged = mergeHeldHunks(MAC.content, MAC.retry, hold);
-  assert.equal(merged.edits.length, 10);
-  const root = workspace(MAC.content), doubleRoot = workspace(MAC.content);
-  const runtime = await runtimeEdit(root, {path: MAC.path, edits: merged.edits});
-  assert.equal(runtime.error, `Could not find edits[0] in ${MAC.path}. The oldText must match exactly including all whitespace and newlines.`);
-  assert.equal(executeOpenClawEdit(doubleRoot, {path: MAC.path, edits: merged.edits}).details.error, runtime.error);
-  assert.deepEqual(classifyEditHunks(MAC.content, merged.edits).hunks.map(hunk => hunk.status),
-    ['missing', ...Array(9).fill('match')]);
-  assert.equal(read(root), MAC.content);
+test('parallel edits of one file run in the order they start: each sees the bytes the one before it left', async () => {
+  const root = workspace(MAC.content);
+  const tool = createEditToolDefinition(root);
+  const start = args => tool.execute('call', tool.prepareArguments(structuredClone(args)), undefined, undefined, undefined)
+    .then(result => ({text: result.content[0].text}), error => ({error: error.message}));
+  const title = {oldText: '<h1>Night Garden FLEET-9201630fb1</h1>', newText: '<h1>Night Garden FLEET-9201630fb1 Revised</h1>'};
+  const [batch, first, second] = await Promise.all([
+    start({path: MAC.path, edits: MAC.batch}),
+    start({path: MAC.path, edits: [title]}),
+    start({path: MAC.path, edits: [{oldText: 'FLEET-9201630fb1 Revised</h1>', newText: 'FLEET-9201630fb1 Revised!</h1>'}]}),
+  ]);
+  assert.equal(batch.error, MAC.batchError);
+  assert.match(first.text, /Successfully replaced 1 block\(s\)/);
+  assert.match(second.text, /Successfully replaced 1 block\(s\)/);
+  assert.ok(read(root).includes('<h1>Night Garden FLEET-9201630fb1 Revised!</h1>'));
+  // A note computed now describes these bytes: edits[9]'s change is applied.
+  assert.deepEqual(classifyEditHunks(read(root), MAC.batch).hunks.map(hunk => hunk.status).slice(8), ['missing', 'missing']);
 });
 
 const PARITY = [
