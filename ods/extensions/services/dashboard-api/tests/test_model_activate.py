@@ -3002,8 +3002,96 @@ class TestRecreateLlamaServerFromInspect:
 
         assert self._spec_env_values(argv) == expected
 
+    @pytest.mark.parametrize("mounted", [True, False])
+    def test_recreate_passes_a_chat_template_only_when_the_container_can_read_it(
+        self, monkeypatch, mounted,
+    ):
+        template = "/config/llama-server/templates/qwen3.5-preserve-thinking.jinja"
+        mount = "/srv/ods/config/llama-server/templates:/config/llama-server/templates:ro"
+        inspect_config = {
+            "Config": {
+                "Image": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014",
+                "Cmd": ["--model", "/models/old.gguf", "--metrics"],
+                "Env": ["PATH=/usr/bin", "GGUF_FILE=old.gguf"],
+            },
+            "HostConfig": {"Binds": ["/srv/models:/models:ro", *([mount] if mounted else [])]},
+            "NetworkSettings": {"Networks": {}},
+            "Mounts": [],
+        }
+        env = {"GPU_BACKEND": "nvidia", "GGUF_FILE": "Qwen3.5-27B-Q4_K_M.gguf", "CTX_SIZE": "8192",
+               "MAX_CONTEXT": "8192", "LLAMA_ARG_CHAT_TEMPLATE_FILE": template}
+
+        argv, _calls = self._capture_recreate(monkeypatch, inspect_config, env)
+
+        # A container created before the templates mount would fail to start.
+        assert (f"LLAMA_ARG_CHAT_TEMPLATE_FILE={template}" in argv) is mounted
+        assert (mount in argv) is mounted
+
 
 class TestLaunchNativeLlamaServer:
+
+    @pytest.mark.parametrize(("value", "mapped"), [
+        ("/config/llama-server/templates/qwen3.5-small-preserve-thinking.jinja", True),
+        ("/config/llama-server/templates/missing.jinja", False),
+        ("/config/llama-server/templates/../qwen3.5-small-preserve-thinking.jinja", False),
+        ("/etc/qwen3.5-small-preserve-thinking.jinja", False),
+        ("", False),
+    ])
+    def test_maps_the_chat_template_to_the_installed_copy(self, monkeypatch, tmp_path, value, mapped):
+        templates = tmp_path / "config" / "llama-server" / "templates"
+        templates.mkdir(parents=True)
+        (templates / "qwen3.5-small-preserve-thinking.jinja").write_text("{{ messages }}", encoding="utf-8")
+        env_path = tmp_path / ".env"
+        env_path.write_text(
+            "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n"
+            f"LLAMA_ARG_CHAT_TEMPLATE_FILE={value}\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "data" / "models").mkdir(parents=True)
+        calls = []
+
+        class _FakeProc:
+            pid = 4321
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: calls.append(cmd) or _FakeProc())
+
+        _launch_native_llama_server(env_path, tmp_path / "bin" / "llama-server",
+                                    tmp_path / "data" / "llama-server.log", tmp_path / "data" / ".llama-server.pid")
+
+        cmd = calls[0]
+        if mapped:
+            assert cmd[cmd.index("--chat-template-file") + 1] == str(templates / "qwen3.5-small-preserve-thinking.jinja")
+        else:
+            assert "--chat-template-file" not in cmd
+
+    def test_a_registered_runtime_profile_keeps_its_own_chat_template(self, monkeypatch, tmp_path):
+        templates = tmp_path / "config" / "llama-server" / "templates"
+        templates.mkdir(parents=True)
+        (templates / "qwen3.5-small-preserve-thinking.jinja").write_text("{{ messages }}", encoding="utf-8")
+        env_path = tmp_path / ".env"
+        env_path.write_text(
+            "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n"
+            "LLAMA_ARG_CHAT_TEMPLATE_FILE=/config/llama-server/templates/qwen3.5-small-preserve-thinking.jinja\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "data" / "models").mkdir(parents=True)
+        profile_bin = tmp_path / "profile" / "llama-server"
+        calls = []
+
+        class _FakeProc:
+            pid = 4321
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod._model_stores, "lemonade_profile",
+                            lambda *_args, **_kwargs: {"executable": str(profile_bin), "args": []})
+        monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: calls.append(cmd) or _FakeProc())
+
+        _launch_native_llama_server(env_path, tmp_path / "bin" / "llama-server",
+                                    tmp_path / "data" / "llama-server.log", tmp_path / "data" / ".llama-server.pid")
+
+        assert calls[0][0] == str(profile_bin)
+        assert "--chat-template-file" not in calls[0]
 
     def test_reads_env_and_writes_pid(self, monkeypatch, tmp_path):
         env_path = tmp_path / ".env"
@@ -6200,6 +6288,71 @@ class TestModelActivateRollback:
         assert "LLAMA_ARG_SPEC_TYPE=" not in env_text
         assert "LLAMA_ARG_SPEC_DRAFT_N_MAX=" not in env_text
         assert "filename = Research.Model-Q8_0.gguf" in models_ini.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(("backend", "expected"), [
+        ("nvidia", "/config/llama-server/templates/qwen3.5-preserve-thinking.jinja"),
+        ("cpu", "/config/llama-server/templates/qwen3.5-preserve-thinking.jinja"),
+        ("intel", ""),
+    ])
+    def test_activation_sets_the_model_chat_template_and_clears_it_on_switch(
+        self, tmp_path, monkeypatch, backend, expected,
+    ):
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        templates = install_dir / "config" / "llama-server" / "templates"
+        templates.mkdir(parents=True)
+        (templates / "qwen3.5-preserve-thinking.jinja").write_text("{{ messages }}", encoding="utf-8")
+        # Catalog activation verifies each artifact against its integrity manifest.
+        artifact = lambda name: {"gguf_file": name, "gguf_url": f"https://example.test/{name}",
+                                 "gguf_sha256": hashlib.sha256(b"model").hexdigest()}
+        (install_dir / "config" / "model-library.json").write_text(json.dumps({"models": [
+            {"id": "qwen35", **artifact("Qwen3.5-27B-Q4_K_M.gguf"), "llm_model_name": "qwen35",
+             "llama_chat_template": "qwen3.5-preserve-thinking.jinja", "context_length": 65536},
+            {"id": "other", **artifact("Other-Q4_K_M.gguf"), "llm_model_name": "other", "context_length": 65536},
+        ]}), encoding="utf-8")
+        for name in ("Qwen3.5-27B-Q4_K_M.gguf", "Other-Q4_K_M.gguf"):
+            (install_dir / "data" / "models" / name).write_text("model", encoding="utf-8")
+        env_path.write_text(
+            f"GPU_BACKEND={backend}\n"
+            "GGUF_FILE=old-model.gguf\nLLM_MODEL=old-model\nMAX_CONTEXT=65536\nOLLAMA_PORT=8080\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+        served = {}
+
+        def fake_run(cmd, **_kwargs):
+            stdout = _llama_identity_response(served["gguf"]) if cmd and cmd[0] == "curl" else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        for model_id, gguf, template in (("qwen35", "Qwen3.5-27B-Q4_K_M.gguf", expected), ("other", "Other-Q4_K_M.gguf", "")):
+            served["gguf"] = gguf
+            handler = _ResponseHandler()
+            _mod.AgentHandler._do_model_activate(handler, model_id)
+            assert handler.response_code == 200, handler.parse_response()
+            values = dict(line.split("=", 1) for line in env_path.read_text(encoding="utf-8").splitlines() if "=" in line)
+            assert values.get("LLAMA_ARG_CHAT_TEMPLATE_FILE", "") == template, model_id
+
+    def test_chat_template_needs_a_llama_cpp_runtime_and_a_shipped_file(self, tmp_path, monkeypatch):
+        templates = tmp_path / "config" / "llama-server" / "templates"
+        templates.mkdir(parents=True)
+        (templates / "qwen3.5-preserve-thinking.jinja").write_text("{{ messages }}", encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        model = {"llama_chat_template": "qwen3.5-preserve-thinking.jinja"}
+        expected = "/config/llama-server/templates/qwen3.5-preserve-thinking.jinja"
+        for backend in ("nvidia", "jetson", "cpu", "apple"):
+            assert _mod._llama_chat_template_env(model, {"GPU_BACKEND": backend}) == expected
+        for backend in ("amd", "intel", "sycl", ""):
+            assert _mod._llama_chat_template_env(model, {"GPU_BACKEND": backend}) == ""
+        monkeypatch.setattr(_mod, "_uses_lemonade_runtime", lambda _env: True)
+        assert _mod._llama_chat_template_env(model, {"GPU_BACKEND": "nvidia"}) == ""
+        monkeypatch.setattr(_mod, "_uses_lemonade_runtime", lambda _env: False)
+        for name in ("missing.jinja", "../qwen3.5-preserve-thinking.jinja", "qwen3.5.txt", None):
+            assert _mod._llama_chat_template_env({"llama_chat_template": name}, {"GPU_BACKEND": "nvidia"}) == ""
 
     def test_local_gguf_activation_prefers_canonical_ctx_size_on_upgrade(
         self, tmp_path, monkeypatch,

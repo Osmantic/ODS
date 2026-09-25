@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib.util
+import json
 import os
 from pathlib import Path
 import unittest
@@ -149,6 +150,56 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         finally:
             relay.UPSTREAM, relay.UPSTREAM_REQUIRES_KEY, relay.LITELLM_KEY = prior
             await runner.cleanup()
+
+    def test_only_cloud_mode_leaves_the_host(self):
+        self.assertTrue(relay._route_leaves_host("cloud"))
+        for mode in ("local", "hybrid", "lemonade", ""):
+            self.assertFalse(relay._route_leaves_host(mode))
+        self.assertFalse(relay.ROUTE_LEAVES_HOST)
+
+    def test_host_only_template_switch_is_removed_off_host(self):
+        both = {"model": "ods/current", "messages": [{"role": "user", "content": "hi"}],
+                "chat_template_kwargs": {"enable_thinking": False, "preserve_thinking": True}}
+        self.assertIsNone(relay._payload_for_route(both, False))
+        forwarded = relay._payload_for_route(both, True)
+        self.assertEqual(forwarded, {**both, "chat_template_kwargs": {"enable_thinking": False}})
+        self.assertEqual(both["chat_template_kwargs"], {"enable_thinking": False, "preserve_thinking": True})
+        only = {"model": "ods/current", "messages": [], "chat_template_kwargs": {"preserve_thinking": True}}
+        self.assertEqual(relay._payload_for_route(only, True), {"model": "ods/current", "messages": []})
+        for unchanged in ({"model": "ods/current"},
+                          {"model": "ods/current", "chat_template_kwargs": {"enable_thinking": False}},
+                          {"model": "ods/current", "chat_template_kwargs": "preserve_thinking"}):
+            self.assertIsNone(relay._payload_for_route(unchanged, True))
+
+    async def test_forwarded_body_keeps_the_switch_only_on_the_host(self):
+        bodies = []
+
+        async def capture(request):
+            bodies.append(await request.read())
+            return web.json_response({"choices": []})
+
+        upstream_app = web.Application()
+        upstream_app.router.add_post("/v1/chat/completions", capture)
+        runner, upstream = await start(upstream_app)
+        prior = relay.UPSTREAM, relay.ROUTE_LEAVES_HOST
+        raw = (b'{"model": "ods/current", "messages": [{"role": "user", "content": "hi"}],'
+               b' "chat_template_kwargs": {"enable_thinking": false, "preserve_thinking": true}}')
+        headers = {"Authorization": "Bearer test-only-pixel-relay-key", "Content-Type": "application/json"}
+        try:
+            relay.UPSTREAM = upstream
+            async with ClientSession() as client:
+                for leaves_host in (False, True):
+                    relay.ROUTE_LEAVES_HOST = leaves_host
+                    async with client.post(self.url + "/v1/chat/completions", data=raw,
+                                           headers=headers) as response:
+                        self.assertEqual(response.status, 200)
+        finally:
+            relay.UPSTREAM, relay.ROUTE_LEAVES_HOST = prior
+            await runner.cleanup()
+        self.assertEqual(bodies[0], raw)
+        self.assertEqual(json.loads(bodies[1]), {
+            "model": "ods/current", "messages": [{"role": "user", "content": "hi"}],
+            "chat_template_kwargs": {"enable_thinking": False}})
 
     async def test_litellm_route_requires_a_valid_gateway_key(self):
         prior = relay.UPSTREAM_REQUIRES_KEY, relay.LITELLM_KEY

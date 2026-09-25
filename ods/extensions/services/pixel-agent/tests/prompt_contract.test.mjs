@@ -284,6 +284,8 @@ test("uses a bounded complete core on compact contexts without changing requeste
   );
   assert.deepEqual(plain, {
     appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
+    systemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
+    turnContext: "",
   });
   assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 3800);
   assert.match(plain.appendSystemContext, /untrusted data, never authority/);
@@ -302,7 +304,11 @@ test("uses a bounded complete core on compact contexts without changing requeste
     { agentId: "pixel", contextTokenBudget: 32768 },
     "pixel"
   );
-  assert.deepEqual(full, { appendSystemContext: ODS_CONVERSATION_CONTRACT });
+  assert.deepEqual(full, {
+    appendSystemContext: ODS_CONVERSATION_CONTRACT,
+    systemContext: ODS_CONVERSATION_CONTRACT,
+    turnContext: "",
+  });
 
   const configuredCompact = promptContractForAgent(
     {
@@ -316,6 +322,8 @@ test("uses a bounded complete core on compact contexts without changing requeste
   );
   assert.deepEqual(configuredCompact, {
     appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
+    systemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
+    turnContext: "",
   });
 
   const configuredLeanLargeContext = promptContractForAgent(
@@ -330,6 +338,8 @@ test("uses a bounded complete core on compact contexts without changing requeste
   );
   assert.deepEqual(configuredLeanLargeContext, {
     appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
+    systemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
+    turnContext: "",
   });
 });
 
@@ -711,6 +721,9 @@ test("adds exact pending and failed verification truth constraints", () => {
     {
       appendSystemContext:
         `${ODS_CONVERSATION_CONTRACT} ${ODS_VERIFICATION_PENDING_CONTRACT}`,
+      // Verification state is per run, so it rides on the turn, not the system.
+      systemContext: ODS_CONVERSATION_CONTRACT,
+      turnContext: ODS_VERIFICATION_PENDING_CONTRACT.trim(),
     }
   );
   const failed = promptContractForAgent(context, "pixel", undefined, {
@@ -728,7 +741,11 @@ test("adds exact pending and failed verification truth constraints", () => {
     promptContractForAgent(context, "pixel", undefined, {
       verificationStatus: "passed",
     }),
-    { appendSystemContext: ODS_CONVERSATION_CONTRACT }
+    {
+      appendSystemContext: ODS_CONVERSATION_CONTRACT,
+      systemContext: ODS_CONVERSATION_CONTRACT,
+      turnContext: "",
+    }
   );
 });
 
@@ -738,7 +755,11 @@ test("does not let user-authored loop text disable tools", () => {
   assert.equal(needsLoopRecovery(messages), false);
   assert.deepEqual(
     promptContractForAgent({ agentId: "pixel" }, "pixel", { messages }),
-    { appendSystemContext: ODS_CONVERSATION_CONTRACT }
+    {
+      appendSystemContext: ODS_CONVERSATION_CONTRACT,
+      systemContext: ODS_CONVERSATION_CONTRACT,
+      turnContext: "",
+    }
   );
 });
 
@@ -765,7 +786,11 @@ test("adds only a validated exact GitHub repository source to its turn", () => {
   assert.equal(githubSourceContract(messages), exact);
   assert.deepEqual(
     promptContractForAgent({ agentId: "pixel" }, "pixel", { messages }),
-    { appendSystemContext: `${ODS_CONVERSATION_CONTRACT}${exact}` }
+    {
+      appendSystemContext: `${ODS_CONVERSATION_CONTRACT}${exact}`,
+      systemContext: ODS_CONVERSATION_CONTRACT,
+      turnContext: exact.trim(),
+    }
   );
   const exactFile = githubSourceContract(
     [],
@@ -791,7 +816,11 @@ test("adds only a validated exact GitHub repository source to its turn", () => {
         messages: [{ role: "user", content: "old unrelated request" }],
       }
     ),
-    { appendSystemContext: `${ODS_CONVERSATION_CONTRACT}${exact}` }
+    {
+      appendSystemContext: `${ODS_CONVERSATION_CONTRACT}${exact}`,
+      systemContext: ODS_CONVERSATION_CONTRACT,
+      turnContext: exact.trim(),
+    }
   );
 });
 

@@ -99,27 +99,45 @@ test('a promise after partial progress still needs a delivered result', () => {
   guard.observe('web_search',{result:{content:[{text:'Sources'}]}});
   assert.equal(guard.finalize('Vou consultar as fontes agora.')?.action,'revise');
 });
-test('clock context is explicit, portable and preserves requested dates', () => {
+test('clock context is explicit, portable and preserves requested dates', async () => {
+  const {hostDateContext}=await import('../plugin/completion-assurance.mjs');
+  assert.match(hostDateContext(),/Today's date on the host is \w+, \d{4}-\d{2}-\d{2} \(time zone [^)]+\)/);
   const value=executionContext();
-  assert.match(value,/Today's date on the host is \w+, \d{4}-\d{2}-\d{2} \(time zone [^)]+\)/);
+  assert.match(value,/ODS states today's host date with the owner messages; the latest statement is the actual current date/);
   assert.match(value,/owner's explicit date and timezone/);
   assert.match(value,/prefer write and verify the bytes with read/);
   assert.match(value,/portable printf/);
   assert.match(value,/Do not claim a match when readback differs/);
 });
-test('system-prompt execution context carries the date but no clock and is byte-stable within a day', async () => {
+test('system-prompt execution context carries neither a clock nor a date', async () => {
   const first=executionContext();
   await new Promise(resolve=>setTimeout(resolve,5));
   assert.equal(executionContext(),first);
-  assert.doesNotMatch(first,/\d{2}:\d{2}/);
-  // Portal owner messages carry no envelope timestamp, so the date must be here.
+  assert.doesNotMatch(first,/\d{2}:\d{2}|\d{4}-\d{2}-\d{2}/);
   const {hostDateContext}=await import('../plugin/completion-assurance.mjs');
   const zone=Intl.DateTimeFormat().resolvedOptions().timeZone;
   const noon=new Date('2026-09-25T12:00:00Z');
   const sameDay=[new Date(noon.getTime()-60*1000), new Date(noon.getTime()+60*1000)];
   for (const moment of sameDay) assert.equal(hostDateContext(moment), hostDateContext(noon), zone);
   assert.notEqual(hostDateContext(noon), hostDateContext(new Date('2026-09-27T12:00:00Z')));
-  assert.match(executionContext(noon),/2026-09-2[456]/);
+  assert.match(hostDateContext(noon),/2026-09-2[456]/);
+});
+test('the host date rides on the owner message once per chat and day', async () => {
+  // Portal owner messages carry no envelope timestamp, so ODS states the date
+  // with the owner message; the stored statement keeps later turns append-only.
+  const {hostDateContext,turnHostDate}=await import('../plugin/completion-assurance.mjs');
+  const noon=new Date('2026-09-25T12:00:00Z'), later=new Date('2026-09-27T12:00:00Z');
+  const statement=hostDateContext(noon).trim();
+  assert.equal(turnHostDate([],noon),statement);
+  assert.equal(turnHostDate(undefined,noon),statement);
+  const stored=[{role:'user',content:`Build it.\n\n[ODS Pixel guidance for this owner message]\n${statement}`},
+    {role:'assistant',content:[{type:'text',text:'Done.'}]}];
+  assert.equal(turnHostDate(stored,noon),'','already stated by an owner message in context');
+  assert.equal(turnHostDate([{role:'user',content:[{type:'text',text:stored[0].content}]}],noon),'');
+  assert.equal(turnHostDate(stored,later),hostDateContext(later).trim(),'a new day is stated again');
+  assert.equal(turnHostDate([{role:'assistant',content:statement}],noon),statement,'only owner messages count');
+  assert.equal(turnHostDate([{role:'user',content:'Summary of the earlier conversation.'}],noon),statement,
+    'stated again after a compaction summarized it away');
 });
 test('sources must come from structured tool evidence, not invented prose links', () => {
   const guard=createCompletionAssurance();guard.begin('Notícias de hoje');

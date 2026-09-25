@@ -28,6 +28,27 @@ def _upstream_route(ods_mode, external_llm_url):
 
 UPSTREAM, UPSTREAM_REQUIRES_KEY = _upstream_route(
     os.environ.get("ODS_MODE", "local"), os.environ.get("EXTERNAL_LLM_URL", ""))
+
+
+def _route_leaves_host(ods_mode):
+    """Cloud mode is the only route that can reach another machine's model API.
+
+    Local, hybrid and Lemonade modes use model-router's install-time endpoint
+    allowlist, and an external LLM is a host-managed Ollama, LM Studio or
+    other OpenAI-compatible runtime serving this install's model. In cloud
+    mode LiteLLM may forward to a cloud API or a remote provider, which can be
+    another ODS host's inference-sharing API.
+    """
+    return ods_mode == "cloud"
+
+
+ROUTE_LEAVES_HOST = _route_leaves_host(os.environ.get("ODS_MODE", "local"))
+# Pixel asks Qwen chat templates to render earlier assistant turns with the
+# (empty) think block they were generated with, so this host's llama.cpp or
+# Lemonade server can reuse its prompt cache on the next owner message. A
+# shared ODS host on an earlier release rejects every template key except
+# enable_thinking (HTTP 400), so the switch never leaves the host.
+HOST_ONLY_TEMPLATE_KEYS = frozenset({"preserve_thinking"})
 ALIASES = {"ods/current", "default"}
 MAX_BODY = 2 * 1024 * 1024
 WRITE_TIMEOUT_SECONDS = 30.0  # Host-local OpenClaw must drain promptly.
@@ -48,6 +69,25 @@ def _generation_summary(payload):
         "max_completion_tokens": completion_budget if type(completion_budget) is int and 0 <= completion_budget <= 10**9 else None,
         "tool_count": len(tools) if isinstance(tools, list) else 0,
     }
+
+
+def _payload_for_route(payload, leaves_host):
+    """Return the request to send instead of the original bytes, or None.
+
+    Only host-only chat-template switches are removed, and only on a route
+    that can leave the host; every other field is forwarded unchanged.
+    """
+    template = payload.get("chat_template_kwargs")
+    if (not leaves_host or not isinstance(template, dict)
+            or HOST_ONLY_TEMPLATE_KEYS.isdisjoint(template)):
+        return None
+    kept = {key: value for key, value in template.items() if key not in HOST_ONLY_TEMPLATE_KEYS}
+    forwarded = dict(payload)
+    if kept:
+        forwarded["chat_template_kwargs"] = kept
+    else:
+        del forwarded["chat_template_kwargs"]
+    return forwarded
 
 
 async def _disconnect(request):
@@ -82,6 +122,9 @@ async def _inference(request):
         diagnostic_id = uuid.uuid4().hex
         LOG.info("generation_start %s", json.dumps({
             "id": diagnostic_id, **_generation_summary(payload)}))
+        forwarded = _payload_for_route(payload, ROUTE_LEAVES_HOST)
+        if forwarded is not None:
+            body = json.dumps(forwarded).encode("utf-8")
 
     started = time.monotonic()
     first_chunk = None

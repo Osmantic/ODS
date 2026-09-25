@@ -183,5 +183,6 @@ load_model_selector_env_from_output() {
         LLAMA_ARG_SPEC_DRAFT_TYPE_K \
         LLAMA_ARG_SPEC_DRAFT_TYPE_V \
         LLAMA_ARG_SPLIT_MODE \
-        LLAMA_ARG_TENSOR_SPLIT
+        LLAMA_ARG_TENSOR_SPLIT \
+        LLAMA_ARG_CHAT_TEMPLATE_FILE
 }

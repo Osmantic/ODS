@@ -67,6 +67,12 @@ grep -Eq 'HERMES_CONTEXT_SIZE=65536' installers/macos/install-macos.sh \
     || fail "macOS Hermes floor must be 64K"
 pass "Windows and macOS Hermes floors are 64K"
 
+# The macOS Hermes re-selection drops the previous pick's chat template too.
+grep -B4 'load_model_selector_env_from_output <<< "$_hermes_env"' installers/macos/install-macos.sh \
+    | grep -q 'unset LLAMA_ARG_CHAT_TEMPLATE_FILE' \
+    || fail "macOS Hermes re-selection must unset LLAMA_ARG_CHAT_TEMPLATE_FILE before loading the new pick"
+pass "macOS Hermes re-selection drops the previous pick's chat template"
+
 grep -Eq 'HERMES_CONTEXT_SIZE=.*131072|hermesContextSize[[:space:]]*=[[:space:]]*131072' \
     installers/phases/03-features.sh installers/windows/phases/03-features.ps1 \
     && fail "Linux/Windows Hermes feature phases must not force 128K"
@@ -81,6 +87,9 @@ mkdir -p "$fixture_dir/scripts" "$fixture_dir/config" "$fixture_dir/installers/l
     "$fixture_dir/extensions/services/dashboard-api" "$fixture_dir/lib"
 cp scripts/select-model.py "$fixture_dir/scripts/"
 cp config/model-library.json "$fixture_dir/config/"
+# The selector names an ODS chat template only when the file ships.
+mkdir -p "$fixture_dir/config/llama-server"
+cp -R config/llama-server/templates "$fixture_dir/config/llama-server/"
 cp installers/lib/model-selector.sh "$fixture_dir/installers/lib/"
 cp extensions/services/dashboard-api/model_memory.py \
     extensions/services/dashboard-api/model_selection.py \
@@ -123,6 +132,8 @@ run_fit_case() {
         INSTALLER_RECOMMENDED_GGUF="${9:-$5}"
         INSTALLER_RECOMMENDED_CONTEXT="${10:-$6}"
         MODEL_RECOMMENDATION_REASON="selector chose $6 context"
+        # What phase 02 loaded with the pick (see CASE_CHAT_TEMPLATE below).
+        LLAMA_ARG_CHAT_TEMPLATE_FILE="${CASE_CHAT_TEMPLATE:-}"
         WARNINGS=""
 
         ods_progress() { :; }
@@ -137,6 +148,7 @@ run_fit_case() {
         printf 'LLM_MODEL=%s\n' "$LLM_MODEL"
         printf 'MODEL_RUNTIME_PROFILE=%s\n' "${MODEL_RUNTIME_PROFILE:-}"
         printf 'LLAMA_ARG_CACHE_TYPE_K=%s\n' "${LLAMA_ARG_CACHE_TYPE_K:-}"
+        printf 'LLAMA_ARG_CHAT_TEMPLATE_FILE=%s\n' "${LLAMA_ARG_CHAT_TEMPLATE_FILE:-}"
         printf 'INSTALLER_RECOMMENDED_CONTEXT=%s\n' "$INSTALLER_RECOMMENDED_CONTEXT"
         printf 'INSTALLER_RECOMMENDED_MODEL=%s\n' "$INSTALLER_RECOMMENDED_MODEL"
         printf 'HERMES_CONTEXT_BELOW_FLOOR=%s\n' "$HERMES_CONTEXT_BELOW_FLOOR"
@@ -208,6 +220,23 @@ if command -v python3 >/dev/null 2>&1; then
     out="$(run_fit_case 49140 128 4 deepseek-r1-distill-llama-70b DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf 65536 installer         qwen3.6-35b-a3b Qwen3.6-35B-A3B-UD-Q4_K_M.gguf 131072)"
     [[ "$(field "$out" INSTALLER_RECOMMENDED_CONTEXT)" == "131072" ]]         || fail "the recommended Qwen3.6-35B-A3B must keep its 131072, not the preserved R1-70B 65536: $out"
     pass "Linux phase 03 records the served context only for this run's own pick"
+
+    # (h) A re-selection replaces the pick's ODS chat template: the new model
+    # gets its own, or none. 48 GB: the Qwen3.5-122B-A10B pick does not fit at
+    # 64K and Qwen3.6-35B-A3B (no ODS template) is re-selected; 16 GB: the
+    # 27B gives way to the 9B and its small-model template.
+    templates=/config/llama-server/templates
+    out="$(CASE_CHAT_TEMPLATE="$templates/qwen3.5-preserve-thinking.jinja" \
+        run_fit_case 49140 128 4 qwen3.5-122b-a10b Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf 32768 installer)"
+    [[ "$(field "$out" LLM_MODEL)" == "qwen3.6-35b-a3b" ]] || fail "48 GB 122B-A10B should be re-selected: $out"
+    [[ -z "$(field "$out" LLAMA_ARG_CHAT_TEMPLATE_FILE)" ]] \
+        || fail "a re-selected model must not keep the previous pick's chat template: $out"
+    out="$(CASE_CHAT_TEMPLATE="$templates/qwen3.5-preserve-thinking.jinja" \
+        run_fit_case 16376 64 3 qwen3.5-27b Qwen3.5-27B-Q4_K_M.gguf 32768 installer)"
+    [[ "$(field "$out" LLM_MODEL)" == "qwen3.5-9b" ]] || fail "16 GB 27B should be re-selected: $out"
+    [[ "$(field "$out" LLAMA_ARG_CHAT_TEMPLATE_FILE)" == "$templates/qwen3.5-small-preserve-thinking.jinja" ]] \
+        || fail "the re-selected 9B must get its own chat template: $out"
+    pass "Linux Hermes floor re-selection replaces the previous pick's chat template"
 else
     echo "  SKIP: python3 unavailable; fit re-check cases need the real selector"
 fi

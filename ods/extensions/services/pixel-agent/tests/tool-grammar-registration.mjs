@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
-export async function registeredPixelTools({inspection = true} = {}) {
+export async function registeredPixelTools({inspection = true, context: toolContext} = {}) {
   const entry = new URL('../plugin/index.js', import.meta.url);
   const source = await readFile(entry, 'utf8');
   const isolated = source.replace(/from\s+(['"])([^'"]+)\1/g, (match, quote, specifier) => {
@@ -27,7 +27,7 @@ export async function registeredPixelTools({inspection = true} = {}) {
   assert.doesNotMatch(stubs, /from\s*['"]openclaw\//, 'all SDK imports must be isolated');
   const {default: plugin} = await import(`data:text/javascript;base64,${Buffer.from(`${stubs}\n//# sourceURL=${entry.href}?schema-discovery`).toString('base64')}`);
   const tools = [];
-  const context = {agentId: 'pixel', sessionKey: `agent:pixel:openai-user:ods-${'a'.repeat(64)}`};
+  const context = toolContext ?? {agentId: 'pixel', sessionKey: `agent:pixel:openai-user:ods-${'a'.repeat(64)}`};
   plugin.register({
     registrationMode: 'discovery',
     config: {agents: {list: [{id: 'pixel', sandbox: {mode: 'off'}, tools: {exec: {host: 'gateway'}}}]}},

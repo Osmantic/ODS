@@ -1306,6 +1306,8 @@ $(if [[ -n "${LLAMA_ARG_CHECKPOINT_EVERY_NT:-}" ]]; then echo "LLAMA_ARG_CHECKPO
 $(if [[ -n "${LLAMA_ARG_CTX_CHECKPOINTS:-}" ]]; then echo "LLAMA_ARG_CTX_CHECKPOINTS=${LLAMA_ARG_CTX_CHECKPOINTS}"; fi)
 $(if [[ -n "${LLAMA_ARG_CACHE_RAM:-}" ]]; then echo "LLAMA_ARG_CACHE_RAM=${LLAMA_ARG_CACHE_RAM}"; fi)
 $(if [[ -n "${LLAMA_THREADS_VALUE:-}" ]]; then echo "LLAMA_THREADS=${LLAMA_THREADS_VALUE}"; fi)
+# Set by the model selector for catalog GGUFs that use an ODS llama.cpp chat template.
+$(if [[ -n "${LLAMA_ARG_CHAT_TEMPLATE_FILE:-}" ]]; then echo "LLAMA_ARG_CHAT_TEMPLATE_FILE=${LLAMA_ARG_CHAT_TEMPLATE_FILE}"; fi)
 LLAMA_PARALLEL=${LLAMA_PARALLEL:-1}
 # NVIDIA/CPU llama.cpp images default to lossless n-gram speculation (ngram-mod).
 # LLAMA_SPEC_TYPE=none turns it off; unset keeps the default.
