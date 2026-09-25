@@ -120,6 +120,33 @@ by the installer. Provider service availability remains an external dependency;
 neither engine guarantees coverage of a particular date or source. Only the
 public search brief should be sent to an external search provider.
 
+## Research pacing
+
+Search results are leads, and each one adds several kilobytes to the live
+context. On the fleet, research runs issued five to seven searches before
+reading a page. The context guard then compacted the conversation, the leads
+disappeared from view, the model repeated the same searches, and the search
+allowance ran out before any page was read. `plugin/research-pacing.mjs` adds
+three run-scoped checks, all delivered as tool results so the system prompt
+stays unchanged:
+
+- After three consecutive searches that returned leads without a page read in
+  between, the next search is paused once and the model is asked to read the
+  leads first. It may search again immediately if none fits.
+- A search that adds no term to an earlier search in the same response (same
+  model numbers and years, filler words such as "official" or "site" ignored)
+  is answered with that search's result URLs instead of running again. This
+  recovers leads lost to compaction, including after the search allowance is
+  spent, while pages can still be read. A deliberate second repeat runs.
+- When the owner states the date ("Today is YYYY-MM-DD", "as of ..."), a search
+  that names an earlier month is followed by a date check note.
+
+Pauses and recalls run nothing, do not use the search allowance and are not
+charged as tool failures; each is limited to two per response, after which
+searches proceed unchanged. The fixed evidence and projection notes on search
+results are repeated only at the normal coaching interval; the per-call
+research budget line stays on every result.
+
 ## Interactive clarification
 
 `pixel_ods_ask_user` presents one to three questions, each with two to four
