@@ -1,4 +1,12 @@
 # Prerequisite orchestration; actual installation remains in install-core.sh.
+function Write-ODSPortalStage([int]$Step, [string]$Title, [string]$Detail) {
+    Write-Host ''
+    $style = @{}
+    if (-not $env:NO_COLOR -and $env:ODS_UI_MODE -ne 'plain') { $style.ForegroundColor = 'Cyan' }
+    Write-Host ("  [{0}/4]  {1}" -f $Step, $Title) @style
+    Write-Host "         $Detail"
+}
+
 function Test-ODSPortalAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     return ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -83,12 +91,37 @@ function Get-ODSPortalLinuxArguments([System.Collections.IDictionary]$Options) {
     return $linuxArgs
 }
 
+function Resolve-ODSPortalDistro([string]$Requested, [string[]]$Names) {
+    if ($Requested) { return $Requested }
+    # Reuse a single recognizable Ubuntu installation; never guess between
+    # existing user environments or select Docker's internal distribution.
+    $ubuntu = @($Names | Where-Object { $_ -match '^Ubuntu(?:-\d{2}\.\d{2})?$' } | Select-Object -Unique)
+    if ($ubuntu.Count -eq 1) { return $ubuntu[0] }
+    if ($ubuntu.Count -gt 1) {
+        throw ('Multiple Ubuntu distributions exist: ' + ($ubuntu -join ', ') + '. Rerun with -Distro <name> to choose where ODS belongs. No distribution was changed.')
+    }
+    return 'Ubuntu-24.04'
+}
+
+function Assert-ODSPortalWslVersion {
+    $version = Invoke-ODSPortalWsl -Arguments @('--version')
+    # The first dotted version is WSL itself; labels are localized. Later
+    # versions describe the kernel, WSLg and Windows and must not be used.
+    $match = [regex]::Match($version.Output, '(?m)^.*?:\s*(\d+\.\d+\.\d+(?:\.\d+)?)\s*\r?$')
+    if ($version.Code -ne 0 -or -not $match.Success -or [version]$match.Groups[1].Value -lt [version]'0.67.6') {
+        throw 'Pixel requires WSL 0.67.6 or newer for systemd. Run wsl --update, restart WSL when your work is saved, and rerun setup. If --update is unavailable, install the current WSL release using https://learn.microsoft.com/windows/wsl/install .'
+    }
+}
+
 function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string]$InstallerRoot) {
     $linuxArgs = @(Get-ODSPortalLinuxArguments $Options)
     $distro = if ($Options['Distro']) { [string]$Options['Distro'] } else { 'Ubuntu-24.04' }
     if ($distro -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$' -or $distro -match '^docker-desktop') { throw 'Select a named Ubuntu WSL distribution, for example -Distro Ubuntu-24.04.' }
     $nonInteractive = [bool]$Options['NonInteractive']
-    Write-Host "ODS Portal: Pixel in $distro (WSL2). Hermes is disabled."
+    Write-Host ''
+    Write-Host '  O D S  /  PORTAL'
+    Write-Host '  Windows -> Ubuntu / WSL2 -> Pixel'
+    Write-Host '  Your workspace runs in Ubuntu. Open Portal from Windows.'
     if ($Options['DryRun']) {
         Write-Host 'Dry run: no features, distributions, tasks, services or files will be changed.'
         Write-Host 'Plan: verify WSL2, Ubuntu user, systemd, Docker integration; run the Linux installer; verify Pixel ingress and Portal HTTP readiness.'
@@ -98,8 +131,9 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     if ($env:OS -ne 'Windows_NT') { throw 'Run install.ps1 in Windows PowerShell. Inside Ubuntu use bash install.sh --pixel --no-hermes.' }
     if (Test-ODSPortalAdministrator) { throw 'Open a normal, non-Administrator PowerShell window and rerun this command. Only Windows feature preparation will request elevation.' }
     if (Test-ODSNativeWindowsInstall) { throw 'An existing native Windows ODS installation was found. It is not automatically migrated or deleted. Stop and migrate/remove that installation before creating a WSL stack, to avoid shared ports and Compose project conflicts. See ods/docs/WINDOWS-QUICKSTART.md.' }
+    Write-ODSPortalStage 1 'WINDOWS FOUNDATION' 'Checking WSL availability and systemd support.'
     if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
-        throw 'WSL is unavailable. Run wsl --install -d Ubuntu-24.04 from Administrator PowerShell on a supported Windows version, restart if requested, then rerun this command.'
+        throw 'wsl.exe is unavailable. Update Windows and enable Windows Subsystem for Linux and Virtual Machine Platform in Windows Features, then restart. Follow https://learn.microsoft.com/windows/wsl/install-manual before rerunning setup. ODS has not been installed.'
     }
     $status = Invoke-ODSPortalWsl -Arguments @('--status')
     if ($status.Code -ne 0) {
@@ -109,9 +143,13 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
         Write-Host 'Restart Windows if requested, then rerun the same install.ps1 command from a normal PowerShell window. ODS has not been installed yet.'
         return 3010
     }
+    Assert-ODSPortalWslVersion
+    Write-ODSPortalStage 2 'YOUR UBUNTU WORKSPACE' 'Finding an existing Ubuntu before offering a download.'
     $list = Invoke-ODSPortalWsl -Arguments @('--list', '--quiet')
     if ($list.Code -ne 0) { throw ('Cannot list WSL distributions: ' + $list.Output) }
     $names = @($list.Output -split '\r?\n' | ForEach-Object { $_.Trim() })
+    $distro = Resolve-ODSPortalDistro ([string]$Options['Distro']) $names
+    Write-Host "Selected Ubuntu distribution: $distro"
     if ($distro -notin $names) {
         if (-not (Confirm-ODSPortalPreparation "Install $distro using wsl --install? This downloads Ubuntu under your Windows account; existing distributions will not be removed." $nonInteractive)) { return 1 }
         $installed = Invoke-ODSPortalWsl -Arguments @('--install', '--distribution', $distro, '--no-launch')
@@ -135,12 +173,14 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     if ($init.Code -ne 0 -or $init.Output.Trim() -ne 'systemd') {
         throw "Enable systemd=true under [boot] in /etc/wsl.conf inside Ubuntu (preserve other settings). Then run wsl --terminate $distro from PowerShell, reopen Ubuntu and rerun this command."
     }
+    Write-ODSPortalStage 3 'CONTAINER CONNECTION' "Checking Docker and Compose inside $distro."
     foreach ($arguments in @(@('docker','info'), @('docker','compose','version'))) {
         $probe = Invoke-ODSPortalWsl -Arguments (@('--distribution', $distro, '--exec') + $arguments)
         if ($probe.Code -ne 0) {
             throw "Docker is not ready inside $distro. Install/start Docker Desktop, enable the WSL2 engine and Settings > Resources > WSL Integration for $distro. In Ubuntu, docker info AND docker compose version must succeed as your normal user. See https://docs.docker.com/desktop/features/wsl/ ."
         }
     }
-    Write-Host 'Prerequisites passed. Starting the existing Linux installer. Enter your Ubuntu sudo password there if requested.'
+    Write-ODSPortalStage 4 'INSTALL PIXEL / PORTAL' "Prerequisites passed for $distro. Starting the Linux installer."
+    Write-Host '         Enter your Ubuntu sudo password there if requested.'
     return Invoke-ODSPortalLinuxInstaller $InstallerRoot $distro $linuxArgs ([string]$Options['InstallDir'])
 }

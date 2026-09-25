@@ -21,8 +21,8 @@ Pixel uses source bundled in public Osmantic/ODS, not a private repository.
 ## Setup stages
 
 1. If WSL is not ready, setup offers Windows feature preparation with administrator approval. It then stops: restart if requested and rerun the same command. No automatic reboot or resume task is created.
-2. If Ubuntu is absent, setup offers to download Ubuntu-24.04 under your Windows account. Complete Linux user/password creation in the Ubuntu window, then type `exit` to return. The default Linux user must not be root.
-3. Setup checks WSL2 and systemd. Missing prerequisites stop installation with instructions; existing distributions are not converted and `/etc/wsl.conf` is not overwritten automatically.
+2. Setup reuses a single existing distribution named Ubuntu or Ubuntu-YY.MM. If several exist, select one with `-Distro <name>`; it never guesses between user environments. If none exists, setup offers to download Ubuntu-24.04 under your Windows account. Complete Linux user/password creation in the Ubuntu window, then type `exit` to return. The default Linux user must not be root.
+3. Setup checks a systemd-capable WSL release (0.67.6 or newer), WSL2 and systemd. Older inbox WSL stops with update instructions. Missing prerequisites stop installation with instructions; existing distributions are not converted and `/etc/wsl.conf` is not overwritten automatically.
 4. Start Docker Desktop, enable its WSL2 engine and **Settings > Resources > WSL Integration** for Ubuntu. Both `docker info` and `docker compose version` must work inside Ubuntu. Setup checks them and stops with instructions if needed; it does not install another Docker engine.
 5. The Linux installer runs with `--pixel --no-hermes --no-openclaw`. Enter the Ubuntu sudo password when requested and complete model/service selections.
 6. After installation, the wrapper verifies Pixel gateway/ingress services, private ingress health and the dashboard HTTP endpoint. Send a message in Portal to verify model inference too.
