@@ -999,6 +999,7 @@ write_inspection_contract_fixture() {
     write_ops_fixture
     local file digest
     for file in preview_inspection.py preview_inspection_protocol.py preview_inspection_capsule.py \
+        preview_inspection_document.py preview_inspection_lease.py preview_inspection_leases.py \
         Dockerfile.inspection preview-inspection.requirements.lock pixel-preview-inspection.service; do
         cp "$ROOT_DIR/extensions/services/pixel-agent/host/$file" "$INSTALL_DIR/extensions/services/pixel-agent/host/$file"
     done

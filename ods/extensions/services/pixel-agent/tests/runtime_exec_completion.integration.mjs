@@ -1,27 +1,19 @@
 // Actual pinned SDK hook lifecycle; deterministic provider, no model inference.
 import test,{after} from 'node:test';
-import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
 import {spawn,spawnSync} from 'node:child_process';
-import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync,readFileSync,rmSync,copyFileSync,chmodSync,cpSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync,readFileSync,rmSync,copyFileSync,chmodSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
+import {preparePromptContextRuntime} from './prompt_context_runtime_fixture.mjs';
 const installed=process.env.OPENCLAW_PACKAGE;
 let pkg=installed, runtimeCopy;
 if(installed && process.env.ODS_EXEC_RECEIPT_RED!=='1') {
-  const manifest=JSON.parse(readFileSync(new URL('../host/openclaw-compaction-budget.json',import.meta.url)));
-  const hash=text=>createHash('sha256').update(text).digest('hex');
-  let source=readFileSync(join(installed,'dist/selection-BEwSQKM-.js'),'utf8');
-  const prior=hash(source)===manifest.patchedSha256?manifest.replacements:manifest.previousReplacements[hash(source)];
-  if(prior)for(const [before,value] of [...prior].reverse()){assert.equal(source.split(value).length,2);source=source.replace(value,before);}
-  assert.equal(hash(source),manifest.sourceSha256,'refuse unknown SDK source');
-  for(const [before,value] of manifest.replacements){assert.equal(source.split(before).length,2);source=source.replace(before,value);}
-  assert.equal(hash(source),manifest.patchedSha256);
-  runtimeCopy=mkdtempSync(join(tmpdir(),'ods-exec-reviewed-runtime-'));pkg=join(runtimeCopy,'package');
-  cpSync(installed,pkg,{recursive:true});writeFileSync(join(pkg,'dist/selection-BEwSQKM-.js'),source);
+  runtimeCopy=mkdtempSync(join(tmpdir(),'ods-exec-reviewed-runtime-'));
+  pkg=preparePromptContextRuntime(installed,runtimeCopy);
 }
 after(()=>{if(runtimeCopy)rmSync(runtimeCopy,{recursive:true,force:true});});
 const image=process.env.OPENCLAW_TEST_SANDBOX_IMAGE;
@@ -60,11 +52,18 @@ for(const mode of ['plain','wrapped','sandbox','deferred','unrelated']) test(`re
   writeFileSync(join(plugin,'index.mjs'),`
     import {createToolLoopGuard,createExecCancellationControl} from ${JSON.stringify(new URL('../plugin/tool-loop-guard.mjs',import.meta.url).href)};
     import {appendFileSync} from 'node:fs';
+    import {requireDurableTurnContext} from ${JSON.stringify(new URL('../plugin/prompt-contract.mjs',import.meta.url).href)};
     const expected=new Map();
     const guard=createToolLoopGuard(${mode==='plain'?'{}':`{execControl:createExecCancellationControl({root:${JSON.stringify(controls)},executionHost:${JSON.stringify(mode==='sandbox'?'sandbox':'gateway')}})}`});
     const save=row=>appendFileSync(${JSON.stringify(join(root,'hooks.jsonl'))},JSON.stringify(row)+'\\n');
     export default {id:'pixel-ods',register(api){
-      api.on('before_prompt_build',(event,ctx)=>guard.observeRun(ctx,'pixel',event,{workspaceRoot:${JSON.stringify(workspace)}}));
+      api.on('before_agent_run',(_event,ctx)=>requireDurableTurnContext(ctx,'pixel'));
+      api.on('before_prompt_build',(event,ctx)=>{
+        guard.observeRun(ctx,'pixel',event,{workspaceRoot:${JSON.stringify(workspace)}});
+        if(ctx.agentId!=='pixel')return;
+        const admission=ctx.odsTurnContextAdmission;
+        return {odsTurnContext:{...admission,content:admission.previous?.content ?? 'Execution completion fixture.'}};
+      });
       api.on('before_tool_call',(event,ctx)=>{const result=guard.beforeToolCall(event,ctx);expected.set(ctx.toolCallId,{original:event.params,executed:result?.params??event.params});return result;});
       api.on('after_tool_call',(event,ctx)=>{const p=expected.get(ctx.toolCallId);save({hook:'after',tool:event.toolName,error:!!event.error,status:event.result?.details?.status,exitCode:event.result?.details?.exitCode,original:JSON.stringify(p?.original)===JSON.stringify(event.params),executed:JSON.stringify(p?.executed)===JSON.stringify(event.params),paramKeys:Object.keys(event.params??{}),changed:Object.keys(event.params??{}).filter(k=>JSON.stringify(event.params[k])!==JSON.stringify(p?.executed?.[k])).map(k=>({key:k,actual:event.params[k],expected:p?.executed?.[k]}))});return guard.afterToolCall(event,ctx);});
       api.on('tool_result_persist',(event,ctx)=>{const result=guard.toolResultPersist(event,ctx);
