@@ -53,6 +53,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-linux-host-agent-stop.sh
 	@bash tests/test-preflight-dashboard-port.sh
 	@bash tests/test-wsl-broken-docker-shim.sh
+	@bash tests/test-wsl-nvidia-driver-guard.sh
 	@bash tests/test-ui-missing-container-fast-fail.sh
 	@echo ""
 	@echo "=== ods-doctor rootless subordinate IDs ==="
