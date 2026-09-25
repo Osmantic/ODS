@@ -11,16 +11,24 @@
 // each with a host-side read receipt in `details`, plus unread leads.
 //
 // Receipt rules (completion-assurance.mjs reads only `details`):
-// - a page earns a receipt only when it was read, at least one relevant window
-//   (query term, requested fact or date) was emitted, and its excerpt is part
-//   of the delivered output, which is sized to fit the live per-result cap;
+// - a page earns a receipt only when it was read, its final URL is a citable
+//   public URL, and its excerpt is part of the delivered output, which is
+//   sized to fit the live per-result cap;
+// - the delivered excerpt must carry evidence (receiptEvidence): page text
+//   beyond the title and any script or style residue, at least
+//   MIN_EVIDENCE_CHARS of it, and in search mode a query term plus a
+//   requested fact (a date for events, a price, board power...). A title
+//   with a line of JavaScript, a bot check, navigation that names the city,
+//   or "open 24/7" is not a read page. Such a page is listed as opened
+//   without a receipt, so host citation verification still checks it;
 // - the requested URL is receipted only when it is the same document as the
 //   final URL (sameDocument); otherwise only the final URL is;
 // - search results and links seen on a page are leads, never receipts.
 //
-// Page text never carries host metadata: each page's header line precedes its
-// own untrusted-content boundary, page lines are indented, and marker-like
-// text inside the page is neutralised.
+// Page text never carries host metadata, and host lines never carry page
+// text: each page's host line (tag, URL, status) precedes its own
+// untrusted-content boundary, the page title is printed inside it, page lines
+// are indented, and marker-like text inside the page is neutralised.
 
 import {randomBytes} from 'node:crypto';
 import {isIP} from 'node:net';
@@ -38,7 +46,10 @@ export const SEARCH_READ_LIMITS = Object.freeze({
   searchCount: 8,
   searchTimeoutMs: 10_000,
   readDeadlineMs: 15_000,   // all reads of one call, wall clock
-  readTimeoutSeconds: 12,   // one read's network timeout
+  // One read's network time, both requests included: the shared reader's one
+  // plain retry after a 403/406 runs only inside what the first request left
+  // (web-extract.mjs), so a read never outlasts this or the call deadline.
+  readTimeoutSeconds: 12,
   perHostInFlight: 2,
   maxResults: 10,           // search results kept in details
   maxLeads: 6,
@@ -53,6 +64,8 @@ export const SEARCH_READ_LIMITS = Object.freeze({
   outputMarginChars: 800,   // room for the guard's budget line
   maxExcerptChars: 1_500,
   minExcerptChars: 300,
+  minEvidenceChars: 40,     // excerpt text beyond the title and code residue
+  minOverviewChars: 80,     // the same, for a urls call without focus
 });
 
 const MAX_QUERY_CHARS = 300;
@@ -273,7 +286,11 @@ export function selectCandidates(results, {site, maxPages = SEARCH_READ_LIMITS.d
 // ---------------------------------------------------------------------------
 // Page text: links, relevance windows and neutralisation
 
-const LINK = /(!?)\[([^[\]\n]{0,300})\]\(\s*<?([^\s()<>]{1,2048})>?(?:\s+"[^"\n]{0,200}")?\s*\)|(https?:\/\/[^\s<>"'`[\]()]{4,2048})/g;
+// The pinned extractor writes some hrefs with raw spaces, e.g. UL Benchmarks'
+// "(/hardware/gpu/NVIDIA GeForce RTX 5070+review)". Such a link is still one
+// link: left unparsed, its markup filled the excerpt and pushed the page's
+// board power line out of it.
+const LINK = /(!?)\[([^[\]\n]{0,300})\]\(\s*<?([^\s()<>]{1,2048}(?: [^\s()<>"]{1,2048}){0,40})>?(?:\s+"[^"\n]{0,200}")?\s*\)|(https?:\/\/[^\s<>"'`[\]()]{4,2048})/g;
 
 // Plain text of the extracted markdown, with each link's span in it.
 export function parsePageText(text, baseUrl) {
@@ -305,8 +322,11 @@ export function parsePageText(text, baseUrl) {
 }
 
 const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
+// A numeric date is month/day[/year] with a real month and day, and never
+// part of a longer slash chain: "24/7" and "1/2/3" are not dates.
+const NUMERIC_DATE = '(?<![\\d/])(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\\d|3[01])(?:/(?:\\d{4}|\\d{2}))?(?![\\d/])';
 const FACT_PATTERNS = {
-  date: new RegExp(`\\b${MONTH}\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?\\b|\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH}\\b|\\b\\d{4}-\\d{2}-\\d{2}\\b|\\b\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?\\b`, 'i'),
+  date: new RegExp(`\\b${MONTH}\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?\\b|\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH}\\b|\\b\\d{4}-\\d{2}-\\d{2}\\b|${NUMERIC_DATE}`, 'i'),
   time: /\b\d{1,2}(?::\d{2})?\s?[ap]\.?m\b/i,
   price: /(?:[$\u20ac\u00a3]\s?\d[\d,]*(?:\.\d{2})?|\b\d[\d,]*(?:\.\d{2})?\s?(?:usd|eur|gbp|dollars)\b)/i,
   power: /\b\d{2,4}\s?(?:w|watts?)\b/i,
@@ -515,7 +535,61 @@ function relevantExcerpt(parsed, focus, maxChars, pageUrl, linkBudget, nextLinkI
   const text = parts.join('\n');
   const match = chosen.some(window => window.match === 'terms') ? 'terms'
     : chosen.some(window => window.match === 'facts') ? 'facts' : 'overview';
-  return {match, text, links: kept.map(link => ({id: ids.get(link), url: link.url}))};
+  return {match, text, ranges, links: kept.map(link => ({id: ids.get(link), url: link.url}))};
+}
+
+// ---------------------------------------------------------------------------
+// Receipt evidence
+
+const comparable = text => String(text ?? '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+// A line that only repeats the page title ("Title", "- Title", "Title | Site"
+// or a shortened title), or carries no letters or digits at all.
+function titleLine(line, titles) {
+  const words = comparable(line);
+  if (!words) return true;
+  return titles.some(title => words === title || (title.includes(words) && words.length >= 0.6 * title.length) ||
+    (words.includes(title) && words.length <= title.length + 24));
+}
+
+// Script or style residue that reached the text: "(function() {",
+// "@layer legacy {", a closing brace, or a line dense in code punctuation.
+const CODE_LINE = /^[@.#]?[\w-]+(?:[\s,>+~.#:[\]="'\w-]*)\{\s*$|^[\s})\];,]+$|\bfunction\s*\(|=>\s*\{|\b(?:var|let|const)\s+[\w$]+\s*=/;
+function codeLine(line) {
+  if (CODE_LINE.test(line)) return true;
+  const symbols = line.match(/[{}();=<>\\|]/g)?.length ?? 0;
+  return symbols >= 2 && symbols / line.length >= 0.15;
+}
+
+// Whether a delivered excerpt shows the page was read: 'ok', 'thin' (little
+// or no text beyond the title and code residue: a script-built page, a bot
+// check, a truncated response) or 'none' (text, but not what was asked). In
+// search mode the evidence lines must name a query term and, when the request
+// names fact classes, show one of them; a fact pattern alone ("$35" free
+// shipping, "open 24/7") is not a read page. A urls call with focus needs a
+// focus term or a requested fact; one without focus needs overview text.
+export function receiptEvidence(plain, ranges, {titles = [], mode, queryTerms = [], focus}) {
+  const L = SEARCH_READ_LIMITS;
+  const compared = titles.map(comparable).filter(Boolean);
+  const words = new Set();
+  const facts = new Set();
+  let chars = 0;
+  for (const range of ranges ?? []) {
+    const line = plain.slice(range.start, range.end).replace(/\s+/g, ' ').trim();
+    if (!line || titleLine(line, compared) || codeLine(line)) continue;
+    chars += line.length;
+    for (const word of wordsOf(line)) words.add(word);
+    for (const name of focus.classes) if (FACT_PATTERNS[name]?.test(line)) facts.add(name);
+  }
+  const overview = !focus.terms.length && !focus.classes.length;
+  if (chars < (overview ? L.minOverviewChars : L.minEvidenceChars)) return 'thin';
+  if (overview) return 'ok';
+  const fact = facts.size > 0;
+  if (mode === 'search') {
+    const named = !queryTerms.length || queryTerms.some(term => words.has(term));
+    return named && (fact || !focus.classes.length) ? 'ok' : 'none';
+  }
+  return fact || focus.terms.some(term => words.has(term)) ? 'ok' : 'none';
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +600,7 @@ const REASONS = {
   'content-type': () => 'not a text document',
   timeout: () => 'timed out',
   'invalid-url': () => 'not a public page URL',
+  'final-url': () => 'redirected to an address that cannot be cited',
   allowance: () => 'not opened: page-reading allowance',
 };
 const failureLabel = page => (REASONS[page.reason] ?? (() => 'could not be read'))(page.status);
@@ -546,6 +621,15 @@ function assemble(state, {excerptChars, linksPerPage, leadCount}) {
     if (page.outcome === 'read' && page.parsed) {
       const excerpt = relevantExcerpt(page.parsed, state.focus, excerptChars, page.finalUrl, linksPerPage, linkId);
       page.excerpt = excerpt;
+      if (excerpt.match !== 'none' && excerpt.text) {
+        excerpt.evidence = receiptEvidence(page.parsed.plain, excerpt.ranges, {titles: page.titles, mode: state.mode,
+          queryTerms: state.queryTerms, focus: state.focus});
+        if (excerpt.evidence !== 'ok') excerpt.match = excerpt.evidence;
+      }
+      if (excerpt.match === 'thin') {
+        blocks.push(`[opened, too little page text beyond its title (it may need JavaScript); not citable] ${page.finalUrl} | HTTP ${page.status}`);
+        continue;
+      }
       if (excerpt.match === 'none' || !excerpt.text) {
         blocks.push(`[opened, nothing relevant found; not citable] ${page.finalUrl} | HTTP ${page.status}`);
         continue;
@@ -556,11 +640,16 @@ function assemble(state, {excerptChars, linksPerPage, leadCount}) {
       }
       linkId += excerpt.links.length;
       page.id = `R${receiptId++}`;
+      // The title is page text: it is printed inside the boundary, never on
+      // the host line, and only when the excerpt does not start with it.
       const title = titleOf(page.title);
+      const firstLine = excerpt.text.split('\n', 1)[0];
+      const showTitle = title && !titleLine(firstLine, [comparable(title)]);
       const redirect = page.sameDocument ? '' : page.finalUrl !== page.url ? ` (redirected from ${page.url})` : '';
       blocks.push([
-        `[${page.id}] ${page.finalUrl}${title ? ` | ${title}` : ''} | HTTP ${page.status}${redirect}`,
+        `[${page.id}] ${page.finalUrl} | HTTP ${page.status}${redirect}`,
         `<<<EXTERNAL_UNTRUSTED_CONTENT id="${id}">>>`,
+        ...(showTitle ? [indent(`Title: ${neutralized(title)}`)] : []),
         indent(excerpt.text),
         `<<<END_EXTERNAL_UNTRUSTED_CONTENT id="${id}">>>`,
         ...(excerpt.links.length
@@ -606,7 +695,8 @@ function fitOutput(state, budget) {
     else if (linksPerPage > 2) linksPerPage -= 2;
     else if (excerptChars > L.minExcerptChars) excerptChars = Math.max(L.minExcerptChars, Math.floor(excerptChars * 0.85));
     else {
-      const last = [...readPages].reverse().find(page => !page.omitted && page.excerpt?.text);
+      const last = [...readPages].reverse().find(page => !page.omitted && page.excerpt?.text &&
+        !['none', 'thin'].includes(page.excerpt.match));
       if (last) last.omitted = true;
       else if (linksPerPage > 0) linksPerPage = 0;
       else break;
@@ -783,11 +873,22 @@ export function createSearchReadTool({
           page.status = result?.status;
           continue;
         }
+        // Text served from a final URL that cannot be cited (a trailing-dot
+        // host, an IDN top-level domain) is another site's text: never
+        // attributed to the requested URL, never a receipt.
+        const finalUrl = typeof result.finalUrl === 'string' ? publicSourceUrl(result.finalUrl) : undefined;
+        if (!finalUrl) {
+          page.outcome = 'not-read';
+          page.reason = 'final-url';
+          page.status = result.status;
+          continue;
+        }
         page.outcome = 'read';
         page.status = result.status;
-        page.finalUrl = publicSourceUrl(result.finalUrl) ?? page.url;
+        page.finalUrl = finalUrl;
         page.sameDocument = sameDocument(page.url, page.finalUrl);
         page.contentType = result.contentType;
+        page.titles = [result.title, page.title].map(pageTitle).filter(Boolean);
         page.title = result.title ?? page.title;
         page.truncated = result.truncated === true;
         page.parsed = parsePageText(result.text, page.finalUrl);
@@ -799,7 +900,10 @@ export function createSearchReadTool({
         ? `Search "${neutralized(valid.query).replace(/"/g, "'")}" (${provider}): ${rows.length} results. `
         : `Read ${pages.length} requested page${pages.length === 1 ? '' : 's'}. `;
       const skipped = valid.mode === 'urls' ? valid.urls.slice(granted) : [];
-      const state = {id, pages, leads, focus, skipped, header: [
+      // The query's own subject terms: a search-mode receipt needs one of
+      // them on the page, beyond its title.
+      const queryTerms = valid.mode === 'search' ? focusTerms(valid.query, '').terms : [];
+      const state = {id, pages, leads, focus, skipped, mode: valid.mode, queryTerms, header: [
         `${subject}Opened ${opened} page${opened === 1 ? '' : 's'}: ${readCount} read, ${opened - readCount} not read. ` +
           `Retrieved ${utcMinute(now())}.`,
         '[R#] pages were read: cite a page\'s URL only for facts shown in its excerpt. [L#] links and leads were not ' +
