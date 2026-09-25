@@ -134,10 +134,12 @@ function resolveServiceId(service) {
 
 export function buildTopology(statusData) {
   const services = Array.isArray(statusData?.services) ? statusData.services : []
+  const seenIds = new Set()
   const nodes = services
     .map(service => {
       const id = resolveServiceId(service)
-      if (!id) return null
+      if (!id || seenIds.has(id)) return null
+      seenIds.add(id)
       return {
         id,
         name: service.name || id,

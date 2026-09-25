@@ -83,6 +83,17 @@ it('filters the compact list and renders a panel-sized map with inline details',
   expect(screen.getByText('No matching services.')).toBeVisible()
 })
 
+it('keeps duplicate service identities from corrupting topology rendering', () => {
+  const topology = buildTopology({
+    services: [
+      { id: 'dashboard', name: 'Dashboard (Control Center)', status: 'healthy', port: 3001 },
+      { id: 'dashboard', name: 'Stale Dashboard Record', status: 'down', port: 3999 },
+    ],
+  })
+  expect(topology.nodes).toHaveLength(1)
+  expect(topology.nodes[0]).toMatchObject({ id: 'dashboard', name: 'Dashboard (Control Center)', port: 3001 })
+})
+
 const expectedIds = [
   'ape',
   'comfyui',
