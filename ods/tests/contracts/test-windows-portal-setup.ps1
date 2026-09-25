@@ -99,5 +99,24 @@ try {
         try { $null=Invoke-ODSPortalSetup $bad 'unused' } catch { $rejected=$true }
         Check ($rejected -and $script:calls.Count -eq 0) 'invalid options fail before system operations'
     }
+    # Exercise the actual root script in a child PowerShell, with only its
+    # destination replaced. This catches failures swallowed at script boundaries.
+    $fixture = Join-Path ([IO.Path]::GetTempPath()) ('ods-portal-entry-' + [guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path (Join-Path $fixture 'ods/installers') -Force
+    try {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../../../install.ps1') -Destination $fixture
+        $destination = Join-Path $fixture 'ods/installers/windows-portal.ps1'
+        $shell = (Get-Process -Id $PID).Path
+        foreach ($exitCode in @(0, 17, 42)) {
+            Set-Content -LiteralPath $destination -Value "param([switch]`$DryRun)`nWrite-Host 'stub delegate output'`nexit $exitCode" -Encoding UTF8
+            & $shell -NoProfile -File (Join-Path $fixture 'install.ps1') -DryRun | Out-Host
+            Check ($LASTEXITCODE -eq $exitCode) "actual root preserves delegated exit $exitCode"
+        }
+    } finally {
+        $resolved = [IO.Path]::GetFullPath($fixture)
+        $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+        if (-not $resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or (Split-Path $resolved -Leaf) -notlike 'ods-portal-entry-*') { throw 'Unsafe test cleanup path' }
+        Remove-Item -LiteralPath $resolved -Recurse -Force
+    }
     Write-Host "Passed $script:checks Windows Portal setup contracts."
 } finally { $env:OS=$originalOS }
