@@ -255,6 +255,12 @@ jobs:
           python3 tests/test_model_library_apple_context.py
           python3 tests/test_model_selector_failure.py
 
+      - name: llama.cpp Chat Template Contracts
+        run: |
+          python3 -m pip install "Jinja2>=3.1,<4"
+          python3 -m pytest -q tests/test_llama_chat_templates.py
+          bash tests/test-macos-chat-template-args.sh
+
       - name: Pixel Provider and Access Contracts
         run: python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
 

@@ -635,6 +635,8 @@ $(if [[ -n "${LLAMA_SERVER_IMAGE:-}" ]]; then echo "LLAMA_SERVER_IMAGE=${LLAMA_S
 LLAMA_ARG_FLASH_ATTN=${LLAMA_ARG_FLASH_ATTN:-auto}
 LLAMA_ARG_CACHE_TYPE_K=${LLAMA_ARG_CACHE_TYPE_K:-f16}
 LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
+# Set by the model selector for catalog GGUFs that use an ODS llama.cpp chat template.
+$(if [[ -n "${LLAMA_ARG_CHAT_TEMPLATE_FILE:-}" ]]; then echo "LLAMA_ARG_CHAT_TEMPLATE_FILE=${LLAMA_ARG_CHAT_TEMPLATE_FILE}"; fi)
 # Optional native hybrid-model cache tuning; requires matching runtime --help support.
 # Empty/unset preserves runtime defaults; registered model profiles own their arguments.
 # LLAMA_ARG_CHECKPOINT_EVERY_NT=1024

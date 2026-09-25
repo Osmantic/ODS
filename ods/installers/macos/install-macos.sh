@@ -2322,6 +2322,8 @@ else
         # are spelled for, and only added when supported by, this runtime.
         macos_resolve_checkpoint_args "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$_reasoning_fmt" || exit 1
         _llama_args+=(${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}"})
+        macos_resolve_chat_template_args "$INSTALL_DIR"
+        _llama_args+=(${MACOS_NATIVE_CHAT_TEMPLATE_ARGS[@]+"${MACOS_NATIVE_CHAT_TEMPLATE_ARGS[@]}"})
         fi
 
         _macos_stop_install_owned_native_llama \

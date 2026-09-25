@@ -14,6 +14,12 @@ services:
       # per-model LLAMA_ARG_SPEC_TYPE (e.g. draft-mtp) wins. Set
       # LLAMA_SPEC_TYPE=none in .env to turn it off.
       - LLAMA_ARG_SPEC_TYPE=${LLAMA_ARG_SPEC_TYPE:-${LLAMA_SPEC_TYPE:-ngram-mod}}
+      # ODS chat template for the active catalog model, set by model selection
+      # (Qwen3.5: its own template plus Qwen3.6's preserve_thinking switch).
+      # Unset uses the GGUF's embedded template.
+      - LLAMA_ARG_CHAT_TEMPLATE_FILE
+    volumes:
+      - ./config/llama-server/templates:/config/llama-server/templates:ro,z
     deploy:
       resources:
         reservations:

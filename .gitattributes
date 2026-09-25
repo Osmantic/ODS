@@ -15,6 +15,8 @@ docker-entrypoint* text eol=lf
 
 # Source patches are hash-bound build inputs; checkout/archive must preserve LF.
 ods/extensions/services/pixel-agent/runtime-source/*.patch text eol=lf
+# llama.cpp chat templates are byte-exact model inputs (tests pin their hashes).
+ods/config/llama-server/templates/*.jinja -text
 
 # PowerShell scripts can use CRLF (native Windows)
 *.ps1 text eol=crlf

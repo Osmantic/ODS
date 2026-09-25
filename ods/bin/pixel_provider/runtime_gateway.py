@@ -71,8 +71,9 @@ def validate_request(payload):
             not isinstance(tool,dict) or tool.get('type') != 'function' for tool in payload['tools'])):
         raise RuntimeErrorCode('unsupported-tools')
     if 'chat_template_kwargs' in payload and (not isinstance(payload['chat_template_kwargs'],dict)
-            or set(payload['chat_template_kwargs']) != {'enable_thinking'}
-            or type(payload['chat_template_kwargs']['enable_thinking']) is not bool):
+            or not payload['chat_template_kwargs']
+            or not set(payload['chat_template_kwargs']) <= {'enable_thinking','preserve_thinking'}
+            or any(type(value) is not bool for value in payload['chat_template_kwargs'].values())):
         raise RuntimeErrorCode('unsupported-template-options')
     return payload
 

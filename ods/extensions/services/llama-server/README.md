@@ -36,6 +36,7 @@ Environment variables (set in `.env`):
 | `LLAMA_SPEC_TYPE` | `ngram-mod` on the NVIDIA and CPU images | Default speculative decoding when the model sets no `LLAMA_ARG_SPEC_TYPE`. Set `none` to turn it off. See [N-gram speculative decoding](#n-gram-speculative-decoding) |
 | `LLAMA_ARG_SPEC_TYPE` | unset | Optional per-model speculative decoding mode (`--spec-type`), normally written by a runtime profile. Overrides `LLAMA_SPEC_TYPE`. Use only with supported GGUF/runtime combinations |
 | `LLAMA_ARG_SPEC_DRAFT_N_MAX` | unset | Optional speculative draft token cap (`--spec-draft-n-max`; `--draft-max` on native macOS b8210) |
+| `LLAMA_ARG_CHAT_TEMPLATE_FILE` | set by model selection | ODS chat template for the active catalog model (`--chat-template-file`), a path under `/config/llama-server/templates`. Written for Qwen3.5 GGUFs on the NVIDIA, CPU and native macOS runtimes; not set by hand. See [Qwen3.5 chat template](#qwen35-chat-template) |
 | `LLAMA_SERVER_MEMORY_LIMIT` | `64G` | Docker memory limit for the container |
 
 ### Long-context profile
@@ -121,6 +122,12 @@ Native macOS keeps the `llama-server` binary it was installed with, so an older 
 - passes `LLAMA_REASONING` (default `off`) as `--reasoning` when the binary has that switch, and leaves `--reasoning-format` at llama.cpp's default, as Docker does with `LLAMA_ARG_REASONING`. On the Mac mini with b9014, the old native flags (`--reasoning-format none` only) left `--reasoning` at `auto`: the server logged `thinking = 1` and returned its reasoning as the reply. With `--reasoning off` but `--reasoning-format none`, every reply, tool calls included, started with an empty `<think>` block. `--reasoning off` with the default format replied exactly as b8210 did. b8210 has no `--reasoning` switch, so it keeps `--reasoning-format none`.
 
 A setting you add to `.env` that the binary cannot honour stops the restart before the running model is touched. The bootstrap full-model swap instead logs a warning and starts the full model without the tuning. A default the binary does not support is left out. A fresh install, or `get-ods.sh --force`, installs the pinned b9014.
+
+### Qwen3.5 chat template
+
+With thinking off, llama.cpp generates each Qwen3.5 assistant turn after an empty `<think></think>` block, but the GGUF's chat template drops that block from every assistant turn before the latest user message. So each new owner message rewrote the previous run from its first assistant turn, and a hybrid model re-processed all of it: 2.9k to 13.8k tokens per owner turn on tower1 and tower3 (b9014, rounds 070 and 071).
+
+`config/llama-server/templates` holds each Qwen3.5 GGUF's own template with one line replaced by Qwen3.6's `preserve_thinking` switch. Pixel sends `chat_template_kwargs.preserve_thinking=true`, so earlier turns render exactly as they were generated and the server only processes the new message. Without the switch the file renders byte-identically to the GGUF's template, so other clients are unaffected. Qwen3.6 GGUFs already have the switch. Model selection and activation write `LLAMA_ARG_CHAT_TEMPLATE_FILE` for catalog Qwen3.5 models and remove it for every other model. Lemonade, Intel and Arc runtimes keep the GGUF's template.
 
 ### MTP speculative decoding
 

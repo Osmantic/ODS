@@ -48,6 +48,22 @@ macos_resolve_checkpoint_args() {
     rm -f "$fields_file"
 }
 
+# .env names an ODS llama.cpp chat template by its path inside the Linux
+# llama-server containers; the native server reads the same shipped file.
+macos_resolve_chat_template_args() {
+    local install_dir="$1" value name
+    MACOS_NATIVE_CHAT_TEMPLATE_ARGS=()
+    value="$(read_env_value "${install_dir}/.env" LLAMA_ARG_CHAT_TEMPLATE_FILE)"
+    [[ -n "$value" ]] || return 0
+    name="${value#/config/llama-server/templates/}"
+    if [[ "$name" == "$value" || ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.jinja$ \
+          || ! -f "${install_dir}/config/llama-server/templates/${name}" ]]; then
+        echo "Ignoring unsupported LLAMA_ARG_CHAT_TEMPLATE_FILE; using the model's own chat template." >&2
+        return 0
+    fi
+    MACOS_NATIVE_CHAT_TEMPLATE_ARGS=(--chat-template-file "${install_dir}/config/llama-server/templates/${name}")
+}
+
 macos_model_store_compose_flags() {
     local flags="$1" helper="${INSTALL_DIR}/scripts/model-store-compose-flags.py"
     if [[ ! -e "${INSTALL_DIR}/.model-stores.compose.json" && ! -e "${INSTALL_DIR}/data/model-stores.json" ]]; then

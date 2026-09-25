@@ -31,6 +31,10 @@ services:
       # The pinned b9014 image has the b8955+ ngram-mod implementation. Set
       # LLAMA_SPEC_TYPE=none in .env to turn it off.
       - LLAMA_ARG_SPEC_TYPE=${LLAMA_ARG_SPEC_TYPE:-${LLAMA_SPEC_TYPE:-ngram-mod}}
+      # Same chat-template contract as docker-compose.nvidia.yml.
+      - LLAMA_ARG_CHAT_TEMPLATE_FILE
+    volumes:
+      - ./config/llama-server/templates:/config/llama-server/templates:ro,z
     deploy:
       resources:
         limits:

@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'bin'))
 from pixel_provider.config import default_config
-from pixel_provider.runtime_gateway import create_app
+from pixel_provider.runtime_gateway import RuntimeErrorCode, create_app, validate_request
 
 
 def configuration():
@@ -247,3 +247,15 @@ def test_cancel_waiting_headers_releases_and_closes_lease():
         assert cancelled.is_set()
         assert (await request_to(app,payload())).status_code==409
     asyncio.run(check())
+
+
+def test_chat_template_switches_are_booleans_only():
+    # Pixel asks Qwen templates to keep earlier empty think blocks so a local
+    # prompt cache survives the next owner turn; nothing else may pass.
+    for kwargs in ({'enable_thinking':False},{'enable_thinking':False,'preserve_thinking':True},
+                   {'preserve_thinking':True}):
+        validate_request({**payload(),'chat_template_kwargs':kwargs})
+    for kwargs in ({},{'arbitrary':True},{'enable_thinking':False,'arbitrary':True},
+                   {'preserve_thinking':'yes'},{'enable_thinking':0},[('enable_thinking',False)]):
+        with pytest.raises(RuntimeErrorCode):
+            validate_request({**payload(),'chat_template_kwargs':kwargs})

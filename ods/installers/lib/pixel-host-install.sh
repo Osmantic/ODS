@@ -1564,10 +1564,16 @@ if "qwen" in model_label:
     if not isinstance(template_kwargs, dict):
         raise SystemExit("live Pixel chat-template parameters are outside the ODS contract")
     template_kwargs["enable_thinking"] = contract.get("modelReasoning") is True
+    # Re-render earlier assistant turns with the (empty) think block they were
+    # generated with. Qwen3.6 templates and ODS's llama.cpp Qwen3.5 template
+    # honor it; without it every owner turn rewrites the previous run and a
+    # local server re-reads all of it. Other templates ignore unknown kwargs.
+    template_kwargs["preserve_thinking"] = True
 else:
     template_kwargs = normalized_agent_params.get("chat_template_kwargs")
     if isinstance(template_kwargs, dict):
         template_kwargs.pop("enable_thinking", None)
+        template_kwargs.pop("preserve_thinking", None)
         if not template_kwargs:
             normalized_agent_params.pop("chat_template_kwargs", None)
     if not normalized_agent_params:

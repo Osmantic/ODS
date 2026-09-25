@@ -134,11 +134,29 @@ def normalize_model(raw: dict[str, Any]) -> dict[str, Any] | None:
         "quantization": raw.get("quantization") or "",
         "specialty": raw.get("specialty") or "General",
         "llama_server_image": raw.get("llama_server_image") or "",
+        "llama_chat_template": raw.get("llama_chat_template") or "",
         "install_recommendation": value_enabled(raw.get("install_recommendation", True)),
         "agent_viability_status": normalize_key(agent_viability.get("status")),
         "pixel_agent_status": normalize_key(pixel_agent.get("status")),
         "runtime_profiles": raw.get("runtime_profiles") if isinstance(raw.get("runtime_profiles"), list) else [],
     }
+
+
+# ODS chat templates for llama.cpp (config/llama-server/templates), named by
+# catalog entries. The value is the path inside the NVIDIA/CPU llama-server
+# containers; native macOS launchers map it into the install directory.
+LLAMA_CHAT_TEMPLATE_DIR = "/config/llama-server/templates"
+LLAMA_CHAT_TEMPLATE_BACKENDS = {"nvidia", "jetson", "cpu", "apple"}
+
+
+def llama_chat_template_env(model: dict[str, Any], backend: str, catalog: Path) -> str:
+    """Return LLAMA_ARG_CHAT_TEMPLATE_FILE for a llama.cpp backend, or ""."""
+    name = model.get("llama_chat_template")
+    if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.jinja", name)
+            or str(backend).strip().lower() not in LLAMA_CHAT_TEMPLATE_BACKENDS
+            or not (catalog.resolve().parent / "llama-server" / "templates" / name).is_file()):
+        return ""
+    return f"{LLAMA_CHAT_TEMPLATE_DIR}/{name}"
 
 
 def curated_source_allowed(model: dict[str, Any]) -> bool:
@@ -689,6 +707,9 @@ def main() -> int:
                 env[str(key)] = value
     elif selected.get("llama_server_image"):
         env["LLAMA_SERVER_IMAGE"] = selected["llama_server_image"]
+    chat_template = llama_chat_template_env(selected, args.backend, args.catalog)
+    if chat_template:
+        env["LLAMA_ARG_CHAT_TEMPLATE_FILE"] = chat_template
     for key, value in env.items():
         print(f"{key}={shell_value(value)}")
     return 0
