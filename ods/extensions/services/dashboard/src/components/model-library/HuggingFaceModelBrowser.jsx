@@ -324,7 +324,7 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
             </div>
             <p className="mt-1 text-xs text-theme-text-muted">Select an exact, integrity-qualified GGUF artifact.</p>
           </div>
-          <button type="button" onClick={onClose} disabled={Boolean(importingArtifact)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/[0.08] text-theme-text-muted hover:text-theme-text disabled:opacity-40" title="Close">
+          <button type="button" onClick={onClose} disabled={Boolean(importingArtifact)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/[0.08] text-theme-text-muted hover:text-theme-text disabled:opacity-40" title="Close" aria-label="Close">
             <X size={15} />
           </button>
         </header>
