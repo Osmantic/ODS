@@ -90,7 +90,7 @@ test('a module that is not the imported function is never run; extraction falls 
 
 test('the in-process path bounds the adversarial input it hands the extractor', async () => {
   assert.equal(boundedHtml('a'.repeat(10), 4), 'aaaa');
-  assert.equal(boundedHtml('a😀b', 2), 'a', 'never ends inside a surrogate pair');
+  assert.equal(boundedHtml('a\uD83D\uDE00b', 2), 'a', 'never ends inside a surrogate pair');
   const {result, gap} = await blockedFor(() => fixtureExtract({html: boundedHtml(UNCLOSED), extractMode: 'text'}));
   assert.ok(result.text.length > 1000);
   // Bounded, not free: about 0.7 s on tower2 for the pinned extractor.
