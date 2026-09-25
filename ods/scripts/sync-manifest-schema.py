@@ -17,6 +17,8 @@ LIBRARY_SCHEMA = ROOT_DIR / "extensions" / "library" / "schema" / "service-manif
 def canonical_schema_path() -> Path:
     manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
     relative_path = manifest["contracts"]["extensions"]["serviceManifestSchema"]
+    if not isinstance(relative_path, str) or not relative_path.strip():
+        raise ValueError("declared manifest schema path must be a non-empty string")
     schema_path = (ROOT_DIR / relative_path).resolve()
     if not schema_path.is_file():
         raise FileNotFoundError(f"declared manifest schema not found: {relative_path}")
