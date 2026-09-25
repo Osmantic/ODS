@@ -47,12 +47,29 @@ only `{}` and asks the host to reconcile that existing transaction. Both require
 the Dashboard's owner credential. Private configuration and credential values
 are excluded from the response.
 
-Recovery may finish an already committed switch, or release a verified unchanged
-or fully restored previous state. It checks configuration digests and actual
-inference evidence. It does not choose or load another model. An intermediate
-crash without sufficient proof remains pending and needs explicit repair;
-there is no generic reset that discards the saved state or silently unlocks an
-unverified model.
+Recovery may finish an already committed or applied switch, or release a
+verified unchanged or fully restored previous state. It checks configuration
+digests and actual inference evidence. It does not choose or load another model.
+An intermediate crash without sufficient proof remains pending and needs
+explicit repair. There is no generic reset that discards the saved state or
+silently unlocks an unverified model.
+
+A rollback whose native status read fails because of a transport problem, such
+as docker CLI timeouts on an overloaded host, still restores and proves the
+host's previous state. Its `rolling-back` receipt lets recovery finish once the
+coordinator answers again.
+
+The explicit repair is **Restore <previous model>**, which the model menu shows
+after recovery reports `model-recovery-proof-required`.
+`POST /api/models/recovery/restore` accepts only `{"transactionId": ...}` for
+the pending transaction. The host runs recovery first. If recovery cannot
+resolve the switch, the host reads the native hold and requires the same
+transaction with an unchanged previous contract, or an applied target that the
+rollback will undo. It then loads the journal's previous model at its previous
+context through the normal activation path and sends `model-finish` with
+`rollback` only after proving that exact model and context. It never sends
+`model-begin` or `model-apply`. A failed restore rolls the host back to what it
+was serving before the restore and leaves the transaction pending.
 
 Windows `/runtime/lemonade/ensure` remains a bootstrap operation outside this
 transaction. The launcher may need it before Edge and the agent have started.
