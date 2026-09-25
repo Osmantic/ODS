@@ -1,0 +1,12 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "0cb612bf4a5c25e09e99b31d89cef12ff6151a6c20b4c960d0c5e06465236aff",
+  "patchedSha256": "4bd6c8beee7f339febeab5600cb15f6b23f50c0ee9381a66d184a43b61734338",
+  "replacements": [
+    [
+      "function shouldTerminateToolBatch(finalizedCalls) {\n\treturn finalizedCalls.length > 0 && finalizedCalls.every((finalized) => finalized.result.terminate === true);\n}",
+      "function shouldTerminateToolBatch(finalizedCalls) {\n\t// ODS: in this release write, edit and apply_patch set terminate only for a\n\t// change that left the file as it was. That is an ordinary result: the\n\t// model still gets the next turn to answer. Other terminating results end\n\t// the batch as before.\n\treturn finalizedCalls.length > 0 && finalizedCalls.every((finalized) => finalized.result.terminate === true && ![\n\t\t\"write\",\n\t\t\"edit\",\n\t\t\"apply_patch\"\n\t].includes(finalized.toolCall?.name));\n}"
+    ]
+  ],
+  "previousReplacements": {}
+}

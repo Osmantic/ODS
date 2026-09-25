@@ -268,6 +268,44 @@ Each prompt also receives the current host UTC time. The model must preserve
 the owner's requested date/timezone, check source publication dates and avoid
 confusing its training cutoff with the actual date.
 
+## Published preview after later tool calls
+
+A tool call after publication, such as a test run, a `grep` or a file write,
+may change the published files. The guard then stops presenting the preview as
+current. When that call has settled and qualifies (see
+`plugin/preview-revalidation.mjs`), the host compares the published directory
+with the publication receipt, byte for byte, and only a match restores it.
+
+That comparison used to run only in `before_agent_finalize`, and OpenClaw skips
+that hook when a turn ends without answer text. Tower2 fleet round 092
+(coding-v1) ended that way: after publishing and a CLI check, the model saved
+unchanged test output as its last call, and the pinned runtime ended the turn
+on that write (repaired separately, see
+[runtime repairs](../../../docs/pixel/ODS-RUNTIME-REPAIRS.md)). The owner got
+no answer and a preview marked as not verified since later tool activity, even
+though the files had not changed.
+
+The comparison now starts as soon as the qualifying call's result is saved:
+
+- Only a result of the same run and session, with no other call of the run
+  still pending, starts it. The host is asked only while that still holds.
+- Finalization and the ingress verification route (`settleDelivery`) wait for
+  it, at most the existing 4-second limit, and never start a second one for the
+  same state. A later saved result's comparison runs after it.
+- The attempt's end revokes the candidate and no comparison of it starts
+  afterwards. One that a saved result started before the end still answers,
+  because the turn can end right after that result with no model call in
+  between. A comparison started by finalization still loses to the end.
+- A mismatch or a timeout stands for that state. An answer the run could not
+  use yet, for example while one of its read-only calls was pending, can be
+  asked again once that call is saved.
+- Republication (`recoverWorkspacePreview`) stays a finalization step.
+
+`tests/saved_result_revalidation.test.mjs` replays round 092's coding sequence
+and the races above. `tests/runtime_noop_file_change.integration.mjs` runs it
+with the real pinned runtime, the guard and the ODS ingress, with a host that
+answers after the attempt has ended.
+
 ## Tool-limit finalization
 
 When the run-progress budget (`run-progress-budget.mjs`) or the research

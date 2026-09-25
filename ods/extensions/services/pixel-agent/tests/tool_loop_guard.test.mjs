@@ -16059,13 +16059,17 @@ function revalidationGuardFixture(verify,options={}) {
   const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',sessionKey:'agent:pixel:test',...options.context};
   const guard=createToolLoopGuard({verifyWorkspacePreview:verify,...options.guard});
   guard.observeRun(context,'pixel',{prompt:'Build and publish a website in existing signal-garden.'});
-  const invoke=(name,params,result,id)=>{
+  // A saved result starts a settled comparison only when its persist context
+  // names the run's session key; finalizerOnly omits it so that finalization
+  // starts the comparison, as it did before saved results could.
+  const invoke=(name,params,result,id,{finalizerOnly=false}={})=>{
     const ctx={...context,toolName:name,toolCallId:id};
     const prepared=guard.beforeToolCall({toolName:name,params,toolCallId:id},ctx);
     assert.notEqual(prepared?.block,true);
     if(!result)return;
     guard.afterToolCall({toolName:name,params:prepared?.params??params,result,toolCallId:id},ctx);
-    guard.toolResultPersist({toolName:name,toolCallId:id,message:{role:'toolResult',toolName:name,toolCallId:id,...result}},ctx);
+    guard.toolResultPersist({toolName:name,toolCallId:id,message:{role:'toolResult',toolName:name,toolCallId:id,...result}},
+      finalizerOnly?{agentId:ctx.agentId,toolName:name,toolCallId:id}:ctx);
   };
   const write={path:'signal-garden/index.html',content:'<!doctype html><title>Model-authored garden</title>'};
   invoke('write',write,{content:[{type:'text',text:'written'}],details:{status:'completed'}},'write');
@@ -16120,6 +16124,8 @@ test('invalid JSON publication stays failed until repaired files are republished
   assert.equal(guard.verificationForRun(context.runId).status,'passed');
 });
 
+// The saved result cannot start the comparison here (finalizerOnly), so the
+// finalizer's own context and the attempt's end are what is tested.
 for(const fault of ['detached-exec','timed-out','running','env','pending-read','wrong-run','wrong-session','wrong-key','ended']) test(`final preview revalidation fails closed: ${fault}`,async()=>{
   let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
   const params={command:fault==='detached-exec'?'python3 test.py &':'ls -la signal-garden/'};
@@ -16127,7 +16133,7 @@ for(const fault of ['detached-exec','timed-out','running','env','pending-read','
   const result={content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}};
   if(fault==='timed-out'){result.isError=true;result.details={status:'failed',exitCode:null,timedOut:true,failureKind:'overall-timeout'};}
   if(fault==='running'){result.details={status:'running',sessionId:'background-session'};}
-  invoke('exec',params,result,'inspection');
+  invoke('exec',params,result,'inspection',{finalizerOnly:true});
   if(fault==='pending-read')invoke('read',{path:'signal-garden/index.html'},null,'pending');
   if(fault==='ended')guard.endPreviewRevalidation({},context);
   const altered={...context};
@@ -16138,23 +16144,63 @@ for(const fault of ['detached-exec','timed-out','running','env','pending-read','
   assert.equal(probes,0);
 });
 
-for(const change of ['new-write','end','new-run']) test(`late host verification cannot restore stale preview: ${change}`,async()=>{
+// The same settlements never let the saved result itself ask the host.
+for(const fault of ['detached-exec','timed-out','running','env','pending-read']) test(`saved-result revalidation fails closed: ${fault}`,async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
+  const params={command:fault==='detached-exec'?'python3 test.py &':'ls -la signal-garden/'};
+  if(fault==='env')params.env={PATH:'/workspace'};
+  const result={content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}};
+  if(fault==='timed-out'){result.isError=true;result.details={status:'failed',exitCode:null,timedOut:true,failureKind:'overall-timeout'};}
+  if(fault==='running'){result.details={status:'running',sessionId:'background-session'};}
+  invoke('exec',params,result,'inspection');
+  if(fault==='pending-read')invoke('read',{path:'signal-garden/index.html'},null,'pending');
+  await guard.settleDelivery(context.runId);
+  assert.equal(await guard.revalidateWorkspacePreview({},context),false);
+  assert.equal(probes,0);
+});
+
+test('a saved result persisted under another session key starts no comparison; the run finalizer still can',async()=>{
+  let probes=0;const {guard,context}=revalidationGuardFixture(async()=>{probes++;return true;});
+  const params={command:'ls -la signal-garden/'},ctx={...context,toolName:'exec',toolCallId:'inspection'};
+  const result={content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}};
+  guard.beforeToolCall({toolName:'exec',params,toolCallId:'inspection'},ctx);
+  guard.afterToolCall({toolName:'exec',params,result,toolCallId:'inspection'},ctx);
+  guard.toolResultPersist({toolName:'exec',toolCallId:'inspection',message:{role:'toolResult',toolName:'exec',toolCallId:'inspection',...result}},
+    {...ctx,sessionKey:'agent:pixel:foreign'});
+  await guard.settleDelivery(context.runId);
+  assert.equal(probes,0);
+  assert.notEqual(guard.verificationForRun(context.runId).status,'passed');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),true);
+  assert.equal(probes,1);
+  assert.equal(guard.verificationForRun(context.runId).status,'passed');
+});
+
+// A comparison finalization started loses to the attempt's end as to any
+// change. One the saved result started before the end still answers: the end
+// can follow that result directly (a terminating tool batch), and delivery
+// (settleDelivery) waits for it. The ended candidate is never compared again.
+for(const starter of ['finalizer','saved-result']) for(const change of ['new-write','end','new-run']) test(`late host verification cannot restore stale preview: ${change}, started by ${starter}`,async()=>{
   let resolve;const answer=new Promise(r=>resolve=r);
   const {guard,context,invoke}=revalidationGuardFixture(()=>answer);
-  invoke('exec',{command:'ls -la signal-garden/'},{content:[{type:'text',text:'index.html'}],details:{status:'completed',exitCode:0}},'inspection');
+  invoke('exec',{command:'ls -la signal-garden/'},{content:[{type:'text',text:'index.html'}],details:{status:'completed',exitCode:0}},'inspection',
+    {finalizerOnly:starter==='finalizer'});
   const pending=guard.revalidateWorkspacePreview({},context);
   await Promise.resolve();
   if(change==='new-write')invoke('write',{path:'signal-garden/index.html',content:'changed'},null,'late-write');
   if(change==='end')guard.endPreviewRevalidation({},context);
   if(change==='new-run')guard.observeRun({...context,runId:'new-run'},'pixel',{prompt:'Inspect another project.'});
-  resolve(true);assert.equal(await pending,false);
-  assert.notEqual(guard.verificationForRun('run-1').status,'passed');
+  resolve(true);
+  const answered=starter==='saved-result'&&change==='end';
+  assert.equal(await pending,answered);
+  assert.equal(guard.verificationForRun('run-1').status==='passed',answered);
+  if(change==='end')assert.equal(await guard.revalidateWorkspacePreview({},context),false);
 });
 
-test('actual registered finalize hook awaits trusted revalidation before goal and delivery decisions',async()=>{
+for(const starter of ['finalizer','saved-result']) test(`actual registered finalize hook awaits trusted revalidation before goal and delivery decisions, started by ${starter}`,async()=>{
   let resolve;const answer=new Promise(r=>resolve=r),order=[];
   const {guard,context,invoke}=revalidationGuardFixture(()=>{order.push('verify');return answer;});
-  invoke('exec',{command:'ls -la signal-garden/'},{content:[{type:'text',text:'index.html'}],details:{status:'completed',exitCode:0}},'inspection');
+  invoke('exec',{command:'ls -la signal-garden/'},{content:[{type:'text',text:'index.html'}],details:{status:'completed',exitCode:0}},'inspection',
+    {finalizerOnly:starter==='finalizer'});
   const source=readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');
   const start=source.indexOf('    api.on("before_agent_finalize",');
   const end=source.indexOf('    // Delivery rewriting',start);
@@ -16165,7 +16211,8 @@ test('actual registered finalize hook awaits trusted revalidation before goal an
     goalProgress:{finalize(_event,_context,decision){order.push('goal');return decision;}},
   });
   const pending=finalize({},context);
-  await Promise.resolve();assert.deepEqual(order,['verify']);
+  for(let tick=0;tick<20&&!order.length;tick++)await Promise.resolve();
+  assert.deepEqual(order,['verify']);
   assert.equal(guard.verificationForRun('run-1').status,'failed');
   resolve(true);await pending;
   assert.deepEqual(order,['verify','goal']);
@@ -16296,7 +16343,8 @@ test('concurrent finalizers publish once and discard receipt after run invalidat
   assert.equal(calls,1);assert.equal(guard.verificationForRun(context.runId).status,'failed');
 });
 
-for(const change of ['end','write']) test(`final restore rejects ${change} in the nested async resolution microtask gap`,async()=>{
+// A saved result's comparison deliberately survives the end (see above).
+for(const [starter,change] of [['finalizer','end'],['finalizer','write'],['saved-result','write']]) test(`final restore rejects ${change} in the nested async resolution microtask gap, started by ${starter}`,async()=>{
   let fixture,changed=false;
   fixture=revalidationGuardFixture(()=>{
     queueMicrotask(()=>queueMicrotask(()=>queueMicrotask(()=>{
@@ -16307,7 +16355,8 @@ for(const change of ['end','write']) test(`final restore rejects ${change} in th
     return true;
   });
   const {guard,context,invoke}=fixture;
-  invoke('exec',{command:'ls -la signal-garden/'},{content:[{type:'text',text:'index.html'}],details:{status:'completed',exitCode:0}},'inspection');
+  invoke('exec',{command:'ls -la signal-garden/'},{content:[{type:'text',text:'index.html'}],details:{status:'completed',exitCode:0}},'inspection',
+    {finalizerOnly:starter==='finalizer'});
   const result=await guard.revalidateWorkspacePreview({},context);
   assert.equal(changed,true);
   assert.equal(result,false);

@@ -4497,6 +4497,7 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/native_search.py" \
         && -f "$plugin_root/host/openclaw-tool-recovery.json" \
         && -f "$plugin_root/host/openclaw-completion-recovery.json" \
+        && -f "$plugin_root/host/openclaw-noop-file-change.json" \
         && -f "$plugin_root/host/openclaw-compaction-export.json" \
         && -f "$plugin_root/host/openclaw-compaction-idle.json" \
         && -f "$plugin_root/host/openclaw-compaction-resume.json" \
@@ -4810,7 +4811,7 @@ ods_pixel_install_default_agent() {
         "$plugin_root/host/openclaw_tool_recovery.py" \
         --openclaw-bin "$openclaw_bin" \
         --restore-foreign "$home/.openclaw/ods-runtime-patches" \
-        --known tool-recovery completion-recovery image-envelope compaction-export \
+        --known tool-recovery completion-recovery noop-file-change image-envelope compaction-export \
             compaction-idle compaction-resume read-range tool-result-projection \
             compaction-budget \
         >>"$pixel_log" 2>&1; then
@@ -4839,6 +4840,17 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/completion-recovery" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's completion recovery repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # A write, edit or patch that leaves a file unchanged asks the pinned agent
+    # loop to end the turn, so the model never answers. Keep the turn going;
+    # other terminating tool results still end it.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --noop-file-change \
+        --state-dir "$home/.openclaw/ods-runtime-patches/noop-file-change" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's unchanged-file continuation repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     # Keep screenshot bytes in native image blocks. JSON-encoding them as text

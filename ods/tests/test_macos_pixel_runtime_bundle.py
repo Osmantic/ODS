@@ -180,7 +180,8 @@ def test_shared_repairs_compose_deterministically_only_in_staging(artifacts, sha
     manifest, _ = bundle.verify(root, expected_digest=digest)
     repairs = json.loads((root / 'ods-runtime-repairs.json').read_bytes())
     stream = json.loads((root / 'ods-runtime-patches.json').read_bytes())[0]
-    assert len(repairs) == 9
+    reviewed = Path(bundle.__file__).resolve().parents[3] / 'extensions/services/pixel-agent/host'
+    assert len(repairs) == len(bundle.SHARED_REPAIRS) == len(list(reviewed.glob('openclaw-*.json'))) >= 10
     for receipt, (name, module) in zip(repairs, bundle.SHARED_REPAIRS):
         assert receipt['manifestSha256'] == hashlib.sha256((shared_repairs / name).read_bytes()).hexdigest()
         expected = stream['patchedSha256'] if module == bundle.SHARED_REPAIRS[-1][1] else receipt['patchedSha256']

@@ -11010,9 +11010,19 @@ export function createToolLoopGuard({
     };
   }
 
+  // The saved result of this run's exactly bound call may leave a settled host
+  // comparison waiting (revalidateWorkspacePreview). Start it now: OpenClaw
+  // skips before_agent_finalize for a turn that ends without answer text.
   function toolResultPersist(event, context, agentId = "pixel") {
     if (context?.agentId !== agentId) return undefined;
     const toolCallId = context?.toolCallId ?? event?.toolCallId ?? event?.message?.toolCallId;
+    const runId = pendingToolRuns.get(toolCallId)?.runId;
+    const decision = persistToolResult(event, context, toolCallId);
+    if (runId) startSavedResultRevalidation(runId, context, agentId);
+    return decision;
+  }
+
+  function persistToolResult(event, context, toolCallId) {
     const pending = pendingToolRuns.get(toolCallId);
     pendingToolRuns.delete(toolCallId);
     // A Tool Search child's result is folded into this outer receipt and never
@@ -11456,10 +11466,41 @@ export function createToolLoopGuard({
     } finally { pendingToolRuns.delete(callId); }
   }
 
+  // Finalization first waits for comparisons saved results already started
+  // (true when those restored the run's preview). Either way a generation is
+  // compared at most once, and an ended attempt's candidate is not compared.
   async function revalidateWorkspacePreview(event, context, agentId = 'pixel') {
     if (context?.agentId !== agentId || typeof verifyWorkspacePreview !== 'function') return false;
     const runId = context?.runId ?? event?.runId;
     const state = runs.get(runId);
+    const inFlight = state?.previewRevalidationInFlight;
+    if (inFlight && await inFlight) return true;
+    const candidate = state?.previewRevalidationCandidate;
+    if (!candidate || candidate === state.previewRevalidationEndedCandidate) return false;
+    return comparePublishedBytes(state, runId, context);
+  }
+
+  // The persist hook carries the session key but no run or session ID; the
+  // exactly bound pending call supplied the run, whose own session is used.
+  // A comparison requested here runs after any earlier one, even if the
+  // attempt ends meanwhile. Republication (recoverWorkspacePreview) remains a
+  // finalization fallback.
+  function startSavedResultRevalidation(runId, context, agentId) {
+    const state = runs.get(runId);
+    const candidate = state?.previewRevalidationCandidate;
+    if (!candidate || typeof verifyWorkspacePreview !== 'function' || state.workspacePreview ||
+        candidate === state.previewRevalidationEndedCandidate ||
+        state.previewRevalidationCompletedGeneration !== state.previewVerificationGeneration) return;
+    const identity = {agentId, runId, sessionId: state.currentSessionId, sessionKey: context?.sessionKey};
+    const inFlight = Promise.resolve(state.previewRevalidationInFlight)
+      .then(async restored => await comparePublishedBytes(state, runId, identity) ||
+        restored === true && state.workspacePreview === candidate.preview)
+      .catch(() => false)
+      .finally(() => { if (state.previewRevalidationInFlight === inFlight) state.previewRevalidationInFlight = undefined; });
+    state.previewRevalidationInFlight = inFlight;
+  }
+
+  async function comparePublishedBytes(state, runId, context) {
     const candidate = state?.previewRevalidationCandidate;
     const generation = state?.previewVerificationGeneration;
     if (!candidate || state.previewRevalidationAttemptedGeneration === generation) return false;
@@ -11476,7 +11517,23 @@ export function createToolLoopGuard({
       ![...pendingToolRuns.values()].some(pending=>pending.runId===runId));
     if (!valid()) return false;
     state.previewRevalidationAttemptedGeneration = generation;
-    if (!await boundedPreviewVerification(verifyWorkspacePreview, candidate.preview, valid) || !valid()) return false;
+    // The host is asked only while the run can still use its answer.
+    let asked = false, matched = false;
+    const verify = async (receipt, options) => {
+      if (!valid()) return false;
+      asked = true;
+      return matched = await verifyWorkspacePreview(receipt, options) === true;
+    };
+    if (!await boundedPreviewVerification(verify, candidate.preview, valid) || !valid()) {
+      // Without a host verdict the run could use, for example while one of its
+      // read-only calls was pending, the same generation may compare again
+      // once valid() holds. A mismatch, a timeout or a newer generation stands.
+      if ((!asked || matched) && state.previewRevalidationAttemptedGeneration === generation &&
+          state.previewVerificationGeneration === generation && state.previewRevalidationCandidate === candidate) {
+        state.previewRevalidationAttemptedGeneration = undefined;
+      }
+      return false;
+    }
     state.workspacePreview = candidate.preview;
     rememberSessionPreview(candidate.sessionId, candidate.preview, state);
     return true;
@@ -11563,6 +11620,8 @@ export function createToolLoopGuard({
   async function settleDelivery(runId) {
     const state = typeof runId === 'string' ? runs.get(runId) : undefined;
     if (!state) return;
+    // The verdict waits for a bounded byte comparison a saved result started.
+    if (state.previewRevalidationInFlight) await state.previewRevalidationInFlight;
     if (state.partialAnswerVerification) await state.partialAnswerVerification;
     // Decided once per run: a request is never retried, and a skip stands.
     if (!state.stopSynthesis && !state.stopSynthesisOutcome) {
@@ -11680,9 +11739,23 @@ export function createToolLoopGuard({
     return undefined;
   }
 
+  // An attempt's end revokes its candidate, and no comparison of it starts
+  // afterwards. One a saved result started before the end may still answer:
+  // an attempt can end right after that result (a terminating tool batch)
+  // with no model call in between, and delivery (settleDelivery) waits for it.
+  // A later attempt of the same run keeps a candidate it published itself.
   function endPreviewRevalidation(event, context) {
     const state = runs.get(context?.runId ?? event?.runId);
-    if (state) {state.previewRevalidationCandidate=undefined;state.previewVerificationGeneration=(state.previewVerificationGeneration ?? 0)+1;}
+    if (!state) return;
+    const candidate = state.previewRevalidationCandidate;
+    const end = () => {
+      if (state.previewRevalidationCandidate !== candidate) return;
+      state.previewRevalidationCandidate = undefined;
+      state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
+    };
+    if (!candidate || !state.previewRevalidationInFlight) return end();
+    state.previewRevalidationEndedCandidate = candidate;
+    state.previewRevalidationInFlight.then(end, end);
   }
 
   // agent_end: a later cancel for this user can no longer name this run's

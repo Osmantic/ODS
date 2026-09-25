@@ -18,6 +18,7 @@ import tempfile
 
 MANIFEST = Path(__file__).with_name("openclaw-tool-recovery.json")
 MODULE = "tool-loop-detection-C0oQKkXZ.js"
+NOOP_FILE_CHANGE_MODULE = "proxy-Bsfwfsp-.js"
 COMPLETION_MODULE = "agent-command-DeS125kF.js"
 IMAGE_MODULE = "tool-search-BInRpkE3.js"
 COMPACTION_MODULE = "embedded-agent-subscribe.handlers.compaction.runtime.js"
@@ -121,7 +122,7 @@ def recorded_original(state_dir, module_name, source_sha256, current_hash):
 
 def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
            module_name=MODULE):
-    if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE,
+    if module_name not in {MODULE, NOOP_FILE_CHANGE_MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE,
                            COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE,
                            TOOL_RESULT_PROJECTION_MODULE}:
         raise ValueError("unsupported runtime repair module")
@@ -324,6 +325,7 @@ def main():
                         help="patch set names this ODS version manages")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--completion-recovery", action="store_true")
+    selection.add_argument("--noop-file-change", action="store_true")
     selection.add_argument("--image-envelope", action="store_true")
     selection.add_argument("--compaction-export", action="store_true")
     selection.add_argument("--compaction-idle", action="store_true")
@@ -347,6 +349,9 @@ def main():
     if args.completion_recovery:
         options = {"module_name": COMPLETION_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-completion-recovery.json")}
+    elif args.noop_file_change:
+        options = {"module_name": NOOP_FILE_CHANGE_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-noop-file-change.json")}
     elif args.image_envelope:
         options = {"module_name": IMAGE_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-image-envelope.json")}
