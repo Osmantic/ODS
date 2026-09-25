@@ -248,15 +248,21 @@ export function createFileReceiptAdapter({ root, operation, operations, context 
         ? rangeBody(state.observed, { offset: Math.max(1, changedLine - 3), limit: 12 }, 'read')
         : rangeBody(state.observed, args, operation);
       if (!range) return result;
-      const limitation = range.oversizedLine ? `[File receipt unavailable for line ${range.oversizedLine}: this line exceeds the ${MAX_BODY}-character numbered-line budget. Repeating the same read cannot grant complete-file replacement evidence. Use a bounded targeted operation through the existing confined tools; no full-file visibility is claimed.]` : '';
-      if (!range.body) return limitation ? { ...result, content: operation === 'read'
-        ? [{ type: 'text', text: limitation }]
-        : [...(result.content ?? []), { type: 'text', text: limitation }] } : result;
+      if (range.oversizedLine) {
+        // Preserve the original native read (and its existing output bound).
+        // Line-based receipt pagination cannot reveal part of a long line.
+        // Give a real existing retrieval route without inventing edit authority.
+        const program = `from pathlib import Path; text=Path(${JSON.stringify(state.path)}).read_bytes().decode("utf-8").splitlines(keepends=True)[${range.oversizedLine - 1}]; print(text[0:8000], end="")`;
+        const command = `python3 -c '${program.replaceAll("'", "'\\''")}'`;
+        const limitation = `[File receipt unavailable: line ${range.oversizedLine} exceeds the ${MAX_BODY}-character numbered-line budget. Original native output is preserved. For bounded retrieval, use exec with workdir=${JSON.stringify(root)} and command=${JSON.stringify(command)}. Continue that same line with text[8000:16000], then successive 8000-character slices. These exec reads do not authorize receipt-gated edit/write; long-line transformations use existing confined exec operations under their ordinary checks.]`;
+        return { ...result, content: [...(result.content ?? []), { type: 'text', text: limitation }] };
+      }
+      if (!range.body) return result;
       const receipt = { schemaVersion: 1, id: randomUUID(), scope: context.scope, toolCallId,
         operation, path: state.path, version: digest(state.observed), identity: state.identity, bytes: state.observed.length,
         status: 'completed', observed: true, ...range };
       const header = `[File ${operation}: ${receipt.path}; sha256=${receipt.version}; bytes=${receipt.bytes}; lines=${range.start}-${range.end}/${range.totalLines}]`;
-      const omitted = limitation ? `\n${limitation}` : range.end < range.totalLines ? `\n[More content: read path=${JSON.stringify(receipt.path)} offset=${range.end + 1}.]` : '';
+      const omitted = range.end < range.totalLines ? `\n[More content: read path=${JSON.stringify(receipt.path)} offset=${range.end + 1}.]` : '';
       const rendered = `${header}\n${range.body}${omitted}`;
       receipt.rendered = rendered;
       receipt.renderedSha256 = digest(rendered);

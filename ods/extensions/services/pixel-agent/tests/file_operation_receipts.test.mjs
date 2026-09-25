@@ -282,11 +282,15 @@ test('bounded coverage eviction cannot retain stale full-file union', async () =
   assert.equal(f.context.visible('a.txt').fullFile,false);
 });
 
-test('oversized lines explicitly report unsupported visibility instead of impossible refresh', async () => {
+test('oversized lines preserve native output and give an actionable bounded exec route', async () => {
   for(const prefix of ['', 'short\n']) {
     const f=fixture(prefix+'x'.repeat(13000));
     const result=await f.read.execute('r',{path:'a.txt'});
-    assert.match(result.content[0].text,/Repeating the same read cannot grant/);
+    assert.equal(result.content[0].text,'original');
+    assert.match(result.content[1].text,/python3 -c/);
+    assert.match(result.content[1].text,/text\[8000:16000\]/);
+    assert.match(result.content[1].text,/do not authorize receipt-gated edit/);
+    assert.equal(result.details?.fileReceipt,undefined);
     assert.doesNotMatch(result.content[0].text,/More content: read/);
     assert(result.content[0].text.length < 12500);
     f.show(result,'r');

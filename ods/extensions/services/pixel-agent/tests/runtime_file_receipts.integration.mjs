@@ -105,6 +105,21 @@ for (const mode of image ? ['native', 'sandbox'] : ['native']) test(`actual SDK 
     fs.unlinkSync(path.join(workspace,'alias'));fs.symlinkSync('right',path.join(workspace,'alias'));
     await assert.rejects(execute('edit','alias-edit',{path:'alias/same.txt',edits:[{oldText:'same',newText:'changed'}]}),/File changed|no longer visible|symlink|alias/i);
     for(const dir of ['left','right'])assert.equal(fs.readFileSync(path.join(workspace,dir,'same.txt'),'utf8'),'same bytes');
+    // The fallback is executable through the existing actual SDK exec tool,
+    // including sandbox cwd translation; it does not grant file-tool authority.
+    const longName = "quoted' $(not-a-command).txt", longText = 'x'.repeat(13000);
+    fs.writeFileSync(path.join(workspace,longName),longText);
+    const longRead = await execute('read','long-read',{path:longName});
+    assert.equal(longRead.details?.fileReceipt,undefined);
+    assert(longRead.content.some(item=>item.type==='text' && item.text.includes(longText)),'native read content preserved');
+    const note=longRead.content.at(-1).text;
+    const route=note.match(/workdir=("(?:[^"\\]|\\.)*") and command=("(?:[^"\\]|\\.)*")\. Continue/);
+    assert(route,'exact retrieval arguments');
+    const workdir=JSON.parse(route[1]),command=JSON.parse(route[2]);
+    const retrieved=await tool('exec').execute('long-slice',{workdir,command,yieldMs:10000});
+    assert.notEqual(retrieved.isError,true);
+    assert(retrieved.content.some(item=>item.type==='text' && item.text.includes('x'.repeat(8000))),'bounded actual exec retrieves first chunk');
+    assert.equal(receipt.visible(longName),undefined,'exec does not promote file receipt');
     console.log(JSON.stringify({ kind: 'actual-sdk-file-receipt', mode, status: 'passed', nativeBytesVerified: true, staleRejected: true, contextLossRejected: true }));
   } finally {
     if (sandbox?.containerName) {

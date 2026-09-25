@@ -71,8 +71,10 @@ truncated, evicted, or superseded ranges do not count. This is context visibilit
 not cached filesystem authority: mutation still rereads actual confined bytes.
 
 A single numbered line exceeding the 12,000-character body budget cannot obtain
-receipt visibility through this line-oriented read adapter. The result explicitly
-reports that limitation instead of suggesting an impossible repeat read. No
-full-file replacement authority is granted; existing confined tools remain
-available for bounded targeted operations under their ordinary checks. A future
+receipt visibility through this line-oriented read adapter. The result preserves the original native output and its existing SDK output
+bound, adding an exact confined exec/Python command for successive 8,000-character
+slices of that line. This fallback does not satisfy receipt-gated edit/write:
+long-line transformations use existing confined exec operations under ordinary
+checks. No full-file replacement authority is granted, and the adapter does not
+suggest an impossible repeat read. A future
 byte-range reader would require a separate schema and visibility contract.
