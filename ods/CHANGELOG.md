@@ -33,6 +33,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rejects a llama.cpp image without a digest.
 
 ### Changed
+- Windows: `install.ps1` now installs ODS inside Ubuntu/WSL2 with Pixel
+  (`--pixel --no-hermes --no-openclaw`) instead of the native Windows stack.
+  It prepares WSL and Ubuntu 24.04 when needed, and stops with instructions,
+  before changing anything in Ubuntu, when WSL2, systemd, a non-root user,
+  Docker Desktop's WSL integration or, on NVIDIA machines, a Windows driver
+  >= 570 with GPU and `nvidia` runtime visible from Ubuntu is missing. An
+  existing Ubuntu older than 24.04 is never reused. Success now requires the
+  authenticated Portal status API to report the agent available. Existing
+  native Windows installs are detected and left untouched; `install.ps1`
+  refuses to run beside them. Keep managing them with their own `ods.ps1`, or
+  rerun `ods\installers\windows\install-windows.ps1`. AMD machines that used
+  the native Lemonade path now get a GPU backend detected inside WSL, CPU, or
+  an explicitly configured endpoint.
+- Linux on WSL: an NVIDIA driver older than 570 stops with Windows update
+  instructions instead of installing `nvidia-driver-*` inside the distro,
+  which breaks WSL GPU passthrough.
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
   file. The 48 other re-pinned models download the same bytes: each sha256 was
