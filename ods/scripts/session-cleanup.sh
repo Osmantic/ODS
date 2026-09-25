@@ -89,9 +89,9 @@ if not isinstance(data, dict):
     print("invalid sessions index: root must be an object", file=sys.stderr)
     raise SystemExit(1)
 
-for value in data.values():
-    if not isinstance(value, dict):
-        print("invalid sessions index: each entry must be an object", file=sys.stderr)
+for key, value in data.items():
+    if not isinstance(key, str) or not key.strip() or not isinstance(value, dict):
+        print("invalid sessions index: each entry must be an object with valid key", file=sys.stderr)
         raise SystemExit(1)
     session_id = value.get("sessionId")
     if not isinstance(session_id, str) or not session_id:
