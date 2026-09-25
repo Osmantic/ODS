@@ -23,3 +23,28 @@ dotenv_quote() {
         printf "'%s'\n" "$value"
     fi
 }
+
+# Serialize one value for a .env that Docker Compose and lib/safe-env.sh read,
+# keeping it bare whenever Compose already reads the bare text literally.
+# Quotes are added only for what Compose would otherwise change: surrounding
+# whitespace, a leading quote, '$' interpolation, and a whitespace-led '#'
+# comment. Values that read correctly today keep their exact bytes, so simple
+# grep/cut readers still see them unchanged. The quoted form is lossless for
+# those readers; unlike dotenv_quote, it is not meant to be sourced by Bash.
+dotenv_value() {
+    local value="$1"
+    value="${value//$'\r'/ }"
+    value="${value//$'\n'/ }"
+    if [[ "$value" != [[:space:]]* && "$value" != *[[:space:]] \
+        && "$value" != [\"\']* && "$value" != *'$'* \
+        && "$value" != *[[:space:]]'#'* ]]; then
+        printf '%s\n' "$value"
+    elif [[ "$value" != *"'"* ]]; then
+        printf "'%s'\n" "$value"
+    else
+        value="${value//\\/\\\\}"
+        value="${value//\"/\\\"}"
+        value="${value//\$/\\\$}"
+        printf '"%s"\n' "$value"
+    fi
+}

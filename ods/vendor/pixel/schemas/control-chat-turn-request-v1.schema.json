@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-chat-turn-request-v1.schema.json",
+  "title": "Pixel private chat turn request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "requestId", "conversationHandle", "message"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "requestId": {"type": "string", "pattern": "^chatreq-[a-f0-9]{32}$"},
+    "conversationHandle": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^chatview-[a-f0-9]{24}$"}]},
+    "message": {"type": "string", "minLength": 1, "maxLength": 32768}
+  }
+}

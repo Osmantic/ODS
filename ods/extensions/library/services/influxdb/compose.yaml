@@ -1,0 +1,65 @@
+services:
+  influxdb:
+    image: ods/influxdb:2.9.1-local-v1
+    container_name: ods-influxdb
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${INFLUXDB_PORT:-11135}:8086
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ods
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_ADMIN_PASSWORD:?Set a random 64-hex
+        administrator password}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_ADMIN_TOKEN:?Set a distinct random
+        64-hex operator token}
+      DOCKER_INFLUXDB_INIT_ORG: ods
+      DOCKER_INFLUXDB_INIT_BUCKET: projects
+      DOCKER_INFLUXDB_INIT_RETENTION: 30d
+      INFLUXD_REPORTING_DISABLED: 'true'
+    volumes:
+    - influxdb-data:/var/lib/influxdb2
+    - influxdb-config:/etc/influxdb2
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --show-error
+      - --max-time
+      - '10'
+      - http://127.0.0.1:8086/health
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    init: true
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    stop_grace_period: 60s
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  influxdb-data: {}
+  influxdb-config: {}

@@ -1,0 +1,101 @@
+services:
+  hoppscotch:
+    image: ods/hoppscotch:2026.8.1-local-v1
+    container_name: ods-hoppscotch
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${HOPPSCOTCH_PORT:-11090}:8000
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - require('http').get('http://127.0.0.1:8000/backend/v1/onboarding/status',r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    - hoppscotch-internal
+    user: '1000:0'
+    environment:
+      HOPPSCOTCH_DB_PASSWORD: ${HOPPSCOTCH_DB_PASSWORD:?Set a 64-hex database password}
+      DATA_ENCRYPTION_KEY: ${HOPPSCOTCH_ENCRYPTION_KEY:?Set a stable 32-hex encryption
+        key}
+      ENABLE_SUBPATH_BASED_ACCESS: 'true'
+      HOPP_ALTERNATE_PORT: '8000'
+      WHITELISTED_ORIGINS: http://localhost:${HOPPSCOTCH_PORT:-11090}
+      VITE_BASE_URL: http://localhost:${HOPPSCOTCH_PORT:-11090}
+      VITE_SHORTCODE_BASE_URL: http://localhost:${HOPPSCOTCH_PORT:-11090}
+      VITE_ADMIN_URL: http://localhost:${HOPPSCOTCH_PORT:-11090}/admin
+      VITE_BACKEND_GQL_URL: http://localhost:${HOPPSCOTCH_PORT:-11090}/backend/graphql
+      VITE_BACKEND_WS_URL: ws://localhost:${HOPPSCOTCH_PORT:-11090}/backend/graphql
+      VITE_BACKEND_API_URL: http://localhost:${HOPPSCOTCH_PORT:-11090}/backend/v1
+      VITE_APP_TOS_LINK: ''
+      VITE_APP_PRIVACY_POLICY_LINK: ''
+      VITE_PROXYSCOTCH_ACCESS_TOKEN: ''
+      PROXY_APP_URL: ''
+      TRUST_PROXY: 'false'
+      HOME: /tmp
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    depends_on:
+      hoppscotch-db:
+        condition: service_healthy
+  hoppscotch-db:
+    image: postgres:16-alpine@sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb
+    restart: unless-stopped
+    networks:
+    - hoppscotch-internal
+    environment:
+      POSTGRES_DB: hoppscotch
+      POSTGRES_USER: hoppscotch
+      POSTGRES_PASSWORD: ${HOPPSCOTCH_DB_PASSWORD:?Set a 64-hex database password}
+    volumes:
+    - hoppscotch-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - hoppscotch
+      - -d
+      - hoppscotch
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    container_name: ods-hoppscotch-db
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+  hoppscotch-internal:
+    internal: true
+volumes:
+  hoppscotch-db-data: {}

@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/penpot/penpot",
+  "license": "MPL-2.0",
+  "image": "penpotapp/frontend:2.17.2@sha256:94fa2864d8fc0cd62245af95c03cca89306a7fd23c206a98a3e9dc9a376ea27e",
+  "companion_images": [
+    "penpotapp/backend:2.17.2@sha256:770b55f6e51bfcee49152b30858ca6a47143256de8d43953a50b952b5c60bb55",
+    "penpotapp/exporter:2.17.2@sha256:72a8061e88069b9baf0767bc11fbf3310d2527bb5964ca084cf8c844d84306c8",
+    "penpotapp/mcp:2.17.2@sha256:84f3f07ead11745ad95c2c1db90d33d00c550cff76844791ca4389d307f1be37",
+    "postgres:15-alpine@sha256:a46e076249ce434e41203b8c1dadfaa025b9726331d72390df038385d6dc29cd",
+    "valkey/valkey:8.1@sha256:3fbd2e3e4b6e85e046c1e7c215e8f79087bc0357789184305806664e320996f3"
+  ],
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Pinned 2.17.2 community design stack, private PostgreSQL/Valkey, shared persistent assets. Local frontend layer removes absent Nitrate DNS dependency. Backend readiness is proxied through /readyz; MCP ships upstream but is not automatically registered with Portal."
+}

@@ -30,6 +30,15 @@ install_dir="$tmp/install"
 docker_calls="$tmp/docker-calls.log"
 mkdir -p "$fakebin" "$install_dir/data/models" "$install_dir/config/llama-server" "$install_dir/config/litellm"
 
+# Keep the Docker-only fixture independent of the operator's managed Pixel.
+mkdir -p "$tmp/owner-home"
+cat > "$fakebin/getent" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1:-}" == passwd && -n "${2:-}" ]] || exit 2
+printf '%s:x:1000:1000:fixture:%s:/bin/bash\n' "$2" "${ODS_FIXTURE_OWNER_HOME:?}"
+EOF
+chmod +x "$fakebin/getent"
+
 cat > "$fakebin/curl" <<'EOF'
 #!/usr/bin/env bash
 case " $* " in
@@ -147,7 +156,7 @@ printf 'full-model\n' > "$install_dir/data/models/Full.gguf"
 curl_calls="$tmp/curl-calls.log"
 
 set +e
-PATH="$fakebin:$PATH" ODS_FAKE_DOCKER_LOG="$docker_calls" ODS_FAKE_CURL_LOG="$curl_calls" bash "$TARGET" \
+PATH="$fakebin:$PATH" ODS_FIXTURE_OWNER_HOME="$tmp/owner-home" ODS_FAKE_DOCKER_LOG="$docker_calls" ODS_FAKE_CURL_LOG="$curl_calls" bash "$TARGET" \
     "$install_dir" \
     "Full.gguf" \
     "https://example.invalid/Full.gguf" \

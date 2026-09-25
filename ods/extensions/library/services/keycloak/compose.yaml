@@ -1,0 +1,83 @@
+services:
+  keycloak:
+    image: ods/keycloak:26.7.4-local-v1
+    container_name: ods-keycloak
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    user: '1000:0'
+    init: true
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    stop_grace_period: 60s
+    ports:
+    - 127.0.0.1:${KEYCLOAK_PORT:-11141}:8080
+    environment:
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set a random 64-hex database password}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ods-bootstrap
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_BOOTSTRAP_PASSWORD:?Set a distinct random 64-hex bootstrap password}
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-11141}
+      KC_HTTP_ENABLED: 'true'
+      KC_HTTP_MANAGEMENT_HEALTH_ENABLED: 'false'
+      KC_CACHE: local
+    volumes:
+    - keycloak-data:/opt/keycloak/data
+    networks: [ods-network, keycloak-internal]
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, bash, /ods-health.sh]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 240s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+  keycloak-db:
+    image: postgres:17-alpine@sha256:f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995
+    container_name: ods-keycloak-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set a random 64-hex database password}
+    volumes:
+    - keycloak-db-data:/var/lib/postgresql/data
+    networks: [keycloak-internal]
+    healthcheck:
+      test: [CMD, pg_isready, -U, keycloak, -d, keycloak]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+  keycloak-internal:
+    internal: true
+volumes:
+  keycloak-data: {}
+  keycloak-db-data: {}

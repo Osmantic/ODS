@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-fleet-checkpoint-v1.schema.json",
+  "title": "Pixel Deep Work durable host-fleet checkpoint v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "checkpointId", "fleetId", "sequence", "createdAt", "previousCheckpointSha256", "fleetSha256", "state", "nextIndex", "active", "lastOutcome", "turns", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-fleet-checkpoint-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "checkpointId": {"type": "string", "pattern": "^workfleetcheckpoint-[0-9]{13}-[a-f0-9]{12}$"},
+    "fleetId": {"type": "string", "pattern": "^workfleet-[0-9]{13}-[a-f0-9]{12}$"},
+    "sequence": {"type": "integer", "minimum": 0, "maximum": 1000000},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "previousCheckpointSha256": {"$ref": "#/$defs/nullableSha256"},
+    "fleetSha256": {"$ref": "#/$defs/sha256"},
+    "state": {"enum": ["ready", "claimed"]},
+    "nextIndex": {"type": "integer", "minimum": 0, "maximum": 63},
+    "active": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["turnId", "goalIndex", "goalId", "goalSha256", "jobsSha256", "controllerConfigSha256", "goalCheckpointSha256", "resourceEnvelope", "selectedAt"],
+          "properties": {
+            "turnId": {"type": "string", "pattern": "^workturn-[0-9]{13}-[a-f0-9]{12}$"},
+            "goalIndex": {"type": "integer", "minimum": 0, "maximum": 63},
+            "goalId": {"type": "string", "pattern": "^workgoal-[0-9]{13}-[a-f0-9]{12}$"},
+            "goalSha256": {"$ref": "#/$defs/sha256"},
+            "jobsSha256": {"$ref": "#/$defs/sha256"},
+            "controllerConfigSha256": {"$ref": "#/$defs/sha256"},
+            "goalCheckpointSha256": {"$ref": "#/$defs/sha256"},
+            "resourceEnvelope": {"$ref": "#/$defs/goalEnvelope"},
+            "selectedAt": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
+    },
+    "lastOutcome": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["turnId", "goalId", "code", "resultSha256", "settledAt"],
+          "properties": {
+            "turnId": {"type": "string", "pattern": "^workturn-[0-9]{13}-[a-f0-9]{12}$"},
+            "goalId": {"type": "string", "pattern": "^workgoal-[0-9]{13}-[a-f0-9]{12}$"},
+            "code": {"enum": ["cycle-advanced", "cycle-noop", "cycle-terminal", "cleanup-contained", "cycle-failed-contained"]},
+            "resultSha256": {"$ref": "#/$defs/sha256"},
+            "settledAt": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
+    },
+    "turns": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started", "settled"],
+      "properties": {
+        "started": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "settled": {"type": "integer", "minimum": 0, "maximum": 1000000}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grantsExecution", "grantsLease", "grantsReplay", "grantsScopeExpansion", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "grantsExecution": {"const": false},
+        "grantsLease": {"const": false},
+        "grantsReplay": {"const": false},
+        "grantsScopeExpansion": {"const": false},
+        "grantsExternalEffects": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Private hash-chained host-admission record. One active turn blocks every other goal until exact recovery and settlement; the record grants no execution, lease, replay, scope expansion, external effect, or completion authority."}
+  },
+  "allOf": [
+    {"if": {"properties": {"sequence": {"const": 0}}, "required": ["sequence"]}, "then": {"properties": {"previousCheckpointSha256": {"const": null}}}, "else": {"properties": {"previousCheckpointSha256": {"$ref": "#/$defs/sha256"}}}},
+    {"if": {"properties": {"state": {"const": "claimed"}}, "required": ["state"]}, "then": {"properties": {"active": {"type": "object"}}}, "else": {"properties": {"active": {"type": "null"}}}}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nullableSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+    "hostCapacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxTurnSeconds", "maxCpuCores", "maxMemoryMiB", "maxDiskBytes", "maxRetainedArtifactBytes"],
+      "properties": {
+        "maxTurnSeconds": {"type": "integer", "minimum": 1, "maximum": 608700},
+        "maxCpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maxMemoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+        "maxDiskBytes": {"type": "integer", "minimum": 1048576, "maximum": 1099511627776},
+        "maxRetainedArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 140737488355328}
+      }
+    },
+    "goalEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxTurnSeconds", "maxWorkerSeconds", "maxVerifierSeconds", "maxCleanupSeconds", "maxCpuCores", "maxMemoryMiB", "maxDiskBytes", "maxRetainedArtifactBytes"],
+      "properties": {
+        "maxTurnSeconds": {"type": "integer", "minimum": 1, "maximum": 608700},
+        "maxWorkerSeconds": {"type": "integer", "minimum": 1, "maximum": 604800},
+        "maxVerifierSeconds": {"type": "integer", "minimum": 0, "maximum": 3600},
+        "maxCleanupSeconds": {"const": 300},
+        "maxCpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maxMemoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+        "maxDiskBytes": {"type": "integer", "minimum": 1048576, "maximum": 1099511627776},
+        "maxRetainedArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 2199023255552}
+      }
+    }
+  }
+}

@@ -260,6 +260,16 @@ _MAX_SAMPLES_PER_WINDOW = 20000
 _MAX_BREAKER_SAMPLES = 5000
 _MAX_PENDING_APPROVALS = 1000
 _MAX_PENDING_GRANTS = 1000
+# A human decision and its unused one-shot grant each have a 15-minute window.
+# Persisted timestamps survive restarts; missing/future timestamps authorize nothing.
+APPROVAL_TTL_SECONDS = 15 * 60
+
+
+def _approval_fresh(record: dict, field: str, now: float) -> bool:
+    timestamp = record.get(field)
+    # Compare bounds without coercing an untrusted JSON integer to float.
+    # Subtraction can overflow and reset persisted governance state on reload.
+    return type(timestamp) in (int, float) and now - APPROVAL_TTL_SECONDS < timestamp <= now
 
 
 def _empty_state() -> dict[str, Any]:
@@ -366,6 +376,11 @@ def _prune_state(now: float) -> None:
     ][-_MAX_BREAKER_SAMPLES:]
     if cb.get("tripped_until", 0.0) and cb["tripped_until"] < now:
         cb["tripped_until"] = 0.0
+
+    for collection, field in (("approvals", "issued_at"), ("grants", "granted_at")):
+        for key, record in list(_state[collection].items()):
+            if not _approval_fresh(record, field, now):
+                del _state[collection][key]
 
     if len(_state["approvals"]) > _MAX_PENDING_APPROVALS:
         # Drop the oldest pending approvals by issued timestamp.
@@ -546,7 +561,8 @@ def consume_grant(
     gkey = _grant_key(session_id, tool_name, intent, _args_hash(args))
     with _STATE_LOCK:
         grants = _state.setdefault("grants", {})
-        return grants.pop(gkey, None)
+        grant = grants.pop(gkey, None)
+        return grant if grant and _approval_fresh(grant, "granted_at", time.time()) else None
 
 
 def record_window_sample(
@@ -928,7 +944,12 @@ async def verify(req: VerifyRequest, request: Request, api_key: str = Depends(ve
         "client": client_host,
     }
     if approval_token:
-        entry["approval_token"] = approval_token
+        # Never persist the usable token. audit.jsonl sits under data/ape (a
+        # path `ods backup` captures) and GET /audit echoes entries verbatim,
+        # so a raw token here is a replayable credential for the approval gate
+        # that /approve exists to enforce. Record only a non-usable prefix —
+        # the same form /approve already logs — and correlate via "id".
+        entry["approval_token_prefix"] = approval_token[:12] + "..."
     if grant_used is not None:
         # Mark the approved allow so the audit trail shows it bypassed an
         # exhausted window via a consumed one-shot grant.
@@ -970,6 +991,9 @@ async def approve(req: ApproveRequest, request: Request,
             return ApproveResponse(
                 granted=False,
                 reason="unknown or already-consumed approval token")
+        if not _approval_fresh(rec, "issued_at", time.time()):
+            save_state()
+            return ApproveResponse(granted=False, reason="approval token expired; verify the action again")
         # Persist a one-shot bypass tightly keyed to the approved action.
         gkey = _grant_key(
             rec.get("session"),

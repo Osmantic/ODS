@@ -1,0 +1,59 @@
+services:
+  mailpit:
+    image: ods/mailpit:1.31.2-local-v1
+    container_name: ods-mailpit
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${MAILPIT_PORT:-11052}:8025
+    - 127.0.0.1:${MAILPIT_SMTP_PORT:-11053}:1025
+    healthcheck:
+      test:
+      - CMD
+      - /mailpit
+      - readyz
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      MP_UI_BIND_ADDR: 0.0.0.0:8025
+      MP_SMTP_BIND_ADDR: 0.0.0.0:1025
+      MP_DATABASE: /data/mailpit.db
+      MP_UI_AUTH: ${MAILPIT_UI_AUTH:?Set UI username:password credentials}
+      MP_SMTP_AUTH: ${MAILPIT_SMTP_AUTH:?Set SMTP username:password credentials}
+      MP_SMTP_AUTH_ACCEPT_ANY: 'false'
+      MP_SMTP_AUTH_ALLOW_INSECURE: 'true'
+      MP_MAX_MESSAGES: '1000'
+      MP_MAX_MESSAGE_SIZE: '25'
+      MP_DISABLE_VERSION_CHECK: 'true'
+      MP_SMTP_RELAY_ALL: 'false'
+      MP_SMTP_RELAY_HOST: ''
+      MP_SMTP_FORWARD_HOST: ''
+      TZ: UTC
+    volumes:
+    - mailpit-data:/data
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  mailpit-data: {}

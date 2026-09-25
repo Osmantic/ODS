@@ -1,0 +1,54 @@
+services:
+  node-red:
+    image: ods/node-red:5.0.7-local-v1
+    container_name: ods-node-red
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${NODE_RED_PORT:-11088}:1880
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - require('http').get('http://127.0.0.1:1880/',r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      NODE_RED_ADMIN_PASSWORD: ${NODE_RED_ADMIN_PASSWORD:?Set the editor password}
+      NODE_RED_CREDENTIAL_SECRET: ${NODE_RED_CREDENTIAL_SECRET:?Set a stable 64-hex
+        credential key}
+      HOME: /data
+      NODE_OPTIONS: --max-old-space-size=768
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - node-red-data:/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  node-red-data: {}

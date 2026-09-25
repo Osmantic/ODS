@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/operations-action-pack-v1.schema.json",
+  "title": "Pixel Operations action pack v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "kind", "id", "version", "name", "description", "targetPlaceholder", "actions", "authorityGrants"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/operations-action-pack-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "kind": {"const": "operations-action-pack"},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+    "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 100},
+    "description": {"type": "string", "minLength": 1, "maxLength": 500},
+    "targetPlaceholder": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$"},
+    "actions": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_.-]{1,127}$"},
+      "additionalProperties": {"$ref": "#/$defs/action"}
+    },
+    "authorityGrants": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/grant"}}
+  },
+  "$defs": {
+    "parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern", "maxLength"],
+      "properties": {
+        "pattern": {"type": "string", "minLength": 3, "maxLength": 256},
+        "maxLength": {"type": "integer", "minimum": 1, "maximum": 4096}
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "tier", "effect", "defaultAuthority", "idempotent", "reversible", "targets", "argv"],
+      "properties": {
+        "description": {"type": "string", "minLength": 1, "maxLength": 500},
+        "tier": {"enum": ["read", "staging", "managed", "change"]},
+        "effect": {"enum": ["observe", "stage", "manage", "change"]},
+        "defaultAuthority": {"enum": ["disabled", "observe", "propose"]},
+        "idempotent": {"type": "boolean"},
+        "reversible": {"type": "boolean"},
+        "rollbackAction": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,127}$"},
+        "verificationAction": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,127}$"},
+        "targets": {"type": "array", "minItems": 1, "maxItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$"}},
+        "parameters": {"type": "object", "maxProperties": 32, "propertyNames": {"pattern": "^[a-z][A-Za-z0-9_]{0,63}$"}, "additionalProperties": {"$ref": "#/$defs/parameter"}},
+        "argv": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"type": "string", "minLength": 1, "maxLength": 16384}},
+        "cwd": {"type": "string", "pattern": "^/var/lib/pixel-runner/jobs(?:/|$)"},
+        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+        "exclusiveTarget": {"type": "boolean"},
+        "isolation": {"enum": ["none", "dedicated-runner", "ephemeral"]}
+      }
+    },
+    "grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "level", "actions", "targets", "tiers", "environments", "maxExecutions", "windowSeconds", "maxConcurrent", "maxRuntimeSeconds", "maxFailures"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,127}$"},
+        "level": {"const": "bounded-auto"},
+        "actions": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,127}$"}},
+        "targets": {"type": "array", "minItems": 1, "maxItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$"}},
+        "tiers": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": {"enum": ["read", "staging", "managed"]}},
+        "environments": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"enum": ["development", "test", "staging", "lab"]}},
+        "targetLabels": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$"}},
+        "parameterConstraints": {"type": "object", "maxProperties": 32, "propertyNames": {"pattern": "^[a-z][A-Za-z0-9_]{0,63}$"}, "additionalProperties": {"$ref": "#/$defs/constraint"}},
+        "maxExecutions": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "windowSeconds": {"type": "integer", "minimum": 60, "maximum": 31536000},
+        "maxConcurrent": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maxRuntimeSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+        "maxFailures": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "maxOutputBytes": {"type": "integer", "minimum": 1024, "maximum": 16777216},
+        "maxArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 2147483648}
+      }
+    },
+    "constraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "values": {"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": {"type": ["string", "integer"]}},
+        "pattern": {"type": "string", "minLength": 3, "maxLength": 256}
+      }
+    }
+  }
+}

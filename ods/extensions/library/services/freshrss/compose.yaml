@@ -1,0 +1,44 @@
+services:
+  freshrss:
+    image: freshrss/freshrss:1.30.0@sha256:258b8edfc8a76a61f60d2d6a14d8f8d12495d78abf38646a2137612dfa264a21
+    container_name: ods-freshrss
+    restart: unless-stopped
+    ports:
+    - 127.0.0.1:${FRESHRSS_PORT:-11029}:80
+    healthcheck:
+      test:
+      - CMD
+      - php
+      - -r
+      - $$c=curl_init('http://127.0.0.1/');curl_setopt_array($$c,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>5]);$$ok=curl_exec($$c)!==false;$$status=curl_getinfo($$c,CURLINFO_HTTP_CODE);exit($$ok&&$$status>=200&&$$status<400?0:1);
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    environment:
+      TZ: ${FRESHRSS_TIMEZONE:-UTC}
+      CRON_MIN: ${FRESHRSS_CRON_MIN-7,37}
+      FRESHRSS_ENV: production
+      TRUSTED_PROXY: '0'
+    volumes:
+    - freshrss-data:/var/www/FreshRSS/data
+    - freshrss-extensions:/var/www/FreshRSS/extensions
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  freshrss-data: {}
+  freshrss-extensions: {}

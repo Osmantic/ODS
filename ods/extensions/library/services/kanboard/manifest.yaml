@@ -1,0 +1,54 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: kanboard
+  name: Kanboard
+  aliases: []
+  container_name: ods-kanboard
+  host_env: KANBOARD_HOST
+  default_host: kanboard
+  port: 80
+  external_port_env: KANBOARD_PORT
+  external_port_default: 11063
+  health: /healthcheck.php
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Kanban project boards with tasks, subtasks, swimlanes, time tracking
+    and automation rules.
+  env_vars:
+  - key: KANBOARD_INITIAL_PASSWORD
+    required: true
+    secret: true
+    description: "Initial admin password, 12\u201372 UTF-8 bytes. Existing passwords\
+      \ are not reset."
+  ui_path: /
+tags:
+- kanban
+- projects
+- open-source
+features:
+- id: kanboard-projects
+  name: Kanboard
+  description: Kanban project boards with tasks, subtasks, swimlanes, time tracking
+    and automation rules.
+  icon: Columns3
+  category: productivity
+  requirements:
+    services:
+    - kanboard
+    vram_gb: 0
+  enabled_services_all:
+  - kanboard
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: kanboard
+    path: /

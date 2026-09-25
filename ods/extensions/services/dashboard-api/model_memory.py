@@ -7,6 +7,19 @@ import re
 from typing import Any
 
 
+MEMORY_METADATA_KEYS = (
+    "total_params_b", "params_b", "block_count", "embedding_length",
+    "attention_head_count", "head_count", "attention_head_count_kv",
+    "head_count_kv", "attention_head_dimension", "head_dimension",
+    "attention_key_length", "attention_value_length", "kv_cache_element_bytes",
+)
+
+
+def memory_metadata(model: dict[str, Any]) -> dict[str, Any]:
+    """Preserve architecture inputs when normalizing catalog records."""
+    return {key: model[key] for key in MEMORY_METADATA_KEYS if key in model}
+
+
 def _positive_number(value: object) -> float:
     try:
         number = float(value)
@@ -62,6 +75,50 @@ def estimated_context_kv_gb(
     except (TypeError, ValueError):
         context = 0
     context = max(context, 8192)
+    block_count = _positive_number(model.get("block_count"))
+    kv_heads_raw = model.get("attention_head_count_kv") or model.get("head_count_kv")
+    embedding_length = _positive_number(model.get("embedding_length"))
+    head_count = _positive_number(
+        model.get("attention_head_count") or model.get("head_count")
+    )
+    head_dimension = _positive_number(
+        model.get("attention_head_dimension")
+        or model.get("head_dimension")
+    )
+    derived_head_dimension = (
+        embedding_length / head_count if embedding_length and head_count else 0.0
+    )
+    key_dimension = _positive_number(model.get("attention_key_length"))
+    value_dimension = _positive_number(model.get("attention_value_length"))
+    key_dimension = key_dimension or head_dimension or derived_head_dimension
+    value_dimension = value_dimension or head_dimension or derived_head_dimension
+
+    layer_kv_heads = 0.0
+    if isinstance(kv_heads_raw, (list, tuple)):
+        kv_heads_by_layer = [_positive_number(value) for value in kv_heads_raw]
+        # Per-layer arrays are authoritative only when complete. The GGUF
+        # inspector deliberately samples very large arrays, so an incomplete
+        # list must fall back instead of under-counting omitted layers.
+        if block_count and len(kv_heads_by_layer) == int(block_count):
+            layer_kv_heads = sum(kv_heads_by_layer)
+    else:
+        kv_heads = _positive_number(kv_heads_raw)
+        if block_count and kv_heads:
+            layer_kv_heads = block_count * kv_heads
+
+    if layer_kv_heads and key_dimension and value_dimension:
+        # llama.cpp's default f16 KV cache stores one key and one value for
+        # every KV head/token. Key and value dimensions can differ, and newer
+        # hybrid architectures expose a per-layer KV-head array.
+        element_bytes = _positive_number(model.get("kv_cache_element_bytes")) or 2.0
+        kv_bytes = (
+            layer_kv_heads
+            * (key_dimension + value_dimension)
+            * element_bytes
+            * context
+        )
+        return round(kv_bytes / (1024.0 ** 3), 2)
+
     params_b = estimated_param_billions(model)
     kv_per_32k_gb = min(max(params_b * 0.12, 0.35), 3.5)
     return round(kv_per_32k_gb * (context / 32768.0), 2)
@@ -96,3 +153,29 @@ def required_model_memory_gb(
         else 0.0
     )
     return round(max(declared_gb, size_and_kv_gb), 2)
+
+
+def context_fitting_model(
+    model: dict[str, Any], capacity_gb: float, *, tolerance_gb: float = 0.25,
+) -> dict[str, Any]:
+    """Reduce catalog context using architecture metadata, never a measured profile.
+
+    Leave unqualified catalog entries unchanged. The ranker still checks fit
+    afterward, including when even the minimum context cannot fit.
+    """
+    if model.get("_runtime_profile") or not _positive_number(model.get("block_count")):
+        return model
+    maximum = int(_positive_number(model.get("context_length")))
+    if maximum <= 8192 or not _positive_number(capacity_gb):
+        return model
+    choices = {maximum, *(n for n in (8192, 16384, 32768, 65536, 131072, 262144) if n <= maximum)}
+    for context in sorted(choices, reverse=True):
+        if required_model_memory_gb(model, context_length=context) <= capacity_gb + tolerance_gb:
+            if context == maximum:
+                return model
+            return {
+                **model,
+                "max_context_length": model.get("max_context_length") or maximum,
+                "context_length": context,
+            }
+    return model

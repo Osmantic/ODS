@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/languagetool-org/languagetool",
+  "license": "LGPL-2.1-or-later",
+  "image": "eclipse-temurin:21-jre-alpine@sha256:1a29e1fe337eb28b5bec30f0ee8ed29f0ff80ab6f75dcf9313efe82911065a52",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "source_ref": "v6.6",
+  "archive_sha256": "4eb77f988f2ad75bd3b4ab4cd9565bea08e57f53e7cb17f71ff0e8f8c6b77580",
+  "notes": "Official source tag and upstream standalone Maven assembly; binary download returned 403. Pinned builder/runtime images. Native Java API, no cloud AI rules, fastText or n-gram downloads, no automatic chat rewrite. Build and language checking remain unverified."
+}

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "actions": {
+    "updateCheck": false,
+    "backupCreate": false,
+    "operationsPause": false,
+    "frontierPause": false,
+    "deepWorkPause": false,
+    "deepWorkResume": false,
+    "deepWorkCancel": false,
+    "deepWorkDraft": false,
+    "deepWorkPrepare": false,
+    "deepWorkStage": false,
+    "deepWorkServiceRender": false
+  },
+  "views": {
+    "frontierReviews": false,
+    "deepWorkSemanticReviews": false
+  },
+  "backup": {
+    "directory": "/var/backups/pixel",
+    "ageRecipient": "age1disabled"
+  }
+}

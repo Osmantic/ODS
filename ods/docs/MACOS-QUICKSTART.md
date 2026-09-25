@@ -23,6 +23,12 @@ cd ODS/ods
 ./install.sh
 ```
 
+For the public beta, add `--single-branch --branch public-beta` to the clone
+command. The hosted installer and an unqualified clone select `main`, not the
+beta. Back up existing configuration and data before updating. Existing native
+Pixel installations use the managed native update/migration path; the base
+installer intentionally stops instead of overwriting protected runtime state.
+
 The installer will:
 
 1. **Detect your chip** — identifies Apple Silicon variant and unified memory
@@ -30,7 +36,8 @@ The installer will:
 3. **Download llama-server** — native macOS arm64 binary with Metal support
 4. **Download your model** — GGUF file sized for your hardware
 5. **Start Docker services** — chat UI, search, workflows, voice, and more
-6. **Install OpenCode** — browser-based AI coding IDE on port 3003
+6. **Activate native Pixel** — use the public bundled source, with the gateway and managed helpers on macOS and ingress/sandbox services in Docker
+7. **Install OpenCode** — browser-based AI coding IDE on port 3003
 
 **Estimated time:** 5–15 minutes depending on download speed.
 
@@ -53,6 +60,7 @@ the first user to create the admin account.
 ```
 macOS Host
   ├── llama-server (native, Metal GPU acceleration)
+  ├── Pixel gateway + managed host helpers (native)
   ├── OpenCode web IDE (native, LaunchAgent)
   └── Docker Desktop
         ├── Open WebUI (port 3000)
@@ -62,7 +70,8 @@ macOS Host
         ├── Qdrant Vector DB (port 6333)
         ├── SearXNG Search (port 8888)
         ├── Perplexica Deep Research (port 3004)
-        ├── Hermes Agent + auth proxy (port 9120)
+        ├── Pixel edge, ingress, sandbox and workspace preview
+        ├── Hermes Agent + auth proxy (optional alternative)
         ├── OpenClaw Agents (port 7860, deprecated optional)
         ├── TEI Embeddings (port 8090)
         ├── Whisper STT (port 9000)
@@ -71,6 +80,12 @@ macOS Host
 ```
 
 llama-server runs natively for full Metal GPU utilization. Docker containers reach it via `host.docker.internal:8080`.
+
+Portal is enabled by default and disables Hermes while selected. A fresh install
+can opt out with `--no-pixel`; this is not a way to disable an existing native
+Portal installation. Portal needs neither a separate Lima VM nor access to a
+private GitHub repository. Its source and verified install bundle are included
+in ODS. See [PIXEL.md](PIXEL.md) for eligibility and authority boundaries.
 
 ---
 

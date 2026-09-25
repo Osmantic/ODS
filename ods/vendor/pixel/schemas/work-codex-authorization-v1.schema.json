@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-codex-authorization-v1.schema.json",
+  "title": "Pixel external single-use Codex work authorization v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "authorizationId", "createdAt", "expiresAt", "planId", "planSha256", "requestSha256", "policySha256", "capsuleSha256", "outputSchemaSha256", "jobId", "checkpointSha256", "provider", "confirmation", "authorizationSource", "singleUse", "providerInvoked", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-codex-authorization-v1.schema.json"}, "schemaVersion": {"const": 1},
+    "authorizationId": {"type": "string", "pattern": "^workcodexauth-[0-9]{13}-[a-f0-9]{12}$"}, "createdAt": {"type": "string", "format": "date-time"}, "expiresAt": {"type": "string", "format": "date-time"},
+    "planId": {"type": "string", "pattern": "^workcodexplan-[0-9]{13}-[a-f0-9]{12}$"}, "planSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "requestSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "policySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "capsuleSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "outputSchemaSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"}, "checkpointSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "provider": {"type": "object", "additionalProperties": false, "required": ["authMode", "model", "billingBoundary", "transportSha256"], "properties": {"authMode": {"enum": ["chatgpt", "api-key"]}, "model": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$"}, "billingBoundary": {"enum": ["chatgpt-plan-or-credits-not-api-billing", "separately-billed-api-platform"]}, "transportSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
+    "confirmation": {"type": "object", "additionalProperties": false, "required": ["planInspected", "dataOwnerConfirmed", "billingAcknowledgment", "externalHumanAuthentication", "authenticationEvidenceSha256"], "properties": {"planInspected": {"const": true}, "dataOwnerConfirmed": {"const": true}, "billingAcknowledgment": {"enum": ["chatgpt-plan-or-credits", "separately-billed-api-platform"]}, "externalHumanAuthentication": {"const": true}, "authenticationEvidenceSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
+    "authorizationSource": {"enum": ["test-mock", "external-signed-mfa"]},
+    "singleUse": {"const": true}, "providerInvoked": {"const": false},
+    "boundary": {"const": "External approval for one exact sanitized Codex work plan. It is single-use, expires within fifteen minutes, and grants only the plan's one advisory provider turn; it grants no tools, local execution, merge, deployment, publication, message, purchase, production, policy, scope-expansion, verification, or completion authority."}
+  }
+}

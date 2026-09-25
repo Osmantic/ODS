@@ -60,6 +60,42 @@ try {
         throw "Windows catalog selector chose a non-curated source: $($resolved.LlmModel)"
     }
     Write-Host "[PASS] Windows catalog selector excludes Hugging Face imports"
+    $realCatalog = Get-Content (Join-Path $repoRoot "config/model-library.json") -Raw | ConvertFrom-Json
+    $phi = $realCatalog.models | Where-Object { $_.id -eq "phi4-mini-q4" }
+    if ((Get-CatalogModelEstimatedContextKvGB -Model $phi) -ne 15.62) {
+        throw "Phi4 full-context KV allocation was underestimated"
+    }
+    @{ models = @($phi) } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $configDir "model-library.json")
+    foreach ($backend in @("nvidia", "amd", "sycl")) {
+        foreach ($case in @(@(4, 8192), @(8, 32768), @(16, 65536), @(24, 128000))) {
+            $gpu.Backend = $backend
+            $gpu.VramMB = $case[0] * 1024
+            $resolved = Resolve-CatalogModelRecommendation -TierConfig $tierConfig.Clone() -Tier "1" -GpuInfo $gpu -SystemRamGB 32 -SourceRoot $tempRoot
+            if ($resolved.LlmModel -ne "phi-4-mini" -or $resolved.MaxContext -ne $case[1]) {
+                throw "Wrong Phi4 context on $backend with $($case[0]) GiB: $($resolved.MaxContext)"
+            }
+        }
+    }
+    if ($phi.context_length -ne 128000) { throw "Context selection mutated the catalog" }
+    $gpu.VramMB = 1024
+    $rejected = $false
+    try {
+        $null = Resolve-CatalogModelRecommendation -TierConfig $tierConfig.Clone() -Tier "1" -GpuInfo $gpu -SystemRamGB 32 -SourceRoot $tempRoot
+    } catch {
+        if ($_.Exception.Message -notlike "*No catalog model fits*") { throw }
+        $rejected = $true
+    }
+    if (-not $rejected) { throw "Unsafe tier fallback survived no-fit selection" }
+    $profileModel = [pscustomobject]@{
+        runtime_profiles = @([pscustomobject]@{
+            backend = "nvidia"; system_ram_min_gb = 16; system_ram_max_gb = 32
+        })
+    }
+    $gpu.Backend = "nvidia"
+    if (Get-CatalogRuntimeProfile -Model $profileModel -GpuInfo $gpu -SystemRamGB 8) { throw "Low RAM matched" }
+    if (-not (Get-CatalogRuntimeProfile -Model $profileModel -GpuInfo $gpu -SystemRamGB 8 -IgnoreRamMinimum)) { throw "Low RAM lost safety anchor" }
+    if (Get-CatalogRuntimeProfile -Model $profileModel -GpuInfo $gpu -SystemRamGB 64 -IgnoreRamMinimum) { throw "Larger host trapped in smaller profile" }
+    Write-Host "[PASS] Windows architecture memory, adaptive context, and no-fit rejection"
 } finally {
     $resolvedTemp = [System.IO.Path]::GetFullPath($tempRoot)
     if (

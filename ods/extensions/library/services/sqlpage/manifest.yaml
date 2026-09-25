@@ -1,0 +1,50 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: sqlpage
+  name: SQLPage
+  aliases: []
+  container_name: ods-sqlpage
+  host_env: SQLPAGE_HOST
+  default_host: sqlpage
+  port: 8080
+  external_port_env: SQLPAGE_PORT
+  external_port_default: 11126
+  health: /ods-health.sql
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Build database-backed internal web applications using SQL files and
+    native UI components.
+  env_vars: []
+  ui_path: /
+tags:
+- sql
+- web-apps
+- developer-tools
+- open-source
+features:
+- id: sqlpage-apps
+  name: SQLPage
+  description: Build database-backed internal web applications using SQL files and
+    native UI components.
+  icon: Database
+  category: developer-tools
+  requirements:
+    services:
+    - sqlpage
+    vram_gb: 0
+  enabled_services_all:
+  - sqlpage
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: sqlpage
+    path: /

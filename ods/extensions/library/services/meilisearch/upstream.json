@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/meilisearch/meilisearch",
+  "license": "MIT (Community Edition)",
+  "image": "getmeili/meilisearch:v1.53.2@sha256:c94e58ca09662dd6e65e8f1b0fd145767be3da7d5422a863a27b8d2b68e090c9",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/arm64",
+    "linux/amd64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Uses the Community image, not meilisearch-enterprise. Production mode deliberately disables the development mini-dashboard. No hosted embedding provider is preconfigured; configure a local embedder before enabling semantic search."
+}

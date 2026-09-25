@@ -1,0 +1,36 @@
+services:
+  drawio:
+    image: jgraph/drawio:31.4.6@sha256:4bd19d4bc36b65cabf1ae9c5d234597e564416b6c67f7d4db296c2df758fcb52
+    container_name: ods-drawio
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${DRAWIO_PORT:-11009}:8080
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - http://127.0.0.1:8080/
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+networks:
+  ods-network:
+    external: true
+    name: ods-network

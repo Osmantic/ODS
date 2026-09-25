@@ -1,0 +1,59 @@
+services:
+  sftpgo:
+    image: ods/sftpgo:2.7.6-local-v1
+    container_name: ods-sftpgo
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${SFTPGO_PORT:-11113}:8080
+    - 127.0.0.1:${SFTPGO_SFTP_PORT:-11114}:2022
+    healthcheck:
+      test:
+      - CMD
+      - sftpgo
+      - ping
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - sftpgo-files:/srv/sftpgo
+    - sftpgo-state:/var/lib/sftpgo
+    init: true
+    environment:
+      SFTPGO_HTTPD__SETUP__INSTALLATION_CODE: ${SFTPGO_SETUP_CODE:?Set a 64-hex installation
+        code}
+      SFTPGO_GRACE_TIME: '32'
+      SFTPGO_DATA_PROVIDER__NAME: /var/lib/sftpgo/sftpgo.db
+      SFTPGO_DATA_PROVIDER__USERS_BASE_DIR: /srv/sftpgo/data
+      SFTPGO_DATA_PROVIDER__BACKUPS_PATH: /srv/sftpgo/backups
+      SFTPGO_FTPD__BINDINGS__0__PORT: '0'
+      SFTPGO_WEBDAVD__BINDINGS__0__PORT: '0'
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  sftpgo-files: {}
+  sftpgo-state: {}

@@ -1,0 +1,51 @@
+services:
+  verdaccio:
+    image: ods/verdaccio:6.10.4-local-v1
+    container_name: ods-verdaccio
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${VERDACCIO_PORT:-11115}:4873
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - require('http').get('http://127.0.0.1:4873/-/ping',r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: '10001:0'
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - verdaccio-storage:/verdaccio/storage
+    init: true
+    environment:
+      VERDACCIO_PASSWORD: ${VERDACCIO_PASSWORD:?Set a 64-hex registry password}
+      NODE_OPTIONS: --max-old-space-size=768
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  verdaccio-storage: {}

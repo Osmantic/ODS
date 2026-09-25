@@ -1,0 +1,54 @@
+services:
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.16.1@sha256:6b6ec62130dd9a273b24e53e905bdc728b915fbd2dfb71f2fb7eff9a22f7fa67
+    container_name: ods-mlflow
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${MLFLOW_PORT:-11004}:5000
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health',
+        timeout=8).read()
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    volumes:
+    - mlflow-data:/mlflow
+    command:
+    - mlflow
+    - server
+    - --host
+    - 0.0.0.0
+    - --port
+    - '5000'
+    - --backend-store-uri
+    - sqlite:////mlflow/mlflow.db
+    - --serve-artifacts
+    - --artifacts-destination
+    - /mlflow/artifacts
+    - --allowed-hosts
+    - localhost:*,127.0.0.1:*,mlflow:5000
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  mlflow-data: {}

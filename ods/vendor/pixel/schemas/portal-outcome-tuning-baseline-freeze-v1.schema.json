@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-tuning-baseline-freeze-v1.schema.json",
+  "title": "Pixel immutable pre-held-out tuning baseline freeze v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "campaignId", "materializationSha256", "pairConfigSha256", "preflightSha256", "tuningTaskSetSha256", "tuningTasks", "heldOutTaskSetSha256", "heldOutTaskCount", "heldOutTaskBytesOpened", "authority", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-portal-outcome-tuning-baseline-freeze"},
+    "campaignId": {"type": "string", "pattern": "^outcomebattery-[a-f0-9]{24}$"},
+    "materializationSha256": {"$ref": "#/$defs/hash"},
+    "pairConfigSha256": {"$ref": "#/$defs/hash"},
+    "preflightSha256": {"$ref": "#/$defs/hash"},
+    "tuningTaskSetSha256": {"$ref": "#/$defs/hash"},
+    "heldOutTaskSetSha256": {"$ref": "#/$defs/hash"},
+    "heldOutTaskCount": {"type": "integer", "minimum": 0, "maximum": 256},
+    "heldOutTaskBytesOpened": {"const": false},
+    "tuningTasks": {
+      "type": "array", "minItems": 1, "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["batteryTaskId", "taskSha256", "attempt", "comparisonSha256", "status", "classification"],
+        "properties": {
+          "batteryTaskId": {"type": "string", "pattern": "^(?:battery|stress|trial|heldout)-[a-z0-9][a-z0-9-]{2,62}$"},
+          "taskSha256": {"$ref": "#/$defs/hash"},
+          "attempt": {"type": "integer", "minimum": 1, "maximum": 999},
+          "comparisonSha256": {"$ref": "#/$defs/hash"},
+          "status": {"enum": ["pass", "blocked"]},
+          "classification": {"enum": ["parity", "pixel-regression", "capability-blocking", "reference-failure", "unexplained-delta", "safety-failure"]}
+        }
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["execution", "retuning", "heldOutDisclosure", "completion", "promotion"],
+      "properties": {
+        "execution": {"const": false}, "retuning": {"const": false},
+        "heldOutDisclosure": {"const": false}, "completion": {"const": false},
+        "promotion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Content-free immutable tuning-baseline freeze only. It binds every completed tuning comparison before the campaign opens held-out task bytes and grants no execution, retuning, model, provider, credential, external-effect, acceptance, publication, deployment, or promotion authority."}
+  },
+  "$defs": {"hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

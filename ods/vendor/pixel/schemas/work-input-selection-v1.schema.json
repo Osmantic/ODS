@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-input-selection-v1.schema.json",
+  "title": "Pixel Deep Work owner-selected local inputs v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "selectionId", "createdAt", "entries", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-input-selection-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "selectionId": {"type": "string", "pattern": "^inputselection-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "classification", "sourceDirectory", "limits"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+          "kind": {"enum": ["repository-snapshot", "dataset", "document", "context"]},
+          "classification": {"enum": ["public", "internal", "confidential", "restricted"]},
+          "sourceDirectory": {"type": "string", "minLength": 1, "maxLength": 4096},
+          "limits": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["maxEntries", "maxFileBytes", "maxTotalBytes", "maxArchiveBytes"],
+            "properties": {
+              "maxEntries": {"type": "integer", "minimum": 1, "maximum": 100000},
+              "maxFileBytes": {"type": "integer", "minimum": 1, "maximum": 4294967296},
+              "maxTotalBytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776},
+              "maxArchiveBytes": {"type": "integer", "minimum": 1536, "maximum": 1099511627776}
+            }
+          },
+          "datasets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["datasetId", "relativePath", "format"],
+              "properties": {
+                "datasetId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+                "relativePath": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+                "format": {"enum": ["csv", "json", "jsonl", "parquet", "sqlite"]}
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"kind": {"const": "dataset"}}, "required": ["kind"]},
+            "then": {"required": ["datasets"]},
+            "else": {"not": {"required": ["datasets"]}}
+          }
+        ]
+      }
+    },
+    "boundary": {"const": "Explicit owner-selected local directories only. Packing may read exactly those directory trees into inert content-addressed snapshots but grants no execution, lease, network, credential, external-effect, scope-expansion, or completion authority."}
+  }
+}

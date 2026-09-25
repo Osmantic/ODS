@@ -1,0 +1,49 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: cloudbeaver
+  name: CloudBeaver Community
+  aliases: []
+  container_name: ods-cloudbeaver
+  host_env: CLOUDBEAVER_HOST
+  default_host: cloudbeaver
+  port: 8978
+  external_port_env: CLOUDBEAVER_PORT
+  external_port_default: 11057
+  health: /
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Connect selected databases through a browser SQL workspace with account-based
+    access, schema browsing and query results.
+  env_vars: []
+  ui_path: /
+tags:
+- database
+- development
+- open-source
+features:
+- id: cloudbeaver-databases
+  name: CloudBeaver Community
+  description: Connect selected databases through a browser SQL workspace with account-based
+    access, schema browsing and query results.
+  icon: Database
+  category: productivity
+  requirements:
+    services:
+    - cloudbeaver
+    vram_gb: 0
+  enabled_services_all:
+  - cloudbeaver
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: cloudbeaver
+    path: /

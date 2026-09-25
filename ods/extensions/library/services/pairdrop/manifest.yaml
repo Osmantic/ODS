@@ -1,0 +1,47 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: pairdrop
+  name: PairDrop
+  aliases: []
+  container_name: ods-pairdrop
+  host_env: PAIRDROP_HOST
+  default_host: pairdrop
+  port: 3000
+  external_port_env: PAIRDROP_PORT
+  external_port_default: 11061
+  health: /
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Send selected files and text between paired browsers using WebRTC.
+  env_vars: []
+  ui_path: /
+tags:
+- file-transfer
+- webrtc
+- open-source
+features:
+- id: pairdrop-transfer
+  name: PairDrop
+  description: Send selected files and text between paired browsers using WebRTC.
+  icon: Share2
+  category: productivity
+  requirements:
+    services:
+    - pairdrop
+    vram_gb: 0
+  enabled_services_all:
+  - pairdrop
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: pairdrop
+    path: /

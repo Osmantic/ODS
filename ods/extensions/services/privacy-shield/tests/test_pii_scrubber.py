@@ -229,3 +229,14 @@ class TestStats:
         types = detector.get_stats()["pii_types"]
         assert "ip_address" in types
         assert "ip" not in types
+@pytest.mark.parametrize("value", [None, 42, [], {}, b"user@example.org"])
+def test_invalid_text_is_rejected_without_losing_content_or_session(value):
+    detector = PIIDetector()
+    token = detector.scrub("user@example.org")
+    before = dict(detector.pii_map)
+    with pytest.raises(TypeError, match="requires text"):
+        detector.scrub(value)
+    with pytest.raises(TypeError, match="requires text"):
+        detector.restore(value)
+    assert detector.pii_map == before
+    assert detector.restore(token) == "user@example.org"

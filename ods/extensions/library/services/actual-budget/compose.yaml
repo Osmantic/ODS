@@ -1,0 +1,45 @@
+services:
+  actual-budget:
+    image: ghcr.io/actualbudget/actual-server:26.9.0@sha256:552beab3dec8c93d46b8b9245612d63c3f123b8a45063a474f53e229b17621d3
+    container_name: ods-actual-budget
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${ACTUAL_BUDGET_PORT:-11046}:5006
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - /app/scripts/health-check.js
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1001:1001
+    environment:
+      ACTUAL_DATA_DIR: /data
+      ACTUAL_HOSTNAME: 0.0.0.0
+      ACTUAL_PORT: '5006'
+      ACTUAL_LOGIN_METHOD: password
+      ACTUAL_ALLOWED_LOGIN_METHODS: password
+    volumes:
+    - actual-budget-data:/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  actual-budget-data: {}

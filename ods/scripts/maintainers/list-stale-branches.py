@@ -21,6 +21,7 @@ DEFAULT_EXCLUDE_EXACT = {
     "origin/main",
     "origin/master",
     "origin/develop",
+    "origin/public-beta",
 }
 
 DEFAULT_EXCLUDE_PREFIXES = (
@@ -63,8 +64,17 @@ def open_pr_heads() -> set[str]:
     return {row.get("headRefName", "") for row in rows if row.get("headRefName")}
 
 
+def default_remote_branch() -> str | None:
+    result = run(["git", "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
+    if result.returncode == 1:  # origin/HEAD is not configured in this checkout.
+        return None
+    if result.returncode != 0:
+        raise SystemExit(result.stderr.strip() or "error: unable to read origin/HEAD")
+    return result.stdout.strip().removeprefix("refs/remotes/")
+
+
 def remote_branches() -> list[tuple[datetime, str, str]]:
-    fmt = "%(committerdate:iso8601-strict)%09%(refname:short)%09%(objectname:short)"
+    fmt = "%(committerdate:iso8601-strict)%09%(refname)%09%(objectname:short)"
     result = run(["git", "for-each-ref", f"--format={fmt}", "refs/remotes/origin"])
     if result.returncode != 0:
         raise SystemExit(result.stderr.strip() or "error: unable to list remote refs")
@@ -75,7 +85,7 @@ def remote_branches() -> list[tuple[datetime, str, str]]:
             continue
         date_s, ref, sha = line.split("\t", 2)
         date = datetime.fromisoformat(date_s.replace("Z", "+00:00"))
-        branches.append((date, ref, sha))
+        branches.append((date, ref.removeprefix("refs/remotes/"), sha))
     return branches
 
 
@@ -93,6 +103,7 @@ def main() -> int:
     heads = set() if args.include_open_prs else open_pr_heads()
     now = datetime.now(timezone.utc)
     cutoff_days = args.days
+    protected_refs = DEFAULT_EXCLUDE_EXACT | {default_remote_branch()}
 
     print(f"Repository: {root}")
     print(f"Stale threshold: {cutoff_days} days")
@@ -104,7 +115,7 @@ def main() -> int:
 
     candidates: list[tuple[int, str, str, str]] = []
     for date, ref, sha in remote_branches():
-        if ref in DEFAULT_EXCLUDE_EXACT or ref.startswith(DEFAULT_EXCLUDE_PREFIXES):
+        if ref in protected_refs or ref.startswith(DEFAULT_EXCLUDE_PREFIXES):
             continue
         short = ref.removeprefix("origin/")
         if short in heads:

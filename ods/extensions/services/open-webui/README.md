@@ -97,4 +97,8 @@ docker compose logs open-webui
 
 ## License
 
-Part of ODS — Local AI Infrastructure
+The ODS integration and the upstream application have different terms.
+The pinned Open WebUI v0.7.2 image uses the
+[Open WebUI license](https://github.com/open-webui/open-webui/blob/v0.7.2/LICENSE),
+including its branding conditions. See [BRANDING.md](BRANDING.md) before making
+branding changes. ODS's Apache license does not relicense Open WebUI.

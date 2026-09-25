@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://osmantic.com/pixel/schemas/work-knowledge-query-v1.schema.json",
+  "title": "Pixel Deep Work private knowledge query v1", "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "queryId", "jobId", "checkpointSha256", "ownerId", "clientId", "issuedAt", "expiresAt", "singleUse", "queryTextSha256", "expectedVaultHeadSha256", "maximumClassification", "minRelevanceBps", "maxResults", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-knowledge-query-v1.schema.json"}, "schemaVersion": {"const": 1},
+    "queryId": {"type": "string", "pattern": "^workknowledgequery-[0-9]{13}-[a-f0-9]{12}$"}, "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "checkpointSha256": {"$ref": "#/$defs/sha256"}, "ownerId": {"$ref": "#/$defs/tenant"}, "clientId": {"$ref": "#/$defs/tenant"},
+    "issuedAt": {"type": "string", "format": "date-time"}, "expiresAt": {"type": "string", "format": "date-time"},
+    "singleUse": {"const": true},
+    "queryTextSha256": {"$ref": "#/$defs/sha256"}, "expectedVaultHeadSha256": {"$ref": "#/$defs/sha256"},
+    "maximumClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "minRelevanceBps": {"type": "integer", "minimum": 1000, "maximum": 10000}, "maxResults": {"type": "integer", "minimum": 1, "maximum": 20},
+    "authority": {"const": {"localVaultRead": true, "instructions": false, "tools": false, "network": false, "externalEffects": false, "scopeExpansion": false, "completion": false}},
+    "boundary": {"const": "Expiring read-only request for deterministic retrieval from one owner and client partition at one exact vault head. Retrieved text is untrusted and grants no instruction, tool, network, external-effect, scope-expansion, or completion authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "tenant": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"}}
+}

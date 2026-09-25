@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-runtime-cache-manifest-v1.schema.json",
+  "title": "Pixel private executable model-runtime cache manifest v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "kind", "artifactSha256", "fileCount", "totalBytes", "files", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-runtime-cache-manifest-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "kind": {"const": "directory"},
+    "artifactSha256": {"$ref": "#/$defs/sha256"},
+    "fileCount": {"type": "integer", "minimum": 1, "maximum": 100000},
+    "totalBytes": {"type": "integer", "minimum": 1, "maximum": 17592186044416},
+    "files": {
+      "type": "array", "minItems": 1, "maxItems": 100000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["relativePath", "bytes", "sha256"],
+        "properties": {
+          "relativePath": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9._+@=-]+(?:/[A-Za-z0-9._+@=-]+)*$"},
+          "bytes": {"type": "integer", "minimum": 0, "maximum": 17592186044416},
+          "sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "authority": {"const": {"grantsExecution": false, "startsContainer": false, "grantsNetwork": false, "grantsDevices": false, "grantsCredentials": false, "grantsExternalEffects": false, "grantsCompletion": false}},
+    "boundary": {"const": "Private deterministic identity for exact owner-selected executable model-runtime cache bytes. Measurement grants no cache trust, execution, container start, network, device, credential, external-effect, or completion authority; use requires an image-bound read-only launch contract."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

@@ -1,0 +1,57 @@
+services:
+  convertx:
+    image: ods/convertx:0.18.0-local-v1
+    container_name: ods-convertx
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${CONVERTX_PORT:-11085}:3000
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --max-time
+      - '5'
+      - http://127.0.0.1:3000/healthcheck
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      HOME: /app/data/home
+      JWT_SECRET: ${CONVERTX_JWT_SECRET:?Set a persistent random session secret}
+      ACCOUNT_REGISTRATION: 'false'
+      ALLOW_UNAUTHENTICATED: 'false'
+      HTTP_ALLOWED: 'true'
+      AUTO_DELETE_EVERY_N_HOURS: '24'
+      MAX_CONVERT_PROCESS: '2'
+      UNAUTHENTICATED_USER_SHARING: 'false'
+    volumes:
+    - convertx-data:/app/data
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  convertx-data: {}

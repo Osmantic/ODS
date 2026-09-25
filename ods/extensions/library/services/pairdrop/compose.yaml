@@ -1,0 +1,57 @@
+services:
+  pairdrop:
+    image: ods/pairdrop:1.11.2-local-v1
+    container_name: ods-pairdrop
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${PAIRDROP_PORT:-11061}:3000
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - --spider
+      - --quiet
+      - --timeout=5
+      - http://127.0.0.1:3000/
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: []
+    entrypoint:
+    - node
+    - server/index.js
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=32m
+    init: true
+    environment:
+      PORT: '3000'
+      NODE_ENV: production
+      DEBUG_MODE: 'false'
+      WS_FALLBACK: 'false'
+      RATE_LIMIT: 'false'
+      RTC_CONFIG: /etc/pairdrop/rtc-config.json
+      SIGNALING_SERVER: 'false'
+networks:
+  ods-network:
+    external: true
+    name: ods-network

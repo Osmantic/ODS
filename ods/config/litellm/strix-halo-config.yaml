@@ -1,4 +1,10 @@
 model_list:
+  - model_name: ods/current
+    litellm_params:
+      model: openai/default
+      api_base: http://host.docker.internal:8080/api/v1
+      api_key: lemonade
+
   - model_name: default
     litellm_params:
       model: openai/default

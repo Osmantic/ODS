@@ -88,8 +88,8 @@ async def test_chat_completion_posts_openai_shape():
 
     assert payload["choices"][0]["message"]["content"] == "ok"
     assert seen["url"] == "http://lemonade:13305/api/v1/chat/completions"
-    assert b'"model":"Qwen3-0.6B-GGUF"' in seen["body"]
-    assert b'"temperature":0' in seen["body"]
+    assert b'"model": "Qwen3-0.6B-GGUF"' in seen["body"] or b'"model":"Qwen3-0.6B-GGUF"' in seen["body"]
+    assert b'"temperature": 0' in seen["body"] or b'"temperature":0' in seen["body"]
     await client.aclose()
 
 
@@ -171,3 +171,23 @@ async def test_explicit_timeout_override_is_applied():
     await client.aclose()
 
     assert seen["timeout"].get("read") == 5.0
+
+
+@pytest.mark.asyncio
+async def test_speech_http_status_errors_are_classified():
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            504,
+            json={"error": {"message": "gateway timeout"}},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = LemonadeClient(client=client)
+
+    with pytest.raises(LemonadeClientError) as exc:
+        await adapter.speech("tts-1", "hello")
+
+    assert exc.value.kind == "timeout"
+    assert exc.value.status_code == 504
+    assert "gateway timeout" in str(exc.value)
+    await client.aclose()

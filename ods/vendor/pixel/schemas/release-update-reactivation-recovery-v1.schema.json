@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-reactivation-recovery-v1.schema.json",
+  "title": "Pixel release reactivation interruption recovery preview v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "status", "candidateId", "product", "version", "restoreVersion", "activeVersion", "originalActivationHash", "reactivationHash", "state", "safeAction", "confirmationAvailable", "rollbackMarkerPresent", "candidateCodeWillExecute", "networkWillBeUsed", "boundary", "recoveryHash"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-release-reactivation-recovery"},
+    "status": {"enum": ["recoverable", "complete", "manual-review"]},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "product": {"const": "Pixel"},
+    "version": {"$ref": "#/$defs/version"},
+    "restoreVersion": {"$ref": "#/$defs/version"},
+    "activeVersion": {"$ref": "#/$defs/version"},
+    "originalActivationHash": {"$ref": "#/$defs/hash"},
+    "reactivationHash": {"$ref": "#/$defs/hash"},
+    "state": {"enum": ["reactivation-applied-result-missing", "reactivation-claimed-before-active-change", "reactivation-complete", "reactivation-failed", "reactivation-rollback-result-present", "reactivation-rollback-restored-result-missing", "reactivation-rollback-claimed-before-restoration", "reactivation-rollback-interrupted-manual-review", "reactivation-rollback-failed", "manual-review"]},
+    "safeAction": {"type": ["string", "null"], "enum": ["finalize-reactivation-result", "finalize-reactivation-rollback-result", null]},
+    "confirmationAvailable": {"type": "boolean"},
+    "rollbackMarkerPresent": {"type": "boolean"},
+    "candidateCodeWillExecute": {"const": false},
+    "networkWillBeUsed": {"const": false},
+    "boundary": {"const": "Content-free reactivation interruption diagnosis only; exact confirmation may finalize a missing trusted receipt but never executes candidate code or resumes deployment work."},
+    "recoveryHash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "recoverable"}}},
+      "then": {"properties": {"confirmationAvailable": {"const": true}, "safeAction": {"type": "string"}, "recoveryHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}}
+    },
+    {
+      "if": {"properties": {"confirmationAvailable": {"const": false}}},
+      "then": {"properties": {"safeAction": {"const": null}, "recoveryHash": {"const": null}}}
+    }
+  ],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"}
+  }
+}

@@ -28,6 +28,13 @@ scripts/ods-support-bundle.sh --json
 - Docker version, daemon info, container summary, and short ODS container log tails
 - Platform, git, disk, memory, listening port, manifest, env schema, and redacted `.env` details
 
+Container log tails are limited to names starting with `ods-`, including bundled
+sidecars such as `ods-langfuse-postgres`. Other applications whose names merely
+contain `ods` are excluded from log collection and do not consume its 25-container
+limit. This naming convention is not an ownership or authorization check; custom
+containers outside that namespace need separate log collection. The Docker
+container summary remains a host-wide diagnostic.
+
 The command is best-effort. Missing Docker, an unreachable daemon, or a failing
 diagnostic command is recorded in the bundle instead of aborting the whole run.
 
@@ -44,3 +51,10 @@ URLs.
 Review the archive before posting it publicly. Redaction is defensive, but local
 paths, hostnames, container names, model names, and non-secret configuration
 values may still be useful to attackers in some environments.
+
+Each collected diagnostic has a 60-second deadline. To allow slower hosts more time,
+set `ODS_SUPPORT_COMMAND_TIMEOUT` to an integer from 1 to 3600 seconds. A timed-out
+command and its child processes are stopped; the bundle retains partial output and
+records exit code 124 in `manifest.json`. Collection continues with other probes.
+This is a per-command limit, so the whole bundle can take longer than one deadline.
+Docker availability checks also use the limit and report an unavailable daemon on failure.

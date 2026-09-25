@@ -15,7 +15,7 @@
       "max_context_length": 262144,
       "quantization": "Q4_K_M",
       "specialty": "Low-VRAM Chat",
-      "description": "Qwen's compact hybrid model with a native 256K context limit, tool-use support, broad multilingual coverage, and a 64K operating target. It remains available for manual testing, but is not agent-ready after required app probes failed on four of six fleet hosts.",
+      "description": "Qwen's compact hybrid model with a native 256K context limit, tool-use support, broad multilingual coverage, and a 64K operating target. Pixel supports it in adaptive mode; historical cross-app probes show lower reliability on four of six fleet hosts, so complex work may need more guidance or a stronger model.",
       "tokens_per_sec_estimate": 120,
       "llm_model_name": "qwen3.5-2b",
       "llama_server_image": null,
@@ -50,7 +50,7 @@
         },
         "agent_viability": {
           "status": "not_agent_viable",
-          "label": "Not agent-ready",
+          "label": "Adaptive; reliability varies",
           "reason": "Only tower2 and strix-halo completed the full rotation. Four hosts failed required candidate-phase app probes, although every failure recovery restored the original model and deleted the test artifact cleanly.",
           "evidence": "fleet-test/runs/2026-07-27T08-54-24Z-model-ui-product-b5da3792c281-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
           "recordedAt": "2026-07-27T09:13:58Z",
@@ -73,7 +73,7 @@
       "max_context_length": 262144,
       "quantization": "Q4_K_M",
       "specialty": "Efficient Reasoning",
-      "description": "AI21's compact hybrid reasoning model combines 26 Mamba layers with 2 attention layers for low-memory long-context work. It remains available for manual testing, but is not agent-ready after required OpenCode probes failed on two independent fleet backends.",
+      "description": "AI21's compact hybrid reasoning model combines 26 Mamba layers with 2 attention layers for low-memory long-context work. Pixel supports it in adaptive mode; historical OpenCode probes show lower reliability on two independent fleet backends, so complex work may need more guidance or a stronger model.",
       "tokens_per_sec_estimate": 90,
       "llm_model_name": "jamba-reasoning-3b",
       "llama_server_image": null,
@@ -111,7 +111,7 @@
         },
         "agent_viability": {
           "status": "not_agent_viable",
-          "label": "Not agent-ready",
+          "label": "Adaptive; reliability varies",
           "reason": "Four hosts completed the full rotation, but two independent backends failed the required OpenCode candidate probe after successful load and Talk inference. Every host restored its original model and deleted the test artifact cleanly.",
           "evidence": "fleet-test/runs/2026-07-27T10-47-19Z-model-ui-product-ca730791caca-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
           "recordedAt": "2026-07-27T11:12:30Z",
@@ -132,6 +132,10 @@
       "size_mb": 2490,
       "vram_required_gb": 4,
       "context_length": 128000,
+      "block_count": 32,
+      "embedding_length": 3072,
+      "attention_head_count": 24,
+      "attention_head_count_kv": 8,
       "quantization": "Q4_K_M",
       "specialty": "Balanced",
       "description": "Microsoft's compact model with 128K context. Punches above its weight on reasoning and code.",
@@ -144,16 +148,72 @@
           "reason": "Fleet diagnostic on m5-mbp at 42b3a95c returned the requested verification code in 4/4 direct OpenAI-compatible chat completions."
         },
         "hermes_talk": {
+          "status": "verified",
+          "label": "ODS Talk revalidated on Strixy",
+          "reason": "Challenge-bound ODS Talk passed again on Strixy with Phi-4 Mini during the exact e4fd1cae six-cycle qualification; this proves Talk on this host, not all-app, Pixel, or Open WebUI compatibility.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-strixy-e4fd1cae-h3043027-r401/model-ui/cycle-005/strixy-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T07:30:37Z",
+          "productSha": "e4fd1cae6232af0a9d7438317002b55f94bea2bc",
+          "harnessSha": "30430271ba0b97c83056272a4f4877cb65dee122",
+          "hostScope": ["strixy"],
+          "expiresAt": "2026-10-21T00:00:00Z"
+        },
+        "open_webui": {
           "status": "unsupported_until_revalidated",
-          "reason": "Fleet model-UI run 2026-07-20T10:45Z on strixy loaded Phi-4 Mini successfully, but ODS Talk returned a corrupted verification phrase during release app probing; keep it out of Talk and all-app release coverage until revalidated.",
-          "evidence": "fleet-test/runs/2026-07-20T10-45-12Z-release-product-6b152663c2e3-harness-ec9ada8148fa-hosts-windows-laptop-strixy/model-ui/cycle-001/strixy"
+          "label": "Open WebUI revalidation required on Strixy",
+          "reason": "The exact e4fd1cae Strixy revalidation loaded Phi-4 Mini through native Lemonade, proved the signed expected route and returned HTTP 200, but Open WebUI mutated a verification digit by changing the requested token from ODSVAL-A6B4422ACC-461A91E67B to ODSVAL-A6B4422ACC-461A891B7B. Keep this host/model/app pairing out of all-app release coverage until exact-answer behavior is revalidated.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-strixy-e4fd1cae-h3043027-r401/model-ui/cycle-005/strixy-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T07:30:37Z",
+          "productSha": "e4fd1cae6232af0a9d7438317002b55f94bea2bc",
+          "harnessSha": "30430271ba0b97c83056272a4f4877cb65dee122",
+          "hostScope": ["strixy"],
+          "expiresAt": "2026-10-21T00:00:00Z"
+        },
+        "pixel_agent": {
+          "status": "unsupported_until_revalidated",
+          "label": "Pixel revalidation required on Strixy",
+          "reason": "The exact e4fd1cae Strixy revalidation reached Phi-4 Mini over the signed expected route with HTTP 200 and completed retained Pixel SSE, but dropped the leading O from the requested phrase. This repeats earlier exact-answer failures despite correct routing, so keep the host/model pairing excluded until response behavior is revalidated.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-strixy-e4fd1cae-h3043027-r401/model-ui/cycle-005/strixy-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T07:30:37Z",
+          "productSha": "e4fd1cae6232af0a9d7438317002b55f94bea2bc",
+          "harnessSha": "30430271ba0b97c83056272a4f4877cb65dee122",
+          "hostScope": ["strixy"],
+          "expiresAt": "2026-10-21T00:00:00Z"
         },
         "agent_viability": {
-          "status": "not_agent_viable",
-          "reason": "ODS Talk release probe failed exact verification after successful Phi-4 Mini load; not agent-viable until a Talk revalidation passes.",
-          "evidence": "fleet-test/runs/2026-07-20T10-45-12Z-release-product-6b152663c2e3-harness-ec9ada8148fa-hosts-windows-laptop-strixy/model-ui/cycle-001/strixy"
+          "status": "unsupported_until_revalidated",
+          "label": "All-app revalidation required on Strixy",
+          "reason": "The exact e4fd1cae Strixy revalidation did not sustain all-app coverage for Phi-4 Mini: Pixel dropped the first challenge character and Open WebUI mutated a verification digit despite exact signed routes and HTTP 200 responses. Talk, LiteLLM, OpenCode, and Perplexica passed, and failure recovery restored the Qwen 3.6 baseline.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-strixy-e4fd1cae-h3043027-r401/model-ui/cycle-005/strixy-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T07:30:37Z",
+          "productSha": "e4fd1cae6232af0a9d7438317002b55f94bea2bc",
+          "harnessSha": "30430271ba0b97c83056272a4f4877cb65dee122",
+          "hostScope": ["strixy"],
+          "expiresAt": "2026-10-21T00:00:00Z"
         }
-      }
+      },
+      "runtime_profiles": [
+        {
+          "id": "apple-silicon-8gb-16k",
+          "label": "Apple Silicon 8GB 16K context with Q4 KV cache",
+          "backend": "apple",
+          "host_arch": [
+            "arm64"
+          ],
+          "memory_type": "unified",
+          "system_ram_min_gb": 7,
+          "system_ram_max_gb": 10,
+          "context_length": 16384,
+          "estimated_required_gb": 4.35,
+          "fit_label": "16K 8GB Q4 KV profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "auto",
+            "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q4_0"
+          }
+        }
+      ]
     },
     {
       "id": "phi3.5-mini-q4",
@@ -356,6 +416,30 @@
       "tokens_per_sec_estimate": 80,
       "llm_model_name": "granite-4.0-h-tiny",
       "llama_server_image": null,
+      "app_compatibility": {
+        "pixel_agent": {
+          "status": "unsupported_until_revalidated",
+          "label": "Pixel revalidation required",
+          "reason": "Pixel routed correctly to Granite 4.0 H-Tiny but failed to answer its verification phrase in exact-head release cycles on Tower3 (2026-09-20), Tower2, and the Windows laptop WSL lane (2026-09-21). On Tower2 and Windows it returned delivery instructions instead of the requested phrase, while the exact Granite route was proven and the other required apps passed on the same loaded model; baseline recovery succeeded. Keep this model out of Tower2, Tower3, and Windows laptop all-app release coverage until Pixel behavior is revalidated.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-01d81ef8-hb71daee-r377/model-ui/cycle-002/tower3/model-ui.json; ods-public-beta-fleet-green-20260911/release-candidate-9381eff2-h6665980-r400/model-ui/cycle-003/tower2/model-ui.json; ods-public-beta-fleet-green-20260911/release-candidate-9381eff2-h6665980-r400/model-ui/cycle-005/windows-laptop-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T04:23:13Z",
+          "productSha": "9381eff2822390ea0dd44f9471f27c5cffb346e4",
+          "harnessSha": "66659802985da37d3289ca33bb815d375b307323",
+          "hostScope": ["tower2", "tower3", "windows-laptop"],
+          "expiresAt": "2026-10-21T00:00:00Z"
+        },
+        "opencode": {
+          "status": "unsupported_until_revalidated",
+          "label": "OpenCode revalidation required",
+          "reason": "In the 2026-09-17 Tower1 exact-head release cycle, OpenCode's build agent issued a read tool call against a fabricated path instead of returning its requested verification phrase on Granite 4.0 H-Tiny. The same installed OpenCode path answered on the baseline and neighboring Granite 4.0 models; Pixel, ODS Talk, LiteLLM, Open WebUI, and Perplexica passed on H-Tiny with exact model-route evidence. Keep this model out of Tower1 all-app release coverage until OpenCode behavior is revalidated.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-tower1-pr5579-471bc50-135daf6-r216/model-ui/cycle-002/tower1/model-ui.json",
+          "recordedAt": "2026-09-17T08:46:03Z",
+          "productSha": "471bc50df3b3a127aa83ac208c7220e19493d8f6",
+          "harnessSha": "135daf604399fe757e8364d3721767a22bafe541",
+          "hostScope": ["tower1"],
+          "expiresAt": "2026-10-17T00:00:00Z"
+        }
+      },
       "install_recommendation": false
     },
     {
@@ -402,7 +486,22 @@
           "productSha": "faaf5af99c89e38cc43f18239ea94747f62bf16b",
           "harnessSha": "b838abf5a87b32c3f7ab8eaef43ea97133fb43d9",
           "globalScope": true,
-          "expiresAt": "2026-08-24T00:00:00Z"
+          "expiresAt": "2026-08-24T00:00:00Z",
+          "scopedOverrides": [
+            {
+              "status": "verified",
+              "label": "Perplexica verified on Strixy",
+              "reason": "A targeted exact-head Strixy WSL native-Lemonade switch to SmolLM3 passed challenge-bound Perplexica and every other required deployed LLM consumer, signed model-route checks, Pixel retained and non-retained SSE, ODS Talk, and exact baseline restoration with an identical final inventory. The original coordinator false-red on the intentionally null external currentModel; corrected harness c959bc6 accepted the unchanged artifact. This is one host/backend app-compatibility proof, not full release-cycle coverage.",
+              "evidence": "ods-public-beta-fleet-green-20260911/model-ui-strixy-smollm3-revalidate-dd15084f-h9b98068-r391/cycle-001/strixy-wsl-beta",
+              "recordedAt": "2026-09-20T20:01:05Z",
+              "productSha": "dd15084fb0cc10d03b8b322fd34cdaa474fc513f",
+              "harnessSha": "9b98068fad8ae732b87d0273ab28809843996c7d",
+              "validationHarnessSha": "c959bc6f0d499321305249b55415e4556cf32123",
+              "hostScope": ["strixy"],
+              "llmBackendScope": ["lemonade"],
+              "expiresAt": "2026-10-20T00:00:00Z"
+            }
+          ]
         }
       },
       "install_recommendation": false
@@ -459,13 +558,13 @@
         "perplexica": {
           "status": "unsupported_until_revalidated",
           "label": "Perplexica revalidation required",
-          "reason": "Fleet model-UI run 2026-07-22T04:37Z on m5-mbp loaded this model and ODS Talk passed, but the Perplexica app probe emitted only a partial verification phrase while the same cycle on strix-halo passed. Keep it out of all-app release coverage until m5-mbp Perplexica compatibility is revalidated.",
-          "evidence": "fleet-test/runs/2026-07-22T04-37-32Z-release-product-0334416e344c-harness-8bdceb20b959-hosts-m5-mbp-strix-halo-windows-laptop-strixy/model-ui/cycle-003/m5-mbp",
-          "recordedAt": "2026-07-22T05:32:17Z",
-          "productSha": "0334416e344c2cdb9124bed88b7a71b98eea9fc4",
-          "harnessSha": "8bdceb20b9594515dae65f7f66df734ec152e1e4",
-          "hostScope": ["m5-mbp"],
-          "revalidateAgainstSha": "892df74a769cf8aa9530e8e10d319281e063483f"
+          "reason": "Perplexica emitted only a partial verification phrase with this model in independent model-UI runs on m5-mbp (2026-07-22) and the Windows WSL beta lane (2026-09-21). In the current WSL run the stream completed and used the exact signed Granite H-1B route, while Pixel, ODS Talk, and the other required consumers passed; baseline recovery succeeded. Keep it out of all-app release coverage on these hosts until Perplexica behavior is revalidated.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-9381eff2-h6665980-r400/model-ui/cycle-003/windows-laptop-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T04:04:00Z",
+          "productSha": "9381eff2822390ea0dd44f9471f27c5cffb346e4",
+          "harnessSha": "66659802985da37d3289ca33bb815d375b307323",
+          "hostScope": ["m5-mbp", "windows-laptop-wsl-beta"],
+          "expiresAt": "2026-10-21T00:00:00Z"
         }
       },
       "install_recommendation": false
@@ -619,6 +718,18 @@
           "productSha": "651e048b61d9a5cc2133f342014b9ceb64800d41",
           "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
           "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        },
+        "pixel_agent": {
+          "status": "not_agent_viable",
+          "label": "Pixel tool loop failed on Windows",
+          "reason": "A real Pixel coding turn created an incorrect TTL/LRU cache, retained two independently reproduced test failures, made no useful repair, and failed to provide a concise honest terminal result. Generic route, Talk, and consumer validation does not establish Pixel capability.",
+          "evidence": "docs/pixel/model-capability-qualification.md#nvidia-nemotron-3-nano-4b",
+          "recordedAt": "2026-08-30T06:30:00Z",
+          "productSha": "df05a732ed7aedac6c527e1f9e7eeeeccfed3a5b",
+          "pixelSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "harnessSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-09-30T00:00:00Z"
         }
       },
       "install_recommendation": true
@@ -767,13 +878,13 @@
         "perplexica": {
           "status": "unsupported_until_revalidated",
           "label": "Perplexica revalidation required",
-          "reason": "A fresh release-grade fleet model-UI run loaded this model on tower2, strix-halo, spark, m5-mbp, and strixy. Strix Halo, Spark, and Strixy passed Perplexica, while Tower2 and M5 passed ODS Talk, LiteLLM, Open WebUI, and OpenCode but Perplexica did not return the requested verification phrase. Keep this model out of all-app release coverage on tower2 and m5-mbp until that path is revalidated.",
-          "evidence": "fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/tower2; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/strix-halo; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/spark; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/m5-mbp; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/strixy",
-          "recordedAt": "2026-07-23T23:04:18Z",
-          "productSha": "cf6dffb8e8bbf60f418caeab47d7ae3ef8815307",
-          "harnessSha": "47eedd6c0b40908272ad6ba324868f4acec2f308",
-          "hostScope": ["tower2", "m5-mbp"],
-          "expiresAt": "2026-08-23T00:00:00Z"
+          "reason": "Fleet runs on Tower2, M5, Tower3, Tower1, and the M4 Mac Mini found Perplexica failures with this model. In the exact 93a2c4bc Mac release run, the signed Granite 3.2 route and every other required consumer passed, but Perplexica produced no headers for five minutes and timed out; exact Qwen 3.5 baseline recovery and candidate deletion then passed. Keep Granite 3.2 2B out of all-app release coverage on these hosts until Perplexica passes a real revalidation.",
+          "evidence": "fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/tower2; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/m5-mbp; ods-public-beta-fleet-green-20260911/release-four-host-2f985137-abb61b2-r46/model-ui/cycle-006/tower3/model-ui.json; ods-public-beta-fleet-green-20260911/release-tower1-pr5579-afe7408-ff56b22-r208/model-ui/cycle-006/tower1/model-ui.json; ods-public-beta-fleet-green-20260911/release-mac-native-93a2c4bc-h6ab9611-r417/model-ui/cycle-006/mac-mini/model-ui.json",
+          "recordedAt": "2026-09-21T15:39:37Z",
+          "productSha": "93a2c4bc9b7e8a47335d468b2b4772ead5091680",
+          "harnessSha": "6ab9611be19b544e9764c456206d1283f371fbb5",
+          "hostScope": ["tower2", "m5-mbp", "tower3", "tower1", "mac-mini"],
+          "expiresAt": "2026-10-21T00:00:00Z"
         },
         "hermes_talk": {
           "status": "unsupported_until_revalidated",
@@ -901,6 +1012,22 @@
       "llama_server_image": null,
       "runtime_profiles": [
         {
+          "id": "cpu-16k-agent-memory",
+          "label": "CPU 16K agent context with 8G memory budget",
+          "backend": "cpu",
+          "system_ram_min_gb": 16,
+          "context_length": 16384,
+          "estimated_required_gb": 7.8,
+          "fit_label": "16K CPU agent profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "auto",
+            "LLAMA_ARG_CACHE_TYPE_K": "f16",
+            "LLAMA_ARG_CACHE_TYPE_V": "f16",
+            "LLAMA_SERVER_MEMORY_LIMIT": "8G"
+          }
+        },
+        {
           "id": "nvidia-8gb-64k-q4-kv",
           "label": "NVIDIA 8GB 64K context with Q4 KV cache",
           "backend": "nvidia",
@@ -917,6 +1044,26 @@
             "LLAMA_ARG_FLASH_ATTN": "on",
             "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
             "LLAMA_ARG_CACHE_TYPE_V": "q4_0"
+          }
+        },
+        {
+          "id": "nvidia-8gb-32k-q8-kv",
+          "label": "NVIDIA 8GB 32K context with Q8 KV cache",
+          "backend": "nvidia",
+          "host_arch": ["amd64"],
+          "memory_type": "discrete",
+          "vram_min_gb": 7.5,
+          "vram_max_gb": 8.5,
+          "system_ram_min_gb": 15,
+          "context_length": 32768,
+          "estimated_required_gb": 6.8,
+          "fit_label": "32K 8GB Q8 KV constrained-runtime profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+            "LLAMA_SERVER_MEMORY_LIMIT": "12G"
           }
         }
       ],
@@ -960,6 +1107,18 @@
           "productSha": "7629cd20c0ec75a274187aea52b8cc9ad6fa2a2a",
           "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
           "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        },
+        "pixel_agent": {
+          "status": "not_agent_viable",
+          "label": "Pixel tool loop failed on Windows",
+          "reason": "A real Pixel coding turn wrote tests to the wrong directory, ran the wrong verification command, hallucinated a filename correction after an import failure, emitted invalid and ineffective edits, and recursively deleted the requested project tree without owner authorization.",
+          "evidence": "docs/pixel/model-capability-qualification.md#ministral-3-8b-instruct-2512",
+          "recordedAt": "2026-08-30T06:50:00Z",
+          "productSha": "df05a732ed7aedac6c527e1f9e7eeeeccfed3a5b",
+          "pixelSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "harnessSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-09-30T00:00:00Z"
         }
       },
       "install_recommendation": true
@@ -1184,6 +1343,18 @@
           "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
           "hostScope": ["windows-laptop"],
           "expiresAt": "2026-08-24T00:00:00Z"
+        },
+        "pixel_agent": {
+          "status": "not_agent_viable",
+          "label": "Pixel repair loop failed on Windows",
+          "reason": "A real Pixel coding turn at 24K context ignored the deterministic fake-clock contract, wrote defective cache code and tests, independently retained two failures out of seven, and then made ineffective and duplicate repairs until the bounded verification guard terminated the continuation honestly. Direct tool calls and generic route, Talk, or consumer evidence do not establish Pixel capability.",
+          "evidence": "docs/pixel/model-capability-qualification.md#qwen3-4b-instruct-2507",
+          "recordedAt": "2026-08-30T08:10:12Z",
+          "productSha": "df05a732ed7aedac6c527e1f9e7eeeeccfed3a5b",
+          "pixelSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "harnessSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-09-30T00:00:00Z"
         }
       },
       "runtime_profiles": [
@@ -1359,6 +1530,18 @@
           "evidence": "fleet-test/runs/2026-07-24T18-23-guardrail-fullapp-windows-qwen25-coder-3b-product-f35e9af8eeab-harness-7c6cd3af853b/cycle-001/windows-laptop",
           "recordedAt": "2026-07-24T18:30:00Z",
           "hostScope": ["windows-laptop"]
+        },
+        "pixel_agent": {
+          "status": "not_agent_viable",
+          "label": "Pixel protocol failed on Windows",
+          "reason": "A real Pixel coding turn made no tool calls, created no files, and returned malformed mock example protocol text instead of operating the requested workspace.",
+          "evidence": "docs/pixel/model-capability-qualification.md#qwen-25-coder-3b-128k",
+          "recordedAt": "2026-08-30T06:25:00Z",
+          "productSha": "df05a732ed7aedac6c527e1f9e7eeeeccfed3a5b",
+          "pixelSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "harnessSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-09-30T00:00:00Z"
         },
         "hermes_talk": {
           "status": "unsupported_until_revalidated",
@@ -1600,6 +1783,18 @@
           "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
           "hostScope": ["windows-laptop"],
           "expiresAt": "2026-08-24T00:00:00Z"
+        },
+        "pixel_agent": {
+          "status": "not_agent_viable",
+          "label": "Pixel repair loop failed on Windows",
+          "reason": "A real Pixel coding turn reached a unittest NameError, made one ineffective duplicate edit, exhausted its bounded tool loop, and ended without rerunning verification or reporting the remaining failure honestly. Independent replay retained the error and found additional contract defects.",
+          "evidence": "docs/pixel/model-capability-qualification.md#qwen-35-4b",
+          "recordedAt": "2026-08-30T06:20:00Z",
+          "productSha": "df05a732ed7aedac6c527e1f9e7eeeeccfed3a5b",
+          "pixelSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "harnessSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-09-30T00:00:00Z"
         }
       },
       "runtime_profiles": [
@@ -1692,7 +1887,74 @@
       "description": "Excellent general-purpose model. Default for most systems. Great at coding, reasoning, and multilingual tasks.",
       "tokens_per_sec_estimate": 90,
       "llm_model_name": "qwen3.5-9b",
-      "llama_server_image": null
+      "llama_server_image": null,
+      "app_compatibility": {
+        "open_webui": {
+          "status": "verified",
+          "label": "Open WebUI revalidated on Strixy",
+          "reason": "The exact e4fd1cae Strixy cycle loaded Qwen 3.5 9B through native Lemonade at 64K context and passed the challenge-bound Open WebUI reply with signed route evidence naming Qwen3.5-9B-GGUF. ODS Talk, Pixel retained and non-retained inference, LiteLLM, OpenCode, and Perplexica also passed before exact Qwen 3.6 baseline restoration and clean inventory verification.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-strixy-e4fd1cae-h3043027-r401/model-ui/cycle-006/strixy-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T07:48:20Z",
+          "productSha": "e4fd1cae6232af0a9d7438317002b55f94bea2bc",
+          "harnessSha": "30430271ba0b97c83056272a4f4877cb65dee122",
+          "hostScope": ["strixy"],
+          "expiresAt": "2026-10-21T00:00:00Z"
+        },
+        "pixel_agent": {
+          "status": "verified",
+          "label": "Pixel verified at 64K context on Windows laptop",
+          "reason": "Fresh Pixel sessions on the auto-paired 64K profile created and debugged a new CLI, then repaired two seeded implementation defects while preserving fixed tests. The load-bearing repair ran the exact 12-second unittest command as a background process, polled an initial four-failure terminal result, made only two focused implementation edits, polled the rerun to 9/9 and exit zero, and passed an exact functional marker plus independent replay. This is capability evidence for the named host, artifact, profile, ODS source, and Pixel source; the earlier failed 24K, 32K, and 64K probes remain preserved as historical evidence rather than an access restriction.",
+          "evidence": "docs/pixel/model-capability-qualification.md#qwen-35-9b-revalidation-2026-09-02",
+          "recordedAt": "2026-09-02T23:04:24Z",
+          "productSha": "d0808d08645841ffcbb3cf3919a9c81fe485937b",
+          "pixelSha": "d99923246e5ea22c0f1c8c8fc7b0927ac8b523fe",
+          "harnessSha": "d99923246e5ea22c0f1c8c8fc7b0927ac8b523fe",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-10-02T23:04:24Z"
+        }
+      },
+      "runtime_profiles": [
+        {
+          "id": "nvidia-8gb-64k-q8-kv",
+          "label": "NVIDIA 8GB 64K context with Q8 KV cache",
+          "backend": "nvidia",
+          "host_arch": ["amd64"],
+          "memory_type": "discrete",
+          "vram_min_gb": 7.5,
+          "vram_max_gb": 8.5,
+          "system_ram_min_gb": 15,
+          "context_length": 65536,
+          "estimated_required_gb": 7.2,
+          "fit_label": "64K 8GB Q8 KV interactive-agent profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+            "LLAMA_SERVER_MEMORY_LIMIT": "12G"
+          }
+        },
+        {
+          "id": "nvidia-8gb-32k-q8-kv",
+          "label": "NVIDIA 8GB 32K context with Q8 KV cache",
+          "backend": "nvidia",
+          "host_arch": ["amd64"],
+          "memory_type": "discrete",
+          "vram_min_gb": 7.5,
+          "vram_max_gb": 8.5,
+          "system_ram_min_gb": 15,
+          "context_length": 32768,
+          "estimated_required_gb": 6.8,
+          "fit_label": "32K 8GB Q8 KV interactive-agent profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+            "LLAMA_SERVER_MEMORY_LIMIT": "12G"
+          }
+        }
+      ]
     },
     {
       "id": "phi4-q4",
@@ -1727,6 +1989,35 @@
       "tokens_per_sec_estimate": 50,
       "llm_model_name": "deepseek-r1-distill-qwen-14b",
       "llama_server_image": null
+    },
+    {
+      "id": "qwen3.8-27b-iq4-xs",
+      "name": "Qwen 3.8 27B",
+      "family": "qwen",
+      "gguf_file": "Qwen3.8-27B-UD-IQ4_XS.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-UD-IQ4_XS.gguf",
+      "gguf_sha256": "40fac4050e940397dbf13087afd50f4734a11805bf9d65ef8ddd7483470e6199",
+      "size_bytes": 14252845984,
+      "size_mb": 14253,
+      "vram_required_gb": 18,
+      "context_length": 32768,
+      "max_context_length": 262144,
+      "quantization": "UD-IQ4_XS",
+      "specialty": "Reasoning and coding",
+      "description": "Dense 27B reasoning model with embedded MTP. Smaller GPUs can use partial offload and a reduced context profile. MTP needs a compatible llama.cpp runtime and measured memory/throughput validation; it is not enabled automatically.",
+      "llm_model_name": "qwen3.8-27b",
+      "llama_server_image": null,
+      "install_recommendation": false,
+      "source_repo": "unsloth/Qwen3.8-27B-GGUF",
+      "source_revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
+      "source_url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF",
+      "license": "apache-2.0",
+      "mtp": {
+        "mode": "embedded",
+        "source_url": "https://unsloth.ai/docs/models/mtp",
+        "runtime_requirement": "llama.cpp advertising draft-mtp and --spec-draft-n-max",
+        "recommendation": "benchmark-required"
+      }
     },
     {
       "id": "qwen3.5-27b-q4",

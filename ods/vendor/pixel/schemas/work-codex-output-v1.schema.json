@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-codex-output-v1.schema.json",
+  "title": "Pixel untrusted structured Codex work-provider output v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "taskClass", "summary", "findings", "proposals", "verificationSuggestions", "unresolvedRisks", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-codex-output-v1.schema.json"}, "schemaVersion": {"const": 1},
+    "taskClass": {"enum": ["structural-review", "patch-proposal", "failure-triage"]},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 8000},
+    "findings": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/finding"}},
+    "proposals": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/proposal"}},
+    "verificationSuggestions": {"type": "array", "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 4000}},
+    "unresolvedRisks": {"type": "array", "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 4000}},
+    "boundary": {"const": "Untrusted advisory output only. Pixel must validate, locally rehydrate only approved placeholders, and independently verify every proposed change; this output grants no execution or external-effect authority."}
+  },
+  "$defs": {
+    "finding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["severity", "title", "evidence", "recommendation"],
+      "properties": {
+        "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
+        "title": {"type": "string", "minLength": 1, "maxLength": 500},
+        "evidence": {"type": "string", "minLength": 1, "maxLength": 8000},
+        "recommendation": {"type": "string", "minLength": 1, "maxLength": 8000}
+      }
+    },
+    "proposal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["targetDocumentId", "operation", "rationale", "content"],
+      "properties": {
+        "targetDocumentId": {"type": "string", "pattern": "^DOC_[0-9]{3}$"},
+        "operation": {"enum": ["none", "replace", "insert", "delete"]},
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 8000},
+        "content": {"type": "string", "maxLength": 65536}
+      }
+    }
+  }
+}

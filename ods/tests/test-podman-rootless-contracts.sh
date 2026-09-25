@@ -135,6 +135,14 @@ if grep -Eq 'list\[|\|[[:space:]]*None' "$REGISTRY_LIB"; then
 fi
 pass "Podman helper remains compatible with installer Python baselines"
 
+# The Python invocation forwards fallback sources as argv. An unguarded
+# array expansion aborts under `set -u` with "unbound variable" when no
+# registry config exists on disk (fresh minimal hosts) on Bash < 4.4,
+# killing phase 05 before Podman is usable.
+grep -Fq '${source_confs[@]+"${source_confs[@]}"}' "$REGISTRY_LIB" \
+    || fail "source_confs expansion must use the set -u safe guarded form"
+pass "Podman helper guards empty source_confs under set -u (Bash < 4.4)"
+
 # A Linux host may run systemd while ODS has no system unit because sudo was
 # unavailable during installation. The CLI must use the session fallback and
 # must not call sudo merely because systemd exists on the host.
@@ -259,11 +267,14 @@ grep -q 'not owned by ODS' "$agent_output" \
 kill "$unowned_pid" 2>/dev/null || true
 pass "session fallback refuses to stop an unowned stale PID"
 
-python3 - "$ROOT_DIR/installers/phases/01-preflight.sh" <<'PY'
+python3 - "$ROOT_DIR/installers/phases/01-preflight.sh" "$ROOT_DIR/installers/lib/preflight-jq.sh" <<'PY'
 import pathlib
 import sys
 
-text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+phase = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+assert 'source "$SCRIPT_DIR/installers/lib/preflight-jq.sh"' in phase
+assert "ods_preflight_require_jq" in phase
+text = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
 start = text.index("if ! command -v jq")
 end = text.index('log "jq:', start)
 block = text[start:end]
@@ -371,10 +382,11 @@ import sys
 
 text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
 assert "_phase06_repair_host_path" in text
-assert "Hermes requires data/hermes ownership 10000:10000 and mode 700" in text
+assert "Hermes requires data/hermes ownership $_phase06_compose_uid:$_phase06_compose_gid and mode 700" in text
+assert 'ods_sudo chown -R "$_phase06_compose_uid:$_phase06_compose_gid"' in text
 assert not re.search(r"(?m)^\s*sudo\s+(?:chown|chmod)\s+", text)
 PY
-pass "rootful ownership repair fails clearly instead of bypassing no-sudo mode"
+pass "rootful ownership repair uses persisted IDs and fails clearly without sudo"
 
 if grep -q 'Ignoring placeholder .* from environment' \
     "$ROOT_DIR/installers/phases/06-directories.sh"; then

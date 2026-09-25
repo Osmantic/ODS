@@ -312,7 +312,7 @@ flags="$(LEMONADE_EXTERNAL=true ODS_MODE=lemonade AMD_INFERENCE_RUNTIME=lemonade
     --gpu-backend amd \
     --tier SH_LARGE \
     --env)"
-[[ "$flags" == *"docker-compose.cloud.yml"* ]] || fail "external Lemonade stack must include cloud overlay"
+[[ "$flags" != *"docker-compose.cloud.yml"* ]] || fail "external Lemonade stack must keep model-router enabled"
 [[ "$flags" == *"docker-compose.lemonade-external.yml"* ]] || fail "external Lemonade stack must include external overlay"
 [[ "$flags" != *"docker-compose.amd.yml"* ]] || fail "external Lemonade stack must not include managed AMD overlay"
 [[ "$flags" != *"compose.local.yaml"* ]] || fail "external Lemonade stack must not include local llama-server dependency overlays"

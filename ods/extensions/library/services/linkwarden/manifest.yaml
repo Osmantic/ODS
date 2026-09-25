@@ -1,0 +1,80 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: linkwarden
+  name: Linkwarden
+  aliases: []
+  container_name: ods-linkwarden
+  host_env: LINKWARDEN_HOST
+  default_host: linkwarden
+  port: 3000
+  external_port_env: LINKWARDEN_PORT
+  external_port_default: 11023
+  health: /login
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on:
+  - litellm
+  description: Preserve, annotate and organize web pages in shared collections with
+    local storage and search.
+  env_vars:
+  - key: LINKWARDEN_DATABASE_PASSWORD
+    required: true
+    secret: true
+    description: Random URL-safe database password (letters and digits, at least 32
+      characters).
+  - key: LINKWARDEN_AUTH_SECRET
+    required: true
+    secret: true
+    description: Persistent random authentication secret.
+  - key: LINKWARDEN_SEARCH_KEY
+    required: true
+    secret: true
+    description: Private search index key, at least 16 random characters.
+  - key: LINKWARDEN_AUTH_URL
+    required: false
+    default: http://localhost:11023/api/v1/auth
+    description: Browser-facing authentication URL including /api/v1/auth; match any
+      custom port.
+  - key: LINKWARDEN_DISABLE_REGISTRATION
+    required: false
+    default: 'false'
+    description: Set true after creating the intended owner accounts.
+  ui_path: /
+  llm:
+    consumes: true
+    route: gateway
+    pinning: none
+    probe:
+      kind: chat
+      path: /v1/chat/completions
+      auth: env:LITELLM_KEY
+tags:
+- productivity
+- local
+- open-source
+features:
+- id: linkwarden-workspace
+  name: Linkwarden
+  description: Preserve, annotate and organize web pages in shared collections with
+    local storage and search.
+  icon: Bookmark
+  category: productivity
+  requirements:
+    services:
+    - linkwarden
+    vram_gb: 0
+  enabled_services_all:
+  - linkwarden
+  setup_time: Initial image download; see README
+  priority: 52
+  launch:
+    type: service
+    service: linkwarden
+    path: /

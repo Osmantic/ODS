@@ -1,0 +1,12 @@
+.portal-extension-mention{position:absolute;bottom:calc(100% + 8px);left:0;width:min(420px,calc(100vw - 48px));z-index:30;padding:10px;border-radius:16px;background:var(--glass-bg,rgba(20,28,44,.94));backdrop-filter:blur(24px);box-shadow:0 12px 32px #0003;color:inherit}
+.portal-extension-mention-heading{display:flex;justify-content:space-between;gap:12px;padding:4px 8px 10px}
+.portal-extension-mention small{font-size:11px;opacity:.72}
+.portal-extension-mention-options{max-height:300px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#ffffff40 transparent}
+.portal-extension-mention button{display:flex;align-items:center;gap:10px;width:100%;padding:9px 10px;text-align:left;color:inherit;background:transparent;border:0;border-radius:9px;cursor:pointer}
+.portal-extension-mention button:hover,.portal-extension-mention button:focus-visible{background:#ffffff12;outline:2px solid transparent}
+.portal-extension-mention button:focus-visible{outline-color:#8faee6}
+.portal-extension-mention button:disabled{opacity:.45;cursor:default}
+.portal-extension-mention button>span{display:flex;min-width:0;flex-direction:column;gap:3px}
+.portal-extension-mention button>svg{flex-shrink:0}
+.portal-extension-mention-description{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.portal-extension-mention p{padding:8px;margin:0;font-size:12px}

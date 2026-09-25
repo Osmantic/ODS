@@ -1,0 +1,53 @@
+{
+  "$schema": "./schemas/client-overlay-v1.schema.json",
+  "schemaVersion": 1,
+  "clientId": "example-client",
+  "core": {
+    "pixel": "4.3.27",
+    "modificationAllowed": false,
+    "privateStateOutsideCore": true
+  },
+  "capabilityProfile": "minimal",
+  "frontier": {
+    "defaultRoute": "local-first",
+    "advertisedAuthModes": [
+      "chatgpt"
+    ],
+    "apiKeyModeAdvertised": false,
+    "clientDataEgressAllowed": false
+  },
+  "operatorAccess": {
+    "mode": "local-only",
+    "pixelListener": "exact-ipv4-loopback",
+    "remoteAccessEnabled": false,
+    "remoteAccessPolicy": {
+      "requiredIfLaterEnabled": true,
+      "enforcement": "external-identity-provider",
+      "mfaRequired": true,
+      "preferredFactor": "totp-authenticator-app",
+      "fallbackFactor": "email-one-time-code",
+      "credentialsVisibleToPixel": false
+    }
+  },
+  "privacy": {
+    "clientDataInCore": false,
+    "credentialsInOverlay": false,
+    "remoteReceivesSanitizedOnly": true,
+    "localFinalComposition": true
+  },
+  "extensions": {
+    "localCapabilityPackIds": [],
+    "operationsActionPackIds": [],
+    "frontierTaskPackIds": []
+  },
+  "licensing": {
+    "required": true,
+    "recorded": false,
+    "evidenceSha256": null
+  },
+  "usability": {
+    "required": true,
+    "recorded": false,
+    "evidenceSha256": null
+  }
+}

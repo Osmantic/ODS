@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-pixel-system-v1.schema.json",
+  "title": "Pixel private portal outcome system configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "runtimeRoot", "policyTemplatePath", "environmentTemplatePath", "modelBackendTemplatePath", "assistantTemplatePath", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-pixel-system-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "runtimeRoot": {"$ref": "#/$defs/path"},
+    "policyTemplatePath": {"$ref": "#/$defs/path"},
+    "environmentTemplatePath": {"$ref": "#/$defs/path"},
+    "modelBackendTemplatePath": {"$ref": "#/$defs/path"},
+    "assistantTemplatePath": {"$ref": "#/$defs/path"},
+    "boundary": {"const": "Owner-private templates and a disposable runtime root for exact Pixel outcome runs only. Configuration grants no model start, task execution, provider, credential, external-effect, merge, deployment, publication, completion, acceptance, or promotion authority."}
+  },
+  "$defs": {
+    "path": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\\u0000\\r\\n]+$"}
+  }
+}

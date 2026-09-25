@@ -1,0 +1,44 @@
+services:
+  swagger-editor:
+    image: ods/swagger-editor:5-b56bd6a7-local-v1
+    container_name: ods-swagger-editor
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${SWAGGER_EDITOR_PORT:-11137}:8080
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://127.0.0.1:8080/
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 101:101
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+networks:
+  ods-network:
+    external: true
+    name: ods-network

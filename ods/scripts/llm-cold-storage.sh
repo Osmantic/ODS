@@ -19,6 +19,12 @@ set -uo pipefail
 
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface/hub}"
 COLD_DIR="${COLD_DIR:-$HOME/llm-cold-storage}"
+# Relative archive locations are relative to the invocation directory, not
+# the Hugging Face cache directory where the replacement symlink is stored.
+case "$COLD_DIR" in
+    /*) ;;
+    *) COLD_DIR="$(pwd -P)/$COLD_DIR" ;;
+esac
 LOG_FILE="${LOG_FILE:-$HOME/.local/log/llm-cold-storage.log}"
 MAX_IDLE_DAYS=7
 
@@ -71,14 +77,13 @@ get_last_access_days() {
         # GNU: stat -c %X (atime as epoch seconds)
         newest_atime="$(find "$dir" -type f -exec stat -c %X {} + 2>/dev/null | sort -rn | sed -n '1p')"
     fi
-    if [[ -z "$newest_atime" ]]; then
+    if [[ -z "$newest_atime" || ! "${newest_atime%.*}" =~ ^[0-9]+$ ]]; then
         echo "9999"
         return
     fi
     local now
     now="$(date +%s)"
-    local age_secs
-    age_secs="$(echo "$now - ${newest_atime%.*}" | bc)"
+    local age_secs=$(( now - ${newest_atime%.*} ))
     echo "$(( age_secs / 86400 ))"
 }
 
@@ -224,30 +229,32 @@ show_status() {
     echo "Cold storage total: $(du -sh "$COLD_DIR" 2>/dev/null | cut -f1)"
 }
 
-case "${1:-}" in
-    --execute)
-        do_archive false
-        ;;
-    --restore)
-        [[ -n "${2:-}" ]] || { echo "Usage: $0 --restore <model-name>"; exit 1; }
-        do_restore "$2"
-        ;;
-    --restore-all)
-        do_restore_all
-        ;;
-    --status)
-        show_status
-        ;;
-    --help|-h)
-        echo "Usage: $0 [--execute|--restore <name>|--restore-all|--status|--help]"
-        echo ""
-        echo "  (no args)            Dry-run: show what would be archived"
-        echo "  --execute            Archive idle models (>$MAX_IDLE_DAYS days)"
-        echo "  --restore <name>     Restore model from cold storage"
-        echo "  --restore-all        Restore all archived models"
-        echo "  --status             Show current hot/cold status"
-        ;;
-    *)
-        do_archive true
-        ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    case "${1:-}" in
+        --execute)
+            do_archive false
+            ;;
+        --restore)
+            [[ -n "${2:-}" ]] || { echo "Usage: $0 --restore <model-name>"; exit 1; }
+            do_restore "$2"
+            ;;
+        --restore-all)
+            do_restore_all
+            ;;
+        --status)
+            show_status
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--execute|--restore <name>|--restore-all|--status|--help]"
+            echo ""
+            echo "  (no args)            Dry-run: show what would be archived"
+            echo "  --execute            Archive idle models (>$MAX_IDLE_DAYS days)"
+            echo "  --restore <name>     Restore model from cold storage"
+            echo "  --restore-all        Restore all archived models"
+            echo "  --status             Show current hot/cold status"
+            ;;
+        *)
+            do_archive true
+            ;;
+    esac
+fi

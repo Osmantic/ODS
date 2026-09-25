@@ -117,7 +117,7 @@ def build_event(
         or kwargs.get("model")
         or "unknown"
     )
-    return {
+    event = {
         "agent": "litellm",
         "model": model[:512],
         "provider_name": _provider_name(kwargs),
@@ -139,7 +139,11 @@ def build_event(
                 "cached_tokens", usage.get("cache_read_tokens", 0)
             )
         ),
-        "cache_write_tokens": _count(usage.get("cache_write_tokens", 0)),
+        "cache_write_tokens": _count(
+            prompt_details.get(
+                "cache_creation_tokens", usage.get("cache_write_tokens", 0)
+            )
+        ),
         "duration_ms": _duration_ms(start_time, end_time),
         "stop_reason": str(
             first_choice.get("finish_reason")
@@ -148,6 +152,14 @@ def build_event(
             or ""
         )[:128],
     }
+
+    # Provider prompt/input counts include cached tokens. Token Spy stores
+    # disjoint categories; partition once, after any stream aggregation.
+    event["cache_read_tokens"] = min(event["cache_read_tokens"], event["input_tokens"])
+    remaining = event["input_tokens"] - event["cache_read_tokens"]
+    event["cache_write_tokens"] = min(event["cache_write_tokens"], remaining)
+    event["input_tokens"] = remaining - event["cache_write_tokens"]
+    return event
 
 
 class ODSTokenSpyCallback(CustomLogger):
@@ -177,7 +189,7 @@ class ODSTokenSpyCallback(CustomLogger):
         # model-router. Skipping here preserves exactly-once accounting.
         if (
             not self.enabled
-            or os.environ.get("ODS_MODEL_SWITCHBOARD", "observe") == "enabled"
+            or os.environ.get("ODS_MODEL_SWITCHBOARD", "enabled") == "enabled"
         ):
             return
         if self.worker is None or self.worker.done():
@@ -195,9 +207,10 @@ class ODSTokenSpyCallback(CustomLogger):
         timeout = max(
             0.1, float(os.environ.get("ODS_LITELLM_TELEMETRY_TIMEOUT", "3"))
         )
-        async with httpx.AsyncClient(
+        client = httpx.AsyncClient(
             follow_redirects=False, timeout=timeout
-        ) as client:
+        )
+        try:
             while True:
                 event = await self.queue.get()
                 try:
@@ -215,6 +228,14 @@ class ODSTokenSpyCallback(CustomLogger):
                     self._warn(f"Token Spy telemetry unavailable: {exc}")
                 finally:
                     self.queue.task_done()
+        finally:
+            close_task = asyncio.create_task(client.aclose())
+            try:
+                await asyncio.shield(close_task)
+            except asyncio.CancelledError:
+                # A second cancellation must not interrupt socket cleanup.
+                await close_task
+                raise
 
     def _warn(self, message: str) -> None:
         now = time.monotonic()

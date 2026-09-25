@@ -1,0 +1,9 @@
+/* Geometry only: colors and surfaces remain owned by the surrounding workspace. */
+.portal-workbench-content.portal-tree-split > .portal-workbench-file-tree { flex-basis:var(--portal-file-tree-width); width:var(--portal-file-tree-width); }
+.pixel-file-changes.portal-review-layout.has-files.portal-tree-split { grid-template-columns:minmax(0,1fr) 12px var(--portal-file-tree-width); }
+.portal-file-tree-resizer { position:relative; flex:0 0 12px; align-self:stretch; width:12px; cursor:col-resize; touch-action:none; user-select:none; outline:0; }
+.portal-file-tree-resizer::after { content:''; position:absolute; inset:0 auto 0 5px; width:2px; background:transparent; transition:background .12s ease; }
+.portal-file-tree-resizer:hover::after,.portal-file-tree-resizer:focus-visible::after,.portal-file-tree-resizer[data-dragging=true]::after { background:rgb(var(--theme-text-muted) / .65); }
+@media (pointer:coarse) { .pixel-file-changes.portal-review-layout.has-files.portal-tree-split { grid-template-columns:minmax(0,1fr) 24px var(--portal-file-tree-width); } .portal-file-tree-resizer { width:24px; flex-basis:24px; } .portal-file-tree-resizer::after { left:11px; } }
+@media (prefers-reduced-motion:reduce) { .portal-file-tree-resizer::after { transition:none; } }
+@media (forced-colors:active) { .portal-file-tree-resizer:hover::after,.portal-file-tree-resizer:focus-visible::after,.portal-file-tree-resizer[data-dragging=true]::after { background:Highlight; } }

@@ -26,8 +26,10 @@
 # Security posture:
 #   * Proxy is the LAN-facing surface; everything behind it stays
 #     loopback-bound on the host.
-#   * Trust is delegated to each backend's existing checks: dashboard-
-#     api's API-key, Open WebUI's WEBUI_AUTH, hermes-proxy's forward_auth.
+#   * Trust is delegated to each backend's existing checks: dashboard
+#     sign-in (dashboard/talk hosts use the dashboard's :3011 network
+#     listener) and dashboard-api's API key, Open WebUI's WEBUI_AUTH, and
+#     optional Hermes session gating.
 #   * For exposure beyond the trusted LAN, put this behind Tailscale.
 #     Don't publish to the public internet without TLS + extra auth.
 
@@ -81,7 +83,9 @@ http://chat.{$ODS_DEVICE_NAME:ods}.local {
 # dashboard.<device>.local → ODS Dashboard (operator UI)
 # ---------------------------------------------------------------------
 http://dashboard.{$ODS_DEVICE_NAME:ods}.local {
-	reverse_proxy dashboard:3001 {
+	# :3011 is the dashboard's network listener: its admin API always
+	# requires dashboard sign-in (see the dashboard's nginx.conf).
+	reverse_proxy dashboard:3011 {
 		header_up X-Forwarded-Proto {scheme}
 		header_up X-Forwarded-Host {host}
 	}
@@ -93,9 +97,11 @@ http://dashboard.{$ODS_DEVICE_NAME:ods}.local {
 # Served by the dashboard container but rendered as a chrome-free route.
 # /api/* requests still proxy to dashboard-api through dashboard nginx;
 # the talk router ignores admin API-key auth and requires ods-session.
+# The network listener (:3011) keeps the rest of the admin API behind
+# dashboard sign-in on this hostname too.
 # ---------------------------------------------------------------------
 http://talk.{$ODS_DEVICE_NAME:ods}.local {
-	reverse_proxy dashboard:3001 {
+	reverse_proxy dashboard:3011 {
 		header_up X-Forwarded-Proto {scheme}
 		header_up X-Forwarded-Host {host}
 	}

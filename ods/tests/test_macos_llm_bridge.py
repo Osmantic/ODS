@@ -5,10 +5,14 @@ import importlib.util
 import json
 import socket
 import socketserver
+import struct
 import sys
 import threading
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
+
+import pytest
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "bin" / "ods-macos-llm-bridge.py"
@@ -23,6 +27,80 @@ assert AGENT_SPEC and AGENT_SPEC.loader
 agent = importlib.util.module_from_spec(AGENT_SPEC)
 sys.modules["ods_host_agent_bridge_test"] = agent
 AGENT_SPEC.loader.exec_module(agent)
+
+
+@contextmanager
+def _live_tunnel():
+    class ObservedBridge(bridge.LlmBridgeServer):
+        max_connections = 1
+
+        def process_request_thread(self, request, client_address):
+            try:
+                super().process_request_thread(request, client_address)
+            finally:
+                finished.set()
+
+    finished = threading.Event()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(3)
+        proxy = ObservedBridge(("127.0.0.1", 0), listener.getsockname())
+        worker = threading.Thread(target=proxy.serve_forever, daemon=True)
+        worker.start()
+        client = socket.create_connection(proxy.server_address, timeout=3)
+        upstream, _ = listener.accept()
+        upstream.settimeout(3)
+        try:
+            # Ensure both directions actually crossed the production tunnel.
+            client.sendall(b"request")
+            assert upstream.recv(7) == b"request"
+            upstream.sendall(b"ready")
+            assert client.recv(5) == b"ready"
+            yield client, upstream, proxy, finished
+        finally:
+            for connection in (client, upstream):
+                try:
+                    connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                connection.close()
+            proxy.shutdown()
+            proxy.server_close()
+            worker.join(timeout=3)
+            assert finished.wait(3), "bridge handler did not exit after cleanup"
+
+
+@pytest.mark.parametrize("reset_peer", ["client", "upstream"])
+def test_reset_releases_tunnel_while_other_peer_remains_open(reset_peer):
+    with _live_tunnel() as (client, upstream, proxy, finished):
+        connection = client if reset_peer == "client" else upstream
+        connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        connection.close()
+        assert finished.wait(2), "reset tunnel retained its handler and connection slot"
+        assert proxy._connection_slots.acquire(blocking=False)
+        proxy._connection_slots.release()
+
+
+def test_request_half_close_still_receives_complete_response():
+    with _live_tunnel() as (client, upstream, _proxy, finished):
+        client.shutdown(socket.SHUT_WR)
+        assert upstream.recv(1) == b""
+        assert not finished.is_set()
+        response = b"response after request EOF" * 10000
+        sender = threading.Thread(target=upstream.sendall, args=(response,), daemon=True)
+        sender.start()
+        received = bytearray()
+        while len(received) < len(response):
+            chunk = client.recv(65536)
+            assert chunk
+            received.extend(chunk)
+        sender.join(timeout=3)
+        assert not sender.is_alive()
+        assert bytes(received) == response
+        upstream.shutdown(socket.SHUT_WR)
+        assert client.recv(1) == b""
+        assert finished.wait(2)
 
 
 class _HttpHandler(socketserver.BaseRequestHandler):
@@ -84,15 +162,11 @@ def test_bridge_backlog_handles_dashboard_poll_bursts():
 
 
 def test_bridge_enables_tcp_keepalive():
-    left, right = socket.socketpair()
-    try:
-        bridge._enable_tcp_keepalive(left)
-        assert (
-            left.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
-        )
-    finally:
-        left.close()
-        right.close()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
+        assert connection.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 0
+        bridge._enable_tcp_keepalive(connection)
+        # BSD may return the enabled option bit (8), rather than the integer 1.
+        assert connection.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) != 0
 
 
 def test_bridge_reuses_real_host_agent_gets_and_safely_closes_posts(monkeypatch):

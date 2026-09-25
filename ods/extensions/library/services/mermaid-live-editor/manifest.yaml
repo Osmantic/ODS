@@ -1,0 +1,49 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: mermaid-live-editor
+  name: Mermaid Live Editor
+  aliases: []
+  container_name: ods-mermaid-live-editor
+  host_env: MERMAID_LIVE_EDITOR_HOST
+  default_host: mermaid-live-editor
+  port: 8080
+  external_port_env: MERMAID_LIVE_EDITOR_PORT
+  external_port_default: 11071
+  health: /
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Edit Mermaid diagram source with live browser rendering for flowcharts,
+    sequences and other supported diagrams.
+  env_vars: []
+  ui_path: /
+tags:
+- diagrams
+- mermaid
+- open-source
+features:
+- id: mermaid-live-editor-diagrams
+  name: Mermaid Live Editor
+  description: Edit Mermaid diagram source with live browser rendering for flowcharts,
+    sequences and other supported diagrams.
+  icon: Workflow
+  category: productivity
+  requirements:
+    services:
+    - mermaid-live-editor
+    vram_gb: 0
+  enabled_services_all:
+  - mermaid-live-editor
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: mermaid-live-editor
+    path: /

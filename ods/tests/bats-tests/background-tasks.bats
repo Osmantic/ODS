@@ -78,6 +78,57 @@ print('OK')
 
 # ── bg_task_status ──────────────────────────────────────────────────────────
 
+@test "bg_task_start: replaces a stale record when the same task restarts" {
+    bg_task_start "model-download" "999999998" "Old download" "/tmp/old.log"
+    bg_task_start "model-download" "999999997" "Current download" "/tmp/current.log"
+
+    run python3 -c "
+import json
+tasks = json.load(open('$BG_TASK_REGISTRY'))
+assert len(tasks) == 1
+assert tasks[0]['id'] == 'model-download'
+assert tasks[0]['pid'] == 999999997
+assert tasks[0]['description'] == 'Current download'
+assert tasks[0]['log_file'] == '/tmp/current.log'
+print('OK')
+"
+    assert_success
+    assert_output "OK"
+}
+
+@test "bg_task_start: preserves the original live task across an installer rerun" {
+    sleep 30 &
+    live_pid=$!
+    bg_task_start "model-download" "$live_pid" "Original download" "/tmp/original.log"
+    bg_task_start "model-download" "999999996" "Duplicate launcher" "/tmp/duplicate.log"
+
+    run python3 -c "
+import json
+tasks = json.load(open('$BG_TASK_REGISTRY'))
+assert len(tasks) == 1
+assert tasks[0]['id'] == 'model-download'
+assert tasks[0]['pid'] == $live_pid
+assert tasks[0]['description'] == 'Original download'
+assert tasks[0]['log_file'] == '/tmp/original.log'
+print('OK')
+"
+    kill "$live_pid"
+    wait "$live_pid" 2>/dev/null || true
+    assert_success
+    assert_output "OK"
+}
+
+@test "background task registry: defaults to the current install logs directory" {
+    unset BG_TASK_REGISTRY
+    export INSTALL_DIR="$BATS_TEST_TMPDIR/ods-install"
+
+    source "$BATS_TEST_DIRNAME/../../installers/lib/background-tasks.sh"
+
+    [[ "$BG_TASK_REGISTRY" == "$INSTALL_DIR/logs/background-tasks.json" ]]
+    bg_task_start "install-task" "12345" "Install task" "/tmp/install-task.log"
+    [[ -f "$INSTALL_DIR/logs/background-tasks.json" ]]
+}
+
 @test "bg_task_status: returns 3 when no registry exists" {
     rm -f "$BG_TASK_REGISTRY"
     run bg_task_status "nonexistent"

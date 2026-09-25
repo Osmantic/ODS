@@ -23,6 +23,7 @@ let failures = 0;
 let redirectTarget = "";
 let redirectedRequests = 0;
 const observedTokens = [];
+let pendingDisconnect;
 
 function check(name, cond, detail) {
   if (cond) {
@@ -66,7 +67,15 @@ function stubHandler(req, res) {
     res.writeHead(status, { "content-type": "application/json" });
     res.end(body);
   };
-  if (q === "err500") {
+  if (q === "disconnect-headers" || q === "disconnect-body") {
+    const pending = pendingDisconnect;
+    if (q === "disconnect-body") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write("{");
+    }
+    res.on("close", pending.closed);
+    pending.started(res);
+  } else if (q === "err500") {
     respond(500, "{}");
   } else if (q === "err429") {
     respond(429, "{}");
@@ -326,6 +335,20 @@ async function testCompatEnabled(base) {
     JSON.stringify(braveEngine.body.unresponsive_engines),
   );
 
+  const page10 = await getJson(base, "/search?format=json&q=echo&pageno=10");
+  check("last supported page maps to offset 9",
+    page10.body.results[0]?.title === "offset=9 count=20", page10);
+
+  for (const page of [11, 100, 100000000000000000000]) {
+    const before = observedTokens.length;
+    const outside = await getJson(base, "/search?format=json&q=echo&pageno=" + page);
+    check("out-of-range page has an honest empty envelope",
+      outside.status === 200 && outside.body.results.length === 0 &&
+      outside.body.unresponsive_engines[0]?.[1] === "page outside supported range (1-10)", outside);
+    check("out-of-range page does not spend an upstream request",
+      observedTokens.length === before, observedTokens.length - before);
+  }
+
   const page3 = await getJson(base, "/search?format=json&q=echo&pageno=3");
   check(
     "pageno maps to Brave offset (page 3 → offset 2)",
@@ -371,6 +394,36 @@ async function testCompatEnabled(base) {
   }
 }
 
+async function testClientDisconnect(base) {
+  console.log("downstream disconnect cancellation:");
+  for (const route of ["/v1/search?", "/search?format=json&"]) {
+    for (const phase of ["headers", "body"]) {
+      let entered, closed;
+      const started = new Promise(resolve => { entered = resolve; });
+      const upstreamClosed = new Promise(resolve => { closed = resolve; });
+      pendingDisconnect = { started: entered, closed: () => closed(true) };
+      const request = http.get(base + route + "q=disconnect-" + phase);
+      request.on("error", () => {});
+      let timer, upstream;
+      try {
+        upstream = await started;
+        request.destroy();
+        const cancelled = await Promise.race([
+          upstreamClosed,
+          new Promise(resolve => { timer = setTimeout(() => resolve(false), 500); }),
+        ]);
+        check(route + " aborts upstream during " + phase, cancelled === true);
+      } finally {
+        clearTimeout(timer);
+        request.destroy();
+        upstream?.destroy();
+      }
+    }
+  }
+  const healthy = await getJson(base, "/health");
+  check("proxy remains healthy after cancelled searches", healthy.status === 200);
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 
 const stub = http.createServer(stubHandler);
@@ -402,6 +455,7 @@ try {
   await testV1Route(plainBase);
   await testCompatDisabled(plainBase);
   await testCompatEnabled(compatBase);
+  await testClientDisconnect(compatBase);
 
   console.log("env validation:");
   await expectStartupFailure(

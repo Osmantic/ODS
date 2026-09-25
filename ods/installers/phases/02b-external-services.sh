@@ -100,10 +100,10 @@ if [[ -z "$_external_provider" || "$_external_provider" == "auto" ]]; then
     _external_provider="$(external_llm_detect_provider "$_external_url" || true)"
 fi
 case "$_external_provider" in
-    ollama|lmstudio) ;;
+    ollama|lmstudio|openai-compatible) ;;
     *)
         ai_bad "Could not identify the external LLM provider at ${_external_url}"
-        ai "Use --external-llm-provider ollama|lmstudio and verify the service is running."
+        ai "Use --external-llm-provider ollama|lmstudio|openai-compatible and verify the service is running."
         return 1
         ;;
 esac

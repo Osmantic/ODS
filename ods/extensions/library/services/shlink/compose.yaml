@@ -1,0 +1,107 @@
+services:
+  shlink:
+    image: ods/shlink:5.1.6-local-v1
+    container_name: ods-shlink
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${SHLINK_PORT:-11121}:8080
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://127.0.0.1:8080/rest/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    - shlink-internal
+    user: '1001'
+    environment:
+      DEFAULT_DOMAIN: localhost:${SHLINK_PORT:-11121}
+      IS_HTTPS_ENABLED: 'false'
+      DB_DRIVER: postgres
+      DB_HOST: shlink-db
+      DB_PORT: '5432'
+      DB_NAME: shlink
+      DB_USER: shlink
+      DB_PASSWORD: ${SHLINK_DB_PASSWORD:?Set a 64-hex database password}
+      INITIAL_API_KEY: ${SHLINK_API_KEY:?Set a distinct 64-hex API key}
+      SKIP_INITIAL_GEOLITE_DOWNLOAD: 'true'
+      AUTO_RESOLVE_TITLES: 'false'
+      DISABLE_IP_TRACKING: 'true'
+      DISABLE_REFERRER_TRACKING: 'true'
+      DISABLE_UA_TRACKING: 'true'
+      TRACK_ORPHAN_VISITS: 'false'
+      WEB_WORKER_NUM: '2'
+      TASK_WORKER_NUM: '1'
+      MEMORY_LIMIT: 256M
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - shlink-data:/etc/shlink/data
+    depends_on:
+      shlink-db:
+        condition: service_healthy
+  shlink-db:
+    image: postgres:17-alpine@sha256:f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995
+    restart: unless-stopped
+    networks:
+    - shlink-internal
+    environment:
+      POSTGRES_DB: shlink
+      POSTGRES_USER: shlink
+      POSTGRES_PASSWORD: ${SHLINK_DB_PASSWORD:?Set a 64-hex database password}
+    volumes:
+    - shlink-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - shlink
+      - -d
+      - shlink
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    container_name: ods-shlink-db
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+  shlink-internal:
+    internal: true
+volumes:
+  shlink-data: {}
+  shlink-db-data: {}

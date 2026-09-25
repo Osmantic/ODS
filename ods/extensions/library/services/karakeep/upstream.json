@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/karakeep-app/karakeep",
+  "license": "AGPL-3.0",
+  "image": "ghcr.io/karakeep-app/karakeep:release@sha256:b069e4307dec06ea06d16989c6861c30a1ff208568be44ed5fb5d422cd3e950c",
+  "companion_images": [
+    "ghcr.io/karakeep-app/karakeep-chrome:release@sha256:5b19bbb160e9ff60681a3abd97e1c4ec9f64212301410de658c3900ab7ef31e7",
+    "getmeili/meilisearch:v1.41.0@sha256:860fa4baed04ae1c235de870edab0c8006227546dea1bbb6411fbfc5e27cf1db"
+  ],
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official three-service deployment; dedicated upstream-compatible Meilisearch 1.41 index, private Chromium endpoint and persistent SQLite/assets. ODS current-model gateway for text tagging. Vision needs a capable selected model; semantic search is disabled until a separate embedding route is configured. Companion images are dependencies, not extra catalog entries."
+}

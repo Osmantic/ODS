@@ -572,12 +572,14 @@ FAKE_PYTHON
         ENV_ODS_MACOS_HOST_GATEWAY="$TEST_GATEWAY"
         ENV_ODS_MODE="local"
         ENV_LLAMA_REASONING="off"
+        ENV_LLAMA_PARALLEL="${TEST_PARALLEL:-}"
         unset ENV_LLAMA_ARG_FLASH_ATTN ENV_LLAMA_ARG_CACHE_TYPE_K \
             ENV_LLAMA_ARG_CACHE_TYPE_V ENV_LLAMA_ARG_N_CPU_MOE \
             ENV_LLAMA_ARG_SPEC_TYPE ENV_LLAMA_ARG_SPEC_DRAFT_N_MAX
     }
     read_env_value() {
         case "$2" in
+            GGUF_FILE) printf 'test.gguf\n' ;;
             ODS_MODE) printf 'local\n' ;;
             BIND_ADDRESS) printf '%s\n' "$TEST_BIND" ;;
             ODS_MACOS_HOST_GATEWAY) printf '%s\n' "$TEST_GATEWAY" ;;
@@ -597,6 +599,18 @@ FAKE_PYTHON
     ai_err() { :; }
     sleep() { command sleep 0.05; }
     curl() { grep -q '^exec' "$EVENT_LOG"; }
+    # Isolate launchd here; its real helper is covered by test_macos_native_service.py.
+    bash() {
+        if [[ "$1" == "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" ]]; then
+            [[ "$2" == start ]] || return 2
+            local binary="$4" pid_file="$5"
+            shift 5
+            "$binary" "$@"
+            printf '%s\n' "$$" > "$pid_file"
+        else
+            command bash "$@"
+        fi
+    }
 
     run_start_case() {
         local bind_address="$1" gateway_address="$2" expected_route="$3" label="$4"
@@ -629,6 +643,8 @@ FAKE_PYTHON
             [[ "$LAST_BRIDGE_ENABLED" == "true" ]] \
                 || fail "$label: restored bridge state was not persisted"
         fi
+        [[ "${events[${#events[@]}-1]}" == *"<--parallel> <${TEST_PARALLEL:-1}>"* ]] \
+            || fail "$label: native llama parallelism was not preserved"
         pass "$label"
     }
 
@@ -636,6 +652,8 @@ FAKE_PYTHON
     run_start_case "::" "192.168.106.1" direct "IPv6 wildcard boots out bridge before native llama"
     run_start_case "192.168.106.1" "192.168.106.1" direct "gateway bind boots out bridge before native llama"
     run_start_case "127.0.0.1" "192.168.106.1" bridge "returning to loopback recreates bridge before native llama"
+    TEST_PARALLEL=2
+    run_start_case "0.0.0.0" "192.168.106.1" direct "explicit native parallelism survives start"
 )
 
 echo "[OK] macOS direct-bind bridge contract holds"

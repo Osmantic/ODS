@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/deep-work-multi-day-soak-invocation-v1.schema.json",
+  "title": "Pixel Deep Work multi-day soak invocation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "campaignId", "sequence", "startedAt", "finishedAt", "previousInvocationSha256", "invocationIdSha256", "bootIdSha256", "source", "before", "after", "cycle", "privacy", "boundary"],
+  "properties": {
+    "$schema": {"const": "./schemas/deep-work-multi-day-soak-invocation-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-deep-work-multi-day-soak-cycle"},
+    "campaignId": {"type": "string", "pattern": "^deepworksoak-[0-9]{13}-[a-f0-9]{12}$"},
+    "sequence": {"type": "integer", "minimum": 0, "maximum": 64},
+    "startedAt": {"type": "string", "format": "date-time"},
+    "finishedAt": {"type": "string", "format": "date-time"},
+    "previousInvocationSha256": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-f0-9]{64}$"}]},
+    "invocationIdSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "bootIdSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree", "programSha256", "runtimeSnapshotSha256", "configSha256"],
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "programSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "runtimeSnapshotSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "configSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "before": {"$ref": "#/$defs/goalProjection"},
+    "after": {"$ref": "#/$defs/goalProjection"},
+    "cycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "childState", "replaysChild", "grantsExecution"],
+      "properties": {
+        "action": {"type": "string", "enum": ["controller-yield", "terminal"]},
+        "childState": {"oneOf": [{"type": "null"}, {"type": "string", "enum": ["completed"]}]},
+        "replaysChild": {"const": false},
+        "grantsExecution": {"const": false}
+      }
+    },
+    "privacy": {"const": {"providerCalls": 0, "credentialInputs": 0, "networkRequests": 0, "externalEffects": 0, "productionDeploymentsTouched": 0}},
+    "boundary": {"const": "Content-free append-only systemd invocation fact. It grants no work, lease, replay, credential, provider, network, external effect, deployment, completion, or release authority."}
+  },
+  "$defs": {
+    "goalProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "sequence", "checkpointSha256", "milestonesCompleted", "jobsStarted", "modelRequests"],
+      "properties": {
+        "state": {"type": "string", "enum": ["ready", "running", "completed"]},
+        "sequence": {"type": "integer", "minimum": 0, "maximum": 64},
+        "checkpointSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "milestonesCompleted": {"type": "integer", "minimum": 0, "maximum": 24},
+        "jobsStarted": {"type": "integer", "minimum": 0, "maximum": 24},
+        "modelRequests": {"type": "integer", "minimum": 0, "maximum": 24}
+      }
+    }
+  }
+}

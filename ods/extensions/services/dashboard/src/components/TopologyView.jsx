@@ -5,8 +5,8 @@ import { Network } from 'lucide-react'
 function linkStyle(rank) {
   if (rank >= 100) return { bg: 'bg-green-500/20', text: 'text-green-400', dot: 'bg-green-400' }
   if (rank >= 60)  return { bg: 'bg-indigo-500/20', text: 'text-indigo-400', dot: 'bg-indigo-400' }
-  if (rank >= 40)  return { bg: 'bg-yellow-500/20', text: 'text-yellow-400', dot: 'bg-yellow-400' }
-  if (rank >= 20)  return { bg: 'bg-orange-500/20', text: 'text-orange-400', dot: 'bg-orange-400' }
+  if (rank >= 40)  return { bg: 'bg-theme-text-secondary/20', text: 'text-theme-text-secondary', dot: 'bg-theme-text-secondary' }
+  if (rank >= 20)  return { bg: 'bg-theme-text-secondary/20', text: 'text-theme-text-secondary', dot: 'bg-theme-text-secondary' }
   return           { bg: 'bg-red-500/20', text: 'text-red-400', dot: 'bg-red-400' }
 }
 
@@ -38,7 +38,7 @@ export const TopologyView = memo(function TopologyView({ topology }) {
         <div className="flex items-center gap-3 text-[10px] font-mono text-zinc-500">
           {driver_version && <span>driver {driver_version}</span>}
           {mig_enabled && (
-            <span className="px-1.5 py-0.5 bg-purple-500/15 text-purple-400 rounded">MIG</span>
+            <span className="px-1.5 py-0.5 bg-theme-surface text-theme-text-secondary rounded">MIG</span>
           )}
           <span className="uppercase">{vendor}</span>
         </div>

@@ -21,7 +21,7 @@ grep -q '^TimeoutStopSec=15$' "$SERVICE" \
   || fail "ods-host-agent systemd unit must bound service stop time"
 pass "systemd unit has bounded stop timeout"
 
-grep -q 'timeout 20s sudo systemctl disable --now ods-host-agent.service' "$UNINSTALL" \
+grep -q 'timeout 20s sudo -n -- systemctl disable --now ods-host-agent.service' "$UNINSTALL" \
   || fail "uninstall must bound systemctl disable --now for old/stuck host-agent services"
 grep -q 'systemctl kill -s SIGKILL ods-host-agent.service' "$UNINSTALL" \
   || fail "uninstall must force-kill a stuck host-agent service after bounded stop"

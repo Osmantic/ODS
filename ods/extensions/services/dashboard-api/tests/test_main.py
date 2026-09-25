@@ -221,7 +221,8 @@ class TestPreflightDisk:
 class TestBuildApiStatus:
 
     @pytest.mark.asyncio
-    async def test_returns_full_structure(self, monkeypatch):
+    @pytest.mark.parametrize("tps", [25.5, 0.0, None], ids=["measured", "idle", "unavailable"])
+    async def test_returns_full_structure(self, monkeypatch, tps):
         from models import GPUInfo, BootstrapStatus, ModelInfo
 
         gpu = GPUInfo(
@@ -235,7 +236,8 @@ class TestBuildApiStatus:
         monkeypatch.setattr("main.get_bootstrap_status", lambda: BootstrapStatus(active=False))
         monkeypatch.setattr("main.get_loaded_model", AsyncMock(return_value="Test-32B"))
         monkeypatch.setattr("main.get_llama_metrics", AsyncMock(return_value={
-            "tokens_per_second": 25.5,
+            "tokens_per_second": tps,
+            "throughput_model": "Test-32B",
             "lifetime_tokens": 10000,
             "token_count_mode": "cumulative",
         }))
@@ -255,9 +257,42 @@ class TestBuildApiStatus:
         assert result["model"]["currentModel"] == "Test-32B"
         assert result["model"]["loadedModel"] == "Test-32B"
         assert result["model"]["configuredModel"] == "Test-32B"
-        assert result["inference"]["tokensPerSecond"] == 25.5
+        assert result["inference"]["tokensPerSecond"] == tps
+        assert result["model"]["tokensPerSecond"] == tps
         assert result["inference"]["tokenCountMode"] == "cumulative"
         assert result["inference"]["loadedModel"] == "Test-32B"
+
+    @pytest.mark.asyncio
+    async def test_live_runtime_model_overrides_stale_configured_model(self, monkeypatch):
+        from models import BootstrapStatus, ModelInfo
+
+        monkeypatch.setattr("main.get_gpu_info", lambda: None)
+        monkeypatch.setattr("main.get_all_services", AsyncMock(return_value=[]))
+        monkeypatch.setattr(
+            "main.get_model_info",
+            lambda: ModelInfo(name="Configured-Qwen", size_gb=16.0, context_length=65536),
+        )
+        monkeypatch.setattr("main.get_bootstrap_status", lambda: BootstrapStatus(active=False))
+        monkeypatch.setattr("main.get_loaded_model", AsyncMock(return_value="Live-Ministral"))
+        monkeypatch.setattr(
+            "main.get_llama_metrics",
+            AsyncMock(return_value={"tokens_per_second": 0, "lifetime_tokens": 0}),
+        )
+        monkeypatch.setattr("main.get_llama_context_size", AsyncMock(return_value=20480))
+        monkeypatch.setattr("main.get_uptime", lambda: 0)
+        monkeypatch.setattr("main.get_cpu_metrics", lambda: {"percent": 0, "temp_c": None})
+        monkeypatch.setattr("main.get_ram_metrics", lambda: {"used_gb": 0, "total_gb": 0, "percent": 0})
+
+        result = await _build_api_status()
+
+        assert result["currentModel"] == "Live-Ministral"
+        assert result["loadedModel"] == "Live-Ministral"
+        assert result["configuredModel"] == "Configured-Qwen"
+        assert result["model"]["name"] == "Live-Ministral"
+        assert result["model"]["currentModel"] == "Live-Ministral"
+        assert result["model"]["configuredModel"] == "Configured-Qwen"
+        assert result["model"]["contextLength"] == 20480
+        assert result["inference"]["contextSize"] == 20480
 
     def test_detected_gpu_count_overrides_stale_compose_default(self, monkeypatch):
         from main import _serialize_gpu
@@ -277,6 +312,29 @@ class TestBuildApiStatus:
         )
 
         assert _serialize_gpu(gpu)["gpu_count"] == 2
+
+    @pytest.mark.parametrize("backend,memory_type,label", [
+        ("apple", "unified", "Unified Memory"),
+        ("amd", "unified", "VRAM Partition"),
+        ("nvidia", "discrete", "VRAM"),
+    ])
+    def test_live_adapter_survives_zero_install_count(self, monkeypatch, backend, memory_type, label):
+        from main import _serialize_gpu
+        from models import GPUInfo
+
+        # A WSL install can begin with GPU_COUNT=0 and later discover its native
+        # adapter. Its live memory/utilization must not accompany a zero count.
+        monkeypatch.setenv("GPU_COUNT", "0")
+        info = GPUInfo(name="Native adapter", memory_used_mb=8192,
+                       memory_total_mb=16384, memory_percent=50,
+                       utilization_percent=22, temperature_c=0,
+                       gpu_backend=backend, memory_type=memory_type,
+                       temperature_available=False)
+        result = _serialize_gpu(info)
+        assert result["gpu_count"] == 1
+        assert result["memoryLabel"] == label
+        assert result["vramUsed"] == 8 and result["utilization"] == 22
+        assert result["temperature"] is None
 
     @pytest.mark.asyncio
     async def test_tier_professional(self, monkeypatch):
@@ -1075,9 +1133,17 @@ class TestApiStatusServiceSerialization:
 
 class TestApiStatusFallback:
 
-    def test_fallback_on_oserror(self, test_client, monkeypatch):
+    @pytest.mark.parametrize("prior", [None, 25.0], ids=["no-measurement", "held-measurement"])
+    def test_fallback_on_oserror(self, test_client, monkeypatch, prior):
         """Narrow exception class (OSError) falls through to the safe-fallback dict."""
         monkeypatch.setattr("main._build_api_status", AsyncMock(side_effect=OSError("network down")))
+        import helpers
+        monkeypatch.setattr(helpers, "_llama_metrics_sample", {"result": {
+            "tokens_per_second": prior, "lifetime_tokens": 100 if prior else None,
+            "throughput_state": "measured", "throughput_sampled_at": 123.0 if prior else None,
+            "throughput_model": "known-model" if prior else None,
+            "throughput_mode": "generation_interval", "token_count_mode": "cumulative",
+        }})
 
         resp = test_client.get("/api/status", headers=test_client.auth_headers)
         assert resp.status_code == 200
@@ -1085,6 +1151,13 @@ class TestApiStatusFallback:
         assert data["gpu"] is None
         assert data["tier"] == "Unknown"
         assert data["services"] == []
+        assert data["cpu"]["percent"] is None
+        assert data["ram"]["percent"] is None
+        assert data["ram"]["total_gb"] is None
+        assert data["inference"]["tokensPerSecond"] == prior
+        assert data["inference"]["throughputState"] == "unavailable"
+        assert data["inference"]["throughputModel"] == ("known-model" if prior else None)
+        assert data["inference"]["throughputSampledAt"] == (123.0 if prior else None)
 
     def test_runtime_error_propagates_as_500(self, test_client, monkeypatch):
         """Programming errors (RuntimeError) inside _build_api_status must

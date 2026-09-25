@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-runtime-v1.schema.json",
+  "title": "Pixel Deep Work supervised capability runtime receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "pack", "admissionReceiptSha256", "healthReceiptSha256", "grant", "claim", "operationCustody", "request", "startedAt", "completedAt", "result", "container", "workspace", "enabled", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-runtime-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-capability-runtime"},
+    "pack": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "packSha256", "treeSha256", "signerIdentity"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+        "packSha256": {"$ref": "#/$defs/sha256"},
+        "treeSha256": {"$ref": "#/$defs/sha256"},
+        "signerIdentity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$"}
+      }
+    },
+    "admissionReceiptSha256": {"$ref": "#/$defs/sha256"},
+    "healthReceiptSha256": {"$ref": "#/$defs/sha256"},
+    "grant": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantId", "grantSha256", "jobId", "checkpointSha256", "dataClassification", "tool"],
+      "properties": {
+        "grantId": {"type": "string", "pattern": "^workcapgrant-[0-9]{13}-[a-f0-9]{12}$"},
+        "grantSha256": {"$ref": "#/$defs/sha256"},
+        "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+        "checkpointSha256": {"$ref": "#/$defs/sha256"},
+        "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+        "tool": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"}
+      }
+    },
+    "claim": {
+      "type": "object", "additionalProperties": false,
+      "required": ["claimId", "claimSha256"],
+      "properties": {
+        "claimId": {"type": "string", "pattern": "^workcapclaim-[0-9]{13}-[a-f0-9]{12}$"},
+        "claimSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "operationCustody": {
+      "type": "object", "additionalProperties": false,
+      "required": ["bindingSha256", "token"],
+      "properties": {"bindingSha256": {"$ref": "#/$defs/sha256"}, "token": {"$ref": "#/$defs/sha256"}}
+    },
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["inputBytes", "watchdogDecisionSha256"],
+      "properties": {
+        "inputBytes": {"type": "integer", "minimum": 0, "maximum": 1048576},
+        "watchdogDecisionSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "startedAt": {"type": "string", "format": "date-time"},
+    "completedAt": {"type": "string", "format": "date-time"},
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "failureClass", "protocolVersion", "toolSurfaceSha256", "frames", "stdoutBytes", "stderrBytes", "stderrSha256", "outputBytes", "externalEffects", "authority"],
+      "properties": {
+        "status": {"enum": ["succeeded", "failed", "uncertain-recovered"]},
+        "failureClass": {"enum": [null, "launch", "timeout", "identity-or-schema", "protocol", "tool-failure", "output-validation", "transport", "uncertain-recovered"]},
+        "protocolVersion": {"enum": [null, "2026-07-28"]},
+        "toolSurfaceSha256": {"$ref": "#/$defs/nullableSha256"},
+        "frames": {"type": "integer", "minimum": 0, "maximum": 1024},
+        "stdoutBytes": {"type": "integer", "minimum": 0, "maximum": 16777216},
+        "stderrBytes": {"type": "integer", "minimum": 0, "maximum": 1048576},
+        "stderrSha256": {"$ref": "#/$defs/sha256"},
+        "outputBytes": {"type": "integer", "minimum": 0, "maximum": 16777216},
+        "externalEffects": {"const": false},
+        "authority": {"const": "none"}
+      }
+    },
+    "container": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reference", "id", "startState", "network", "removed", "absenceProven"],
+      "properties": {
+        "reference": {
+          "type": "string",
+          "oneOf": [
+            {"pattern": "^[a-z0-9][a-z0-9._/:+-]{1,255}@sha256:[a-f0-9]{64}$"},
+            {"pattern": "^sha256:[a-f0-9]{64}$"}
+          ]
+        },
+        "id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "startState": {"enum": ["started", "uncertain"]},
+        "network": {"const": "none"},
+        "removed": {"const": true},
+        "absenceProven": {"const": true}
+      }
+    },
+    "workspace": {
+      "type": "object", "additionalProperties": false,
+      "required": ["used", "removed", "absenceProven"],
+      "properties": {"used": {"type": "boolean"}, "removed": {"const": true}, "absenceProven": {"const": true}}
+    },
+    "enabled": {"const": false},
+    "authority": {"const": {"grantsFutureExecution": false, "grantsReplay": false, "grantsImagePull": false, "grantsNetwork": false, "grantsHostAccess": false, "grantsCredentials": false, "grantsExternalEffects": false, "grantsScopeExpansion": false, "grantsControllerRegistration": false, "grantsCompletion": false}},
+    "boundary": {"const": "Content-free terminal evidence for one exact single-use capability grant. Structured output crossed only the live caller boundary and is not retained here; the receipt grants no replay, future execution, image pull, network, host access, credential, external effect, scope expansion, controller registration, or completion authority."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"result": {"properties": {"status": {"const": "succeeded"}}, "required": ["status"]}}, "required": ["result"]},
+      "then": {"properties": {"result": {"properties": {"failureClass": {"const": null}, "protocolVersion": {"const": "2026-07-28"}, "toolSurfaceSha256": {"type": "string"}}, "required": ["failureClass", "protocolVersion", "toolSurfaceSha256"]}}}
+    },
+    {
+      "if": {"properties": {"result": {"properties": {"status": {"enum": ["failed", "uncertain-recovered"]}}, "required": ["status"]}}, "required": ["result"]},
+      "then": {"properties": {"result": {"properties": {"failureClass": {"not": {"const": null}}, "outputBytes": {"const": 0}}, "required": ["failureClass", "outputBytes"]}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nullableSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}
+  }
+}

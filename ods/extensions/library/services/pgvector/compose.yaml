@@ -1,0 +1,55 @@
+services:
+  pgvector:
+    image: ods/pgvector:0.8.6-pg17-local-v1
+    container_name: ods-pgvector
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${PGVECTOR_PORT:-11098}:5432
+    healthcheck:
+      test:
+      - CMD
+      - sh
+      - /opt/ods/health.sh
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    environment:
+      POSTGRES_USER: ods_admin
+      POSTGRES_DB: vectors
+      POSTGRES_PASSWORD: ${PGVECTOR_ADMIN_PASSWORD:?Set the 64-hex administrator password}
+      PGVECTOR_APP_PASSWORD: ${PGVECTOR_APP_PASSWORD:?Set a distinct 64-hex application
+        password}
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    - /var/run/postgresql:rw,nosuid,size=16m
+    volumes:
+    - pgvector-data:/var/lib/postgresql/data
+    shm_size: 128m
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  pgvector-data: {}

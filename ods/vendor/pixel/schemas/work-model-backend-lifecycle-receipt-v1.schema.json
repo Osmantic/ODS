@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-backend-lifecycle-receipt-v1.schema.json",
+  "title": "Pixel contained model backend lifecycle receipt v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "intent", "generatedAt", "state", "checks", "changes", "recovery", "privacy", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-backend-lifecycle-receipt-v1.schema.json"},
+    "schemaVersion": {"const": 1}, "operation": {"const": "pixel-work-model-backend-lifecycle"},
+    "intent": {"enum": ["start", "stop"]}, "generatedAt": {"type": "string", "format": "date-time"},
+    "state": {"enum": ["ready-started", "ready-already-running", "removed", "already-absent"]},
+    "checks": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifactBound", "launchBound", "imageBound", "runtimeBound", "readinessPassed", "noUnexpectedPeers", "postflightBound"],
+      "properties": {"artifactBound": {"type": "boolean"}, "launchBound": {"type": "boolean"}, "imageBound": {"type": "boolean"}, "runtimeBound": {"type": "boolean"}, "readinessPassed": {"type": "boolean"}, "noUnexpectedPeers": {"type": "boolean"}, "postflightBound": {"type": "boolean"}}
+    },
+    "changes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["networkCreated", "containerCreated", "containerStarted", "containerStopped", "containerRemoved", "networkRemoved", "imagePulled"],
+      "properties": {"networkCreated": {"type": "boolean"}, "containerCreated": {"type": "boolean"}, "containerStarted": {"type": "boolean"}, "containerStopped": {"type": "boolean"}, "containerRemoved": {"type": "boolean"}, "networkRemoved": {"type": "boolean"}, "imagePulled": {"const": false}}
+    },
+    "recovery": {
+      "type": "object", "additionalProperties": false,
+      "required": ["resumedPartialState", "rollbackAttempted", "rollbackComplete"],
+      "properties": {"resumedPartialState": {"type": "boolean"}, "rollbackAttempted": {"type": "boolean"}, "rollbackComplete": {"type": "boolean"}}
+    },
+    "privacy": {"const": {"modelIdentifier": false, "backendIdentifier": false, "acceleratorIdentifier": false, "deviceIdentifiers": false, "paths": false, "hashes": false, "credentials": false, "prompts": false, "responses": false}},
+    "authority": {"const": {"grantsExecution": false, "changesNetwork": false, "startsContainer": false, "stopsContainer": false, "removesContainer": false, "pullsImage": false, "grantsDevices": false, "grantsCredentials": false, "grantsExternalEffects": false, "grantsCompletion": false}},
+    "boundary": {"const": "Content-free evidence of one exact-confirmed contained local-model lifecycle reconciliation. It reports only completed local Docker changes and exact safety checks; it contains no private identity or content and grants no future execution, network, container, device, credential, external-effect, or completion authority."}
+  }
+}

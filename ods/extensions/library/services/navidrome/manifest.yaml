@@ -1,0 +1,49 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: navidrome
+  name: Navidrome
+  aliases: []
+  container_name: ods-navidrome
+  host_env: NAVIDROME_HOST
+  default_host: navidrome
+  port: 4533
+  external_port_env: NAVIDROME_PORT
+  external_port_default: 11048
+  health: /ping
+  type: docker
+  startup_check: true
+  startup_timeout: 120
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Index a personal music collection, stream albums and playlists, and
+    connect compatible Subsonic clients with individual accounts.
+  env_vars: []
+  ui_path: /
+tags:
+- media
+- local
+- open-source
+features:
+- id: navidrome-music
+  name: Navidrome
+  description: Index a personal music collection, stream albums and playlists, and
+    connect compatible Subsonic clients with individual accounts.
+  icon: Music
+  category: productivity
+  requirements:
+    services:
+    - navidrome
+    vram_gb: 0
+  enabled_services_all:
+  - navidrome
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: navidrome
+    path: /

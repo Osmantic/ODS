@@ -1,0 +1,49 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: keycloak
+  name: Keycloak
+  aliases: []
+  container_name: ods-keycloak
+  host_env: KEYCLOAK_HOST
+  default_host: keycloak
+  port: 8080
+  external_port_env: KEYCLOAK_PORT
+  external_port_default: 11141
+  health: /health/ready
+  type: docker
+  startup_check: true
+  startup_timeout: 300
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Provide project authentication through OpenID Connect and SAML with managed realms and clients.
+  env_vars:
+  - key: KEYCLOAK_DB_PASSWORD
+    required: true
+    secret: true
+    description: Stable random 64-hex PostgreSQL password.
+  - key: KEYCLOAK_BOOTSTRAP_PASSWORD
+    required: true
+    secret: true
+    description: Distinct random 64-hex initial temporary administrator password, not an existing-account reset.
+  ui_path: /admin/
+tags: [identity, oidc, saml, open-source]
+features:
+- id: keycloak-identity
+  name: Keycloak
+  description: Provide project authentication through OpenID Connect and SAML with managed realms and clients.
+  icon: KeyRound
+  category: productivity
+  requirements:
+    services: [keycloak]
+    vram_gb: 0
+  enabled_services_all: [keycloak]
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: keycloak
+    path: /admin/

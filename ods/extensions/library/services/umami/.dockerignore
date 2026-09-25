@@ -1,0 +1,6 @@
+**
+!Dockerfile
+!ods-config.mjs
+!ods-start.mjs
+!ods-initialize.mjs
+!ods-start.sh

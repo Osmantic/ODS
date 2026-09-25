@@ -41,11 +41,18 @@ echo ""
 [[ -f "$SCRIPT_DIR/lib/safe-env.sh" ]] && . "$SCRIPT_DIR/lib/safe-env.sh"
 
 ARCH="$(uname -m 2>/dev/null || echo unknown)"
+HOST_OS="$(uname -s 2>/dev/null || echo unknown)"
+# Only a real Darwin host knows its Mac architecture. The Linux CI simulation
+# of this script passes an empty value, which the engine treats as unknown.
+PREFLIGHT_HOST_ARCH=""
 if [[ "$ARCH" == "arm64" ]]; then
     echo "[OK] Apple Silicon detected: $ARCH"
+elif [[ "$HOST_OS" == "Darwin" ]]; then
+    echo "[WARN] Intel Mac detected ($ARCH): the macOS installer requires Apple Silicon (arm64)."
 else
     echo "[WARN] Non-Apple-Silicon architecture detected: $ARCH"
 fi
+[[ "$HOST_OS" == "Darwin" ]] && PREFLIGHT_HOST_ARCH="$ARCH"
 
 if command -v docker >/dev/null 2>&1; then
     if docker version >/dev/null 2>&1; then
@@ -77,6 +84,7 @@ if [[ -x "$SCRIPT_DIR/scripts/preflight-engine.sh" ]]; then
         --gpu-vram-mb 0 \
         --gpu-name "Apple Silicon" \
         --platform-id "macos" \
+        --host-arch "$PREFLIGHT_HOST_ARCH" \
         --compose-overlays "docker-compose.base.yml,docker-compose.amd.yml" \
         --script-dir "$SCRIPT_DIR" \
         --env)"
@@ -113,8 +121,20 @@ PY
 fi
 
 if [[ -x "$SCRIPT_DIR/scripts/ods-doctor.sh" ]]; then
-    "$SCRIPT_DIR/scripts/ods-doctor.sh" "$DOCTOR_FILE" >/dev/null 2>&1 || true
-    echo "[INFO] Doctor report: $DOCTOR_FILE"
+    # Do not announce a report the doctor never wrote: on stock macOS Bash
+    # 3.2 the doctor exits early (service-registry needs Bash 4+), and the
+    # old `|| true` still printed "[INFO] Doctor report: ..." for a missing
+    # file. Capture stderr so the failure tells the user why.
+    doctor_err_file="$(mktemp)"
+    if "$SCRIPT_DIR/scripts/ods-doctor.sh" "$DOCTOR_FILE" >/dev/null 2>"$doctor_err_file" \
+        && [[ -f "$DOCTOR_FILE" ]]; then
+        echo "[INFO] Doctor report: $DOCTOR_FILE"
+    else
+        echo "[WARN] Doctor report unavailable: $DOCTOR_FILE"
+        sed -n '1,5{s/^/  /;p}' "$doctor_err_file"
+        echo "  Re-run 'scripts/ods-doctor.sh $DOCTOR_FILE' for the full output."
+    fi
+    rm -f "$doctor_err_file"
 fi
 
 echo ""

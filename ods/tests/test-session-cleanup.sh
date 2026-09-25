@@ -99,6 +99,47 @@ else
 fi
 
 # ============================================================================
+# Test 4b: Empty active index still removes orphaned session files
+# ============================================================================
+EMPTY_INDEX_DIR="$TEMP_DIR/empty-active-index"
+mkdir -p "$EMPTY_INDEX_DIR"
+printf '{}\n' > "$EMPTY_INDEX_DIR/sessions.json"
+printf '{"orphaned":true}\n' > "$EMPTY_INDEX_DIR/orphaned.jsonl"
+
+empty_index_exit=0
+empty_index_output=$(SESSIONS_DIR="$EMPTY_INDEX_DIR" MAX_SIZE=100 \
+    bash "$SESSION_CLEANUP_SCRIPT" 2>&1) || empty_index_exit=$?
+if [[ $empty_index_exit -eq 0 ]] \
+    && [[ ! -f "$EMPTY_INDEX_DIR/orphaned.jsonl" ]] \
+    && echo "$empty_index_output" | grep -q "Active sessions found: 0"; then
+    pass "Empty active index removes orphaned sessions"
+else
+    fail "Empty active index cleanup failed (exit $empty_index_exit)"
+fi
+
+# Refuse structurally incomplete indexes before deleting any artifact.
+# A valid JSON root is insufficient if an entry cannot identify its session.
+for record in 'null' '"truncated entry"' '[]' '{}' '{"sessionId":null}' '{"sessionId":42}' '{"sessionId":""}'; do
+    malformed_dir=$(mktemp -d "$TEMP_DIR/invalid-entry.XXXXXX")
+    printf '{"known":{"sessionId":"keep-me"},"damaged":%s}\n' "$record" > "$malformed_dir/sessions.json"
+    printf 'live notes\n' > "$malformed_dir/keep-me.jsonl"
+    printf 'possibly referenced notes\n' > "$malformed_dir/unknown.jsonl"
+    printf 'recoverable backup\n' > "$malformed_dir/recovery.bak"
+    printf 'recoverable deleted entry\n' > "$malformed_dir/recovery.deleted.jsonl"
+    cp "$malformed_dir/sessions.json" "$malformed_dir/index-before"
+    malformed_exit=0
+    SESSIONS_DIR="$malformed_dir" MAX_SIZE=1 bash "$SESSION_CLEANUP_SCRIPT" > "$malformed_dir/output" 2>&1 || malformed_exit=$?
+    if [[ $malformed_exit -ne 0 ]] && cmp -s "$malformed_dir/sessions.json" "$malformed_dir/index-before" \
+        && [[ -f "$malformed_dir/keep-me.jsonl" && -f "$malformed_dir/unknown.jsonl" \
+              && -f "$malformed_dir/recovery.bak" && -f "$malformed_dir/recovery.deleted.jsonl" ]] \
+        && grep -q 'invalid sessions index' "$malformed_dir/output"; then
+        pass "Incomplete index preserves all artifacts: $record"
+    else
+        fail "Incomplete index allowed cleanup: $record"
+    fi
+done
+
+# ============================================================================
 # Test 5: Behavioral test - removes inactive sessions
 # ============================================================================
 # Create inactive session file (not in sessions.json)

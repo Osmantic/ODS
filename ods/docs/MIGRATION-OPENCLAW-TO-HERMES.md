@@ -42,7 +42,7 @@ ods enable openclaw      # still available (deprecated)
 
 Ports do not conflict — Hermes is internal on 9119 and is reached through hermes-proxy on 9120; OpenClaw is on 7860.
 
-The default at install time has flipped: `install.sh` no longer enables OpenClaw without `--openclaw`. Existing installs that already had `ENABLE_OPENCLAW=true` keep it enabled through `ods upgrade`; nothing is removed for you.
+The default at install time has flipped: `install.sh` no longer enables OpenClaw without `--openclaw`. Existing installs that already had `ENABLE_OPENCLAW=true` keep it enabled through `ods update`; nothing is removed for you.
 
 ## Clean-cut migration
 
@@ -67,7 +67,7 @@ ods disable openclaw
 mv data/openclaw data/openclaw.archive.$(date +%Y%m%d)
 ```
 
-If you want to keep using OpenClaw, you can — until the next release. After that, `ods upgrade` will remove the OpenClaw extension and warn (not error) if `ENABLE_OPENCLAW=true` is still set.
+If you want to keep using OpenClaw, you can — until the next release. After that, `ods update` will remove the OpenClaw extension and warn (not error) if `ENABLE_OPENCLAW=true` is still set.
 
 ## n8n flows that target OpenClaw
 

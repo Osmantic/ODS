@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/gtsteffaniak/filebrowser",
+  "license": "Apache-2.0",
+  "image": "ghcr.io/gtsteffaniak/filebrowser:1.5.6-stable@sha256:7c5d7ac8ffda31294d278063cf9d2e04303b39e6dce1f4c691342240ca7703b8",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official full stable 1.5.6 image with FFmpeg/document previews. Prepared nonroot files and application data volumes, mandatory initial admin password and persistent JWT key. Explicit /srv source; no host or Portal workspace mounted. No beta database migration or OnlyOffice server implied."
+}

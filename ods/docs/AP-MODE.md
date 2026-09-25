@@ -75,7 +75,7 @@ If either is missing, the captive portal redirect lands the phone on a dead port
 
 ```bash
 # 1. Install hostapd, dnsmasq, iptables (NetworkManager is already required for PR-8).
-sudo apt install hostapd dnsmasq iptables
+sudo apt install hostapd dnsmasq iptables network-manager python3
 
 # 2. Drop the operator config in place. Edit SSID + password per device.
 sudo install -d -m 0755 /etc/ods
@@ -113,8 +113,8 @@ All settings are bash variables sourced from `/etc/ods/ap-mode.conf`. See `scrip
 
 | Variable | Default | Notes |
 |---|---|---|
-| `ODS_AP_SSID` | `ODS-Setup` | Network name. Include a per-unit suffix to avoid collisions. |
-| `ODS_AP_PASSWORD` | empty | WPA2 passphrase. Empty → open AP (allowed but warned). The example placeholder is refused so images do not ship a known password. |
+| `ODS_AP_SSID` | `ODS-Setup` | Network name, 1–32 bytes with no line breaks. UTF-8 names may use several bytes per character. Include a per-unit suffix to avoid collisions. |
+| `ODS_AP_PASSWORD` | empty | WPA2 passphrase, 8–63 bytes with no line breaks; printable ASCII is recommended for client compatibility. Empty → open AP (allowed but warned). The example placeholder is refused so images do not ship a known password. Invalid SSIDs/passphrases are rejected before releasing the wireless interface. |
 | `ODS_AP_INTERFACE` | `wlan0` | Must support AP mode. Check with `iw list \| grep -A4 'Supported interface modes' \| grep AP`. |
 | `ODS_AP_GATEWAY_IP` | `192.168.7.1` | IP that resolves every hostname (captive-portal trick). |
 | `ODS_AP_NETMASK` | `255.255.255.0` | |

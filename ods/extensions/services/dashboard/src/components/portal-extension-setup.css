@@ -1,0 +1,16 @@
+.portal-extension-setup { margin-top: 1rem; display: grid; gap: .65rem; }
+.portal-extension-setup p, .portal-extension-setup small { color: var(--text-secondary, #a3abb8); font-size: .8rem; }
+.portal-extension-setup fieldset { border: 0; padding: 0; display: grid; gap: .65rem; }
+.portal-extension-setup legend { padding: .4rem 0; font-size: .8rem; }
+.portal-extension-setup label { display: grid; gap: .3rem; }
+.portal-extension-setup input { min-width: 0; width: 100%; padding: .45rem .65rem; border: 1px solid var(--border-color, #ffffff20); border-radius: .5rem; background: var(--bg-input, #ffffff08); color: inherit; }
+.portal-extension-setup button { justify-self: start; padding: .4rem .65rem; border: 0; border-radius: .5rem; background: var(--bg-hover, #ffffff10); color: inherit; }
+.portal-extension-setup button:disabled { opacity: .5; }
+.portal-extension-progress { margin: .75rem 0; font-size: .8rem; }
+.portal-extension-progress > div, .portal-extension-progress li { display: flex; gap: .6rem; align-items: center; }
+.portal-extension-progress > div span, .portal-extension-progress small { margin-left: auto; color: var(--text-secondary, #a3abb8); }
+.portal-extension-progress ul { list-style: none; padding: .4rem 0; max-height: 12rem; overflow: auto; scrollbar-width: thin; }
+.portal-extension-progress li { padding: .2rem 0; }
+.portal-extension-progress button { background: transparent; border: 0; color: inherit; padding: .2rem 0; }
+
+.portal-extension-progress button + button { margin-left: .8rem; }

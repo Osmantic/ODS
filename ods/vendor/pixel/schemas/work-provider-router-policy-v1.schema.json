@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-provider-router-policy-v1.schema.json",
+  "title": "Pixel owner-private work-provider router policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "routerPolicyId", "createdAt", "mode", "allowedModes", "preference", "enabledRemoteProviders", "qualification", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-provider-router-policy-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "routerPolicyId": {"type": "string", "pattern": "^workproviderrouterpolicy-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "mode": {"enum": ["local-only", "explicit-provider", "policy-router"]},
+    "allowedModes": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": {"enum": ["local-only", "explicit-provider", "policy-router"]}},
+    "preference": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"enum": ["anthropic", "fireworks", "groq", "local", "moonshot-kimi", "openai", "openrouter", "together"]}},
+    "enabledRemoteProviders": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["providerId", "privatePolicySha256"],
+        "properties": {
+          "providerId": {"enum": ["anthropic", "fireworks", "groq", "moonshot-kimi", "openai", "openrouter", "together"]},
+          "privatePolicySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "maxAgeSeconds", "semanticTaskClasses"],
+      "properties": {
+        "required": {"const": true},
+        "maxAgeSeconds": {"type": "integer", "minimum": 60, "maximum": 31536000},
+        "semanticTaskClasses": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"enum": ["structural-review", "patch-proposal", "failure-triage"]}}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["execution", "credential", "network", "merge", "deploy", "publish", "externalMessages", "productionCredentials", "securityTesting", "policyMutation"],
+      "properties": {
+        "execution": {"const": false}, "credential": {"const": false}, "network": {"const": false}, "merge": {"const": false},
+        "deploy": {"const": false}, "publish": {"const": false}, "externalMessages": {"const": false},
+        "productionCredentials": {"const": false}, "securityTesting": {"const": false}, "policyMutation": {"const": false}
+      }
+    },
+    "boundary": {"const": "Owner-private content-free local-first work-provider router policy. It pins the ordered provider preference and the exact enabled remote private-policy SHA-256 set; remote providers stay disabled by default. It grants no execution, credential, network, merge, deploy, publish, external-message, security-testing, or policy-mutation authority."}
+  }
+}

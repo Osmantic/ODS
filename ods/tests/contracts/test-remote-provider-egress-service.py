@@ -121,7 +121,15 @@ def test_compose_service_is_internal_only_and_hardened() -> None:
     assert_true("expose:" in block and '"8091"' in block, "service must expose only the internal port")
     assert_true("ports:" not in block, "service must not bind a host port")
     assert_true("cap_drop:" in block and "- ALL" in block, "service must drop capabilities")
+    assert_true(
+        '"${REMOTE_PROVIDER_DATA_GID:-1000}"' in block,
+        "service must receive the host data group for mode-0640 secret reads",
+    )
     assert_true("read_only: true" in block, "service filesystem must be read-only")
+    assert_true(
+        "${ODS_DATA_DIR:-./data}/remote-provider:/state/remote-provider:ro" in block,
+        "service must mount only remote-provider state, not unrelated ODS data",
+    )
     assert_true("/remote-provider/secrets/provider-api-key" in block, "service must use a secret file path")
     assert_true("http://remote-provider-ssh-tunnel:18090/health" in block, "service must check internal SSH tunnel health")
     assert_true("REMOTE_LLM_API_KEY" not in block, "service must not source provider API keys from public env")

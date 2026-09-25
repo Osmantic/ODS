@@ -1,0 +1,54 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: orthanc
+  name: Orthanc
+  aliases: []
+  container_name: ods-orthanc
+  host_env: ORTHANC_HOST
+  default_host: orthanc
+  port: 8042
+  external_port_env: ORTHANC_PORT
+  external_port_default: 11143
+  health: ''
+  type: docker
+  startup_check: false
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Store, inspect and query local DICOM imaging studies through an authenticated
+    web interface and REST API.
+  env_vars:
+  - key: ORTHANC_PASSWORD
+    required: true
+    secret: true
+    description: Random 64-hex password for the orthanc web/API account.
+  ui_path: /
+tags:
+- dicom
+- medical-imaging
+- research
+- open-source
+features:
+- id: orthanc-imaging
+  name: Orthanc DICOM
+  description: Store, inspect and query local DICOM imaging studies through an authenticated
+    web interface and REST API.
+  icon: ScanLine
+  category: productivity
+  requirements:
+    services:
+    - orthanc
+    vram_gb: 0
+  enabled_services_all:
+  - orthanc
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: orthanc
+    path: /

@@ -289,11 +289,21 @@ function Get-ODSLemonadeLaunchContract {
 
         [string]$AdminApiKey,
 
-        [string]$VersionOverride
+        [string]$VersionOverride,
+
+        [hashtable]$RuntimeEnvironment = @{}
     )
 
     if ($Port -lt 1 -or $Port -gt 65535) { throw "Invalid Lemonade port: $Port" }
     if ([string]::IsNullOrWhiteSpace($BindAddress)) { $BindAddress = "127.0.0.1" }
+    foreach ($key in $RuntimeEnvironment.Keys) {
+        $value = [string]$RuntimeEnvironment[$key]
+        if ($key -notmatch '^LEMONADE_LLAMACPP_(VULKAN|ROCM|CPU|METAL|CUDA)_BIN$' -or
+            [string]::IsNullOrWhiteSpace($value) -or $value -match '[\x00\r\n]' -or
+            -not [IO.Path]::IsPathRooted($value)) {
+            throw "Invalid registered Lemonade runtime environment"
+        }
+    }
 
     $version = Get-ODSLemonadeExecutableVersion `
         -ExecutablePath $ExecutablePath -VersionOverride $VersionOverride
@@ -330,6 +340,7 @@ function Get-ODSLemonadeLaunchContract {
         ModelsDir = $ModelsDir
         ContextSize = $ContextSize
         AdminApiKey = $AdminApiKey
+        RuntimeEnvironment = $RuntimeEnvironment
         ArgumentList = $argumentList
         ArgumentString = $argumentString
         RequiresRuntimeConfiguration = $modern
@@ -417,7 +428,10 @@ function New-ODSLemonadeScheduledTaskAction {
     )
 
     $workingDirectory = Split-Path -Parent $Contract.ExecutablePath
-    if (-not $Contract.Modern) {
+    $runtimeEnvironment = if ($Contract.PSObject.Properties.Name -contains 'RuntimeEnvironment') {
+        $Contract.RuntimeEnvironment
+    } else { @{} }
+    if (-not $Contract.Modern -and $runtimeEnvironment.Count -eq 0) {
         return New-ScheduledTaskAction -Execute $Contract.ExecutablePath `
             -Argument $Contract.ArgumentString -WorkingDirectory $workingDirectory
     }
@@ -427,6 +441,11 @@ function New-ODSLemonadeScheduledTaskAction {
     $workLiteral = ConvertTo-ODSPowerShellSingleQuotedLiteral $workingDirectory
     $envLiteral = ConvertTo-ODSPowerShellSingleQuotedLiteral $EnvPath
     $logLiteral = ConvertTo-ODSPowerShellSingleQuotedLiteral $DiagnosticLogPath
+    $runtimeAssignments = @($runtimeEnvironment.Keys | ForEach-Object {
+        $keyLiteral = ConvertTo-ODSPowerShellSingleQuotedLiteral ([string]$_)
+        $valueLiteral = ConvertTo-ODSPowerShellSingleQuotedLiteral ([string]$runtimeEnvironment[$_])
+        "[Environment]::SetEnvironmentVariable($keyLiteral, $valueLiteral, 'Process')"
+    }) -join "`n"
     $wrapper = @"
 `$ErrorActionPreference = 'Stop'
 `$exe = $exeLiteral
@@ -442,6 +461,7 @@ function Read-ODSLauncherEnvValue([string]`$key) {
     return `$null
 }
 try {
+$runtimeAssignments
     `$adminKey = `$env:LEMONADE_ADMIN_API_KEY
     if ([string]::IsNullOrWhiteSpace(`$adminKey)) { `$adminKey = Read-ODSLauncherEnvValue 'LEMONADE_ADMIN_API_KEY' }
     if ([string]::IsNullOrWhiteSpace(`$adminKey)) { `$adminKey = Read-ODSLauncherEnvValue 'LITELLM_LEMONADE_API_KEY' }
@@ -467,7 +487,9 @@ try {
     }
     Set-Content -LiteralPath $launcherPath -Value $wrapper -Encoding UTF8 -Force
     $escapedLauncherPath = ([string]$launcherPath).Replace('"', '\"')
-    return New-ScheduledTaskAction -Execute "powershell.exe" `
+    $shell = Get-Command pwsh.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    $shellPath = if ($shell) { $shell.Source } else { "powershell.exe" }
+    return New-ScheduledTaskAction -Execute $shellPath `
         -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$escapedLauncherPath`"" `
         -WorkingDirectory $workingDirectory
 }
@@ -480,7 +502,15 @@ function Start-ODSLemonadeDirectProcess {
     )
 
     $previousAdminKey = $env:LEMONADE_ADMIN_API_KEY
+    $runtimeEnvironment = if ($Contract.PSObject.Properties.Name -contains 'RuntimeEnvironment') {
+        $Contract.RuntimeEnvironment
+    } else { @{} }
+    $previousRuntimeEnvironment = @{}
     try {
+        foreach ($key in $runtimeEnvironment.Keys) {
+            $previousRuntimeEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            [Environment]::SetEnvironmentVariable($key, [string]$runtimeEnvironment[$key], 'Process')
+        }
         if (-not [string]::IsNullOrWhiteSpace([string]$Contract.AdminApiKey)) {
             $env:LEMONADE_ADMIN_API_KEY = [string]$Contract.AdminApiKey
         }
@@ -519,6 +549,9 @@ function Start-ODSLemonadeDirectProcess {
             LaunchMethod = "start-process"
         }
     } finally {
+        foreach ($key in $previousRuntimeEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable($key, $previousRuntimeEnvironment[$key], 'Process')
+        }
         if ($null -eq $previousAdminKey) {
             Remove-Item Env:\LEMONADE_ADMIN_API_KEY -ErrorAction SilentlyContinue
         } else {
@@ -593,6 +626,42 @@ function Set-ODSLemonadeModernRuntimeConfig {
         }
     }
     return $config
+}
+
+function Set-ODSLemonadeLoadedModel {
+    # Global server options do not prove per-model options. Explicitly load the
+    # checkpoint with its context before the caller verifies health/completion.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$ModelId,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 10000000)][int]$ContextSize,
+        [string]$ApiKey = "",
+        [int]$TimeoutSec = 240
+    )
+    $headers = @{}
+    if ($ApiKey) { $headers.Authorization = "Bearer $ApiKey" }
+    $body = @{
+        model_name = $ModelId
+        ctx_size = $ContextSize
+        save_options = $true
+        llamacpp_backend = "vulkan"
+    } | ConvertTo-Json -Compress
+    $response = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/api/v1/load" `
+        -Headers $headers -ContentType "application/json" -Body $body `
+        -TimeoutSec $TimeoutSec -ErrorAction Stop
+    if ([string]$response.status -notin @("success", "ok")) {
+        throw "Lemonade did not confirm model loading."
+    }
+    $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/health" `
+        -Headers $headers -TimeoutSec 10 -ErrorAction Stop
+    $loaded = @($health.all_models_loaded | Where-Object { $_.model_name -ceq $ModelId })
+    if ($loaded.Count -ne 1) { throw "Lemonade did not prove the requested loaded model." }
+    $actualContext = $loaded[0].recipe_options.ctx_size
+    if (-not $actualContext) { $actualContext = $loaded[0].ctx_size }
+    if ([long]$actualContext -lt $ContextSize) {
+        throw "Lemonade did not prove the requested loaded context."
+    }
 }
 
 function Resolve-ODSLemonadeModelId {

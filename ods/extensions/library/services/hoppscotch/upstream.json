@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/hoppscotch/hoppscotch",
+  "license": "MIT",
+  "image": "hoppscotch/hoppscotch:2026.8.1@sha256:e55f3f901e7b18c1a90e6f5b1d283ab45e89049774552553e0451a0ae308ddf2",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Community AIO with native onboarding, nonroot GID-0 writable runtime as upstream requires, dedicated PostgreSQL and migrations before startup. Authentication is configured in native setup; no provider, email or account fabricated."
+}

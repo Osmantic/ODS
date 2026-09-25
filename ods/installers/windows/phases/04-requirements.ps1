@@ -158,51 +158,55 @@ function Test-WindowsODSLemonadeOwnsPort {
     }).Count
 }
 
-function Stop-WindowsODSLemonadePortConflicts {
-    <#
-    .SYNOPSIS
-        Stop native Lemonade when this install is not using Lemonade inference.
-    #>
+function Get-WindowsODSSelectedPortConflicts {
     param(
-        [switch]$UseNativeLemonade,
-        [switch]$NonInteractive,
-        [switch]$Force
+        [System.Collections.IDictionary]$PortsToCheck,
+        [switch]$UsesNativeLemonade
     )
 
-    if ($UseNativeLemonade) { return }
-
-    $_lemonadeProcesses = @(Get-WindowsODSLemonadeProcesses)
-    if ($_lemonadeProcesses.Count -eq 0) { return }
-
-    $_pidList = ($_lemonadeProcesses | ForEach-Object { "$($_.Name) PID $($_.ProcessId)" }) -join ", "
-    Write-AIWarn "Native Lemonade is running but this install uses Docker-backed inference."
-    Write-AI "  Lemonade can reserve localhost ports used by ODS services, including Whisper STT."
-    Write-AI "  Detected: $_pidList"
-
-    $_shouldStop = $true
-    if (-not $NonInteractive -and -not $Force) {
-        $_choice = Read-Host "  Stop native Lemonade for this ODS session? [Y/n]"
-        $_shouldStop = ($_choice -notmatch "^[nN]")
+    $managedLemonadeProcesses = @()
+    if ($UsesNativeLemonade) {
+        $managedLemonadeProcesses = @(Get-WindowsODSLemonadeProcesses)
     }
-
-    if (-not $_shouldStop) {
-        Write-AIWarn "Native Lemonade left running. Docker service readiness may fail on localhost ports."
-        return
-    }
-
-    foreach ($_proc in $_lemonadeProcesses) {
-        if ($_proc.ProcessId -gt 0) {
-            Stop-Process -Id ([int]$_proc.ProcessId) -Force -ErrorAction SilentlyContinue
+    $conflicts = @()
+    foreach ($service in $PortsToCheck.Keys) {
+        $port = [int]$PortsToCheck[$service]
+        $result = Test-WindowsPortInUse -Port $port
+        if (-not $result.InUse) { continue }
+        if ($service -eq "Lemonade (LLM)" -and
+            (Test-WindowsODSLemonadeOwnsPort `
+                -PortResult $result `
+                -LemonadeProcesses $managedLemonadeProcesses)) {
+            Write-AI "  Port $port is already owned by the managed Lemonade runtime; it will be reused."
+            continue
         }
+        $conflicts += "  Port $port ($service) in use by: $($result.ProcessName) (PID $($result.ProcessId))"
     }
-    Start-Sleep -Seconds 2
+    return $conflicts
+}
 
-    $_remaining = @(Get-WindowsODSLemonadeProcesses)
-    if ($_remaining.Count -gt 0) {
-        Write-AIWarn "Could not fully stop native Lemonade. Port conflicts may remain."
-    } else {
-        Write-AISuccess "Native Lemonade stopped for Docker-backed install"
+function Assert-WindowsODSSelectedPortAvailability {
+    param(
+        [string[]]$Conflicts = @(),
+        [switch]$NonInteractive,
+        [switch]$Force,
+        [switch]$DryRun
+    )
+
+    if ($Conflicts.Count -eq 0) {
+        Write-AISuccess "No port conflicts detected"
+        return $true
     }
+    Write-AIWarn "Port conflicts detected:"
+    $Conflicts | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
+    Write-AI "  Stop the conflicting processes, or override ports via environment variables."
+    Write-AI '  Example: $env:WEBUI_PORT = "9090" before running the installer.'
+    Write-AI "  See .env.example for all configurable ports."
+    if ($NonInteractive -and -not $Force -and -not $DryRun) {
+        Write-AIError "Non-interactive install cannot continue with occupied service ports."
+        throw "ODS_INSTALL_ABORTED"
+    }
+    return $false
 }
 
 # ── Tier-specific RAM requirements ────────────────────────────────────────────
@@ -270,14 +274,10 @@ if ($selectedTier -notin @("0", "CLOUD") -and $gpuInfo.Backend -eq "none") {
     Write-AI "  Consider --Cloud for API mode, or --Tier 0 for CPU-optimized inference."
 }
 
-# Native Lemonade legitimately belongs to Windows AMD/Lemonade installs. On
-# Docker-backed NVIDIA/CPU installs it can shadow localhost ports such as 9000
-# and make healthy Docker services look dead from the Windows host.
+# Native Lemonade legitimately belongs to Windows AMD/Lemonade installs. Other
+# Lemonade processes may belong to unrelated products or users; never stop them
+# as an installer preflight side effect. Check selected ports below instead.
 $_usesNativeLemonade = ($gpuInfo.Backend -eq "amd" -and -not $cloudMode)
-Stop-WindowsODSLemonadePortConflicts `
-    -UseNativeLemonade:$_usesNativeLemonade `
-    -NonInteractive:$nonInteractive `
-    -Force:$force
 
 # ── Port conflict detection ───────────────────────────────────────────────────
 # Build list of ports to check based on enabled features.
@@ -334,35 +334,12 @@ if ($enablePrivacyShield) {
     $_portsToCheck["Privacy Shield"] = 8085
 }
 
-$_portConflicts = @()
-$_managedLemonadeProcesses = @()
-if ($_usesNativeLemonade) {
-    $_managedLemonadeProcesses = @(Get-WindowsODSLemonadeProcesses)
-}
-foreach ($svc in $_portsToCheck.Keys) {
-    $port   = $_portsToCheck[$svc]
-    $result = Test-WindowsPortInUse -Port $port
-    if ($result.InUse) {
-        if ($svc -eq "Lemonade (LLM)" -and
-            (Test-WindowsODSLemonadeOwnsPort `
-                -PortResult $result `
-                -LemonadeProcesses $_managedLemonadeProcesses)) {
-            Write-AI "  Port $port is already owned by the managed Lemonade runtime; it will be reused."
-            continue
-        }
-        $_portConflicts += "  Port $port ($svc) in use by: $($result.ProcessName) (PID $($result.ProcessId))"
-        $requirementsMet = $false
-    }
-}
-
-if ($_portConflicts.Count -gt 0) {
-    Write-AIWarn "Port conflicts detected:"
-    $_portConflicts | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
-    Write-AI "  Stop the conflicting processes, or override ports via environment variables."
-    Write-AI '  Example: $env:WEBUI_PORT = "9090" before running the installer.'
-    Write-AI "  See .env.example for all configurable ports."
-} else {
-    Write-AISuccess "No port conflicts detected"
+$_portConflicts = @(Get-WindowsODSSelectedPortConflicts `
+    -PortsToCheck $_portsToCheck -UsesNativeLemonade:$_usesNativeLemonade)
+if (-not (Assert-WindowsODSSelectedPortAvailability `
+    -Conflicts $_portConflicts -NonInteractive:$nonInteractive `
+    -Force:$force -DryRun:$dryRun)) {
+    $requirementsMet = $false
 }
 
 # ── Requirements gate ─────────────────────────────────────────────────────────

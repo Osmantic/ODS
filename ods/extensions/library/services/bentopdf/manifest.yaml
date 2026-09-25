@@ -1,0 +1,49 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: bentopdf
+  name: BentoPDF
+  aliases: []
+  container_name: ods-bentopdf
+  host_env: BENTOPDF_HOST
+  default_host: bentopdf
+  port: 8080
+  external_port_env: BENTOPDF_PORT
+  external_port_default: 11006
+  health: /
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Merge, split and process PDFs in your browser with the self-hosted
+    BentoPDF build.
+  env_vars: []
+  ui_path: /
+tags:
+- documents
+- local
+- open-source
+features:
+- id: bentopdf-workspace
+  name: BentoPDF
+  description: Merge, split and process PDFs in your browser with the self-hosted
+    BentoPDF build.
+  icon: FileText
+  category: documents
+  requirements:
+    services:
+    - bentopdf
+    vram_gb: 0
+  enabled_services_all:
+  - bentopdf
+  setup_time: Initial image download; see README
+  priority: 36
+  launch:
+    type: service
+    service: bentopdf
+    path: /

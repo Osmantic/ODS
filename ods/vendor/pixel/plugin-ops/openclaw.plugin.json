@@ -1,0 +1,27 @@
+{
+  "id": "pixel-operations-broker",
+  "name": "Pixel Operations Broker",
+  "description": "Typed fleet jobs through an isolated policy and execution broker.",
+  "version": "4.3.27",
+  "contracts": {
+    "tools": [
+      "pixel_ops_inventory",
+      "pixel_ops_run",
+      "pixel_ops_workflow_submit",
+      "pixel_ops_download_stage",
+      "pixel_ops_artifact_transfer",
+      "pixel_ops_shell_propose",
+      "pixel_ops_job_get",
+      "pixel_ops_job_wait",
+      "pixel_ops_job_events",
+      "pixel_ops_job_cancel"
+    ]
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}

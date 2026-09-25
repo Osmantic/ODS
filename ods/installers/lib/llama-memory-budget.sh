@@ -30,6 +30,18 @@ ods_effective_container_memory_gb() {
     fi
 }
 
+# A small Docker VM cannot afford two independent Kokoro model copies alongside
+# Portal, Pixel, and the rest of ODS. Unknown memory retains the old default.
+ods_default_tts_workers() {
+    local memory_gb="${1:-0}"
+    [[ "$memory_gb" =~ ^[0-9]+$ ]] || memory_gb=0
+    if (( memory_gb > 0 && memory_gb < 12 )); then
+        printf '%s\n' 1
+    else
+        printf '%s\n' 2
+    fi
+}
+
 # Keep the NVIDIA llama-server below the memory available to its Docker
 # engine. Reserve 3 GiB on sub-16 GiB systems and 4 GiB otherwise for the OS,
 # Docker, and the rest of the ODS stack. The historical 64 GiB value remains

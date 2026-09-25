@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-research-report-proposal-v1.schema.json",
+  "title": "Pixel untrusted Researcher report proposal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "title", "batchSha256s", "findings", "limitations", "dataClassification", "privateDataIncluded", "externalEffects", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-research-report-proposal-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "title": {"type": "string", "minLength": 1, "maxLength": 16000},
+    "batchSha256s": {"type": "array", "minItems": 1, "maxItems": 200, "uniqueItems": true, "items": {"$ref": "#/$defs/sha256"}},
+    "findings": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"$ref": "#/$defs/finding"}},
+    "limitations": {"type": "string", "minLength": 1, "maxLength": 16000},
+    "dataClassification": {"const": "public"},
+    "privateDataIncluded": {"const": false},
+    "externalEffects": {"const": false},
+    "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Untrusted public Researcher proposal only. It carries no verification, publication, action, policy, or completion authority and must be finalized and independently checked by Pixel."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "finding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["statement", "citations"],
+      "properties": {
+        "statement": {"type": "string", "minLength": 1, "maxLength": 16000},
+        "citations": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"$ref": "#/$defs/citation"}}
+      }
+    },
+    "citation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["batchSha256", "sourceId", "evidence"],
+      "properties": {
+        "batchSha256": {"$ref": "#/$defs/sha256"},
+        "sourceId": {"type": "string", "pattern": "^source-[a-f0-9]{16}$"},
+        "evidence": {"type": "string", "minLength": 16, "maxLength": 12288}
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["directNetwork", "credentials", "externalWrites", "accounts", "messages", "publish", "purchase", "policyMutation", "scopeExpansion"],
+      "properties": {
+        "directNetwork": {"const": false}, "credentials": {"const": false}, "externalWrites": {"const": false},
+        "accounts": {"const": false}, "messages": {"const": false}, "publish": {"const": false},
+        "purchase": {"const": false}, "policyMutation": {"const": false}, "scopeExpansion": {"const": false}
+      }
+    }
+  }
+}

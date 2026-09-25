@@ -1,0 +1,28 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-context-session-input-v1.schema.json",
+  "schemaVersion": 1,
+  "summary": "Continue from the exact checkpoint and independently verify every acceptance criterion before completion.",
+  "decisions": [
+    {
+      "id": "keep-isolation",
+      "statement": "Keep all work inside the reviewed disposable workspace boundary.",
+      "evidenceSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "unresolvedRisks": [
+    {
+      "id": "verification-open",
+      "statement": "Independent verification has not yet established semantic correctness.",
+      "evidenceSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "reports/status.json",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "bytes": 123,
+      "verified": true,
+      "verificationEvidenceSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-backend-halt-receipt-v1.schema.json",
+  "title": "Pixel model-independent emergency backend halt receipt v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "generatedAt", "state", "checks", "observation", "changes", "privacy", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-backend-halt-receipt-v1.schema.json"},
+    "schemaVersion": {"const": 1}, "operation": {"const": "pixel-work-model-backend-halt"}, "generatedAt": {"type": "string", "format": "date-time"},
+    "state": {"enum": ["halted", "already-halted", "already-absent"]},
+    "checks": {
+      "type": "object", "additionalProperties": false,
+      "required": ["staticIdentityBound", "reviewObservationBound", "coordinationHeld", "postflightBound", "modelBytesRead", "imageRequired", "forensicResourcesRetained"],
+      "properties": {
+        "staticIdentityBound": {"type": "boolean"}, "reviewObservationBound": {"const": true}, "coordinationHeld": {"const": true}, "postflightBound": {"const": true},
+        "modelBytesRead": {"const": false}, "imageRequired": {"const": false}, "forensicResourcesRetained": {"type": "boolean"}
+      }
+    },
+    "observation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["hardenedBoundaryObserved", "privateNetworkBound", "activeWorkerPeersObserved"],
+      "properties": {"hardenedBoundaryObserved": {"type": "boolean"}, "privateNetworkBound": {"type": "boolean"}, "activeWorkerPeersObserved": {"type": "boolean"}}
+    },
+    "changes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["containerStopped", "containerRemoved", "networkRemoved", "imagePulled"],
+      "properties": {"containerStopped": {"type": "boolean"}, "containerRemoved": {"const": false}, "networkRemoved": {"const": false}, "imagePulled": {"const": false}}
+    },
+    "privacy": {"const": {"modelIdentifier": false, "backendIdentifier": false, "deviceIdentifiers": false, "paths": false, "hashes": false, "credentials": false, "prompts": false, "responses": false}},
+    "authority": {"const": {"grantsExecution": false, "changesNetwork": false, "startsContainer": false, "stopsContainer": false, "removesContainer": false, "pullsImage": false, "grantsDevices": false, "grantsCredentials": false, "grantsExternalEffects": false, "grantsCompletion": false}},
+    "boundary": {"const": "Content-free evidence of one exact-confirmed stop-only emergency backend halt. It reads no model bytes, requires no image, retains the container and network for forensics, removes nothing, and grants no future authority."}
+  }
+}

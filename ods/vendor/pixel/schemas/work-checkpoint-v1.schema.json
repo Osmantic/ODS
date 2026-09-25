@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-checkpoint-v1.schema.json",
+  "title": "Pixel Deep Work checkpoint v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "checkpointId", "jobId", "sequence", "createdAt", "previousCheckpointSha256", "planSha256", "inputSetSha256", "objectiveSha256", "acceptanceCriteriaSha256", "state", "iteration", "usage", "progress", "workspaceSnapshotSha256", "artifactManifestSha256", "workerSessionSha256", "verificationEvidenceSha256", "authorityExpansionObserved", "acceptanceCriteriaMutationObserved", "externalEffectsObserved", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-checkpoint-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "checkpointId": {"type": "string", "pattern": "^workcheckpoint-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "sequence": {"type": "integer", "minimum": 0, "maximum": 1000000},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "previousCheckpointSha256": {"$ref": "#/$defs/nullableSha256"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "inputSetSha256": {"$ref": "#/$defs/sha256"},
+    "objectiveSha256": {"$ref": "#/$defs/sha256"},
+    "acceptanceCriteriaSha256": {"$ref": "#/$defs/sha256"},
+    "state": {"enum": ["authorized", "running", "verifying", "verified", "waiting-authority", "cleanup-failed", "recovery-inconclusive", "completed", "failed", "cancelled", "budget-exhausted", "no-progress"]},
+    "iteration": {"type": "integer", "minimum": 0, "maximum": 1000000},
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtimeSeconds", "modelRequests", "inputTokens", "outputTokens", "networkBytes", "artifactBytes", "failures"],
+      "properties": {
+        "runtimeSeconds": {"type": "integer", "minimum": 0, "maximum": 604800},
+        "modelRequests": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "inputTokens": {"type": "integer", "minimum": 0, "maximum": 2000000000},
+        "outputTokens": {"type": "integer", "minimum": 0, "maximum": 500000000},
+        "networkBytes": {"type": "integer", "minimum": 0, "maximum": 10737418240},
+        "artifactBytes": {"type": "integer", "minimum": 0, "maximum": 34359738368},
+        "failures": {"type": "integer", "minimum": 0, "maximum": 1000}
+      }
+    },
+    "progress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["criteriaTotal", "criteriaPassing", "criteriaFailing", "noProgressCount", "failureFingerprintSha256"],
+      "properties": {
+        "criteriaTotal": {"type": "integer", "minimum": 1, "maximum": 32},
+        "criteriaPassing": {"type": "integer", "minimum": 0, "maximum": 32},
+        "criteriaFailing": {"type": "integer", "minimum": 0, "maximum": 32},
+        "noProgressCount": {"type": "integer", "minimum": 0, "maximum": 100},
+        "failureFingerprintSha256": {"$ref": "#/$defs/nullableSha256"},
+        "failureStage": {"type": ["string", "null"], "enum": [null, "profile-execution", "rpc-execution", "proxy-receipt", "proposal-parse", "proposal-contract", "evidence-finalization", "artifact-retention", "candidate-contract", "cleanup", "authorization-expired", "interrupted"]}
+      }
+    },
+    "workspaceSnapshotSha256": {"$ref": "#/$defs/sha256"},
+    "artifactManifestSha256": {"$ref": "#/$defs/nullableSha256"},
+    "workerSessionSha256": {"$ref": "#/$defs/nullableSha256"},
+    "verificationEvidenceSha256": {"$ref": "#/$defs/nullableSha256"},
+    "authorityExpansionObserved": {"type": "boolean"},
+    "acceptanceCriteriaMutationObserved": {"type": "boolean"},
+    "externalEffectsObserved": {"type": "boolean"},
+    "boundary": {"const": "Private hash-bound recovery record. Contains only immutable digests, bounded counters, and transition facts. Cannot authorize or replay actions."}
+  },
+  "allOf": [
+    {"if": {"properties": {"sequence": {"const": 0}}, "required": ["sequence"]}, "then": {"properties": {"previousCheckpointSha256": {"const": null}}}, "else": {"properties": {"previousCheckpointSha256": {"$ref": "#/$defs/sha256"}}}},
+    {
+      "if": {"properties": {"state": {"const": "completed"}}, "required": ["state"]},
+      "then": {"properties": {"authorityExpansionObserved": {"const": false}, "acceptanceCriteriaMutationObserved": {"const": false}, "externalEffectsObserved": {"const": false}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nullableSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}
+  }
+}

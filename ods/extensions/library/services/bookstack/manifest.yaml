@@ -1,0 +1,53 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: bookstack
+  name: BookStack
+  aliases: [documentation-books]
+  container_name: ods-bookstack
+  host_env: BOOKSTACK_HOST
+  default_host: bookstack
+  port: 80
+  external_port_env: BOOKSTACK_PORT
+  external_port_default: 11148
+  health: /status
+  ui_path: /
+  type: docker
+  startup_check: true
+  startup_timeout: 300
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  env_vars:
+    - key: BOOKSTACK_APP_KEY
+      required: true
+      secret: true
+      description: Stable Laravel encryption key, base64 followed by a colon and base64 encoding of 32 random bytes. Preserve it with backups.
+    - key: BOOKSTACK_DB_PASSWORD
+      required: true
+      secret: true
+      description: Dedicated database password. Use at least 24 random alphanumeric characters; preserve it after initialization.
+    - key: BOOKSTACK_URL
+      required: true
+      secret: false
+      description: Browser origin including port, normally http://localhost:11148. Changing this later requires BookStack URL migration.
+  description: Structured team documentation with books, chapters, pages, role permissions and a REST API; includes a private MariaDB database.
+tags: [documentation, knowledge, collaboration, open-source]
+features:
+  - id: bookstack-documentation
+    name: Documentation books
+    description: Write and organize project documentation with permissions and revision history.
+    icon: BookOpen
+    category: productivity
+    requirements:
+      services: [bookstack]
+      vram_gb: 0
+    enabled_services_all: [bookstack]
+    setup_time: Initial image download and database migration
+    priority: 48
+    launch:
+      type: service
+      service: bookstack
+      path: /

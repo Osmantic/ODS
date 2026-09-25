@@ -1,0 +1,63 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: changedetection
+  name: changedetection.io
+  aliases: []
+  container_name: ods-changedetection
+  host_env: CHANGEDETECTION_HOST
+  default_host: changedetection
+  port: 5000
+  external_port_env: CHANGEDETECTION_PORT
+  external_port_default: 11039
+  health: /login
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Monitor changes in selected web pages and JSON APIs, retain snapshots
+    and compare text differences locally.
+  env_vars:
+  - key: CHANGEDETECTION_PASSWORD
+    required: true
+    secret: true
+    description: Required web login password, converted in memory to upstream salted
+      PBKDF2 format on startup.
+  - key: CHANGEDETECTION_BASE_URL
+    required: false
+    default: http://localhost:11039
+    description: Browser URL used for links; adjust if publishing on a different local
+      port.
+  - key: CHANGEDETECTION_TIMEZONE
+    required: false
+    default: UTC
+    description: IANA timezone for user-configured watch schedules.
+  ui_path: /
+tags:
+- research
+- local
+- open-source
+features:
+- id: changedetection-workspace
+  name: changedetection.io
+  description: Monitor changes in selected web pages and JSON APIs, retain snapshots
+    and compare text differences locally.
+  icon: ScanSearch
+  category: productivity
+  requirements:
+    services:
+    - changedetection
+    vram_gb: 0
+  enabled_services_all:
+  - changedetection
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: changedetection
+    path: /

@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-input-pack-v1.schema.json",
+  "title": "Pixel Deep Work private input pack v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "packId", "createdAt", "selectionSha256", "catalogSha256", "entries", "totals", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-input-pack-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-input-pack"},
+    "packId": {"type": "string", "pattern": "^inputpack-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "selectionSha256": {"$ref": "#/$defs/sha256"},
+    "catalogSha256": {"$ref": "#/$defs/sha256"},
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "objectName", "archiveSha256", "archiveBytes", "extractedBytes", "files", "directories", "treeSha256"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+          "kind": {"enum": ["repository-snapshot", "dataset", "document", "context"]},
+          "objectName": {"type": "string", "pattern": "^[a-f0-9]{64}\\.tar$"},
+          "archiveSha256": {"$ref": "#/$defs/sha256"},
+          "archiveBytes": {"type": "integer", "minimum": 1536, "maximum": 1099511627776},
+          "extractedBytes": {"type": "integer", "minimum": 0, "maximum": 1099511627776},
+          "files": {"type": "integer", "minimum": 0, "maximum": 100000},
+          "directories": {"type": "integer", "minimum": 0, "maximum": 100000},
+          "treeSha256": {"$ref": "#/$defs/sha256"},
+          "datasets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["datasetId", "relativePath", "format", "contentSha256", "bytes"],
+              "properties": {
+                "datasetId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+                "relativePath": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+                "format": {"enum": ["csv", "json", "jsonl", "parquet", "sqlite"]},
+                "contentSha256": {"$ref": "#/$defs/sha256"},
+                "bytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776}
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"kind": {"const": "dataset"}}, "required": ["kind"]},
+            "then": {"required": ["datasets"]},
+            "else": {"not": {"required": ["datasets"]}}
+          }
+        ]
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputs", "objects", "archiveBytes", "extractedBytes", "files", "directories", "datasets"],
+      "properties": {
+        "inputs": {"type": "integer", "minimum": 1, "maximum": 64},
+        "objects": {"type": "integer", "minimum": 1, "maximum": 64},
+        "archiveBytes": {"type": "integer", "minimum": 1536, "maximum": 70368744177664},
+        "extractedBytes": {"type": "integer", "minimum": 0, "maximum": 70368744177664},
+        "files": {"type": "integer", "minimum": 0, "maximum": 6400000},
+        "directories": {"type": "integer", "minimum": 0, "maximum": 6400000},
+        "datasets": {"type": "integer", "minimum": 0, "maximum": 4096}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grantsRead", "grantsExecution", "grantsLease", "grantsNetwork", "grantsCredentials", "grantsExternalEffects", "grantsScopeExpansion", "grantsCompletion"],
+      "properties": {
+        "grantsRead": {"const": false},
+        "grantsExecution": {"const": false},
+        "grantsLease": {"const": false},
+        "grantsNetwork": {"const": false},
+        "grantsCredentials": {"const": false},
+        "grantsExternalEffects": {"const": false},
+        "grantsScopeExpansion": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Private inert content-addressed input pack only. Source paths are omitted; packed control files remain untrusted data; the pack grants no read, execution, lease, network, credential, external-effect, scope-expansion, or completion authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

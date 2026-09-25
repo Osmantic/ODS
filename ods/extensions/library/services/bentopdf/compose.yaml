@@ -1,0 +1,36 @@
+services:
+  bentopdf:
+    image: ghcr.io/alam00000/bentopdf-simple:2.8.8@sha256:3d62b8f8eece5fe947026ac3925ff08fda245b3d6ba2c3916b94da91e0010c74
+    container_name: ods-bentopdf
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${BENTOPDF_PORT:-11006}:8080
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - --spider
+      - http://127.0.0.1:8080/
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+networks:
+  ods-network:
+    external: true
+    name: ods-network

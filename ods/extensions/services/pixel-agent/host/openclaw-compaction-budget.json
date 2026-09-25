@@ -1,0 +1,79 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "ae83457af1947f3eaf3e08f8fbde869a1c023a80acfbf0f27d3db887af1d36d3",
+  "patchedSha256": "0439891d0b7e7528af4c5d6a81be609ade3cae08f5f75347c94478462512d4bd",
+  "replacements": [
+    [
+      "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = 6e4;",
+      "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = resolveCompactionTimeoutMs(params.config);"
+    ],
+    [
+      "\tlet heldLock = await acquireLock();\n\tconst activeWriteLock = new AsyncLocalStorage();",
+      "\tlet heldLock = await acquireLock();\n\tlet promptLockReacquisition;\n\tconst activeWriteLock = new AsyncLocalStorage();"
+    ],
+    [
+      "\t\tasync reacquireAfterPrompt() {\n\t\t\tawait waitForHeldLockDrain();\n\t\t\tif (takeoverDetected || heldLock) return;\n\t\t\tconst lock = await acquireLock();\n\t\t\ttry {\n\t\t\t\theldLock = lock;\n\t\t\t\tawait assertSessionFileFence();\n\t\t\t} catch (err) {\n\t\t\t\theldLock = void 0;\n\t\t\t\tawait lock.release();\n\t\t\t\tthrow err;\n\t\t\t}\n\t\t},",
+      "\t\tasync reacquireAfterPrompt() {\n\t\t\tawait waitForHeldLockDrain();\n\t\t\t// Split-turn summaries share one session: acquire and verify its lock once.\n\t\t\tif (promptLockReacquisition) return await promptLockReacquisition;\n\t\t\tif (takeoverDetected || heldLock) return;\n\t\t\tpromptLockReacquisition = (async () => {\n\t\t\t\tconst lock = await acquireLock();\n\t\t\t\ttry {\n\t\t\t\t\theldLock = lock;\n\t\t\t\t\tawait assertSessionFileFence();\n\t\t\t\t} catch (err) {\n\t\t\t\t\theldLock = void 0;\n\t\t\t\t\tawait lock.release();\n\t\t\t\t\tthrow err;\n\t\t\t\t}\n\t\t\t})();\n\t\t\ttry {\n\t\t\t\tawait promptLockReacquisition;\n\t\t\t} finally {\n\t\t\t\tpromptLockReacquisition = void 0;\n\t\t\t}\n\t\t},"
+    ],
+    [
+      "\t\t\t\tonBeforeLifecycleTerminal: () => {\n\t\t\t\t\tif (requiresCompletionRequiredAsyncTaskWait({\n\t\t\t\t\t\tsessionKey: params.sessionKey,\n\t\t\t\t\t\ttoolMetas: toolMetasForTerminal\n\t\t\t\t\t})) return;\n\t\t\t\t\tclearActiveEmbeddedRun(params.sessionId, queueHandle, params.sessionKey, params.sessionFile);\n\t\t\t\t},",
+      "\t\t\t\t// agent_end may precede overflow compaction and continuation in this same\n\t\t\t\t// attempt. Retain its abort handle until the identity-checked outer finally."
+    ],
+    [
+      "\t\t\tsessionManager = guardSessionManager(SessionManager.open(params.sessionFile), {",
+      "\t\t\tconst persistedToolResultModelProjection = createPersistedToolResultModelProjection({agentId: sessionAgentId, config: params.config});\n\t\t\tsessionManager = guardSessionManager(SessionManager.open(params.sessionFile), {"
+    ],
+    [
+      "\t\t\t\tonMessagePersisted: () => {\n\t\t\t\t\tsessionLockController.refreshAfterOwnedSessionWrite();",
+      "\t\t\t\tonMessagePersisted: (message) => {\n\t\t\t\t\tpersistedToolResultModelProjection.capture(message);\n\t\t\t\t\tsessionLockController.refreshAfterOwnedSessionWrite();"
+    ],
+    [
+      "function normalizeMessagesForLlmBoundary(messages, options) {",
+      "// Per-attempt projection of already-persisted tool feedback. Hooks run once.\nfunction createPersistedToolResultModelProjection({agentId, config} = {}) {\n\t// Persistence hooks on other agents/plugins keep their storage-only contract.\n\tconst enabled = agentId === \"pixel\" && config?.plugins?.enabled !== false &&\n\t\tconfig?.plugins?.entries?.[\"pixel-ods\"]?.enabled === true &&\n\t\t(!Array.isArray(config.plugins.allow) || config.plugins.allow.includes(\"pixel-ods\")) &&\n\t\t(!Array.isArray(config.plugins.deny) || !config.plugins.deny.includes(\"pixel-ods\"));\n\tconst projected = new Map();\n\tconst keyFor = (message) => message?.role === \"toolResult\" &&\n\t\ttypeof message.toolCallId === \"string\" && message.toolCallId.length > 0 &&\n\t\ttypeof message.toolName === \"string\" && message.toolName.length > 0 &&\n\t\tNumber.isSafeInteger(message.timestamp) && message.timestamp > 0\n\t\t? JSON.stringify([message.toolCallId, message.toolName, message.timestamp]) : void 0;\n\treturn {\n\t\tcapture(message) {\n\t\t\tif (!enabled) return;\n\t\t\tconst key = keyFor(message);\n\t\t\tif (!key) return;\n\t\t\t// Reused identities are ambiguous, even within one attempt.\n\t\t\tif (projected.has(key)) { projected.set(key, null); return; }\n\t\t\tif (projected.size >= 512) return;\n\t\t\tprojected.set(key, structuredClone(message));\n\t\t},\n\t\tapply(messages) {\n\t\t\tif (!enabled) return messages;\n\t\t\tconst counts = new Map();\n\t\t\tfor (const message of messages) { const key = keyFor(message); if (key) counts.set(key, (counts.get(key) ?? 0) + 1); }\n\t\t\tlet changed = false;\n\t\t\tconst result = messages.map(message => {\n\t\t\t\tconst key = keyFor(message), replacement = projected.get(key);\n\t\t\t\tif (!replacement || counts.get(key) !== 1) return message;\n\t\t\t\tchanged = true;\n\t\t\t\treturn structuredClone(replacement);\n\t\t\t});\n\t\t\treturn changed ? result : messages;\n\t\t}\n\t};\n}\nfunction normalizeMessagesForLlmBoundary(messages, options) {"
+    ],
+    [
+      "const providerPromptHistoryTruncation = truncateOversizedToolResultsInMessages(messages, contextTokenBudget,",
+      "const providerPromptHistoryTruncation = truncateOversizedToolResultsInMessages(persistedToolResultModelProjection.apply(messages), contextTokenBudget,"
+    ]
+  ],
+  "previousReplacements": {
+    "edf3d389cf098db7d2f9c8866579542d2aa0faf33730a4a2ab979712718c43e8": [
+      [
+        "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = 6e4;",
+        "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = resolveCompactionTimeoutMs(params.config);"
+      ]
+    ],
+    "9b42083e60143d03d10b0a966416a187b057356e2447d7b3502ac0ccd3bf2cec": [
+      [
+        "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = 6e4;",
+        "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = resolveCompactionTimeoutMs(params.config);"
+      ],
+      [
+        "\tlet heldLock = await acquireLock();\n\tconst activeWriteLock = new AsyncLocalStorage();",
+        "\tlet heldLock = await acquireLock();\n\tlet promptLockReacquisition;\n\tconst activeWriteLock = new AsyncLocalStorage();"
+      ],
+      [
+        "\t\tasync reacquireAfterPrompt() {\n\t\t\tawait waitForHeldLockDrain();\n\t\t\tif (takeoverDetected || heldLock) return;\n\t\t\tconst lock = await acquireLock();\n\t\t\ttry {\n\t\t\t\theldLock = lock;\n\t\t\t\tawait assertSessionFileFence();\n\t\t\t} catch (err) {\n\t\t\t\theldLock = void 0;\n\t\t\t\tawait lock.release();\n\t\t\t\tthrow err;\n\t\t\t}\n\t\t},",
+        "\t\tasync reacquireAfterPrompt() {\n\t\t\tawait waitForHeldLockDrain();\n\t\t\t// Split-turn summaries share one session: acquire and verify its lock once.\n\t\t\tif (promptLockReacquisition) return await promptLockReacquisition;\n\t\t\tif (takeoverDetected || heldLock) return;\n\t\t\tpromptLockReacquisition = (async () => {\n\t\t\t\tconst lock = await acquireLock();\n\t\t\t\ttry {\n\t\t\t\t\theldLock = lock;\n\t\t\t\t\tawait assertSessionFileFence();\n\t\t\t\t} catch (err) {\n\t\t\t\t\theldLock = void 0;\n\t\t\t\t\tawait lock.release();\n\t\t\t\t\tthrow err;\n\t\t\t\t}\n\t\t\t})();\n\t\t\ttry {\n\t\t\t\tawait promptLockReacquisition;\n\t\t\t} finally {\n\t\t\t\tpromptLockReacquisition = void 0;\n\t\t\t}\n\t\t},"
+      ]
+    ],
+    "65fb7b9ed2fadfa3c0019c88484e77e355c6db4650feda7f39c43db99aaa2e61": [
+      [
+        "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = 6e4;",
+        "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = resolveCompactionTimeoutMs(params.config);"
+      ],
+      [
+        "\tlet heldLock = await acquireLock();\n\tconst activeWriteLock = new AsyncLocalStorage();",
+        "\tlet heldLock = await acquireLock();\n\tlet promptLockReacquisition;\n\tconst activeWriteLock = new AsyncLocalStorage();"
+      ],
+      [
+        "\t\tasync reacquireAfterPrompt() {\n\t\t\tawait waitForHeldLockDrain();\n\t\t\tif (takeoverDetected || heldLock) return;\n\t\t\tconst lock = await acquireLock();\n\t\t\ttry {\n\t\t\t\theldLock = lock;\n\t\t\t\tawait assertSessionFileFence();\n\t\t\t} catch (err) {\n\t\t\t\theldLock = void 0;\n\t\t\t\tawait lock.release();\n\t\t\t\tthrow err;\n\t\t\t}\n\t\t},",
+        "\t\tasync reacquireAfterPrompt() {\n\t\t\tawait waitForHeldLockDrain();\n\t\t\t// Split-turn summaries share one session: acquire and verify its lock once.\n\t\t\tif (promptLockReacquisition) return await promptLockReacquisition;\n\t\t\tif (takeoverDetected || heldLock) return;\n\t\t\tpromptLockReacquisition = (async () => {\n\t\t\t\tconst lock = await acquireLock();\n\t\t\t\ttry {\n\t\t\t\t\theldLock = lock;\n\t\t\t\t\tawait assertSessionFileFence();\n\t\t\t\t} catch (err) {\n\t\t\t\t\theldLock = void 0;\n\t\t\t\t\tawait lock.release();\n\t\t\t\t\tthrow err;\n\t\t\t\t}\n\t\t\t})();\n\t\t\ttry {\n\t\t\t\tawait promptLockReacquisition;\n\t\t\t} finally {\n\t\t\t\tpromptLockReacquisition = void 0;\n\t\t\t}\n\t\t},"
+      ],
+      [
+        "\t\t\t\tonBeforeLifecycleTerminal: () => {\n\t\t\t\t\tif (requiresCompletionRequiredAsyncTaskWait({\n\t\t\t\t\t\tsessionKey: params.sessionKey,\n\t\t\t\t\t\ttoolMetas: toolMetasForTerminal\n\t\t\t\t\t})) return;\n\t\t\t\t\tclearActiveEmbeddedRun(params.sessionId, queueHandle, params.sessionKey, params.sessionFile);\n\t\t\t\t},",
+        "\t\t\t\t// agent_end may precede overflow compaction and continuation in this same\n\t\t\t\t// attempt. Retain its abort handle until the identity-checked outer finally."
+      ]
+    ]
+  }
+}

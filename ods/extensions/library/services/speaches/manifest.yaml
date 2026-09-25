@@ -1,0 +1,47 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: speaches
+  name: Speaches
+  aliases: []
+  container_name: ods-speaches
+  host_env: SPEACHES_HOST
+  default_host: speaches
+  port: 8000
+  external_port_env: SPEACHES_PORT
+  external_port_default: 11014
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: OpenAI-compatible streaming transcription and speech API with on-demand
+    local audio models.
+  env_vars: []
+  external_link: false
+tags:
+- audio
+- local
+- open-source
+features:
+- id: speaches-workspace
+  name: Speaches
+  description: OpenAI-compatible streaming transcription and speech API with on-demand
+    local audio models.
+  icon: AudioLines
+  category: audio
+  requirements:
+    services:
+    - speaches
+    vram_gb: 0
+  enabled_services_all:
+  - speaches
+  setup_time: Initial image download; see README
+  priority: 44
+  launch:
+    type: none

@@ -5,7 +5,8 @@ services:
     # Version-pinned upstream image. Override HERMES_AGENT_IMAGE only for
     # deliberate hotfix testing; bumping the default is a review-and-smoke-test
     # pass — see docs/HERMES.md "How to bump the image pin."
-    image: ${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.6.5}
+    image: ${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7}
+    entrypoint: ["/opt/hermes/.venv/bin/python", "/opt/hermes/ods-auth-bootstrap.py"]
     container_name: ods-hermes
     restart: unless-stopped
     # NOT host networking — we use bridge so the container can resolve
@@ -15,8 +16,8 @@ services:
     environment:
       # User remapping: match the host user so files written into the volume
       # are owned by the user, not container-root. Same pattern as n8n.
-      - HERMES_UID=${UID:-10000}
-      - HERMES_GID=${GID:-10000}
+      - HERMES_UID=${ODS_UID:-10000}
+      - HERMES_GID=${ODS_GID:-10000}
       # Point Hermes at the local LLM. provider=custom is the documented
       # alias for any OpenAI-compatible local server (vLLM / llama.cpp / Ollama).
       # The actual provider/model wiring lives in cli-config.yaml (mounted below).
@@ -51,11 +52,21 @@ services:
       - HERMES_DASHBOARD_HOST=0.0.0.0
       - HERMES_DASHBOARD_PORT=9119
       # Keep the upstream dashboard token stable across container restarts.
-      # The public-facing proxy still requires an ODS session independently.
+      # Optional owner-card gating is controlled by HERMES_REQUIRE_OWNER_CARD.
       - HERMES_DASHBOARD_SESSION_TOKEN=${HERMES_DASHBOARD_SESSION_TOKEN:?installer must generate HERMES_DASHBOARD_SESSION_TOKEN}
-      # --insecure equivalent: dashboard refuses non-loopback binds without
-      # this since it stores API keys. The trusted-LAN posture is the v1
-      # trade-off (documented in docs/HERMES.md).
+      - HERMES_ODS_MANAGED_AUTH=${HERMES_ODS_MANAGED_AUTH:-true}
+      - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-}
+      - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:-}
+      - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH:-}
+      - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_BASIC_AUTH_SECRET:-}
+      - HERMES_DASHBOARD_OAUTH_CLIENT_ID=${HERMES_DASHBOARD_OAUTH_CLIENT_ID:-}
+      - HERMES_DASHBOARD_PORTAL_URL=${HERMES_DASHBOARD_PORTAL_URL:-}
+      - HERMES_DASHBOARD_OIDC_CLIENT_ID=${HERMES_DASHBOARD_OIDC_CLIENT_ID:-}
+      - HERMES_DASHBOARD_OIDC_ISSUER=${HERMES_DASHBOARD_OIDC_ISSUER:-}
+      - HERMES_DASHBOARD_OIDC_CLIENT_SECRET=${HERMES_DASHBOARD_OIDC_CLIENT_SECRET:-}
+      - HERMES_DASHBOARD_OIDC_SCOPES=${HERMES_DASHBOARD_OIDC_SCOPES:-}
+      # Compatibility for explicitly selected older images. The current
+      # release ignores this and requires the auth provider above.
       - HERMES_DASHBOARD_INSECURE=1
       # --no-open equivalent: stops Hermes from trying to spawn a browser
       # inside the container.
@@ -78,14 +89,13 @@ services:
       # Skills / etc. but has no way to actually start a conversation.
       # Upstream defaults this off because PTY = shell access; we flip
       # it on because (a) Hermes is the agent we ship — chat is the
-      # point — and (b) the surface is gated end-to-end:
-      #   * hermes container is internal-only (compose `expose:`)
-      #   * hermes-proxy in front does forward_auth against
-      #     dashboard-api/api/auth/verify-session
-      #   * a magic-link session OR admin-session bootstrap (#1222) is
-      #     required before Caddy lets the request through
+      # point. Hermes is internal-only (compose `expose:`); its proxy
+      # follows BIND_ADDRESS and optionally requires an ODS session when
+      # HERMES_REQUIRE_OWNER_CARD=true. Keep network access trusted.
       - HERMES_DASHBOARD_TUI=1
     volumes:
+      - ./data/hermes-auth:/run/ods-hermes-auth:z
+      - ./extensions/services/dashboard-api/hermes_auth.py:/opt/hermes/ods-auth-bootstrap.py:ro,z
       # Persistent state: Hermes's HERMES_HOME. Sessions, skills, memories,
       # cron jobs, audit logs all live here.
       - ./data/hermes:/opt/data:z

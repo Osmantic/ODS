@@ -1,0 +1,55 @@
+services:
+  wiremock:
+    image: ods/wiremock:3.13.2-2-storage-v1
+    container_name: ods-wiremock
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${WIREMOCK_PORT:-11035}:8080
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --output
+      - /dev/null
+      - --max-time
+      - '5'
+      - http://127.0.0.1:8080/__admin/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      JAVA_OPTS: -XX:MaxRAMPercentage=65.0
+    volumes:
+    - wiremock-data:/home/wiremock
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+    - --port
+    - '8080'
+    - --max-request-journal-entries
+    - '500'
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  wiremock-data: {}

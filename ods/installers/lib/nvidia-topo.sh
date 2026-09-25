@@ -127,9 +127,12 @@ detect_nvidia_topo() {
   local gpu_count
   gpu_count=$(echo "$gpus_json" | jq 'length')
 
-  # MIG detection
+  # Query the current state directly: -q prints MIG Mode and Current on
+  # separate lines, and Pending may differ until a reset. Consume all rows
+  # so a mixed GPU host remains detectable under pipefail.
   local mig_mode="false"
-  if nvidia-smi -q 2>/dev/null | grep -q "MIG Mode.*Enabled"; then
+  if nvidia-smi --query-gpu=mig.mode.current --format=csv,noheader 2>/dev/null |
+    grep -E '^[[:space:]]*Enabled[[:space:]]*$' >/dev/null; then
     mig_mode="true"
   fi
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 
 /**
  * Ensure the dashboard user has a valid `ods-session` cookie.
@@ -25,19 +25,16 @@ import { useEffect, useRef } from 'react'
  * From the user's POV: open dashboard → sidebar's Hermes link just
  * works. No invite-to-yourself dance.
  *
- * Runs once per mount. Re-runs only if the page is reloaded — which is
- * fine, the verify-session call is cheap (one signature check, no
- * DB lookups). If session_signer isn't configured server-side the
+ * Runs once per enabled route lifetime, including a fresh verification after
+ * returning from the public Talk route. Leaving that lifetime cancels browser
+ * work; an already accepted mint remains owned by the server. If session_signer isn't configured server-side the
  * admin-session POST 503s; we surface that in console as a hint to
  * set ODS_SESSION_SECRET, but don't block the dashboard.
  */
 export function useSessionBootstrap(enabled = true) {
-  const ran = useRef(false)
-
   useEffect(() => {
     if (!enabled) return
-    if (ran.current) return
-    ran.current = true
+    const controller = new AbortController()
 
     const run = async () => {
       try {
@@ -45,7 +42,9 @@ export function useSessionBootstrap(enabled = true) {
           // Include the cookie if the browser has one — that's how
           // verify-session decides whether to return 200 or 401.
           credentials: 'same-origin',
+          signal: controller.signal,
         })
+        if (controller.signal.aborted) return
         if (verify.ok) return  // session already present
 
         // 401 (or any non-2xx, e.g. 503 if dashboard-api is mid-restart) —
@@ -54,13 +53,16 @@ export function useSessionBootstrap(enabled = true) {
         const mint = await fetch('/api/auth/admin-session', {
           method: 'POST',
           credentials: 'same-origin',
+          signal: controller.signal,
         })
+        if (controller.signal.aborted) return
         if (mint.ok) return
 
         // 503 = ODS_SESSION_SECRET not configured. The dashboard still
         // works; cookie-gated services won't. Surface the hint quietly.
         if (mint.status === 503) {
           const body = await mint.json().catch(() => ({}))
+          if (controller.signal.aborted) return
           console.warn(
             '[ods-session] could not mint admin session:',
             body.detail || 'server misconfigured',
@@ -74,10 +76,11 @@ export function useSessionBootstrap(enabled = true) {
         // just the Hermes / chat tiles will route them to the invite page.
         console.warn('[ods-session] admin-session returned', mint.status)
       } catch (err) {
-        console.warn('[ods-session] bootstrap failed:', err)
+        if (!controller.signal.aborted) console.warn('[ods-session] bootstrap failed:', err)
       }
     }
 
     run()
+    return () => controller.abort()
   }, [enabled])
 }

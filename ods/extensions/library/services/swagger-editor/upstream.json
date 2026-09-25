@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/swagger-api/swagger-editor",
+  "license": "Apache-2.0",
+  "source_ref": "official-v5-image-pinned-by-digest",
+  "image": "docker.swagger.io/swaggerapi/swagger-editor:latest-unprivileged@sha256:b56bd6a78cd9ba59378353d47bb07b689c18879c677b65fa62710daeac5af80f",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official unprivileged v5 image. Exact editor patch version is not exposed in image labels; base nginx labels must not be reported as application version. Browser import/export and persistence; no server document volume or automatic project association."
+}

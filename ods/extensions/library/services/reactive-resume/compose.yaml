@@ -1,0 +1,98 @@
+services:
+  reactive-resume:
+    image: ods/reactive-resume:5.3.1-local-v1
+    container_name: ods-reactive-resume
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${REACTIVE_RESUME_PORT:-11093}:3000
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    - reactive-resume-internal
+    user: 1000:1000
+    environment:
+      APP_URL: http://localhost:${REACTIVE_RESUME_PORT:-11093}
+      AUTH_SECRET: ${REACTIVE_RESUME_AUTH_SECRET:?Set a stable 64-hex auth secret}
+      REACTIVE_RESUME_DB_PASSWORD: ${REACTIVE_RESUME_DB_PASSWORD:?Set a 64-hex database
+        password}
+      LOCAL_STORAGE_PATH: /app/data
+      FLAG_DISABLE_SIGNUPS: ${REACTIVE_RESUME_DISABLE_SIGNUPS:-false}
+      FLAG_DISABLE_EMAIL_AUTH: 'false'
+      FLAG_DISABLE_API_RATE_LIMIT: 'false'
+      FLAG_ALLOW_UNSAFE_AI_BASE_URL: 'false'
+      FLAG_ALLOW_UNSAFE_OAUTH_REDIRECT_URI: 'false'
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    depends_on:
+      reactive-resume-db:
+        condition: service_healthy
+    volumes:
+    - reactive-resume-data:/app/data
+    read_only: true
+    init: true
+  reactive-resume-db:
+    image: postgres:17-alpine@sha256:f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995
+    restart: unless-stopped
+    networks:
+    - reactive-resume-internal
+    environment:
+      POSTGRES_DB: resume
+      POSTGRES_USER: resume
+      POSTGRES_PASSWORD: ${REACTIVE_RESUME_DB_PASSWORD:?Set a 64-hex database password}
+    volumes:
+    - reactive-resume-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - resume
+      - -d
+      - resume
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    container_name: ods-reactive-resume-db
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+  reactive-resume-internal:
+    internal: true
+volumes:
+  reactive-resume-data: {}
+  reactive-resume-db-data: {}

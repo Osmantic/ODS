@@ -6,9 +6,8 @@
 #   * macOS:  installers/macos/lib/preflight-fs.sh::test_install_dir_filesystem
 #   * Linux:  installers/phases/01-preflight.sh::check_install_dir_filesystem
 #
-# Strategy: stub `stat` via PATH so each test deterministically reports a
-# specific filesystem type, then source the relevant helper and assert on
-# INSTALL_FS_NETWORKED / warn output / fatal exit behavior.
+# Strategy: stub platform command output via PATH, then source the helper
+# at the preflight boundary and assert on classification and fatal behavior.
 
 load '../bats/bats-support/load'
 load '../bats/bats-assert/load'
@@ -23,8 +22,7 @@ setup() {
 
     # Stub `diskutil` to exit non-zero on every call so the macOS
     # personality-refinement branch in preflight-fs.sh is deterministically
-    # bypassed; INSTALL_FS_TYPE then stays equal to whatever the stat stub
-    # returned. Linux tests don't invoke diskutil so this stub is harmless.
+    # bypassed. Linux tests do not invoke diskutil.
     cat > "$STUB_BIN/diskutil" <<'MOCK'
 #!/bin/bash
 exit 1
@@ -40,19 +38,21 @@ teardown() {
 # Helpers: write a `stat` stub that prints the requested filesystem type.
 # ---------------------------------------------------------------------------
 
-# BSD stat stub: macOS preflight-fs.sh calls `stat -f %T <path>`.
+# BSD stat reports a file type marker, never the underlying filesystem.
+# Model Apple's mount output, including a root mount and a nested volume.
 _make_bsd_stat_stub() {
-    local fs_type="$1"
-    cat > "$STUB_BIN/stat" <<MOCK
+    export ODS_TEST_FS_TYPE="$1"
+    cat > "$STUB_BIN/stat" <<'MOCK'
 #!/bin/bash
-# Match BSD-style \`stat -f %T <path>\`.
-if [[ "\$1" == "-f" && "\$2" == "%T" ]]; then
-    echo "$fs_type"
-    exit 0
-fi
-exit 0
+printf '/\n'
 MOCK
-    chmod +x "$STUB_BIN/stat"
+    cat > "$STUB_BIN/mount" <<'MOCK'
+#!/bin/bash
+[[ $# -eq 0 ]] || exit 99
+printf '/dev/disk1 on / (apfs, local, read-only)\n'
+printf '/dev/disk2 on %s (%s, local)\n' "$(cd "$INSTALL_DIR" && pwd -P)" "$ODS_TEST_FS_TYPE"
+MOCK
+    chmod +x "$STUB_BIN/stat" "$STUB_BIN/mount"
 }
 
 # GNU stat stub: Linux 01-preflight.sh calls `stat -fc %T <path>`.
@@ -230,4 +230,64 @@ _extract_linux_fs_fn() {
     assert_success
     assert_output --partial "FATAL=false"
     assert_output --partial "NETWORKED=false"
+}
+
+@test "macos preflight: non-POSIX volumes remain fatal without diskutil" {
+    for fs_type in exfat msdos ntfs; do
+        _make_bsd_stat_stub "$fs_type"
+        run env PATH="$STUB_BIN:$PATH" bash -eu -o pipefail -c '
+            source "$1"
+            test_install_dir_filesystem "$INSTALL_DIR/new/ods"
+            [[ "$INSTALL_FS_TYPE" == "$ODS_TEST_FS_TYPE" ]]
+            [[ "$INSTALL_FS_FATAL" == true && "$INSTALL_FS_NETWORKED" == false ]]
+        ' bash "$BATS_TEST_DIRNAME/../../installers/macos/lib/preflight-fs.sh"
+        assert_success
+    done
+}
+
+@test "macos preflight: longest mount wins for literal paths and symlinked parents" {
+    export INSTALL_DIR="$BATS_TEST_TMPDIR/External on Disk (backup) [1]"
+    mkdir -p "$INSTALL_DIR/projects"
+    ln -s "$INSTALL_DIR/projects" "$BATS_TEST_TMPDIR/shortcut"
+    _make_bsd_stat_stub "smbfs"
+    run env PATH="$STUB_BIN:$PATH" bash -eu -o pipefail -c '
+        source "$1"
+        test_install_dir_filesystem "$2/new/ods"
+        [[ "$INSTALL_FS_TYPE" == smbfs && "$INSTALL_FS_NETWORKED" == true ]]
+    ' bash "$BATS_TEST_DIRNAME/../../installers/macos/lib/preflight-fs.sh" "$BATS_TEST_TMPDIR/shortcut"
+    assert_success
+}
+
+@test "macos preflight: sibling prefix is not the containing volume" {
+    _make_bsd_stat_stub "exfat"
+    mkdir -p "$INSTALL_DIR-other"
+    run env PATH="$STUB_BIN:$PATH" bash -eu -o pipefail -c '
+        source "$1"
+        test_install_dir_filesystem "$INSTALL_DIR-other/new"
+        [[ "$INSTALL_FS_TYPE" == apfs && "$INSTALL_FS_FATAL" == false ]]
+    ' bash "$BATS_TEST_DIRNAME/../../installers/macos/lib/preflight-fs.sh"
+    assert_success
+}
+
+@test "macos preflight: failed mount inspection retains the optional diskutil fallback" {
+    _make_bsd_stat_stub "exfat"
+    printf '#!/bin/bash\nexit 1\n' > "$STUB_BIN/mount"
+    printf '#!/bin/bash\nprintf "File System Personality: ExFAT\\n"\n' > "$STUB_BIN/diskutil"
+    run env PATH="$STUB_BIN:$PATH" bash -eu -o pipefail -c '
+        source "$1"
+        test_install_dir_filesystem "$INSTALL_DIR"
+        [[ "$INSTALL_FS_TYPE" == exfat && "$INSTALL_FS_FATAL" == true ]]
+    ' bash "$BATS_TEST_DIRNAME/../../installers/macos/lib/preflight-fs.sh"
+    assert_success
+}
+
+@test "macos preflight: inspection failures stay unknown without aborting strict shells" {
+    _make_bsd_stat_stub "exfat"
+    printf '#!/bin/bash\nexit 1\n' > "$STUB_BIN/mount"
+    run env PATH="$STUB_BIN:$PATH" bash -eu -o pipefail -c '
+        source "$1"
+        test_install_dir_filesystem "$INSTALL_DIR"
+        [[ "$INSTALL_FS_TYPE" == unknown ]]
+    ' bash "$BATS_TEST_DIRNAME/../../installers/macos/lib/preflight-fs.sh"
+    assert_success
 }

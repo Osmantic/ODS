@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-work-draft-reviews-v1.schema.json",
+  "title": "Pixel private retained Deep Work draft reviews v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "state", "revision", "drafts", "launch", "service", "privacy", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "state": {"enum": ["disabled", "ready", "unavailable"]},
+    "revision": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{64}$"}, {"type": "null"}]},
+    "drafts": {
+      "type": "array", "maxItems": 100,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["handle", "createdAt", "reviewSha256", "objective", "dataClassification", "milestoneCount", "preparationState", "canPrepare", "launchPackage", "milestones", "authority"],
+        "properties": {
+          "handle": {"type": "string", "pattern": "^workdraftview-[a-f0-9]{24}$"},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "reviewSha256": {"$ref": "#/$defs/sha256"},
+          "objective": {"type": "string", "minLength": 1, "maxLength": 8000},
+          "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+          "milestoneCount": {"type": "integer", "minimum": 1, "maximum": 64},
+          "preparationState": {"enum": ["draft", "prepared-inactive", "staged-inactive", "unavailable"]},
+          "canPrepare": {"type": "boolean"},
+          "launchPackage": {
+            "oneOf": [
+              {"type": "null"},
+              {
+                "type": "object", "additionalProperties": false,
+                "required": ["handle", "manifestSha256", "state", "childCount", "profiles", "earliestLeaseExpiry", "stageReceiptPresent", "canStage", "canRenderService", "servicePackage"],
+                "properties": {
+                  "handle": {"type": "string", "pattern": "^worklaunchview-[a-f0-9]{24}$"},
+                  "manifestSha256": {"$ref": "#/$defs/sha256"},
+                  "state": {"enum": ["prepared-inactive", "staged-inactive"]},
+                  "childCount": {"type": "integer", "minimum": 1, "maximum": 64},
+                  "profiles": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"enum": ["scout", "builder", "researcher", "data-lab"]}},
+                  "earliestLeaseExpiry": {"type": "string", "format": "date-time"},
+                  "stageReceiptPresent": {"type": "boolean"},
+                  "canStage": {"type": "boolean"},
+                  "canRenderService": {"type": "boolean"},
+                  "servicePackage": {
+                    "oneOf": [
+                      {"type": "null"},
+                      {
+                        "type": "object", "additionalProperties": false,
+                        "required": ["handle", "manifestSha256", "state", "executionModel", "watchdogRole", "canInstall", "canActivate"],
+                        "properties": {
+                          "handle": {"type": "string", "pattern": "^workserviceview-[a-f0-9]{24}$"},
+                          "manifestSha256": {"$ref": "#/$defs/sha256"},
+                          "state": {"const": "rendered-inactive"},
+                          "executionModel": {"const": "durable-event-driven"},
+                          "watchdogRole": {"const": "liveness-only"},
+                          "canInstall": {"const": false},
+                          "canActivate": {"const": false}
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "milestones": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/milestone"}},
+          "authority": {"$ref": "#/$defs/authority"}
+        }
+      }
+    },
+    "launch": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "preparedUsed", "maxPrepared"],
+      "properties": {
+        "state": {"enum": ["disabled", "ready", "full", "unavailable"]},
+        "preparedUsed": {"type": "integer", "minimum": 0, "maximum": 100},
+        "maxPrepared": {"type": "integer", "minimum": 0, "maximum": 100}
+      }
+    },
+    "service": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "renderedUsed", "maxRendered"],
+      "properties": {
+        "state": {"enum": ["disabled", "ready", "full", "unavailable"]},
+        "renderedUsed": {"type": "integer", "minimum": 0, "maximum": 100},
+        "maxRendered": {"type": "integer", "minimum": 0, "maximum": 100}
+      }
+    },
+    "privacy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pathsExposed", "inputIdentitiesExposed", "credentialsExposed", "genericCommandSurface", "grantsExecution", "grantsScheduling", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "pathsExposed": {"const": false}, "inputIdentitiesExposed": {"const": false}, "credentialsExposed": {"const": false},
+        "genericCommandSurface": {"const": false}, "grantsExecution": {"const": false}, "grantsScheduling": {"const": false},
+        "grantsExternalEffects": {"const": false}, "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Process-lifetime private review of exact retained Deep Work drafts, pathless launch-package receipts, and inactive service-render receipts. It may show owner-authored objectives, criteria, bounded capabilities, budgets, verifier limits, review and manifest digests, child counts, profiles, lease expiry, dormant-staging presence, and event-driven supervision intent, but no host path, input identity, credential, installation, execution, scheduling, service activation, external-effect, completion, or scope-expansion authority."}
+  },
+  "allOf": [
+    {"if": {"properties": {"state": {"const": "ready"}}, "required": ["state"]}, "then": {"properties": {"revision": {"type": "string"}}}, "else": {"properties": {"revision": {"const": null}, "drafts": {"maxItems": 0}, "launch": {"properties": {"state": {"const": "disabled"}, "preparedUsed": {"const": 0}, "maxPrepared": {"const": 0}}}, "service": {"properties": {"state": {"const": "disabled"}, "renderedUsed": {"const": 0}, "maxRendered": {"const": 0}}}}}},
+    {"if": {"properties": {"launch": {"properties": {"state": {"const": "ready"}}, "required": ["state"]}}, "required": ["launch"]}, "else": {"properties": {"drafts": {"items": {"properties": {"canPrepare": {"const": false}}}}}}},
+    {"if": {"properties": {"launch": {"properties": {"state": {"const": "unavailable"}}, "required": ["state"]}}, "required": ["launch"]}, "then": {"properties": {"drafts": {"items": {"properties": {"preparationState": {"const": "unavailable"}, "launchPackage": {"type": "null"}}}}}}},
+    {"if": {"properties": {"service": {"properties": {"state": {"const": "ready"}}, "required": ["state"]}}, "required": ["service"]}, "else": {"properties": {"drafts": {"items": {"allOf": [{"if": {"properties": {"launchPackage": {"type": "object"}}, "required": ["launchPackage"]}, "then": {"properties": {"launchPackage": {"properties": {"canRenderService": {"const": false}}}}}}]}}}}},
+    {"properties": {"drafts": {"items": {"allOf": [
+      {"if": {"properties": {"preparationState": {"enum": ["draft", "unavailable"]}}, "required": ["preparationState"]}, "then": {"properties": {"launchPackage": {"type": "null"}}}},
+      {"if": {"properties": {"preparationState": {"const": "prepared-inactive"}}, "required": ["preparationState"]}, "then": {"properties": {"canPrepare": {"const": false}, "launchPackage": {"type": "object", "properties": {"state": {"const": "prepared-inactive"}, "stageReceiptPresent": {"const": false}, "canRenderService": {"const": false}, "servicePackage": {"type": "null"}}}}}},
+      {"if": {"properties": {"preparationState": {"const": "staged-inactive"}}, "required": ["preparationState"]}, "then": {"properties": {"canPrepare": {"const": false}, "launchPackage": {"type": "object", "properties": {"state": {"const": "staged-inactive"}, "stageReceiptPresent": {"const": true}}}}}},
+      {"if": {"properties": {"launchPackage": {"type": "object", "properties": {"servicePackage": {"type": "object"}}, "required": ["servicePackage"]}}, "required": ["launchPackage"]}, "then": {"properties": {"launchPackage": {"properties": {"stageReceiptPresent": {"const": true}, "canRenderService": {"const": false}}}}}}
+    ]}}}}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantsExecution", "grantsLease", "grantsRetry", "grantsScheduling", "grantsCredentials", "grantsScopeExpansion", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "grantsExecution": {"const": false}, "grantsLease": {"const": false}, "grantsRetry": {"const": false}, "grantsScheduling": {"const": false},
+        "grantsCredentials": {"const": false}, "grantsScopeExpansion": {"const": false}, "grantsExternalEffects": {"const": false}, "grantsCompletion": {"const": false}
+      }
+    },
+    "budgets": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxRuntimeSeconds", "maxIterations", "maxToolCalls", "maxConcurrentSubagents", "maxModelRequests", "maxInputTokens", "maxOutputTokens", "maxCpuCores", "maxMemoryMiB", "maxDiskBytes", "maxArtifactBytes", "maxNetworkBytes", "maxFailures", "noProgressLimit"],
+      "properties": {
+        "maxRuntimeSeconds": {"type": "integer", "minimum": 1, "maximum": 604800}, "maxIterations": {"type": "integer", "minimum": 1, "maximum": 1000}, "maxToolCalls": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "maxConcurrentSubagents": {"type": "integer", "minimum": 1, "maximum": 32}, "maxModelRequests": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "maxInputTokens": {"type": "integer", "minimum": 1, "maximum": 2000000000}, "maxOutputTokens": {"type": "integer", "minimum": 1, "maximum": 500000000}, "maxCpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maxMemoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576}, "maxDiskBytes": {"type": "integer", "minimum": 1048576, "maximum": 1099511627776}, "maxArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 34359738368},
+        "maxNetworkBytes": {"type": "integer", "minimum": 0, "maximum": 10737418240}, "maxFailures": {"type": "integer", "minimum": 1, "maximum": 1000}, "noProgressLimit": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    },
+    "milestone": {
+      "type": "object", "additionalProperties": false,
+      "required": ["number", "profile", "objective", "doneWhen", "dependsOn", "inputCount", "effort", "budgets", "capabilities", "verification", "externalEffects"],
+      "properties": {
+        "number": {"type": "integer", "minimum": 1, "maximum": 64},
+        "profile": {"enum": ["scout", "builder", "researcher", "data-lab"]},
+        "objective": {"type": "string", "minLength": 1, "maxLength": 8000},
+        "doneWhen": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
+        "dependsOn": {"type": "array", "maxItems": 63, "uniqueItems": true, "items": {"type": "integer", "minimum": 1, "maximum": 64}},
+        "inputCount": {"type": "integer", "minimum": 0, "maximum": 64},
+        "effort": {"enum": ["quick", "standard", "deep"]},
+        "budgets": {"$ref": "#/$defs/budgets"},
+        "capabilities": {
+          "type": "object", "additionalProperties": false, "required": ["workspace", "tools", "brokeredServices", "modelRoute"],
+          "properties": {
+            "workspace": {"enum": ["read-only-workspace", "disposable-read-write"]},
+            "tools": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string"}},
+            "brokeredServices": {"type": "array", "maxItems": 4, "items": {"type": "string"}},
+            "modelRoute": {"const": "local-only"}
+          }
+        },
+        "verification": {"enum": ["independent-report-verification", "patch-integrity-and-semantic-review", "citation-and-source-verification", "isolated-exact-replay-and-semantic-review"]},
+        "externalEffects": {"const": false}
+      }
+    }
+  }
+}

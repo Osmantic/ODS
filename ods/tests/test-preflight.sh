@@ -121,8 +121,9 @@ else
 fi
 
 # 11. External Lemonade mode checks LiteLLM, not a managed llama-server container
-if grep -q 'is_external_lemonade()' "$PREFLIGHT" \
-   && grep -q 'LiteLLM external Lemonade gateway' "$PREFLIGHT" \
+if grep -q 'is_external_lemonade()' "$SCRIPT_DIR/../lib/preflight-llm-route.sh" \
+   && grep -q 'if ods_preflight_uses_litellm; then' "$PREFLIGHT" \
+   && grep -q 'LiteLLM gateway' "$PREFLIGHT" \
    && grep -q 'ods-litellm' "$PREFLIGHT"; then
     pass "External Lemonade preflight checks LiteLLM gateway"
 else

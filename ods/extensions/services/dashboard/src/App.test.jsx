@@ -1,10 +1,12 @@
-import { screen } from '@testing-library/react'
+import { screen, fireEvent } from '@testing-library/react'
 import { render } from './test/test-utils'
 import { render as rtlRender } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom' // eslint-disable-line no-unused-vars
 import { ThemeProvider } from './contexts/ThemeContext' // eslint-disable-line no-unused-vars
 import App from './App' // eslint-disable-line no-unused-vars
 import { useFirstRun } from './hooks/useFirstRun'
+import { useVersion } from './hooks/useVersion'
+import { getInternalRoutes } from './plugins/registry'
 
 vi.mock('./hooks/useSystemStatus', () => ({
   useSystemStatus: vi.fn(() => ({
@@ -49,6 +51,8 @@ vi.mock('./pages/FirstBoot', () => ({
 vi.mock('./pages/ODSTalk', () => ({
   default: () => <div data-testid="ods-talk">ODS Talk Portal</div>,
 }))
+vi.mock('./pages/Pixel', () => ({ default: () => <input aria-label="Portal draft" /> }))
+vi.mock('./components/SettingsModal', () => ({ default: () => <input aria-label="Settings draft" /> }))
 
 vi.mock('./components/SplashScreen', () => ({
   default: ({ onComplete }) => {
@@ -65,7 +69,50 @@ vi.mock('./components/InstallPromptBanner', () => ({
 }))
 
 describe('App', () => {
+  test('opens legacy Pixel settings in the common utility panel', async () => {
+    rtlRender(<MemoryRouter initialEntries={['/pixel/settings']}><ThemeProvider><App /></ThemeProvider></MemoryRouter>)
+    expect(await screen.findByLabelText('Settings draft')).toBeVisible()
+    expect(screen.getByRole('complementary', {name:'ODS navigation'})).toBeVisible()
+    expect(screen.queryByRole('complementary', {name:'Pixel navigation'})).toBeNull()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByLabelText('Portal draft')).toBeVisible()
+  })
+  test('opens settings inside the workspace and preserves both drafts when collapsed', async () => {
+    rtlRender(<MemoryRouter initialEntries={['/settings']}><ThemeProvider><App /></ThemeProvider></MemoryRouter>)
+    const chat = await screen.findByLabelText('Portal draft')
+    const settings = await screen.findByLabelText('Settings draft')
+    fireEvent.change(chat, {target:{value:'Chat draft'}})
+    fireEvent.change(settings, {target:{value:'Unsaved settings'}})
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByRole('complementary', {name:'Workspace panel'})).toContainElement(settings)
+    fireEvent.click(screen.getByRole('button', {name:'Collapse workspace panel'}))
+    expect(settings).not.toBeVisible()
+    expect(chat).toBeVisible()
+    fireEvent.click(screen.getByRole('button', {name:'Expand workspace panel'}))
+    expect(settings).toHaveValue('Unsaved settings')
+    fireEvent.click(screen.getByRole('button', {name:'Close workspace panel'}))
+    expect(screen.queryByLabelText('Settings draft')).toBeNull()
+    expect(chat).toHaveValue('Chat draft')
+  })
+  test('keeps the portal draft mounted while a panel collapses and closes', async () => {
+    getInternalRoutes.mockReturnValue([{id:'dashboard',path:'/dashboard',label:'Dashboard',component:() => <p>Panel readings</p>}])
+    rtlRender(<MemoryRouter initialEntries={['/dashboard']}><ThemeProvider><App /></ThemeProvider></MemoryRouter>)
+    const input = await screen.findByLabelText('Portal draft')
+    fireEvent.change(input, {target:{value:'Keep this message'}})
+    expect(await screen.findByText('Panel readings')).toBeVisible()
+    fireEvent.click(screen.getByRole('button',{name:'Collapse workspace panel'}))
+    expect(screen.getByText('Panel readings')).not.toBeVisible()
+    expect(screen.getByLabelText('Portal draft')).toBe(input)
+    fireEvent.click(screen.getByRole('button',{name:'Expand workspace panel'}))
+    expect(screen.getByText('Panel readings')).toBeVisible()
+    fireEvent.click(screen.getByRole('button',{name:'Close workspace panel'}))
+    expect(screen.queryByText('Panel readings')).toBeNull()
+    expect(screen.getByLabelText('Portal draft')).toBe(input)
+    expect(input).toHaveValue('Keep this message')
+  })
   beforeEach(() => {
+    useVersion.mockReturnValue({ version:{current:'2.6.0',update_available:false}, showUpdate:false, dismissUpdate:vi.fn() })
+    getInternalRoutes.mockReturnValue([])
     vi.stubGlobal('fetch', vi.fn(() =>
       Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
     ))
@@ -81,6 +128,17 @@ describe('App', () => {
   test('renders without crashing', () => {
     render(<App />)
     expect(document.querySelector('aside')).toBeInTheDocument()
+  })
+
+  test('opens update details from the confirmed-release notice without replacing the conversation', async () => {
+    useVersion.mockReturnValue({ version:{current:'2.6.0',latest:'2.7.0',update_available:true,check_status:'checked'}, showUpdate:true, dismissUpdate:vi.fn() })
+    render(<App />)
+    const draft = await screen.findByLabelText('Portal draft')
+    fireEvent.change(draft, {target:{value:'Keep my message'}})
+    fireEvent.click(screen.getByRole('button', {name:'View update'}))
+    expect(await screen.findByLabelText('Settings draft')).toBeVisible()
+    expect(screen.getByLabelText('Portal draft')).toBe(draft)
+    expect(draft).toHaveValue('Keep my message')
   })
 
   test('shows FirstBoot when server reports first_run=true', async () => {
@@ -107,18 +165,16 @@ describe('App', () => {
   test('uses the compact shell offset below the desktop sidebar breakpoint', () => {
     render(<App />)
 
-    expect(document.querySelector('aside')).toHaveClass('w-20', 'sm:w-64')
-    expect(document.querySelector('main')).toHaveClass('ml-20', 'sm:ml-64')
+    expect(document.querySelector('aside')).toHaveClass('pixel-sidebar')
+    expect(document.querySelector('main')).toHaveClass('pixel-workspace')
   })
 
   test('keeps the compact shell offset when the desktop sidebar is collapsed', () => {
     globalThis.localStorage.setItem('ods-sidebar-collapsed', 'true')
     render(<App />)
 
-    expect(document.querySelector('aside')).toHaveClass('w-20')
-    expect(document.querySelector('aside')).not.toHaveClass('sm:w-64')
-    expect(document.querySelector('main')).toHaveClass('ml-20')
-    expect(document.querySelector('main')).not.toHaveClass('sm:ml-64')
+    expect(document.querySelector('aside')).toHaveClass('is-collapsed')
+    expect(document.querySelector('.pixel-app')).toHaveClass('sidebar-collapsed')
   })
 
   test('renders ODS Talk without dashboard chrome on /talk', async () => {
@@ -133,4 +189,16 @@ describe('App', () => {
     expect(document.querySelector('aside')).not.toBeInTheDocument()
     expect(globalThis.fetch).not.toHaveBeenCalledWith('/api/auth/admin-session', expect.anything())
   })
+})
+
+test.each(['localStorage', 'sessionStorage'])('opens the beta workspace when %s access is denied', async storage => {
+  const getter = vi.spyOn(window, storage, 'get').mockImplementation(() => {
+    throw new window.DOMException('Storage denied', 'SecurityError')
+  })
+  try {
+    render(<App />)
+    expect(await screen.findByLabelText('Portal draft')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', {name:'Collapse sidebar'}))
+    expect(screen.getByRole('button', {name:'Expand sidebar'})).toBeVisible()
+  } finally { getter.mockRestore() }
 })

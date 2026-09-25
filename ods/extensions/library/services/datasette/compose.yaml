@@ -1,0 +1,51 @@
+services:
+  datasette:
+    image: ods/datasette:0.65.5-local-v1
+    container_name: ods-datasette
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${DATASETTE_PORT:-11117}:8001
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/-/versions.json',timeout=5).close()
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - datasette-databases:/data
+    init: true
+    environment:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUNBUFFERED: '1'
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  datasette-databases: {}

@@ -1,0 +1,54 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: couchdb
+  name: Apache CouchDB
+  aliases: []
+  container_name: ods-couchdb
+  host_env: COUCHDB_HOST
+  default_host: couchdb
+  port: 5984
+  external_port_env: COUCHDB_PORT
+  external_port_default: 11045
+  health: /_up
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Store JSON documents with revisions, indexes and replication APIs,
+    managed through the local Fauxton interface.
+  env_vars:
+  - key: COUCHDB_PASSWORD
+    required: true
+    secret: true
+    description: Initial password for the ods administrator. Use a single-line password;
+      later changes are managed in CouchDB and persisted.
+  ui_path: /_utils/
+tags:
+- database
+- local
+- open-source
+features:
+- id: couchdb-workspace
+  name: Apache CouchDB
+  description: Store JSON documents with revisions, indexes and replication APIs,
+    managed through the local Fauxton interface.
+  icon: Database
+  category: productivity
+  requirements:
+    services:
+    - couchdb
+    vram_gb: 0
+  enabled_services_all:
+  - couchdb
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: couchdb
+    path: /_utils/

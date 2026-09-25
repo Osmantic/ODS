@@ -11,7 +11,7 @@ service:
   default_host: hermes
   # Hermes's own dashboard listens on 9119 inside the container.
   # Internal-only — there is intentionally no host-port binding here.
-  # End users reach Hermes via hermes-proxy on :9120 (auth-gated entry
+  # End users reach Hermes via hermes-proxy on :9120 (optionally session-gated entry
   # point); see HERMES-SSO.md. The compose file declares this port
   # under `expose:` so other containers on the bridge network (notably
   # hermes-proxy) can talk to ods-hermes:9119.

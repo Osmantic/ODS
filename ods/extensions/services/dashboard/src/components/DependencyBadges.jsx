@@ -4,7 +4,7 @@ const STATUS_DOTS = {
   enabled: 'bg-green-500',
   disabled: 'bg-theme-border',
   not_installed: 'bg-theme-border',
-  incompatible: 'bg-orange-500',
+  incompatible: 'bg-theme-text-secondary',
   unknown: 'bg-theme-border',
 }
 
@@ -89,16 +89,16 @@ export function DependencyConfirmDialog({ ext, missingDeps, onConfirm, onCancel 
 }
 
 /**
- * DisableDependentWarning — orange warning banner shown when disabling
+ * DisableDependentWarning — theme-neutral warning banner shown when disabling
  * a service that has active dependents.
  */
 export function DisableDependentWarning({ dependents }) {
   if (!dependents || dependents.length === 0) return null
 
   return (
-    <div className="flex items-start gap-2 mt-3 p-2.5 rounded-lg bg-orange-500/10 border border-orange-500/20">
-      <AlertTriangle size={14} className="text-orange-400 mt-0.5 shrink-0" />
-      <p className="text-xs text-orange-300">
+    <div className="flex items-start gap-2 mt-3 p-2.5 rounded-lg bg-theme-text-secondary/10 border border-theme-border">
+      <AlertTriangle size={14} className="text-theme-text-secondary mt-0.5 shrink-0" />
+      <p className="text-xs text-theme-text-secondary">
         Disabling this may break: {dependents.join(', ')}
       </p>
     </div>

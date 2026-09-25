@@ -85,6 +85,18 @@ def test_cloud_callers_do_not_render_local_switchboard() -> None:
     assert 'str(common["ods_mode"]).strip().lower() != "cloud"' in host_agent
 
 
+def test_runtime_renderer_callers_keep_credentials_out_of_process_arguments() -> None:
+    callers = [
+        read("installers/phases/06-directories.sh"),
+        read("installers/macos/install-macos.sh"),
+        read("installers/windows/lib/env-generator.ps1"),
+        read("scripts/bootstrap-upgrade.sh"),
+        read("bin/ods-host-agent.py"),
+    ]
+    assert all('"--litellm-key"' not in text for text in callers)
+    assert all("ODS_RENDER_LITELLM_KEY" in text for text in callers)
+
+
 def main() -> int:
     for test in (
         test_linux_installer_uses_renderer_as_sole_writer,
@@ -94,6 +106,7 @@ def main() -> int:
         test_windows_lemonade_uses_renderer_as_sole_writer,
         test_openclaw_receives_persisted_lemonade_model_id,
         test_cloud_callers_do_not_render_local_switchboard,
+        test_runtime_renderer_callers_keep_credentials_out_of_process_arguments,
     ):
         test()
         print(f"[PASS] {test.__name__}")

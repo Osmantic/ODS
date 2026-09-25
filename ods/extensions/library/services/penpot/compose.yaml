@@ -1,0 +1,204 @@
+services:
+  penpot:
+    image: ods/penpot:2.17.2-local-v1
+    restart: unless-stopped
+    networks:
+    - ods-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    container_name: ods-penpot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+    - 127.0.0.1:${PENPOT_PORT:-11026}:8080
+    environment:
+      PENPOT_FLAGS: ${PENPOT_FLAGS:-enable-registration enable-login-with-password
+        disable-email-verification disable-smtp disable-prepl-server disable-secure-session-cookies
+        disable-telemetry enable-mcp enable-air-gapped-conf}
+      PENPOT_PUBLIC_URI: ${PENPOT_PUBLIC_URI:-http://localhost:11026}
+      PENPOT_DISABLE_IPV6_LISTEN: 'true'
+    volumes:
+    - penpot-assets:/opt/data/assets:ro
+    depends_on:
+      penpot-backend:
+        condition: service_healthy
+      penpot-exporter:
+        condition: service_started
+      penpot-mcp:
+        condition: service_started
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://127.0.0.1:8080/readyz
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+  penpot-backend:
+    image: penpotapp/backend:2.17.2@sha256:770b55f6e51bfcee49152b30858ca6a47143256de8d43953a50b952b5c60bb55
+    restart: unless-stopped
+    networks:
+    - ods-network
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    environment:
+      PENPOT_FLAGS: ${PENPOT_FLAGS:-enable-registration enable-login-with-password
+        disable-email-verification disable-smtp disable-prepl-server disable-secure-session-cookies
+        disable-telemetry enable-mcp enable-air-gapped-conf}
+      PENPOT_PUBLIC_URI: ${PENPOT_PUBLIC_URI:-http://localhost:11026}
+      PENPOT_SECRET_KEY: ${PENPOT_SECRET_KEY:?Set a persistent random 512-bit signing
+        secret}
+      PENPOT_DATABASE_URI: postgresql://penpot-postgres/penpot
+      PENPOT_DATABASE_USERNAME: penpot
+      PENPOT_DATABASE_PASSWORD: ${PENPOT_DATABASE_PASSWORD:?Set a persistent private
+        database password}
+      PENPOT_REDIS_URI: redis://penpot-valkey/0
+      PENPOT_OBJECTS_STORAGE_BACKEND: fs
+      PENPOT_OBJECTS_STORAGE_FS_DIRECTORY: /opt/data/assets
+      PENPOT_TELEMETRY_ENABLED: 'false'
+    volumes:
+    - penpot-assets:/opt/data/assets
+    depends_on:
+      penpot-postgres:
+        condition: service_healthy
+      penpot-valkey:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --output
+      - /dev/null
+      - http://127.0.0.1:6060/readyz
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+  penpot-exporter:
+    image: penpotapp/exporter:2.17.2@sha256:72a8061e88069b9baf0767bc11fbf3310d2527bb5964ca084cf8c844d84306c8
+    restart: unless-stopped
+    networks:
+    - ods-network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    environment:
+      PENPOT_SECRET_KEY: ${PENPOT_SECRET_KEY:?Set a persistent random 512-bit signing
+        secret}
+      PENPOT_PUBLIC_URI: ${PENPOT_PUBLIC_URI:-http://localhost:11026}
+      PENPOT_INTERNAL_URI: http://penpot:8080
+      PENPOT_REDIS_URI: redis://penpot-valkey/0
+    depends_on:
+      penpot-valkey:
+        condition: service_healthy
+    shm_size: 256m
+  penpot-mcp:
+    image: penpotapp/mcp:2.17.2@sha256:84f3f07ead11745ad95c2c1db90d33d00c550cff76844791ca4389d307f1be37
+    restart: unless-stopped
+    networks:
+    - ods-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+  penpot-postgres:
+    image: postgres:15-alpine@sha256:a46e076249ce434e41203b8c1dadfaa025b9726331d72390df038385d6dc29cd
+    restart: unless-stopped
+    networks:
+    - ods-network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    environment:
+      POSTGRES_DB: penpot
+      POSTGRES_USER: penpot
+      POSTGRES_PASSWORD: ${PENPOT_DATABASE_PASSWORD:?Set a persistent private database
+        password}
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+    - penpot-db:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - penpot
+      - -d
+      - penpot
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+  penpot-valkey:
+    image: valkey/valkey:8.1@sha256:3fbd2e3e4b6e85e046c1e7c215e8f79087bc0357789184305806664e320996f3
+    restart: unless-stopped
+    networks:
+    - ods-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    command:
+    - valkey-server
+    - --maxmemory
+    - 128mb
+    - --maxmemory-policy
+    - volatile-lfu
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - valkey-cli ping | grep -q PONG
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  penpot-assets: {}
+  penpot-db: {}

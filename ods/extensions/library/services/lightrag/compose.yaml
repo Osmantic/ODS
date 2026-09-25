@@ -1,0 +1,73 @@
+services:
+  lightrag:
+    image: ghcr.io/hkuds/lightrag:v1.5.7@sha256:5bdbd524931b011df246fe20888d110cef691e6804c12cde636a2b746d7de27e
+    container_name: ods-lightrag
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${LIGHTRAG_PORT:-11032}:9621
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:9621/health',
+        timeout=5).close()
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      HOST: 0.0.0.0
+      PORT: '9621'
+      LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY:?Set a private LightRAG access key}
+      WHITELIST_PATHS: /health
+      WORKING_DIR: /app/data/rag_storage
+      INPUT_DIR: /app/data/inputs
+      PROMPT_DIR: /app/data/prompts
+      LLM_BINDING: openai
+      LLM_BINDING_HOST: http://litellm:4000/v1
+      LLM_BINDING_API_KEY: ${LITELLM_KEY:?Configure the ODS model gateway key}
+      LLM_MODEL: ods/current
+      EMBEDDING_BINDING: openai
+      EMBEDDING_BINDING_HOST: http://embeddings:80/v1
+      EMBEDDING_BINDING_API_KEY: local-embeddings
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}
+      EMBEDDING_DIM: ${LIGHTRAG_EMBEDDING_DIM:?Set the actual embedding dimension}
+      EMBEDDING_TOKEN_LIMIT: ${LIGHTRAG_EMBEDDING_TOKEN_LIMIT:?Set the actual embedding
+        input limit}
+      EMBEDDING_SEND_DIM: 'false'
+      EMBEDDING_USE_BASE64: 'false'
+      MAX_TOTAL_TOKENS: ${LIGHTRAG_MAX_TOTAL_TOKENS:?Set a retrieval budget for the
+        active model}
+      MAX_ASYNC_LLM: '1'
+      MAX_PARALLEL_INSERT: '1'
+      EMBEDDING_FUNC_MAX_ASYNC: '1'
+      EMBEDDING_BATCH_NUM: '8'
+      RERANK_BINDING: 'null'
+      LIGHTRAG_KV_STORAGE: JsonKVStorage
+      LIGHTRAG_DOC_STATUS_STORAGE: JsonDocStatusStorage
+      LIGHTRAG_GRAPH_STORAGE: NetworkXStorage
+      LIGHTRAG_VECTOR_STORAGE: NanoVectorDBStorage
+    volumes:
+    - lightrag-data:/app/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  lightrag-data: {}

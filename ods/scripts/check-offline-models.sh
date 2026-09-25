@@ -19,5 +19,5 @@ else
     exit 2
 fi
 
-export ODS_ROOT="$ODS_DIR"
-exec "$PYTHON_CMD" "$SCRIPT_DIR/validate-models.py"
+export ODS_ROOT="${ODS_ROOT:-$ODS_DIR}"
+exec "$PYTHON_CMD" "$SCRIPT_DIR/validate-models.py" "$@"

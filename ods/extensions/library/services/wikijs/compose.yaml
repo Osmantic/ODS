@@ -1,0 +1,93 @@
+services:
+  wikijs:
+    image: ods/wikijs:2.5.314-local-v1
+    container_name: ods-wikijs
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${WIKIJS_PORT:-11107}:3000
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --max-time
+      - '5'
+      - http://127.0.0.1:3000/healthz
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    - wikijs-internal
+    user: 1000:1000
+    environment:
+      DB_PASS: ${WIKIJS_DB_PASSWORD:?Set a 64-hex database password}
+      NODE_OPTIONS: --max-old-space-size=768
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - wikijs-data:/wiki/data
+    depends_on:
+      wikijs-db:
+        condition: service_healthy
+  wikijs-db:
+    image: postgres:16-alpine@sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb
+    restart: unless-stopped
+    networks:
+    - wikijs-internal
+    environment:
+      POSTGRES_DB: wiki
+      POSTGRES_USER: wikijs
+      POSTGRES_PASSWORD: ${WIKIJS_DB_PASSWORD:?Set a 64-hex database password}
+    volumes:
+    - wikijs-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - wikijs
+      - -d
+      - wiki
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    container_name: ods-wikijs-db
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+  wikijs-internal:
+    internal: true
+volumes:
+  wikijs-data: {}
+  wikijs-db-data: {}

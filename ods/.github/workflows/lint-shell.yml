@@ -14,10 +14,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify bundled Pixel source and publication scan
+        run: |
+          python3 scripts/verify-pixel-bundle.py
+          bash vendor/pixel/scripts/check-no-secrets.sh vendor/pixel
+
       - name: Bash Syntax Check
         run: |
           set -euo pipefail
-          mapfile -t files < <(git ls-files '*.sh')
+          mapfile -t files < <(git ls-files '*.sh' ':!:vendor/pixel/**')
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No shell scripts found"
             exit 0
@@ -30,10 +35,9 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get -qq install -y shellcheck
-          mapfile -t files < <(git ls-files '*.sh')
+          mapfile -t files < <(git ls-files '*.sh' ':!:vendor/pixel/**')
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No shell scripts found"
             exit 0
           fi
           shellcheck -x -S warning "${files[@]}"
-

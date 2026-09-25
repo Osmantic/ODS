@@ -32,6 +32,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 
 import session_signer
 from security import request_uses_https, verify_api_key
@@ -39,6 +40,46 @@ from security import request_uses_https, verify_api_key
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["auth"])
+
+
+@router.get("/api/auth/hermes-session")
+async def hermes_session(request: Request):
+    """Sign in on the Hermes proxy origin using an already valid ODS session.
+
+    The proxy exposes this as /auth/ods. No caller-selected destination, cookie
+    domain, or credential is accepted. Other host aliases must sign in separately.
+    """
+    verify_session(request)
+    if request.query_params:
+        raise HTTPException(status_code=400, detail="Hermes launch does not accept a destination")
+    import aiohttp
+    import hermes_auth
+    import hermes_bridge
+    auth = hermes_auth.settings()
+    if not auth:
+        # Explicit operator auth (e.g. OAuth or a password hash only) keeps its
+        # own native sign-in page; never manufacture a password from a hash.
+        return RedirectResponse("/login", status_code=303)
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+            cookies = await hermes_bridge.login_dashboard(session, auth)
+    except hermes_bridge.HermesUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Hermes sign-in is unavailable") from exc
+    if cookies is not None and not any(c.key == "hermes_session_at" and c.value for c in cookies):
+        raise HTTPException(status_code=503, detail="Hermes did not issue a login session")
+    response = RedirectResponse("/", status_code=303)
+    response.headers["Cache-Control"] = "no-store"
+    secure = request_uses_https(request)
+    allowed = {"hermes_session_at", "hermes_session_rt", "hermes_session_provider"}
+    for cookie in cookies or []:
+        if cookie.key not in allowed:
+            continue
+        max_age = cookie["max-age"]
+        response.set_cookie(cookie.key, cookie.value, path="/", httponly=True,
+                            secure=secure or bool(cookie["secure"]),
+                            samesite=cookie["samesite"].lower() or "lax",
+                            max_age=int(max_age) if max_age.isdigit() else None)
+    return response
 
 SESSION_COOKIE_NAME = "ods-session"
 # Same TTL the magic-link router uses for redeemed sessions; keeping

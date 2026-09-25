@@ -1,0 +1,48 @@
+services:
+  jaeger:
+    image: ods/jaeger:2.21.0-local-v1
+    container_name: ods-jaeger
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${JAEGER_PORT:-11102}:16686
+    - 127.0.0.1:${JAEGER_GRPC_PORT:-11103}:4317
+    - 127.0.0.1:${JAEGER_HTTP_PORT:-11104}:4318
+    healthcheck:
+      test:
+      - CMD
+      - /opt/ods-health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 10001:10001
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - jaeger-data:/data
+    init: true
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  jaeger-data: {}

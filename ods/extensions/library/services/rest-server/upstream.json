@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/restic/rest-server",
+  "license": "BSD-2-Clause",
+  "source_ref": "ad130de02124c445300f149fa4f8e826dfdd0e3f",
+  "image": "restic/rest-server:latest@sha256:d2aff06f47eb38637dff580c3e6bce4af98f386c396a25d32eb6727ec96214a5",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 0.14.0 binary copied into a pinned Alpine runtime. Authenticated append-only private repositories, persistent data; no backups, repository encryption secret or schedules provisioned."
+}

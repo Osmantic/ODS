@@ -2,9 +2,9 @@ name: Python Lint
 
 on:
   push:
-    branches: [main]
+    branches: [main, public-beta]
   pull_request:
-    branches: [main]
+    branches: [main, public-beta]
 
 permissions:
   contents: read
@@ -22,7 +22,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Ruff
-        run: pip install ruff
+        run: pip install ruff==0.15.12
 
       - name: Run Ruff on ods Python files
         run: |

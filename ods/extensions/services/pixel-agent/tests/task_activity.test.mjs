@@ -1,0 +1,224 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createTaskActivity} from '../plugin/task-activity.mjs';
+import {parseTaskActivity} from '../host/task_activity_schema.mjs';
+const runId = 'chatcmpl_11111111-2222-4333-8444-555555555555';
+const ctx = {agentId:'pixel',runId};
+const now = () => '2026-09-08T20:00:00.000Z';
+
+test('a fresh owned prompt attempt recovers an overflow failure without erasing tool history', () => {
+  let instant = '2026-09-23T18:39:00.000Z';
+  const context = {...ctx, sessionId:'owned-session', sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+  const recorder = createTaskActivity({now:()=>instant});
+  recorder.begin({prompt:'Edit the existing project'},context);
+  instant = '2026-09-23T18:39:01.000Z';
+  recorder.finish({success:false,error:'Context overflow: prompt too large for the model (precheck).'},context);
+  assert.equal(recorder.projection(runId).state,'failed');
+  instant = '2026-09-23T18:40:00.000Z';
+  recorder.begin({prompt:'Edit the existing project'},context);
+  assert.equal(recorder.projection(runId).state,'running');
+  assert.equal(recorder.projection(runId).finishedAt,null);
+  assert.equal(recorder.activeForUser('ods-'+'a'.repeat(64)).runId,runId);
+  for (let i=0;i<2;i++) recorder.before({toolName:'pixel_ods_workspace_preview'},{...context,toolCallId:'blocked-'+i},true);
+  instant = '2026-09-23T18:42:34.000Z';
+  recorder.before({toolName:'pixel_ods_workspace_preview'},{...context,toolCallId:'published'});
+  recorder.after({result:{details:{status:'succeeded'}}},{...context,toolCallId:'published'});
+  instant = '2026-09-23T18:42:44.000Z';
+  recorder.finish({success:true},context);
+  const value=recorder.projection(runId);
+  assert.equal(value.state,'completed');
+  assert.equal(value.startedAt,'2026-09-23T18:39:00.000Z');
+  assert.equal(value.finishedAt,instant);
+  assert.equal(value.failures,2);
+  assert.equal(value.blocked,2);
+  assert.equal(value.calls,3);
+  assert.equal(value.events.at(-1).state,'completed');
+  assert.equal(parseTaskActivity(value,runId),value);
+  assert.equal(recorder.activeForUser('ods-'+'a'.repeat(64)),null);
+});
+
+test('recovered attempts retain previous failed calls and can themselves fail', () => {
+  const context={...ctx,sessionId:'owned-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+  const recorder=createTaskActivity({now});
+  recorder.begin({prompt:'Do the work'},context);
+  recorder.before({toolName:'exec'},{...context,toolCallId:'first'});
+  recorder.after({result:{details:{exitCode:1}}},{...context,toolCallId:'first'});
+  recorder.finish({success:false},context);
+  recorder.begin({prompt:'Do the work'},context);
+  recorder.finish({success:false},context);
+  assert.equal(recorder.projection(runId).state,'failed');
+  assert.equal(recorder.projection(runId).failures,1);
+  assert.equal(recorder.projection(runId).calls,1);
+});
+
+test('duplicate, unowned, incomplete and late hooks cannot reopen a closed attempt', () => {
+  for (const variant of ['completed','same-event','missing-prompt','blank-prompt','wrong-session','missing-session','missing-original-session','wrong-key','missing-key','conflicted-key','other-agent','late-tool','late-finish']) {
+    const context={...ctx,sessionId:'owned-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+    const recorder=createTaskActivity({now});
+    const original={prompt:'Do the work'};
+    const initialContext={...context};
+    if(variant==='missing-original-session')delete initialContext.sessionId;
+    recorder.begin(original,initialContext);
+    recorder.finish({success:variant==='completed'},context);
+    const closed=recorder.projection(runId);
+    const retryContext={...context};
+    if(variant==='wrong-session')retryContext.sessionId='other-session';
+    if(variant==='missing-session')delete retryContext.sessionId;
+    if(variant==='wrong-key')retryContext.sessionKey='agent:pixel:openai-user:ods-'+'b'.repeat(64);
+    if(variant==='missing-key')delete retryContext.sessionKey;
+    if(variant==='other-agent')retryContext.agentId='other';
+    if(variant==='conflicted-key')recorder.begin({prompt:'Do the work'}, {...context,sessionKey:'agent:pixel:openai-user:ods-'+'b'.repeat(64)});
+    const event=variant==='same-event'?original:variant==='missing-prompt'?{}:{prompt:variant==='blank-prompt'?'  ':'Do the work'};
+    if(variant==='late-tool')recorder.after({result:{}},{...context,toolCallId:'late',toolName:'read'});
+    else if(variant==='late-finish')recorder.finish({success:true},context);
+    else recorder.begin(event,retryContext);
+    const observed=recorder.projection(runId);
+    assert.equal(observed.state,closed.state,variant);
+    assert.equal(observed.finishedAt,closed.finishedAt,variant);
+    assert.equal(recorder.activeForUser('ods-'+'a'.repeat(64)),null,variant);
+  }
+});
+
+test('a running retry has one start and duplicate final hooks stay idempotent', () => {
+  let instant='2026-09-23T10:00:00.000Z';
+  const context={...ctx,sessionId:'owned-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+  const recorder=createTaskActivity({now:()=>instant});
+  recorder.begin({prompt:'Do the work'},context);recorder.finish({success:false},context);
+  const retry={prompt:'Do the work'};recorder.begin(retry,context);
+  recorder.begin(retry,context);
+  instant='2026-09-23T10:01:00.000Z';recorder.finish({success:true},context);
+  instant='2026-09-23T10:02:00.000Z';recorder.finish({success:false},context);
+  assert.equal(recorder.projection(runId).state,'completed');
+  assert.equal(recorder.projection(runId).finishedAt,'2026-09-23T10:01:00.000Z');
+});
+
+test('context uses the latest assistant call, includes cached tokens and never cumulative cost',()=>{
+  const r=createTaskActivity({now});r.begin({},ctx);
+  r.modelOutput({contextTokenBudget:1000,usage:{input:9000,output:9000}},ctx);
+  assert.equal(r.projection(runId).context,null);
+  r.modelOutput({contextTokenBudget:1000,lastAssistant:{usage:{input:400,output:50,cacheRead:200,cacheWrite:100}}},ctx);
+  assert.deepEqual(r.projection(runId).context,{used:750,window:1000,measuredAt:now()});
+  assert.ok(parseTaskActivity(r.projection(runId),runId));
+});
+test('records bounded ordered steps and rejects malformed timeline and token metadata',()=>{
+  const r=createTaskActivity({now});r.begin({},ctx);
+  for(let i=0;i<30;i++){r.before({toolName:'read'},{...ctx,toolCallId:String(i)});r.after({result:{}},{...ctx,toolCallId:String(i)});}
+  const value=r.projection(runId);
+  assert.equal(value.events.length,24);assert.equal(value.events[0].sequence,7);
+  assert.ok(parseTaskActivity(value,runId));
+  assert.equal(parseTaskActivity({...value,events:[...value.events].reverse()},runId),null);
+  assert.equal(parseTaskActivity({...value,context:{used:-1,window:1000,measuredAt:now()}},runId),null);
+});
+
+test('a backward wall-clock step cannot invalidate a completed tool receipt',()=>{
+  const ticks=[
+    '2026-09-23T06:48:42.000Z',
+    '2026-09-23T06:48:42.719Z',
+    '2026-09-23T06:48:42.587Z',
+    '2026-09-23T06:48:42.600Z',
+  ];
+  const recorder=createTaskActivity({now:()=>ticks.shift()});
+  recorder.begin({},ctx);
+  recorder.before({toolName:'pixel_ops_run'},{...ctx,toolCallId:'broker-install'});
+  recorder.after({result:{}},{...ctx,toolCallId:'broker-install'});
+  recorder.finish({success:true},ctx);
+  const projection=recorder.projection(runId);
+  assert.equal(projection.events[0].startedAt,'2026-09-23T06:48:42.719Z');
+  assert.equal(projection.events[0].finishedAt,'2026-09-23T06:48:42.719Z');
+  assert.equal(projection.finishedAt,'2026-09-23T06:48:42.719Z');
+  assert.equal(parseTaskActivity(projection,runId),projection);
+});
+
+test('live observations bind exactly one active run to its opaque user and exclude other sessions', () => {
+  const recorder=createTaskActivity({now});
+  const user='ods-'+ 'a'.repeat(64);
+  const context={...ctx,sessionKey:`agent:pixel:openai-user:${user}`};
+  recorder.begin({},context);
+  assert.equal(recorder.activeForUser(user).runId,runId);
+  assert.equal(recorder.activeForUser('ods-'+ 'b'.repeat(64)),null);
+  const second={...context,runId:runId.replace('11111111','aaaaaaaa')};
+  recorder.begin({},second);
+  assert.equal(recorder.activeForUser(user),null);
+  recorder.finish({success:true},second);
+  assert.equal(recorder.activeForUser(user).runId,runId);
+  recorder.finish({success:true},context);
+  assert.equal(recorder.activeForUser(user),null);
+});
+
+test('projects real attempts without arguments, outputs or unknown tool names', () => {
+  const recorder = createTaskActivity({now});
+  recorder.begin({prompt:'private prompt'},ctx);
+  recorder.before({toolName:'tool_call',params:{id:'openclaw:core:read',path:'secret.txt'}},{...ctx,toolCallId:'a'});
+  recorder.after({result:{content:[{text:'secret output'}]}},{...ctx,toolCallId:'a'});
+  recorder.before({toolName:'read'},{...ctx,toolCallId:'a'}); // replay must not regress a settled call
+  recorder.before({toolName:'exec'},{...ctx,toolCallId:'b'});
+  recorder.after({result:{details:{exitCode:1}}},{...ctx,toolCallId:'b'});
+  recorder.before({toolName:'edit'},{...ctx,toolCallId:'c'},true);
+  recorder.after({result:{}},{...ctx,toolCallId:'c'});
+  recorder.after({toolName:'private-tool-name',result:{}},{...ctx,toolCallId:'d'});
+  recorder.finish({success:true},ctx);
+  const result=recorder.projection(runId);
+  assert.equal(result.calls,4);
+  assert.equal(result.failures,2);
+  assert.equal(result.blocked,1);
+  assert.deepEqual(result.activities.map(item=>item.kind),['read','run','edit','unknown']);
+  assert.equal(parseTaskActivity(result,runId),result);
+  assert.doesNotMatch(JSON.stringify(result),/secret|private|prompt|output|toolCallId/);
+});
+test('isolates other agents and evicts only settled runs with bounded calls', () => {
+  const recorder=createTaskActivity({now,maximumRuns:1,maximumCalls:1});
+  recorder.begin({}, {...ctx,agentId:'other'});
+  assert.equal(recorder.projection(runId),null);
+  recorder.begin({},ctx);
+  recorder.before({toolName:'read'}, {...ctx,toolCallId:'a'});
+  recorder.before({toolName:'read'}, {...ctx,toolCallId:'b'});
+  assert.equal(recorder.projection(runId).truncated,true);
+  const next={...ctx,runId:runId.replace('11111111','aaaaaaaa')};
+  recorder.begin({},next);
+  assert.equal(recorder.projection(next.runId),null);
+  recorder.finish({success:false},ctx);
+  recorder.begin({},next);
+  assert.equal(recorder.projection(runId),null);
+  assert.equal(recorder.projection(next.runId).calls,0);
+});
+test('counts Tool Search outer and inner hooks as one invocation by explicit parent ID', () => {
+  const recorder=createTaskActivity({now}); recorder.begin({},ctx);
+  const outer={...ctx,toolCallId:'parent',toolName:'tool_call'};
+  const inner={...ctx,toolCallId:'tool_search_code:parent:edit:1',toolName:'edit'};
+  recorder.before({params:{id:'openclaw:core:edit'}},outer);
+  recorder.before({},inner);
+  recorder.after({error:'failed'},inner);
+  recorder.after({error:'failed'},outer);
+  assert.equal(recorder.projection(runId).calls,1);
+  assert.equal(recorder.projection(runId).failures,1);
+});
+test('rejects cross-run, unbounded, extra-field, duplicate and impossible projections', () => {
+  const recorder=createTaskActivity({now}); recorder.begin({},ctx); recorder.finish({success:true},ctx);
+  const value=recorder.projection(runId);
+  const invalid=[{...value,runId:'other'}, {...value,prompt:'secret'}, {...value,calls:513},
+    {...value,finishedAt:'2026-01-01T00:00:00.000Z'}, {...value,state:'done'},
+    {...value,activities:[{kind:'read',calls:1,failures:2,blocked:0}]},
+    {...value,calls:2,activities:[{kind:'read',calls:1,failures:0,blocked:0},{kind:'read',calls:1,failures:0,blocked:0}]}];
+  for (const item of invalid) assert.equal(parseTaskActivity(item,runId),null);
+});
+
+test('configured agent activity binds to that agent and its exact user session', () => {
+  const recorder = createTaskActivity({now, agentId:'assistant'});
+  const user = 'ods-' + 'a'.repeat(64);
+  const context = {...ctx, agentId:'assistant', sessionKey:`agent:assistant:openai-user:${user}`};
+  recorder.begin({}, {...ctx, sessionKey:`agent:pixel:openai-user:${user}`});
+  assert.equal(recorder.projection(runId), null);
+  recorder.begin({}, context);
+  recorder.before({toolName:'read'}, {...context, toolCallId:'a'});
+  recorder.after({result:{}}, {...context, toolCallId:'a'});
+  const active = recorder.activeForUser(user);
+  assert.equal(active?.runId, runId);
+  assert.equal(active.calls, 1);
+  assert.equal(parseTaskActivity(active, runId), active);
+  assert.equal(recorder.activeForUser('ods-' + 'b'.repeat(64)), null);
+  recorder.finish({success:true}, ctx);
+  assert.equal(recorder.activeForUser(user)?.state, 'running');
+  recorder.finish({success:true}, context);
+  assert.equal(recorder.activeForUser(user), null);
+  assert.equal(recorder.projection(runId).state, 'completed');
+});

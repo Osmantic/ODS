@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-fleet-host-probe-v1.schema.json",
+  "title": "Pixel Deep Work fleet host-capacity probe configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "fleetPath", "disposableDiskPath", "systemReserve", "sharedServices", "evidenceLifetimeSeconds", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-fleet-host-probe-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "fleetPath": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "disposableDiskPath": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "systemReserve": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cpuCores", "memoryMiB", "diskBytes"],
+      "properties": {
+        "cpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+        "memoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+        "diskBytes": {"type": "integer", "minimum": 1048576, "maximum": 140737488355328}
+      }
+    },
+    "sharedServices": {
+      "type": "array", "minItems": 1, "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["serviceId", "unitName", "maxCpuCores", "maxMemoryMiB", "maxDiskBytes", "diskLimitEvidenceSha256"],
+        "properties": {
+          "serviceId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$"},
+          "unitName": {"type": "string", "pattern": "^[a-zA-Z0-9_.@-]{1,200}\\.service$"},
+          "maxCpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+          "maxMemoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+          "maxDiskBytes": {"type": "integer", "minimum": 0, "maximum": 1099511627776},
+          "diskLimitEvidenceSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }
+      }
+    },
+    "evidenceLifetimeSeconds": {"type": "integer", "minimum": 60, "maximum": 86400},
+    "boundary": {"const": "Owner-reviewed live host probe configuration. It names exact shared services and conservative reserves but grants no execution, lease, service mutation, scope expansion, external effect, or completion authority."}
+  }
+}

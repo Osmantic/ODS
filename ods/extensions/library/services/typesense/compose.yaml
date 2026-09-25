@@ -1,0 +1,43 @@
+services:
+  typesense:
+    image: typesense/typesense:30.2@sha256:610f2d34b1f93d00762869da2c67736775e5798d19a2c8b91b014b8a0cc1e110
+    container_name: ods-typesense
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${TYPESENSE_PORT:-11005}:8108
+    healthcheck:
+      test:
+      - CMD
+      - bash
+      - -ec
+      - 'exec 3<>/dev/tcp/127.0.0.1/8108; printf ''GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n''
+        >&3; head -n 1 <&3 | grep -q '' 200 '''
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    volumes:
+    - typesense-data:/data
+    environment:
+      TYPESENSE_DATA_DIR: /data
+      TYPESENSE_API_KEY: ${TYPESENSE_API_KEY:?Set TYPESENSE_API_KEY in extension settings}
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  typesense-data: {}

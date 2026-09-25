@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-operator-status-v1.schema.json",
+  "title": "Pixel Deep Work content-free operator status v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "projectionId", "generatedAt", "controllerState", "goal", "sessions", "services", "privacy", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-operator-status-v1.schema.json"}, "schemaVersion": {"const": 1},
+    "projectionId": {"type": "string", "pattern": "^workoperatorstatus-[0-9]{13}-[a-f0-9]{12}$"}, "generatedAt": {"type": "string", "format": "date-time"},
+    "controllerState": {"enum": ["ready", "busy", "degraded", "offline", "disabled"]},
+    "goal": {"$ref": "#/$defs/goal"},
+    "sessions": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/session"}},
+    "services": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/service"}},
+    "privacy": {"const": {"objectiveText": false, "promptText": false, "toolArguments": false, "artifactNames": false, "paths": false, "hashes": false, "credentials": false, "providerContent": false}},
+    "boundary": {"const": "Content-free local Deep Work orientation only. This snapshot carries no job authority and cannot pause, cancel, resume, expand boundaries, approve egress, reveal private evidence, or open artifacts."}
+  },
+  "$defs": {
+    "goal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "updatedAt", "progress", "usage", "budgets", "continuity", "nextAction"],
+      "properties": {
+        "state": {"enum": ["ready", "running", "waiting-authority", "paused", "recovery-inconclusive", "completed", "failed", "cancelled", "budget-exhausted", "no-progress"]},
+        "updatedAt": {"type": "string", "format": "date-time"},
+        "progress": {"type": "object", "additionalProperties": false, "required": ["milestonesTotal", "milestonesCompleted", "jobsStarted", "failures"], "properties": {
+          "milestonesTotal": {"type": "integer", "minimum": 1, "maximum": 64}, "milestonesCompleted": {"type": "integer", "minimum": 0, "maximum": 64},
+          "jobsStarted": {"type": "integer", "minimum": 0, "maximum": 64}, "failures": {"type": "integer", "minimum": 0, "maximum": 64000}
+        }},
+        "usage": {"type": "object", "additionalProperties": false, "required": ["runtimeSeconds", "modelRequests", "inputTokens", "outputTokens", "networkBytes", "artifactBytes", "failures"], "properties": {
+          "runtimeSeconds": {"type": "integer", "minimum": 0, "maximum": 31536000}, "modelRequests": {"type": "integer", "minimum": 0, "maximum": 6400000},
+          "inputTokens": {"type": "integer", "minimum": 0, "maximum": 128000000000}, "outputTokens": {"type": "integer", "minimum": 0, "maximum": 32000000000},
+          "networkBytes": {"type": "integer", "minimum": 0, "maximum": 687194767360}, "artifactBytes": {"type": "integer", "minimum": 0, "maximum": 2199023255552},
+          "failures": {"type": "integer", "minimum": 0, "maximum": 64000}
+        }},
+        "budgets": {"type": "object", "additionalProperties": false, "required": ["accounting", "used", "limits", "remaining"], "properties": {
+          "accounting": {"const": "settled-plus-active-observed"},
+          "used": {"$ref": "#/$defs/goalBudgetRemaining"}, "limits": {"$ref": "#/$defs/goalBudgetLimits"}, "remaining": {"$ref": "#/$defs/goalBudgetRemaining"}
+        }},
+        "continuity": {"type": "object", "additionalProperties": false, "required": ["checkpointSequence", "restartSafe", "completionRequiresIndependentVerification", "progressModel", "watchdogRole"], "properties": {
+          "checkpointSequence": {"type": "integer", "minimum": 0, "maximum": 1000000}, "restartSafe": {"const": true}, "completionRequiresIndependentVerification": {"const": true},
+          "progressModel": {"const": "durable-events"}, "watchdogRole": {"const": "liveness-only"}
+        }},
+        "nextAction": {"enum": ["dispatch-child", "record-completed", "recover-or-continue-child", "wait-for-child-authority", "paused", "terminal", "fail-closed"]}
+      }
+    },
+    "goalBudgetLimits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["jobs", "runtimeSeconds", "modelRequests", "inputTokens", "outputTokens", "networkBytes", "artifactBytes", "failures"],
+      "properties": {
+        "jobs": {"type": "integer", "minimum": 1, "maximum": 64},
+        "runtimeSeconds": {"type": "integer", "minimum": 1, "maximum": 31536000},
+        "modelRequests": {"type": "integer", "minimum": 1, "maximum": 6400000},
+        "inputTokens": {"type": "integer", "minimum": 1, "maximum": 128000000000},
+        "outputTokens": {"type": "integer", "minimum": 1, "maximum": 32000000000},
+        "networkBytes": {"type": "integer", "minimum": 0, "maximum": 687194767360},
+        "artifactBytes": {"type": "integer", "minimum": 1, "maximum": 2199023255552},
+        "failures": {"type": "integer", "minimum": 1, "maximum": 64000}
+      }
+    },
+    "goalBudgetRemaining": {
+      "type": "object", "additionalProperties": false,
+      "required": ["jobs", "runtimeSeconds", "modelRequests", "inputTokens", "outputTokens", "networkBytes", "artifactBytes", "failures"],
+      "properties": {
+        "jobs": {"type": "integer", "minimum": 0, "maximum": 64},
+        "runtimeSeconds": {"type": "integer", "minimum": 0, "maximum": 31536000},
+        "modelRequests": {"type": "integer", "minimum": 0, "maximum": 6400000},
+        "inputTokens": {"type": "integer", "minimum": 0, "maximum": 128000000000},
+        "outputTokens": {"type": "integer", "minimum": 0, "maximum": 32000000000},
+        "networkBytes": {"type": "integer", "minimum": 0, "maximum": 687194767360},
+        "artifactBytes": {"type": "integer", "minimum": 0, "maximum": 2199023255552},
+        "failures": {"type": "integer", "minimum": 0, "maximum": 64000}
+      }
+    },
+    "session": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sessionHandle", "current", "mode", "state", "startedAt", "updatedAt", "progress", "usage", "artifacts", "verification", "capability", "boundaryState", "activity", "controls"],
+      "properties": {
+        "sessionHandle": {"type": "string", "pattern": "^workdisplay-[a-f0-9]{24}$"}, "mode": {"enum": ["scout", "builder", "researcher", "data-lab"]},
+        "current": {"type": "boolean"},
+        "state": {"enum": ["authorized", "running", "verifying", "verified", "waiting-authority", "cleanup-failed", "recovery-inconclusive", "completed", "failed", "cancelled", "budget-exhausted", "no-progress"]},
+        "startedAt": {"type": "string", "format": "date-time"}, "updatedAt": {"type": "string", "format": "date-time"},
+        "progress": {"type": "object", "additionalProperties": false, "required": ["criteriaTotal", "criteriaPassing", "criteriaFailing", "iteration", "maxIterations", "noProgressCount"], "properties": {"criteriaTotal": {"type": "integer", "minimum": 1, "maximum": 32}, "criteriaPassing": {"type": "integer", "minimum": 0, "maximum": 32}, "criteriaFailing": {"type": "integer", "minimum": 0, "maximum": 32}, "iteration": {"type": "integer", "minimum": 0, "maximum": 1000}, "maxIterations": {"type": "integer", "minimum": 1, "maximum": 1000}, "noProgressCount": {"type": "integer", "minimum": 0, "maximum": 100}, "failureStage": {"type": ["string", "null"], "enum": [null, "profile-execution", "rpc-execution", "proxy-receipt", "proposal-parse", "proposal-contract", "evidence-finalization", "artifact-retention", "candidate-contract", "cleanup", "authorization-expired", "interrupted"]}}},
+        "usage": {"type": "object", "additionalProperties": false, "required": ["runtimeSeconds", "modelRequests", "inputTokens", "outputTokens", "networkBytes", "artifactBytes", "failures"], "properties": {"runtimeSeconds": {"type": "integer", "minimum": 0, "maximum": 604800}, "modelRequests": {"type": "integer", "minimum": 0, "maximum": 100000}, "inputTokens": {"type": "integer", "minimum": 0, "maximum": 2000000000}, "outputTokens": {"type": "integer", "minimum": 0, "maximum": 500000000}, "networkBytes": {"type": "integer", "minimum": 0, "maximum": 10737418240}, "artifactBytes": {"type": "integer", "minimum": 0, "maximum": 34359738368}, "failures": {"type": "integer", "minimum": 0, "maximum": 1000}}},
+        "artifacts": {"type": "object", "additionalProperties": false, "required": ["count", "totalBytes", "kinds"], "properties": {"count": {"type": "integer", "minimum": 0, "maximum": 64}, "totalBytes": {"type": "integer", "minimum": 0, "maximum": 34359738368}, "kinds": {"type": "array", "maxItems": 6, "items": {"type": "object", "additionalProperties": false, "required": ["kind", "count"], "properties": {"kind": {"enum": ["finding-report", "patch", "test-evidence", "dataset", "document", "visualization"]}, "count": {"type": "integer", "minimum": 1, "maximum": 64}}}}}},
+        "verification": {"enum": ["not-started", "pending", "pass", "fail", "not-required"]},
+        "capability": {"type": "object", "additionalProperties": false, "required": ["state", "toolCount", "singleUseCalls", "networkAccess", "externalEffects"], "properties": {
+          "state": {"enum": ["not-configured", "configured", "authorized", "recovery-required"]}, "toolCount": {"type": "integer", "minimum": 0, "maximum": 64},
+          "singleUseCalls": {"const": true}, "networkAccess": {"const": false}, "externalEffects": {"const": false}
+        }, "allOf": [{"if": {"properties": {"state": {"const": "not-configured"}}}, "then": {"properties": {"toolCount": {"const": 0}}}, "else": {"properties": {"toolCount": {"minimum": 1}}}}]},
+        "boundaryState": {"type": "object", "additionalProperties": false, "required": ["state", "requestedExpansion"], "properties": {"state": {"enum": ["within-authority", "waiting-approval", "blocked"]}, "requestedExpansion": {"enum": ["none", "network", "credential", "external-effect", "scope", "budget"]}}},
+        "activity": {"type": "array", "maxItems": 20, "items": {"type": "object", "additionalProperties": false, "required": ["eventId", "at", "category", "summaryCode", "outcome"], "properties": {"eventId": {"type": "string", "pattern": "^workevent-[a-f0-9]{24}$"}, "at": {"type": "string", "format": "date-time"}, "category": {"enum": ["controller", "local-model", "workspace", "research", "data", "verification", "knowledge", "capability"]}, "summaryCode": {"enum": ["authorized", "work-started", "local-step-completed", "artifact-recorded", "verification-started", "verification-passed", "verification-failed", "boundary-requested", "checkpoint-recovered", "cleanup-failed", "recovery-inconclusive", "session-completed", "session-failed", "session-cancelled", "budget-exhausted", "no-progress"]}, "outcome": {"enum": ["pending", "succeeded", "failed", "stopped"]}}}},
+        "controls": {"const": {"browserCanPause": false, "browserCanCancel": false, "browserCanResume": false, "browserCanExpandBoundary": false, "browserCanOpenArtifacts": false}}
+      }
+    },
+    "service": {"type": "object", "additionalProperties": false, "required": ["id", "state", "observedAt"], "properties": {"id": {"enum": ["controller", "local-model", "worker", "verifier", "research", "data-lab", "knowledge-vault", "capability-adapter"]}, "state": {"enum": ["ready", "busy", "degraded", "offline", "disabled", "unknown"]}, "observedAt": {"type": "string", "format": "date-time"}}}
+  }
+}

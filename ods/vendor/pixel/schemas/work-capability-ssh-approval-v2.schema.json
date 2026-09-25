@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-ssh-approval-v2.schema.json",
+  "title": "Pixel Deep Work owner-signed SSH approval v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema", "schemaVersion", "operation", "requestId", "destinationAlias", "commandId",
+    "credentialRef", "issuedAt", "expiresAt", "nonce", "maxOutputBytes", "timeoutMs",
+    "authority", "boundary"
+  ],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-ssh-approval-v2.schema.json"},
+    "schemaVersion": {"const": 2},
+    "operation": {"const": "pixel-work-capability-ssh-approval-v2"},
+    "requestId": {"type": "string", "pattern": "^workcaprequest-[0-9]{13}-[a-f0-9]{12}$"},
+    "destinationAlias": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+    "commandId": {"const": "hostname"},
+    "credentialRef": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"},
+    "issuedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "nonce": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 4096},
+    "timeoutMs": {"type": "integer", "minimum": 100, "maximum": 30000},
+    "authority": {
+      "const": {
+        "grantsOneSshConnection": true,
+        "grantsGenericShell": false,
+        "grantsCommandSelection": false,
+        "grantsDestinationSelection": false,
+        "grantsCredentialDisclosure": false,
+        "grantsReplay": false,
+        "grantsExternalEffects": false,
+        "grantsScopeExpansion": false,
+        "grantsCompletion": false
+      }
+    },
+    "boundary": {
+      "const": "Fresh owner signature for one exact single-use SSH forced-command request. It grants one connection to a trusted destination alias using a separately custodied credential and grants no generic shell, command or destination selection, credential disclosure, replay, external effect, scope expansion, or completion."
+    }
+  }
+}

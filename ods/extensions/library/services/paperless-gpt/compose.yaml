@@ -1,0 +1,56 @@
+services:
+  paperless-gpt:
+    image: icereed/paperless-gpt:v0.28.0@sha256:413af73ff5415e1f61327ccb1c63cb14e84e86b761969be6eaaee61b4f39bef4
+    container_name: ods-paperless-gpt
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${PAPERLESS_GPT_PORT:-11015}:8080
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - --spider
+      - http://127.0.0.1:8080/
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    volumes:
+    - paperless-gpt-prompts:/app/prompts
+    - paperless-gpt-config:/app/config
+    - paperless-gpt-db:/app/db
+    environment:
+      PAPERLESS_BASE_URL: http://paperless-ngx:8000
+      PAPERLESS_API_TOKEN: ${PAPERLESS_GPT_API_TOKEN:?Set your Paperless-ngx API token}
+      LLM_PROVIDER: openai
+      LLM_MODEL: ods/current
+      OPENAI_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_KEY: ${LITELLM_KEY:-no-key}
+      OCR_PROVIDER: docling
+      DOCLING_URL: http://docling-serve:5001
+      DOCLING_OCR_PIPELINE: standard
+      DOCLING_OCR_ENGINE: easyocr
+      PDF_UPLOAD: 'false'
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  paperless-gpt-prompts: {}
+  paperless-gpt-config: {}
+  paperless-gpt-db: {}

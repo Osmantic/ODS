@@ -8,7 +8,7 @@ import { AssignmentTable } from '../components/AssignmentTable'
 
 // Aggregate bar shared between aggregate section
 const AggBar = memo(function AggBar({ label, value, percent }) {
-  const color = percent > 90 ? 'bg-red-500' : percent > 70 ? 'bg-yellow-500' : 'bg-indigo-500'
+  const color = percent > 90 ? 'bg-red-500' : percent > 70 ? 'bg-theme-text-secondary' : 'bg-indigo-500'
   return (
     <div>
       <div className="flex items-center justify-between text-xs mb-1">
@@ -95,7 +95,7 @@ export default function GPUMonitor() {
             <div>
               <div className="flex items-center justify-between text-xs mb-1">
                 <span className="text-zinc-400">Max Temp</span>
-                <span className={`font-mono ${aggregate.temperature_available === false ? 'text-zinc-500' : aggregate.temperature_c >= 85 ? 'text-red-400' : aggregate.temperature_c >= 70 ? 'text-yellow-400' : 'text-white'}`}>
+                <span className={`font-mono ${aggregate.temperature_available === false ? 'text-zinc-500' : aggregate.temperature_c >= 85 ? 'text-red-400' : aggregate.temperature_c >= 70 ? 'text-theme-text-secondary' : 'text-white'}`}>
                   {aggregate.temperature_available !== false ? `${aggregate.temperature_c}°C` : '—'}
                 </span>
               </div>

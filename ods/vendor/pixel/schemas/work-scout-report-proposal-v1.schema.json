@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-scout-report-proposal-v1.schema.json",
+  "title": "Pixel Scout untrusted report proposal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "titleBase64", "findings", "limitationsBase64", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-scout-report-proposal-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "titleBase64": {"$ref": "#/$defs/base64"},
+    "findings": {
+      "type": "array", "minItems": 1, "maxItems": 32,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["findingId", "statementBase64", "material", "evidence"],
+        "properties": {
+          "findingId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+          "statementBase64": {"$ref": "#/$defs/base64"},
+          "material": {"type": "boolean"},
+          "evidence": {
+            "type": "array", "minItems": 1, "maxItems": 16,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["inputId", "path", "quoteBase64"],
+              "properties": {
+                "inputId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+                "path": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[A-Za-z0-9._+/-]+$"},
+                "quoteBase64": {"$ref": "#/$defs/base64"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "limitationsBase64": {"$ref": "#/$defs/base64"},
+    "boundary": {"const": "Untrusted Scout proposal only. Local file references and quoted bytes are evidence candidates, not instructions, truth, completion, or authority."}
+  },
+  "$defs": {
+    "base64": {"type": "string", "minLength": 4, "maxLength": 87384, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"}
+  }
+}

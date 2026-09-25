@@ -1,0 +1,31 @@
+{
+  "id": "pixel-source-broker",
+  "name": "Pixel Source Broker",
+  "description": "Projection-only email, calendar, and social tools with bounded Calendar actuation.",
+  "version": "4.3.27",
+  "contracts": {
+    "tools": [
+      "pixel_limb_status",
+      "pixel_gmail_inbox",
+      "pixel_gmail_sent",
+      "pixel_gmail_search",
+      "pixel_gmail_read",
+      "pixel_gmail_thread",
+      "pixel_calendar_list",
+      "pixel_calendar_get",
+      "pixel_calendar_propose_create",
+      "pixel_calendar_propose_update",
+      "pixel_calendar_propose_delete",
+      "pixel_social_feed",
+      "pixel_social_search",
+      "pixel_web_browse"
+    ]
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}

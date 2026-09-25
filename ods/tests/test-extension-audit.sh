@@ -72,7 +72,7 @@ service:
   external_port_default: 8080
   health: /health
   type: docker
-  gpu_backends: [amd, nvidia]
+  gpu_backends: [cpu, amd, nvidia]
   category: core
   depends_on: []
 EOF
@@ -185,12 +185,33 @@ service:
 EOF
 }
 
+service_socket_host_valid() {
+    local dir="$1"
+    cat > "$dir/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+
+service:
+  id: socket-agent
+  name: Socket Agent
+  aliases: []
+  container_name: ""
+  socket_only: true
+  port: 0
+  health: /health
+  type: host-systemd
+  gpu_backends: [all]
+  category: core
+  depends_on: []
+EOF
+}
+
 create_valid_project() {
     local root="$1"
     write_service "$root" "llama-server" service_core_llm
     write_service "$root" "search" service_search_valid
     write_service "$root" "image-gen" service_image_valid
     write_service "$root" "opencode" service_host_valid
+    write_service "$root" "socket-agent" service_socket_host_valid
 }
 
 run_audit() {

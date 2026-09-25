@@ -1,0 +1,56 @@
+services:
+  temporal:
+    image: ods/temporal:1.9.1-local-v1
+    container_name: ods-temporal
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${TEMPORAL_PORT:-11111}:8233
+    - 127.0.0.1:${TEMPORAL_GRPC_PORT:-11112}:7233
+    healthcheck:
+      test:
+      - CMD
+      - temporal
+      - operator
+      - cluster
+      - health
+      - --address
+      - 127.0.0.1:7233
+      - --command-timeout
+      - 5s
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - temporal-data:/home/temporal/data
+    init: true
+    environment:
+      GOMEMLIMIT: 1536MiB
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  temporal-data: {}

@@ -1,0 +1,60 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: grafana
+  name: Grafana OSS
+  aliases: []
+  container_name: ods-grafana
+  host_env: GRAFANA_HOST
+  default_host: grafana
+  port: 3000
+  external_port_env: GRAFANA_PORT
+  external_port_default: 11100
+  health: /api/health
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Build local observability dashboards against explicitly configured
+    project data sources.
+  env_vars:
+  - key: GRAFANA_ADMIN_PASSWORD
+    required: true
+    secret: true
+    description: 64-hex initial administrator password for ods; existing users are
+      not reset.
+  - key: GRAFANA_SECRET_KEY
+    required: true
+    secret: true
+    description: Distinct stable 64-hex key protecting stored data-source credentials;
+      preserve with backups.
+  ui_path: /
+tags:
+- observability
+- dashboards
+- development
+- open-source
+features:
+- id: grafana-dashboards
+  name: Grafana OSS
+  description: Build local observability dashboards against explicitly configured
+    project data sources.
+  icon: ChartNoAxesCombined
+  category: productivity
+  requirements:
+    services:
+    - grafana
+    vram_gb: 0
+  enabled_services_all:
+  - grafana
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: grafana
+    path: /

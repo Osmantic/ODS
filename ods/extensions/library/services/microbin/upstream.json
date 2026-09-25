@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/szabodanika/microbin",
+  "license": "BSD-3-Clause",
+  "image": "docker.io/danielszabo99/microbin:2.1.0@sha256:34fe4ac99b65cc633975ae72ca6fc84eab15f73a95b2e03b98312374063ee5d7",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "2.1.0 official image with nonroot data layer. Site-wide Basic authentication remains enforced by MicroBin; small ODS bridge performs an authenticated root probe and exposes only readiness at /_ods/health. Other requests preserve caller authentication. Two required passwords replace defaults; no unauthenticated publishing."
+}

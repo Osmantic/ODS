@@ -1,10 +1,22 @@
 """Tests for session_signer — HMAC-signed ods-session cookies."""
 
+import base64
+import hashlib
+import hmac
 import time
 
 import pytest
 
 import session_signer
+
+
+def test_upgrade_rejects_pre_fix_guest_cookie_even_before_expiry():
+    payload = f"legacy-guest.{int(time.time()) + 3600}"
+    signature = base64.urlsafe_b64encode(hmac.new(
+        b"test-secret-do-not-use-in-prod", payload.encode(), hashlib.sha256,
+    ).digest()).rstrip(b"=").decode()
+    assert session_signer.verify(f"{payload}.{signature}") == (False, "bad-signature")
+    assert session_signer.verify(session_signer.issue()) == (True, "ok")
 
 
 @pytest.fixture(autouse=True)
@@ -184,3 +196,15 @@ class TestVerify:
         ok, reason = session_signer.verify(cookie)
         assert ok is False
         assert reason == "malformed"
+def test_malformed_expiry_does_not_compute_hmac(monkeypatch):
+    def unexpected_sign(_payload):
+        raise AssertionError("Malformed timestamp reached HMAC")
+    monkeypatch.setattr(session_signer, "_sign", unexpected_sign)
+    for expiry in ("not-a-number", "9" * 5000):
+        assert session_signer.verify(f"id.{expiry}.signature") == (False, "malformed")
+
+
+def test_parseable_expiry_still_requires_a_signature():
+    future = int(time.time()) + 3600
+    assert session_signer.verify(f"id.{future}.forged") == (False, "bad-signature")
+    assert session_signer.verify("id.1.forged") == (False, "bad-signature")

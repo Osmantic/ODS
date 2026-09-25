@@ -1,0 +1,129 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-policy-v1.schema.json",
+  "schemaVersion": 1,
+  "policyId": "pixel-deep-work-default",
+  "enabled": false,
+  "executor": {
+    "id": "omp",
+    "version": "17.2.12",
+    "sourceCommit": "45e12e5bb758198a920c6070e7e64cb33b21beac",
+    "license": "MIT",
+    "url": "https://github.com/can1357/oh-my-pi/releases/download/v17.2.12/omp-linux-x64",
+    "sha256": "6c75331bf09d5a9e9433bd592b3ee993d751a15d5b7450c1a334cc0684996f30",
+    "rpcProtocolVersion": 2
+  },
+  "runner": {
+    "prepared": false,
+    "imageRef": "ghcr.io/osmantic/pixel-work-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "imageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "allowedIsolation": ["hardened-container", "ephemeral-vm"]
+  },
+  "localModel": {
+    "prepared": false,
+    "provider": "llama.cpp",
+    "id": "assistant-model",
+    "imageRef": "ghcr.io/ggml-org/llama.cpp:server@sha256:8b7f05d7d14d040463ef9191b24da93724574abd6bfea9bf12899100f62e98db",
+    "imageDigest": "sha256:8b7f05d7d14d040463ef9191b24da93724574abd6bfea9bf12899100f62e98db",
+    "modelArtifactSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "backendVersion": "replace-with-pinned-version",
+    "acceleratorClass": "cpu",
+    "promptContractSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "toolSchemaSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "contextWindow": 32768,
+    "maxRequestContextTokens": 32768,
+    "supportsVision": false,
+    "maxRequestOutputTokens": 1024,
+    "inference": null,
+    "qualification": {
+      "receiptPath": "/var/lib/pixel/work/private/model-qualification.json",
+      "receiptSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "casesSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "evaluatorSha256": "6666666666666666666666666666666666666666666666666666666666666666"
+    }
+  },
+  "verifier": {
+    "enabled": false,
+    "allowedExecutables": ["/opt/node/bin/node", "/bin/sh"],
+    "maxChecks": 16,
+    "maxRuntimeSeconds": 900,
+    "maxOutputBytes": 4194304
+  },
+  "profiles": {
+    "scout": {
+      "enabled": false,
+      "isolation": "hardened-container",
+      "tools": ["read", "search"],
+      "services": ["local-model"],
+      "workspaceMount": "read-only",
+      "outputKinds": ["finding-report"],
+      "minimumMemoryMiB": 1536,
+      "maxBudgets": {
+        "maxRuntimeSeconds": 3600,
+        "maxIterations": 20,
+        "maxToolCalls": 2000,
+        "maxConcurrentSubagents": 1,
+        "maxModelRequests": 200,
+        "maxInputTokens": 1000000,
+        "maxOutputTokens": 200000,
+        "maxCpuCores": 4,
+        "maxMemoryMiB": 8192,
+        "maxDiskBytes": 10737418240,
+        "maxArtifactBytes": 268435456,
+        "maxNetworkBytes": 1073741824,
+        "maxFailures": 5,
+        "noProgressLimit": 3
+      }
+    },
+    "builder": {
+      "enabled": false,
+      "isolation": "hardened-container",
+      "tools": ["read", "search", "write", "edit", "bash", "eval", "lsp", "debug", "task", "hub"],
+      "services": ["local-model"],
+      "workspaceMount": "disposable-read-write",
+      "outputKinds": ["patch", "test-evidence"],
+      "minimumMemoryMiB": 2048,
+      "maxBudgets": {
+        "maxRuntimeSeconds": 4800,
+        "maxIterations": 128,
+        "maxToolCalls": 32000,
+        "maxConcurrentSubagents": 4,
+        "maxModelRequests": 512,
+        "maxInputTokens": 4000000,
+        "maxOutputTokens": 524288,
+        "maxCpuCores": 4,
+        "maxMemoryMiB": 8192,
+        "maxDiskBytes": 10737418240,
+        "maxArtifactBytes": 268435456,
+        "maxNetworkBytes": 1073741824,
+        "maxFailures": 24,
+        "noProgressLimit": 8
+      }
+    },
+    "dataLab": {"enabled": false},
+    "researcher": {"enabled": false},
+    "publicProject": {"enabled": false}
+  },
+  "maxRequestAgeSeconds": 3600,
+  "maxLeaseSeconds": 4800,
+  "retention": {"requestDays": 30, "planDays": 30, "resultDays": 90, "checkpointDays": 30},
+  "security": {
+    "freshHome": true,
+    "inheritEnvironment": false,
+    "inheritFileDescriptors": false,
+    "projectEnvDiscovery": false,
+    "userConfigDiscovery": false,
+    "extensions": false,
+    "skills": false,
+    "mcp": false,
+    "browser": false,
+    "computer": false,
+    "collaboration": false,
+    "directNetwork": false,
+    "hostFilesystem": false,
+    "dockerSocket": false,
+    "sshAgent": false,
+    "ambientCredentials": false,
+    "automaticMerge": false,
+    "automaticDeployment": false
+  }
+}

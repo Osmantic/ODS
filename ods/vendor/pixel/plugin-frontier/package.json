@@ -1,0 +1,25 @@
+{
+  "name": "openclaw-pixel-frontier-broker",
+  "version": "4.3.27",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "check": "node --check index.js && node --check chat-audit.js && node --check publish-json.js && node --check secure-read.js"
+  },
+  "dependencies": {
+    "typebox": "1.3.13"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.5.17",
+      "minGatewayVersion": "2026.5.17"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

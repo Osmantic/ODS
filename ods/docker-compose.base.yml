@@ -112,10 +112,10 @@ services:
       WEBUI_URL: "${WEBUI_URL:-}"
       WEBUI_AUTH: "${WEBUI_AUTH:-true}"
       WEBUI_SECRET_KEY: "${WEBUI_SECRET:?WEBUI_SECRET must be set — run the installer or add it to .env}"
-      ENABLE_WEB_SEARCH: "true"
+      ENABLE_WEB_SEARCH: "${ENABLE_WEB_SEARCH:-false}"
       WEB_SEARCH_ENGINE: "searxng"
       SEARXNG_QUERY_URL: "http://searxng:8080/search?q=<query>&format=json"
-      ENABLE_SEARCH_QUERY_GENERATION: "true"
+      ENABLE_SEARCH_QUERY_GENERATION: "${ENABLE_WEB_SEARCH:-false}"
       WEB_SEARCH_RESULT_COUNT: "5"
       # Route Open WebUI retrieval embeddings through ODS's TEI service.
       # Otherwise Open WebUI downloads sentence-transformers/all-MiniLM-L6-v2
@@ -214,6 +214,13 @@ services:
       - LLAMA_ARG_SPLIT_MODE=${LLAMA_ARG_SPLIT_MODE:-}
       - LLAMA_ARG_TENSOR_SPLIT=${LLAMA_ARG_TENSOR_SPLIT:-}
       - HOST_RAM_GB=${HOST_RAM_GB:-0}
+      # WSL may use the CPU compose surface while inference runs on the
+      # Windows GPU. Pass the selected runtime independently of GPU exposure.
+      - LLM_BACKEND=${LLM_BACKEND:-}
+      - AMD_INFERENCE_LOCATION=${AMD_INFERENCE_LOCATION:-}
+      - AMD_INFERENCE_PORT=${AMD_INFERENCE_PORT:-8080}
+      - LEMONADE_CONTAINER_BASE_URL=${LEMONADE_CONTAINER_BASE_URL:-}
+      - LEMONADE_BASE_URL=${LEMONADE_BASE_URL:-}
       - OLLAMA_URL=${LLM_API_URL:-http://llama-server:8080}
       - LLM_MODEL=${LLM_MODEL:-qwen3:30b-a3b}
       - GGUF_FILE=${GGUF_FILE:-}
@@ -266,18 +273,21 @@ services:
       # with Hermes/LiteLLM long-model timeouts so Talk does not 502 while the
       # underlying agent is still working.
       - ODS_TALK_HERMES_TIMEOUT=${ODS_TALK_HERMES_TIMEOUT:-900}
+      # Shared managed login defaults; raw secrets never leave the server.
+      - HERMES_DASHBOARD_SESSION_TOKEN=${HERMES_DASHBOARD_SESSION_TOKEN:-}
+      - HERMES_ODS_MANAGED_AUTH=${HERMES_ODS_MANAGED_AUTH:-true}
+      - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-}
+      - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:-}
+      - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH:-}
+      - HERMES_DASHBOARD_OAUTH_CLIENT_ID=${HERMES_DASHBOARD_OAUTH_CLIENT_ID:-}
+      - HERMES_DASHBOARD_OIDC_CLIENT_ID=${HERMES_DASHBOARD_OIDC_CLIENT_ID:-}
       # Model id of the vision-capable variant. Defaults to the user.*
       # name we register on AMD install (Qwen3.6-35B-A3B + mmproj-F16).
       - ODS_TALK_VISION_MODEL=${ODS_TALK_VISION_MODEL:-user.Qwen3.6-35B-A3B-Vision}
     volumes:
-      - ./scripts:/ods/scripts:ro,z
-      - ./config:/ods/config:ro,z
-      - ./extensions:/ods/extensions:ro,z
-      - ./.env:/ods/.env:ro,z
-      - ./.env.example:/ods/.env.example:ro,z
-      - ./.env.schema.json:/ods/.env.schema.json:ro,z
+      # .env is atomically replaced; mounting the parent keeps updates visible.
+      - ./:/ods:ro,z
       - ./data:/data:z
-      - ./templates:/ods/templates:ro,z
     deploy:
       resources:
         limits:
@@ -357,6 +367,10 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # Lifecycle secrets stay owner-written on the host and group-readable only
+    # to the two dedicated, read-only remote-provider containers.
+    group_add:
+      - "${REMOTE_PROVIDER_DATA_GID:-1000}"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -370,7 +384,7 @@ services:
       - ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_URL=${ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_URL:-http://remote-provider-ssh-tunnel:18090/health}
       - ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_TIMEOUT=${ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_TIMEOUT:-2}
     volumes:
-      - ${ODS_DATA_DIR:-./data}:/state:ro
+      - ${ODS_DATA_DIR:-./data}/remote-provider:/state/remote-provider:ro
       - ${ODS_CONFIG_DIR:-./config}/remote-provider-egress-policy.json:/config/remote-provider-egress-policy.json:ro
     deploy:
       resources:
@@ -405,6 +419,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    group_add:
+      - "${REMOTE_PROVIDER_DATA_GID:-1000}"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -418,7 +434,7 @@ services:
       - ODS_REMOTE_PROVIDER_SSH_RESTART_COOLDOWN=${ODS_REMOTE_PROVIDER_SSH_RESTART_COOLDOWN:-5}
       - ODS_REMOTE_PROVIDER_SSH_STOP_TIMEOUT=${ODS_REMOTE_PROVIDER_SSH_STOP_TIMEOUT:-5}
     volumes:
-      - ${ODS_DATA_DIR:-./data}:/state:ro
+      - ${ODS_DATA_DIR:-./data}/remote-provider:/state/remote-provider:ro
     deploy:
       resources:
         limits:
@@ -448,6 +464,10 @@ services:
     logging: *default-logging
     environment:
       - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-}
+      - PIXEL_PREVIEW_PORT=${PIXEL_PREVIEW_PORT:-9437}
+      # Must match the host address port 3001 is published on below: only a
+      # loopback bind lets browsers on this machine skip dashboard sign-in.
+      - ODS_DASHBOARD_BIND=${BIND_ADDRESS:-127.0.0.1}
     volumes:
       - ./data:/data:ro,z
     ports:

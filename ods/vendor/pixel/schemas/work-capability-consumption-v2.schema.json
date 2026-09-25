@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-consumption-v2.schema.json",
+  "title": "Pixel Deep Work broad-tools capability consumption v2 (admission-only foundation)",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "claimId", "grantId", "jobId", "claimedAt", "grantSha256", "packSha256", "checkpointSha256", "status", "externalEffects", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-consumption-v2.schema.json"},
+    "schemaVersion": {"const": 2},
+    "claimId": {"type": "string", "pattern": "^workcapclaim-[0-9]{13}-[a-f0-9]{12}$"},
+    "grantId": {"type": "string", "pattern": "^workcapgrant-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "claimedAt": {"type": "string", "format": "date-time"},
+    "grantSha256": {"$ref": "#/$defs/sha256"},
+    "packSha256": {"$ref": "#/$defs/sha256"},
+    "checkpointSha256": {"$ref": "#/$defs/sha256"},
+    "status": {"const": "consumed"},
+    "externalEffects": {"const": false},
+    "boundary": {"const": "Immutable replay tombstone for one admission-only v2 capability grant. It contains no tool arguments, result content, credential, network, external-effect, scope-expansion, or completion authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

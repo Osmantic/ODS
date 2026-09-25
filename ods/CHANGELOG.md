@@ -6,6 +6,79 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+- The dashboard asks for sign-in when it is reached from another device: LAN
+  mode, ODS proxy (`dashboard.<device>.local`), a reverse proxy or Tailscale
+  Serve. Previously its proxy added the admin API key to every request, so
+  anyone who could reach it had full control. Browsers on the ODS machine
+  itself (`http://localhost`) are unchanged. Sign in once per browser (30 days)
+  with a user-chosen password. The frosted sign-in, setup and recovery screens
+  match the dashboard. Local owners can defer password setup; remote access
+  stays protected. `ods dashboard-login` prints a short-lived, single-use
+  recovery link. Password replacement revokes other dashboard sessions and
+  unused links; only a salted password hash is stored.
+- Chat-only guest invites no longer set the `ods-session` cookie, so they
+  cannot open ODS Talk or pass the optional Hermes gate. Owner cards and
+  Hermes invites are unchanged.
+- Previously issued ODS session cookies are invalidated at upgrade, including
+  unexpired chat-only guest cookies. Owners renew through the existing owner
+  card or authenticated dashboard flow; default direct Hermes access is unchanged.
+
+## [3.0.0] - 2026-09-24
+
+ODS V3 was published as `v3.0.0` on September 24, 2026. Full fleet
+qualification remains incomplete. See [V3 notes](docs/RELEASE_NOTES_3.0.0.md)
+for the immutable source commit and acceptance boundaries.
+
+### Added
+- Bundled Portal assistant, powered by Pixel, with dashboard conversations,
+  streamed activity, managed workspace previews, research tools, and explicit
+  extension and host-action approval flows on eligible platforms.
+- Public, pinned Pixel source and installation artifacts, with bundle/source
+  integrity checks and documentation of the separate ODS-only Pixel license.
+
+### Changed
+- ODS runtime, installers, dashboard package, and desktop installer package now
+  identify as 3.0.0. Dependency and separately versioned Pixel versions are unchanged.
+- Portal shows the advertised runtime model and distinguishes route availability
+  from agent qualification. The non-actionable readiness banner was removed
+  from chat; removal does not certify the agent or its model.
+- Native macOS and qualifying Linux/WSL installations have additional ownership,
+  lifecycle, sandbox, and artifact-binding checks. Native Windows continues to
+  use its separate agent installation path without the Portal host runtime.
+
+### Fixed
+- Native Windows verifies private `.env` access before writing credentials in
+  both Windows PowerShell and PowerShell 7; protection failures stop the install.
+  Credentials are created with a private ACL and published by replacement, so
+  an already-open reader cannot observe new credentials after a reinstall.
+- Source update and rollback preserve quoted Compose paths. The source updater
+  refuses native Pixel and source-built stacks whose runtime artifacts it cannot
+  safely coordinate; ordinary image maintenance remains a separate operation.
+- Generic backup and restore refuse unsupported native Pixel state instead of
+  silently omitting it. Configuration-only archives explicitly record the
+  exclusion. This restriction does not add native backup/recovery support.
+  Ordinary Linux installations retain backup, restore and configuration rollback
+  when run as root; account-owner receipts determine native state.
+- Installer failure guidance preserves source and recovery receipts instead of
+  recommending manual directory deletion or promising every retry is safe.
+- Pixel retry and compaction handling preserves the current request, task
+  activity, and goal plan, and avoids waiting for an impossible terminal retry.
+- Workspace operations retain canonical project paths, reject mistaken host
+  paths before file access, and verify published preview bytes independently
+  from whether the overall user task succeeded.
+- Reinstallation and update handling better recognizes owned Compose stacks,
+  retires owned native macOS sandboxes, and preserves retired sandbox archives.
+- Model streaming closes connections after client disconnects; memory-based
+  context limits cover additional native and WSL installation paths.
+
+### Validation boundaries
+- V3 source publication does not establish full fleet acceptance. Pixel/Portal
+  task quality, full model-switchboard qualification,
+  and installed update/rollback/reboot acceptance remain incomplete. See the
+  [promotion record](docs/PUBLIC_BETA_PROMOTION_2026-09.md) for evidence and
+  known limitations; source and CI passes do not imply full fleet acceptance.
+
 ## [2.6.0] - 2026-07-28
 
 ### Added

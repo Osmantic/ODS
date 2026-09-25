@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/dbeaver/cloudbeaver",
+  "license": "Apache-2.0",
+  "image": "dbeaver/cloudbeaver:25.3.5@sha256:f3cca49f00cab1c8878cf9d0431620ee51a7d52f8ece72b49d60195fdc709747",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Community Edition 25.3.5 pinned, upstream launch script runs directly as its existing UID 8978. Workspace ownership and driver write access prepared at build time. Initial connection catalog empty, anonymous access disabled, owner configures account and chosen database connections in first-run UI."
+}

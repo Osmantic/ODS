@@ -10,11 +10,18 @@ search:
     - html
     - json
 engines:
+  - name: bing
+    # Requalify before enabling: this pin returns first-word-only results.
+    # https://github.com/searxng/searxng/pull/6671
+    disabled: true
   - name: duckduckgo
     disabled: false
   - name: google
     disabled: false
   - name: brave
+    disabled: false
+  - name: seznam
+    # Independent general-web fallback when major engines block this household IP.
     disabled: false
   - name: wikipedia
     disabled: false

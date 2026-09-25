@@ -3,7 +3,7 @@ import { Cpu } from 'lucide-react'
 
 const STRATEGY_STYLE = {
   dedicated: 'bg-indigo-500/15 text-indigo-400',
-  shared:    'bg-yellow-500/15 text-yellow-400',
+  shared:    'bg-theme-text-secondary/15 text-theme-text-secondary',
   auto:      'bg-zinc-700 text-zinc-300',
 }
 

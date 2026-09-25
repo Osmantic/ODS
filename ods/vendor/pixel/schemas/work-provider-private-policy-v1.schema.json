@@ -1,0 +1,459 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-provider-private-policy-v1.schema.json",
+  "title": "Pixel owner-private work provider policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "policyId",
+    "createdAt",
+    "providerId",
+    "enabled",
+    "credentialCustody",
+    "transport",
+    "dataPolicy",
+    "budgets",
+    "fallback",
+    "verification",
+    "authority",
+    "boundary"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://osmantic.com/pixel/schemas/work-provider-private-policy-v1.schema.json"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "policyId": {
+      "type": "string",
+      "pattern": "^workproviderpolicy-[0-9]{13}-[a-f0-9]{12}$"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "providerId": {
+      "enum": [
+        "anthropic",
+        "fireworks",
+        "groq",
+        "moonshot-kimi",
+        "openai",
+        "openrouter",
+        "together"
+      ]
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "credentialCustody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "credentialId",
+        "fileName",
+        "maxBytes"
+      ],
+      "properties": {
+        "credentialId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}$"
+        },
+        "fileName": {
+          "type": "string",
+          "enum": [
+            "provider-key",
+            "moonshot-kimi-key",
+            "openai-key",
+            "anthropic-key"
+          ]
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 20,
+          "maximum": 8192
+        }
+      }
+    },
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowedHosts",
+        "proxyRequired",
+        "directNetworkAllowed",
+        "denyIpLiterals",
+        "denyPrivateAddressResolution",
+        "denyPlainHttp",
+        "logRequestBodies",
+        "logResponseBodies"
+      ],
+      "properties": {
+        "allowedHosts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9.-]+:[0-9]{1,5}$"
+          }
+        },
+        "proxyRequired": {
+          "const": true
+        },
+        "directNetworkAllowed": {
+          "const": false
+        },
+        "denyIpLiterals": {
+          "const": true
+        },
+        "denyPrivateAddressResolution": {
+          "const": true
+        },
+        "denyPlainHttp": {
+          "const": true
+        },
+        "logRequestBodies": {
+          "const": false
+        },
+        "logResponseBodies": {
+          "const": false
+        }
+      }
+    },
+    "dataPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowedClassifications",
+        "neverEgressCategories"
+      ],
+      "properties": {
+        "allowedClassifications": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "public",
+              "internal-source",
+              "owner-approved-source"
+            ]
+          }
+        },
+        "neverEgressCategories": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "authentication-material",
+              "credentials",
+              "private-keys",
+              "regulated-records",
+              "session-tokens",
+              "unapproved-owner-data"
+            ]
+          }
+        }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxRequestsPerRun",
+        "maxInputTokensPerRun",
+        "maxOutputTokensPerRun",
+        "maxNetworkBytesPerRun",
+        "maxRequestSeconds",
+        "maxEstimatedCostMicrosPerRun",
+        "maxEstimatedCostMicrosPerDay"
+      ],
+      "properties": {
+        "maxRequestsPerRun": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "maxInputTokensPerRun": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000000
+        },
+        "maxOutputTokensPerRun": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        },
+        "maxNetworkBytesPerRun": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 10737418240
+        },
+        "maxRequestSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "maxEstimatedCostMicrosPerRun": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000
+        },
+        "maxEstimatedCostMicrosPerDay": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000000
+        }
+      }
+    },
+    "pricing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inputMicrosPerMillionTokens",
+        "outputMicrosPerMillionTokens",
+        "fixedMicrosPerRun"
+      ],
+      "properties": {
+        "inputMicrosPerMillionTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "outputMicrosPerMillionTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "fixedMicrosPerRun": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        }
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "cloudToCloudAllowed",
+        "reconcileBeforeRetry"
+      ],
+      "properties": {
+        "mode": {
+          "const": "local-only"
+        },
+        "cloudToCloudAllowed": {
+          "const": false
+        },
+        "reconcileBeforeRetry": {
+          "const": true
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "independentLocalVerifierRequired",
+        "verifierMayBeWorker",
+        "failClosedIfUnavailable"
+      ],
+      "properties": {
+        "independentLocalVerifierRequired": {
+          "const": true
+        },
+        "verifierMayBeWorker": {
+          "const": false
+        },
+        "failClosedIfUnavailable": {
+          "const": true
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "merge",
+        "push",
+        "deploy",
+        "publish",
+        "externalMessages",
+        "productionCredentials",
+        "securityTesting"
+      ],
+      "properties": {
+        "merge": {
+          "const": false
+        },
+        "push": {
+          "const": false
+        },
+        "deploy": {
+          "const": false
+        },
+        "publish": {
+          "const": false
+        },
+        "externalMessages": {
+          "const": false
+        },
+        "productionCredentials": {
+          "const": false
+        },
+        "securityTesting": {
+          "const": false
+        }
+      }
+    },
+    "boundary": {
+      "const": "Owner-private remote work-provider policy. It may enable only the exact selected provider, credential custody, egress hosts, data classes, and budgets; it grants no merge, push, deployment, publication, external-message, production-credential, cloud-fallback, policy-mutation, verifier-selection, completion, or security-testing authority."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^(?!provider-selected-model$|auto$|placeholder$).+"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "providerId": {
+            "const": "moonshot-kimi"
+          }
+        },
+        "required": [
+          "providerId"
+        ]
+      },
+      "then": {
+        "properties": {
+          "credentialCustody": {
+            "properties": {
+              "fileName": {
+                "enum": [
+                  "provider-key",
+                  "moonshot-kimi-key"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "providerId": {
+            "const": "openai"
+          }
+        },
+        "required": [
+          "providerId"
+        ]
+      },
+      "then": {
+        "properties": {
+          "credentialCustody": {
+            "properties": {
+              "fileName": {
+                "enum": [
+                  "provider-key",
+                  "openai-key"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "providerId": {
+            "const": "anthropic"
+          }
+        },
+        "required": [
+          "providerId"
+        ]
+      },
+      "then": {
+        "properties": {
+          "credentialCustody": {
+            "properties": {
+              "fileName": {
+                "enum": [
+                  "provider-key",
+                  "anthropic-key"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "providerId": {
+            "enum": [
+              "fireworks",
+              "groq",
+              "openrouter",
+              "together"
+            ]
+          }
+        },
+        "required": [
+          "providerId"
+        ]
+      },
+      "then": {
+        "properties": {
+          "credentialCustody": {
+            "properties": {
+              "fileName": {
+                "const": "provider-key"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "providerId": {
+            "enum": [
+              "fireworks",
+              "groq",
+              "openrouter",
+              "together"
+            ]
+          }
+        },
+        "required": [
+          "providerId"
+        ]
+      },
+      "then": {
+        "required": [
+          "model"
+        ]
+      }
+    }
+  ]
+}

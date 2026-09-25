@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-policy-v1.schema.json",
+  "title": "Pixel private local control policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "actions", "backup"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "actions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["updateCheck", "backupCreate", "operationsPause", "frontierPause"],
+      "properties": {
+        "updateCheck": {"type": "boolean"},
+        "backupCreate": {"type": "boolean"},
+        "operationsPause": {"type": "boolean"},
+        "frontierPause": {"type": "boolean"},
+        "deepWorkPause": {"type": "boolean"},
+        "deepWorkResume": {"type": "boolean"},
+        "deepWorkCancel": {"type": "boolean"},
+        "deepWorkDraft": {"type": "boolean"},
+        "deepWorkPrepare": {"type": "boolean"},
+        "deepWorkStage": {"type": "boolean"},
+        "deepWorkServiceRender": {"type": "boolean"}
+      }
+    },
+    "views": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frontierReviews"],
+      "properties": {
+        "frontierReviews": {"type": "boolean"},
+        "deepWorkSemanticReviews": {"type": "boolean"}
+      }
+    },
+    "backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directory", "ageRecipient"],
+      "properties": {
+        "directory": {"type": "string", "pattern": "^/[^\\r\\n]{1,2046}$"},
+        "ageRecipient": {"type": "string", "pattern": "^age1[a-z0-9]{8,190}$"}
+      }
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-lease-revocation-v1.schema.json",
+  "title": "Pixel Deep Work pre-launch lease revocation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "revocationId", "goalId", "jobId", "leaseId", "revokedAt", "goalCheckpointSha256", "reviewedChildCheckpointSha256", "cancellationReviewSha256", "planSha256", "leaseSha256", "reason", "singleUse", "status", "externalEffects", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-lease-revocation-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "revocationId": {"type": "string", "pattern": "^workrevocation-[0-9]{13}-[a-f0-9]{12}$"},
+    "goalId": {"type": "string", "pattern": "^workgoal-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "leaseId": {"type": "string", "pattern": "^worklease-[0-9]{13}-[a-f0-9]{12}$"},
+    "revokedAt": {"type": "string", "format": "date-time"},
+    "goalCheckpointSha256": {"$ref": "#/$defs/sha256"},
+    "reviewedChildCheckpointSha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+    "cancellationReviewSha256": {"$ref": "#/$defs/sha256"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "leaseSha256": {"$ref": "#/$defs/sha256"},
+    "reason": {"const": "operator-cancel-before-launch"},
+    "singleUse": {"const": true},
+    "status": {"const": "revoked"},
+    "externalEffects": {"const": false},
+    "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Private immutable tombstone proving one exact lease was revoked before launch. It grants no execution, replay, retry, scope expansion, credential, network, host, merge, deployment, publication, purchase, or external-effect authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostAccess", "ambientCredentials", "arbitraryNetwork", "externalEffects", "merge", "deploy", "publish", "purchase", "policyMutation", "acceptanceCriteriaMutation", "leaseExpansion"],
+      "properties": {
+        "hostAccess": {"const": false}, "ambientCredentials": {"const": false}, "arbitraryNetwork": {"const": false},
+        "externalEffects": {"const": false}, "merge": {"const": false}, "deploy": {"const": false},
+        "publish": {"const": false}, "purchase": {"const": false}, "policyMutation": {"const": false},
+        "acceptanceCriteriaMutation": {"const": false}, "leaseExpansion": {"const": false}
+      }
+    }
+  }
+}

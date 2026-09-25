@@ -142,6 +142,14 @@ run_phase_case() {
             EXTERNAL_LLM_PROVIDER="ollama"
             EXTERNAL_LLM_MODEL="qwen3.5:9b"
             ;;
+        explicit-openai|detect-openai)
+            MOCK_LMSTUDIO=up
+            MOCK_OLLAMA=down
+            EXTERNAL_LLM_URL="http://10.0.2.2:18080"
+            EXTERNAL_LLM_PROVIDER="openai-compatible"
+            [[ "$case_name" != detect-openai ]] || EXTERNAL_LLM_PROVIDER=auto
+            EXTERNAL_LLM_MODEL="local-model"
+            ;;
         explicit-cloud)
             MOCK_OLLAMA=up
             ODS_MODE=cloud
@@ -174,6 +182,15 @@ run_phase_case() {
 
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
+
+for external_case in explicit-openai detect-openai; do
+    if output="$(run_phase_case "$external_case" "$TEMP_DIR/$external_case"; printf '%s|%s\n' \
+        "${EXTERNAL_LLM_PROVIDER:-}" "${EXTERNAL_LLM_MODEL:-}")"; then
+        assert_eq "$output" "openai-compatible|local-model" "$external_case preserves protocol and exact model identity"
+    else
+        fail "$external_case accepts a generic OpenAI-compatible endpoint"
+    fi
+done
 
 if output="$(run_phase_case default "$TEMP_DIR/default"; printf '%s|%s\n' "${EXTERNAL_LLM_URL:-}" "${SKIP_MODEL_DOWNLOAD:-}")"; then
     assert_eq "$output" "|false" "non-interactive ambient discovery is inert by default"
@@ -254,6 +271,8 @@ run_phase06_env_cycle() (
 
     local install_dir="$TEMP_DIR/phase06-install"
     mkdir -p "$install_dir"
+    export HOME="$install_dir/test-home"
+    mkdir -p "$HOME"
     tar -C "$ROOT_DIR" \
         --exclude='./.env' \
         --exclude='./extensions/services/dashboard/node_modules' \
@@ -317,9 +336,13 @@ run_phase06_env_cycle() (
 
     grep -qx 'LLM_BACKEND=external' "$install_dir/.env"
     grep -qx 'LLM_MODEL=qwen3.5:9b' "$install_dir/.env"
-    grep -qx 'LLM_API_URL=http://host.docker.internal:11434' "$install_dir/.env"
-    grep -qx 'OPEN_WEBUI_LLM_BASE_URL=http://host.docker.internal:11434/v1' "$install_dir/.env"
-    grep -qx 'HERMES_LLM_BASE_URL=http://host.docker.internal:11434/v1' "$install_dir/.env"
+    grep -qx 'LLM_API_URL=http://litellm:4000' "$install_dir/.env"
+    grep -qx 'OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000/v1' "$install_dir/.env"
+    grep -qx 'HERMES_LLM_BASE_URL=http://litellm:4000/v1' "$install_dir/.env"
+    grep -q 'model_name: "ods/current"' "$install_dir/config/litellm/local.yaml"
+    grep -q 'model: "openai/qwen3.5:9b"' "$install_dir/config/litellm/local.yaml"
+    grep -q 'api_base: "http://host.docker.internal:11434/v1"' "$install_dir/config/litellm/local.yaml"
+    grep -q 'master_key: os.environ/LITELLM_MASTER_KEY' "$install_dir/config/litellm/local.yaml"
     grep -qx 'EXTERNAL_LLM_PROVIDER=ollama' "$install_dir/.env"
     grep -qx 'SKIP_MODEL_DOWNLOAD=true' "$install_dir/.env"
     grep -qx 'MODEL_RECOMMENDED_MODEL=qwen3-1.7b' "$install_dir/.env"
@@ -343,6 +366,8 @@ run_phase06_env_cycle() (
     grep -qx 'EXTERNAL_LLM_URL=' "$install_dir/.env"
     grep -qx 'EXTERNAL_LLM_PROVIDER=' "$install_dir/.env"
     grep -qx 'SKIP_MODEL_DOWNLOAD=false' "$install_dir/.env"
+    grep -q 'api_base: http://llama-server:8080/v1' "$install_dir/config/litellm/local.yaml"
+    ! grep -q 'host.docker.internal:11434\|openai/qwen3.5:9b' "$install_dir/config/litellm/local.yaml"
 )
 
 if run_phase06_env_cycle; then
@@ -356,6 +381,8 @@ run_phase06_amd_external() (
 
     local install_dir="$TEMP_DIR/phase06-amd"
     mkdir -p "$install_dir"
+    export HOME="$install_dir/test-home"
+    mkdir -p "$HOME"
     tar -C "$ROOT_DIR" \
         --exclude='./.env' \
         --exclude='./extensions/services/dashboard/node_modules' \
@@ -425,6 +452,54 @@ if run_phase06_amd_external; then
     pass "AMD external reuse writes one coherent non-Lemonade backend contract"
 else
     fail "AMD external reuse .env contract"
+fi
+
+probe_retries_after_one_transport_failure() (
+    local curl_failure="$1" calls=0
+    curl() {
+        calls=$((calls + 1))
+        [[ "${*: -1}" == "http://127.0.0.1:18080/v1/chat/completions" ]] || return 99
+        [[ "$calls" -eq 2 ]] || return "$curl_failure"
+    }
+    sleep() { [[ "$1" == 2 ]]; }
+    external_llm_probe_completion 'http://127.0.0.1:18080' 'test-model' >/dev/null 2>&1 &&
+        [[ "$calls" -eq 2 ]]
+)
+assert_true "external completion probe retries one transient timeout" probe_retries_after_one_transport_failure 28
+assert_true "external completion probe retries one connection failure" probe_retries_after_one_transport_failure 7
+
+probe_fails_after_two_timeouts() (
+    local calls=0
+    curl() {
+        calls=$((calls + 1))
+        return 28
+    }
+    sleep() { [[ "$1" == 2 ]]; }
+    if external_llm_probe_completion 'http://127.0.0.1:18080' 'test-model' >/dev/null 2>&1; then
+        return 1
+    fi
+    [[ "$calls" -eq 2 ]]
+)
+assert_true "external completion probe stays red after bounded retries" probe_fails_after_two_timeouts
+
+probe_does_not_retry_http_error() (
+    local calls=0
+    curl() {
+        calls=$((calls + 1))
+        return 22
+    }
+    sleep() { return 99; }
+    if external_llm_probe_completion 'http://127.0.0.1:18080' 'test-model' >/dev/null 2>&1; then
+        return 1
+    fi
+    [[ "$calls" -eq 1 ]]
+)
+assert_true "external completion probe does not retry a hard HTTP error" probe_does_not_retry_http_error
+
+if python3 "$ROOT_DIR/tests/test-external-completion-probe.py"; then
+    pass "completion probe distinguishes reasoning budget exhaustion from invalid responses"
+else
+    fail "external completion response validation"
 fi
 
 printf '\nResult: %d passed, %d failed\n' "$PASSED" "$FAILED"

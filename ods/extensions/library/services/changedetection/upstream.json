@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/dgtlmoon/changedetection.io",
+  "license": "Apache-2.0",
+  "image": "ghcr.io/dgtlmoon/changedetection.io:0.60.7@sha256:096dae27b5d677b89f0e810fff95a70403271aa3ff3b6437952d2db9be7e74c5",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official CPU HTTP monitor with persistent nonroot data, required password mapped to upstream PBKDF2 format. Version-checked build edit disables first-run example watches. No browser fetcher, notification destinations or LLM configured. Login page readiness is not worker or target-site verification."
+}

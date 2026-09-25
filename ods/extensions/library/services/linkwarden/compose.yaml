@@ -1,0 +1,132 @@
+services:
+  linkwarden:
+    image: ghcr.io/linkwarden/linkwarden:latest@sha256:0664c28a039bda8ffa6663389e8536b2fc717219e329f85b83faca7efed3b144
+    container_name: ods-linkwarden
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${LINKWARDEN_PORT:-11023}:3000
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - fetch('http://127.0.0.1:3000/login',{signal:AbortSignal.timeout(8000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    volumes:
+    - linkwarden-data:/data/data
+    depends_on:
+      linkwarden-db:
+        condition: service_healthy
+      linkwarden-search:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://linkwarden:${LINKWARDEN_DATABASE_PASSWORD:?Set a
+        random URL-safe database password}@linkwarden-db:5432/linkwarden
+      NEXTAUTH_URL: ${LINKWARDEN_AUTH_URL:-http://localhost:11023/api/v1/auth}
+      NEXTAUTH_SECRET: ${LINKWARDEN_AUTH_SECRET:?Set a persistent random authentication
+        secret}
+      NEXT_PUBLIC_DISABLE_REGISTRATION: ${LINKWARDEN_DISABLE_REGISTRATION:-false}
+      STORAGE_FOLDER: /data/data
+      MEILI_HOST: http://linkwarden-search:7700
+      MEILI_MASTER_KEY: ${LINKWARDEN_SEARCH_KEY:?Set a private search index key}
+      OPENAI_API_KEY: ${LITELLM_KEY:-no-key}
+      OPENAI_MODEL: ods/current
+      CUSTOM_OPENAI_BASE_URL: http://litellm:4000/v1
+      CUSTOM_OPENAI_NAME: ods
+  linkwarden-db:
+    image: postgres:16-alpine@sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb
+    container_name: ods-linkwarden-db
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - linkwarden
+      - -d
+      - linkwarden
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    environment:
+      POSTGRES_DB: linkwarden
+      POSTGRES_USER: linkwarden
+      POSTGRES_PASSWORD: ${LINKWARDEN_DATABASE_PASSWORD:?Set a random URL-safe database
+        password}
+    volumes:
+    - linkwarden-db-data:/var/lib/postgresql/data
+  linkwarden-search:
+    image: getmeili/meilisearch:v1.13.3@sha256:bed3fb650e62da53145777204891159242f6ea4ce69e215b36223af4aa64a0ae
+    container_name: ods-linkwarden-search
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - http://127.0.0.1:7700/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    volumes:
+    - linkwarden-search-data:/meili_data
+    environment:
+      MEILI_ENV: production
+      MEILI_NO_ANALYTICS: 'true'
+      MEILI_MASTER_KEY: ${LINKWARDEN_SEARCH_KEY:?Set a private search index key}
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  linkwarden-data: {}
+  linkwarden-db-data: {}
+  linkwarden-search-data: {}

@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-health-v1.schema.json",
+  "title": "Pixel Deep Work capability health evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "pack", "admissionReceiptSha256", "attempt", "operationCustody", "startedAt", "completedAt", "result", "container", "health", "enabled", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-health-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-capability-health"},
+    "pack": {"$ref": "#/$defs/pack"},
+    "admissionReceiptSha256": {"$ref": "#/$defs/sha256"},
+    "attempt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sequence", "previousReceiptSha256"],
+      "properties": {
+        "sequence": {"type": "integer", "minimum": 1, "maximum": 999999},
+        "previousReceiptSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
+      }
+    },
+    "operationCustody": {
+      "type": "object", "additionalProperties": false,
+      "required": ["bindingSha256", "token"],
+      "properties": {"bindingSha256": {"$ref": "#/$defs/sha256"}, "token": {"$ref": "#/$defs/sha256"}}
+    },
+    "startedAt": {"type": "string", "format": "date-time"},
+    "completedAt": {"type": "string", "format": "date-time"},
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "failureClass", "protocolVersion", "toolSurfaceSha256", "instructionsSha256", "frames", "stdoutBytes", "stderrBytes", "stderrSha256", "evidenceSha256", "toolCalls", "dataBytes"],
+      "properties": {
+        "status": {"enum": ["passed", "failed"]},
+        "failureClass": {"enum": [null, "launch", "timeout", "protocol", "identity-or-schema", "transport", "uncertain-recovered"]},
+        "protocolVersion": {"enum": [null, "2026-07-28"]},
+        "toolSurfaceSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "instructionsSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "frames": {"type": "integer", "minimum": 0, "maximum": 1024},
+        "stdoutBytes": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "stderrBytes": {"type": "integer", "minimum": 0, "maximum": 16777216},
+        "stderrSha256": {"$ref": "#/$defs/sha256"},
+        "evidenceSha256": {"$ref": "#/$defs/sha256"},
+        "toolCalls": {"const": 0},
+        "dataBytes": {"const": 0}
+      }
+    },
+    "container": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reference", "id", "startState", "network", "workspace", "removed", "absenceProven"],
+      "properties": {
+        "reference": {
+          "type": "string",
+          "oneOf": [
+            {"pattern": "^[a-z0-9][a-z0-9._/:+-]{1,255}@sha256:[a-f0-9]{64}$"},
+            {"pattern": "^sha256:[a-f0-9]{64}$"}
+          ]
+        },
+        "id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "startState": {"enum": ["started", "uncertain"]},
+        "network": {"const": "none"},
+        "workspace": {"const": false},
+        "removed": {"const": true},
+        "absenceProven": {"const": true}
+      }
+    },
+    "health": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "consecutiveFailures", "quarantineThreshold"],
+      "properties": {
+        "status": {"enum": ["passing", "failing", "quarantined"]},
+        "consecutiveFailures": {"type": "integer", "minimum": 0, "maximum": 3},
+        "quarantineThreshold": {"const": 3}
+      }
+    },
+    "enabled": {"const": false},
+    "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Content-free evidence from one explicitly confirmed, networkless, workspace-free MCP discovery and tools-list probe. The probe made no tool call and the receipt grants no future health probe, execution, tool use, data access, image pull, network, external effect, controller registration, or completion authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "pack": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "packSha256", "treeSha256", "signerIdentity"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+        "packSha256": {"$ref": "#/$defs/sha256"},
+        "treeSha256": {"$ref": "#/$defs/sha256"},
+        "signerIdentity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$"}
+      }
+    },
+    "authority": {
+      "const": {
+        "grantsHealthProbe": false,
+        "grantsExecution": false,
+        "grantsToolUse": false,
+        "grantsDataAccess": false,
+        "grantsImagePull": false,
+        "grantsNetwork": false,
+        "grantsExternalEffects": false,
+        "grantsControllerRegistration": false,
+        "grantsCompletion": false
+      }
+    }
+  }
+}

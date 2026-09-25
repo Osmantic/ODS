@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/rabbitmq/rabbitmq-server",
+  "license": "MPL-2.0",
+  "source_ref": "v4.3.6",
+  "image": "rabbitmq:4.3.6-management@sha256:de62d9901fb73aaa8767b9c1e9ea32f2938f69d1b83e430f7c5ca854081d2128",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official management image, required administrator/node secrets, stable nodename, persistent broker state and resource alarms. No project queues, client connections or model integration provisioned. Upstream runtime privilege drop preserved."
+}

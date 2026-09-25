@@ -1,0 +1,31 @@
+id: document_report
+namespace: ods.documents
+description: Produce a reproducible size, text and checksum report for an uploaded UTF-8 document.
+inputs:
+  - id: text_file
+    type: FILE
+    required: true
+tasks:
+  - id: report
+    type: io.kestra.plugin.scripts.python.Script
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    inputFiles:
+      input.txt: "{{ inputs.text_file }}"
+    outputFiles:
+      - report.json
+    script: |
+      import hashlib
+      import json
+      from pathlib import Path
+
+      data = Path('input.txt').read_bytes()
+      text = data.decode('utf-8')
+      report = {
+          'bytes': len(data),
+          'characters': len(text),
+          'lines': len(text.splitlines()),
+          'words': len(text.split()),
+          'sha256': hashlib.sha256(data).hexdigest(),
+      }
+      Path('report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')

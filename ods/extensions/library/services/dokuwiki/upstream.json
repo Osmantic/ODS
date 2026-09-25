@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/dokuwiki/dokuwiki",
+  "license": "GPL-2.0",
+  "image": "dokuwiki/dokuwiki:2026-07-14c@sha256:1475c0d9c85fbcb31bdb380e8d2157b836e244a33c90b7ae8406ea30ec659f37",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official Docker packaging at https://github.com/dokuwiki/docker. Original Apache/PHP entrypoint and storage symlink setup under UID 1000. Persistent pages/media/configuration/plugins, upstream interactive installer and native initialization health check. No preset account or external database."
+}

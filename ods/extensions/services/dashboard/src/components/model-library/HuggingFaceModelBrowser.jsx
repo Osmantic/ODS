@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 
 const SEARCH_DELAY_MS = 350
+const SEARCH_TIMEOUT_MS = 30000
 
 export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportStarted }) {
   const [query, setQuery] = useState('')
@@ -40,23 +41,34 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
     const controller = new AbortController()
     setLoading(true)
     setError(null)
+    let deadline
     const timeout = setTimeout(async () => {
+      // Include body consumption in the deadline. Cleanup aborts obsolete
+      // queries; a current stalled request must also release the Retry action.
+      deadline = setTimeout(() => {
+        controller.abort()
+        setError('Hugging Face search timed out. Retry search.')
+        setLoading(false)
+      }, SEARCH_TIMEOUT_MS)
       try {
         const params = new URLSearchParams({ q: query.trim(), sort, limit: '20' })
         const response = await fetch(`/api/models/huggingface/search?${params}`, { signal: controller.signal })
         const body = await responseJson(response)
+        if (controller.signal.aborted) return
         if (!response.ok) throw new Error(errorMessage(body, 'Hugging Face search failed'))
         setResults(Array.isArray(body.models) ? body.models : [])
         setAuthenticated(Boolean(body.authenticated))
         setStale(Boolean(body.stale))
       } catch (requestError) {
-        if (requestError?.name !== 'AbortError') setError(requestError.message)
+        if (!controller.signal.aborted && requestError?.name !== 'AbortError') setError(requestError.message)
       } finally {
+        clearTimeout(deadline)
         if (!controller.signal.aborted) setLoading(false)
       }
     }, SEARCH_DELAY_MS)
     return () => {
       clearTimeout(timeout)
+      clearTimeout(deadline)
       controller.abort()
     }
   }, [query, sort, searchAttempt])
@@ -73,6 +85,9 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
       const body = await responseJson(response)
       if (!response.ok) throw new Error(errorMessage(body, 'Could not inspect this repository'))
       if (detailsRequestRef.current !== requestId) return
+      if (body?.id !== model.id || !Array.isArray(body.artifacts)) {
+        throw new Error('Could not read repository metadata. Retry details.')
+      }
       setDetails(body)
     } catch (requestError) {
       if (detailsRequestRef.current === requestId) setDetailsError(requestError.message)
@@ -115,7 +130,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
     <div className="space-y-4">
       <section className="grid gap-3 border-b border-white/[0.06] pb-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-amber-300/20 bg-amber-300/8">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-theme-border bg-theme-text-secondary/8">
             <img src="/huggingface-logo.svg" alt="" className="h-7 w-7 object-contain" />
           </div>
           <div className="min-w-0">
@@ -126,7 +141,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
                 {authenticated ? 'Authenticated' : 'Public access'}
               </span>
               {stale && (
-                <span className="inline-flex items-center gap-1 rounded border border-amber-400/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
+                <span className="inline-flex items-center gap-1 rounded border border-theme-border bg-theme-text-secondary/10 px-1.5 py-0.5 text-[10px] font-semibold text-theme-text-secondary">
                   Cached snapshot
                 </span>
               )}
@@ -138,7 +153,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
         </div>
         <div className="flex items-center gap-2 text-[11px] text-theme-text-muted" aria-live="polite">
           <span className="inline-flex min-w-[112px] items-center justify-center gap-1.5 rounded-md border border-white/[0.06] bg-black/20 px-2.5 py-1.5">
-            {loading && <Loader2 size={11} className="animate-spin text-amber-300" />}
+            {loading && <Loader2 size={11} className="animate-spin text-theme-text-secondary" />}
             {loading ? 'Searching...' : `${results.length} repositories`}
           </span>
           <span className="rounded-md border border-white/[0.06] bg-black/20 px-2.5 py-1.5">GGUF only</span>
@@ -152,15 +167,15 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search repositories, authors, or model families..."
-            className="h-10 w-full rounded-lg border border-white/[0.08] bg-black/25 pl-10 pr-10 text-sm text-theme-text outline-none transition-colors placeholder:text-theme-text-muted/60 focus:border-amber-300/40"
+            className="h-10 w-full rounded-lg border border-white/[0.08] bg-black/25 pl-10 pr-10 text-sm text-theme-text outline-none transition-colors placeholder:text-theme-text-muted/60 focus:border-theme-border"
             aria-busy={loading}
           />
-          {loading && <Loader2 size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-amber-300" />}
+          {loading && <Loader2 size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-theme-text-secondary" />}
         </label>
         <select
           value={sort}
           onChange={(event) => setSort(event.target.value)}
-          className="h-10 rounded-lg border border-white/[0.08] bg-[#0b0b12] px-3 text-xs text-theme-text-secondary outline-none focus:border-amber-300/40"
+          className="h-10 rounded-lg border border-white/[0.08] bg-[#0b0b12] px-3 text-xs text-theme-text-secondary outline-none focus:border-theme-border"
           aria-label="Sort Hugging Face models"
         >
           <option value="downloads">Most downloaded</option>
@@ -185,8 +200,8 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
 
       <section className="relative overflow-hidden rounded-lg border border-white/[0.08] bg-black/15" aria-busy={loading}>
         {loading && (
-          <div className="absolute inset-x-0 top-0 z-10 h-0.5 overflow-hidden bg-amber-300/10">
-            <div className="h-full w-full animate-pulse bg-gradient-to-r from-transparent via-amber-300 to-transparent" />
+          <div className="absolute inset-x-0 top-0 z-10 h-0.5 overflow-hidden bg-theme-text-secondary/10">
+            <div className="h-full w-full animate-pulse bg-gradient-to-r from-transparent via-theme-text-secondary to-transparent" />
           </div>
         )}
         <div className="hidden grid-cols-[minmax(280px,1.5fr)_120px_100px_110px_140px] gap-4 border-b border-white/[0.06] px-5 py-3 text-[9px] font-semibold uppercase tracking-[0.16em] text-theme-text-muted/60 lg:grid">
@@ -198,7 +213,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
         </div>
         <div className="divide-y divide-white/[0.05]">
           {loading && results.length === 0 && <RepositorySkeleton />}
-          {!loading && results.length === 0 && (
+          {!loading && !error && results.length === 0 && (
             <div className="px-5 py-16 text-center">
               <Cloud size={28} className="mx-auto text-theme-text-muted/45" />
               <p className="mt-3 text-sm font-medium text-theme-text-secondary">No GGUF repositories found</p>
@@ -213,6 +228,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
 
       {selectedRepo && (
         <ArtifactDialog
+          key={selectedRepo.id}
           model={selectedRepo}
           details={details}
           loading={detailsLoading}
@@ -233,7 +249,7 @@ function RepositoryRow({ model, onInspect }) {
   const [avatarFailed, setAvatarFailed] = useState(false)
   const fallbackStyle = authorFallbackStyle(model.author)
   return (
-    <div className="grid grid-cols-2 gap-3 px-4 py-4 transition-colors hover:bg-white/[0.025] sm:grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(280px,1.5fr)_120px_100px_110px_140px] lg:items-center lg:gap-4 lg:px-5 lg:py-3.5">
+    <div className="hf-repository-row grid grid-cols-2 gap-3 px-4 py-4 transition-colors hover:bg-white/[0.025] sm:grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(280px,1.5fr)_120px_100px_110px_140px] lg:items-center lg:gap-4 lg:px-5 lg:py-3.5">
       <div className="col-span-2 flex min-w-0 items-start gap-3 sm:col-span-1">
         <div className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border text-xs font-bold" style={fallbackStyle}>
           <span>{model.author?.slice(0, 2).toUpperCase() || 'HF'}</span>
@@ -252,12 +268,12 @@ function RepositoryRow({ model, onInspect }) {
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="truncate text-sm font-semibold text-theme-text">{model.id}</h3>
             {model.gated && (
-              <span className="inline-flex items-center gap-1 rounded border border-amber-400/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
+              <span className="inline-flex items-center gap-1 rounded border border-theme-border bg-theme-text-secondary/10 px-1.5 py-0.5 text-[10px] font-semibold text-theme-text-secondary">
                 <LockKeyhole size={10} /> Gated
               </span>
             )}
             {model.runtimeCompatible === false && (
-              <span className="inline-flex items-center gap-1 rounded border border-amber-400/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
+              <span className="inline-flex items-center gap-1 rounded border border-theme-border bg-theme-text-secondary/10 px-1.5 py-0.5 text-[10px] font-semibold text-theme-text-secondary">
                 Browse only
               </span>
             )}
@@ -280,7 +296,7 @@ function RepositoryRow({ model, onInspect }) {
       <button
         type="button"
         onClick={onInspect}
-        className="inline-flex h-8 items-center justify-center gap-2 rounded-md border border-amber-300/25 bg-amber-300/8 px-3 text-xs font-semibold text-amber-100 transition-colors hover:border-amber-200/45 hover:bg-amber-300/15"
+        className="inline-flex h-8 items-center justify-center gap-2 rounded-md border border-theme-border bg-theme-text-secondary/8 px-3 text-xs font-semibold text-theme-text-secondary transition-colors hover:border-theme-border hover:bg-theme-text-secondary/15"
       >
         <Box size={13} /> {model.runtimeCompatible === false ? 'Inspect' : 'Choose file'}
       </button>
@@ -289,6 +305,14 @@ function RepositoryRow({ model, onInspect }) {
 }
 
 function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, importingArtifact, onClose, onImport, onRetry }) {
+  const [artifactFilter, setArtifactFilter] = useState('')
+  const filteredArtifacts = useMemo(() => {
+    const query = artifactFilter.trim().toLowerCase()
+    return (details?.artifacts || []).filter(artifact => (
+      artifact.label.toLowerCase().includes(query)
+      || (artifact.quantization || '').toLowerCase().includes(query)
+    ))
+  }, [details, artifactFilter])
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={`Choose a GGUF from ${model.id}`}>
       <div className="max-h-[88vh] w-full max-w-5xl overflow-hidden rounded-lg border border-white/[0.1] bg-[#090910] shadow-2xl">
@@ -296,7 +320,7 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="truncate text-base font-semibold text-theme-text">{model.id}</h2>
-              <span className="rounded border border-amber-300/25 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200">Hugging Face</span>
+              <span className="rounded border border-theme-border bg-theme-text-secondary/10 px-1.5 py-0.5 text-[10px] font-semibold text-theme-text-secondary">Hugging Face</span>
             </div>
             <p className="mt-1 text-xs text-theme-text-muted">Select an exact, integrity-qualified GGUF artifact.</p>
           </div>
@@ -308,7 +332,7 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
         <div className="max-h-[calc(88vh-72px)] overflow-y-auto p-5">
           {loading && (
             <div className="flex min-h-52 items-center justify-center gap-3 text-sm text-theme-text-muted">
-              <Loader2 size={18} className="animate-spin text-amber-300" /> Reading repository metadata...
+              <Loader2 size={18} className="animate-spin text-theme-text-secondary" /> Reading repository metadata...
             </div>
           )}
           {error && (
@@ -334,22 +358,38 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
               </div>
 
               {details.runtimeCompatible === false && (
-                <div className="mb-4 rounded-lg border border-amber-400/20 bg-amber-500/8 px-4 py-3 text-sm text-amber-200">
+                <div className="mb-4 rounded-lg border border-theme-border bg-theme-text-secondary/8 px-4 py-3 text-sm text-theme-text-secondary">
                   {details.runtimeReason}. You can inspect its artifacts here, but ODS will not route it through the LLM runtime.
                 </div>
               )}
 
               {details.artifacts.length === 0 ? (
-                <div className="rounded-lg border border-amber-400/20 bg-amber-500/8 px-4 py-8 text-center text-sm text-amber-200">
+                <div className="rounded-lg border border-theme-border bg-theme-text-secondary/8 px-4 py-8 text-center text-sm text-theme-text-secondary">
                   This repository has no complete GGUF artifact with exact size and SHA-256 metadata.
                 </div>
               ) : (
                 <div className="overflow-hidden rounded-lg border border-white/[0.08]">
+                  <div className="flex flex-wrap items-center gap-3 border-b border-white/[0.06] px-4 py-3">
+                    <input
+                      type="search"
+                      aria-label="Filter GGUF artifacts"
+                      placeholder="Filename or quantization"
+                      maxLength={200}
+                      value={artifactFilter}
+                      onChange={event => setArtifactFilter(event.target.value)}
+                      className="min-w-0 flex-1 rounded-md border border-white/[0.12] bg-black/20 px-3 py-2 text-sm text-theme-text focus:border-theme-accent focus:outline-none"
+                    />
+                    <span role="status" className="text-xs text-theme-text-muted">{filteredArtifacts.length} of {details.artifacts.length} artifacts</span>
+                    {artifactFilter && (
+                      <button type="button" onClick={() => setArtifactFilter('')} className="text-xs text-theme-text-secondary hover:text-theme-text-secondary" aria-label="Clear artifact filter">Clear</button>
+                    )}
+                  </div>
                   <div className="hidden grid-cols-[minmax(220px,1fr)_100px_120px_130px_130px] gap-4 border-b border-white/[0.06] bg-black/20 px-4 py-2.5 text-[9px] font-semibold uppercase tracking-[0.15em] text-theme-text-muted/60 lg:grid">
                     <span>Artifact</span><span>Quant</span><span>Download</span><span>Memory estimate</span><span>Action</span>
                   </div>
                   <div className="divide-y divide-white/[0.05]">
-                    {details.artifacts.map(artifact => (
+                    {filteredArtifacts.length === 0 && <p className="px-4 py-8 text-center text-sm text-theme-text-muted">No artifacts match this filter.</p>}
+                    {filteredArtifacts.map(artifact => (
                       <ArtifactRow
                         key={artifact.id}
                         artifact={artifact}
@@ -366,7 +406,7 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
 
               <div className="mt-4 flex flex-col gap-3 border-t border-white/[0.06] pt-4 text-xs text-theme-text-muted sm:flex-row sm:items-center sm:justify-between">
                 <p>Community models are not included in the ODS compatibility matrix until benchmarked locally.</p>
-                <a href={details.url} target="_blank" rel="noreferrer" className="inline-flex shrink-0 items-center gap-1.5 text-amber-300 hover:text-amber-200">
+                <a href={details.url} target="_blank" rel="noreferrer" className="inline-flex shrink-0 items-center gap-1.5 text-theme-text-secondary hover:text-theme-text-secondary">
                   View model card <ExternalLink size={12} />
                 </a>
               </div>
@@ -392,7 +432,7 @@ function ArtifactRow({ artifact, gpu, busy, importing, runtimeCompatible, onImpo
       <span className="text-xs font-semibold text-theme-text-secondary">{artifact.quantization || 'Unknown'}</span>
       <span className="font-mono text-xs text-theme-text-secondary">{formatBytes(artifact.sizeBytes)}</span>
       <div>
-        <p className={`text-xs font-semibold ${fits === false ? 'text-amber-300' : 'text-emerald-300'}`}>~{estimatedVram.toFixed(1)} GB</p>
+        <p className={`text-xs font-semibold ${fits === false ? 'text-theme-text-secondary' : 'text-emerald-300'}`}>~{estimatedVram.toFixed(1)} GB</p>
         <p className="mt-0.5 text-[10px] text-theme-text-muted">{fits === null ? 'GPU unknown' : fits ? 'Fits detected GPU' : 'Exceeds GPU VRAM'}</p>
       </div>
       <button type="button" onClick={onImport} disabled={busy || artifact.installed || !runtimeCompatible} className="inline-flex h-8 items-center justify-center gap-2 rounded-md bg-theme-accent px-3 text-xs font-semibold text-white transition-colors hover:bg-theme-accent-light disabled:cursor-not-allowed disabled:opacity-45">

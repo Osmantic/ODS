@@ -1,0 +1,53 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: code-server
+  name: code-server
+  aliases: []
+  container_name: ods-code-server
+  host_env: CODE_SERVER_HOST
+  default_host: code-server
+  port: 8080
+  external_port_env: CODE_SERVER_PORT
+  external_port_default: 11030
+  health: /healthz
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Edit persistent project folders in a browser-based code editor with
+    terminal, Git and language extensions.
+  env_vars:
+  - key: CODE_SERVER_PASSWORD
+    required: true
+    secret: true
+    description: Strong password required to access the editor and its container terminal.
+  ui_path: /
+tags:
+- development
+- local
+- open-source
+features:
+- id: code-server-workspace
+  name: code-server
+  description: Edit persistent project folders in a browser-based code editor with
+    terminal, Git and language extensions.
+  icon: Code
+  category: productivity
+  requirements:
+    services:
+    - code-server
+    vram_gb: 0
+  enabled_services_all:
+  - code-server
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: code-server
+    path: /

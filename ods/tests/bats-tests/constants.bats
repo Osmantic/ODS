@@ -33,32 +33,25 @@ setup() {
 
 # ── Color codes ─────────────────────────────────────────────────────────────
 
-@test "color codes: RED is defined" {
-    [[ -n "$RED" ]]
+@test "color codes: presentation variables are declared" {
+    declare -p RED GRN BGRN DGRN MAG BMAG AMB WHT DIM NC >/dev/null
 }
 
-@test "color codes: GRN is defined" {
-    [[ -n "$GRN" ]]
+@test "color codes: a capable terminal initializes presentation colors" {
+    run env -u NO_COLOR TERM=xterm bash -c '
+        source "$1"
+        [[ -n "$RED$GRN$BGRN$DGRN$MAG$BMAG$AMB$WHT$DIM$NC" ]]
+    ' _ "$BATS_TEST_DIRNAME/../../installers/lib/constants.sh"
+    assert_success
 }
 
-@test "color codes: BGRN is defined" {
-    [[ -n "$BGRN" ]]
-}
-
-@test "color codes: DGRN is defined" {
-    [[ -n "$DGRN" ]]
-}
-
-@test "color codes: AMB is defined" {
-    [[ -n "$AMB" ]]
-}
-
-@test "color codes: WHT is defined" {
-    [[ -n "$WHT" ]]
-}
-
-@test "color codes: NC is defined" {
-    [[ -n "$NC" ]]
+@test "color codes: NO_COLOR strips ANSI values at source" {
+    run bash -c '
+        export NO_COLOR=1 TERM=xterm
+        source "$1"
+        [[ -z "$RED$GRN$BGRN$DGRN$MAG$BMAG$AMB$WHT$DIM$NC" ]]
+    ' _ "$BATS_TEST_DIRNAME/../../installers/lib/constants.sh"
+    assert_success
 }
 
 @test "color codes: CURSOR is defined" {

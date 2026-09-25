@@ -23,6 +23,16 @@ function Set-OpenCodeObjectProperty {
     }
 }
 
+function Get-WindowsOpenCodeOutputLimit {
+    param([long]$ContextLimit)
+    if ($ContextLimit -lt 1024) {
+        throw "OpenCode requires at least 1024 context tokens."
+    }
+    # OpenCode reserves output tokens from context before deciding to compact.
+    # Equal context/output budgets can loop on synthetic continuation turns.
+    return [long][Math]::Min(32768.0, [Math]::Floor($ContextLimit / 4))
+}
+
 function New-WindowsOpenCodeConfigObject {
     param(
         [hashtable]$LlmEndpoint,
@@ -50,7 +60,7 @@ function New-WindowsOpenCodeConfigObject {
                         name = $ModelName
                         limit = [pscustomobject]@{
                             context = $ContextLimit
-                            output = 32768
+                            output = (Get-WindowsOpenCodeOutputLimit -ContextLimit $ContextLimit)
                         }
                     }
                 }
@@ -118,7 +128,7 @@ function Update-WindowsOpenCodeConfigObject {
         Set-OpenCodeObjectProperty -Target $modelEntry -Name 'limit' -Value ([pscustomobject]@{})
     }
     Set-OpenCodeObjectProperty -Target $modelEntry.limit -Name 'context' -Value $ContextLimit
-    Set-OpenCodeObjectProperty -Target $modelEntry.limit -Name 'output' -Value 32768
+    Set-OpenCodeObjectProperty -Target $modelEntry.limit -Name 'output' -Value (Get-WindowsOpenCodeOutputLimit -ContextLimit $ContextLimit)
 
     return $Config
 }
@@ -216,6 +226,8 @@ function Sync-WindowsOpenCodeConfigFromEnv {
     $_modelName = Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("LLM_MODEL") -Default $DefaultModelName
     $_apiKey = "no-key"
     $_providerName = "llama-server (local)"
+    # New installers write "enabled" explicitly. Preserve the legacy direct
+    # route when this key is absent from an existing installation.
     $_switchboardMode = (Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("ODS_MODEL_SWITCHBOARD") -Default "observe").ToLowerInvariant()
     if ($_switchboardMode -eq "enabled") {
         $_litellmPort = Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("LITELLM_PORT") -Default "4000"

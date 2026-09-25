@@ -41,6 +41,32 @@ assert_in_order() {
 # Strip comments so explanatory text cannot satisfy or fail the checks.
 active_code="$(grep -v '^[[:space:]]*#' "$TARGET")"
 
+gate_acquire_block="$(function_block acquire_model_router_swap_gate | grep -v '^[[:space:]]*#')"
+gate_release_block="$(function_block release_model_router_swap_gate | grep -v '^[[:space:]]*#')"
+grep -qF 'model_router_swap_gate_call begin "$token" 30' <<<"$gate_acquire_block" \
+    || fail "model swap admission must use a short renewable router lease"
+grep -qF 'model_router_swap_gate_health' <<<"$gate_acquire_block" \
+    || fail "model swap admission must inspect authoritative router request counts"
+grep -qF 'consecutive_idle >= 2' <<<"$gate_acquire_block" \
+    || fail "model swap admission must prove a stable drained boundary"
+grep -qF 'model_router_swap_gate_call end "$token" 30' <<<"$gate_release_block" \
+    || fail "model swap admission must explicitly reopen after the transaction"
+grep -qF "trap 'cleanup_bootstrap_pixel_model_transaction; release_model_router_swap_gate; release_model_lifecycle_lock; release_upgrade_lock' EXIT" <<<"$active_code" \
+    || fail "model swap admission must reopen on every normal or failed exit"
+top_level_swap="$(awk '
+    /acquire_model_lifecycle_lock \|\| fail "Could not serialize background full-model activation/ { in_block=1 }
+    in_block { print }
+    /Snapshotting active model config before full-model swap/ { exit }
+' "$TARGET" | grep -v '^[[:space:]]*#')"
+assert_in_order "$top_level_swap" "bootstrap swap drain boundary" \
+    'acquire_model_lifecycle_lock ||' \
+    'acquire_bootstrap_pixel_model_transaction' \
+    'Could not safely drain Portal work before full-model activation.' \
+    'acquire_model_router_swap_gate' \
+    'Could not safely drain model traffic before full-model activation.' \
+    'Snapshotting active model config before full-model swap'
+pass "bootstrap promotion closes, drains, reports gate failure, and releases router admission"
+
 yaml_scalar_block="$(function_block yaml_double_quoted_scalar_content | grep -v '^[[:space:]]*#')"
 sed_escape_block="$(function_block sed_replacement_escape | grep -v '^[[:space:]]*#')"
 hermes_host_patch_block="$(function_block patch_hermes_yaml_with_sed | grep -v '^[[:space:]]*#')"
@@ -60,10 +86,10 @@ hermes_patch_marker="$hermes_patch_tmp/injected"
 hermes_config="$hermes_patch_tmp/config.yaml"
 cat >"$hermes_config" <<'YAML'
 model:
-  default: "old-model"
+  default: old-model
   context_length: 8192
 provider:
-  base_url: "http://old.invalid/v1"
+  base_url: http://old.invalid/v1
   context_length: 8192
 compression:
   enabled: false
@@ -75,8 +101,10 @@ request:
 YAML
 hermes_docker_calls=0
 hermes_docker_args=()
+hermes_docker_pathconv=""
 docker() {
     hermes_docker_calls=$((hermes_docker_calls + 1))
+    hermes_docker_pathconv="${MSYS_NO_PATHCONV:-}"
     hermes_docker_args=("$@")
     local arg_count=${#hermes_docker_args[@]}
     local sed_arg_count=$((arg_count - 4))
@@ -96,6 +124,8 @@ patch_hermes_yaml_in_container \
     && "${hermes_docker_args[3]:-}" == "-i" \
     && "${hermes_docker_args[${#hermes_docker_args[@]}-1]:-}" == "/opt/data/config.yaml" ]] \
     || fail "Hermes live patch helper did not preserve the expected docker/sed argv boundary"
+[[ "$hermes_docker_pathconv" == "1" ]] \
+    || fail "Hermes live patch helper did not disable Git Bash path conversion for container paths"
 for hermes_arg in "${hermes_docker_args[@]}"; do
     [[ "$hermes_arg" != "sh" && "$hermes_arg" != "-c" ]] \
         || fail "Hermes live patch helper reintroduced a container shell"
@@ -125,6 +155,122 @@ rm -rf -- "$hermes_patch_tmp"
 unset -f docker patch_hermes_yaml_in_container patch_hermes_yaml_with_sed \
     yaml_double_quoted_scalar_content sed_replacement_escape
 pass "Hermes live patch values stay inside explicit docker exec arguments"
+
+hermes_prewarm_block="$(awk '
+    /Pre-warming Hermes system prompt/ { in_block=1 }
+    in_block { print }
+    in_block && /\/opt\/hermes\/\.venv\/bin\/hermes/ { exit }
+' "$TARGET" | grep -v '^[[:space:]]*#')"
+grep -qF 'MSYS_NO_PATHCONV=1 $DOCKER_CMD exec ods-hermes timeout 90' <<<"$hermes_prewarm_block" \
+    || fail "Hermes pre-warm must disable Git Bash path conversion for the container executable"
+grep -qF '/opt/hermes/.venv/bin/hermes -z "ping" --yolo' <<<"$hermes_prewarm_block" \
+    || fail "Hermes pre-warm must preserve the exact container executable and argv"
+pass "Hermes pre-warm preserves its container-absolute executable on Windows"
+
+compose_hermes_block="$(function_block compose_recreate_hermes | grep -v '^[[:space:]]*#')"
+windows_compose_loader_block="$(function_block load_windows_lemonade_compose_args | grep -v '^[[:space:]]*#')"
+eval "$compose_hermes_block"
+eval "$windows_compose_loader_block"
+log() { :; }
+compose_hermes_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ods-hermes-compose.XXXXXX")"
+INSTALL_DIR="$compose_hermes_tmp/install"
+mkdir -p "$INSTALL_DIR"
+compose_capture="$compose_hermes_tmp/calls"
+compose_mock="$compose_hermes_tmp/mock-compose"
+cat >"$compose_mock" <<'MOCK_COMPOSE'
+#!/usr/bin/env bash
+{
+    printf 'cwd=%s\n' "$PWD"
+    printf 'arg=%s\n' "$@"
+    printf 'GGUF_FILE=%s\n' "${GGUF_FILE-unset}"
+    printf 'LLM_MODEL=%s\n' "${LLM_MODEL-unset}"
+    printf 'LEMONADE_MODEL=%s\n' "${LEMONADE_MODEL-unset}"
+    printf 'MAX_CONTEXT=%s\n' "${MAX_CONTEXT-unset}"
+    printf 'CTX_SIZE=%s\n' "${CTX_SIZE-unset}"
+} >>"$ODS_COMPOSE_CAPTURE"
+MOCK_COMPOSE
+chmod +x "$compose_mock"
+export ODS_COMPOSE_CAPTURE="$compose_capture"
+DOCKER_COMPOSE_CMD="$compose_mock"
+export GGUF_FILE=leaked-gguf LLM_MODEL=leaked-llm LEMONADE_MODEL=leaked-lemonade \
+    MAX_CONTEXT=123 CTX_SIZE=456
+
+COMPOSE_ARGS=(-f "$INSTALL_DIR/base.yml" -f "$INSTALL_DIR/overlay.yml")
+WINDOWS_LEMONADE_COMPOSE_ARGS=(-f "$INSTALL_DIR/wrong-windows.yml")
+compose_recreate_hermes || fail "Hermes recreate rejected the active COMPOSE_ARGS stack"
+grep -Fxq "cwd=$INSTALL_DIR" "$compose_capture" \
+    || fail "Hermes recreate did not execute from the install directory"
+mapfile -t compose_call_args < <(sed -n 's/^arg=//p' "$compose_capture")
+[[ "${compose_call_args[0]:-}" == -f \
+    && "${compose_call_args[1]:-}" == "$INSTALL_DIR/base.yml" \
+    && "${compose_call_args[2]:-}" == -f \
+    && "${compose_call_args[3]:-}" == "$INSTALL_DIR/overlay.yml" \
+    && "${compose_call_args[4]:-}" == up \
+    && "${compose_call_args[5]:-}" == -d \
+    && "${compose_call_args[6]:-}" == --force-recreate \
+    && "${compose_call_args[7]:-}" == --no-deps \
+    && "${compose_call_args[8]:-}" == hermes ]] \
+    || fail "Hermes recreate did not preserve the exact active Compose argv"
+for compose_env in GGUF_FILE LLM_MODEL LEMONADE_MODEL MAX_CONTEXT CTX_SIZE; do
+    grep -Fxq "${compose_env}=unset" "$compose_capture" \
+        || fail "Hermes recreate leaked ${compose_env} into Compose interpolation"
+done
+
+: >"$compose_capture"
+unset COMPOSE_ARGS
+WINDOWS_LEMONADE_COMPOSE_ARGS=(-f "$INSTALL_DIR/windows.yml")
+compose_recreate_hermes || fail "Hermes recreate rejected the Windows Lemonade Compose stack"
+grep -Fxq "arg=$INSTALL_DIR/windows.yml" "$compose_capture" \
+    || fail "Hermes recreate did not fall back to WINDOWS_LEMONADE_COMPOSE_ARGS"
+
+: >"$compose_capture"
+unset WINDOWS_LEMONADE_COMPOSE_ARGS
+printf '%s\n' "-f $INSTALL_DIR/persisted.yml -f $INSTALL_DIR/persisted-overlay.yml" \
+    >"$INSTALL_DIR/.compose-flags"
+compose_recreate_hermes || fail "Hermes recreate rejected the persisted Compose stack"
+grep -Fxq "arg=$INSTALL_DIR/persisted.yml" "$compose_capture" \
+    && grep -Fxq "arg=$INSTALL_DIR/persisted-overlay.yml" "$compose_capture" \
+    || fail "Hermes recreate did not fall back to the persisted Compose stack"
+
+: >"$compose_capture"
+unset WINDOWS_LEMONADE_COMPOSE_ARGS
+declare -a WINDOWS_LEMONADE_COMPOSE_ARGS=()
+rm -f "$INSTALL_DIR/.compose-flags"
+mkdir -p "$INSTALL_DIR/logs"
+touch "$INSTALL_DIR/recovered.yml" "$INSTALL_DIR/recovered-overlay.yml"
+printf '%s\n' \
+    $'compose_flags=-f recovered.yml -f recovered-overlay.yml\r' \
+    >"$INSTALL_DIR/logs/compose-launch.txt"
+is_windows_bash() { return 0; }
+compose_recreate_hermes || fail "Hermes recreate did not recover the Windows launch stack"
+grep -Fxq "arg=recovered.yml" "$compose_capture" \
+    && grep -Fxq "arg=recovered-overlay.yml" "$compose_capture" \
+    || fail "Hermes recreate changed the recovered Windows launch stack"
+grep -Fxq -- "-f recovered.yml -f recovered-overlay.yml" "$INSTALL_DIR/.compose-flags" \
+    || fail "Hermes recreate did not persist the recovered Windows launch stack"
+
+: >"$compose_capture"
+WINDOWS_LEMONADE_COMPOSE_ARGS=()
+rm -f "$INSTALL_DIR/.compose-flags"
+printf '%s\n' "compose_flags=-f missing.yml" >"$INSTALL_DIR/logs/compose-launch.txt"
+if compose_recreate_hermes; then
+    fail "Hermes recreate accepted a recovered stack with a missing Compose file"
+fi
+[[ ! -e "$INSTALL_DIR/.compose-flags" && ! -s "$compose_capture" ]] \
+    || fail "Hermes recreate persisted or executed an invalid recovered stack"
+
+WINDOWS_LEMONADE_COMPOSE_ARGS=()
+printf '%s\n' "compose_flags=--env-file .env" >"$INSTALL_DIR/logs/compose-launch.txt"
+if compose_recreate_hermes; then
+    fail "Hermes recreate accepted a recovered stack without any Compose file"
+fi
+[[ ! -e "$INSTALL_DIR/.compose-flags" ]] \
+    || fail "Hermes recreate persisted a recovered stack without a Compose file"
+
+rm -rf -- "$compose_hermes_tmp"
+unset -f compose_recreate_hermes load_windows_lemonade_compose_args is_windows_bash log
+unset ODS_COMPOSE_CAPTURE DOCKER_COMPOSE_CMD GGUF_FILE LLM_MODEL LEMONADE_MODEL MAX_CONTEXT CTX_SIZE
+pass "Hermes recreation preserves the active stack and strips model overrides"
 
 grep -qF 'up -d --force-recreate --no-deps llama-server' <<<"$active_code" \
     || fail "llama-server hot-swap must force-recreate llama-server without deps"
@@ -301,6 +447,11 @@ pass "Windows Lemonade loaded-context verifier rejects stale bootstrap contexts"
 
 grep -qF 'patch_hermes_model_after_swap' <<<"$active_code" \
     || fail "Windows Lemonade hot-swap must patch Hermes off the bootstrap model"
+grep -qF 'compose_recreate_hermes' "$TARGET" \
+    || fail "Hermes model reconciliation must use the active Compose stack"
+if grep -qF '$DOCKER_CMD restart ods-hermes' "$TARGET"; then
+    fail "Hermes model reconciliation must not reuse stale Docker Desktop bind mounts"
+fi
 windows_activation_block="$(function_block activate_windows_lemonade_full_model | grep -v '^[[:space:]]*#')"
 assert_in_order "$windows_activation_block" "Windows Lemonade activation" \
     'restart_windows_lemonade_with_full_model' \
@@ -310,6 +461,8 @@ assert_in_order "$windows_activation_block" "Windows Lemonade activation" \
     'recreate_windows_lemonade_openclaw' \
     'verify_windows_lemonade_openclaw_model_env "$model_id"' \
     'request_windows_switchboard_route_reconciliation' \
+    'reconcile_ods_managed_pixel_model' \
+    'release_model_router_swap_gate' \
     'verify_windows_lemonade_downstream_route "$model_id" "full model route"'
 
 switchboard_reconcile_block="$(function_block request_windows_switchboard_route_reconciliation | grep -v '^[[:space:]]*#')"
@@ -330,6 +483,8 @@ assert_in_order "$windows_lemonade_block" "Windows Lemonade main path" \
     'HOT_SWAP_VERIFIED=true' \
     'discard_active_model_config_snapshot' \
     'discard_bootstrap_model_backup_after_windows_swap'
+grep -qF 'windows_lemonade_swap_failed "the managed Pixel route could not be reconciled" true' <<<"$windows_activation_block" \
+    || fail "Windows Lemonade must restore and verify both inference and Pixel after Pixel promotion failure"
 pass "Windows Lemonade verifies the exact downstream route before commit"
 
 snapshot_block="$(function_block snapshot_active_model_config | grep -v '^[[:space:]]*#')"
@@ -396,8 +551,8 @@ rollback_block="$(function_block rollback_windows_lemonade_swap | grep -v '^[[:s
 rollback_dependents_block="$(function_block restart_windows_lemonade_dependents_after_rollback | grep -v '^[[:space:]]*#')"
 grep -qF '$DOCKER_CMD restart ods-litellm' <<<"$rollback_dependents_block" \
     || fail "Windows Lemonade rollback must restart LiteLLM with its restored config"
-grep -qF '$DOCKER_CMD restart ods-hermes' <<<"$rollback_dependents_block" \
-    || fail "Windows Lemonade rollback must restart Hermes with its restored config"
+grep -qF 'compose_recreate_hermes' <<<"$rollback_dependents_block" \
+    || fail "Windows Lemonade rollback must recreate Hermes with its restored config"
 grep -qF 'recreate_windows_lemonade_openclaw' <<<"$rollback_dependents_block" \
     || fail "Windows Lemonade rollback must recreate a previously present OpenClaw"
 assert_in_order "$rollback_block" "Windows Lemonade rollback" \
@@ -407,11 +562,13 @@ assert_in_order "$rollback_block" "Windows Lemonade rollback" \
     'restart_windows_lemonade_with_previous_model "$previous_gguf"' \
     'restart_windows_lemonade_dependents_after_rollback' \
     'verify_windows_lemonade_openclaw_model_env "$previous_model_id"' \
+    'reconcile_ods_managed_pixel_model "$previous_llm_model"' \
+    'release_model_router_swap_gate' \
     'verify_windows_lemonade_downstream_route "$previous_model_id" "previous model route"' \
     'Rollback verified: the previous model completed through the restored downstream route.'
-pass "Windows Lemonade rollback restarts and proves the previous routed model"
+pass "Windows Lemonade rollback restarts and proves the previous routed model and managed Pixel route"
 
-for injected_failure in native model-id litellm hermes openclaw openclaw-env reconcile route; do
+for injected_failure in native model-id litellm hermes openclaw openclaw-env reconcile pixel route; do
     if ! (
         eval "$windows_activation_block"
         failure_stage="$injected_failure"
@@ -446,6 +603,17 @@ for injected_failure in native model-id litellm hermes openclaw openclaw-env rec
             calls+=(reconcile)
             [[ "$failure_stage" != "reconcile" ]]
         }
+        reconcile_ods_managed_pixel_model() {
+            calls+=(pixel)
+            [[ "$failure_stage" != "pixel" ]]
+        }
+        release_model_router_swap_gate() {
+            calls+=(gate-open)
+        }
+        acquire_model_router_swap_gate() {
+            calls+=(gate-close)
+            return 0
+        }
         verify_windows_lemonade_downstream_route() {
             calls+=(route)
             [[ "$failure_stage" != "route" ]]
@@ -471,7 +639,8 @@ for injected_failure in native model-id litellm hermes openclaw openclaw-env rec
             openclaw) expected+=(litellm hermes openclaw) ;;
             openclaw-env) expected+=(litellm hermes openclaw openclaw-env) ;;
             reconcile) expected+=(litellm hermes openclaw openclaw-env reconcile) ;;
-            route) expected+=(litellm hermes openclaw openclaw-env reconcile route) ;;
+            pixel) expected+=(litellm hermes openclaw openclaw-env reconcile pixel) ;;
+            route) expected+=(litellm hermes openclaw openclaw-env reconcile pixel gate-open route gate-close) ;;
         esac
         expected+=(rollback)
         [[ "${calls[*]}" == "${expected[*]}" ]]
@@ -493,17 +662,24 @@ assert_in_order "$docker_swap_block" "Docker model transaction commit" \
     '$DOCKER_CMD restart ods-litellm' \
     'verify_model_completion_route' \
     'HOT_SWAP_VERIFIED=true' \
+    'reconcile_ods_managed_pixel_model' \
     'discard_active_model_config_snapshot'
-pass "Docker model transaction commits only after renderer, reload, and completion proof"
+grep -qF 'Full model served, but ODS could not reconcile the managed Pixel route.' <<<"$docker_swap_block" \
+    || fail "Docker model promotion must fail honestly when Pixel reconciliation fails"
+grep -qF 'restore_docker_llama_server_after_swap_failure "$_health_url" true' <<<"$docker_swap_block" \
+    || fail "Docker Pixel promotion failure must request managed Pixel rollback verification"
+pass "Docker model transaction commits only after renderer, reload, completion proof, and Pixel reconciliation"
 
 docker_rollback_block="$(function_block restore_docker_llama_server_after_swap_failure | grep -v '^[[:space:]]*#')"
 assert_in_order "$docker_rollback_block" "Docker model transaction rollback" \
+    'previous_llm_model="$(snapshot_env_value LLM_MODEL)"' \
     'previous_model_id="$(snapshot_env_value LEMONADE_MODEL)"' \
     'restore_active_model_config' \
     'compose_recreate_llama_server_with_retry' \
     '$DOCKER_CMD restart ods-litellm' \
-    'verify_model_completion_route'
-pass "Docker rollback restores and proves the previous routed model"
+    'verify_model_completion_route' \
+    'reconcile_ods_managed_pixel_model "$previous_llm_model"'
+pass "Docker rollback restores and proves the previous routed model and managed Pixel route"
 
 completion_route_block="$(function_block verify_model_completion_route | grep -v '^[[:space:]]*#')"
 grep -qF '"choices"[[:space:]]*:' <<<"$completion_route_block" \
@@ -524,10 +700,10 @@ grep -qF 'new_model="ods/current"' <<<"$active_code" \
     || fail "Hermes post-swap patch helper must use the stable switchboard alias"
 grep -qF '_hermes_new_model="ods/current"' <<<"$active_code" \
     || fail "Docker full-model swap must patch Hermes to the stable switchboard alias"
-grep -qF 'hermes_base_url="http://litellm:4000/v1"' <<<"$active_code" \
-    || fail "Switchboard Hermes patch helper must route through LiteLLM"
-grep -qF '_hermes_base_url="http://litellm:4000/v1"' <<<"$active_code" \
-    || fail "Switchboard Docker swap must route Hermes through LiteLLM"
+grep -qF 'hermes_base_url="http://model-router:9099/v1"' <<<"$active_code" \
+    || fail "Switchboard Hermes patch helper must route through model-router"
+grep -qF '_hermes_base_url="http://model-router:9099/v1"' <<<"$active_code" \
+    || fail "Switchboard Docker swap must route Hermes through model-router"
 pass "Hermes post-swap patch uses switchboard stable alias when enabled"
 
 perplexica_update_block="$(awk '

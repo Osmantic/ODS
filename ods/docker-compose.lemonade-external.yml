@@ -1,14 +1,13 @@
 # ODS - external Lemonade SDK runtime overlay
 #
 # Use when Lemonade is already installed and running on the host. This overlay
-# keeps ODS's managed llama-server disabled and routes ODS services
-# through LiteLLM, which calls the existing Lemonade service.
+# keeps ODS's managed llama-server disabled while retaining model-router for
+# Pixel and browser model switching against the existing Lemonade service.
 #
 # This file is intentionally not standalone. It is selected by
 # scripts/resolve-compose-stack.sh together with:
 #
 #   docker-compose.base.yml
-#   docker-compose.cloud.yml
 #   extensions/services/litellm/compose.yaml
 #   docker-compose.lemonade-external.yml
 #
@@ -18,6 +17,15 @@
 #     ./scripts/resolve-compose-stack.sh --ods-mode lemonade --gpu-backend amd --tier SH_LARGE
 
 services:
+  llama-server:
+    profiles:
+      - local-inference
+    restart: "no"
+
+  model-router:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   litellm:
     extra_hosts:
       - "host.docker.internal:host-gateway"

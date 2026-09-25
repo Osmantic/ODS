@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-result-v1.schema.json",
+  "title": "Pixel Deep Work result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "jobId", "completedAt", "status", "planSha256", "inputSetSha256", "finalCheckpointSha256", "workspaceSha256", "acceptance", "artifacts", "usage", "safety", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-result-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "completedAt": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["pass", "failed", "cancelled", "waiting-authority", "cleanup-failed", "recovery-inconclusive", "budget-exhausted", "no-progress"]},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "inputSetSha256": {"$ref": "#/$defs/sha256"},
+    "finalCheckpointSha256": {"$ref": "#/$defs/sha256"},
+    "workspaceSha256": {"$ref": "#/$defs/sha256"},
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["criteriaSha256", "total", "passing", "failing", "independentlyVerified", "evidenceSha256"],
+      "properties": {
+        "criteriaSha256": {"$ref": "#/$defs/sha256"},
+        "total": {"type": "integer", "minimum": 1, "maximum": 32},
+        "passing": {"type": "integer", "minimum": 0, "maximum": 32},
+        "failing": {"type": "integer", "minimum": 0, "maximum": 32},
+        "independentlyVerified": {"type": "boolean"},
+        "evidenceSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "sha256", "bytes", "mediaType"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+          "kind": {"enum": ["finding-report", "patch", "test-evidence", "dataset", "document", "visualization"]},
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "bytes": {"type": "integer", "minimum": 1, "maximum": 34359738368},
+          "mediaType": {"type": "string", "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$"}
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtimeSeconds", "iterations", "modelRequests", "inputTokens", "outputTokens", "networkBytes", "artifactBytes", "failures"],
+      "properties": {
+        "runtimeSeconds": {"type": "integer", "minimum": 0, "maximum": 604800},
+        "iterations": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "modelRequests": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "inputTokens": {"type": "integer", "minimum": 0, "maximum": 2000000000},
+        "outputTokens": {"type": "integer", "minimum": 0, "maximum": 500000000},
+        "networkBytes": {"type": "integer", "minimum": 0, "maximum": 10737418240},
+        "artifactBytes": {"type": "integer", "minimum": 0, "maximum": 34359738368},
+        "failures": {"type": "integer", "minimum": 0, "maximum": 1000}
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostEscapeObserved", "credentialAccessObserved", "directNetworkObserved", "externalEffectObserved", "policyMutationObserved", "acceptanceMutationObserved", "deniedAttemptCount", "evidenceSha256"],
+      "properties": {
+        "hostEscapeObserved": {"type": "boolean"},
+        "credentialAccessObserved": {"type": "boolean"},
+        "directNetworkObserved": {"type": "boolean"},
+        "externalEffectObserved": {"type": "boolean"},
+        "policyMutationObserved": {"type": "boolean"},
+        "acceptanceMutationObserved": {"type": "boolean"},
+        "deniedAttemptCount": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "evidenceSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mergePerformed", "deploymentPerformed", "publicationPerformed", "purchasePerformed", "externalMessagesSent"],
+      "properties": {
+        "mergePerformed": {"type": "boolean"},
+        "deploymentPerformed": {"type": "boolean"},
+        "publicationPerformed": {"type": "boolean"},
+        "purchasePerformed": {"type": "boolean"},
+        "externalMessagesSent": {"type": "boolean"}
+      }
+    },
+    "boundary": {"const": "Untrusted worker output plus independent content-free verification evidence. This result grants no merge, deployment, publication, purchase, external-message, credential, production, or policy authority."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "pass"}}, "required": ["status"]},
+      "then": {
+        "properties": {
+          "acceptance": {"properties": {"independentlyVerified": {"const": true}, "failing": {"const": 0}}},
+          "safety": {"properties": {"hostEscapeObserved": {"const": false}, "credentialAccessObserved": {"const": false}, "directNetworkObserved": {"const": false}, "externalEffectObserved": {"const": false}, "policyMutationObserved": {"const": false}, "acceptanceMutationObserved": {"const": false}}},
+          "authority": {"properties": {"mergePerformed": {"const": false}, "deploymentPerformed": {"const": false}, "publicationPerformed": {"const": false}, "purchasePerformed": {"const": false}, "externalMessagesSent": {"const": false}}}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

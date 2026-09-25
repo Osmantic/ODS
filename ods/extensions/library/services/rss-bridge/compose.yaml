@@ -1,0 +1,45 @@
+services:
+  rss-bridge:
+    image: ods/rss-bridge:f4aa9e04-local-v1
+    container_name: ods-rss-bridge
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${RSS_BRIDGE_PORT:-11134}:80
+    volumes:
+    - rss-bridge-config:/config
+    - rss-bridge-cache:/app/cache
+    healthcheck:
+      test:
+      - CMD
+      - php
+      - -r
+      - $$s=@file_get_contents('http://127.0.0.1/',false,stream_context_create(['http'=>['timeout'=>5]]));
+        exit($$s===false?1:0);
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  rss-bridge-config: {}
+  rss-bridge-cache: {}

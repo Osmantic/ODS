@@ -70,7 +70,7 @@ else
     fail "Windows installer must refresh SOUL after optional services settle"
 fi
 check '-LemonadeCompact:($gpuInfo.Backend -eq "amd")' "$PHASE_06" "Windows AMD applies compact Hermes toolset profile"
-check 'http://litellm:4000/v1' "$PHASE_06" "Windows AMD Hermes routes through LiteLLM"
+check 'http://model-router:9099/v1' "$ROOT_DIR/installers/windows/lib/env-generator.ps1" "Windows AMD Hermes routes through model-router"
 
 check 'function Invoke-HermesSoulRefresh' "$WINDOWS_CLI" "Windows CLI can refresh Hermes SOUL"
 check 'Invoke-HermesSoulRefresh -SyncContainer' "$WINDOWS_CLI" "Windows CLI syncs SOUL into running Hermes"

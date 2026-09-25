@@ -1,0 +1,4 @@
+*
+!Dockerfile
+!nginx.conf
+!disable-analytics.cjs

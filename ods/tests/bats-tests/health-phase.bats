@@ -101,7 +101,7 @@ teardown() {
     '
     assert_success
     assert_output --partial "PHASE_COMPLETE"
-    assert_output --partial "dry run"
+    assert_output --partial "Dry-run"
 }
 
 @test "health phase: DRY_RUN lists all services that would be checked" {

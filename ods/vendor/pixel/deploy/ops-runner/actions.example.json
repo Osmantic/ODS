@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "jobRoot": "/var/lib/pixel-runner/jobs",
+  "maxArtifactBytes": 1073741824,
+  "services": {
+    "pixel-fixture": {
+      "unit": "pixel-ops-fixture.service"
+    }
+  },
+  "repositories": {
+    "client-app": {
+      "path": "/var/lib/pixel-runner/jobs/client-app",
+      "allowedRefs": ["main", "release-*", "refs/tags/v*"],
+      "recipes": {
+        "lint": {
+          "argv": ["/usr/bin/npm", "run", "lint"],
+          "timeoutSeconds": 900
+        },
+        "test": {
+          "argv": ["/usr/bin/npm", "test"],
+          "timeoutSeconds": 1800
+        },
+        "package": {
+          "argv": ["/usr/bin/npm", "run", "build"],
+          "timeoutSeconds": 1800
+        }
+      }
+    }
+  },
+  "collectSources": {
+    "fixture-log": "/var/log/pixel-ops-fixture.log"
+  }
+}

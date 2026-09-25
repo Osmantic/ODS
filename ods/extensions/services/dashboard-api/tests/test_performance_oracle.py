@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from helpers import record_model_performance
-from models import GPUInfo
+from models import GPUInfo, ModelLibraryResponse
 from performance_oracle import (
     build_models_payload,
     current_model_matches,
@@ -44,6 +44,25 @@ def _model():
         "quantization": "Q4_K_M",
         "llm_model_name": "qwen3.5-9b",
     }
+
+
+def test_phi4_dashboard_defaults_to_fitting_context(data_dir, tmp_path):
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    raw = next(item for item in _official_model_catalog() if item["id"] == "phi4-mini-q4")
+    payload = build_models_payload(
+        _gpu(), None, 0, install_dir, data_dir, catalog=[raw], evidence=[],
+        downloaded_files_override={},
+    )
+    model = next(item for item in payload["models"] if item["id"] == raw["id"])
+    assert model["contextLength"] == 32768
+    recommended = [option for option in model["contextOptions"] if option["recommended"]]
+    assert len(recommended) == 1
+    assert recommended[0]["contextLength"] == 32768
+    assert recommended[0]["fitsVram"] is True
+    maximum = next(option for option in model["contextOptions"] if option["fullContext"])
+    assert maximum["contextLength"] == 128000
+    assert maximum["fitsVram"] is False
 
 
 def test_performance_env_readers_share_matching_quote_contract(monkeypatch, tmp_path):
@@ -160,6 +179,46 @@ def test_real_catalog_phi_models_have_exactly_one_loaded_identity(data_dir, tmp_
 
         assert loaded_rows == [expected_id]
         assert payload["currentModel"] == expected_id
+
+
+def test_unmatched_runtime_model_is_visible_without_borrowing_catalog_metadata(data_dir, tmp_path):
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    catalog_model = {
+        **_model(),
+        "id": "qwen3.6-35b-a3b-ud-q4",
+        "name": "Qwen 3.6 35B-A3B",
+        "gguf_file": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+        "llm_model_name": "qwen3.6-35b-a3b",
+        "quantization": "UD-Q4_K_M",
+    }
+    runtime_name = "Qwen3.6-35B-A3B-GGUF"
+
+    payload = build_models_payload(
+        _gpu(), runtime_name, 0, install_dir, data_dir, catalog=[catalog_model], evidence=[]
+    )
+    loaded = [entry for entry in payload["models"] if entry["status"] == "loaded"]
+
+    assert len(loaded) == 1
+    assert loaded[0]["id"].startswith("runtime-")
+    assert loaded[0]["name"] == runtime_name
+    assert loaded[0]["metadata"]["source"] == "runtime"
+    assert loaded[0]["metadata"]["readable"] is False
+    for field in ("gguf", "downloadUrl", "size", "sizeGb", "vramRequired",
+                  "estimatedRequired", "contextLength", "quantization", "architecture",
+                  "fitsVram", "fitsCurrentVram", "activationSupport"):
+        assert loaded[0].get(field) is None, field
+    assert payload["currentModel"] is None
+    assert payload["loadedModel"] == runtime_name
+    assert payload["models"][0]["status"] != "loaded"
+    ModelLibraryResponse(**payload)
+
+    matched = build_models_payload(
+        _gpu(), "qwen3.6-35b-a3b", 0, install_dir, data_dir,
+        catalog=[catalog_model], evidence=[],
+    )
+    assert [entry["id"] for entry in matched["models"] if entry["status"] == "loaded"] == [catalog_model["id"]]
+    assert not any(entry["metadata"]["source"] == "runtime" for entry in matched["models"])
 
 
 def test_benchmark_required_without_measurement_or_evidence(data_dir, tmp_path):
@@ -416,6 +475,136 @@ def test_host_scoped_app_compatibility_applies_only_to_matching_host():
     assert strixy["agentViability"]["status"] == "unknown"
 
 
+def test_host_scoped_positive_override_preserves_global_negative_elsewhere():
+    model = {
+        "id": "smollm3-3b-q4",
+        "app_compatibility": {
+            "perplexica": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Earlier cross-platform challenge failure",
+                "scopedOverrides": [
+                    {
+                        "status": "verified",
+                        "label": "Perplexica verified on Strixy",
+                        "reason": "Fresh exact Strixy proof",
+                        "hostScope": ["strixy"],
+                        "llmBackendScope": ["lemonade"],
+                        "expiresAt": "2999-01-01T00:00:00Z",
+                    },
+                    {"status": "verified", "reason": "Unsafe unscoped result"},
+                ],
+            },
+        },
+    }
+
+    strixy = model_app_compatibility(
+        model, runtime_context={"hosts": ["strixy"], "llmBackend": "lemonade"},
+    )
+    wrong_backend = model_app_compatibility(
+        model, runtime_context={"hosts": ["strixy"], "llmBackend": "llama-server"},
+    )
+    tower2 = model_app_compatibility(
+        model, runtime_context={"hosts": ["tower2"], "llmBackend": "lemonade"},
+    )
+
+    assert strixy["perplexica"] == {
+        "status": "verified",
+        "label": "Perplexica verified on Strixy",
+        "reason": "Fresh exact Strixy proof",
+    }
+    assert wrong_backend["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
+
+
+def test_host_scoped_positive_override_must_be_current_and_dated():
+    model = {
+        "app_compatibility": {
+            "perplexica": {
+                "status": "unsupported_until_revalidated",
+                "scopedOverrides": [
+                    {"status": "verified", "hostScope": ["strixy"],
+                     "expiresAt": "2020-01-01T00:00:00Z"},
+                    {"status": "verified", "hostScope": ["strixy"],
+                     "expiresAt": "not-a-date"},
+                    {"status": "verified", "hostScope": ["strixy"]},
+                ],
+            },
+        },
+    }
+    context = {"hosts": ["strixy"], "llmBackend": "lemonade"}
+    assert model_app_compatibility(model, runtime_context=context)["perplexica"]["status"] == (
+        "unsupported_until_revalidated"
+    )
+    model["app_compatibility"]["perplexica"]["scopedOverrides"].append({
+        "status": "verified",
+        "hostScope": ["strixy"],
+        "expiresAt": "2999-01-01T00:00:00Z",
+    })
+    assert model_app_compatibility(model, runtime_context=context)["perplexica"]["status"] == "verified"
+
+
+def test_real_smollm3_strixy_revalidation_is_not_global():
+    model = next(
+        model for model in _official_model_catalog() if model["id"] == "smollm3-3b-q4"
+    )
+    strixy = model_app_compatibility(
+        model, runtime_context={"hosts": ["strixy"], "llmBackend": "lemonade"},
+    )
+    windows = model_app_compatibility(
+        model, runtime_context={"hosts": ["windows-laptop"], "llmBackend": "llama-server"},
+    )
+    tower2 = model_app_compatibility(
+        model, runtime_context={"hosts": ["tower2"], "llmBackend": "lemonade"},
+    )
+
+    assert strixy["perplexica"]["status"] == "verified"
+    assert "r391/cycle-001/strixy-wsl-beta" in strixy["perplexica"]["evidence"]
+    assert windows["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
+
+
+def test_pixel_compatibility_is_explicit_and_host_scoped():
+    model = {
+        "id": "pixel-probe-model",
+        "app_compatibility": {
+            "agent_viability": {"status": "verified"},
+            "pixel_agent": {
+                "status": "not_agent_viable",
+                "label": "Pixel capability blocked on Windows",
+                "reason": "A real Pixel tool-loop probe failed.",
+                "hostScope": ["windows-laptop"],
+            },
+        },
+    }
+
+    windows_laptop = model_app_compatibility(
+        model,
+        runtime_context={"host": "windows-laptop", "hosts": ["windows-laptop"]},
+    )
+    tower2 = model_app_compatibility(
+        model,
+        runtime_context={"host": "tower2", "hosts": ["tower2"]},
+    )
+
+    assert windows_laptop["agentViability"]["status"] == "verified"
+    assert windows_laptop["pixelAgent"]["status"] == "not_agent_viable"
+    assert "real Pixel tool-loop probe" in windows_laptop["pixelAgent"]["reason"]
+    assert "agent-viability" not in windows_laptop
+    assert "pixel-agent" not in windows_laptop
+    assert tower2["agentViability"]["status"] == "verified"
+    assert tower2["pixelAgent"]["status"] == "unknown"
+
+
+def test_missing_pixel_compatibility_is_never_inferred_from_generic_agent_status():
+    compatibility = model_app_compatibility({
+        "id": "generic-only",
+        "app_compatibility": {"agent_viability": {"status": "verified"}},
+    })
+
+    assert compatibility["agentViability"]["status"] == "verified"
+    assert compatibility["pixelAgent"]["status"] == "unknown"
+
+
 def test_model_payload_applies_scoped_app_compatibility_from_install_env(data_dir, tmp_path):
     install_dir = tmp_path / "ods"
     (install_dir / "data" / "models").mkdir(parents=True)
@@ -546,7 +735,7 @@ def test_real_catalog_gemma_perplexica_block_is_global():
     assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
 
 
-def test_real_catalog_granite32_perplexica_block_is_tower2_and_m5_scoped():
+def test_real_catalog_granite32_perplexica_block_includes_towers_and_mac_after_live_failures():
     by_id = {model["id"]: model for model in _official_model_catalog()}
     model = by_id["granite3.2-2b-instruct-q4"]
 
@@ -566,11 +755,29 @@ def test_real_catalog_granite32_perplexica_block_is_tower2_and_m5_scoped():
         model,
         runtime_context={"host": "m5-mbp", "hosts": ["m5-mbp"]},
     )
+    tower3 = model_app_compatibility(
+        model,
+        runtime_context={"host": "tower3", "hosts": ["tower3"]},
+    )
+    tower1 = model_app_compatibility(
+        model,
+        runtime_context={"host": "tower1", "hosts": ["tower1"]},
+    )
+    mac_mini = model_app_compatibility(
+        model,
+        runtime_context={"host": "mac-mini", "hosts": ["mac-mini"]},
+    )
 
     assert windows_laptop["perplexica"]["status"] == "unknown"
     assert strix_halo["perplexica"]["status"] == "unknown"
     assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
     assert m5_mbp["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert tower3["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert tower1["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert mac_mini["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert "Tower3" in tower3["perplexica"]["reason"]
+    assert "Tower1" in tower1["perplexica"]["reason"]
+    assert "M4 Mac Mini" in mac_mini["perplexica"]["reason"]
 
 
 def test_real_catalog_smollm3_perplexica_block_is_global():
@@ -833,7 +1040,10 @@ def test_bundled_windows_laptop_phi_evidence_blocks_agent_compatibility(data_dir
 def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_path):
     install_dir = tmp_path / "ods"
     (install_dir / "data" / "models").mkdir(parents=True)
-    (install_dir / ".env").write_text("ODS_FLEET_HOST_ID=windows-laptop\n", encoding="utf-8")
+    (install_dir / ".env").write_text(
+        "ODS_FLEET_HOST_ID=windows-laptop\nSYSTEM_RAM_GB=31\n",
+        encoding="utf-8",
+    )
     catalog = _official_model_catalog()
 
     payload = build_models_payload(
@@ -851,11 +1061,12 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
         if model["id"] != "qwen3.5-9b-q4"
         and model["status"] in {"available", "downloaded"}
         and model["fitsVram"] is not False
-        and model["contextLength"] >= 64000
-        and all(
-            not _compatibility_blocks_release_coverage(entry)
-            for entry in model["appCompatibility"].values()
-        )
+            and model["contextLength"] >= 64000
+            and all(
+                not _compatibility_blocks_release_coverage(entry)
+                for key, entry in model["appCompatibility"].items()
+                if key != "pixelAgent"
+            )
     ]
     candidate_ids = {model["id"] for model in candidates}
     by_id = {model["id"]: model for model in candidates}
@@ -875,6 +1086,9 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     assert by_id["qwen3.5-4b-q4"]["appCompatibility"]["agentViability"]["status"] == (
         "verified"
     )
+    assert by_id["qwen3.5-4b-q4"]["appCompatibility"]["pixelAgent"]["status"] == (
+        "not_agent_viable"
+    )
     assert all_by_id["smollm3-3b-q4"]["contextLength"] == 65536
     assert all_by_id["qwen3-4b-128k-q4"]["contextLength"] == 131072
     assert by_id["qwen2.5-coder-3b-128k-q4"]["contextLength"] == 128000
@@ -883,6 +1097,9 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     )
     assert by_id["qwen2.5-coder-3b-128k-q4"]["appCompatibility"]["agentViability"]["status"] == (
         "verified"
+    )
+    assert by_id["qwen2.5-coder-3b-128k-q4"]["appCompatibility"]["pixelAgent"]["status"] == (
+        "not_agent_viable"
     )
     assert "qwen3-4b-instruct-2507-q4" in candidate_ids
     assert by_id["qwen3-4b-instruct-2507-q4"]["contextLength"] >= 64000
@@ -924,6 +1141,8 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     assert all_by_id["granite4.0-h-1b-q4"]["appCompatibility"]["perplexica"]["status"] == "unknown"
     assert "granite3.1-2b-instruct-q4" not in candidate_ids
     assert "granite4.0-h-1b-q4" in candidate_ids
+    # The Strixy-only positive evidence must not override this Windows host's
+    # independently measured 0.5 tok/s performance block.
     assert "phi4-mini-q4" not in candidate_ids
     assert "gemma3-4b-it-q4" not in candidate_ids
     assert "falcon-h1-1.5b-instruct-q4" not in candidate_ids
@@ -975,7 +1194,82 @@ def test_real_catalog_scopes_qwen25_coder_3b_host_failures():
     assert windows["hermesTalk"]["status"] == "unknown"
     assert windows["opencode"]["status"] == "unknown"
     assert windows["agentViability"]["status"] == "verified"
-    assert not any(_compatibility_blocks_release_coverage(entry) for entry in windows.values())
+    assert windows["pixelAgent"]["status"] == "not_agent_viable"
+    assert not any(
+        _compatibility_blocks_release_coverage(entry)
+        for key, entry in windows.items()
+        if key != "pixelAgent"
+    )
+
+
+def test_real_catalog_scopes_granite_h_tiny_pixel_failure_to_proven_hosts():
+    catalog = _official_model_catalog()
+    model = next(model for model in catalog if model["id"] == "granite4.0-h-tiny-q4")
+
+    tower3 = model_app_compatibility(model, runtime_context={"hosts": ["tower3"]})
+    tower2 = model_app_compatibility(model, runtime_context={"hosts": ["tower2"]})
+    windows = model_app_compatibility(
+        model,
+        runtime_context={"hosts": ["windows-laptop"]},
+    )
+    tower1 = model_app_compatibility(model, runtime_context={"hosts": ["tower1"]})
+
+    assert tower3["pixelAgent"]["status"] == "unsupported_until_revalidated"
+    assert tower2["pixelAgent"]["status"] == "unsupported_until_revalidated"
+    assert windows["pixelAgent"]["status"] == "unsupported_until_revalidated"
+    assert "cycle-003/tower2/model-ui.json" in tower2["pixelAgent"]["evidence"]
+    assert "cycle-005/windows-laptop-wsl-beta/model-ui.json" in (
+        windows["pixelAgent"]["evidence"]
+    )
+    assert tower1["pixelAgent"]["status"] == "unknown"
+
+
+def test_real_catalog_scopes_granite_h_1b_perplexica_failure_to_proven_hosts():
+    catalog = _official_model_catalog()
+    model = next(model for model in catalog if model["id"] == "granite4.0-h-1b-q4")
+
+    macbook = model_app_compatibility(model, runtime_context={"hosts": ["m5-mbp"]})
+    windows_wsl = model_app_compatibility(
+        model,
+        runtime_context={"hosts": ["windows-laptop-wsl-beta"]},
+    )
+    tower1 = model_app_compatibility(model, runtime_context={"hosts": ["tower1"]})
+
+    assert macbook["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert windows_wsl["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert "cycle-003/windows-laptop-wsl-beta/model-ui.json" in (
+        windows_wsl["perplexica"]["evidence"]
+    )
+    assert tower1["perplexica"]["status"] == "unknown"
+
+
+def test_real_catalog_scopes_phi4_talk_pass_and_later_pixel_failure_to_strixy():
+    catalog = _official_model_catalog()
+    model = next(model for model in catalog if model["id"] == "phi4-mini-q4")
+
+    strixy = model_app_compatibility(model, runtime_context={"hosts": ["strixy"]})
+    windows = model_app_compatibility(model, runtime_context={"hosts": ["windows-laptop"]})
+
+    assert strixy["hermesTalk"]["status"] == "verified"
+    assert strixy["pixelAgent"]["status"] == "unsupported_until_revalidated"
+    assert strixy["openWebui"]["status"] == "unsupported_until_revalidated"
+    assert strixy["agentViability"]["status"] == "unsupported_until_revalidated"
+    assert "cycle-005/strixy-wsl-beta/model-ui.json" in strixy["hermesTalk"]["evidence"]
+    assert windows["hermesTalk"]["status"] == "unknown"
+    assert windows["pixelAgent"]["status"] == "unknown"
+    assert windows["agentViability"]["status"] == "unknown"
+
+
+def test_real_catalog_scopes_qwen35_9b_open_webui_revalidation_to_strixy():
+    catalog = _official_model_catalog()
+    model = next(model for model in catalog if model["id"] == "qwen3.5-9b-q4")
+
+    strixy = model_app_compatibility(model, runtime_context={"hosts": ["strixy"]})
+    windows = model_app_compatibility(model, runtime_context={"hosts": ["windows-laptop"]})
+
+    assert strixy["openWebui"]["status"] == "verified"
+    assert "cycle-006/strixy-wsl-beta/model-ui.json" in strixy["openWebui"]["evidence"]
+    assert windows["openWebui"]["status"] == "unknown"
 
 
 def test_installer_recommended_model_survives_bootstrap_env(data_dir, tmp_path):
@@ -1013,6 +1307,7 @@ def test_installer_recommended_model_survives_bootstrap_env(data_dir, tmp_path):
     assert payload["configuredModel"] == "qwen3.5-9b-q4"
     assert payload["hermesMinimumContext"] == 65536
     assert payload["hermesTargetContext"] == 131072
+    assert payload["pixelMinimumContext"] == 16384
     assert by_id["qwen3.5-2b-q4"]["status"] == "loaded"
     assert by_id["qwen3.5-9b-q4"]["contextLength"] == 65536
     assert by_id["qwen3.5-9b-q4"]["recommended"] is True
@@ -1143,6 +1438,10 @@ def test_downloaded_gguf_header_replaces_stale_hub_context(
             "readable": True,
             "context_length": 131072,
             "quantization": "Q4_K_M",
+            "block_count": 36,
+            "attention_head_count_kv": 8,
+            "embedding_length": 4096,
+            "attention_head_count": 32,
         },
     )
 
@@ -1162,6 +1461,8 @@ def test_downloaded_gguf_header_replaces_stale_hub_context(
     assert model["metadata"]["contextSource"] == "gguf_file"
     assert model["contextOptions"][-1]["contextLength"] == 131072
     assert model["contextOptions"][-1]["fullContext"] is True
+    assert model["estimatedRequired"] == 1.61
+    assert model["contextOptions"][-1]["estimatedRequired"] == 18.49
 
 
 def test_configured_model_prefers_env_file_over_stale_process_env(data_dir, tmp_path, monkeypatch):
@@ -1336,7 +1637,7 @@ def test_jamba_reasoning_3b_catalog_profile_fits_4gb_at_agent_context(data_dir, 
     assert model["recommended"] is False
 
 
-def test_pre_download_ranker_falls_back_to_smallest_model_without_gpu_info(data_dir):
+def test_pre_download_ranker_does_not_assume_large_gpu_without_hardware_info(data_dir):
     catalog = [
         _model(),
         {
@@ -1356,7 +1657,7 @@ def test_pre_download_ranker_falls_back_to_smallest_model_without_gpu_info(data_
 
     ranked = rank_pre_download_models(catalog, None, profile="qwen", limit=2)
 
-    assert [model["id"] for model in ranked] == ["qwen3.5-9b-q4"]
+    assert ranked == []
 
 
 def test_windows_amd_host_runtime_uses_install_ram_when_gpu_probe_is_unavailable(data_dir, tmp_path):
@@ -1470,6 +1771,77 @@ def test_pre_download_ranker_allows_8gb_nvidia_runtime_profile(monkeypatch):
 
     assert ranked[0]["id"] == "qwen3.6-35b-a3b-ud-q4"
     assert ranked[0]["_runtime_profile"]["id"] == "nvidia-8gb-qwen36-35b-a3b-turboquant"
+
+
+def test_pre_download_ranker_excludes_ram_ineligible_hardware_profile(
+    monkeypatch,
+    data_dir,
+    tmp_path,
+):
+    monkeypatch.setattr("performance_oracle.platform.machine", lambda: "x86_64")
+    small = {
+        "id": "plain-small",
+        "name": "Plain Small",
+        "family": "qwen",
+        "gguf_file": "plain-small.gguf",
+        "size_mb": 1024,
+        "vram_required_gb": 2,
+        "context_length": 8192,
+        "quantization": "Q4_K_M",
+        "specialty": "Fast",
+        "description": "Unprofiled fallback",
+        "llm_model_name": "plain-small",
+    }
+    profiled = {
+        **_model(),
+        "runtime_profiles": [{
+            "id": "nvidia-8gb-profile",
+            "backend": "nvidia",
+            "host_arch": ["amd64"],
+            "memory_type": "discrete",
+            "vram_min_gb": 7.5,
+            "vram_max_gb": 8.5,
+            "system_ram_min_gb": 15,
+            "estimated_required_gb": 8,
+            "context_length": 65536,
+        }],
+    }
+
+    constrained = rank_pre_download_models(
+        [profiled, small],
+        _gpu(total_mb=8188),
+        profile="qwen",
+        limit=2,
+        system_ram_gb=13,
+    )
+    eligible = rank_pre_download_models(
+        [profiled, small],
+        _gpu(total_mb=8188),
+        profile="qwen",
+        limit=2,
+        system_ram_gb=15,
+    )
+
+    assert [model["id"] for model in constrained] == ["plain-small"]
+    assert eligible[0]["id"] == profiled["id"]
+    assert eligible[0]["_runtime_profile"]["id"] == "nvidia-8gb-profile"
+
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".env").write_text("SYSTEM_RAM_GB=13\n", encoding="utf-8")
+    payload = build_models_payload(
+        _gpu(total_mb=8188),
+        None,
+        0,
+        install_dir,
+        data_dir,
+        catalog=[profiled, small],
+        evidence=[],
+    )
+    cards = {model["id"]: model for model in payload["models"]}
+    assert cards[profiled["id"]]["fitsVram"] is False
+    assert cards[profiled["id"]]["runtimeProfile"] is None
+    assert cards["plain-small"]["recommended"] is True
 
 
 def test_measured_local_from_live_loaded_model(data_dir, tmp_path):

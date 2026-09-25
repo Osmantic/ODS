@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-verification-evidence-v1.schema.json",
+  "title": "Pixel independent verification evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "format", "jobId", "claimId", "planSha256", "patchSha256", "candidateSha256", "status", "checks", "criteria", "network", "workerSelectedChecks", "externalEffects", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "format": {"const": "pixel-independent-verification-v1"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "claimId": {"type": "string", "pattern": "^workclaim-[0-9]{13}-[a-f0-9]{12}$"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "patchSha256": {"$ref": "#/$defs/sha256"},
+    "candidateSha256": {"$ref": "#/$defs/sha256"},
+    "status": {"enum": ["pass", "fail"]},
+    "checks": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"oneOf": [{"$ref": "#/$defs/patchCheck"}, {"$ref": "#/$defs/commandCheck"}]}},
+    "criteria": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/criterion"}},
+    "network": {"const": "none"},
+    "workerSelectedChecks": {"const": false},
+    "externalEffects": {"const": false},
+    "boundary": {"const": "Content-free independent verification evidence only. Worker output cannot select checks or grant merge, deployment, publication, external-effect, or policy authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "criterionIndexes": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"type": "integer", "minimum": 0, "maximum": 31}},
+    "baseCheckProperties": {
+      "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+      "criterionIndexes": {"$ref": "#/$defs/criterionIndexes"},
+      "status": {"enum": ["pass", "fail"]},
+      "candidateSha256": {"$ref": "#/$defs/sha256"},
+      "evidenceSha256": {"$ref": "#/$defs/sha256"}
+    },
+    "patchCheck": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "criterionIndexes", "status", "candidateSha256", "evidenceSha256", "changes", "files", "bytes"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}, "kind": {"const": "patch-integrity"},
+        "criterionIndexes": {"$ref": "#/$defs/criterionIndexes"}, "status": {"enum": ["pass", "fail"]},
+        "candidateSha256": {"$ref": "#/$defs/sha256"}, "evidenceSha256": {"$ref": "#/$defs/sha256"},
+        "changes": {"type": "integer", "minimum": 0, "maximum": 100000}, "files": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "bytes": {"type": "integer", "minimum": 0, "maximum": 1099511627776}
+      }
+    },
+    "commandCheck": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "criterionIndexes", "status", "candidateSha256", "evidenceSha256", "runtimeMilliseconds", "exitCode", "signal", "timedOut", "outputLimitExceeded", "spawnFailed", "stdoutBytes", "stdoutSha256", "stderrBytes", "stderrSha256"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}, "kind": {"const": "command"},
+        "criterionIndexes": {"$ref": "#/$defs/criterionIndexes"}, "status": {"enum": ["pass", "fail"]},
+        "candidateSha256": {"$ref": "#/$defs/sha256"}, "evidenceSha256": {"$ref": "#/$defs/sha256"},
+        "runtimeMilliseconds": {"type": "integer", "minimum": 0, "maximum": 3630000},
+        "exitCode": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
+        "signal": {"type": ["string", "null"], "pattern": "^SIG[A-Z0-9]{1,16}$"},
+        "timedOut": {"type": "boolean"}, "outputLimitExceeded": {"type": "boolean"}, "spawnFailed": {"type": "boolean"},
+        "stdoutBytes": {"type": "integer", "minimum": 0, "maximum": 17825792}, "stdoutSha256": {"$ref": "#/$defs/sha256"},
+        "stderrBytes": {"type": "integer", "minimum": 0, "maximum": 17825792}, "stderrSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "criterion": {
+      "type": "object", "additionalProperties": false, "required": ["index", "status", "checkIds"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0, "maximum": 31}, "status": {"enum": ["pass", "fail"]},
+        "checkIds": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}}
+      }
+    }
+  }
+}

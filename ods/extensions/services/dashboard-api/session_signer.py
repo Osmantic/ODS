@@ -10,7 +10,7 @@ Where:
   * expiry-epoch is the integer Unix timestamp the cookie should stop
     being honored (server-side expiry; the browser may keep the cookie
     longer but we reject it)
-  * signature is `HMAC-SHA256(ODS_SESSION_SECRET, "<random-id>.<expiry>")`
+  * signature is `HMAC-SHA256(ODS_SESSION_SECRET, "ods-privileged-session/v2\\0<random-id>.<expiry>")`
     base64-url-encoded (no padding)
 
 Why this shape:
@@ -96,7 +96,11 @@ def _b64u_decode(text: str) -> bytes:
 
 def _sign(payload: str) -> str:
     """HMAC-SHA256 of ``payload`` with ``_SECRET``. Returns base64-url."""
-    mac = hmac.new(_SECRET, payload.encode("utf-8"), hashlib.sha256).digest()
+    # Before dashboard sign-in hardening, chat-only guests received this same
+    # privileged cookie. A new signing domain rejects all legacy signatures
+    # immediately, including guest cookies that have not expired. Preserve the
+    # wire shape for existing consumers; owners renew through their normal flow.
+    mac = hmac.new(_SECRET, b"ods-privileged-session/v2\x00" + payload.encode("utf-8"), hashlib.sha256).digest()
     return _b64u(mac)
 
 
@@ -147,6 +151,12 @@ def verify(cookie_value: str) -> Tuple[bool, str]:
     if not random_id or not expiry_str or not claimed_sig:
         return False, "malformed"
 
+    # Verify expiry format first before computing HMAC.
+    try:
+        expiry = int(expiry_str)
+    except (ValueError, TypeError):
+        return False, "malformed"
+
     payload = f"{random_id}.{expiry_str}"
     expected_sig = _sign(payload)
     # Constant-time compare to defeat signature timing oracles. Encoded to
@@ -156,15 +166,7 @@ def verify(cookie_value: str) -> Tuple[bool, str]:
     if not hmac.compare_digest(expected_sig.encode("utf-8"), claimed_sig.encode("utf-8")):
         return False, "bad-signature"
 
-    # Signature is good — check expiry.
-    try:
-        expiry = int(expiry_str)
-    except (ValueError, TypeError):
-        return False, "malformed"
-
-    # `<=` because the expiry timestamp is the moment of invalidation, not
-    # the last valid second. A cookie issued with ttl=60 stops being valid
-    # AT t+60, not after t+61.
+    # Signature is good — check expiry timestamp.
     if expiry <= int(time.time()):
         return False, "expired"
 

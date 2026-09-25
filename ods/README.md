@@ -1,14 +1,22 @@
-# ODS
+# ODS V3 Pre-Release
 
 **Osmantic Deployment System**
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](../LICENSE)
+**Public testing and refinement ahead of the official V3 launch.**
+Try it, share feedback, and help us improve the experience. See the
+[V3 Pre-Release notes](docs/RELEASE_NOTES_3.0.0.md) for current qualification status.
+
+[![License: Apache 2.0 + Pixel ODS-only](https://img.shields.io/badge/License-Apache%202.0%20%2B%20Pixel%20ODS--only-blue.svg)](LICENSING.md)
 [![Docker](https://img.shields.io/badge/Docker-Required-2496ED?logo=docker)](https://docs.docker.com/get-docker/)
 [![NVIDIA](https://img.shields.io/badge/NVIDIA-GPU%20Accelerated-76B900?logo=nvidia)](https://developer.nvidia.com/cuda-toolkit)
 [![AMD](https://img.shields.io/badge/AMD-Strix%20Halo%20ROCm-ED1C24?logo=amd)](https://rocm.docs.amd.com/)
 [![n8n](https://img.shields.io/badge/n8n-Workflows-FF6D5A?logo=n8n)](https://n8n.io)
 
 **Your turnkey local AI stack.** Buy hardware. Run installer. AI running.
+
+Pixel source ships inside ODS with an ODS-only use and distribution grant;
+other ODS code remains Apache-2.0. See [Licensing](LICENSING.md) for the
+boundary and third-party notices.
 
 ---
 
@@ -131,6 +139,20 @@ runtime directory, not from the source checkout.
 
 See [`docs/WINDOWS-QUICKSTART.md`](docs/WINDOWS-QUICKSTART.md) for details.
 
+### Fresh reinstall with cached models
+
+On Linux, WSL, or native macOS, `get-ods.sh --force --keep-models` replaces an
+existing ODS installation while retaining `data/models`. All other installation
+data, configuration, and runtime files are replaced. Without `--keep-models`,
+`--force` keeps its normal full cleanup behavior. The option requires an
+identified existing installation and is consumed by the bootstrap, not `install.sh`.
+
+Preservation temporarily uses `~/.ods-models-backup`; an existing backup or a
+symlink conflict blocks replacement. Resolve that backup manually before retrying.
+If moving the models fails, remaining files stay in the original model directory
+and/or the backup for recovery. Restored models follow the ordinary installer
+validation and download path; retention does not itself verify their contents.
+
 ### Uninstall
 
 Linux/macOS:
@@ -165,7 +187,8 @@ source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 | **LiteLLM** | Multi-model API gateway | 4000 | Recommended |
 | **Token Spy** | Token usage monitor | 3005 | Recommended |
 | **SearXNG** | Self-hosted web search | 8888 | Recommended |
-| **Hermes Agent** | Default local-first autonomous/browser agent | 9120 via auth proxy; 9119 internal | Default agent |
+| **Portal** | Core conversational assistant in Dashboard; default Open WebUI agent route on qualified Linux hosts | Private Unix socket; no host TCP port | Core feature on qualified hosts |
+| **Hermes Agent** | Independent general-purpose agent | 9120 via auth proxy; 9119 internal | Default |
 | **OpenClaw** | Deprecated legacy autonomous agent, opt-in during migration | 7860 | Deprecated optional |
 | **APE** | Agent Policy Engine for policy/audit controls | 7890 | Optional |
 | **OpenCode** | Browser IDE / coding assistant | 3003 | Optional host service |
@@ -257,8 +280,8 @@ See [docs/HARDWARE-GUIDE.md](docs/HARDWARE-GUIDE.md) for buying recommendations.
 └─────────────────────────────────────────────────┘
          │                              │
 ┌────────▼────────┐            ┌───────▼────────┐
-│ Hermes Agent    │            │    Dashboard    │
-│ (default agent) │            │ (Status :3001)  │
+│ Pixel / Hermes  │            │    Dashboard    │
+│ agent selection │            │ (Pixel toolbar) │
 └─────────────────┘            └────────────────┘
 
 ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
@@ -436,7 +459,7 @@ ods mode                               # Show current mode
 | Hardware auto-detect + model selection | **NVIDIA + AMD Strix Halo + Apple Silicon + Intel Arc + CPU/cloud fallback** | No | No |
 | AMD APU / unified memory support | **Platform-specific accelerated backend selected by installer** | Partial (Vulkan) | No |
 | Inference engine | **llama-server** (all GPUs) | llama.cpp | llama.cpp |
-| Autonomous AI agent | **Hermes Agent default; OpenClaw legacy opt-in** | No | No |
+| Autonomous AI agent | **Portal on qualified hosts; Hermes alongside it; OpenClaw legacy opt-in** | No | No |
 | Workflow automation | **n8n (400+ integrations)** | No | No |
 | LLM usage monitoring | **Open WebUI built-in** | No | No |
 | Multi-GPU | **Yes** (NVIDIA) | Partial | Partial |
@@ -532,7 +555,9 @@ If we missed anyone, [open an issue](https://github.com/Osmantic/ODS/issues). We
 
 ## License
 
-Apache 2.0 — Use it, modify it, sell it. Just don't blame us.
+ODS code is Apache-2.0 except the bundled Pixel source, which has a separate
+ODS-only use and distribution grant. See [Licensing](LICENSING.md),
+[LICENSE](LICENSE), and [Pixel's license](vendor/pixel/LICENSE.md).
 
 ---
 

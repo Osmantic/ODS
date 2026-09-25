@@ -680,6 +680,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
         export EXTERNAL_LLM_CONTAINER_URL="http://host.docker.internal:11434"
         export EXTERNAL_LLM_PROVIDER="ollama"
         export EXTERNAL_LLM_MODEL="qwen3.5:9b"
+        export ODS_MODEL_SWITCHBOARD="observe"
         export LLM_API_URL="$EXTERNAL_LLM_CONTAINER_URL"
         export HERMES_LLM_BASE_URL="${EXTERNAL_LLM_CONTAINER_URL}/v1"
         export HERMES_DASHBOARD_SESSION_TOKEN="external-llm-hermes-dashboard-session-token"
@@ -698,8 +699,32 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
             fail "Rendered external-LLM stack still contains model-router"
         elif ! grep -Fq 'ODS_TALK_VISION_URL: http://host.docker.internal:11434/v1' "$compose_config_file"; then
             fail "Rendered external-LLM stack does not route ODS Talk vision to the external backend"
+        elif ! awk '
+            /^  dashboard-api:/ { in_dashboard = 1; next }
+            in_dashboard && /^  [^ ]/ { exit }
+            in_dashboard { print }
+        ' "$compose_config_file" | grep -Fq 'EXTERNAL_LLM_CONTAINER_URL: http://host.docker.internal:11434'; then
+            fail "Rendered Dashboard API lacks the physical external-LLM URL"
+        elif ! awk '
+            /^  dashboard-api:/ { in_dashboard = 1; next }
+            in_dashboard && /^  [^ ]/ { exit }
+            in_dashboard { print }
+        ' "$compose_config_file" | grep -Fq 'EXTERNAL_LLM_PROVIDER: ollama'; then
+            fail "Rendered Dashboard API lacks the external-LLM provider"
+        elif ! awk '
+            /^  dashboard-api:/ { in_dashboard = 1; next }
+            in_dashboard && /^  [^ ]/ { exit }
+            in_dashboard { print }
+        ' "$compose_config_file" | grep -Fq 'EXTERNAL_LLM_MODEL: qwen3.5:9b'; then
+            fail "Rendered Dashboard API lacks the pinned external model ID"
+        elif ! awk '
+            /^  dashboard-api:/ { in_dashboard = 1; next }
+            in_dashboard && /^  [^ ]/ { exit }
+            in_dashboard { print }
+        ' "$compose_config_file" | grep -Fq 'ODS_MODEL_SWITCHBOARD: observe'; then
+            fail "Rendered Dashboard API lacks the effective external switchboard mode"
         else
-            pass "Real external-LLM Compose stack renders without managed inference and routes ODS Talk externally"
+            pass "Real external-LLM Compose stack routes ODS Talk and Dashboard model discovery externally"
         fi
     else
         fail "Real external-LLM Compose stack failed docker compose config"
@@ -752,5 +777,11 @@ else
 fi
 
 echo ""
+if python3 -m pytest -q "$ROOT_DIR/tests/test_extension_build_projection.py" -k test_resolver_; then
+    pass "Imported recipe backend selection preserves provenance and disabled controls"
+else
+    fail "Imported recipe backend selection regression"
+fi
+
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

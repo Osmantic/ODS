@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-action-v1.schema.json",
+  "title": "Pixel local control action preview v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "actionId", "kind", "label", "effect", "expiresAt", "actionHash", "requiresExactConfirmation"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "actionId": {"type": "string", "pattern": "^control-[0-9]{13}-[a-f0-9]{12}$"},
+    "kind": {"enum": ["configure", "plan", "verify", "update-check", "backup-create", "operations-pause", "frontier-pause", "deep-work-pause", "deep-work-resume", "deep-work-cancel", "deep-work-draft", "deep-work-prepare", "deep-work-stage", "deep-work-service-render"]},
+    "label": {"type": "string", "minLength": 1, "maxLength": 120},
+    "effect": {"type": "string", "minLength": 1, "maxLength": 500},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "actionHash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "requiresExactConfirmation": {"const": true}
+  }
+}

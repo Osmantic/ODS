@@ -1,0 +1,76 @@
+services:
+  nifi:
+    image: ods/nifi:6f7f2840-local-v1
+    container_name: ods-nifi
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${NIFI_PORT:-11146}:8443
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --insecure
+      - --max-time
+      - '8'
+      - https://127.0.0.1:8443/nifi-api/access/config
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 300s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    tmpfs:
+    - /tmp:rw,nosuid,size=512m
+    environment:
+      NIFI_ADMIN_PASSWORD: ${NIFI_ADMIN_PASSWORD:?Set a random 64-hex administrator
+        password}
+      NIFI_SENSITIVE_PROPS_KEY: ${NIFI_SENSITIVE_PROPS_KEY:?Set an independent persistent
+        64-hex encryption key}
+      NIFI_WEB_HTTPS_HOST: 0.0.0.0
+      NIFI_WEB_HTTPS_PORT: '8443'
+      NIFI_WEB_PROXY_HOST: localhost:${NIFI_PORT:-11146},127.0.0.1:${NIFI_PORT:-11146},nifi:8443
+      NIFI_JVM_HEAP_INIT: 512m
+      NIFI_JVM_HEAP_MAX: 2g
+      NIFI_CLUSTER_IS_NODE: 'false'
+    volumes:
+    - nifi-conf:/opt/nifi/nifi-current/conf
+    - nifi-content-repository:/opt/nifi/nifi-current/content_repository
+    - nifi-database-repository:/opt/nifi/nifi-current/database_repository
+    - nifi-flowfile-repository:/opt/nifi/nifi-current/flowfile_repository
+    - nifi-logs:/opt/nifi/nifi-current/logs
+    - nifi-nar-extensions:/opt/nifi/nifi-current/nar_extensions
+    - nifi-provenance-repository:/opt/nifi/nifi-current/provenance_repository
+    - nifi-python-extensions:/opt/nifi/nifi-current/python_extensions
+    - nifi-state:/opt/nifi/nifi-current/state
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  nifi-conf: {}
+  nifi-content-repository: {}
+  nifi-database-repository: {}
+  nifi-flowfile-repository: {}
+  nifi-logs: {}
+  nifi-nar-extensions: {}
+  nifi-provenance-repository: {}
+  nifi-python-extensions: {}
+  nifi-state: {}

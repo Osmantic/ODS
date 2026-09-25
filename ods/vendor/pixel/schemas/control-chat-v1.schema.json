@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-chat-v1.schema.json",
+  "title": "Pixel private chat projection v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "state", "activeHandle", "conversations", "limits", "privacy", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "state": {"enum": ["disabled", "ready", "unavailable"]},
+    "activeHandle": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/handle"}]},
+    "conversations": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["handle", "title", "createdAt", "updatedAt", "state", "turns"],
+        "properties": {
+          "handle": {"$ref": "#/$defs/handle"},
+          "title": {"type": "string", "minLength": 1, "maxLength": 120},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"},
+          "state": {"enum": ["active", "attention"]},
+          "turns": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/turn"}}
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxConversations", "maxTurnsPerConversation", "maxMessageCharacters"],
+      "properties": {
+        "maxConversations": {"const": 32},
+        "maxTurnsPerConversation": {"const": 200},
+        "maxMessageCharacters": {"const": 32768}
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewTokenRequired", "credentialsExposed", "pathsExposed", "rawLauncherOutputExposed", "genericCommandSurface"],
+      "properties": {
+        "reviewTokenRequired": {"const": true},
+        "credentialsExposed": {"const": false},
+        "pathsExposed": {"const": false},
+        "rawLauncherOutputExposed": {"const": false},
+        "genericCommandSurface": {"const": false}
+      }
+    },
+    "boundary": {"const": "Process-lifetime token-gated owner conversation view. It can submit text only to the fixed configured Pixel agent and exposes bounded message text, content-free turn state, and pathless no-authority provenance for an exact inert Deep Work handoff. It grants no credential, path, shell, arbitrary agent, policy-widening, approval, execution, scheduling, external-effect, or completion authority."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"state": {"const": "ready"}}, "required": ["state"]},
+      "else": {"properties": {"activeHandle": {"type": "null"}, "conversations": {"maxItems": 0}}}
+    }
+  ],
+  "$defs": {
+    "handle": {"type": "string", "pattern": "^chatview-[a-f0-9]{24}$"},
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskHandle", "createdAt", "finishedAt", "userText", "state", "phase", "assistantText", "toolCalls", "toolFailures", "capability", "activity", "handoff"],
+      "properties": {
+        "taskHandle": {"type": "string", "pattern": "^chattask-[a-f0-9]{24}$"},
+        "createdAt": {"type": "string", "format": "date-time"},
+        "finishedAt": {"oneOf": [{"type": "null"}, {"type": "string", "format": "date-time"}]},
+        "userText": {"type": "string", "minLength": 1, "maxLength": 32768},
+        "state": {"enum": ["running", "succeeded", "failed", "interrupted"]},
+        "phase": {"enum": ["queued", "executing", "completed", "failed", "interrupted"]},
+        "assistantText": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 131072}]},
+        "toolCalls": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 10000}]},
+        "toolFailures": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 10000}]},
+        "capability": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/capability"}]},
+        "activity": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "at"],
+            "properties": {
+              "code": {"enum": ["accepted", "agent-started", "response-verified", "execution-failed", "recovery-required"]},
+              "at": {"type": "string", "format": "date-time"}
+            }
+          }
+        },
+        "handoff": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/handoff"}]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "running"}}, "required": ["state"]},
+          "then": {"properties": {"finishedAt": {"type": "null"}, "phase": {"enum": ["queued", "executing"]}, "assistantText": {"type": "null"}, "toolCalls": {"type": "null"}, "toolFailures": {"type": "null"}, "capability": {"type": "null"}, "handoff": {"type": "null"}}},
+          "else": {"properties": {"finishedAt": {"type": "string", "format": "date-time"}}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "succeeded"}}, "required": ["state"]},
+          "then": {"properties": {"phase": {"const": "completed"}, "assistantText": {"type": "string", "minLength": 1, "maxLength": 131072}, "toolCalls": {"type": "integer", "minimum": 0, "maximum": 10000}, "toolFailures": {"type": "integer", "minimum": 0, "maximum": 10000}, "capability": {"type": "object"}}},
+          "else": {"properties": {"assistantText": {"type": "null"}, "toolCalls": {"type": "null"}, "toolFailures": {"type": "null"}, "capability": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "failed"}}, "required": ["state"]},
+          "then": {"properties": {"phase": {"const": "failed"}}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "interrupted"}}, "required": ["state"]},
+          "then": {"properties": {"phase": {"const": "interrupted"}}}
+        },
+        {
+          "if": {"properties": {"handoff": {"type": "object"}}, "required": ["handoff"]},
+          "then": {"properties": {"state": {"enum": ["succeeded", "failed", "interrupted"]}}}
+        }
+      ]
+    },
+    "capability": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "routes", "effects", "autonomousWithinPolicy", "brokerReceiptRequired", "brokerReceiptSatisfied", "approvalRequired", "externalEffectOccurred", "ambiguousBrokerCalls", "unclassifiedReportedTools", "toolNamesExposed"],
+      "properties": {
+        "state": {"enum": ["complete-local", "broker-correlation-required", "broker-correlated", "broker-approval-required", "broker-ambiguous", "unclassified", "legacy-unavailable"]},
+        "routes": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 64}},
+        "effects": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 64}},
+        "autonomousWithinPolicy": {"type": "boolean"},
+        "brokerReceiptRequired": {"type": "boolean"},
+        "brokerReceiptSatisfied": {"type": "boolean"},
+        "approvalRequired": {"type": "boolean"},
+        "externalEffectOccurred": {"oneOf": [{"type": "null"}, {"type": "boolean"}]},
+        "ambiguousBrokerCalls": {"type": "integer", "minimum": 0, "maximum": 1024},
+        "unclassifiedReportedTools": {"type": "integer", "minimum": 0, "maximum": 256},
+        "toolNamesExposed": {"const": false}
+      }
+    },
+    "handoff": {
+      "type": "object", "additionalProperties": false,
+      "required": ["receiptHandle", "createdAt", "state", "targetState", "draftHandle", "milestoneCount", "profiles", "dataClassification", "exactBinding", "authority"],
+      "properties": {
+        "receiptHandle": {"type": "string", "pattern": "^handoffview-[a-f0-9]{24}$"},
+        "createdAt": {"type": "string", "format": "date-time"},
+        "state": {"const": "draft-created"},
+        "targetState": {"enum": ["retained", "configuration-changed", "unavailable"]},
+        "draftHandle": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^workdraftview-[a-f0-9]{24}$"}]},
+        "milestoneCount": {"type": "integer", "minimum": 1, "maximum": 64},
+        "profiles": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"enum": ["scout", "builder", "researcher", "data-lab"]}},
+        "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+        "exactBinding": {"const": "settled-turn-record-and-goal-declaration"},
+        "authority": {
+          "type": "object", "additionalProperties": false,
+          "required": ["grantsExecution", "grantsScheduling", "grantsLease", "grantsServiceActivation", "grantsExternalEffects", "grantsCompletion", "grantsScopeExpansion"],
+          "properties": {
+            "grantsExecution": {"const": false}, "grantsScheduling": {"const": false},
+            "grantsLease": {"const": false}, "grantsServiceActivation": {"const": false},
+            "grantsExternalEffects": {"const": false}, "grantsCompletion": {"const": false},
+            "grantsScopeExpansion": {"const": false}
+          }
+        }
+      },
+      "allOf": [{
+        "if": {"properties": {"targetState": {"const": "retained"}}, "required": ["targetState"]},
+        "then": {"properties": {"draftHandle": {"type": "string"}}},
+        "else": {"properties": {"draftHandle": {"type": "null"}}}
+      }]
+    }
+  }
+}

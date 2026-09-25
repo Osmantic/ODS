@@ -1,0 +1,10 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/control-work-authoring-config-v1.schema.json",
+  "schemaVersion": 1,
+  "policyFile": "/etc/pixel/work-policy.json",
+  "inputCatalogFile": "/var/lib/pixel-work-inputs/catalog.json",
+  "objectStoreDirectory": "/var/lib/pixel-work-inputs/objects",
+  "draftDirectory": "/var/lib/pixel-work-controller/drafts",
+  "maxDrafts": 32,
+  "boundary": "Owner-private fixed paths for inert Deep Work drafting only. The browser cannot supply, view, or alter these paths and gains no input admission, execution, lease, scheduling, credential, external-effect, scope-expansion, or completion authority."
+}

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-assembly-v1.schema.json",
+  "title": "Pixel inert guided goal assembly v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "assembledAt", "draftId", "goalId", "state", "layout", "bindings", "authority", "nextStep", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-assembly-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-goal-assemble"},
+    "assembledAt": {"type": "string", "format": "date-time"},
+    "draftId": {"type": "string", "pattern": "^workdraft-[0-9]{13}-[a-f0-9]{12}$"},
+    "goalId": {"type": "string", "pattern": "^workgoal-[0-9]{13}-[a-f0-9]{12}$"},
+    "state": {"const": "assembled-inert"},
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["review", "goalBundle", "controllerBundle"],
+      "properties": {
+        "review": {"const": "review.json"},
+        "goalBundle": {"const": "goal"},
+        "controllerBundle": {"const": "controller"}
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["draftSha256", "declarationSha256", "jobsSha256", "inputManifestsSha256", "goalBundleSha256", "controllerBundleSha256", "environmentSha256"],
+      "properties": {
+        "draftSha256": {"$ref": "#/$defs/sha256"},
+        "declarationSha256": {"$ref": "#/$defs/sha256"},
+        "jobsSha256": {"$ref": "#/$defs/sha256"},
+        "inputManifestsSha256": {"$ref": "#/$defs/sha256"},
+        "goalBundleSha256": {"$ref": "#/$defs/sha256"},
+        "controllerBundleSha256": {"$ref": "#/$defs/sha256"},
+        "environmentSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grantsExecution", "grantsLease", "grantsRetry", "grantsScheduling", "grantsServiceActivation", "grantsCredentials", "grantsScopeExpansion", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "grantsExecution": {"const": false},
+        "grantsLease": {"const": false},
+        "grantsRetry": {"const": false},
+        "grantsScheduling": {"const": false},
+        "grantsServiceActivation": {"const": false},
+        "grantsCredentials": {"const": false},
+        "grantsScopeExpansion": {"const": false},
+        "grantsExternalEffects": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "nextStep": {"const": "Compile each exact child separately, then review and stage dormant custody; no work has started."},
+    "boundary": {"const": "Private atomic draft-to-controller assembly only. It binds one reviewed draft to exact inert goal and controller bundles but creates no lease or ledger, starts no worker or service, and grants no execution, retry, scheduling, activation, credential, scope expansion, external effect, or completion authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

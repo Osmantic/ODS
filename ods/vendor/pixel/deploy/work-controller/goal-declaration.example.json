@@ -1,0 +1,19 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-goal-declaration-v1.schema.json",
+  "schemaVersion": 1,
+  "objective": "Complete a reviewed sequence of bounded local milestones and require independent evidence for each one.",
+  "dataClassification": "internal",
+  "milestones": [
+    {
+      "milestoneId": "inspect",
+      "jobId": "work-1786366800000-abcdef123456",
+      "dependsOn": []
+    },
+    {
+      "milestoneId": "implement",
+      "jobId": "work-1786366800001-abcdef123457",
+      "dependsOn": ["inspect"]
+    }
+  ],
+  "boundary": "Owner-authored long-horizon structure only. Preparation may derive immutable hashes and aggregate budgets but grants no execution, lease, retry, credential, scope expansion, external effect, or completion authority."
+}

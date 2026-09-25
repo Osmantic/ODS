@@ -615,6 +615,30 @@ def test_invalid_search_adapter_fails_closed_without_mutating_config() -> None:
 # installer can produce.
 _MODEL_ID_CASES = (
     (
+        "generic_external_uses_the_pinned_provider_model",
+        {
+            "EXTERNAL_LLM_URL": "http://host.docker.internal:8080",
+            "EXTERNAL_LLM_MODEL": "Qwen3.5-9B-Q4_K_M.gguf",
+            "GGUF_FILE": "stale-local-tier.gguf",
+            "LLM_BACKEND": "external",
+            "AMD_INFERENCE_RUNTIME": "",
+            "LEMONADE_MODEL": "",
+        },
+        "Qwen3.5-9B-Q4_K_M.gguf",
+    ),
+    (
+        "stale_external_model_without_a_route_is_ignored",
+        {
+            "EXTERNAL_LLM_URL": "",
+            "EXTERNAL_LLM_MODEL": "stale-external-model",
+            "GGUF_FILE": "active-local-tier.gguf",
+            "LLM_BACKEND": "llama-server",
+            "AMD_INFERENCE_RUNTIME": "",
+            "LEMONADE_MODEL": "",
+        },
+        "active-local-tier.gguf",
+    ),
+    (
         "amd_local_runs_lemonade_under_llama_server_backend",
         {
             "GGUF_FILE": "Modern-Model.gguf",
@@ -662,6 +686,20 @@ def test_health_phase_seeds_the_same_model_id_as_the_sync_script() -> None:
             bash, block, {"LLM_MODEL": "qwen3-30b-a3b", **env}, "PERPLEXICA_MODEL"
         )
         assert resolved == expected, f"{name}: expected {expected}, got {resolved}"
+
+
+def test_perplexica_compose_passes_the_external_model_to_runtime_sync() -> None:
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    environment = compose["services"]["perplexica"]["environment"]
+    assert "EXTERNAL_LLM_URL=${EXTERNAL_LLM_URL:-}" in environment
+    assert "EXTERNAL_LLM_MODEL=${EXTERNAL_LLM_MODEL:-}" in environment
+
+
+def test_runtime_sync_prefers_the_external_model_over_stale_local_tier_metadata() -> None:
+    source = SYNC_SCRIPT.read_text(encoding="utf-8")
+    assert 'const externalUrl = String(process.env.EXTERNAL_LLM_URL || "").trim();' in source
+    assert 'const externalModel = externalUrl' in source
+    assert re.search(r'switchboardMode === "enabled"\s*\? "ods/current"\s*:\s*externalModel\s*\? externalModel', source)
 
 
 def test_post_install_validation_resolves_the_same_model_id_as_the_sync_script() -> None:
@@ -716,5 +754,7 @@ if __name__ == "__main__":
     test_search_adapter_sync_is_idempotent()
     test_invalid_search_adapter_fails_closed_without_mutating_config()
     test_health_phase_seeds_the_same_model_id_as_the_sync_script()
+    test_perplexica_compose_passes_the_external_model_to_runtime_sync()
+    test_runtime_sync_prefers_the_external_model_over_stale_local_tier_metadata()
     test_post_install_validation_resolves_the_same_model_id_as_the_sync_script()
     test_repair_script_resolves_the_same_model_id_as_the_sync_script()

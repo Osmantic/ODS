@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/temporalio/cli",
+  "license": "MIT",
+  "source_ref": "v1.9.1",
+  "image": "temporalio/temporal:1.9.1@sha256:ad4c82c97bd12b417d1ea942610dbcd511afb250c4d5ed26c694009533df447e",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Explicitly local development server, persistent SQLite execution history, native UI/gRPC health, loopback listeners. No production-cluster/authentication claim, automatic workers/workflows or model connection."
+}

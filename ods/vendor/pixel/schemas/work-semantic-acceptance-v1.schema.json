@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-semantic-acceptance-v1.schema.json",
+  "title": "Pixel local semantic acceptance attestation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "acceptanceId", "jobId", "claimId", "createdAt", "planSha256", "candidateCheckpointSha256", "acceptanceCriteriaSha256", "artifactManifestSha256", "deterministicVerificationSha256", "criteria", "reviewMethod", "externalEffects", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-semantic-acceptance-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "acceptanceId": {"type": "string", "pattern": "^semanticacceptance-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "claimId": {"type": "string", "pattern": "^workclaim-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "candidateCheckpointSha256": {"$ref": "#/$defs/sha256"},
+    "acceptanceCriteriaSha256": {"$ref": "#/$defs/sha256"},
+    "artifactManifestSha256": {"$ref": "#/$defs/sha256"},
+    "deterministicVerificationSha256": {"$ref": "#/$defs/sha256"},
+    "criteria": {
+      "type": "array", "minItems": 1, "maxItems": 32,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["index", "status"],
+        "properties": {"index": {"type": "integer", "minimum": 0, "maximum": 31}, "status": {"const": "pass"}}
+      }
+    },
+    "reviewMethod": {"const": "local-human-exact-hash"},
+    "externalEffects": {"const": false},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantsExecution", "grantsLease", "grantsReplay", "grantsScopeExpansion", "grantsExternalEffects", "grantsCompletionEvidence"],
+      "properties": {
+        "grantsExecution": {"const": false}, "grantsLease": {"const": false}, "grantsReplay": {"const": false},
+        "grantsScopeExpansion": {"const": false}, "grantsExternalEffects": {"const": false}, "grantsCompletionEvidence": {"const": true}
+      }
+    },
+    "boundary": {"const": "Explicit local human attestation over exact immutable criteria and candidate hashes. It supplies semantic completion evidence only; it grants no execution, lease, replay, scope expansion, external effect, publication, deployment, or policy authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

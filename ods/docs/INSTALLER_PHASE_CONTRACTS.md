@@ -18,6 +18,12 @@ For the file map and mod recipes, see
   unless a force/reset path explicitly says otherwise.
 - Linux, macOS, Windows, host-agent, and bootstrap-upgrade writers must stay in
   sync for shared generated config.
+- Internal implementation phases map to six stable user-facing ODSGATE phases.
+  Refactoring the internal pipeline must not silently renumber that journey.
+- UI presentation must not change phase exit codes, error propagation,
+  interrupt behavior, structured progress records, or log evidence.
+- Non-TTY, CI, GUI, and `NO_COLOR` paths must be deterministic and free of
+  screen clearing, terminal bells, and cursor-motion animation.
 
 ## Phase Contracts
 
@@ -49,6 +55,7 @@ For the file map and mod recipes, see
 | Compose launch | compose resolver validation and at least one install/lifecycle lane |
 | Health/lifecycle | idempotent reinstall, `ods restart`, and `ods doctor` |
 | Summary/setup output | install smoke plus UI/setup-card sanity when applicable |
+| Installer UI, phase headings, or completion copy | UI unit tests; plain/non-TTY escape scan; Linux dry-run; PowerShell and macOS renderer parity |
 
 For operational code, use [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md)
 and [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) to decide whether focused

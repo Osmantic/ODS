@@ -1,0 +1,67 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: umami
+  name: Umami
+  aliases: []
+  container_name: ods-umami
+  host_env: UMAMI_HOST
+  default_host: umami
+  port: 3000
+  external_port_env: UMAMI_PORT
+  external_port_default: 11056
+  health: /api/heartbeat
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Inspect website visits and events through a self-hosted analytics dashboard
+    with explicitly configured site tracking.
+  env_vars:
+  - key: UMAMI_INITIAL_PASSWORD
+    required: true
+    secret: true
+    description: 'Initial admin password: 12 to 72 UTF-8 bytes. Replaces only the
+      unchanged upstream default.'
+  - key: UMAMI_DATABASE_PASSWORD
+    required: true
+    secret: true
+    description: Persistent password for the dedicated PostgreSQL database.
+  - key: UMAMI_APP_SECRET
+    required: true
+    secret: true
+    description: Persistent random authentication secret of at least 32 characters.
+  - key: UMAMI_TWO_FACTOR_KEY
+    required: true
+    secret: true
+    description: Persistent 64-character hexadecimal encryption key for two-factor
+      authentication.
+  ui_path: /
+tags:
+- analytics
+- development
+- open-source
+features:
+- id: umami-analytics
+  name: Umami
+  description: Inspect website visits and events through a self-hosted analytics dashboard
+    with explicitly configured site tracking.
+  icon: ChartNoAxesCombined
+  category: productivity
+  requirements:
+    services:
+    - umami
+    vram_gb: 0
+  enabled_services_all:
+  - umami
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: umami
+    path: /

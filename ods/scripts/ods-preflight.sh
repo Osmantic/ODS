@@ -14,6 +14,8 @@ sr_load
 # Safe .env loading for port overrides (no eval; use lib/safe-env.sh)
 [[ -f "$SCRIPT_DIR/lib/safe-env.sh" ]] && . "$SCRIPT_DIR/lib/safe-env.sh"
 load_env_file "$SCRIPT_DIR/.env"
+# shellcheck source=../lib/preflight-llm-route.sh
+. "$SCRIPT_DIR/lib/preflight-llm-route.sh"
 sr_resolve_ports
 
 # Resolve compose flags for accurate status checks
@@ -41,6 +43,13 @@ echo ""
 LLM_PORT="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-${SERVICE_PORTS[llama-server]:-11434}}}"
 LLM_HEALTH="${SERVICE_HEALTH[llama-server]:-/health}"
 LLM_CONTAINER="${SERVICE_CONTAINERS[llama-server]:-ods-llama-server}"
+LLM_NAME="llama-server"
+if ods_preflight_uses_litellm; then
+    LLM_PORT="${LITELLM_PORT:-4000}"
+    LLM_HEALTH="/health/readiness"
+    LLM_CONTAINER="ods-litellm"
+    LLM_NAME="LiteLLM gateway"
+fi
 WEBUI_PORT="${SERVICE_PORTS[open-webui]:-3000}"
 WEBUI_HEALTH="${SERVICE_HEALTH[open-webui]:-/}"
 
@@ -64,16 +73,16 @@ else
     exit 1
 fi
 
-# Check llama-server health
+# Check the selected model gateway health
 CURL_HEALTH_FLAGS=(--connect-timeout 3 --max-time 10)
 
-echo -n "llama-server API (port $LLM_PORT)... "
+echo -n "$LLM_NAME API (port $LLM_PORT)... "
 if curl -sf "${CURL_HEALTH_FLAGS[@]}" "http://127.0.0.1:${LLM_PORT}${LLM_HEALTH}" >/dev/null 2>&1; then
     echo -e "${GREEN}✓ healthy${NC}"
 else
     echo -e "${YELLOW}⚠ starting up${NC}"
-    echo "  The model is still loading. Wait 1-2 minutes and retry."
-    echo "  Monitor: docker compose logs -f llama-server"
+    echo "  The model gateway is not ready. Wait and retry."
+    echo "  Monitor: docker logs $LLM_CONTAINER"
 fi
 
 # Check WebUI
@@ -84,9 +93,11 @@ else
     echo -e "${YELLOW}⚠ not ready${NC}"
 fi
 
-# Check GPU if available
+# Check GPU only when ODS owns a local inference container.
 echo -n "GPU availability... "
-if docker exec "$LLM_CONTAINER" nvidia-smi >/dev/null 2>&1; then
+if ods_preflight_uses_litellm; then
+    echo -e "${YELLOW}⚠ external model route (host GPU not required)${NC}"
+elif docker exec "$LLM_CONTAINER" nvidia-smi >/dev/null 2>&1; then
     GPU_MEM=$(docker exec "$LLM_CONTAINER" nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | sed -n '1p' | tr -d ' ')
     echo -e "${GREEN}✓ detected (${GPU_MEM}MB free)${NC}"
 else

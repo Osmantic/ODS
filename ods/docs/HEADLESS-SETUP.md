@@ -88,8 +88,12 @@ Use this checklist for each target hardware profile:
   `auth.<device>.local` resolve on at least one phone and one laptop.
 - Owner-card magic link redeems repeatedly, sets the signed cookie, and redirects
   to Hermes until revoked.
-- Temporary guest invite links still redeem, set the signed cookie, and redirect
-  to their selected target.
+- Temporary guest invite links still redeem and redirect to their selected
+  target. Hermes invites set the signed cookie; chat-only invites do not
+  (Open WebUI has its own sign-in).
+- `dashboard.<device>.local` asks for dashboard sign-in once per browser; the
+  user-chosen password completes it. Run `ods dashboard-login` on the ODS
+  machine to set up or recover that password through a one-time link.
 - Hermes is reachable through `hermes.<device>.local` when enabled.
 - Mobile voice is validated from HTTPS/Tailscale HTTPS when the packaged Hermes
   surface exposes microphone controls; plain HTTP is expected to show fallback

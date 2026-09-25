@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/requarks/wiki",
+  "license": "AGPL-3.0",
+  "source_ref": "v2.5.314",
+  "image": "ghcr.io/requarks/wiki:2.5.314@sha256:68f0d1848261ae76492ba358e30a96a76fed5d97a3fff381656082bf90f70d7e",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Native administrator setup, dedicated private PostgreSQL 16 and persistent content volume. No preset browser account, project imports, SMTP/Git provider or model connection. Upstream setup telemetry choice and locale/update requests documented."
+}

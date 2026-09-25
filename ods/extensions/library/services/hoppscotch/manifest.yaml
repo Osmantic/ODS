@@ -1,0 +1,57 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: hoppscotch
+  name: Hoppscotch Community
+  aliases: []
+  container_name: ods-hoppscotch
+  host_env: HOPPSCOTCH_HOST
+  default_host: hoppscotch
+  port: 8000
+  external_port_env: HOPPSCOTCH_PORT
+  external_port_default: 11090
+  health: /backend/v1/onboarding/status
+  type: docker
+  startup_check: true
+  startup_timeout: 240
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Develop REST, GraphQL and realtime API requests with a local Community
+    workspace and dedicated database.
+  env_vars:
+  - key: HOPPSCOTCH_DB_PASSWORD
+    required: true
+    secret: true
+    description: 64 random hexadecimal characters for the dedicated PostgreSQL account.
+  - key: HOPPSCOTCH_ENCRYPTION_KEY
+    required: true
+    secret: true
+    description: Stable 32-hex data-encryption key; retain with database backups.
+  ui_path: /
+tags:
+- development
+- api
+- open-source
+features:
+- id: hoppscotch-api-workspace
+  name: Hoppscotch Community
+  description: Develop REST, GraphQL and realtime API requests with a local Community
+    workspace and dedicated database.
+  icon: Braces
+  category: productivity
+  requirements:
+    services:
+    - hoppscotch
+    vram_gb: 0
+  enabled_services_all:
+  - hoppscotch
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: hoppscotch
+    path: /

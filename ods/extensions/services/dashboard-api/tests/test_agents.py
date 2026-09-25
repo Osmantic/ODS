@@ -89,3 +89,36 @@ class TestGetThroughput:
         assert "average" in data
         assert "peak" in data
         assert "history" in data
+
+    def test_throughput_metrics_add_sample_sanitization(self):
+        from agent_monitor import ThroughputMetrics
+        tm = ThroughputMetrics()
+        tm.add_sample(float("nan"))
+        tm.add_sample(-10.5)
+        tm.add_sample(25.0)
+        stats = tm.get_stats()
+        assert stats["current"] == 25.0
+        assert stats["average"] == 25.0
+        assert len(stats["history"]) == 1
+
+
+def test_html_missing_and_retained_runtime_measurements(test_client, monkeypatch):
+    from routers import agents
+    from datetime import datetime, timezone
+    sample = {"current": None, "state": "unavailable"}
+    monkeypatch.setattr(agents, "get_full_agent_metrics", lambda: {"throughput": sample})
+    response = test_client.get("/api/agents/metrics.html", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert "Unavailable" in response.text
+    assert "Runtime Throughput" in response.text
+    assert "avg:" not in response.text
+    sample.update(current=55, state="retained", model="<model>",
+                  sampled_at=datetime.now(timezone.utc).timestamp())
+    response = test_client.get("/api/agents/metrics.html", headers=test_client.auth_headers)
+    assert "55.0" in response.text
+    assert "Last run" in response.text
+    assert "&lt;model&gt;" in response.text
+    sample["state"] = "unavailable"
+    response = test_client.get("/api/agents/metrics.html", headers=test_client.auth_headers)
+    assert "Last known rate" in response.text
+    assert "55.0" in response.text

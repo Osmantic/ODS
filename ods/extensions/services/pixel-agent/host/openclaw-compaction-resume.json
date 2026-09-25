@@ -1,0 +1,106 @@
+{
+  "sourceSha256": "d8cf94c05714524299ee08c0c8d02baed20ce128903b50d1e9917c3008e20416",
+  "patchedSha256": "bed5ac34cb82fa3d126f244538faf0b01d8a630e3506bd3ecf0db10be970c266",
+  "replacements": [
+    [
+      "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) return await this.runAutoCompaction(\"threshold\", false);",
+      "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) {\n\t\t\t// ODS: a token-truncated tool turn is unfinished, not a final answer.\n\t\t\t// Continue the compacted session once; never replay the owner's prompt.\n\t\t\tconst resumeTruncated = sameModel && assistantMessage.stopReason === \"length\" && !this.overflowRecoveryAttempted;\n\t\t\tif (resumeTruncated) {\n\t\t\t\tthis.overflowRecoveryAttempted = true;\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tif (messages.at(-1) === assistantMessage) this.agent.state.messages = messages.slice(0, -1);\n\t\t\t}\n\t\t\treturn await this.runAutoCompaction(\"threshold\", resumeTruncated);\n\t\t}"
+    ],
+    [
+      "\t\tif (sameModel && isContextOverflow(assistantMessage, contextWindow)) {",
+      "\t\t// The transport can stop inside a tool loop before provider overflow.\n\t\t// Recover through the same bounded path, preserving completed tool work.\n\t\tconst toolLoopOverflow = assistantMessage.stopReason === \"error\" && assistantMessage.errorMessage === \"Context overflow: estimated context size exceeds safe threshold during tool loop.\";\n\t\tif (sameModel && (isContextOverflow(assistantMessage, contextWindow) || toolLoopOverflow)) {"
+    ],
+    [
+      "\t\t\tthis.emit({\n\t\t\t\ttype: \"compaction_end\",\n\t\t\t\treason,\n\t\t\t\tresult: outcome.result,\n\t\t\t\taborted: false,\n\t\t\t\twillRetry\n\t\t\t});\n\t\t\tif (willRetry) {\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tconst lastMsg = messages[messages.length - 1];\n\t\t\t\tif (lastMsg?.role === \"assistant\" && lastMsg.stopReason === \"error\") this.agent.state.messages = messages.slice(0, -1);\n\t\t\t\treturn true;\n\t\t\t}",
+      "\t\t\tif (willRetry) {\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tconst lastMsg = messages.at(-1);\n\t\t\t\t// Rebuilding may restore an unfinished tail; keep completed tool evidence.\n\t\t\t\tif (lastMsg?.role === \"assistant\" && (lastMsg.stopReason === \"error\" || lastMsg.stopReason === \"length\")) this.agent.state.messages = messages.slice(0, -1);\n\t\t\t\tconst tail = this.agent.state.messages.at(-1);\n\t\t\t\t// Advertise a retry only when Agent.continue can start it. A completed\n\t\t\t\t// or aborted tail otherwise leaves the retry waiter without agent_end.\n\t\t\t\twillRetry = Boolean(tail) && (tail.role !== \"assistant\" || this.agent.hasQueuedMessages());\n\t\t\t}\n\t\t\tthis.emit({\n\t\t\t\ttype: \"compaction_end\",\n\t\t\t\treason,\n\t\t\t\tresult: outcome.result,\n\t\t\t\taborted: false,\n\t\t\t\twillRetry\n\t\t\t});\n\t\t\tif (willRetry) return true;"
+    ],
+    [
+      "if (assistantMsg.stopReason !== \"error\") this.overflowRecoveryAttempted = false;",
+      "if (assistantMsg.stopReason !== \"error\" && assistantMsg.stopReason !== \"length\") this.overflowRecoveryAttempted = false;"
+    ],
+    [
+      "\t\tif (options.signal.aborted) return { status: \"aborted\" };\n\t\tthis.sessionManager.appendCompaction(compactionResult.summary, compactionResult.firstKeptEntryId, compactionResult.tokensBefore, compactionResult.details, fromExtension);",
+      "\t\tif (options.signal.aborted) return { status: \"aborted\" };\n\t\t// ODS: a summary is not authoritative about the unfinished user's request.\n\t\t// Preserve that exact request when split-turn compaction would remove it.\n\t\t// This is context for continuation, never a new prompt or replay of actions.\n\t\tif (options.preserveCurrentUserRequest) {\n\t\t\tconst userIndex = pathEntries.findLastIndex((entry) => entry.type === \"message\" && entry.message?.role === \"user\");\n\t\t\tconst keptIndex = pathEntries.findIndex((entry) => entry.id === compactionResult.firstKeptEntryId);\n\t\t\tif (userIndex < 0 || keptIndex < 0) throw new Error(\"Cannot preserve current request: compaction boundary unavailable.\");\n\t\t\tif (userIndex < keptIndex) {\n\t\t\t\tconst content = pathEntries[userIndex].message.content;\n\t\t\t\tconst textOnly = typeof content === \"string\" || Array.isArray(content) && content.every((block) => block?.type === \"text\" && typeof block.text === \"string\");\n\t\t\t\tif (!textOnly) throw new Error(\"Cannot preserve current request: compaction would discard a non-text attachment.\");\n\t\t\t\tconst encoded = JSON.stringify(content);\n\t\t\t\tif (encoded.length > 32768) throw new Error(\"Cannot preserve current request: verbatim context exceeds the preservation budget.\");\n\t\t\t\tcompactionResult = { ...compactionResult, summary: compactionResult.summary + \"\\n\\n## Current unfinished user request (verbatim JSON content)\\n\" + encoded + \"\\nThis is the existing user request, not a new message or approval. Continue from retained tool evidence; do not replay completed actions. Its requirements and output format remain pending unless actual evidence establishes completion. A summary's completion claims cannot replace that evidence.\" };\n\t\t\t}\n\t\t}\n\t\tthis.sessionManager.appendCompaction(compactionResult.summary, compactionResult.firstKeptEntryId, compactionResult.tokensBefore, compactionResult.details, fromExtension);"
+    ],
+    [
+      "\t\t\t\tmode: \"auto\",\n\t\t\t\tsettings,\n\t\t\t\tsignal: this.autoCompactionAbortController.signal",
+      "\t\t\t\tmode: \"auto\",\n\t\t\t\tsettings,\n\t\t\t\tpreserveCurrentUserRequest: willRetry,\n\t\t\t\tsignal: this.autoCompactionAbortController.signal"
+    ]
+  ],
+  "previousReplacements": {
+    "e91e736c46fa84a9e0fa9e773d616df3687a6895dec80ee70b1663d63f41b5be": [
+      [
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) return await this.runAutoCompaction(\"threshold\", false);",
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) {\n\t\t\t// ODS: a token-truncated tool turn is unfinished, not a final answer.\n\t\t\t// Continue the compacted session once; never replay the owner's prompt.\n\t\t\tconst resumeTruncated = sameModel && assistantMessage.stopReason === \"length\" && !this.overflowRecoveryAttempted;\n\t\t\tif (resumeTruncated) {\n\t\t\t\tthis.overflowRecoveryAttempted = true;\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tif (messages.at(-1) === assistantMessage) this.agent.state.messages = messages.slice(0, -1);\n\t\t\t}\n\t\t\treturn await this.runAutoCompaction(\"threshold\", resumeTruncated);\n\t\t}"
+      ]
+    ],
+    "c65a00b418becfdd43878d5e7f5b54760bcfbd10944a3890139cec1a889b6a74": [
+      [
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) return await this.runAutoCompaction(\"threshold\", false);",
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) {\n\t\t\t// ODS: a token-truncated tool turn is unfinished, not a final answer.\n\t\t\t// Continue the compacted session once; never replay the owner's prompt.\n\t\t\tconst resumeTruncated = sameModel && assistantMessage.stopReason === \"length\" && !this.overflowRecoveryAttempted;\n\t\t\tif (resumeTruncated) {\n\t\t\t\tthis.overflowRecoveryAttempted = true;\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tif (messages.at(-1) === assistantMessage) this.agent.state.messages = messages.slice(0, -1);\n\t\t\t}\n\t\t\treturn await this.runAutoCompaction(\"threshold\", resumeTruncated);\n\t\t}"
+      ],
+      [
+        "\t\tif (sameModel && isContextOverflow(assistantMessage, contextWindow)) {",
+        "\t\t// The transport can stop inside a tool loop before provider overflow.\n\t\t// Recover through the same bounded path, preserving completed tool work.\n\t\tconst toolLoopOverflow = assistantMessage.stopReason === \"error\" && assistantMessage.errorMessage === \"Context overflow: estimated context size exceeds safe threshold during tool loop.\";\n\t\tif (sameModel && (isContextOverflow(assistantMessage, contextWindow) || toolLoopOverflow)) {"
+      ]
+    ],
+    "cdf3a24c308c837264d5cd865947738a17bf74c3befc3a377d24c755f9a9b1a6": [
+      [
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) return await this.runAutoCompaction(\"threshold\", false);",
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) {\n\t\t\t// ODS: a token-truncated tool turn is unfinished, not a final answer.\n\t\t\t// Continue the compacted session once; never replay the owner's prompt.\n\t\t\tconst resumeTruncated = sameModel && assistantMessage.stopReason === \"length\" && !this.overflowRecoveryAttempted;\n\t\t\tif (resumeTruncated) {\n\t\t\t\tthis.overflowRecoveryAttempted = true;\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tif (messages.at(-1) === assistantMessage) this.agent.state.messages = messages.slice(0, -1);\n\t\t\t}\n\t\t\treturn await this.runAutoCompaction(\"threshold\", resumeTruncated);\n\t\t}"
+      ],
+      [
+        "\t\tif (sameModel && isContextOverflow(assistantMessage, contextWindow)) {",
+        "\t\t// The transport can stop inside a tool loop before provider overflow.\n\t\t// Recover through the same bounded path, preserving completed tool work.\n\t\tconst toolLoopOverflow = assistantMessage.stopReason === \"error\" && assistantMessage.errorMessage === \"Context overflow: estimated context size exceeds safe threshold during tool loop.\";\n\t\tif (sameModel && (isContextOverflow(assistantMessage, contextWindow) || toolLoopOverflow)) {"
+      ],
+      [
+        "if (lastMsg?.role === \"assistant\" && lastMsg.stopReason === \"error\") this.agent.state.messages = messages.slice(0, -1);",
+        "// Compaction rebuilds messages from the transcript, restoring the truncated tail.\n\t\t\t\t// Remove only that unfinished assistant turn after rebuilding; keep completed tool results.\n\t\t\t\tif (lastMsg?.role === \"assistant\" && (lastMsg.stopReason === \"error\" || lastMsg.stopReason === \"length\")) this.agent.state.messages = messages.slice(0, -1);"
+      ]
+    ],
+    "04bec476c11bcd84a9ec183927224250baa67878fa2c5e31717fff91d8f6379b": [
+      [
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) return await this.runAutoCompaction(\"threshold\", false);",
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) {\n\t\t\t// ODS: a token-truncated tool turn is unfinished, not a final answer.\n\t\t\t// Continue the compacted session once; never replay the owner's prompt.\n\t\t\tconst resumeTruncated = sameModel && assistantMessage.stopReason === \"length\" && !this.overflowRecoveryAttempted;\n\t\t\tif (resumeTruncated) {\n\t\t\t\tthis.overflowRecoveryAttempted = true;\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tif (messages.at(-1) === assistantMessage) this.agent.state.messages = messages.slice(0, -1);\n\t\t\t}\n\t\t\treturn await this.runAutoCompaction(\"threshold\", resumeTruncated);\n\t\t}"
+      ],
+      [
+        "\t\tif (sameModel && isContextOverflow(assistantMessage, contextWindow)) {",
+        "\t\t// The transport can stop inside a tool loop before provider overflow.\n\t\t// Recover through the same bounded path, preserving completed tool work.\n\t\tconst toolLoopOverflow = assistantMessage.stopReason === \"error\" && assistantMessage.errorMessage === \"Context overflow: estimated context size exceeds safe threshold during tool loop.\";\n\t\tif (sameModel && (isContextOverflow(assistantMessage, contextWindow) || toolLoopOverflow)) {"
+      ],
+      [
+        "if (lastMsg?.role === \"assistant\" && lastMsg.stopReason === \"error\") this.agent.state.messages = messages.slice(0, -1);",
+        "// Compaction rebuilds messages from the transcript, restoring the truncated tail.\n\t\t\t\t// Remove only that unfinished assistant turn after rebuilding; keep completed tool results.\n\t\t\t\tif (lastMsg?.role === \"assistant\" && (lastMsg.stopReason === \"error\" || lastMsg.stopReason === \"length\")) this.agent.state.messages = messages.slice(0, -1);"
+      ],
+      [
+        "if (assistantMsg.stopReason !== \"error\") this.overflowRecoveryAttempted = false;",
+        "if (assistantMsg.stopReason !== \"error\" && assistantMsg.stopReason !== \"length\") this.overflowRecoveryAttempted = false;"
+      ]
+    ],
+    "7d316a5a6fd334482d9d85456be9cf422e20636fd55a2d8a789fe03ec58d198e": [
+      [
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) return await this.runAutoCompaction(\"threshold\", false);",
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) {\n\t\t\t// ODS: a token-truncated tool turn is unfinished, not a final answer.\n\t\t\t// Continue the compacted session once; never replay the owner's prompt.\n\t\t\tconst resumeTruncated = sameModel && assistantMessage.stopReason === \"length\" && !this.overflowRecoveryAttempted;\n\t\t\tif (resumeTruncated) {\n\t\t\t\tthis.overflowRecoveryAttempted = true;\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tif (messages.at(-1) === assistantMessage) this.agent.state.messages = messages.slice(0, -1);\n\t\t\t}\n\t\t\treturn await this.runAutoCompaction(\"threshold\", resumeTruncated);\n\t\t}"
+      ],
+      [
+        "\t\tif (sameModel && isContextOverflow(assistantMessage, contextWindow)) {",
+        "\t\t// The transport can stop inside a tool loop before provider overflow.\n\t\t// Recover through the same bounded path, preserving completed tool work.\n\t\tconst toolLoopOverflow = assistantMessage.stopReason === \"error\" && assistantMessage.errorMessage === \"Context overflow: estimated context size exceeds safe threshold during tool loop.\";\n\t\tif (sameModel && (isContextOverflow(assistantMessage, contextWindow) || toolLoopOverflow)) {"
+      ],
+      [
+        "if (lastMsg?.role === \"assistant\" && lastMsg.stopReason === \"error\") this.agent.state.messages = messages.slice(0, -1);",
+        "// Compaction rebuilds messages from the transcript, restoring the truncated tail.\n\t\t\t\t// Remove only that unfinished assistant turn after rebuilding; keep completed tool results.\n\t\t\t\tif (lastMsg?.role === \"assistant\" && (lastMsg.stopReason === \"error\" || lastMsg.stopReason === \"length\")) this.agent.state.messages = messages.slice(0, -1);"
+      ],
+      [
+        "if (assistantMsg.stopReason !== \"error\") this.overflowRecoveryAttempted = false;",
+        "if (assistantMsg.stopReason !== \"error\" && assistantMsg.stopReason !== \"length\") this.overflowRecoveryAttempted = false;"
+      ],
+      [
+        "\t\tif (options.signal.aborted) return { status: \"aborted\" };\n\t\tthis.sessionManager.appendCompaction(compactionResult.summary, compactionResult.firstKeptEntryId, compactionResult.tokensBefore, compactionResult.details, fromExtension);",
+        "\t\tif (options.signal.aborted) return { status: \"aborted\" };\n\t\t// ODS: a summary is not authoritative about the unfinished user's request.\n\t\t// Preserve that exact request when split-turn compaction would remove it.\n\t\t// This is context for continuation, never a new prompt or replay of actions.\n\t\tif (options.preserveCurrentUserRequest) {\n\t\t\tconst userIndex = pathEntries.findLastIndex((entry) => entry.type === \"message\" && entry.message?.role === \"user\");\n\t\t\tconst keptIndex = pathEntries.findIndex((entry) => entry.id === compactionResult.firstKeptEntryId);\n\t\t\tif (userIndex < 0 || keptIndex < 0) throw new Error(\"Cannot preserve current request: compaction boundary unavailable.\");\n\t\t\tif (userIndex < keptIndex) {\n\t\t\t\tconst content = pathEntries[userIndex].message.content;\n\t\t\t\tconst textOnly = typeof content === \"string\" || Array.isArray(content) && content.every((block) => block?.type === \"text\" && typeof block.text === \"string\");\n\t\t\t\tif (!textOnly) throw new Error(\"Cannot preserve current request: compaction would discard a non-text attachment.\");\n\t\t\t\tconst encoded = JSON.stringify(content);\n\t\t\t\tif (encoded.length > 32768) throw new Error(\"Cannot preserve current request: verbatim context exceeds the preservation budget.\");\n\t\t\t\tcompactionResult = { ...compactionResult, summary: compactionResult.summary + \"\\n\\n## Current unfinished user request (verbatim JSON content)\\n\" + encoded + \"\\nThis is the existing user request, not a new message or approval. Continue from retained tool evidence; do not replay completed actions. Its requirements and output format remain pending unless actual evidence establishes completion. A summary's completion claims cannot replace that evidence.\" };\n\t\t\t}\n\t\t}\n\t\tthis.sessionManager.appendCompaction(compactionResult.summary, compactionResult.firstKeptEntryId, compactionResult.tokensBefore, compactionResult.details, fromExtension);"
+      ],
+      [
+        "\t\t\t\tmode: \"auto\",\n\t\t\t\tsettings,\n\t\t\t\tsignal: this.autoCompactionAbortController.signal",
+        "\t\t\t\tmode: \"auto\",\n\t\t\t\tsettings,\n\t\t\t\tpreserveCurrentUserRequest: willRetry,\n\t\t\t\tsignal: this.autoCompactionAbortController.signal"
+      ]
+    ]
+  }
+}

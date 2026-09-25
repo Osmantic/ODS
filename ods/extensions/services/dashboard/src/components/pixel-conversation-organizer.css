@@ -1,0 +1,16 @@
+.pixel-conversation-navigation .pixel-original-sections .conversation-row .conversation-link { padding-left:34px; padding-right:32px; }
+.conversation-organize { position:absolute; right:3px; top:50%; transform:translateY(-50%); width:26px; height:26px; display:grid; place-items:center; opacity:0; color:#aeb5be; border:0; border-radius:5px; background:transparent; pointer-events:none; }
+.conversation-row:hover .conversation-organize,.conversation-row:focus-within .conversation-organize { opacity:1; pointer-events:auto; }
+.conversation-organize:hover { color:#fff; background:#ffffff12; }
+@media(hover:none) { .conversation-organize { opacity:1; pointer-events:auto; } }
+.conversation-title > span { display:block; width:max-content; min-width:100%; max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+.conversation-row:is(:hover,:focus-within) .conversation-title[data-overflow='true'] { text-overflow:clip; }
+.conversation-row:is(:hover,:focus-within) .conversation-title[data-overflow='true'] > span { max-width:none; overflow:visible; animation:conversation-title-scroll var(--title-duration,5s) ease-in-out infinite alternate; }
+@keyframes conversation-title-scroll { 0%,18% { transform:translateX(0); } 82%,100% { transform:translateX(var(--title-travel)); } }
+@media(prefers-reduced-motion:reduce) { .conversation-row .conversation-title > span { animation:none!important; } }
+.conversation-context-menu { position:fixed; z-index:1000; width:224px; max-width:calc(100vw - 16px); max-height:calc(100dvh - 16px); overflow:auto; padding:5px; border:1px solid #ffffff16; border-radius:10px; background:#202223; color:#e1e4e7; box-shadow:0 12px 36px #0006; font:12px/1.4 Inter,ui-sans-serif,system-ui,sans-serif; }
+.conversation-context-menu > button { display:flex; align-items:center; gap:11px; width:100%; padding:9px 10px; border-radius:6px; text-align:left; background:transparent; }
+.conversation-context-menu > button:is(:hover,:focus-visible) { background:#ffffff0d; outline:none; }
+.conversation-context-menu > button svg { color:#adb4bc; }
+.conversation-context-menu > [role='separator'] { margin:4px 5px; border-top:1px solid #ffffff14; }
+.conversation-context-menu > p { padding:8px; color:#f1b4a9; }

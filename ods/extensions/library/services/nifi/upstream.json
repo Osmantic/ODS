@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/apache/nifi",
+  "license": "Apache-2.0",
+  "source_ref": "official-image-pinned-by-digest",
+  "image": "apache/nifi:latest@sha256:6f7f2840dbf178c6dd3fa13435b9b358f3be3c6fb7417de467a35a267f4d28ad",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official HTTPS standalone image. Exact application version not exposed in image labels. Native credentials/configuration with stable independent sensitive-properties key. All native persistence locations named; no flows or external endpoints provisioned."
+}

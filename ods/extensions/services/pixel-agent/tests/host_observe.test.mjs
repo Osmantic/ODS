@@ -1,0 +1,500 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import {
+  createExtensionReadTool,
+  createHostCommandProposeTool,
+  createHostObserveTool,
+  testing,
+} from "../plugin/host-observe.mjs";
+
+test('catalog model query pattern keeps the runtime character and length allowlist', () => {
+  const pattern = createExtensionReadTool().parameters.properties.query.pattern;
+  assert.ok(!pattern.includes('\\-'), 'GBNF does not support an escaped hyphen');
+  const modelPattern = new RegExp(pattern);
+  const runtimePattern = /^[A-Za-z0-9 _/+:#.\-]{1,80}$/;
+  for (let code = 0; code < 256; code++) {
+    const value = `x${String.fromCharCode(code)}x`;
+    assert.equal(modelPattern.test(value), runtimePattern.test(value), `character ${code}`);
+  }
+  for (const value of ['', 'a'.repeat(80), 'a'.repeat(81), 'local-model', 'c++', 'web/search', 'name:tag']) {
+    assert.equal(modelPattern.test(value), runtimePattern.test(value), value);
+  }
+});
+
+// Match the external broker's atomic_json contract: a visible result is final,
+// never an empty file between open() and write(). Invalid final bytes still fail.
+async function publishResult(filename, value) {
+  const temporary = `${filename}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(value)}\n`, {
+    encoding: "utf8",
+    mode: 0o640,
+  });
+  await rename(temporary, filename);
+}
+
+test('inventory pages retain full evidence without sending the entire catalog as nested JSON', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pixel-inventory-page-'));
+  const requestDir = join(root, 'requests'), resultDir = join(root, 'results');
+  await mkdir(requestDir); await mkdir(resultDir);
+  const extensions = Array.from({length:203}, (_, i) => ({id:`extension-${i}`, name:`Extension ${i}`, status:'not_installed'}));
+  try {
+    const tool = createExtensionReadTool({requestDir, resultDir, timeoutMs:2000, pollIntervalMs:5});
+    for (const [offset, limit] of [[0,10], [10,20], [200,10], [203,10]]) {
+      const pending = tool.execute('page', {action:'list', offset, limit});
+      let names = [];
+      for (let i=0; i<200 && !names.length; i++) {
+        names = (await readdir(requestDir)).filter(name => name.endsWith('.json'));
+        if (!names.length) await delay(5);
+      }
+      assert.equal(names.length, 1);
+      const request = JSON.parse(await readFile(join(requestDir, names[0]), 'utf8'));
+      assert.deepEqual(request.parameters, {}); // Pagination never changes broker authority/schema.
+      const inventory = {schemaVersion:1, kind:'ods-pixel-extension-inventory', outcome:'succeeded', extensions, summary:{total:203}};
+      const receipt = {schemaVersion:2, jobId:request.jobId, status:'succeeded', steps:[{
+        target:'ods-host', action:'ods.extensions.list', exitCode:0, stderr:'', stdout:JSON.stringify(inventory),
+        outputTruncated:{stdout:false,stderr:false},
+      }]};
+      await publishResult(join(resultDir, names[0]), receipt);
+      const result = await pending;
+      const page = JSON.parse(result.content[0].text);
+      assert.deepEqual(page.extensions, extensions.slice(offset, offset+limit));
+      assert.equal(page.page.nextOffset, offset+limit<203 ? offset+limit : null);
+      assert.equal(page.page.total, 203);
+      assert.equal(page.untrustedOutput, true);
+      assert.ok(result.content[0].text.length < 4000);
+      assert.deepEqual(result.details.steps, receipt.steps);
+      assert.equal(JSON.parse(result.details.steps[0].stdout).extensions.length, 203);
+      await rm(join(requestDir, names[0]));
+    }
+    for (const args of [{action:'list',offset:-1}, {action:'list',offset:1.1},
+      {action:'list',limit:21}, {action:'list',limit:0}, {action:'inspect',serviceId:'click',offset:0}]) {
+      assert.equal((await tool.execute('invalid', args)).isError, true);
+    }
+    assert.deepEqual(await readdir(requestDir), []);
+  } finally { await rm(root, {recursive:true,force:true}); }
+});
+
+for (const truncated of [false, true]) {
+test(`completed broker delivery does not verify ${truncated ? 'truncated' : 'failed'} inspection`, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pixel-extension-logical-error-'));
+  const requestDir = join(root, 'requests');
+  const resultDir = join(root, 'results');
+  await mkdir(requestDir); await mkdir(resultDir);
+  try {
+    const tool = createExtensionReadTool({requestDir, resultDir, timeoutMs:2000, pollIntervalMs:5});
+    const pending = tool.execute('inspect', {action:'inspect', serviceId:'unknown-name'});
+    let names = [];
+    for (let i=0; i<200 && names.length===0; i++) {
+      names = (await readdir(requestDir)).filter(name => name.endsWith('.json'));
+      if (!names.length) await delay(5);
+    }
+    assert.equal(names.length, 1);
+    const request = JSON.parse(await readFile(join(requestDir, names[0]), 'utf8'));
+    const receipt = {schemaVersion:2, jobId:request.jobId, status:'succeeded', steps:[{
+      stepId:'action', target:request.target, action:request.action, exitCode:0,
+      stdout:JSON.stringify({schemaVersion:1, kind:'ods-pixel-extension-lifecycle', action:'inspect',
+        extensionId:'unknown-name', outcome:truncated ? 'ready' : 'failed', currentStatus:'unknown'}), stderr:'',
+      outputTruncated:{stdout:truncated,stderr:false}, riskSignals:[],
+    }]};
+    await publishResult(join(resultDir, names[0]), receipt);
+    const result = await pending;
+    assert.equal(result.isError, true);
+    assert.equal(result.details.jobId, request.jobId);
+    assert.deepEqual(result.details.steps, receipt.steps);
+    const observation = JSON.parse(result.content[0].text);
+    assert.equal(observation.lookupStatus, 'unverified');
+    assert.equal(observation.brokerStatus, 'succeeded');
+    assert.equal(observation.action, 'inspect');
+    assert.equal(observation.installationStartedByThisCall, false);
+    assert.equal(observation.runtimeVerified, false);
+    assert.equal(Object.hasOwn(observation, 'status'), false);
+    assert.match(result.details.next, /did not establish/);
+    assert.match(result.details.next, /exact extension IDs/);
+    assert.equal((await readdir(requestDir)).filter(name=>name.endsWith('.json')).length, 1);
+  } finally { await rm(root, {recursive:true,force:true}); }
+});
+}
+
+test("extension read keeps concurrent requests and broker results distinct", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pixel-extension-read-"));
+  const requestDir = join(root, "requests");
+  const resultDir = join(root, "results");
+  await mkdir(requestDir);
+  await mkdir(resultDir);
+  try {
+    const tool = createExtensionReadTool({ requestDir, resultDir, timeoutMs: 2000, pollIntervalMs: 5 });
+    const pending = [
+      tool.execute("search", { action: "search", target: "registered-peer", query: " image generation " }),
+      tool.execute("inspect", { action: "inspect", target: "registered-peer", serviceId: "comfyui" }),
+    ];
+    let names = [];
+    for (let i = 0; i < 200 && names.length < 2; i += 1) {
+      names = (await readdir(requestDir)).filter((name) => name.endsWith(".json"));
+      if (names.length < 2) await delay(5);
+    }
+    assert.equal(names.length, 2);
+    const requests = await Promise.all(names.map(async (name) => JSON.parse(await readFile(join(requestDir, name), "utf8"))));
+    assert.equal(new Set(requests.map((request) => request.jobId)).size, 2);
+    const search = requests.find((request) => request.action === "ods.extensions.search");
+    const inspect = requests.find((request) => request.action === "ods.extensions.inspect");
+    assert.deepEqual(search.parameters, { query: " image generation " });
+    assert.deepEqual(inspect.parameters, { serviceId: "comfyui" });
+    for (const request of requests) {
+      assert.equal(request.kind, "action");
+      assert.equal(request.target, "registered-peer");
+      assert.match(request.jobId, /^ops-[0-9]{13}-[a-f0-9]{12}$/);
+    }
+    // Complete in reverse order, with different outcomes, to detect a shared
+    // result slot or a receipt from a different submitted operation.
+    await publishResult(join(resultDir, `${inspect.jobId}.json`), { schemaVersion: 2, jobId: inspect.jobId, status: "rejected" });
+    const searchReceipt = { schemaVersion: 2, jobId: search.jobId, status: "succeeded", steps: [{
+      stepId: "action", target: search.target, action: search.action, exitCode: 0,
+      stdout: '{"query":" image generation ","matches":[]}\n', stderr: "",
+      outputTruncated: { stdout: false, stderr: false }, riskSignals: [],
+    }] };
+    await publishResult(join(resultDir, `${search.jobId}.json`), searchReceipt);
+    const [searchResult, inspectResult] = await Promise.all(pending);
+    assert.equal(searchResult.details.jobId, search.jobId);
+    assert.deepEqual(searchResult.details.steps, searchReceipt.steps);
+    assert.equal(searchResult.details.waitTimedOut, false);
+    assert.equal(inspectResult.details.jobId, inspect.jobId);
+    assert.equal(inspectResult.details.status, "rejected");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("extension read preserves a queued job after timeout and rejects mutable or ambiguous inputs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pixel-extension-pending-"));
+  const requestDir = join(root, "requests");
+  const resultDir = join(root, "results");
+  await mkdir(requestDir);
+  await mkdir(resultDir);
+  try {
+    const tool = createExtensionReadTool({ requestDir, resultDir, timeoutMs: 30, pollIntervalMs: 5 });
+    const result = await tool.execute("list", { action: "list" });
+    const names = (await readdir(requestDir)).filter((name) => name.endsWith(".json"));
+    assert.deepEqual(names, [`${result.details.jobId}.json`]);
+    const request = JSON.parse(await readFile(join(requestDir, names[0]), "utf8"));
+    assert.equal(request.target, "ods-host");
+    assert.equal(request.action, "ods.extensions.list");
+    assert.deepEqual(request.parameters, {});
+    assert.equal(result.details.status, "pending");
+    assert.equal(result.details.waitTimedOut, true);
+    assert.match(result.details.next, /pixel_ops_job_get/);
+    for (const params of [
+      { action: "install", serviceId: "comfyui" },
+      { action: "inspect", serviceId: "comfyui", query: "extra" },
+      { action: "search", query: "all", serviceId: "comfyui" },
+      { action: "list", approval: true },
+      { action: "inspect", serviceId: "../comfyui" },
+      { action: "search", query: "x".repeat(81) },
+      { action: "search", query: "all\nextra" },
+    ]) {
+      assert.equal((await tool.execute("invalid", params)).isError, true);
+    }
+    assert.deepEqual((await readdir(requestDir)).filter((name) => name.endsWith(".json")), names);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("extension read does not replace its job identity with a mismatched result", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pixel-extension-mismatch-"));
+  const requestDir = join(root, "requests");
+  const resultDir = join(root, "results");
+  await mkdir(requestDir);
+  await mkdir(resultDir);
+  try {
+    const tool = createExtensionReadTool({ requestDir, resultDir, timeoutMs: 2000, pollIntervalMs: 5 });
+    const pending = tool.execute("search", { action: "search" });
+    let names = [];
+    for (let i = 0; i < 200 && names.length === 0; i += 1) {
+      names = (await readdir(requestDir)).filter((name) => name.endsWith(".json"));
+      if (names.length === 0) await delay(5);
+    }
+    assert.equal(names.length, 1);
+    const request = JSON.parse(await readFile(join(requestDir, names[0]), "utf8"));
+    assert.deepEqual(request.parameters, { query: "all" });
+    await publishResult(join(resultDir, names[0]), { jobId: "ops-1234567890123-aaaaaaaaaaaa", status: "succeeded" });
+    const result = await pending;
+    assert.equal(result.details.jobId, request.jobId);
+    assert.equal(result.details.status, "pending");
+    assert.equal(result.details.waitTimedOut, true);
+    assert.match(result.details.next, /do not resubmit/);
+    assert.equal((await readdir(requestDir)).filter((name) => name.endsWith(".json")).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("host observation accepts only unique fixed read-only actions", () => {
+  assert.deepEqual(
+    testing.normalizedActions(["host.identity", "host.kernel"]),
+    ["host.identity", "host.kernel"]
+  );
+  assert.throws(() => testing.normalizedActions([]), /invalid host observation actions/);
+  assert.throws(
+    () => testing.normalizedActions(["host.identity", "host.identity"]),
+    /duplicate host observation action/
+  );
+  assert.throws(
+    () => testing.normalizedActions(["raw-shell"]),
+    /invalid host observation action/
+  );
+});
+
+test("host observation schema exposes no broker target, command, or approval input", async () => {
+  const tool = createHostObserveTool();
+  assert.equal(tool.name, "pixel_ods_host_observe");
+  assert.deepEqual(tool.parameters.required, ["actions"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties), [
+    "actions", "includeOdsStatus", "peer", "ports",
+  ]);
+  assert.equal(tool.parameters.additionalProperties, false);
+  assert.equal(tool.parameters.properties.actions.uniqueItems, true);
+  assert.equal(tool.parameters.properties.actions.items.enum.includes("host.identity"), true);
+  assert.equal(tool.parameters.properties.actions.items.enum.includes("host.gpu"), true);
+  assert.equal(tool.parameters.properties.actions.items.enum.includes("host.tailscale"), true);
+  assert.equal(tool.parameters.properties.actions.items.enum.includes("host.network-peer"), true);
+  assert.equal(tool.parameters.properties.actions.items.enum.includes("raw-shell"), false);
+  assert.deepEqual(tool.parameters.properties.includeOdsStatus, { type: "boolean" });
+
+  const result = await tool.execute("call-1", { actions: ["raw-shell"] });
+  assert.equal(result.isError, true);
+  assert.deepEqual(Object.keys(result.details).sort(), ["boundaryNotice", "status"]);
+  assert.doesNotMatch(result.content[0].text, /raw-shell|var\/lib|operations job ID/);
+});
+
+test("host observation binds one private peer and bounded ports into the workflow", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pixel-host-peer-"));
+  const requestDir = join(root, "requests");
+  const resultDir = join(root, "results");
+  await mkdir(requestDir);
+  await mkdir(resultDir);
+  try {
+    const tool = createHostObserveTool({
+      requestDir,
+      resultDir,
+      timeoutMs: 2_000,
+      pollIntervalMs: 5,
+    });
+    const pending = tool.execute("call-peer", {
+      actions: ["host.tailscale", "host.network-peer"],
+      peer: "Strixy",
+      ports: [22, 3389],
+    });
+    let names = [];
+    for (let attempt = 0; attempt < 100 && names.length === 0; attempt += 1) {
+      names = (await readdir(requestDir)).filter((name) => name.endsWith(".json"));
+      if (names.length === 0) await delay(5);
+    }
+    const request = JSON.parse(await readFile(join(requestDir, names[0]), "utf8"));
+    assert.deepEqual(request.steps, [
+      { id: "observe-1", target: "ods-host", action: "host.tailscale" },
+      {
+        id: "observe-2",
+        target: "ods-host",
+        action: "host.network-peer",
+        parameters: { peer: "Strixy", ports: "22,3389" },
+      },
+    ]);
+    await publishResult(
+      join(resultDir, `${request.jobId}.json`),
+      {
+        schemaVersion: 2,
+        jobId: request.jobId,
+        status: "succeeded",
+        steps: [],
+      }
+    );
+    const result = await pending;
+    assert.equal(result.details.jobId, request.jobId);
+    assert.equal(result.details.status, "succeeded");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("host peer observation rejects ranges, URLs, public paths, and oversized port sets", () => {
+  for (const value of [
+    "192.168.0.0/24", "https://strixy", "Strixy;whoami", "../Strixy",
+    "8.8.8.8", "2606:4700:4700::1111", "localhost",
+  ]) {
+    assert.throws(() => testing.normalizedPeer(value), /invalid network peer/);
+  }
+  assert.deepEqual(testing.normalizedPorts(undefined), [22, 80, 443, 3389, 5985, 5986]);
+  assert.throws(
+    () => testing.normalizedPorts([1, 2, 3, 4, 5, 6, 7, 8, 9]),
+    /invalid network peer ports/
+  );
+});
+
+test("host command adapter publishes exact protocol bytes and returns one approval receipt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pixel-host-command-"));
+  const requestDir = join(root, "requests");
+  const resultDir = join(root, "results");
+  await mkdir(requestDir);
+  await mkdir(resultDir);
+  const command = "printf 'HOST_COMMAND_OK\\n'; /usr/bin/uname -sr; /usr/bin/id -un";
+  try {
+    const tool = createHostCommandProposeTool({
+      requestDir,
+      resultDir,
+      timeoutMs: 2_000,
+      pollIntervalMs: 5,
+    });
+    assert.equal(tool.name, "pixel_ods_host_command_propose");
+    assert.deepEqual(tool.parameters.required, ["command"]);
+    assert.deepEqual(Object.keys(tool.parameters.properties), ["command"]);
+    assert.equal(tool.parameters.additionalProperties, false);
+
+    const pending = tool.execute("call-1", { command });
+    let names = [];
+    for (let attempt = 0; attempt < 100 && names.length === 0; attempt += 1) {
+      names = (await readdir(requestDir)).filter((name) => name.endsWith(".json"));
+      if (names.length === 0) await delay(5);
+    }
+    assert.equal(names.length, 1);
+    const request = JSON.parse(await readFile(join(requestDir, names[0]), "utf8"));
+    assert.deepEqual(Object.keys(request).sort(), [
+      "boundary",
+      "command",
+      "createdAt",
+      "jobId",
+      "kind",
+      "reason",
+      "requester",
+      "schemaVersion",
+      "target",
+    ]);
+    assert.equal(request.schemaVersion, 1);
+    assert.match(request.jobId, /^ops-[0-9]{13}-[a-f0-9]{12}$/);
+    assert.equal(request.kind, "shell");
+    assert.equal(request.target, "ods-host");
+    assert.equal(request.command, command);
+    assert.equal(
+      request.reason,
+      "Owner requested one protected command from the local ODS host, possibly to an explicitly named SSH destination."
+    );
+    assert.doesNotMatch(request.boundary, /approve/i);
+
+    const planHash = "a".repeat(64);
+    await publishResult(
+      join(resultDir, `${request.jobId}.json`),
+      {
+        schemaVersion: 2,
+        jobId: request.jobId,
+        status: "awaiting-approval",
+        approvalRequired: true,
+        planHash,
+      }
+    );
+    const result = await pending;
+    assert.equal(result.isError, undefined);
+    assert.equal(result.details.jobId, request.jobId);
+    assert.equal(result.details.status, "awaiting-approval");
+    assert.equal(result.details.approvalRequired, true);
+    assert.equal(result.details.planHash, planHash);
+    assert.equal(result.details.waitTimedOut, false);
+    assert.match(result.details.boundaryNotice, /cannot approve/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("host command adapter rejects unbounded commands without publishing a request", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pixel-host-command-invalid-"));
+  const requestDir = join(root, "requests");
+  const resultDir = join(root, "results");
+  await mkdir(requestDir);
+  await mkdir(resultDir);
+  try {
+    const tool = createHostCommandProposeTool({ requestDir, resultDir, timeoutMs: 10 });
+    for (const command of ["", "\0", "é".repeat(9_000)]) {
+      const result = await tool.execute("call-invalid", { command });
+      assert.equal(result.isError, true);
+      assert.equal(result.details.status, "unavailable");
+    }
+    assert.deepEqual(await readdir(requestDir), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("host command adapter rejects a result whose embedded job ID does not match", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pixel-host-command-mismatch-"));
+  const requestDir = join(root, "requests");
+  const resultDir = join(root, "results");
+  await mkdir(requestDir);
+  await mkdir(resultDir);
+  try {
+    const tool = createHostCommandProposeTool({
+      requestDir,
+      resultDir,
+      timeoutMs: 2_000,
+      pollIntervalMs: 5,
+    });
+    const pending = tool.execute("call-mismatch", { command: "uname -sr" });
+    let names = [];
+    for (let attempt = 0; attempt < 100 && names.length === 0; attempt += 1) {
+      names = (await readdir(requestDir)).filter((name) => name.endsWith(".json"));
+      if (names.length === 0) await delay(5);
+    }
+    assert.equal(names.length, 1);
+    const request = JSON.parse(await readFile(join(requestDir, names[0]), "utf8"));
+    await publishResult(
+      join(resultDir, `${request.jobId}.json`),
+      {
+        schemaVersion: 2,
+        jobId: "ops-1234567890123-abcdef123456",
+        status: "awaiting-approval",
+        approvalRequired: true,
+        planHash: "b".repeat(64),
+      }
+    );
+    const result = await pending;
+    assert.equal(result.isError, true);
+    assert.equal(result.details.status, "unavailable");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const [name, factory, params] of [
+  ['observation', createHostObserveTool, {actions:['host.kernel']}],
+  ['command proposal', createHostCommandProposeTool, {command:'uname -sr'}],
+]) {
+  test(`${name} retains its submitted identity when result readback fails`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pixel-host-readback-'));
+    const requestDir = join(root, 'requests'), resultDir = join(root, 'results');
+    await mkdir(requestDir); await mkdir(resultDir);
+    try {
+      const tool = factory({requestDir, resultDir, timeoutMs:2000, pollIntervalMs:5});
+      const pending = tool.execute('readback-failure', params);
+      let names = [];
+      for (let attempt=0; attempt<200 && !names.length; attempt++) {
+        names = (await readdir(requestDir)).filter(name => name.endsWith('.json'));
+        if (!names.length) await delay(5);
+      }
+      assert.equal(names.length, 1);
+      const request = JSON.parse(await readFile(join(requestDir, names[0]), 'utf8'));
+      await publishResult(join(resultDir, names[0]), {
+        jobId:'ops-1234567890123-aaaaaaaaaaaa', status:'succeeded',
+        privateResult:'must not escape a mismatched receipt',
+      });
+      const result = await pending;
+      assert.equal(result.isError, true);
+      assert.equal(result.details.status, 'unavailable');
+      assert.equal(result.details.jobId, request.jobId);
+      assert.match(result.content[0].text, new RegExp(request.jobId));
+      assert.match(result.content[0].text, /do not resubmit/i);
+      assert.doesNotMatch(JSON.stringify(result), /privateResult|must not escape/);
+      assert.deepEqual((await readdir(requestDir)).filter(name => name.endsWith('.json')), names);
+    } finally { await rm(root, {recursive:true, force:true}); }
+  });
+}

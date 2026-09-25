@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-provider-profile-v1.schema.json",
+  "title": "Pixel work provider profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "id", "displayName", "protocol", "remote", "enabledByDefault", "baseUrl", "allowedHosts", "auth", "defaultModel", "modelSelection", "reasoning", "budgets", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-provider-profile-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "id": {"enum": ["anthropic", "fireworks", "groq", "local", "moonshot-kimi", "openai", "openrouter", "together"]},
+    "displayName": {"type": "string", "minLength": 1, "maxLength": 80},
+    "protocol": {"enum": ["anthropic-messages", "local-openai-compatible", "openai-chat-completions", "openai-responses"]},
+    "remote": {"type": "boolean"},
+    "enabledByDefault": {"type": "boolean"},
+    "baseUrl": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "allowedHosts": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z0-9.-]+:[0-9]{1,5}$", "maxLength": 260}},
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "header"],
+      "properties": {
+        "mode": {"enum": ["bearer-api-key", "none", "x-api-key"]},
+        "header": {"enum": ["Authorization", "none", "x-api-key"]}
+      }
+    },
+    "defaultModel": {"type": "string", "minLength": 1, "maxLength": 256},
+    "modelSelection": {"enum": ["fixed", "owner-pinned", "qualification-pinned"]},
+    "reasoning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "preserveProviderState", "replayCompleteAssistantMessage"],
+      "properties": {
+        "mode": {"enum": ["anthropic-thinking", "hidden-local", "kimi-reasoning-content", "openai-reasoning-items", "provider-dependent"]},
+        "preserveProviderState": {"const": true},
+        "replayCompleteAssistantMessage": {"type": "boolean"}
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxRequestsPerRun", "maxInputTokensPerRun", "maxOutputTokensPerRun", "maxOutputTokensPerRequest"],
+      "properties": {
+        "maxRequestsPerRun": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "maxInputTokensPerRun": {"type": "integer", "minimum": 1, "maximum": 100000000},
+        "maxOutputTokensPerRun": {"type": "integer", "minimum": 1, "maximum": 10000000},
+        "maxOutputTokensPerRequest": {"type": "integer", "minimum": 1, "maximum": 1000000}
+      }
+    },
+    "boundary": {"const": "Public provider capability metadata only. Remote use remains disabled until an owner-private policy explicitly enables the exact provider, credential custody, egress hosts, and budgets. This profile grants no provider call, credential, network, tool, external-effect, deployment, publication, or security-testing authority."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"remote": {"const": true}}, "required": ["remote"]},
+      "then": {
+        "properties": {
+          "enabledByDefault": {"const": false},
+          "baseUrl": {"pattern": "^https://"},
+          "allowedHosts": {"minItems": 1},
+          "auth": {"properties": {"mode": {"enum": ["bearer-api-key", "x-api-key"]}, "header": {"enum": ["Authorization", "x-api-key"]}}}
+        }
+      },
+      "else": {
+        "properties": {
+          "id": {"const": "local"},
+          "modelSelection": {"const": "qualification-pinned"},
+          "enabledByDefault": {"const": true},
+          "baseUrl": {"const": "http://127.0.0.1:8000/v1"},
+          "allowedHosts": {"maxItems": 0},
+          "auth": {"properties": {"mode": {"const": "none"}, "header": {"const": "none"}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"modelSelection": {"const": "fixed"}}, "required": ["modelSelection"]},
+      "then": {"properties": {"id": {"enum": ["anthropic", "moonshot-kimi", "openai"]}}}
+    },
+    {
+      "if": {"properties": {"modelSelection": {"const": "owner-pinned"}}, "required": ["modelSelection"]},
+      "then": {
+        "properties": {
+          "id": {"enum": ["fireworks", "groq", "openrouter", "together"]},
+          "defaultModel": {"not": {"const": "provider-selected-model"}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"modelSelection": {"const": "qualification-pinned"}}, "required": ["modelSelection"]},
+      "then": {"properties": {"id": {"const": "local"}}}
+    }
+  ]
+}

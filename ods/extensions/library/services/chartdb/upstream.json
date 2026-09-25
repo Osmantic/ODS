@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/chartdb/chartdb",
+  "license": "AGPL-3.0",
+  "image": "ghcr.io/chartdb/chartdb:1.20.1@sha256:9385f1a72174a2cdba27036127a98474a0c941c3c795dcc15149884c09834460",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 1.20.1 static bundle with nonroot read-only Nginx, fixed public runtime config disabling analytics/cloud promotion, and no model/API key. Diagrams persist in browser IndexedDB, not a server volume; export/import required for backup and project exchange."
+}

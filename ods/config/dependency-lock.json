@@ -29,7 +29,7 @@
       "id": "cpu.llama-server",
       "type": "image",
       "path": "docker-compose.cpu.yml",
-      "value": "ghcr.io/ggml-org/llama.cpp:server-b8248"
+      "value": "ghcr.io/ggml-org/llama.cpp:server-b9014"
     },
     {
       "id": "intel.llama-server",
@@ -92,6 +92,36 @@
       "value": "python:3.11-slim"
     },
     {
+      "id": "pixel-inference.python",
+      "type": "image",
+      "path": "extensions/services/pixel-inference/Dockerfile",
+      "value": "python:3.11-slim"
+    },
+    {
+      "id": "pixel-edge.python",
+      "type": "image",
+      "path": "extensions/services/pixel-edge/Dockerfile",
+      "value": "python:3.11-slim"
+    },
+    {
+      "id": "pixel-model-relay.python",
+      "type": "image",
+      "path": "extensions/services/pixel-model-relay/Dockerfile",
+      "value": "python:3.11-slim"
+    },
+    {
+      "id": "pixel-workspace-preview.python",
+      "type": "image",
+      "path": "extensions/services/pixel-agent/host/Dockerfile.preview",
+      "value": "python:3.11-slim"
+    },
+    {
+      "id": "pixel-preview-inspection.python",
+      "type": "image",
+      "path": "extensions/services/pixel-agent/host/Dockerfile.inspection",
+      "value": "python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b"
+    },
+    {
       "id": "remote-provider-egress.python",
       "type": "image",
       "path": "extensions/services/remote-provider-egress/Dockerfile",
@@ -119,7 +149,7 @@
       "id": "hermes.agent",
       "type": "image",
       "path": "extensions/services/hermes/compose.yaml",
-      "value": "nousresearch/hermes-agent:v2026.6.5"
+      "value": "nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
     },
     {
       "id": "hermes-proxy.caddy",
@@ -161,19 +191,19 @@
       "id": "langfuse.minio",
       "type": "image",
       "path": "extensions/services/langfuse/compose.yaml.disabled",
-      "value": "minio/minio:RELEASE.2025-09-07T16-13-09Z"
+      "value": "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
     },
     {
       "id": "langfuse.minio-client",
       "type": "image",
       "path": "extensions/services/langfuse/compose.yaml.disabled",
-      "value": "minio/mc:RELEASE.2025-08-13T08-35-41Z"
+      "value": "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
     },
     {
       "id": "litellm.proxy",
       "type": "image",
       "path": "extensions/services/litellm/compose.yaml",
-      "value": "ghcr.io/berriai/litellm:v1.81.3-stable"
+      "value": "ghcr.io/berriai/litellm:v1.90.7@sha256:917d480b7e4a7e61822e54f70be5c7cf753fb0b7328cbf6467612652ca748075"
     },
     {
       "id": "llama-server.rocm-build",
@@ -268,6 +298,12 @@
       "type": "image",
       "path": "installers/windows/docker-compose.windows-amd.local.yml",
       "value": "busybox:1.36.1"
+    },
+    {
+      "id": "fooocus.runtime",
+      "type": "image",
+      "path": "extensions/services/fooocus/compose.yaml.disabled",
+      "value": "ghcr.io/lllyasviel/fooocus@sha256:a1c3251054a38c22f783b680600050bedf7fe547d0239a8d772d0d372a98a5ce"
     }
   ],
   "allow_latest": [
@@ -278,6 +314,11 @@
     }
   ],
   "allow_local_images": [
+    {
+      "path": "extensions/services/pixel-inference/compose.yaml.disabled",
+      "value": "ods-pixel-inference:local",
+      "reason": "Optional inference-only service built locally after explicit owner activation."
+    },
     {
       "path": "docker-compose.amd.yml",
       "value": "ods-lemonade-server:latest",
@@ -292,6 +333,16 @@
       "path": "extensions/services/brave-search/compose.yaml",
       "value": "ods-brave-search:local",
       "reason": "Local extension image built from the adjacent Dockerfile."
+    },
+    {
+      "path": "extensions/services/pixel-edge/compose.yaml.disabled",
+      "value": "ods-pixel-edge:local",
+      "reason": "Qualified Linux installs enable this fragment and build the internal Pixel edge image from its adjacent Dockerfile."
+    },
+    {
+      "path": "extensions/services/pixel-model-relay/compose.yaml.disabled",
+      "value": "ods-pixel-model-relay:local",
+      "reason": "Qualified Pixel installs enable this host-loopback fragment and build its image from the adjacent Dockerfile."
     },
     {
       "path": "docker-compose.base.yml",
@@ -319,8 +370,8 @@
     },
     {
       "path": "docker-compose.cpu.yml",
-      "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b8248}",
-      "default": "ghcr.io/ggml-org/llama.cpp:server-b8248",
+      "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014}",
+      "default": "ghcr.io/ggml-org/llama.cpp:server-b9014",
       "reason": "CPU llama.cpp image can be overridden for testing, but the shipped default is locked."
     },
     {
@@ -337,8 +388,8 @@
     },
     {
       "path": "extensions/services/hermes/compose.yaml",
-      "value": "${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.6.5}",
-      "default": "nousresearch/hermes-agent:v2026.6.5",
+      "value": "${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7}",
+      "default": "nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7",
       "reason": "Hermes Agent image can be overridden for upstream registry hotfixes, but the shipped default is locked."
     },
     {

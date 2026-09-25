@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/navidrome/navidrome",
+  "license": "GPL-3.0",
+  "image": "deluan/navidrome:0.64.0@sha256:a384948b81bd1529986c5960169e7fc4fa00f46bde6bd517971a4c36671db2af",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/386",
+    "linux/amd64",
+    "linux/arm",
+    "linux/arm64",
+    "linux/riscv64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 0.64.0 image with owned data/music directories and UID 1000. Native startup, first-admin UI, explicit current Scanner settings, local music import, no external metadata services, telemetry or public shares enabled."
+}

@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/mermaid-js/mermaid-live-editor",
+  "license": "MIT",
+  "image": "nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236",
+  "build_image": "node:24.16.0-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "source_commit": "8754416d847d2947c0492bc045cddbab717a51ea",
+  "source_sha256": "1b9e11583b948a25fb6264b3b13493f7a86d7917887e0c2c6430be23b4c848fd",
+  "notes": "No latest GitHub release endpoint available. Exact develop commit and archive checksum pinned; lockfile installation with packageManager version. Compiled external renderers/analytics/commercial chart links disabled. Static nonroot nginx; browser-origin state only."
+}

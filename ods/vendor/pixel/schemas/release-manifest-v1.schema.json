@@ -1,0 +1,1795 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/schemas/pixel/release-manifest-v1.schema.json",
+  "title": "Pixel release manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "pixel",
+    "supportedHosts",
+    "node",
+    "nodeRuntime",
+    "openclaw",
+    "openclawInstaller",
+    "openclawPackage",
+    "capabilityProfiles",
+    "qualification",
+    "openclawPlugins",
+    "openclawPluginPackages",
+    "sandboxImage",
+    "webCourier",
+    "privateBackup",
+    "releaseUpdate",
+    "releaseReactivationArchive",
+    "legacyCleanMigration",
+    "baseImage",
+    "qualificationImages",
+    "referenceImages",
+    "googleScopes",
+    "sourceBroker",
+    "githubBroker",
+    "operationsBroker",
+    "frontierBroker",
+    "workProvider",
+    "controlSurface",
+    "customizationKit",
+    "operationsRunner",
+    "googleTools",
+    "operationsTools",
+    "frontierTools"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "./schemas/release-manifest-v1.schema.json"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "pixel": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "supportedHosts": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "node": {
+      "type": "string",
+      "pattern": "^>=?[0-9]+$"
+    },
+    "nodeRuntime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "url",
+        "sha256"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^22\\.[0-9]+\\.[0-9]+$"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https://nodejs\\.org/dist/v22\\.[0-9]+\\.[0-9]+/node-v22\\.[0-9]+\\.[0-9]+-linux-x64\\.tar\\.xz$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "openclaw": {
+      "$ref": "#/$defs/openclawVersion"
+    },
+    "openclawInstaller": {
+      "$ref": "#/$defs/shaArtifact"
+    },
+    "openclawPackage": {
+      "$ref": "#/$defs/npmArtifact"
+    },
+    "capabilityProfiles": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]+$"
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "matrix",
+        "matrixSchema",
+        "supportedHostSystemdEvidenceSchema",
+        "deepWorkEnduranceEvidenceSchema",
+        "optionalDeepWorkMultiDaySoakEvidenceSchema",
+        "promotionClaimsSchema",
+        "promotionReadinessSchema",
+        "portalOutcomeTaskSchema",
+        "portalOutcomeTaskAdmissionSchema",
+        "portalOutcomeResearchFixtureSchema",
+        "portalOutcomeTaskAdmitter",
+        "portalOutcomeModelContractSchema",
+        "portalOutcomeInferenceContractSchema",
+        "portalOutcomeToolPolicySchema",
+        "portalOutcomeEnvironmentSchema",
+        "portalOutcomeVerifierSchema",
+        "portalOutcomeSourceMaterializer",
+        "portalOutcomeBatteryMaterializer",
+        "portalOutcomeTrialCoverageSchema",
+        "portalOutcomeTrialCoverage",
+        "portalOutcomeRehearsalFixtureTool",
+        "portalOutcomeRunAssembler",
+        "portalOutcomeDeterministicVerifier",
+        "portalOutcomeRuntimeControl",
+        "portalOutcomeCodexOrchestrator",
+        "portalOutcomePixelOrchestrator",
+        "portalOutcomeProductPathRouter",
+        "portalOutcomeResearchEvidence",
+        "portalOutcomeAssistantEvidence",
+        "portalOutcomeAssistantRuntime",
+        "portalOutcomeAssistantSystem",
+        "portalOutcomeAssistantModelProxy",
+        "portalOutcomeAssistantTemplateSchema",
+        "portalOutcomeAssistantTemplateConfig",
+        "portalOutcomeCodexResearchAuthority",
+        "portalOutcomeResearchMcp",
+        "portalOutcomeResearchFixtureAdapter",
+        "portalOutcomePixelArm",
+        "portalOutcomePixelSystemSchema",
+        "portalOutcomePixelSystemConfig",
+        "portalOutcomePixelSystemCli",
+        "portalOutcomePixelLiveSystem",
+        "portalOutcomePairSystemSchema",
+        "portalOutcomePairSystemConfig",
+        "portalOutcomePairSystemBindingSchema",
+        "portalOutcomePairSystemBinding",
+        "portalOutcomePairRunner",
+        "portalOutcomePairPreflightSchema",
+        "portalOutcomePairPreflight",
+        "portalOutcomePolicyCompatibility",
+        "portalOutcomeBatteryCampaignRunner",
+        "portalOutcomeTuningBaselineFreezeSchema",
+        "portalOutcomeDsv4Dockerfile",
+        "portalOutcomeDsv4Launcher",
+        "portalOutcomeDsv4ImageQualifier",
+        "portalOutcomeCodexComparisonDockerfile",
+        "portalOutcomeCodexWorkspaceCopier",
+        "portalOutcomeCodexSurfaceQualifier",
+        "workCodexImageQualifier",
+        "workRunnerImageQualifier",
+        "workModelQualificationDockerSchema",
+        "workModelQualificationDockerConfig",
+        "workModelQualificationDockerRunner",
+        "workModelQualificationContainer",
+        "workModelQualificationBridge",
+        "workModelQualificationMaintenanceSchema",
+        "workModelQualificationMaintenanceConfig",
+        "workModelQualificationMaintenanceRunner",
+        "workModelMaintenanceCustody",
+        "workModelCampaignMaintenanceSchema",
+        "workModelCampaignMaintenanceConfig",
+        "workModelCampaignMaintenanceRunner",
+        "portalOutcomeLiveSystem",
+        "portalOutcomeRunSchema",
+        "portalOutcomeComparisonSchema",
+        "portalOutcomeComparator",
+        "portalOutcomeCampaignPlanSchema",
+        "portalOutcomeCampaignSchema",
+        "portalOutcomeCampaignRunner",
+        "requiredConsecutivePasses",
+        "automatedProviderCallsAllowed",
+        "publicationRequiresAllGates"
+      ],
+      "properties": {
+        "matrix": {
+          "const": "./QUALIFICATION-MATRIX.json"
+        },
+        "matrixSchema": {
+          "const": "./schemas/qualification-matrix-v1.schema.json"
+        },
+        "supportedHostSystemdEvidenceSchema": {
+          "const": "./schemas/supported-host-systemd-evidence-v1.schema.json"
+        },
+        "deepWorkEnduranceEvidenceSchema": {
+          "const": "./schemas/deep-work-endurance-evidence-v1.schema.json"
+        },
+        "optionalDeepWorkMultiDaySoakEvidenceSchema": {
+          "const": "./schemas/deep-work-multi-day-soak-evidence-v1.schema.json"
+        },
+        "promotionClaimsSchema": {
+          "const": "./schemas/promotion-claims-v1.schema.json"
+        },
+        "promotionReadinessSchema": {
+          "const": "./schemas/promotion-readiness-v1.schema.json"
+        },
+        "portalOutcomeTaskSchema": {
+          "const": "./schemas/portal-outcome-task-v1.schema.json"
+        },
+        "portalOutcomeTaskAdmissionSchema": {
+          "const": "./schemas/portal-outcome-task-admission-v1.schema.json"
+        },
+        "portalOutcomeResearchFixtureSchema": {
+          "const": "./schemas/portal-outcome-research-fixture-v1.schema.json"
+        },
+        "portalOutcomeTaskAdmitter": {
+          "const": "./scripts/portal_outcome_task.py"
+        },
+        "portalOutcomeModelContractSchema": {
+          "const": "./schemas/portal-outcome-model-contract-v1.schema.json"
+        },
+        "portalOutcomeInferenceContractSchema": {
+          "const": "./schemas/portal-outcome-inference-contract-v1.schema.json"
+        },
+        "portalOutcomeToolPolicySchema": {
+          "const": "./schemas/portal-outcome-tool-policy-v1.schema.json"
+        },
+        "portalOutcomeEnvironmentSchema": {
+          "const": "./schemas/portal-outcome-environment-v1.schema.json"
+        },
+        "portalOutcomeVerifierSchema": {
+          "const": "./schemas/portal-outcome-verifier-v1.schema.json"
+        },
+        "portalOutcomeSourceMaterializer": {
+          "const": "./scripts/portal_outcome_materialize_source.mjs"
+        },
+        "portalOutcomeBatteryMaterializer": {
+          "const": "./scripts/portal_outcome_materialize_battery.py"
+        },
+        "portalOutcomeTrialCoverageSchema": {
+          "const": "./schemas/portal-outcome-trial-coverage-v1.schema.json"
+        },
+        "portalOutcomeTrialCoverage": {
+          "const": "./scripts/portal_outcome_trial_coverage.py"
+        },
+        "portalOutcomeRehearsalFixtureTool": {
+          "const": "./scripts/agent_comparison_fixture_tool.py"
+        },
+        "portalOutcomeRunAssembler": {
+          "const": "./scripts/portal_outcome_runner.py"
+        },
+        "portalOutcomeDeterministicVerifier": {
+          "const": "./scripts/portal_outcome_verifier.py"
+        },
+        "portalOutcomeRuntimeControl": {
+          "const": "./scripts/portal_outcome_runtime_control.py"
+        },
+        "portalOutcomeCodexOrchestrator": {
+          "const": "./scripts/portal_outcome_orchestrate.py"
+        },
+        "portalOutcomePixelOrchestrator": {
+          "const": "./scripts/portal_outcome_pixel_orchestrate.py"
+        },
+        "portalOutcomeProductPathRouter": {
+          "const": "./scripts/portal_outcome_product_path.py"
+        },
+        "portalOutcomeResearchEvidence": {
+          "const": "./scripts/portal_outcome_research_evidence.py"
+        },
+        "portalOutcomeAssistantEvidence": {
+          "const": "./scripts/portal_outcome_assistant_evidence.py"
+        },
+        "portalOutcomeAssistantRuntime": {
+          "const": "./scripts/portal_outcome_assistant_runtime.py"
+        },
+        "portalOutcomeAssistantSystem": {
+          "const": "./scripts/portal_outcome_assistant_system.py"
+        },
+        "portalOutcomeAssistantModelProxy": {
+          "const": "./deploy/agent-comparison/assistant-model-proxy.mjs"
+        },
+        "portalOutcomeAssistantTemplateSchema": {
+          "const": "./schemas/portal-outcome-assistant-template-v1.schema.json"
+        },
+        "portalOutcomeAssistantTemplateConfig": {
+          "const": "./deploy/agent-comparison/assistant-template.example.json"
+        },
+        "portalOutcomeCodexResearchAuthority": {
+          "const": "./deploy/agent-comparison/codex-research-authority.mjs"
+        },
+        "portalOutcomeResearchMcp": {
+          "const": "./deploy/agent-comparison/research-mcp-server.mjs"
+        },
+        "portalOutcomeResearchFixtureAdapter": {
+          "const": "./deploy/agent-comparison/research-fixture-adapter.mjs"
+        },
+        "portalOutcomePixelArm": {
+          "const": "./deploy/agent-comparison/pixel-arm.mjs"
+        },
+        "portalOutcomePixelSystemSchema": {
+          "const": "./schemas/portal-outcome-pixel-system-v1.schema.json"
+        },
+        "portalOutcomePixelSystemConfig": {
+          "const": "./deploy/agent-comparison/pixel-system.example.json"
+        },
+        "portalOutcomePixelSystemCli": {
+          "const": "./deploy/agent-comparison/pixel-system-cli.mjs"
+        },
+        "portalOutcomePixelLiveSystem": {
+          "const": "./scripts/portal_outcome_pixel_livesystem.py"
+        },
+        "portalOutcomePairSystemSchema": {
+          "const": "./schemas/portal-outcome-pair-system-v1.schema.json"
+        },
+        "portalOutcomePairSystemConfig": {
+          "const": "./deploy/agent-comparison/pair-system.example.json"
+        },
+        "portalOutcomePairSystemBindingSchema": {
+          "const": "./schemas/portal-outcome-pair-system-binding-v1.schema.json"
+        },
+        "portalOutcomePairSystemBinding": {
+          "const": "./scripts/portal_outcome_pair_system.py"
+        },
+        "portalOutcomePairRunner": {
+          "const": "./scripts/portal_outcome_pair.py"
+        },
+        "portalOutcomePairPreflightSchema": {
+          "const": "./schemas/portal-outcome-pair-preflight-v1.schema.json"
+        },
+        "portalOutcomePairPreflight": {
+          "const": "./scripts/portal_outcome_pair_preflight.py"
+        },
+        "portalOutcomePolicyCompatibility": {
+          "const": "./scripts/portal_outcome_policy_compatibility.py"
+        },
+        "portalOutcomeBatteryCampaignRunner": {
+          "const": "./scripts/portal_outcome_battery_campaign.py"
+        },
+        "portalOutcomeTuningBaselineFreezeSchema": {
+          "const": "./schemas/portal-outcome-tuning-baseline-freeze-v1.schema.json"
+        },
+        "portalOutcomeDsv4Dockerfile": {
+          "const": "./deploy/agent-comparison/Dockerfile.dsv4-vllm"
+        },
+        "portalOutcomeDsv4Launcher": {
+          "const": "./deploy/agent-comparison/dsv4-serve.sh"
+        },
+        "portalOutcomeDsv4ImageQualifier": {
+          "const": "./scripts/qualify-dsv4-image.sh"
+        },
+        "portalOutcomeCodexComparisonDockerfile": {
+          "const": "./deploy/agent-comparison/Dockerfile.codex-runner"
+        },
+        "portalOutcomeCodexWorkspaceCopier": {
+          "const": "./scripts/codex_comparison_workspace.py"
+        },
+        "portalOutcomeCodexSurfaceQualifier": {
+          "const": "./scripts/qualify_codex_comparison_surface.py"
+        },
+        "workCodexImageQualifier": {
+          "const": "./scripts/qualify-work-codex-images.sh"
+        },
+        "workRunnerImageQualifier": {
+          "const": "./scripts/qualify-work-runner-image.sh"
+        },
+        "workModelQualificationDockerSchema": {
+          "const": "./schemas/work-model-qualification-docker-v1.schema.json"
+        },
+        "workModelQualificationDockerConfig": {
+          "const": "./deploy/work-controller/model-qualification-docker.example.json"
+        },
+        "workModelQualificationDockerRunner": {
+          "const": "./deploy/work-controller/model-qualification-docker.mjs"
+        },
+        "workModelQualificationContainer": {
+          "const": "./deploy/work-controller/model-qualification-container.mjs"
+        },
+        "workModelQualificationBridge": {
+          "const": "./deploy/work-controller/model-qualification-bridge.mjs"
+        },
+        "workModelQualificationMaintenanceSchema": {
+          "const": "./schemas/work-model-qualification-maintenance-v1.schema.json"
+        },
+        "workModelQualificationMaintenanceConfig": {
+          "const": "./deploy/work-controller/model-qualification-maintenance.example.json"
+        },
+        "workModelQualificationMaintenanceRunner": {
+          "const": "./deploy/work-controller/model-qualification-maintenance.mjs"
+        },
+        "workModelMaintenanceCustody": {
+          "const": "./deploy/work-controller/maintenance-custody.mjs"
+        },
+        "workModelCampaignMaintenanceSchema": {
+          "const": "./schemas/work-model-campaign-maintenance-v1.schema.json"
+        },
+        "workModelCampaignMaintenanceConfig": {
+          "const": "./deploy/work-controller/model-campaign-maintenance.example.json"
+        },
+        "workModelCampaignMaintenanceRunner": {
+          "const": "./deploy/work-controller/model-campaign-maintenance.mjs"
+        },
+        "portalOutcomeLiveSystem": {
+          "const": "./scripts/portal_outcome_livesystem.py"
+        },
+        "portalOutcomeRunSchema": {
+          "const": "./schemas/portal-outcome-run-v1.schema.json"
+        },
+        "portalOutcomeComparisonSchema": {
+          "const": "./schemas/portal-outcome-comparison-v1.schema.json"
+        },
+        "portalOutcomeComparator": {
+          "const": "./scripts/portal_outcome_evaluation.py"
+        },
+        "portalOutcomeCampaignPlanSchema": {
+          "const": "./schemas/portal-outcome-campaign-plan-v1.schema.json"
+        },
+        "portalOutcomeCampaignSchema": {
+          "const": "./schemas/portal-outcome-campaign-v1.schema.json"
+        },
+        "portalOutcomeCampaignRunner": {
+          "const": "./scripts/portal_outcome_campaign.py"
+        },
+        "requiredConsecutivePasses": {
+          "const": 2
+        },
+        "automatedProviderCallsAllowed": {
+          "const": false
+        },
+        "publicationRequiresAllGates": {
+          "const": true
+        }
+      }
+    },
+    "openclawPlugins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "@openclaw/discord",
+        "@openclaw/searxng-plugin",
+        "@openclaw/llama-cpp-provider"
+      ],
+      "properties": {
+        "@openclaw/discord": {
+          "$ref": "#/$defs/openclawVersion"
+        },
+        "@openclaw/searxng-plugin": {
+          "$ref": "#/$defs/openclawVersion"
+        },
+        "@openclaw/llama-cpp-provider": {
+          "$ref": "#/$defs/openclawVersion"
+        }
+      }
+    },
+    "openclawPluginPackages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "discord",
+        "searxng",
+        "llamaCpp"
+      ],
+      "properties": {
+        "discord": {
+          "$ref": "#/$defs/npmArtifact"
+        },
+        "searxng": {
+          "$ref": "#/$defs/npmArtifact"
+        },
+        "llamaCpp": {
+          "$ref": "#/$defs/npmArtifact"
+        }
+      }
+    },
+    "sandboxImage": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9./_-]*:[A-Za-z0-9._-]+$"
+    },
+    "webCourier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "python",
+        "playwright",
+        "trafilatura",
+        "browser",
+        "requirementsHashMode",
+        "defaultAllowedPorts"
+      ],
+      "properties": {
+        "python": {
+          "type": "string",
+          "pattern": "^>=?[0-9]+(\\.[0-9]+)?$"
+        },
+        "playwright": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "trafilatura": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "browser": {
+          "const": "chromium"
+        },
+        "requirementsHashMode": {
+          "const": "pip-require-hashes"
+        },
+        "defaultAllowedPorts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          }
+        }
+      }
+    },
+    "privateBackup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "encryption",
+        "authentication",
+        "restore"
+      ],
+      "properties": {
+        "encryption": {
+          "const": "age-streaming"
+        },
+        "authentication": {
+          "const": "ssh-ed25519-detached-signature"
+        },
+        "restore": {
+          "const": "audited-transactional-rollback"
+        }
+      }
+    },
+    "releaseUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "channel",
+        "envelopeSchema",
+        "stageReceiptSchema",
+        "rehearsalReceiptSchema",
+        "activationReceiptSchema",
+        "activationResultSchema",
+        "rollbackReceiptSchema",
+        "rollbackResultSchema",
+        "recoverySchema",
+        "cleanupReceiptSchema",
+        "archiveReceiptSchema",
+        "signature",
+        "signatureNamespace",
+        "qualificationSignature",
+        "qualificationSignatureNamespace",
+        "qualificationAuthority",
+        "qualificationMode",
+        "minimumUpgradablePixel",
+        "preparation",
+        "staging",
+        "rehearsal",
+        "activation",
+        "rollback",
+        "recovery",
+        "cleanup",
+        "archive"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "channel": {
+          "const": "stable"
+        },
+        "envelopeSchema": {
+          "const": "./schemas/release-update-v1.schema.json"
+        },
+        "stageReceiptSchema": {
+          "const": "./schemas/release-update-stage-v1.schema.json"
+        },
+        "rehearsalReceiptSchema": {
+          "const": "./schemas/release-update-rehearsal-v1.schema.json"
+        },
+        "activationReceiptSchema": {
+          "const": "./schemas/release-update-activation-v1.schema.json"
+        },
+        "activationResultSchema": {
+          "const": "./schemas/release-update-activation-result-v1.schema.json"
+        },
+        "rollbackReceiptSchema": {
+          "const": "./schemas/release-update-rollback-v1.schema.json"
+        },
+        "rollbackResultSchema": {
+          "const": "./schemas/release-update-rollback-result-v1.schema.json"
+        },
+        "recoverySchema": {
+          "const": "./schemas/release-update-recovery-v1.schema.json"
+        },
+        "cleanupReceiptSchema": {
+          "const": "./schemas/release-update-cleanup-v1.schema.json"
+        },
+        "archiveReceiptSchema": {
+          "const": "./schemas/release-update-archive-v1.schema.json"
+        },
+        "signature": {
+          "const": "openssh-ed25519-detached"
+        },
+        "signatureNamespace": {
+          "const": "pixel-release-update"
+        },
+        "qualificationSignature": {
+          "const": "openssh-ed25519-detached"
+        },
+        "qualificationSignatureNamespace": {
+          "const": "pixel-release-update-qualification"
+        },
+        "qualificationAuthority": {
+          "const": "verify-only-no-publication-staging-activation"
+        },
+        "qualificationMode": {
+          "enum": [
+            "bootstrap",
+            "forward"
+          ]
+        },
+        "minimumUpgradablePixel": {
+          "type": "string",
+          "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"
+        },
+        "preparation": {
+          "const": "verify-without-execution"
+        },
+        "staging": {
+          "const": "private-copy-without-extraction"
+        },
+        "rehearsal": {
+          "const": "private-syntax-and-host-contract-no-candidate-execution"
+        },
+        "activation": {
+          "const": "external-exact-confirmation-transactional-apply"
+        },
+        "rollback": {
+          "const": "single-use-update-bound-last-apply"
+        },
+        "recovery": {
+          "const": "content-free-receipt-finalization-no-candidate-execution"
+        },
+        "cleanup": {
+          "const": "exact-quarantine-audit-tombstone"
+        },
+        "archive": {
+          "const": "exact-failed-rollback-preservation-outside-bounded-staging"
+        }
+      }
+    },
+    "releaseReactivationArchive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "receiptSchema",
+        "operation",
+        "boundary"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "receiptSchema": {
+          "const": "./schemas/release-update-reactivation-archive-v1.schema.json"
+        },
+        "operation": {
+          "const": "exact-terminal-no-live-mutation-reactivation-preservation-outside-bounded-staging"
+        },
+        "boundary": {
+          "const": "terminal-no-live-mutation-reactivation-evidence-only-no-active-deployment-change"
+        }
+      }
+    },
+    "legacyCleanMigration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "cli",
+        "evidenceSchema",
+        "boundary",
+        "v1Contract",
+        "activation",
+        "privacy"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "cli": {
+          "const": "./scripts/migrate-legacy-clean.py"
+        },
+        "evidenceSchema": {
+          "const": "./schemas/legacy-clean-migration-v1.schema.json"
+        },
+        "boundary": {
+          "const": "terminal-only-clean-migration-no-in-place-update"
+        },
+        "v1Contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sourcePixel",
+            "targetPixel"
+          ],
+          "properties": {
+            "sourcePixel": {
+              "const": "3.2.2"
+            },
+            "targetPixel": {
+              "const": "4.3.27"
+            }
+          }
+        },
+        "activation": {
+          "const": "self-contained-migrate-legacy-clean-activate-transaction"
+        },
+        "privacy": {
+          "const": "content-free-receipts-no-paths-no-identity-no-user-content"
+        }
+      }
+    },
+    "baseImage": {
+      "$ref": "#/$defs/digestImage"
+    },
+    "qualificationImages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ubuntu2404Container",
+        "debian12Container",
+        "ubuntu2404Vm",
+        "debian12Vm"
+      ],
+      "properties": {
+        "ubuntu2404Container": {
+          "$ref": "#/$defs/incusImage"
+        },
+        "debian12Container": {
+          "$ref": "#/$defs/incusImage"
+        },
+        "ubuntu2404Vm": {
+          "$ref": "#/$defs/incusImage"
+        },
+        "debian12Vm": {
+          "$ref": "#/$defs/incusImage"
+        }
+      }
+    },
+    "referenceImages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "searxng",
+        "llamaCpp"
+      ],
+      "properties": {
+        "searxng": {
+          "$ref": "#/$defs/digestImage"
+        },
+        "llamaCpp": {
+          "$ref": "#/$defs/digestImage"
+        }
+      }
+    },
+    "googleScopes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^https://www\\.googleapis\\.com/auth/"
+      }
+    },
+    "sourceBroker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "systemUser",
+        "projectionFiles",
+        "rawContentStored",
+        "sentMailProjection",
+        "mailboxCoverage",
+        "toolPagination",
+        "approvalBinding",
+        "actionJournalSchema",
+        "externalActionStates",
+        "uncertainOutcomePolicy"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 2
+        },
+        "systemUser": {
+          "const": "pixel-source-broker"
+        },
+        "projectionFiles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+\\.json$"
+          }
+        },
+        "rawContentStored": {
+          "const": false
+        },
+        "sentMailProjection": {
+          "const": "metadata-only"
+        },
+        "mailboxCoverage": {
+          "const": "exhaustive-query-pagination"
+        },
+        "toolPagination": {
+          "const": "bounded-offset"
+        },
+        "approvalBinding": {
+          "const": "sha256-protected-proposal-snapshot"
+        },
+        "actionJournalSchema": {
+          "const": "./schemas/external-action-journal-event-v1.schema.json"
+        },
+        "externalActionStates": {
+          "const": [
+            "proposed",
+            "submitting",
+            "unknown",
+            "reconciling",
+            "succeeded",
+            "failed",
+            "canceled"
+          ]
+        },
+        "uncertainOutcomePolicy": {
+          "const": "reconcile-before-retry-no-false-success"
+        }
+      }
+    },
+    "githubBroker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "defaultEnabled",
+        "apiHost",
+        "apiVersion",
+        "policySchema",
+        "proposalSchema",
+        "resultSchema",
+        "journalSchema",
+        "allowedOperations",
+        "idempotency",
+        "unknownOutcome",
+        "credentialVisibleToAgent"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "defaultEnabled": {
+          "const": false
+        },
+        "apiHost": {
+          "const": "api.github.com"
+        },
+        "apiVersion": {
+          "const": "2026-03-10"
+        },
+        "policySchema": {
+          "const": "./schemas/github-action-policy-v1.schema.json"
+        },
+        "proposalSchema": {
+          "const": "./schemas/github-action-proposal-v1.schema.json"
+        },
+        "resultSchema": {
+          "const": "./schemas/github-action-result-v1.schema.json"
+        },
+        "journalSchema": {
+          "const": "./schemas/external-action-journal-event-v1.schema.json"
+        },
+        "allowedOperations": {
+          "const": [
+            "create-issue",
+            "create-pull-request",
+            "comment"
+          ]
+        },
+        "idempotency": {
+          "const": "provider-reconciliation-marker"
+        },
+        "unknownOutcome": {
+          "const": "reconcile-before-retry-no-false-success"
+        },
+        "credentialVisibleToAgent": {
+          "const": false
+        }
+      }
+    },
+    "operationsBroker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "systemUser",
+        "policyFile",
+        "credentialVisibleToGateway",
+        "approvalBinding",
+        "requestPublication"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 2
+        },
+        "systemUser": {
+          "const": "pixel-ops-broker"
+        },
+        "policyFile": {
+          "const": "policy.json"
+        },
+        "credentialVisibleToGateway": {
+          "const": false
+        },
+        "approvalBinding": {
+          "const": "sha256-immutable-plan"
+        },
+        "requestPublication": {
+          "const": "atomic-explicit-0640"
+        }
+      }
+    },
+    "frontierBroker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "systemUser",
+        "policyFile",
+        "credentialVisibleToGateway",
+        "approvalBinding",
+        "requestPublication",
+        "providerSession",
+        "authModes",
+        "chatgptAuthCache",
+        "usageProjection",
+        "requestSchemas",
+        "policySchemas",
+        "integrationSchema",
+        "routingDecisions",
+        "dedupBinding",
+        "duplicateSpendPrevention",
+        "localFinalization",
+        "liveQualification"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 2
+        },
+        "systemUser": {
+          "const": "pixel-frontier-broker"
+        },
+        "policyFile": {
+          "const": "policy.json"
+        },
+        "credentialVisibleToGateway": {
+          "const": false
+        },
+        "approvalBinding": {
+          "const": "sha256-exact-request-sanitized-capsule-policy"
+        },
+        "requestPublication": {
+          "const": "atomic-explicit-0640"
+        },
+        "providerSession": {
+          "const": "ephemeral-read-only"
+        },
+        "authModes": {
+          "const": [
+            "chatgpt",
+            "api-key"
+          ]
+        },
+        "chatgptAuthCache": {
+          "const": "broker-owned-0600-persistent"
+        },
+        "usageProjection": {
+          "const": "content-free-routing-quality-savings-aggregate"
+        },
+        "requestSchemas": {
+          "const": [
+            "./schemas/frontier-request-v1.schema.json",
+            "./schemas/frontier-request-v2.schema.json"
+          ]
+        },
+        "policySchemas": {
+          "const": [
+            "./schemas/frontier-policy-v1.schema.json",
+            "./schemas/frontier-policy-v2.schema.json"
+          ]
+        },
+        "integrationSchema": {
+          "const": "./schemas/frontier-integration-v1.schema.json"
+        },
+        "routingDecisions": {
+          "const": [
+            "local-only",
+            "local-retry",
+            "operator-context",
+            "preview",
+            "propose",
+            "bounded-auto",
+            "reject"
+          ]
+        },
+        "dedupBinding": {
+          "const": "sha256-capsule-policy-provider-auth-model-output-contract"
+        },
+        "duplicateSpendPrevention": {
+          "const": "cross-process-transaction-and-private-validated-cache"
+        },
+        "localFinalization": {
+          "const": "content-free-hash-bound-integration-receipt"
+        },
+        "liveQualification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "authorizationSchema",
+            "receiptSchema",
+            "payload",
+            "providerCallCeiling",
+            "inputTokenCeiling",
+            "outputTokenCeiling",
+            "apiCostCeilingMicros",
+            "approval",
+            "recovery"
+          ],
+          "properties": {
+            "authorizationSchema": {
+              "const": "./schemas/frontier-live-authorization-v1.schema.json"
+            },
+            "receiptSchema": {
+              "const": "./schemas/frontier-live-receipt-v1.schema.json"
+            },
+            "payload": {
+              "const": "fixed-public-structural-synthetic-only"
+            },
+            "providerCallCeiling": {
+              "const": 1
+            },
+            "inputTokenCeiling": {
+              "const": 12000
+            },
+            "outputTokenCeiling": {
+              "const": 256
+            },
+            "apiCostCeilingMicros": {
+              "const": 1000000
+            },
+            "approval": {
+              "const": "external-exact-confirmation"
+            },
+            "recovery": {
+              "const": "immutable-authorization-claim-no-duplicate-retry"
+            }
+          }
+        }
+      }
+    },
+    "workProvider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "defaultMode",
+        "modes",
+        "remoteEnabledByDefault",
+        "profilesDirectory",
+        "profileSchema",
+        "receiptSchema",
+        "privatePolicySchema",
+        "custodyReceiptSchema",
+        "runLedgerSchema",
+        "routerRequestSchema",
+        "routerQualificationSchema",
+        "routerPolicySchema",
+        "routerDecisionSchema",
+        "registry",
+        "router",
+        "credentialCustody",
+        "egressProxy",
+        "uncertainOutcome",
+        "executionBinding",
+        "qualification",
+        "qualificationRunner",
+        "neutralCorpusSchema",
+        "qualificationTrialEvidenceSchema",
+        "qualificationPromotionModule",
+        "qualificationPromotion",
+        "modelSelection",
+        "responseModelBinding",
+        "genericRemoteTransportModule",
+        "equivalenceRunnerModule"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "defaultMode": {
+          "const": "local-only"
+        },
+        "modes": {
+          "const": [
+            "local-only",
+            "explicit-provider",
+            "policy-router"
+          ]
+        },
+        "remoteEnabledByDefault": {
+          "const": false
+        },
+        "profilesDirectory": {
+          "const": "./deploy/work-provider/profiles"
+        },
+        "profileSchema": {
+          "const": "./schemas/work-provider-profile-v1.schema.json"
+        },
+        "receiptSchema": {
+          "const": "./schemas/work-provider-receipt-v1.schema.json"
+        },
+        "privatePolicySchema": {
+          "const": "./schemas/work-provider-private-policy-v1.schema.json"
+        },
+        "custodyReceiptSchema": {
+          "const": "./schemas/work-provider-custody-receipt-v1.schema.json"
+        },
+        "runLedgerSchema": {
+          "const": "./schemas/work-provider-run-ledger-v1.schema.json"
+        },
+        "routerRequestSchema": {
+          "const": "./schemas/work-provider-router-request-v1.schema.json"
+        },
+        "routerQualificationSchema": {
+          "const": "./schemas/work-provider-router-qualification-v1.schema.json"
+        },
+        "routerPolicySchema": {
+          "const": "./schemas/work-provider-router-policy-v1.schema.json"
+        },
+        "routerDecisionSchema": {
+          "const": "./schemas/work-provider-router-decision-v1.schema.json"
+        },
+        "registry": {
+          "const": "closed-local-openai-anthropic-moonshot-together-fireworks-groq-openrouter"
+        },
+        "router": {
+          "const": "content-free-deterministic-local-first-no-silent-cloud-fallback"
+        },
+        "credentialCustody": {
+          "const": "owner-private-file-handle-no-env-no-argv-no-log"
+        },
+        "egressProxy": {
+          "const": "exact-profile-host-proxy-only-worker-internal-network"
+        },
+        "uncertainOutcome": {
+          "const": "reconcile-before-retry-no-reroute"
+        },
+        "executionBinding": {
+          "const": "exact-decision-sha-required-no-routing-authority"
+        },
+        "qualification": {
+          "const": "current-semantic-hash-envelope-pricing-required-local-and-remote"
+        },
+        "qualificationRunner": {
+          "const": "sealed-neutral-corpus-qualification-trial-local-moonshot-openai-anthropic-openrouter"
+        },
+        "neutralCorpusSchema": {
+          "const": "./schemas/work-provider-neutral-corpus-v1.schema.json"
+        },
+        "qualificationTrialEvidenceSchema": {
+          "const": "./schemas/work-provider-qualification-trial-evidence-v1.schema.json"
+        },
+        "qualificationPromotionModule": {
+          "const": "./deploy/work-provider/qualification-promotion.mjs"
+        },
+        "qualificationPromotion": {
+          "const": "sealed-deterministic-semantic-capability-promotion"
+        },
+        "modelSelection": {
+          "const": "fixed-owner-pinned-qualification-pinned-closed"
+        },
+        "responseModelBinding": {
+          "const": "exact-ledger-response-model-before-disclosure"
+        },
+        "genericRemoteTransportModule": {
+          "const": "./deploy/work-provider/generic-remote-transport.mjs"
+        },
+        "equivalenceRunnerModule": {
+          "const": "./deploy/work-provider/equivalence-runner.mjs"
+        }
+      }
+    },
+    "controlSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "listener",
+        "browserCredentialAccess",
+        "frontierSetupSelection",
+        "frontierStatusStates",
+        "genericCommandSurface",
+        "sessionBoundary",
+        "requestBoundary",
+        "actionBinding",
+        "allowedActions",
+        "activationAuthority",
+        "onboardingSchema",
+        "actionSchema",
+        "approvalInboxSchema",
+        "permissionSettingsSchema",
+        "statusSchema",
+        "sourceIdentitySchema",
+        "runtimeAttestationSchema",
+        "runtimeAttestationFreshnessSeconds",
+        "runtimeAttestationProjection",
+        "updateStatusSchema",
+        "recoveryGuideSchema",
+        "doctorSchema",
+        "diagnosticsSchema",
+        "policySchema",
+        "reviewSchema",
+        "frontierBudgetRequestSchema",
+        "frontierBudgetProposalSchema",
+        "chatSchema",
+        "chatTurnRequestSchema",
+        "chatHandoffReceiptSchema",
+        "chatProjection",
+        "accessAdapterConfigSchema",
+        "accessAdapterBoundary",
+        "remoteGenericControlProxy",
+        "remotePortalDeploymentQualified",
+        "workDraftReviewSchema",
+        "workLaunchConfigSchema",
+        "workServiceConfigSchema",
+        "workDraftReviewProjection",
+        "frontierBudgetProposalBoundary",
+        "operatorActionPolicy",
+        "doctorProjection",
+        "incidentProjection",
+        "incidentEvidenceBinding",
+        "browserReviewProjection",
+        "reviewAccessBoundary",
+        "browserApprovalAuthority",
+        "browserBudgetApplyAuthority",
+        "browserIncidentRecoveryAuthority",
+        "browserResumeAuthority",
+        "browserRestoreAuthority"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "listener": {
+          "const": "exact-ipv4-loopback"
+        },
+        "browserCredentialAccess": {
+          "const": "none"
+        },
+        "frontierSetupSelection": {
+          "const": "credential-free-auth-mode-managed-budget-or-private-custom"
+        },
+        "frontierStatusStates": {
+          "const": [
+            "disabled",
+            "configured",
+            "active",
+            "unavailable"
+          ]
+        },
+        "genericCommandSurface": {
+          "const": false
+        },
+        "sessionBoundary": {
+          "const": "random-per-process-http-only-samesite-strict"
+        },
+        "requestBoundary": {
+          "const": "same-origin-host-validated-json-only"
+        },
+        "actionBinding": {
+          "const": "sha256-exact-preview-expiring-single-use"
+        },
+        "allowedActions": {
+          "const": [
+            "configure",
+            "plan",
+            "verify",
+            "update-check",
+            "backup-create",
+            "operations-pause",
+            "frontier-pause",
+            "deep-work-pause",
+            "deep-work-resume",
+            "deep-work-cancel",
+            "deep-work-draft",
+            "deep-work-prepare",
+            "deep-work-stage",
+            "deep-work-service-render"
+          ]
+        },
+        "activationAuthority": {
+          "const": "external-operator-only"
+        },
+        "onboardingSchema": {
+          "const": "./schemas/control-onboarding-v1.schema.json"
+        },
+        "actionSchema": {
+          "const": "./schemas/control-action-v1.schema.json"
+        },
+        "approvalInboxSchema": {
+          "const": "./schemas/control-approval-inbox-v1.schema.json"
+        },
+        "permissionSettingsSchema": {
+          "const": "./schemas/control-permission-settings-v1.schema.json"
+        },
+        "statusSchema": {
+          "const": "./schemas/control-status-v1.schema.json"
+        },
+        "sourceIdentitySchema": {
+          "const": "./schemas/release-identity-v1.schema.json"
+        },
+        "runtimeAttestationSchema": {
+          "const": "./schemas/runtime-attestation-v1.schema.json"
+        },
+        "runtimeAttestationFreshnessSeconds": {
+          "const": 300
+        },
+        "runtimeAttestationProjection": {
+          "const": "content-free-exact-source-install-config-connector-gateway-model-unproven"
+        },
+        "updateStatusSchema": {
+          "const": "./schemas/control-update-status-v1.schema.json"
+        },
+        "recoveryGuideSchema": {
+          "const": "./schemas/control-recovery-guide-v1.schema.json"
+        },
+        "doctorSchema": {
+          "const": "./schemas/control-doctor-v1.schema.json"
+        },
+        "diagnosticsSchema": {
+          "const": "./schemas/control-diagnostics-v1.schema.json"
+        },
+        "policySchema": {
+          "const": "./schemas/control-policy-v1.schema.json"
+        },
+        "reviewSchema": {
+          "const": "./schemas/control-frontier-review-v1.schema.json"
+        },
+        "frontierBudgetRequestSchema": {
+          "const": "./schemas/control-frontier-budget-request-v1.schema.json"
+        },
+        "frontierBudgetProposalSchema": {
+          "const": "./schemas/control-frontier-budget-proposal-v1.schema.json"
+        },
+        "chatSchema": {
+          "const": "./schemas/control-chat-v1.schema.json"
+        },
+        "chatTurnRequestSchema": {
+          "const": "./schemas/control-chat-turn-request-v1.schema.json"
+        },
+        "chatHandoffReceiptSchema": {
+          "const": "./schemas/control-chat-handoff-receipt-v1.schema.json"
+        },
+        "chatProjection": {
+          "const": "token-gated-private-bounded-text-content-free-turn-state-exact-inert-goal-handoff"
+        },
+        "accessAdapterConfigSchema": {
+          "const": "./schemas/control-access-adapter-v1.schema.json"
+        },
+        "accessAdapterBoundary": {
+          "const": "cloudflare-access-signed-jwt-distinct-workspace-and-mfa-approval-audiences"
+        },
+        "remoteGenericControlProxy": {
+          "const": false
+        },
+        "remotePortalDeploymentQualified": {
+          "const": false
+        },
+        "workDraftReviewSchema": {
+          "const": "./schemas/control-work-draft-reviews-v1.schema.json"
+        },
+        "workLaunchConfigSchema": {
+          "const": "./schemas/control-work-launch-config-v1.schema.json"
+        },
+        "workServiceConfigSchema": {
+          "const": "./schemas/control-work-service-config-v1.schema.json"
+        },
+        "workDraftReviewProjection": {
+          "const": "token-gated-exact-retained-objective-graph-budget-capability-verifier"
+        },
+        "frontierBudgetProposalBoundary": {
+          "const": "private-expiring-hash-bound-terminal-apply"
+        },
+        "operatorActionPolicy": {
+          "const": "private-disabled-by-default"
+        },
+        "doctorProjection": {
+          "const": "rounded-read-only-no-process-no-network"
+        },
+        "incidentProjection": {
+          "const": "content-free-private-receipt-bound"
+        },
+        "incidentEvidenceBinding": {
+          "const": "sha256-action-result-private-log"
+        },
+        "browserReviewProjection": {
+          "const": "private-policy-gated-sanitized-frontier-capsule"
+        },
+        "reviewAccessBoundary": {
+          "const": "random-per-process-terminal-fragment-bearer"
+        },
+        "browserApprovalAuthority": {
+          "const": false
+        },
+        "browserBudgetApplyAuthority": {
+          "const": false
+        },
+        "browserIncidentRecoveryAuthority": {
+          "const": false
+        },
+        "browserResumeAuthority": {
+          "const": false
+        },
+        "browserRestoreAuthority": {
+          "const": false
+        }
+      }
+    },
+    "customizationKit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "clientOverlaySchema",
+        "clientOverlayExample",
+        "clientOverlayBoundary",
+        "packSchema",
+        "policyPackSchemas",
+        "packKind",
+        "signature",
+        "defaultEnabled",
+        "gatewayAuthority",
+        "serviceAuthority",
+        "serviceIdentity",
+        "projectionSharing",
+        "policyComposition",
+        "minimumOpenClawPluginApi",
+        "lifecycle"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "clientOverlaySchema": {
+          "const": "./schemas/client-overlay-v1.schema.json"
+        },
+        "clientOverlayExample": {
+          "const": "./client-overlay.example.json"
+        },
+        "clientOverlayBoundary": {
+          "const": "private-client-state-outside-golden-core"
+        },
+        "packSchema": {
+          "const": "./schemas/limb-pack-v1.schema.json"
+        },
+        "policyPackSchemas": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "local",
+            "operations",
+            "frontier"
+          ],
+          "properties": {
+            "local": {
+              "const": "./schemas/local-capability-pack-v1.schema.json"
+            },
+            "operations": {
+              "const": "./schemas/operations-action-pack-v1.schema.json"
+            },
+            "frontier": {
+              "const": "./schemas/frontier-task-pack-v1.schema.json"
+            }
+          }
+        },
+        "packKind": {
+          "const": "projection-limb"
+        },
+        "signature": {
+          "const": "openssh-ed25519-detached"
+        },
+        "defaultEnabled": {
+          "const": false
+        },
+        "gatewayAuthority": {
+          "const": "read-only-projection-no-network-no-credentials"
+        },
+        "serviceAuthority": {
+          "const": "offline-projection-only-no-credentials"
+        },
+        "serviceIdentity": {
+          "const": "dedicated-non-login-per-pack"
+        },
+        "projectionSharing": {
+          "const": "enabled-gateway-user-acl-only"
+        },
+        "policyComposition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "local",
+            "operations",
+            "frontier"
+          ],
+          "properties": {
+            "local": {
+              "const": "signed-observe-only-inventory"
+            },
+            "operations": {
+              "const": "explicit-private-target-binding"
+            },
+            "frontier": {
+              "const": "base-policy-restrictions-only"
+            }
+          }
+        },
+        "minimumOpenClawPluginApi": {
+          "const": "2026.5.17"
+        },
+        "lifecycle": {
+          "const": [
+            "generate",
+            "add-local",
+            "add-operations",
+            "add-frontier",
+            "validate",
+            "sign",
+            "verify",
+            "install",
+            "enable",
+            "bind-operations",
+            "unbind-operations",
+            "disable",
+            "upgrade",
+            "remove"
+          ]
+        }
+      }
+    },
+    "deepWorkCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "runtimeEnabled",
+        "admissionBoundary",
+        "packSchema",
+        "toolCatalogSchema",
+        "controllerPolicySchema",
+        "jobAuthorizationSchema",
+        "toolRequestSchema",
+        "grantSchema",
+        "leaseSchema",
+        "runtimeSchema",
+        "consumptionSchema"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 2 },
+        "runtimeEnabled": { "const": false },
+        "admissionBoundary": { "const": "admission-only-no-runtime-no-tool-call-no-network-no-external-effects" },
+        "packSchema": { "const": "./schemas/work-capability-pack-v2.schema.json" },
+        "toolCatalogSchema": { "const": "./schemas/work-capability-tool-catalog-v2.schema.json" },
+        "controllerPolicySchema": { "const": "./schemas/work-capability-controller-policy-v2.schema.json" },
+        "jobAuthorizationSchema": { "const": "./schemas/work-capability-job-authorization-v2.schema.json" },
+        "toolRequestSchema": { "const": "./schemas/work-capability-tool-request-v2.schema.json" },
+        "grantSchema": { "const": "./schemas/work-capability-grant-v2.schema.json" },
+        "leaseSchema": { "const": "./schemas/work-capability-lease-v2.schema.json" },
+        "runtimeSchema": { "const": "./schemas/work-capability-runtime-v2.schema.json" },
+        "consumptionSchema": { "const": "./schemas/work-capability-consumption-v2.schema.json" }
+      }
+    },
+    "operationsRunner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transportUser",
+        "workloadUser",
+        "sshBoundary",
+        "managedAuthority",
+        "workloadLogin"
+      ],
+      "properties": {
+        "transportUser": {
+          "const": "pixel-ops-transport"
+        },
+        "workloadUser": {
+          "const": "pixel-runner"
+        },
+        "sshBoundary": {
+          "const": "forced-command-no-shell"
+        },
+        "managedAuthority": {
+          "const": "transport-only-sudo"
+        },
+        "workloadLogin": {
+          "const": false
+        }
+      }
+    },
+    "googleTools": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^pixel_"
+      }
+    },
+    "operationsTools": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^pixel_ops_"
+      }
+    },
+    "frontierTools": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^pixel_frontier_"
+      }
+    },
+    "upstreamIntake": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "registry",
+        "channel",
+        "sourceCommit"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "registry": {
+          "const": "https://registry.npmjs.org"
+        },
+        "channel": {
+          "enum": [
+            "extended-stable",
+            "latest"
+          ]
+        },
+        "sourceCommit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "openclawVersion": {
+      "type": "string",
+      "pattern": "^[0-9]{4}\\.[0-9]+\\.[0-9]+(-[0-9]+)?$"
+    },
+    "shaArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "sha256"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "mirrors": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^https://"
+          }
+        }
+      }
+    },
+    "npmArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "sha256",
+        "integrity"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "integrity": {
+          "type": "string",
+          "pattern": "^sha512-[A-Za-z0-9+/]+=*$"
+        },
+        "publishedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "digestImage": {
+      "type": "string",
+      "pattern": "^[^@]+@sha256:[0-9a-f]{64}$"
+    },
+    "incusImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fingerprint",
+        "type",
+        "os",
+        "release",
+        "architecture"
+      ],
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "type": {
+          "enum": [
+            "container",
+            "virtual-machine"
+          ]
+        },
+        "os": {
+          "enum": [
+            "Ubuntu",
+            "Debian"
+          ]
+        },
+        "release": {
+          "enum": [
+            "noble",
+            "bookworm"
+          ]
+        },
+        "architecture": {
+          "const": "x86_64"
+        }
+      }
+    }
+  }
+}

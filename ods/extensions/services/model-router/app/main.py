@@ -33,12 +33,17 @@ import re
 import time
 import uuid
 from collections import OrderedDict
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+import anyio
 import httpx
+from jsonschema import validators as jsonschema_validators
+from jsonschema.exceptions import SchemaError, ValidationError
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from .probe_attempts import ProbeAttempts
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ods-model-router")
@@ -60,7 +65,7 @@ INSTANCE_ID = str(uuid.uuid4())
 
 MAX_BODY_BYTES = int(os.environ.get("ODS_ROUTER_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
 MAX_QUEUE_DEPTH = int(os.environ.get("ODS_ROUTER_MAX_QUEUE_DEPTH", "64"))
-QUEUE_WAIT_SECONDS = int(os.environ.get("ODS_ROUTER_QUEUE_WAIT_SECONDS", "60"))
+QUEUE_WAIT_SECONDS = int(os.environ.get("ODS_ROUTER_QUEUE_WAIT_SECONDS", "600"))
 UPSTREAM_TIMEOUT_SECONDS = float(os.environ.get("ODS_ROUTER_UPSTREAM_TIMEOUT", "600"))
 UPSTREAM_MAX_CONNECTIONS = max(
     1, int(os.environ.get(
@@ -80,6 +85,8 @@ TELEMETRY_TIMEOUT_SECONDS = max(
 )
 EVIDENCE_LIMIT = 2048
 EVIDENCE_TTL_SECONDS = 15 * 60
+TOOL_EVIDENCE_MAX_COUNT = 256
+TOOL_EVIDENCE_MAX_BYTES = 256 * 1024
 
 FORWARD_PATHS = {
     "/v1/chat/completions": "POST",
@@ -91,29 +98,225 @@ _HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailer", "transfer-encoding", "upgrade", "host", "authorization",
     "content-length",
+    "x-ods-expected-catalog", "x-ods-expected-model", "x-ods-expected-route",
 }
 
 _PROBE_RE = re.compile(
     r"\[ODS_PROBE id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) "
     r"sig=([A-Za-z0-9_-]+)\]"
 )
-_SSE_DELIMITER_RE = re.compile(rb"(?:\r\n|\r|\n)(?:\r\n|\r|\n)")
+_SSE_DELIMITER_RE = re.compile(rb"(?:\r\n|\r(?!\n)|(?<!\r)\n){2}")
 _CHAT_TEMPLATE_ARTIFACTS = (
     re.compile(r"<\|im_start\|>\s*(?:assistant|user|system|tool)?\s*<\|im_end\|>"),
     re.compile(r"<\|start_header_id\|>\s*(?:assistant|user|system|tool)?\s*<\|end_header_id\|>"),
     re.compile(r"<\|(?:im_start|im_end|eot_id|endoftext|end)\|>"),
 )
+_NATIVE_FUNCTION_NAME = r"[A-Za-z_][A-Za-z0-9_-]{0,127}"
+_NATIVE_CALL = re.compile(
+    rf"<tool_call>\r?\n<function=({_NATIVE_FUNCTION_NAME})>\r?\n"
+    r"(.*?)\r?\n</function>\r?\n</tool_call>", re.DOTALL,
+)
+_NATIVE_PARAMETER = re.compile(
+    rf"<parameter=({_NATIVE_FUNCTION_NAME})>\r?\n(.*?)\r?\n</parameter>",
+    re.DOTALL,
+)
+_MAX_NATIVE_CALLS = 8
+_MAX_NATIVE_MARKUP_CHARS = 32_768
+
+
+def _schema_has_references(value: Any) -> bool:
+    """Keep normalization local; advertised schemas must not resolve URLs."""
+    if isinstance(value, dict):
+        return any(
+            key in {"$ref", "$dynamicRef", "$recursiveRef"}
+            or _schema_has_references(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, list):
+        return any(_schema_has_references(child) for child in value)
+    return False
+
+
+def _complete_native_envelope_names(completion: dict[str, Any]) -> list[str] | None:
+    """Recognize the whole native envelope before considering a repair.
+
+    This deliberately does not infer a tool from prose, examples, or a partial
+    prefix. Semantic checks against the request's tools happen separately.
+    """
+    choices = completion.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        return None
+    choice = choices[0]
+    if not isinstance(choice, dict) or choice.get("finish_reason") != "stop":
+        return None
+    message = choice.get("message")
+    if (not isinstance(message, dict) or message.get("role") != "assistant"
+            or "tool_calls" in message or message.get("refusal")):
+        return None
+    content = message.get("content")
+    if (not isinstance(content, str) or not content
+            or len(content) > _MAX_NATIVE_MARKUP_CHARS):
+        return None
+    markup = content.strip()
+    if not markup.startswith("<tool_call>"):
+        return None
+    names: list[str] = []
+    cursor = 0
+    while cursor < len(markup):
+        match = _NATIVE_CALL.match(markup, cursor)
+        if match is None or len(names) >= _MAX_NATIVE_CALLS:
+            return None
+        parameter_markup = match.group(2)
+        parameter_cursor = 0
+        while parameter_cursor < len(parameter_markup):
+            parameter_match = _NATIVE_PARAMETER.match(
+                parameter_markup, parameter_cursor,
+            )
+            if parameter_match is None:
+                return None
+            parameter_cursor = parameter_match.end()
+            if parameter_cursor < len(parameter_markup):
+                separator = re.match(r"\r?\n", parameter_markup[parameter_cursor:])
+                if separator is None:
+                    return None
+                parameter_cursor += separator.end()
+        names.append(match.group(1))
+        cursor = match.end()
+        if cursor < len(markup):
+            separator = re.match(r"\r?\n", markup[cursor:])
+            if separator is None:
+                return None
+            cursor += separator.end()
+    return names or None
+
+
+def _repairable_native_tool_request(payload: dict[str, Any]) -> bool:
+    offered = payload.get("tools")
+    if not isinstance(offered, list) or not offered:
+        return False
+    choice = payload.get("tool_choice", "auto")
+    if isinstance(choice, str):
+        return choice in {"auto", "required"}
+    return (isinstance(choice, dict) and choice.get("type") == "function"
+            and isinstance(choice.get("function"), dict)
+            and isinstance(choice["function"].get("name"), str))
+
+
+def _native_tool_repair_feedback(
+    names: list[str], payload: dict[str, Any],
+) -> str:
+    offered = [
+        item["function"]["name"]
+        for item in payload["tools"]
+        if isinstance(item, dict) and item.get("type") == "function"
+        and isinstance(item.get("function"), dict)
+        and isinstance(item["function"].get("name"), str)
+    ]
+    # The original request retains the exact, authoritative JSON Schemas. Do
+    # not synthesize aliases or copy long tool descriptions into the context.
+    unknown = [name for name in names if name not in offered]
+    issue = ("Unknown function name(s): " + ", ".join(unknown) + ". "
+             if unknown else "The function arguments did not satisfy its advertised schema. ")
+    return (
+        "Tool protocol error: your previous completion was discarded before "
+        "any tool ran. " + issue + "Choose a function exactly from the "
+        "provided tools and follow its attached JSON parameter schema. "
+        "Available function names: " + ", ".join(offered) + ". "
+        "Return one valid tool call through the API tool-call channel, or "
+        "answer normally if no tool is appropriate."
+    )
+
+
+def _repaired_tool_decision_invalid(
+    completion: dict[str, Any], payload: dict[str, Any],
+) -> bool:
+    """Check the sole retry without executing or inventing a function call."""
+    names = _complete_native_envelope_names(completion)
+    if names is not None:
+        return not _normalize_native_tool_markup(completion, payload)
+    choices = completion.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        return True
+    choice = choices[0]
+    message = choice.get("message") if isinstance(choice, dict) else None
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return True
+    content = message.get("content")
+    if isinstance(content, str) and content.strip().startswith("<tool_call>"):
+        return True
+    calls = message.get("tool_calls")
+    if calls is None:
+        # A normal answer or refusal is valid only after a complete stop.
+        return (choice.get("finish_reason") != "stop"
+                or payload.get("tool_choice") == "required"
+                or isinstance(payload.get("tool_choice"), dict))
+    if not isinstance(calls, list) or not calls:
+        return True
+    if choice.get("finish_reason") != "tool_calls":
+        return True
+    if payload.get("parallel_tool_calls") is False and len(calls) > 1:
+        return True
+    tool_choice = payload.get("tool_choice")
+    forced_function = tool_choice.get("function") if isinstance(tool_choice, dict) else None
+    forced_name = (forced_function.get("name")
+                   if isinstance(forced_function, dict) else None)
+    offered = {
+        item["function"]["name"]: item["function"].get("parameters")
+        for item in payload["tools"]
+        if isinstance(item, dict) and item.get("type") == "function"
+        and isinstance(item.get("function"), dict)
+        and isinstance(item["function"].get("name"), str)
+    }
+    for call in calls:
+        if (not isinstance(call, dict) or not isinstance(call.get("id"), str)
+                or not call["id"] or call.get("type") != "function"):
+            return True
+        function = call.get("function") if isinstance(call, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        schema = offered.get(name) if isinstance(name, str) else None
+        if (not isinstance(schema, dict) or _schema_has_references(schema)
+                or (forced_name is not None and name != forced_name)
+                or not isinstance(function.get("arguments"), str)):
+            return True
+        try:
+            args = json.loads(function["arguments"])
+            validator_class = jsonschema_validators.validator_for(schema)
+            validator_class.check_schema(schema)
+            validator_class(schema).validate(args)
+        except (ValueError, TypeError, SchemaError, ValidationError):
+            return True
+    return False
 
 app = FastAPI(title="ODS Model Router", docs_url=None, redoc_url=None,
               openapi_url=None)
 
 _inflight = 0
 _inflight_lock = asyncio.Lock()
+_waiting = 0
+_swap_gate: dict[str, Any] | None = None
 
 _state_cache: dict[str, Any] = {"mtime": None, "doc": None}
 _endpoints_cache: dict[str, Any] = {"mtime": None, "endpoints": {}}
 _probe_key_cache: dict[str, Any] = {"mtime": None, "key": ""}
 _evidence: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+_probe_attempts = ProbeAttempts()
+
+
+def _begin_probe_attempt(probe_id, request_id, attempt, body, route):
+    if not probe_id:
+        return None
+    try:
+        return _probe_attempts.begin(probe_id, _current_probe_key(), request_id,
+                                     attempt, body, route)
+    except Exception:
+        return None  # Optional diagnostics must never alter inference.
+
+
+def _finish_probe_attempt(handle, status, http_status=None):
+    try:
+        _probe_attempts.finish(handle, status, http_status)
+    except Exception:
+        pass
 
 
 class _TelemetrySink:
@@ -268,7 +471,7 @@ def _build_telemetry_event(
     ]
     tools = payload.get("tools")
     tools = tools if isinstance(tools, list) else []
-    return {
+    event = {
         "agent": "model-router",
         "model": str(model)[:512],
         "provider_name": str(backend or "unknown")[:128],
@@ -293,6 +496,14 @@ def _build_telemetry_event(
         "duration_ms": min(max(duration_ms, 0), 86_400_000),
         "stop_reason": str(stop_reason or "")[:128],
     }
+
+    # Provider prompt/input counts include cached tokens. Token Spy stores
+    # disjoint categories; partition once, after any stream aggregation.
+    event["cache_read_tokens"] = min(event["cache_read_tokens"], event["input_tokens"])
+    remaining = event["input_tokens"] - event["cache_read_tokens"]
+    event["cache_write_tokens"] = min(event["cache_write_tokens"], remaining)
+    event["input_tokens"] = remaining - event["cache_write_tokens"]
+    return event
 
 
 def _emit_telemetry(event: dict[str, Any]) -> bool:
@@ -553,13 +764,46 @@ def _active_route() -> dict[str, Any]:
     availability = (doc or {}).get("availability") or {}
     return {
         "routeSeq": int(active.get("routeSeq") or 0),
+        "catalogId": str(active.get("catalogId") or ""),
         "runtimeModelId": str(active.get("runtimeModelId") or ""),
+        "contextLength": active["contextLength"],
+        "capabilities": dict(active["capabilities"]),
         "backendKind": str((active.get("backend") or {}).get("kind") or "unknown"),
         "endpointId": endpoint_id,
         "baseUrl": endpoint["baseUrl"],
         "apiKeyEnv": endpoint["apiKeyEnv"],
         "queueMode": str(availability.get("mode") or "serve_active") == "queue",
     }
+
+
+def _offered_tool_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fingerprint the outgoing tools, never retain their names or schema text.
+
+    Called only for signed probes. This measures router input to the backend,
+    not schema acceptance, evaluated plugin code, or successful tool execution.
+    Object-key order is normalized; array order and missing-vs-empty are not.
+    Diagnostic limits must never alter inference or its ordinary validation.
+    """
+    result = {
+        "schemaVersion": 1,
+        "boundary": "router-forwarded-tools-not-execution-proof",
+        "encoding": "json-sort-keys-ascii-v1",
+        "state": "unavailable", "count": None, "sha256": None,
+    }
+    present = "tools" in payload
+    tools = payload.get("tools", [])
+    if type(tools) is not list or len(tools) > TOOL_EVIDENCE_MAX_COUNT:
+        return result
+    try:
+        encoded = json.dumps({"present": present, "tools": tools}, sort_keys=True,
+                             separators=(",", ":"), ensure_ascii=True,
+                             allow_nan=False).encode("ascii")
+        if len(encoded) > TOOL_EVIDENCE_MAX_BYTES:
+            return result
+        return {**result, "state": "observed", "count": len(tools),
+                "sha256": hashlib.sha256(encoded).hexdigest()}
+    except (TypeError, ValueError, RecursionError):
+        return result
 
 
 def _record_evidence(record: dict[str, Any]) -> None:
@@ -622,8 +866,13 @@ def _verify_probe_marker(body_text: str) -> str | None:
 
 def _sanitize_headers(request: Request) -> dict[str, str]:
     headers: dict[str, str] = {}
+    connection_fields = {
+        token.strip().lower()
+        for value in request.headers.getlist("connection")
+        for token in value.split(",")
+    }
     for name, value in request.headers.items():
-        if name.lower() in _HOP_BY_HOP:
+        if name.lower() in _HOP_BY_HOP or name.lower() in connection_fields:
             continue
         headers[name] = value
     headers["content-type"] = "application/json"
@@ -680,36 +929,282 @@ def _sanitize_choice_content(obj: dict[str, Any]) -> bool:
 def _rewrite_sse_event(
     event: bytes, alias: str
 ) -> tuple[bytes, list[str], list[dict[str, Any]], bool]:
-    """Rewrite complete SSE data lines and return observable response metadata."""
-    out_lines: list[bytes] = []
-    models: list[str] = []
-    payloads: list[dict[str, Any]] = []
-    saw_done = False
+    """Join an event's data fields before decoding JSON and observing metadata."""
+    lines: list[tuple[bytes, bytes]] = []
+    data_indices: list[int] = []
+    data_values: list[bytes] = []
     for line in event.splitlines(keepends=True):
         content = line.rstrip(b"\r\n")
-        ending = line[len(content):]
-        if content.startswith(b"data:"):
-            payload = content[5:].strip()
-            if payload == b"[DONE]":
-                saw_done = True
-            elif payload:
+        lines.append((content, line[len(content):]))
+        field, _, value = content.partition(b":")
+        if field == b"data":
+            data_indices.append(len(lines) - 1)
+            # SSE removes exactly one optional space after the colon, then
+            # joins all data fields with LF, including fields without a colon.
+            data_values.append(value.removeprefix(b" "))
+    payload = b"\n".join(data_values)
+    if payload.strip() == b"[DONE]":
+        return event, [], [], True
+    try:
+        obj = json.loads(payload)
+    except ValueError:
+        return event, [], [], False
+    if not isinstance(obj, dict):
+        return event, [], [], False
+
+    models: list[str] = []
+    model_objects = [obj]
+    # Responses lifecycle events wrap their response object. Observe the
+    # concrete identity before restoring either top-level or nested aliases.
+    if (isinstance(obj.get("type"), str)
+            and obj["type"].startswith("response.")
+            and isinstance(obj.get("response"), dict)):
+        model_objects.append(obj["response"])
+    for model_object in model_objects:
+        if isinstance(model_object.get("model"), str):
+            if model_object["model"]:
+                models.append(model_object["model"])
+            model_object["model"] = alias
+    _sanitize_choice_content(obj)
+
+    # Emit one compact data field, preserving comments and other SSE fields.
+    # The last retained line inherits the original final ending so deleting
+    # later data fields cannot introduce an extra blank event delimiter.
+    first_data = data_indices[0]
+    removed = set(data_indices[1:])
+    retained = [line for index, line in enumerate(lines) if index not in removed]
+    retained[first_data] = (
+        b"data: " + json.dumps(obj, separators=(",", ":")).encode("utf-8"),
+        lines[first_data][1],
+    )
+    retained[-1] = (retained[-1][0], lines[-1][1])
+    return b"".join(content + ending for content, ending in retained), models, [obj], False
+
+
+def _normalize_native_tool_markup(
+    completion: dict[str, Any], request_payload: dict[str, Any],
+) -> bool:
+    """Recover a *complete* native tool envelope from a tool-bearing response.
+
+    Some GGUF chat templates teach the model an XML tool-call grammar, while a
+    local backend may occasionally return that exact envelope as plain text.
+    This adapter has no tool-selection policy: it accepts only names advertised
+    in this request and arguments valid against their advertised JSON Schemas.
+    Normal prose, mixed/partial markup, or an explicit tool_choice=none remains
+    text. The agent and ODS tool gates still authorize any resulting action.
+    """
+    if request_payload.get("tool_choice") == "none":
+        return False
+    choice_constraint = request_payload.get("tool_choice", "auto")
+    forced_name: str | None = None
+    if isinstance(choice_constraint, dict):
+        function = choice_constraint.get("function")
+        if (choice_constraint.get("type") != "function"
+                or not isinstance(function, dict)
+                or not isinstance(function.get("name"), str)):
+            return False
+        forced_name = function["name"]
+    elif not isinstance(choice_constraint, str) or choice_constraint not in {"auto", "required"}:
+        return False
+
+    offered_tools = request_payload.get("tools")
+    if not isinstance(offered_tools, list):
+        return False
+    parallel = request_payload.get("parallel_tool_calls")
+    if parallel is not None and type(parallel) is not bool:
+        return False
+    advertised: dict[str, dict[str, Any]] = {}
+    for item in offered_tools:
+        if not isinstance(item, dict) or item.get("type") != "function":
+            continue
+        function = item.get("function")
+        if not isinstance(function, dict):
+            continue
+        name, schema = function.get("name"), function.get("parameters")
+        if (not isinstance(name, str) or not isinstance(schema, dict)
+                or name in advertised):
+            return False
+        advertised[name] = schema
+    if not advertised:
+        return False
+
+    choices = completion.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        return False
+    choice = choices[0]
+    if not isinstance(choice, dict) or choice.get("finish_reason") != "stop":
+        return False
+    message = choice.get("message")
+    if (not isinstance(message, dict) or message.get("role") != "assistant"
+            or "tool_calls" in message or message.get("refusal")):
+        return False
+    content = message.get("content")
+    if (not isinstance(content, str) or not content
+            or len(content) > _MAX_NATIVE_MARKUP_CHARS):
+        return False
+    markup = content.strip()
+    if not markup.startswith("<tool_call>"):
+        return False
+
+    calls: list[dict[str, Any]] = []
+    cursor = 0
+    while cursor < len(markup):
+        match = _NATIVE_CALL.match(markup, cursor)
+        if match is None or len(calls) >= _MAX_NATIVE_CALLS:
+            return False
+        name, parameter_markup = match.group(1), match.group(2)
+        schema = advertised.get(name)
+        if schema is None or (forced_name is not None and name != forced_name):
+            return False
+        if _schema_has_references(schema):
+            return False
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return False
+        arguments: dict[str, Any] = {}
+        parameter_cursor = 0
+        while parameter_cursor < len(parameter_markup):
+            parameter_match = _NATIVE_PARAMETER.match(
+                parameter_markup, parameter_cursor,
+            )
+            if parameter_match is None:
+                return False
+            key, raw_value = parameter_match.group(1), parameter_match.group(2)
+            property_schema = properties.get(key)
+            if key in arguments or not isinstance(property_schema, dict):
+                return False
+            if property_schema.get("type") == "string":
+                value: Any = raw_value
+            else:
                 try:
-                    obj = json.loads(payload)
-                except ValueError:
-                    obj = None
-                if isinstance(obj, dict):
-                    payloads.append(obj)
-                    if isinstance(obj.get("model"), str):
-                        if obj["model"]:
-                            models.append(obj["model"])
-                        obj["model"] = alias
-                    _sanitize_choice_content(obj)
-                    content = (
-                        b"data: "
-                        + json.dumps(obj, separators=(",", ":")).encode("utf-8")
-                    )
-        out_lines.append(content + ending)
-    return b"".join(out_lines), models, payloads, saw_done
+                    value = json.loads(raw_value)
+                except (ValueError, TypeError):
+                    # An untyped/union string can still be valid JSON Schema.
+                    value = raw_value
+            arguments[key] = value
+            parameter_cursor = parameter_match.end()
+            if parameter_cursor < len(parameter_markup):
+                separator = re.match(r"\r?\n", parameter_markup[parameter_cursor:])
+                if separator is None:
+                    return False
+                parameter_cursor += separator.end()
+        try:
+            validator_class = jsonschema_validators.validator_for(schema)
+            validator_class.check_schema(schema)
+            validator_class(schema).validate(arguments)
+        except (SchemaError, ValidationError, ValueError, TypeError):
+            return False
+        calls.append({
+            "id": f"call_ods_{uuid.uuid4().hex}", "type": "function",
+            "function": {"name": name, "arguments": json.dumps(
+                arguments, separators=(",", ":"), ensure_ascii=False,
+            )},
+        })
+        cursor = match.end()
+        if cursor < len(markup):
+            separator = re.match(r"\r?\n", markup[cursor:])
+            if separator is None:
+                return False
+            cursor += separator.end()
+    if not calls or (parallel is False and len(calls) > 1):
+        return False
+    message["content"] = None
+    message["tool_calls"] = calls
+    choice["finish_reason"] = "tool_calls"
+    return True
+
+
+def _completed_chat_as_sse(completion: dict[str, Any]) -> bytes:
+    """Present one completed Chat response as a standards-shaped SSE stream.
+
+    llama.cpp's incremental tool parser can retract a previously detected tool
+    call and terminate the stream. Its completed response has no incremental
+    tool-call diff to reconcile. Keep the original call IDs and full arguments;
+    only add the per-stream index required by ChatCompletionChunk.
+    """
+    choices = completion.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("Chat completion has no choices")
+    if not isinstance(completion.get("model"), str) or not completion["model"]:
+        raise ValueError("Chat completion has no model identity")
+    base = {
+        "id": str(completion.get("id") or f"ods-{uuid.uuid4().hex}"),
+        "object": "chat.completion.chunk",
+        "created": completion.get("created")
+        if type(completion.get("created")) is int else int(time.time()),
+        "model": completion.get("model"),
+    }
+    if "system_fingerprint" in completion:
+        base["system_fingerprint"] = completion["system_fingerprint"]
+
+    events: list[dict[str, Any]] = []
+    endings: list[dict[str, Any]] = []
+    for position, choice in enumerate(choices):
+        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+            raise ValueError("Chat completion choice has no message")
+        message = choice["message"]
+        index = choice.get("index", position)
+        if type(index) is not int or index < 0:
+            raise ValueError("Chat completion choice has an invalid index")
+        finish_reason = choice.get("finish_reason")
+        if not isinstance(finish_reason, str) or not finish_reason:
+            raise ValueError("Chat completion choice has no terminal reason")
+        delta = {key: value for key, value in message.items() if key != "tool_calls"}
+        delta.setdefault("role", "assistant")
+        if "tool_calls" in message:
+            calls = message["tool_calls"]
+            if not isinstance(calls, list):
+                raise ValueError("Chat completion tool calls are malformed")
+            delta["tool_calls"] = []
+            for call_index, call in enumerate(calls):
+                function = call.get("function") if isinstance(call, dict) else None
+                if (not isinstance(call, dict)
+                        or not isinstance(call.get("id"), str)
+                        or not call["id"]
+                        or call.get("type") != "function"
+                        or not isinstance(function, dict)
+                        or not isinstance(function.get("name"), str)
+                        or not function["name"]
+                        or not isinstance(function.get("arguments"), str)):
+                    raise ValueError("Chat completion tool call is malformed")
+                delta["tool_calls"].append({**call, "index": call_index})
+        events.append({
+            **base,
+            "choices": [{"index": index, "delta": delta, "finish_reason": None}],
+        })
+        endings.append({
+            "index": index, "delta": {}, "finish_reason": finish_reason,
+        })
+    terminal = {**base, "choices": endings}
+    if isinstance(completion.get("usage"), dict):
+        terminal["usage"] = completion["usage"]
+    events.append(terminal)
+    return b"".join(
+        b"data: " + json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n\n"
+        for event in events
+    ) + b"data: [DONE]\n\n"
+
+
+def _lemonade_context_error(completion: dict[str, Any]) -> dict[str, Any] | None:
+    """Recognize Lemonade's HTTP-200 wrapper around a llama.cpp 400 error."""
+    outer = completion.get("error")
+    details = outer.get("details") if isinstance(outer, dict) else None
+    response = details.get("response") if isinstance(details, dict) else None
+    inner = response.get("error") if isinstance(response, dict) else None
+    if (not isinstance(inner, dict) or details.get("status_code") != 400
+            or inner.get("type") != "exceed_context_size_error"):
+        return None
+    context = inner.get("n_ctx")
+    prompt = inner.get("n_prompt_tokens")
+    if (type(context) is not int or context <= 0
+            or type(prompt) is not int or prompt <= 0):
+        return None
+    return {"error": {
+        "message": (f"Request ({prompt} tokens) exceeds the available context size "
+                    f"({context} tokens)"),
+        "type": "exceed_context_size_error", "code": "400",
+        "n_ctx": context, "n_prompt_tokens": prompt,
+    }}
 
 
 def _is_terminal_stream_payload(payload: dict[str, Any]) -> bool:
@@ -733,10 +1228,15 @@ def _is_terminal_stream_payload(payload: dict[str, Any]) -> bool:
 class _SSERewriter:
     """Incrementally frames SSE so transport chunk boundaries are irrelevant."""
 
-    def __init__(self, alias: str) -> None:
+    def __init__(self, alias: str, expected_model: str) -> None:
         self.alias = alias
+        self.expected_model = expected_model
         self.buffer = b""
-        self.models: list[str] = []
+        # Evidence needs only an irreversible mismatch verdict. Retaining one
+        # decoded model string per token makes long responses grow in memory.
+        self.identity_matches = True
+        self.response_model: str | None = None
+        self.response_model_consistent = True
         self.usage = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -758,17 +1258,35 @@ class _SSERewriter:
                 self.stop_reason = stop_reason
             self.completed = self.completed or _is_terminal_stream_payload(payload)
 
+    def _observe_models(self, models: list[str]) -> None:
+        self.identity_matches = self.identity_matches and all(
+            model == self.expected_model for model in models
+        )
+        for model in models:
+            # A receipt reports the backend identity actually observed, but
+            # must not hide a mid-stream identity change or retain unbounded
+            # backend-controlled strings.
+            if len(model) > 256:
+                self.response_model_consistent = False
+            elif self.response_model is None:
+                self.response_model = model
+            elif model != self.response_model:
+                self.response_model_consistent = False
+
     def feed(self, chunk: bytes) -> list[bytes]:
         self.buffer += chunk
         output: list[bytes] = []
         while match := _SSE_DELIMITER_RE.search(self.buffer):
+            if match.end() == len(self.buffer) and self.buffer.endswith(b"\r"):
+                # A transport split may put the LF of CRLF in the next chunk.
+                break
             event = self.buffer[:match.start()]
             delimiter = self.buffer[match.start():match.end()]
             self.buffer = self.buffer[match.end():]
             rewritten, models, payloads, saw_done = _rewrite_sse_event(
                 event, self.alias
             )
-            self.models.extend(models)
+            self._observe_models(models)
             self._observe(payloads, saw_done=saw_done)
             output.append(rewritten + delimiter)
         return output
@@ -779,7 +1297,7 @@ class _SSERewriter:
         rewritten, models, payloads, saw_done = _rewrite_sse_event(
             self.buffer, self.alias
         )
-        self.models.extend(models)
+        self._observe_models(models)
         self._observe(payloads, saw_done=saw_done)
         self.buffer = b""
         return rewritten
@@ -808,14 +1326,140 @@ async def _read_bounded_body(request: Request) -> bytes:
 
 async def _release_admission() -> None:
     global _inflight
+    with anyio.CancelScope(shield=True):
+        async with _inflight_lock:
+            _inflight -= 1
+
+
+class _OwnedStream(StreamingResponse):
+    """Response, not its possibly unstarted iterator, owns upstream admission."""
+    def __init__(self, *args, cleanup, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cleanup = cleanup
+        self._closed = False
+
+    async def close(self):
+        with anyio.CancelScope(shield=True):
+            if not self._closed:
+                self._closed = True
+                await self._cleanup()
+
+    async def __call__(self, scope, receive, send):
+        try:
+            # ASGI 2.4 lets StreamingResponse rely only on a failed send.
+            # Inference can stay silent during prefill or buffered output, so
+            # always observe disconnects while awaiting the next upstream byte.
+            stream = asyncio.create_task(self.stream_response(send))
+            watcher = asyncio.create_task(self.listen_for_disconnect(receive))
+            try:
+                done, _ = await asyncio.wait((stream, watcher), return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    await task
+            finally:
+                with anyio.CancelScope(shield=True):
+                    for task in (stream, watcher):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(stream, watcher, return_exceptions=True)
+            if self.background is not None:
+                await self.background()
+        finally:
+            await self.close()
+
+
+async def _while_connected(request, operation):
+    """Propagate client cancellation while queued or waiting for model headers."""
+    stopped = False
+    async def disconnected():
+        while not stopped:
+            if await request.is_disconnected():
+                return
+            if stopped:
+                return
+            await asyncio.sleep(0.25)
+
+    work = asyncio.create_task(operation)
+    watcher = asyncio.create_task(disconnected())
+    handed_off = False
+    try:
+        done, _ = await asyncio.wait((work, watcher), return_when=asyncio.FIRST_COMPLETED)
+        if watcher in done:
+            await watcher
+            return Response(status_code=499)
+        result = await work
+        handed_off = True
+        return result
+    finally:
+        stopped = True
+        with anyio.CancelScope(shield=True):
+            watcher.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await watcher
+            if not work.done():
+                work.cancel()
+                with suppress(asyncio.CancelledError):
+                    await work
+            # Completion and disconnect can arrive together. Dispose of the
+            # ready streaming response if no caller accepted its ownership.
+            if not handed_off and work.done() and not work.cancelled() and work.exception() is None:
+                orphan = work.result()
+                if isinstance(orphan, _OwnedStream):
+                    await orphan.close()
+
+
+def _expire_swap_gate_locked() -> None:
+    """Expire an abandoned admission gate while holding ``_inflight_lock``."""
+    global _swap_gate
+    if _swap_gate is not None and time.monotonic() >= _swap_gate["expiresAt"]:
+        logger.warning("model-swap admission gate lease expired; reopening admission")
+        _swap_gate = None
+
+
+async def _admit_request() -> tuple[bool, str]:
+    """Atomically wait out a model swap and reserve an upstream slot.
+
+    The swap controller and this function share ``_inflight_lock``. Once the
+    controller closes the gate, no request can slip between an idle check and
+    the runtime restart. Waiting requests are bounded separately from active
+    upstream work, so a closed gate can drain to a mechanically stable zero.
+    """
+    global _inflight, _waiting
+    deadline = time.monotonic() + QUEUE_WAIT_SECONDS
     async with _inflight_lock:
-        _inflight -= 1
+        _expire_swap_gate_locked()
+        if _inflight + _waiting >= MAX_QUEUE_DEPTH:
+            return False, "queue_full"
+        _waiting += 1
+
+    admitted = False
+    try:
+        while True:
+            async with _inflight_lock:
+                _expire_swap_gate_locked()
+                if _swap_gate is None:
+                    _waiting -= 1
+                    _inflight += 1
+                    admitted = True
+                    return True, ""
+            if time.monotonic() >= deadline:
+                return False, "model_swap_in_progress"
+            await asyncio.sleep(0.25)
+    finally:
+        if not admitted:
+            with anyio.CancelScope(shield=True):
+                async with _inflight_lock:
+                    _waiting -= 1
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
     doc = _read_state()
     endpoints = _load_endpoints()
+    async with _inflight_lock:
+        _expire_swap_gate_locked()
+        active_requests = _inflight
+        queued_requests = _waiting
+        swap_gate_active = _swap_gate is not None
     # Body-level signal only: with an empty allowlist every forward answers
     # endpoint_not_allowlisted, but the HTTP status stays 200 so the compose
     # healthcheck does not cascade a config gap into container restarts.
@@ -827,6 +1471,9 @@ async def health() -> dict[str, Any]:
         "routeSeq": (doc or {}).get("routeSeq"),
         "instanceId": INSTANCE_ID,
         "probeKeyConfigured": bool(_current_probe_key()),
+        "activeRequests": active_requests,
+        "queuedRequests": queued_requests,
+        "modelSwapGateActive": swap_gate_active,
     }
 
 
@@ -837,10 +1484,12 @@ async def list_models() -> dict[str, Any]:
     try:
         route = _active_route()
         metadata = {"routedModel": route["runtimeModelId"],
+                    "catalogId": route["catalogId"],
                     "backend": route["backendKind"],
-                    "routeSeq": route["routeSeq"]}
+                    "routeSeq": route["routeSeq"], "contextLength": route["contextLength"],
+                    "capabilities": route["capabilities"]}
     except RouterError:
-        metadata = {"routedModel": None, "backend": None, "routeSeq": None}
+        metadata = {"routedModel": None, "catalogId": None, "backend": None, "routeSeq": None}
     return {"object": "list", "data": data, "ods": metadata}
 
 
@@ -850,10 +1499,92 @@ async def route_evidence(probe_id: str, request: Request) -> Response:
     if not INTERNAL_KEY or provided != f"Bearer {INTERNAL_KEY}":
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     record = _evidence.get(probe_id)
+    attempts = _probe_attempts.public(probe_id, _current_probe_key())
     if record is None or time.monotonic() - record["storedAt"] > EVIDENCE_TTL_SECONDS:
-        return JSONResponse({"error": "not_found"}, status_code=404)
-    public = {k: v for k, v in record.items() if k != "storedAt"}
+        if attempts is None:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        public = {"probeId": probe_id, "instanceId": INSTANCE_ID}
+    else:
+        public = {k: v for k, v in record.items() if k != "storedAt"}
+    if attempts is not None:
+        public["upstreamAttempts"] = attempts
     return JSONResponse(public)
+
+
+@app.post("/internal/route-evidence/{probe_id}/capture")
+async def capture_probe_attempts(probe_id: str, request: Request) -> Response:
+    """Arm one signed probe, never ordinary traffic or raw-payload logging."""
+    if not INTERNAL_KEY or request.headers.get("authorization", "") != f"Bearer {INTERNAL_KEY}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 512:
+                return JSONResponse({"error": "body_too_large"}, status_code=413)
+        value = json.loads(body)
+        if type(value) is not dict or set(value) != {"ttlSeconds", "maxAttempts"}:
+            raise ValueError("Invalid lease")
+        result = _probe_attempts.arm(probe_id, value["ttlSeconds"], value["maxAttempts"],
+                                     _current_probe_key())
+    except FileExistsError:
+        return JSONResponse({"error": "capture_exists"}, status_code=409)
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "invalid_capture_lease"}, status_code=400)
+    return JSONResponse({**result, "instanceId": INSTANCE_ID}, status_code=201)
+
+
+@app.post("/internal/model-swap/admission")
+async def model_swap_admission(request: Request) -> Response:
+    """Lease the request-admission gate for a serialized runtime swap.
+
+    This endpoint is reachable only inside the Compose network and requires
+    the router's internal bearer key. Leases are deliberately short: the
+    upgrader renews while it owns the lifecycle lock, and a killed upgrader
+    cannot strand the router closed.
+    """
+    provided = request.headers.get("authorization", "")
+    if not INTERNAL_KEY or provided != f"Bearer {INTERNAL_KEY}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+    action = body.get("action")
+    token = body.get("token")
+    if action not in {"begin", "end"} or not isinstance(token, str) \
+            or not re.fullmatch(r"[A-Za-z0-9._-]{16,128}", token):
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+
+    global _swap_gate
+    async with _inflight_lock:
+        _expire_swap_gate_locked()
+        if action == "end":
+            if _swap_gate is None:
+                return JSONResponse({"status": "open", "activeRequests": _inflight})
+            if _swap_gate["token"] != token:
+                return JSONResponse({"error": "gate_owned"}, status_code=409)
+            _swap_gate = None
+            return JSONResponse({"status": "open", "activeRequests": _inflight})
+
+        lease_seconds = body.get("leaseSeconds", 30)
+        if not isinstance(lease_seconds, int) or isinstance(lease_seconds, bool) \
+                or not 5 <= lease_seconds <= 120:
+            return JSONResponse({"error": "invalid_lease"}, status_code=400)
+        if _swap_gate is not None and _swap_gate["token"] != token:
+            return JSONResponse({"error": "gate_owned"}, status_code=409)
+        _swap_gate = {
+            "token": token,
+            "expiresAt": time.monotonic() + lease_seconds,
+        }
+        return JSONResponse({
+            "status": "closed",
+            "activeRequests": _inflight,
+            "queuedRequests": _waiting,
+            "leaseSeconds": lease_seconds,
+        })
 
 
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE",
@@ -888,16 +1619,23 @@ async def forward(full_path: str, request: Request) -> Response:
         )
 
     requested_alias = str(payload.get("model") or PUBLIC_ALIASES[0])
+    return await _while_connected(request, _forward_admitted(request, path, payload, requested_alias, body))
 
-    global _inflight
-    async with _inflight_lock:
-        if _inflight >= MAX_QUEUE_DEPTH:
+
+async def _forward_admitted(request, path, payload, requested_alias, body):
+    admitted, reason = await _admit_request()
+    if not admitted:
+        if reason == "queue_full":
             return JSONResponse(
                 {"error": {"message": "Router queue is full",
                            "type": "overloaded", "code": "503"}},
                 status_code=503, headers={"Retry-After": "5"},
             )
-        _inflight += 1
+        return JSONResponse(
+            {"error": {"message": "A model swap is in progress",
+                       "type": "model_swap_in_progress", "code": "503"}},
+            status_code=503, headers={"Retry-After": "10"},
+        )
     stream_owns_admission = False
     try:
         response, stream_owns_admission = await _forward_inner(
@@ -933,10 +1671,41 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             ), False
         await asyncio.sleep(0.25)
 
+    # Additive precondition for inference-only sharing. It is checked after
+    # admission/queueing and before any upstream bytes are sent. Legacy clients
+    # omit all three headers and retain their existing alias behavior.
+    pin_names = ("x-ods-expected-catalog", "x-ods-expected-model", "x-ods-expected-route")
+    pinned_route = any(name in request.headers for name in pin_names)
+    if pinned_route:
+        values = [request.headers.getlist(name) for name in pin_names]
+        if (any(len(value) != 1 or not value[0] for value in values)
+                or not re.fullmatch(r"0|[1-9][0-9]{0,15}", values[2][0])
+                or int(values[2][0]) > 2**53 - 1):
+            return JSONResponse({"error": {"message": "Invalid route precondition",
+                "type": "route_precondition_invalid", "code": "400"}}, status_code=400), False
+        if (values[0][0] != route["catalogId"] or values[1][0] != route["runtimeModelId"]
+                or int(values[2][0]) != route["routeSeq"]):
+            return JSONResponse({"error": {"message": "The selected model route changed",
+                "type": "route_changed", "code": "409"}}, status_code=409), False
+
     payload["model"] = route["runtimeModelId"]
     request_id = str(uuid.uuid4())
     probe_id = _verify_probe_marker(raw_body.decode("utf-8", "replace"))
     is_stream = bool(payload.get("stream"))
+    completed_tool_stream = (
+        is_stream
+        and path == "/v1/chat/completions"
+        and route["backendKind"] in {"llama-server", "lemonade"}
+        and isinstance(payload.get("tools"), list)
+        and bool(payload["tools"])
+    )
+    if completed_tool_stream:
+        # llama.cpp may withdraw an incrementally parsed tool call, aborting
+        # its SSE stream. Ask this backend for its complete decision, then
+        # present that verified decision as SSE to the existing client.
+        # This is a transport adapter: tools and model selection are unchanged.
+        payload["stream"] = False
+        payload.pop("stream_options", None)
 
     headers = _sanitize_headers(request)
     api_key = os.environ.get(route["apiKeyEnv"], "") if route["apiKeyEnv"] else ""
@@ -956,18 +1725,23 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     telemetry_started = time.monotonic()
     evidence_base = {
         "probeId": probe_id,
+        "requestId": request_id,
         "requestedModel": requested_alias,
         "routedModel": route["runtimeModelId"],
         "backend": route["backendKind"],
         "endpointId": route["endpointId"],
         "routeSeq": route["routeSeq"],
         "path": path,
+        **({"offeredTools": _offered_tool_evidence(payload)} if probe_id else {}),
     }
 
+    attempt_handle = None
     try:
-        if is_stream:
+        forwarded_body = json.dumps(payload).encode("utf-8")
+        attempt_handle = _begin_probe_attempt(probe_id, request_id, 1, forwarded_body, route)
+        if is_stream and not completed_tool_stream:
             upstream_request = client.build_request(
-                "POST", url, content=json.dumps(payload).encode("utf-8"),
+                "POST", url, content=forwarded_body,
                 headers=headers, timeout=UPSTREAM_TIMEOUT_SECONDS,
             )
             upstream = await client.send(upstream_request, stream=True)
@@ -975,33 +1749,58 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             if lemonade_route:
                 ods_headers["X-Lemonade-Route"] = lemonade_route
 
+            async def cleanup_stream():
+                try:
+                    with suppress(httpx.HTTPError, OSError):
+                        await upstream.aclose()
+                finally:
+                    _finish_probe_attempt(attempt_handle, "cancelled", upstream.status_code)
+                    await _release_admission()
+
             async def stream_body() -> AsyncIterator[bytes]:
-                rewriter = _SSERewriter(requested_alias)
+                rewriter = _SSERewriter(requested_alias, route["runtimeModelId"])
                 completed = False
+                disconnected = False
                 try:
                     async for chunk in upstream.aiter_bytes():
-                        for event in rewriter.feed(chunk):
+                        events = rewriter.feed(chunk)
+                        if pinned_route and not rewriter.identity_matches:
+                            raise RouterError(502, 'response_identity_mismatch', 'Backend response identity changed')
+                        for event in events:
                             yield event
+
+                        if await request.is_disconnected():
+                            disconnected = True
+                            break
                     tail = rewriter.finish()
+                    if pinned_route and not rewriter.identity_matches:
+                        raise RouterError(502, 'response_identity_mismatch', 'Backend response identity changed')
                     if tail:
                         yield tail
                     completed = True
+                except asyncio.CancelledError:
+                    _finish_probe_attempt(attempt_handle, "cancelled", upstream.status_code)
+                    raise
+                except Exception:
+                    _finish_probe_attempt(attempt_handle, "stream-error", upstream.status_code)
+                    raise
                 finally:
-                    await upstream.aclose()
+                    _finish_probe_attempt(attempt_handle,
+                        "complete" if completed and not disconnected else "cancelled", upstream.status_code)
                     if (
                         completed
                         and rewriter.completed
                         and probe_id
                         and 200 <= upstream.status_code < 300
-                        and all(
-                            model == route["runtimeModelId"]
-                            for model in rewriter.models
-                        )
+                        and rewriter.response_model_consistent
                     ):
                         _record_evidence({
                             **evidence_base,
                             "status": upstream.status_code,
-                            "responseModel": route["runtimeModelId"],
+                            # The selected route is already reported separately.
+                            # Never present it as a backend identity when the
+                            # stream supplied no model field to observe.
+                            "responseModel": rewriter.response_model or "",
                             "lemonadeRoute": lemonade_route,
                         })
                     if (
@@ -1021,31 +1820,104 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                             usage=rewriter.usage,
                             stop_reason=rewriter.stop_reason,
                         ))
-                    await _release_admission()
 
             media_type = upstream.headers.get("content-type",
                                               "text/event-stream")
-            return StreamingResponse(
+            return _OwnedStream(
                 stream_body(), status_code=upstream.status_code,
-                media_type=media_type, headers=ods_headers,
+                media_type=media_type, headers=ods_headers, cleanup=cleanup_stream,
             ), True
 
         upstream = await client.post(
-            url, content=json.dumps(payload).encode("utf-8"), headers=headers,
+            url, content=forwarded_body, headers=headers,
             timeout=UPSTREAM_TIMEOUT_SECONDS,
         )
+        _finish_probe_attempt(attempt_handle, "complete", upstream.status_code)
+    except asyncio.CancelledError:
+        _finish_probe_attempt(attempt_handle, "cancelled")
+        raise
     except httpx.TimeoutException:
+        _finish_probe_attempt(attempt_handle, "timeout")
         return JSONResponse(
             {"error": {"message": "Upstream model runtime timed out",
                        "type": "upstream_timeout", "code": "504"}},
             status_code=504, headers=ods_headers,
         ), False
     except httpx.HTTPError as exc:
+        _finish_probe_attempt(attempt_handle, "transport-error")
         return JSONResponse(
             {"error": {"message": f"Upstream model runtime unavailable: {exc}",
                        "type": "upstream_unavailable", "code": "502"}},
             status_code=502, headers=ods_headers,
         ), False
+
+    # One bounded protocol repair is allowed only before the agent has seen a
+    # tool call. A complete native envelope is a model decision, not an
+    # executed action; no host/tool operation is replayed here.
+    if (path == "/v1/chat/completions"
+            and route["backendKind"] in {"llama-server", "lemonade"}
+            and _repairable_native_tool_request(payload)
+            and isinstance(payload.get("messages"), list)
+            and 200 <= upstream.status_code < 300):
+        try:
+            initial_decision = json.loads(upstream.content.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            initial_decision = None
+        if isinstance(initial_decision, dict):
+            native_names = _complete_native_envelope_names(initial_decision)
+            if native_names is not None and not _normalize_native_tool_markup(
+                initial_decision, payload,
+            ):
+                if (pinned_route and initial_decision.get("model")
+                        != route["runtimeModelId"]):
+                    return JSONResponse({'error': {'message': 'Backend response identity changed',
+                        'type': 'response_identity_mismatch', 'code': '502'}},
+                        status_code=502, headers=ods_headers), False
+                remaining = UPSTREAM_TIMEOUT_SECONDS - (time.monotonic() - telemetry_started)
+                if remaining <= 0:
+                    return JSONResponse({"error": {
+                        "message": "Upstream model runtime timed out during tool protocol repair",
+                        "type": "upstream_timeout", "code": "504",
+                    }}, status_code=504, headers=ods_headers), False
+                repair_payload = {**payload, "stream": False,
+                    "messages": [*payload["messages"], {"role": "user",
+                        "content": _native_tool_repair_feedback(native_names, payload)}]}
+                repair_payload.pop("stream_options", None)
+                repair_handle = None
+                try:
+                    repair_body = json.dumps(repair_payload).encode("utf-8")
+                    repair_handle = _begin_probe_attempt(probe_id, request_id, 2, repair_body, route)
+                    upstream = await client.post(
+                        url, content=repair_body,
+                        headers=headers, timeout=remaining,
+                    )
+                    _finish_probe_attempt(repair_handle, "complete", upstream.status_code)
+                except asyncio.CancelledError:
+                    _finish_probe_attempt(repair_handle, "cancelled")
+                    raise
+                except httpx.TimeoutException:
+                    _finish_probe_attempt(repair_handle, "timeout")
+                    return JSONResponse({"error": {
+                        "message": "Upstream model runtime timed out during tool protocol repair",
+                        "type": "upstream_timeout", "code": "504",
+                    }}, status_code=504, headers=ods_headers), False
+                except httpx.HTTPError as exc:
+                    _finish_probe_attempt(repair_handle, "transport-error")
+                    return JSONResponse({"error": {
+                        "message": f"Upstream model runtime unavailable during tool protocol repair: {exc}",
+                        "type": "upstream_unavailable", "code": "502",
+                    }}, status_code=502, headers=ods_headers), False
+                if 200 <= upstream.status_code < 300:
+                    try:
+                        repaired = json.loads(upstream.content.decode("utf-8"))
+                    except (ValueError, UnicodeDecodeError):
+                        repaired = None
+                    if (not isinstance(repaired, dict)
+                            or _repaired_tool_decision_invalid(repaired, payload)):
+                        return JSONResponse({"error": {
+                            "message": "Model returned an invalid tool decision after one protocol repair",
+                            "type": "tool_protocol_invalid", "code": "502",
+                        }}, status_code=502, headers=ods_headers), False
 
     lemonade_route = upstream.headers.get("x-lemonade-route")
     if lemonade_route:
@@ -1060,9 +1932,11 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     }
     stop_reason = ""
     content = upstream.content
+    parsed: dict[str, Any] | None = None
     try:
-        parsed = json.loads(content.decode("utf-8"))
-        if isinstance(parsed, dict):
+        decoded = json.loads(content.decode("utf-8"))
+        if isinstance(decoded, dict):
+            parsed = decoded
             response_usage, stop_reason = _usage_from_response(parsed)
             response_model = parsed.get("model")
             if "model" in parsed:
@@ -1077,6 +1951,38 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             content = json.dumps(parsed).encode("utf-8")
     except (ValueError, UnicodeDecodeError):
         pass
+
+    if (route["backendKind"] == "lemonade" and 200 <= upstream.status_code < 300
+            and path == "/v1/chat/completions" and parsed is not None):
+        context_error = _lemonade_context_error(parsed)
+        if context_error is not None:
+            return JSONResponse(context_error, status_code=400,
+                                headers=ods_headers), False
+
+    if pinned_route and 200 <= upstream.status_code < 300 and response_model != route['runtimeModelId']:
+        return JSONResponse({'error': {'message': 'Backend response identity changed',
+            'type': 'response_identity_mismatch', 'code': '502'}}, status_code=502, headers=ods_headers), False
+
+    if (parsed is not None and 200 <= upstream.status_code < 300
+            and path == "/v1/chat/completions"
+            and route["backendKind"] in {"llama-server", "lemonade"}
+            and isinstance(payload.get("tools"), list) and payload["tools"]
+            and _normalize_native_tool_markup(parsed, payload)):
+        content = json.dumps(parsed).encode("utf-8")
+        stop_reason = "tool_calls"
+
+    completed_stream_body: bytes | None = None
+    if completed_tool_stream and 200 <= upstream.status_code < 300:
+        try:
+            if parsed is None:
+                raise ValueError("Backend returned a non-JSON Chat completion")
+            completed_stream_body = _completed_chat_as_sse(parsed)
+        except ValueError as exc:
+            logger.warning("invalid completed tool response from model backend: %s", exc)
+            return JSONResponse({"error": {
+                "message": "Backend returned an invalid completed tool response",
+                "type": "upstream_invalid_response", "code": "502",
+            }}, status_code=502, headers=ods_headers), False
 
     if probe_id:
         _record_evidence({**evidence_base,
@@ -1095,6 +2001,10 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             usage=response_usage,
             stop_reason=stop_reason,
         ))
+
+    if completed_stream_body is not None:
+        return Response(content=completed_stream_body, status_code=200,
+                        media_type="text/event-stream", headers=ods_headers), False
 
     media_type = upstream.headers.get("content-type", "application/json")
     return Response(content=content, status_code=upstream.status_code,

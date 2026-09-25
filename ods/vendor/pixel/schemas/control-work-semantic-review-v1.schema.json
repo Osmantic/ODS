@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-work-semantic-review-v1.schema.json",
+  "title": "Pixel private local semantic candidate review v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "status", "profile", "dataClassification", "objective", "acceptanceCriteria", "reviewSha256", "content", "verification", "completionEffect", "privacy", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/control-work-semantic-review-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-control-work-semantic-review"},
+    "status": {"const": "waiting-authority"},
+    "profile": {"enum": ["scout", "researcher", "data-lab"]},
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "objective": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "acceptanceCriteria": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+    "reviewSha256": {"$ref": "#/$defs/sha256"},
+    "content": {
+      "type": "object", "additionalProperties": false,
+      "required": ["title", "overview", "methodology", "findings", "limitations", "artifacts"],
+      "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "overview": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 20000}]},
+        "methodology": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 20000}]},
+        "findings": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/finding"}},
+        "limitations": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "artifacts": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/artifact"}}
+      }
+    },
+    "verification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "method", "independent", "semanticAccuracyVerified", "checkedItems", "failedItems", "explanation"],
+      "properties": {
+        "status": {"enum": ["evidence-pass", "exact-replay-pass"]},
+        "method": {"enum": ["deterministic-local-evidence-presence", "deterministic-public-evidence-presence", "networkless-exact-replay"]},
+        "independent": {"const": true},
+        "semanticAccuracyVerified": {"const": false},
+        "checkedItems": {"type": "integer", "minimum": 1, "maximum": 1600},
+        "failedItems": {"const": 0},
+        "explanation": {"type": "string", "minLength": 1, "maxLength": 1000}
+      }
+    },
+    "completionEffect": {"const": "none-read-only"},
+    "privacy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["privateContentIncluded", "relativeEvidenceReferencesIncluded", "hostAbsolutePathsIncluded", "credentialsIncluded", "contentLeavesHost"],
+      "properties": {
+        "privateContentIncluded": {"type": "boolean"},
+        "relativeEvidenceReferencesIncluded": {"const": true},
+        "hostAbsolutePathsIncluded": {"const": false},
+        "credentialsIncluded": {"const": false},
+        "contentLeavesHost": {"const": false}
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantsExecution", "grantsLease", "grantsReplay", "grantsAcceptance", "grantsCompletion", "grantsPublication", "grantsDeployment", "grantsExternalEffects", "grantsScopeExpansion"],
+      "properties": {
+        "grantsExecution": {"const": false}, "grantsLease": {"const": false}, "grantsReplay": {"const": false},
+        "grantsAcceptance": {"const": false}, "grantsCompletion": {"const": false}, "grantsPublication": {"const": false},
+        "grantsDeployment": {"const": false}, "grantsExternalEffects": {"const": false}, "grantsScopeExpansion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Process-lifetime private local review of one exact safe semantic candidate. It may reveal owner-authorized work content in the token-gated loopback page, but no host-absolute path, credential, provider secret, execution, lease, replay, acceptance, completion, publication, deployment, external effect, or scope-expansion authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "finding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["statement", "material", "evidence"],
+      "properties": {
+        "statement": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "material": {"type": "boolean"},
+        "evidence": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/evidence"}}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "reference", "excerpt", "bytes"],
+      "properties": {
+        "kind": {"enum": ["local-quote", "public-quote", "derived-artifact"]},
+        "reference": {"type": "string", "minLength": 1, "maxLength": 1100},
+        "excerpt": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 65536}]},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1073741824}
+      }
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "kind", "format", "bytes", "purpose"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^artifacts/[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+        "kind": {"enum": ["dataset", "document", "visualization"]},
+        "format": {"enum": ["csv", "json", "jsonl", "markdown", "parquet", "png", "sqlite", "svg"]},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1073741824},
+        "purpose": {"type": "string", "minLength": 1, "maxLength": 1000}
+      }
+    }
+  }
+}

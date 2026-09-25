@@ -16,7 +16,9 @@ service:
   health: /health
   ui_path: /
   type: docker
-  gpu_backends: [amd, nvidia]
+  # Open WebUI consumes the configured gateway and does not bind a GPU itself.
+  # Keep this core service visible in CPU/external-LLM installations too.
+  gpu_backends: [all]
   category: core
   depends_on: [llama-server]
   llm:

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "actionId": "github-1786512000000-a1b2c3d4",
+  "source": "pixel-owner-conversation",
+  "operation": "create-issue",
+  "status": "pending-operator-approval",
+  "createdAt": "2026-08-12T12:00:00Z",
+  "repository": "OWNER/REPOSITORY",
+  "values": {
+    "title": "Review this exact issue before applying",
+    "body": "The broker appends a hidden reconciliation marker before submission.",
+    "labels": []
+  },
+  "boundary": "Exact operator-reviewed GitHub proposal only. It grants one bounded repository mutation and no merge, push, branch, credential, repository expansion, retry, or other provider authority."
+}

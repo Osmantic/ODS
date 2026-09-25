@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/docling-project/docling-serve",
+  "license": "MIT",
+  "image": "ghcr.io/docling-project/docling-serve-cpu:v1.34.0@sha256:0525640504db7ed8a53e0e443882727888f6a3746948b1b7a8820efe95567bd3",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "CPU image. Model cache persists in a named volume. Each OCR/model checkpoint retains its upstream license."
+}

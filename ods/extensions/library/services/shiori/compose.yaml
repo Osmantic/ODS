@@ -1,0 +1,54 @@
+services:
+  shiori:
+    image: ods/shiori:1.8.0-local-v1
+    container_name: ods-shiori
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${SHIORI_PORT:-11055}:8080
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - --spider
+      - -q
+      - -T
+      - '5'
+      - http://127.0.0.1:8080/
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      SHIORI_DIR: /shiori
+      SHIORI_HTTP_PORT: '8080'
+      SHIORI_HTTP_ADDRESS: '0.0.0.0:'
+      SHIORI_INITIAL_PASSWORD: ${SHIORI_INITIAL_PASSWORD:?Set the first-account password}
+      SHIORI_HTTP_SECRET_KEY: ${SHIORI_HTTP_SECRET_KEY:?Set a persistent session secret}
+      SHIORI_SSO_PROXY_AUTH_ENABLED: 'false'
+    volumes:
+    - shiori-data:/shiori
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  shiori-data: {}

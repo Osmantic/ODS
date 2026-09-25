@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-reactivation-rollback-v1.schema.json",
+  "title": "Pixel reactivation-bound rollback claim receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "status", "candidateId", "product", "version", "restoreVersion", "originalActivationHash", "reactivationHash", "reactivationResultSha256", "rollbackMarkerSha256", "trustedControllerOnly", "singleUse", "rollbackHash", "claimedAt", "claim", "activeDeploymentChanged", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-release-reactivation-rollback"},
+    "status": {"const": "claimed"},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "product": {"const": "Pixel"},
+    "version": {"$ref": "#/$defs/version"},
+    "restoreVersion": {"$ref": "#/$defs/version"},
+    "originalActivationHash": {"$ref": "#/$defs/hash"},
+    "reactivationHash": {"$ref": "#/$defs/hash"},
+    "reactivationResultSha256": {"$ref": "#/$defs/hash"},
+    "rollbackMarkerSha256": {"$ref": "#/$defs/hash"},
+    "trustedControllerOnly": {"const": true},
+    "singleUse": {"const": true},
+    "rollbackHash": {"$ref": "#/$defs/hash"},
+    "claimedAt": {"type": "string", "format": "date-time"},
+    "claim": {"const": "single-use-exclusive-create"},
+    "activeDeploymentChanged": {"const": false},
+    "boundary": {"const": "Single-use exact rollback claimed against the reactivated release and its unchanged rollback marker; trusted controller rollback has not yet run."}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"}
+  }
+}

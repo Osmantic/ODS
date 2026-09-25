@@ -1,0 +1,102 @@
+services:
+  limesurvey:
+    image: ods/limesurvey:7.1.1-local-v1
+    container_name: ods-limesurvey
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${LIMESURVEY_PORT:-11125}:8080
+    healthcheck:
+      test:
+      - CMD
+      - php
+      - -r
+      - 'exit(@file_get_contents(''http://127.0.0.1:8080/index.php/admin'') === false
+        ? 1 : 0);'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    - limesurvey-internal
+    user: www-data
+    environment:
+      DB_TYPE: pgsql
+      DB_HOST: limesurvey-db
+      DB_PORT: '5432'
+      DB_NAME: limesurvey
+      DB_USERNAME: limesurvey
+      DB_PASSWORD: ${LIMESURVEY_DB_PASSWORD:?Set a 64-hex database password}
+      ADMIN_USER: ods
+      ADMIN_NAME: ODS owner
+      ADMIN_EMAIL: ${LIMESURVEY_ADMIN_EMAIL:?Set the owner email address}
+      ADMIN_PASSWORD: ${LIMESURVEY_ADMIN_PASSWORD:?Set a distinct 64-hex initial admin
+        password}
+      LISTEN_PORT: '8080'
+      DEBUG: '0'
+      DEBUG_SQL: '0'
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    volumes:
+    - limesurvey-upload:/var/www/html/upload
+    - limesurvey-security:/var/lib/ods-limesurvey
+    depends_on:
+      limesurvey-db:
+        condition: service_healthy
+  limesurvey-db:
+    image: postgres:17-alpine@sha256:f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995
+    restart: unless-stopped
+    networks:
+    - limesurvey-internal
+    environment:
+      POSTGRES_DB: limesurvey
+      POSTGRES_USER: limesurvey
+      POSTGRES_PASSWORD: ${LIMESURVEY_DB_PASSWORD:?Set a 64-hex database password}
+    volumes:
+    - limesurvey-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - limesurvey
+      - -d
+      - limesurvey
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    container_name: ods-limesurvey-db
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+  limesurvey-internal:
+    internal: true
+volumes:
+  limesurvey-upload: {}
+  limesurvey-security: {}
+  limesurvey-db-data: {}

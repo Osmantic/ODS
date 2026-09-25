@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/github-action-proposal-v1.schema.json",
+  "title": "Pixel exact GitHub action proposal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "actionId", "source", "operation", "status", "createdAt", "repository", "values", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "actionId": {"type": "string", "pattern": "^github-[0-9]{13}-[a-f0-9]{8,32}$"},
+    "source": {"const": "pixel-owner-conversation"},
+    "operation": {"enum": ["create-issue", "create-pull-request", "comment"]},
+    "status": {"const": "pending-operator-approval"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"},
+    "values": {"type": "object"},
+    "boundary": {"const": "Exact operator-reviewed GitHub proposal only. It grants one bounded repository mutation and no merge, push, branch, credential, repository expansion, retry, or other provider authority."
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "operation": {"const": "create-issue"},
+        "values": {
+          "type": "object", "additionalProperties": false, "required": ["title"],
+          "properties": {
+            "title": {"type": "string", "minLength": 1, "maxLength": 256},
+            "body": {"type": "string", "maxLength": 65536},
+            "labels": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 100}}
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "operation": {"const": "create-pull-request"},
+        "values": {
+          "type": "object", "additionalProperties": false, "required": ["title", "body", "head", "base", "draft"],
+          "properties": {
+            "title": {"type": "string", "minLength": 1, "maxLength": 256},
+            "body": {"type": "string", "maxLength": 65536},
+            "head": {"type": "string", "minLength": 1, "maxLength": 255},
+            "base": {"type": "string", "minLength": 1, "maxLength": 255},
+            "draft": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "operation": {"const": "comment"},
+        "values": {
+          "type": "object", "additionalProperties": false, "required": ["issueNumber", "body"],
+          "properties": {
+            "issueNumber": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+            "body": {"type": "string", "minLength": 1, "maxLength": 65536}
+          }
+        }
+      }
+    }
+  ]
+}

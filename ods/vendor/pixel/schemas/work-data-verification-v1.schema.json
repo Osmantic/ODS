@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-data-verification-v1.schema.json",
+  "title": "Pixel Data Lab exact replay verification v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "verificationId", "jobId", "claimId", "planSha256", "createdAt", "manifestSha256", "recipeSha256", "status", "artifacts", "runtime", "semanticAccuracyVerified", "externalEffects", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-data-verification-v1.schema.json"}, "schemaVersion": {"const": 1},
+    "verificationId": {"type": "string", "pattern": "^data-verification-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"}, "claimId": {"type": "string", "pattern": "^workclaim-[0-9]{13}-[a-f0-9]{12}$"},
+    "planSha256": {"$ref": "#/$defs/sha256"}, "createdAt": {"type": "string", "format": "date-time"}, "manifestSha256": {"$ref": "#/$defs/sha256"}, "recipeSha256": {"$ref": "#/$defs/sha256"},
+    "status": {"enum": ["exact-replay-pass", "fail"]},
+    "artifacts": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"type": "object", "additionalProperties": false, "required": ["artifactId", "path", "expectedSha256", "observedSha256", "expectedBytes", "observedBytes", "status"], "properties": {
+      "artifactId": {"type": "string", "pattern": "^artifact-[1-9][0-9]{0,2}$"}, "path": {"type": "string", "pattern": "^artifacts/[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+      "expectedSha256": {"$ref": "#/$defs/sha256"}, "observedSha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+      "expectedBytes": {"type": "integer", "minimum": 1}, "observedBytes": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1}]}, "status": {"enum": ["match", "missing", "different"]}
+    }}},
+    "runtime": {"type": "object", "additionalProperties": false, "required": ["network", "freshWorkspace", "recipeExitCode", "timedOut", "outputLimitExceeded", "unexpectedArtifacts"], "properties": {
+      "network": {"const": "none"}, "freshWorkspace": {"const": true}, "recipeExitCode": {"type": "integer", "minimum": 0, "maximum": 255}, "timedOut": {"type": "boolean"}, "outputLimitExceeded": {"type": "boolean"}, "unexpectedArtifacts": {"type": "integer", "minimum": 0, "maximum": 256}
+    }},
+    "semanticAccuracyVerified": {"const": false}, "externalEffects": {"const": false}, "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Independent networkless replay evidence only. A byte-for-byte match proves reproducibility and artifact integrity, not semantic truth, business correctness, publication authority, or completion authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "authority": {"type": "object", "additionalProperties": false, "required": ["rawInputMutation", "hostAccess", "network", "credentials", "externalEffects", "publish", "policyMutation", "scopeExpansion"], "properties": {
+      "rawInputMutation": {"const": false}, "hostAccess": {"const": false}, "network": {"const": false}, "credentials": {"const": false},
+      "externalEffects": {"const": false}, "publish": {"const": false}, "policyMutation": {"const": false}, "scopeExpansion": {"const": false}
+    }}
+  }
+}

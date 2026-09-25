@@ -1,0 +1,55 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: invoiceshelf
+  name: InvoiceShelf
+  aliases: []
+  container_name: ods-invoiceshelf
+  host_env: INVOICESHELF_HOST
+  default_host: invoiceshelf
+  port: 8080
+  external_port_env: INVOICESHELF_PORT
+  external_port_default: 11122
+  health: /
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Manage local invoices, estimates, customer records and PDF exports
+    with persistent storage.
+  env_vars:
+  - key: INVOICESHELF_KEY
+    required: true
+    secret: true
+    description: Stable random 64-hex encryption key; preserve with backups and never
+      replace casually.
+  ui_path: /
+tags:
+- invoices
+- business
+- documents
+- open-source
+features:
+- id: invoiceshelf-invoices
+  name: InvoiceShelf
+  description: Manage local invoices, estimates, customer records and PDF exports
+    with persistent storage.
+  icon: Receipt
+  category: productivity
+  requirements:
+    services:
+    - invoiceshelf
+    vram_gb: 0
+  enabled_services_all:
+  - invoiceshelf
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: invoiceshelf
+    path: /

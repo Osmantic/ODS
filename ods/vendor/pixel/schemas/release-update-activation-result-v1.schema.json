@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-activation-result-v1.schema.json",
+  "title": "Pixel release activation result receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "status", "candidateId", "product", "version", "previousVersion", "activeVersion", "activationHash", "activationClaimSha256", "executionPhase", "completedAt", "candidateCodeExecuted", "privateConfigurationRead", "activeDeploymentChanged", "networkMayHaveBeenUsed", "rollbackAvailable", "rollbackMarkerSha256", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-release-activation-result"},
+    "status": {"enum": ["activated", "failed"]},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "product": {"const": "Pixel"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "previousVersion": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "activeVersion": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "activationHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "activationClaimSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "executionPhase": {"enum": ["configure", "plan", "apply", "verify", "record"]},
+    "completedAt": {"type": "string", "format": "date-time"},
+    "candidateCodeExecuted": {"const": true},
+    "privateConfigurationRead": {"const": true},
+    "activeDeploymentChanged": {"type": "boolean"},
+    "networkMayHaveBeenUsed": {"const": true},
+    "rollbackAvailable": {"type": "boolean"},
+    "rollbackMarkerSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "boundary": {"const": "Terminal-confirmed candidate execution finished; this content-free receipt records the observed active version and update-bound rollback availability."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "activated"}}},
+      "then": {
+        "properties": {
+          "executionPhase": {"const": "record"},
+          "activeDeploymentChanged": {"const": true},
+          "rollbackAvailable": {"const": true},
+          "rollbackMarkerSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"rollbackAvailable": {"const": false}}},
+      "then": {"properties": {"rollbackMarkerSha256": {"const": null}}}
+    }
+  ]
+}

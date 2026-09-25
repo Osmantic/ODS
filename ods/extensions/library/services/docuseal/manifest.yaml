@@ -1,0 +1,54 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: docuseal
+  name: DocuSeal
+  aliases: []
+  container_name: ods-docuseal
+  host_env: DOCUSEAL_HOST
+  default_host: docuseal
+  port: 3000
+  external_port_env: DOCUSEAL_PORT
+  external_port_default: 11084
+  health: /up
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Prepare PDF forms, collect signatures and retain completed documents
+    in a local document workflow.
+  env_vars:
+  - key: DOCUSEAL_SECRET_KEY_BASE
+    required: true
+    secret: true
+    description: 'Stable random application secret: generate 64 random bytes as 128
+      hex characters and preserve it with backups.'
+  ui_path: /
+tags:
+- documents
+- forms
+- open-source
+features:
+- id: docuseal-documents
+  name: DocuSeal
+  description: Prepare PDF forms, collect signatures and retain completed documents
+    in a local document workflow.
+  icon: FileSignature
+  category: productivity
+  requirements:
+    services:
+    - docuseal
+    vram_gb: 0
+  enabled_services_all:
+  - docuseal
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: docuseal
+    path: /

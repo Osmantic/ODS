@@ -1,0 +1,52 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: valkey
+  name: Valkey
+  aliases: []
+  container_name: ods-valkey
+  host_env: VALKEY_HOST
+  default_host: valkey
+  port: 6379
+  external_port_env: VALKEY_PORT
+  external_port_default: 11091
+  health: ''
+  type: docker
+  startup_check: false
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Store project cache entries and structured temporary data through an
+    authenticated local RESP service.
+  env_vars:
+  - key: VALKEY_PASSWORD
+    required: true
+    secret: true
+    description: 64 random hexadecimal characters for the ods client account.
+  external_link: false
+tags:
+- development
+- cache
+- database
+- open-source
+features:
+- id: valkey-data
+  name: Valkey
+  description: Store project cache entries and structured temporary data through an
+    authenticated local RESP service.
+  icon: Database
+  category: productivity
+  requirements:
+    services:
+    - valkey
+    vram_gb: 0
+  enabled_services_all:
+  - valkey
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: none

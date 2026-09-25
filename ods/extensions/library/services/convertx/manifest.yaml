@@ -1,0 +1,54 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: convertx
+  name: ConvertX
+  aliases: []
+  container_name: ods-convertx
+  host_env: CONVERTX_HOST
+  default_host: convertx
+  port: 3000
+  external_port_env: CONVERTX_PORT
+  external_port_default: 11085
+  health: /healthcheck
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Convert image, audio, video, document and 3D asset formats locally
+    using bundled converters.
+  env_vars:
+  - key: CONVERTX_JWT_SECRET
+    required: true
+    secret: true
+    description: Persistent random login-token signing secret; use at least 32 random
+      characters.
+  ui_path: /
+tags:
+- conversion
+- media
+- open-source
+features:
+- id: convertx-files
+  name: ConvertX
+  description: Convert image, audio, video, document and 3D asset formats locally
+    using bundled converters.
+  icon: Files
+  category: productivity
+  requirements:
+    services:
+    - convertx
+    vram_gb: 0
+  enabled_services_all:
+  - convertx
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: convertx
+    path: /

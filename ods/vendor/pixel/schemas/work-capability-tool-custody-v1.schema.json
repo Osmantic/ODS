@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-tool-custody-v1.schema.json",
+  "title": "Pixel Deep Work capability request custody record v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "recordId", "sequence", "recordedAt", "requestId", "jobId", "requestSha256", "authorizationSha256", "checkpointSha256", "phase", "decisionSha256", "grantId", "grantSha256", "runtimeReceiptSha256", "eventRecordSha256", "responseSha256", "outcome", "previousRecordSha256", "recordSha256", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-tool-custody-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "recordId": {"type": "string", "pattern": "^workcapcustody-[0-9]{13}-[a-f0-9]{12}$"},
+    "sequence": {"type": "integer", "minimum": 0, "maximum": 16},
+    "recordedAt": {"type": "string", "format": "date-time"},
+    "requestId": {"type": "string", "pattern": "^workcaprequest-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "requestSha256": {"$ref": "#/$defs/sha256"},
+    "authorizationSha256": {"$ref": "#/$defs/sha256"},
+    "checkpointSha256": {"$ref": "#/$defs/sha256"},
+    "phase": {"enum": ["claimed", "authorized", "launching", "runtime-returned", "stopped", "settled"]},
+    "decisionSha256": {"$ref": "#/$defs/nullableSha256"},
+    "grantId": {"type": ["string", "null"], "pattern": "^workcapgrant-[0-9]{13}-[a-f0-9]{12}$"},
+    "grantSha256": {"$ref": "#/$defs/nullableSha256"},
+    "runtimeReceiptSha256": {"$ref": "#/$defs/nullableSha256"},
+    "eventRecordSha256": {"$ref": "#/$defs/nullableSha256"},
+    "responseSha256": {"$ref": "#/$defs/nullableSha256"},
+    "outcome": {"enum": [null, "success", "error", "stopped"]},
+    "previousRecordSha256": {"$ref": "#/$defs/nullableSha256"},
+    "recordSha256": {"$ref": "#/$defs/sha256"},
+    "authority": {"const": {"grantsReplay": false, "grantsExecution": false, "grantsCredentials": false, "grantsNetwork": false, "grantsExternalEffects": false, "grantsScopeExpansion": false, "grantsCompletion": false}},
+    "boundary": {"const": "Content-free append-only custody for one private capability request. It records no arguments or result content and grants no replay, execution, credential, network, external-effect, scope-expansion, or completion authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "nullableSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}}
+}

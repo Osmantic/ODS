@@ -1,0 +1,32 @@
+.portal-file-tree { display:flex; flex-direction:column; min-width:0; min-height:0; height:100%; padding:8px; color:var(--pixel-text,var(--color-text-secondary,#c9cbd1)); font:400 .75rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif; }
+.portal-file-tree-search { display:flex; align-items:center; gap:7px; flex-shrink:0; height:29px; padding:0 8px; margin:0 0 7px; border:1px solid var(--pixel-border,#ffffff12); border-radius:8px; background:#ffffff03; color:var(--pixel-muted,#8a8f98); }
+.portal-file-tree-search input { min-width:0; width:100%; height:27px; border:0; outline:0; padding:0; background:transparent; color:inherit; font:inherit; }
+.portal-file-tree-search:focus-within { outline:2px solid var(--pixel-muted,#8a8f98); outline-offset:1px; }
+.portal-file-tree-search input::placeholder { color:var(--pixel-muted,#8a8f98); opacity:1; }
+.portal-file-tree-scroll { flex:1; min-height:0; overflow:auto; scrollbar-width:thin; scrollbar-color:#ffffff25 transparent; }
+.portal-file-tree ul { list-style:none; margin:0; padding:0; }
+.portal-file-tree li { margin:0; padding:0; }
+.portal-file-tree li ul { margin-left:10px; padding-left:6px; border-left:1px solid #ffffff09; }
+.portal-file-tree button { display:flex; align-items:center; gap:7px; width:100%; min-width:0; min-height:29px; margin:0; padding:4px 6px; border:0; border-radius:5px; background:transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; }
+.portal-file-tree button:hover,.portal-file-tree button[aria-current='true'] { background:#ffffff08; color:var(--pixel-text,#e1e3e6); }
+.portal-file-tree button:focus-visible { outline:2px solid var(--pixel-muted,#8a8f98); outline-offset:-2px; }
+.portal-file-tree button > svg,.portal-file-tree button > b { flex-shrink:0; }
+.portal-file-tree button > span:not(.portal-file-tree-status) { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.portal-file-tree .portal-file-tree-folder-button { font-weight:500; }
+.portal-file-tree-folder-button > svg { color:var(--pixel-muted,#8a8f98); }
+.portal-file-tree-folder-button[aria-expanded='true'] .portal-file-tree-chevron { transform:rotate(90deg); }
+.portal-file-tree-folder-button:disabled { cursor:default; opacity:1; }
+.portal-file-tree .portal-file-tree-file { padding-left:9px; color:var(--pixel-muted,#9a9da5); }
+.portal-file-tree .portal-file-tree-status { display:flex; flex-shrink:0; align-items:center; justify-content:center; margin-left:auto; width:14px; font-size:8px; }
+.portal-file-tree-status.is-created { color:#32c979; }
+.portal-file-tree-status.is-deleted { color:#ef6666; }
+.portal-file-tree-status.is-modified,.portal-file-tree-status.is-published { color:#d79960; }
+.portal-file-tree .code-language-badge { display:inline-grid; place-items:center; flex-shrink:0; min-width:17px; height:16px; color:#a7a8b1; font:600 8px/1 Inter,ui-sans-serif,system-ui,sans-serif; }
+.portal-file-tree .code-language-badge:is([data-language='javascript'],[data-language='jsx']) { color:#d6bf68; }
+.portal-file-tree .code-language-badge:is([data-language='typescript'],[data-language='tsx'],[data-language='python']) { color:#6eafdb; }
+.portal-file-tree .code-language-badge[data-language='css'] { color:#af8ccf; }
+.portal-file-tree .code-language-badge[data-language='markup'] { color:#d69774; }
+.portal-file-tree .code-language-badge[data-language='markdown'] { color:#74b78d; }
+.portal-file-tree p { padding:8px 4px; color:var(--pixel-muted,#8a8f98); font-size:11px; }
+@media (pointer:coarse) { .portal-file-tree button { min-height:36px; } .portal-file-tree-search { height:36px; } }
+@media (forced-colors:active) { .portal-file-tree button[aria-current='true'] { outline:1px solid Highlight; } .portal-file-tree-search { border-color:ButtonText; } }

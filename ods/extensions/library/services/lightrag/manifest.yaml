@@ -1,0 +1,82 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: lightrag
+  name: LightRAG
+  aliases: []
+  container_name: ods-lightrag
+  host_env: LIGHTRAG_HOST
+  default_host: lightrag
+  port: 9621
+  external_port_env: LIGHTRAG_PORT
+  external_port_default: 11032
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on:
+  - litellm
+  - embeddings
+  description: Index documents into a persistent knowledge graph and retrieve grounded
+    context through the current ODS chat model.
+  env_vars:
+  - key: LIGHTRAG_API_KEY
+    required: true
+    secret: true
+    description: Private access key for the LightRAG UI/API.
+  - key: LIGHTRAG_EMBEDDING_DIM
+    required: true
+    secret: false
+    description: Exact embedding dimension from the active embedding service; changing
+      it requires reindexing.
+  - key: LIGHTRAG_EMBEDDING_TOKEN_LIMIT
+    required: true
+    secret: false
+    description: Actual maximum input tokens supported by the active embedding model.
+  - key: LIGHTRAG_MAX_TOTAL_TOKENS
+    required: true
+    secret: false
+    description: Retrieval context budget below the selected chat model context, leaving
+      room for instructions and output.
+  ui_path: /webui
+  llm:
+    consumes: true
+    route: gateway
+    pinning: none
+    probe:
+      kind: chat
+      path: /v1/chat/completions
+      auth: env:LITELLM_KEY
+tags:
+- research
+- rag
+- local
+- open-source
+features:
+- id: lightrag-workspace
+  name: LightRAG
+  description: Index documents into a persistent knowledge graph and retrieve grounded
+    context through the current ODS chat model.
+  icon: Network
+  category: productivity
+  requirements:
+    services:
+    - lightrag
+    - litellm
+    - embeddings
+    vram_gb: 0
+  enabled_services_all:
+  - lightrag
+  - litellm
+  - embeddings
+  setup_time: Initial image download; see README
+  priority: 49
+  launch:
+    type: service
+    service: lightrag
+    path: /webui

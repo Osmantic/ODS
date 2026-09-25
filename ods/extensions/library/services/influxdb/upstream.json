@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/influxdata/influxdb",
+  "license": "MIT",
+  "source_ref": "v2.9.1",
+  "image": "influxdb:2@sha256:05d6fb735bc22449c401094d42846123a24e3325d3a6e092242a45bfd68fff21",
+  "image_source_ref": "129b84f0088aa9bf24bccff6a011fb6717b701aa",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official OSS v2 image, native one-time setup, nonroot persistent engine and config volumes. v2 chosen for Flux and embedded dashboards, not presented as latest major. No collectors or project clients configured."
+}

@@ -1,0 +1,64 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: nifi
+  name: Apache NiFi
+  aliases: []
+  container_name: ods-nifi
+  host_env: NIFI_HOST
+  default_host: nifi
+  port: 8443
+  external_port_env: NIFI_PORT
+  external_port_default: 11146
+  health: ''
+  type: docker
+  startup_check: false
+  startup_timeout: 600
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Design persistent data ingestion, routing and transformation flows
+    with Apache NiFi.
+  env_vars:
+  - key: NIFI_ADMIN_PASSWORD
+    required: true
+    secret: true
+    description: Random 64-hex password for the ods single-user administrator.
+  - key: NIFI_SENSITIVE_PROPS_KEY
+    required: true
+    secret: true
+    description: Independent random 64-hex flow encryption key; retain unchanged with
+      backups.
+  - key: NIFI_PUBLIC_URL
+    default: https://localhost:11146/nifi
+    description: Browser URL; update together with NIFI_PORT if changing the published
+      port.
+  ui_path: /
+  public_url_env: NIFI_PUBLIC_URL
+tags:
+- data-pipelines
+- automation
+- etl
+- open-source
+features:
+- id: nifi-flows
+  name: Apache NiFi
+  description: Design persistent data ingestion, routing and transformation flows
+    with Apache NiFi.
+  icon: Workflow
+  category: productivity
+  requirements:
+    services:
+    - nifi
+    vram_gb: 0
+  enabled_services_all:
+  - nifi
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: nifi
+    path: /

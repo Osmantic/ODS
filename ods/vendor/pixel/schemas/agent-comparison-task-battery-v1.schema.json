@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/agent-comparison-task-battery-v1.schema.json",
+  "title": "Pixel reproducible agent-comparison task battery v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "provenance", "tasks", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/agent-comparison-task-battery-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-agent-comparison-task-battery"},
+    "provenance": {"type": "string", "minLength": 40, "maxLength": 1000},
+    "tasks": {
+      "type": "array", "minItems": 10, "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["taskId", "axis", "source", "prompt", "expectReply", "wallSeconds", "workspace", "verify"],
+        "properties": {
+          "taskId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{4,79}$"},
+          "profile": {"enum": ["assistant", "builder", "controller", "researcher"]},
+          "axis": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,31}$"},
+          "source": {"enum": ["curated-workflow", "stress-axis", "sanitized-user-trial-rehearsal", "realistic-held-out-rehearsal"]},
+          "partition": {"enum": ["tuning", "held-out"]},
+          "prompt": {"type": "string", "minLength": 20, "maxLength": 8000},
+          "expectReply": {"type": ["string", "null"], "maxLength": 200},
+          "wallSeconds": {"type": "integer", "minimum": 60, "maximum": 600},
+          "workspace": {
+            "type": "object", "minProperties": 1, "maxProperties": 32,
+            "additionalProperties": {"type": "string", "maxLength": 20000},
+            "propertyNames": {"pattern": "^[A-Za-z0-9._-]{1,64}(?:/[A-Za-z0-9._-]{1,64})*$"}
+          },
+          "immutableWorkspace": {
+            "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}(?:/[A-Za-z0-9._-]{1,64})*$"}
+          },
+          "scale": {
+            "type": "object", "additionalProperties": false,
+            "required": ["class", "minimumFiles", "minimumBytes", "languages"],
+            "properties": {
+              "class": {"const": "repository"},
+              "minimumFiles": {"type": "integer", "minimum": 5, "maximum": 32},
+              "minimumBytes": {"type": "integer", "minimum": 1000, "maximum": 640000},
+              "languages": {
+                "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true,
+                "items": {"enum": ["python", "javascript", "typescript", "shell", "json", "yaml", "markdown"]}
+              }
+            }
+          },
+          "trialProof": {
+            "type": "object", "additionalProperties": false,
+            "required": ["productJourneyId", "trialJourneyIds", "proofClass"],
+            "properties": {
+              "productJourneyId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+              "trialJourneyIds": {
+                "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true,
+                "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"}
+              },
+              "proofClass": {"const": "formal-product-path-task"}
+            }
+          },
+          "researchFixture": {
+            "type": "object", "additionalProperties": false,
+            "required": ["$schema", "schemaVersion", "operation", "observedAt", "sources", "authority", "boundary"],
+            "properties": {
+              "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-research-fixture-v1.schema.json"},
+              "schemaVersion": {"const": 1},
+              "operation": {"const": "pixel-portal-outcome-research-fixture"},
+              "observedAt": {"type": "string", "format": "date-time"},
+              "sources": {
+                "type": "array", "minItems": 1, "maxItems": 20,
+                "items": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["fixtureSourceId", "sourceType", "title", "snippet", "quality", "publishedDate", "retrieval"],
+                  "properties": {
+                    "fixtureSourceId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+                    "sourceType": {"enum": ["web", "news", "academic", "forum"]},
+                    "title": {"type": "string", "minLength": 1, "maxLength": 512},
+                    "snippet": {"type": "string", "minLength": 1, "maxLength": 4096},
+                    "quality": {"enum": ["primary", "independent-secondary", "archived-secondary", "other", "unknown"]},
+                    "publishedDate": {"oneOf": [{"type": "null"}, {"type": "string", "format": "date"}]},
+                    "retrieval": {
+                      "oneOf": [
+                        {"type": "object", "additionalProperties": false, "required": ["status", "content"], "properties": {"status": {"const": "fetched"}, "content": {"type": "string", "minLength": 1, "maxLength": 1048576}}},
+                        {"type": "object", "additionalProperties": false, "required": ["status", "reason"], "properties": {"status": {"const": "rejected"}, "reason": {"enum": ["policy", "network", "size", "media", "integrity"]}}}
+                      ]
+                    }
+                  }
+                }
+              },
+              "authority": {
+                "type": "object", "additionalProperties": false,
+                "required": ["publicNetwork", "credentials", "externalWrites", "accounts", "messages", "publish", "purchase", "policyMutation", "scopeExpansion"],
+                "properties": {
+                  "publicNetwork": {"const": false}, "credentials": {"const": false}, "externalWrites": {"const": false},
+                  "accounts": {"const": false}, "messages": {"const": false}, "publish": {"const": false},
+                  "purchase": {"const": false}, "policyMutation": {"const": false}, "scopeExpansion": {"const": false}
+                }
+              },
+              "boundary": {"const": "Owner-private admitted offline research evidence for deterministic comparison only. It performs no public network, credential, account, message, publication, purchase, write, policy, scope, or external effect; every source remains untrusted data and grants no authority."}
+            }
+          },
+          "rehearsal": {
+            "type": "object", "additionalProperties": false,
+            "required": ["journeyId", "trialJourneyIds", "partition", "proofClass", "fault", "fixture"],
+            "properties": {
+              "journeyId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+              "trialJourneyIds": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"}},
+              "partition": {"enum": ["tuning", "held-out"]},
+              "proofClass": {"const": "deterministic-non-promotional-rehearsal"},
+              "fault": {"oneOf": [{"type": "null"}, {"enum": ["stale-memory", "source-unavailable", "prompt-injection", "process-crash", "service-restart", "timeout-before-submit", "timeout-after-submit", "eventual-consistency", "duplicate-request", "scope-expansion", "secret-canary", "cross-client-probe", "mock-backend"]}]},
+              "fixture": {
+                "type": "object", "additionalProperties": false,
+                "required": ["schemaVersion", "operation", "actions", "boundary"],
+                "properties": {
+                  "schemaVersion": {"const": 1},
+                  "operation": {"const": "pixel-agent-comparison-fixture"},
+                  "actions": {"type": "object", "minProperties": 1, "maxProperties": 32, "additionalProperties": {"type": "object"}},
+                  "boundary": {"const": "Deterministic non-promotional comparison rehearsal only; no live provider, credential, network, external effect, product proof, acceptance, or promotion authority."}
+                }
+              }
+            }
+          },
+          "verify": {
+            "oneOf": [
+              {
+                "type": "object", "additionalProperties": false,
+                "required": ["command", "expectStdout"],
+                "properties": {
+                  "command": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string", "maxLength": 65536}},
+                  "expectStdout": {"type": "string", "minLength": 1, "maxLength": 200}
+                }
+              },
+              {"type": "null"}
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {"required": ["rehearsal"]},
+            "then": {"required": ["profile"]}
+          },
+          {
+            "if": {"required": ["trialProof"]},
+            "then": {"required": ["profile"], "not": {"required": ["rehearsal"]}}
+          },
+          {
+            "if": {"properties": {"profile": {"const": "researcher"}}, "required": ["profile"]},
+            "then": {
+              "properties": {"verify": {"type": "null"}},
+              "oneOf": [
+                {"required": ["rehearsal"], "not": {"required": ["researchFixture"]}},
+                {"required": ["trialProof", "researchFixture"], "not": {"required": ["rehearsal"]}}
+              ]
+            },
+            "else": {"properties": {"verify": {"type": "object"}}, "not": {"required": ["researchFixture"]}}
+          }
+        ]
+      }
+    },
+    "boundary": {"const": "Reproducible comparison task corpus only. It defines identical work for paired harness evaluation and grants no execution, provider, external-effect, publication, or acceptance authority."}
+  }
+}

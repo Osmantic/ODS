@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/grocy/grocy",
+  "license": "MIT",
+  "source_ref": "v4.7.1",
+  "image": "lscr.io/linuxserver/grocy:latest@sha256:71226f43e18b15836833075c15c9d5d51d81a2a4fc38d56bb1dc05f34970cc80",
+  "image_repository": "https://github.com/linuxserver/docker-grocy",
+  "image_license": "GPL-3.0-only",
+  "image_version": "v4.7.1-ls341",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "LinuxServer maintained image; preserve native S6 setup, SQLite and config volume. Native first login requires changing admin/admin. No external product service or project API configured."
+}

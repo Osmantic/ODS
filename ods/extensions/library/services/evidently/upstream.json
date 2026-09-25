@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/evidentlyai/evidently",
+  "license": "Apache-2.0",
+  "image": "evidently/evidently-service:latest@sha256:5b38690426408061068eb5391e7c1fd3cff760a4f44e950c84977a69c271f385",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Open-source self-hosted monitoring UI. Send reports from the Evidently Python SDK to this service; cloud accounts and paid cloud dataset features are not required. Configure the same write secret in RemoteWorkspace clients. No hosted LLM judge is configured automatically."
+}

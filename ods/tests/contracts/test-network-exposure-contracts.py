@@ -8,7 +8,6 @@ import re
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SERVICES = ROOT / "extensions" / "services"
 POLICY = ROOT / "config" / "network-exposure-policy.json"
@@ -79,7 +78,7 @@ def test_exposed_services_are_policy_labeled() -> None:
         assert_true(entry.get("notes"), f"{service_id} missing notes")
 
 
-def test_hermes_is_internal_only_and_proxy_gated() -> None:
+def test_hermes_is_internal_only_with_optional_proxy_gate() -> None:
     hermes_compose = read(SERVICES / "hermes" / "compose.yaml")
     hermes_manifest = read(SERVICES / "hermes" / "manifest.yaml")
     proxy_caddyfile = read(SERVICES / "hermes-proxy" / "Caddyfile")
@@ -89,9 +88,49 @@ def test_hermes_is_internal_only_and_proxy_gated() -> None:
     assert_true(re.search(r"(?m)^\s{4}expose:\s*$", hermes_compose) is not None, "hermes compose should expose only internally")
     assert_true(manifest_value(hermes_manifest, "external_port_default") == "0", "hermes manifest external port must be 0")
     assert_true(policy["hermes"]["lan_exposure"] == "none", "hermes policy must mark no LAN exposure")
-    assert_true("forward_auth" in proxy_caddyfile, "hermes-proxy must verify sessions with forward_auth")
+    assert_true("@owner_card_required expression {$HERMES_REQUIRE_OWNER_CARD:false}" in proxy_caddyfile, "Hermes owner-card gate must default off")
+    assert_true("route @owner_card_required" in proxy_caddyfile, "session verification must be conditional")
+    assert_true(policy["hermes-proxy"]["auth_required"] is False, "default proxy policy must reflect direct access")
+    assert_true("forward_auth" in proxy_caddyfile, "opt-in Hermes gate must retain forward_auth")
     assert_true("/api/auth/verify-session" in proxy_caddyfile, "hermes-proxy must call dashboard auth verification")
     assert_true("reverse_proxy {$HERMES_PROXY_UPSTREAM:ods-hermes:9119}" in proxy_caddyfile, "hermes-proxy must forward to internal Hermes")
+
+
+def test_pixel_edge_is_internal_only_and_token_gated() -> None:
+    compose = read(SERVICES / "pixel-edge" / "compose.yaml.disabled")
+    manifest = read(SERVICES / "pixel-edge" / "manifest.yaml")
+    policy = json.loads(read(POLICY))["services"]["pixel-edge"]
+
+    assert_true(not re.search(r"(?m)^\s{4}ports:\s*$", compose), "pixel-edge must not bind a host port")
+    assert_true(manifest_value(manifest, "external_port_default") == "0", "pixel-edge external port must be 0")
+    assert_true("PIXEL_OPENWEBUI_KEY=${PIXEL_OPENWEBUI_KEY:?" in compose, "pixel-edge must require scoped bearer auth")
+    assert_true(policy["lan_exposure"] == "none", "pixel-edge policy must mark no LAN exposure")
+    assert_true(policy["auth_required"] is True, "pixel-edge policy must require auth")
+
+
+def test_model_router_is_internal_only() -> None:
+    base_compose = read(ROOT / "docker-compose.base.yml")
+    manifest = read(SERVICES / "model-router" / "manifest.yaml")
+    policy = json.loads(read(POLICY))["services"]["model-router"]
+    service_block = re.search(
+        r"(?ms)^  model-router:\s*\n(?P<body>.*?)(?=^  [A-Za-z0-9_.-]+:\s*\n|\Z)",
+        base_compose,
+    )
+
+    assert_true(service_block is not None, "model-router compose service must exist")
+    assert_true(
+        "\n    ports:" not in f"\n{service_block.group('body')}",
+        "model-router must not bind a host port",
+    )
+    assert_true(
+        manifest_value(manifest, "external_port_default") == "0",
+        "model-router external port must be 0",
+    )
+    assert_true(
+        manifest_value(manifest, "health_source") == "container",
+        "model-router health must come from its Docker healthcheck",
+    )
+    assert_true(policy["lan_exposure"] == "none", "model-router policy must mark no LAN exposure")
 
 
 def test_hermes_whatsapp_bridge_avoids_open_webui_port() -> None:
@@ -143,7 +182,42 @@ def test_ods_proxy_routes_talk_portal() -> None:
     caddyfile = read(SERVICES / "ods-proxy" / "Caddyfile")
 
     assert_true("talk.{$ODS_DEVICE_NAME:ods}.local" in caddyfile, "ods-proxy must route talk.<device>.local")
-    assert_true("reverse_proxy dashboard:3001" in caddyfile, "ODS Talk should be served by the dashboard container")
+    for host in ("talk", "dashboard"):
+        body = caddy_block_body(caddyfile, "http://%s.{$ODS_DEVICE_NAME:ods}.local {" % host)
+        assert_true(
+            "reverse_proxy dashboard:3011" in body and "dashboard:3001" not in body,
+            f"ods-proxy must send {host}.<device>.local to the dashboard's sign-in-required network listener",
+        )
+
+
+def test_dashboard_admin_api_requires_sign_in_off_the_machine() -> None:
+    nginx_conf = read(SERVICES / "dashboard" / "nginx.conf")
+    entrypoint = read(SERVICES / "dashboard" / "entrypoint.sh")
+    compose = read(ROOT / "docker-compose.base.yml")
+
+    blocks = re.findall(r"(?ms)^    location [^\n]*\{\n.*?^    \}", nginx_conf)
+    keyed = [block for block in blocks if 'Authorization "Bearer ${DASHBOARD_API_KEY}"' in block]
+    assert_true(len(keyed) >= 8, "expected the dashboard's API-key locations")
+    for block in keyed:
+        assert_true(
+            "auth_request /_ods_dashboard_gate;" in block,
+            "every location that adds the dashboard API key must pass the sign-in gate: " + block.splitlines()[0],
+        )
+    talk = next(block for block in blocks if block.startswith("    location ^~ /api/talk/"))
+    assert_true("DASHBOARD_API_KEY" not in talk, "ODS Talk must not receive the dashboard admin key")
+    assert_true(
+        "listen 3011;" in nginx_conf and '"__ODS_LOCAL_LISTENER__:1:0" 1;' in nginx_conf,
+        "only the loopback-published listener may skip sign-in, and only for loopback hosts without forwarding",
+    )
+    assert_true(
+        "- ODS_DASHBOARD_BIND=${BIND_ADDRESS:-127.0.0.1}" in compose
+        and '"${BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-3001}:3001"' in compose,
+        "the dashboard must learn the address its port 3001 is published on",
+    )
+    assert_true(
+        "LOCAL_LISTENER=off" in entrypoint and 's|__ODS_LOCAL_LISTENER__|${LOCAL_LISTENER}|g' in entrypoint,
+        "network-exposed binds must disable the local no-sign-in listener",
+    )
 
 
 def test_dashboard_csp_allows_ods_talk_tts_blob_audio() -> None:
@@ -151,6 +225,55 @@ def test_dashboard_csp_allows_ods_talk_tts_blob_audio() -> None:
 
     assert_true("Content-Security-Policy" in nginx_conf, "dashboard must keep a CSP header")
     assert_true("media-src 'self' blob:" in nginx_conf, "ODS Talk TTS playback uses blob: audio URLs")
+
+
+def test_dashboard_csp_allows_only_verified_pixel_preview_routes() -> None:
+    nginx_conf = read(SERVICES / "dashboard" / "nginx.conf")
+    entrypoint = read(SERVICES / "dashboard" / "entrypoint.sh")
+    dockerfile = read(SERVICES / "dashboard" / "Dockerfile")
+    compose = read(ROOT / "docker-compose.base.yml")
+
+    assert_true(
+        "frame-src 'self' http://localhost:__PIXEL_PREVIEW_PORT__ "
+        "http://127.0.0.1:__PIXEL_PREVIEW_PORT__ "
+        "http://*.localhost:__PIXEL_PREVIEW_PORT__;" in nginx_conf,
+        "dashboard CSP must permit same-route remote previews and per-artifact loopback origins",
+    )
+    assert_true(
+        "location ^~ /pixel-preview/" in nginx_conf
+        and "rewrite ^/pixel-preview/(.*)$ /preview/$1 break;" in nginx_conf
+        and 'proxy_set_header Authorization "Bearer ${DASHBOARD_API_KEY}";' in nginx_conf,
+        "remote Pixel previews must use the authenticated internal edge route",
+    )
+    assert_true(
+        "PIXEL_PREVIEW_PORT=${PIXEL_PREVIEW_PORT:-9437}" in compose,
+        "dashboard container must receive the configured Pixel preview port",
+    )
+    assert_true(
+        "*[!0-9]*" in entrypoint and '"$PREVIEW_PORT" -gt 65535' in entrypoint,
+        "dashboard must reject a non-numeric or out-of-range preview port",
+    )
+    assert_true(
+        's|__PIXEL_PREVIEW_PORT__|${PREVIEW_PORT}|g' in entrypoint,
+        "dashboard must substitute only the validated preview port into its CSP",
+    )
+    assert_true(
+        "COPY nginx.conf /etc/nginx/conf.d/default.conf.template" in dockerfile,
+        "dashboard image must retain an immutable nginx template for restarts",
+    )
+    assert_true(
+        "pid /tmp/nginx.pid" in dockerfile,
+        "non-root dashboard nginx must keep its restartable PID file in a writable directory",
+    )
+    assert_true(
+        'grep -qF \'__PIXEL_PREVIEW_PORT__\' "$NGINX_TEMPLATE"' in entrypoint
+        and 'cp "$NGINX_TEMPLATE" "$NGINX_CONF"' in entrypoint,
+        "dashboard must render its active nginx config from the template on every start",
+    )
+    assert_true(
+        "^[A-Za-z0-9._~+/=-]+$" in entrypoint,
+        "dashboard must reject API keys containing sed or nginx control characters",
+    )
 
 
 def test_dashboard_csp_allows_huggingface_author_avatars_only_as_images() -> None:
@@ -211,7 +334,7 @@ def test_dashboard_preserves_forwarded_https_for_api_cookies() -> None:
     nginx_conf = read(SERVICES / "dashboard" / "nginx.conf")
 
     assert_true(
-        "map $http_x_forwarded_proto $ods_forwarded_proto" in nginx_conf,
+        "map $http_x_forwarded_proto $ods_cookie_scheme" in nginx_conf,
         "dashboard nginx must derive the original client scheme",
     )
     assert_true(
@@ -223,10 +346,8 @@ def test_dashboard_preserves_forwarded_https_for_api_cookies() -> None:
         "dashboard API routes must not overwrite the original HTTPS scheme",
     )
     assert_true(
-        nginx_conf.count(
-            "proxy_set_header X-Forwarded-Proto $ods_forwarded_proto;"
-        )
-        == 5,
+        set(re.findall(r"proxy_set_header X-Forwarded-Proto ([^;]+);", nginx_conf))
+        == {"$ods_cookie_scheme"},
         "every dashboard API proxy location must forward the derived scheme",
     )
 
@@ -256,11 +377,15 @@ def test_litellm_gateway_auth_is_enforced() -> None:
 def main() -> int:
     tests = [
         test_exposed_services_are_policy_labeled,
-        test_hermes_is_internal_only_and_proxy_gated,
+        test_hermes_is_internal_only_with_optional_proxy_gate,
+        test_pixel_edge_is_internal_only_and_token_gated,
+        test_model_router_is_internal_only,
         test_hermes_whatsapp_bridge_avoids_open_webui_port,
         test_hermes_local_provider_has_generous_timeouts,
         test_ods_proxy_routes_talk_portal,
+        test_dashboard_admin_api_requires_sign_in_off_the_machine,
         test_dashboard_csp_allows_ods_talk_tts_blob_audio,
+        test_dashboard_csp_allows_only_verified_pixel_preview_routes,
         test_ods_proxy_caps_request_body_sizes,
         test_hermes_proxy_caps_request_body,
         test_dashboard_pre_stages_hsts,

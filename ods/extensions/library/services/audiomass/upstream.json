@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/pkalogiros/AudioMass",
+  "license": "MIT",
+  "image": "nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "source_commit": "21f5ee1362a47be6f0dbe6e4969a15e43d21b044",
+  "source_sha256": "de7ed18349e4caed8d0025d56a3d620cbe79244f1345b3728089f5b55f834bf3",
+  "notes": "Exact production snapshot. MIT original code, bundled codec/library licenses retained (BSD/LGPL). Native src/index.html loads local unminified scripts and workers; no npm install or external encoder service. Browser-local sessions and explicit audio exports."
+}

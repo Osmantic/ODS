@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-watchdog-event-v1.schema.json",
+  "title": "Pixel Deep Work capability watchdog event v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["sequence", "observedAt", "tool", "effectClass", "eventFingerprintSha256", "outcome", "failureFingerprintSha256", "verifiedProgressEpoch", "previousEventSha256", "recordSha256"],
+  "properties": {
+    "sequence": {"type": "integer", "minimum": 0, "maximum": 1000000},
+    "observedAt": {"type": "string", "format": "date-time"},
+    "tool": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$"},
+    "effectClass": {"enum": ["read-only", "workspace", "brokered-network", "external"]},
+    "eventFingerprintSha256": {"$ref": "#/$defs/sha256"},
+    "outcome": {"enum": ["success", "error", "timeout", "cancelled"]},
+    "failureFingerprintSha256": {"$ref": "#/$defs/nullableSha256"},
+    "verifiedProgressEpoch": {"type": "integer", "minimum": 0, "maximum": 1000000},
+    "previousEventSha256": {"$ref": "#/$defs/nullableSha256"},
+    "recordSha256": {"$ref": "#/$defs/sha256"}
+  },
+  "allOf": [
+    {"if": {"properties": {"outcome": {"const": "success"}}, "required": ["outcome"]}, "then": {"properties": {"failureFingerprintSha256": {"const": null}}}, "else": {"properties": {"failureFingerprintSha256": {"type": "string"}}}}
+  ],
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "nullableSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}}
+}

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-onboarding-v1.schema.json",
+  "title": "Pixel credential-free local onboarding settings v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "deploymentProfile", "capabilityProfile", "ownerName", "organization", "deploymentName", "timeZone", "agentName", "modelProvider", "modelId", "modelName", "modelBaseUrl", "modelPrivateHosts", "modelReasoning", "modelContextWindow", "modelMaxTokens", "searxngBaseUrl", "embeddingModel", "googleAccount", "calendarId", "gatewayPort", "limbs", "calendarDirectEnabled"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "deploymentProfile": {"enum": ["prepared", "reference"]},
+    "capabilityProfile": {"enum": ["minimal", "chief-of-staff", "research", "engineering-operator"]},
+    "ownerName": {"type": "string", "minLength": 1, "maxLength": 120},
+    "organization": {"type": "string", "minLength": 1, "maxLength": 120},
+    "deploymentName": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "timeZone": {"type": "string", "minLength": 1, "maxLength": 120},
+    "agentName": {"type": "string", "minLength": 1, "maxLength": 120},
+    "modelProvider": {"type": "string", "minLength": 1, "maxLength": 64},
+    "modelId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "modelName": {"type": "string", "minLength": 1, "maxLength": 120},
+    "modelBaseUrl": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "modelPrivateHosts": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 253}},
+    "modelReasoning": {"type": "boolean"},
+    "modelContextWindow": {"type": "integer", "minimum": 4096, "maximum": 10000000},
+    "modelMaxTokens": {"type": "integer", "minimum": 256, "maximum": 1000000},
+    "searxngBaseUrl": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "embeddingModel": {"type": "string", "minLength": 1, "maxLength": 256},
+    "googleAccount": {"type": "string", "minLength": 3, "maxLength": 320},
+    "calendarId": {"type": "string", "minLength": 1, "maxLength": 320},
+    "gatewayPort": {"type": "integer", "minimum": 1024, "maximum": 65535},
+    "frontierAuthMode": {"enum": ["chatgpt", "api-key"]},
+    "frontierBudgetProfile": {"enum": ["starter", "balanced", "expanded", "custom"]},
+    "limbs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["email", "calendar", "social", "web", "operations", "frontier"],
+      "properties": {
+        "email": {"type": "boolean"},
+        "calendar": {"type": "boolean"},
+        "social": {"type": "boolean"},
+        "web": {"type": "boolean"},
+        "operations": {"type": "boolean"},
+        "frontier": {"type": "boolean"}
+      }
+    },
+    "calendarDirectEnabled": {"type": "boolean"}
+  },
+  "oneOf": [
+    {"required": ["frontierAuthMode", "frontierBudgetProfile"]},
+    {"not": {"anyOf": [{"required": ["frontierAuthMode"]}, {"required": ["frontierBudgetProfile"]}]}}
+  ]
+}

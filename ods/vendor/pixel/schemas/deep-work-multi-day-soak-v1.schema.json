@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/deep-work-multi-day-soak-v1.schema.json",
+  "title": "Pixel Deep Work multi-day soak campaign v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "campaignId", "createdAt", "source", "schedule", "paths", "bindings", "privacy", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "./schemas/deep-work-multi-day-soak-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-deep-work-multi-day-soak"},
+    "campaignId": {"type": "string", "pattern": "^deepworksoak-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree", "programSha256", "runtimeSnapshotSha256"],
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "programSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "runtimeSnapshotSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intervalSeconds", "minimumGapSeconds", "maximumGapSeconds", "minimumElapsedSeconds", "milestones", "expectedCycles"],
+      "properties": {
+        "intervalSeconds": {"const": 3600},
+        "minimumGapSeconds": {"const": 3300},
+        "maximumGapSeconds": {"const": 7200},
+        "minimumElapsedSeconds": {"const": 172800},
+        "milestones": {"const": 24},
+        "expectedCycles": {"const": 49}
+      }
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "stateRoot", "objectStore", "goalPath", "jobsPath", "policyPath", "invocationLedgerRoot"],
+      "properties": {
+        "root": {"type": "string", "minLength": 2},
+        "stateRoot": {"type": "string", "minLength": 2},
+        "objectStore": {"type": "string", "minLength": 2},
+        "goalPath": {"type": "string", "minLength": 2},
+        "jobsPath": {"type": "string", "minLength": 2},
+        "policyPath": {"type": "string", "minLength": 2},
+        "invocationLedgerRoot": {"type": "string", "minLength": 2}
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["goalSha256", "jobsSha256", "policySha256", "inputObjectSha256", "inputObjectBytes"],
+      "properties": {
+        "goalSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "jobsSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "policySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "inputObjectSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "inputObjectBytes": {"type": "integer", "minimum": 1, "maximum": 1048576}
+      }
+    },
+    "privacy": {"const": {"providerCalls": 0, "credentialInputs": 0, "networkRequests": 0, "externalEffects": 0, "productionDeploymentsTouched": 0}},
+    "authority": {"const": {"grantsWork": false, "grantsLease": false, "grantsCredentials": false, "grantsProviderUse": false, "grantsExternalEffects": false, "grantsDeployment": false, "grantsRelease": false}},
+    "boundary": {"const": "Credential-free disposable multi-day qualification only. Synthetic child transitions exercise durable production goal custody without invoking a worker, provider, network, credential, external effect, deployment, or release action."}
+  }
+}

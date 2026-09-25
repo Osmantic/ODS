@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "scope": "published-snapshots",
+  "siteId": "site-ebbd5df0d5f45a72c742e331",
+  "beforeSiteId": "site-c329b0034a27cdb560a2bb77",
+  "sha256": "ebbd5df0d5f45a72c742e331de704d508e3039356adb2f159f148a1eb4274e28",
+  "beforeSha256": "c329b0034a27cdb560a2bb77cb484ed852c89321c066e77bd38cfb7866db78b1",
+  "changes": [
+    {
+      "path": "index.html",
+      "change": "modified",
+      "additions": 2,
+      "deletions": 2,
+      "diff": [
+        {
+          "type": "remove",
+          "oldLine": 1,
+          "newLine": null,
+          "text": "old first"
+        },
+        {
+          "type": "add",
+          "oldLine": null,
+          "newLine": 1,
+          "text": "new first"
+        },
+        {
+          "type": "remove",
+          "oldLine": 3,
+          "newLine": null,
+          "text": "old last"
+        },
+        {
+          "type": "add",
+          "oldLine": null,
+          "newLine": 3,
+          "text": "new last"
+        }
+      ],
+      "truncated": true
+    }
+  ]
+}

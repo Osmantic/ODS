@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/wallabag/wallabag",
+  "license": "MIT",
+  "image": "wallabag/wallabag:2.6.14@sha256:4a527e027e0d59e87c14225ef11e005af3d4890374202ad319ce5e63dfc66709",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 2.6.14 image, upstream root supervisor and privilege drop retained. Exact source patch replaces default initial account credentials; existing SQLite database is preserved. Separate article and image volumes."
+}

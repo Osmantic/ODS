@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/AykutSarac/jsoncrack.com",
+  "license": "Apache-2.0",
+  "source_ref": "a46d0d0adb098e12e577a083e87ead7f61f90098",
+  "source_sha256": "f3eaf13430771e38a9436b19e7457b522bcddadca93b8c82ceac7ada09037126",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Source build with frozen pnpm lock, native static export, locally packaged Monaco 0.55.1. Commercial external editor mode disabled; browser files are not server workspace files."
+}

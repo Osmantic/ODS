@@ -72,9 +72,47 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-lemonade-task-cleanup.ps1
 
+      - name: Windows Hermes Config Runtime Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-hermes-config-runtime.ps1
+
+      - name: Windows Hermes Credential Relock Contract (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-hermes-config-acl-repeat.ps1
+
+      - name: Windows Hermes Credential Relock Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-hermes-config-acl-repeat.ps1
+
+      - name: Windows Env Credential ACL (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-env-credential-acl.ps1
+
+      - name: Windows Env Credential ACL (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-env-credential-acl.ps1
+
+      - name: Windows Model Store and Reinstall Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-model-stores.ps1
+
+      - name: Windows Model Store and Reinstall Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-model-stores.ps1
+
       - name: Windows Model Activation Contract
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1
+
+      - name: Windows Bootstrap Download Handoff Contract
+        shell: pwsh
+        run: ./tests/test-windows-bootstrap-download-handoff.ps1
 
       - name: Windows Dotenv Serializer Contract
         shell: pwsh
@@ -95,6 +133,24 @@ jobs:
       - name: Windows Runtime Recovery Contract
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
+
+      - name: Windows Install Model Proof
+        shell: pwsh
+        run: ./tests/contracts/test-windows-install-model-proof.ps1
+
+      - name: Windows Install Model Proof (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-install-model-proof.ps1
+
+      - name: Windows Installer Presentation Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-installer-presentation.ps1
+
+      - name: Windows Installer Presentation Contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-installer-presentation.ps1
 
       - name: Windows Installed Footprint Contract
         if: runner.os == 'Windows'

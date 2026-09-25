@@ -1,9 +1,27 @@
 use crate::state::{GpuInfo, InstallPhase, InstallState};
 use crate::{docker, gpu, installer, platform};
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 const ALLOWED_FEATURES: &[&str] = &["voice", "workflows", "rag", "image_gen", "all"];
+
+static INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+struct InstallPermit;
+
+impl Drop for InstallPermit {
+    fn drop(&mut self) {
+        INSTALL_IN_PROGRESS.store(false, Ordering::Release);
+    }
+}
+
+fn acquire_install_permit() -> Result<InstallPermit, String> {
+    INSTALL_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .map(|_| InstallPermit)
+        .map_err(|_| "An ODS installation is already in progress.".into())
+}
 
 // ---- System Check ----
 
@@ -161,6 +179,10 @@ pub async fn start_install(
     install_dir: Option<String>,
 ) -> Result<String, String> {
     validate_install_request(tier, &features)?;
+    // The installer mutates a shared checkout and its Docker project. A single
+    // process-wide permit prevents duplicate UI requests from racing those
+    // side effects and leaving a half-applied installation behind.
+    let permit = acquire_install_permit()?;
 
     let dir = install_dir
         .map(std::path::PathBuf::from)
@@ -177,7 +199,10 @@ pub async fn start_install(
     let state_clone = state.clone();
 
     // Run installation in a blocking thread
-    tokio::task::spawn_blocking(move || installer::run_install(state_clone, dir, tier, features))
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        installer::run_install(state_clone, dir, tier, features)
+    })
         .await
         .map_err(|e| format!("Install task failed: {}", e))?
         .map(|_| "Installation complete!".to_string())
@@ -297,5 +322,21 @@ fn state_file_path() -> std::path::PathBuf {
         std::path::PathBuf::from(base)
             .join("ods")
             .join("installer-state.json")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{acquire_install_permit, INSTALL_IN_PROGRESS};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn installation_admission_is_single_flight() {
+        INSTALL_IN_PROGRESS.store(false, Ordering::Release);
+        let permit = acquire_install_permit().expect("first installation should be admitted");
+        assert!(acquire_install_permit().is_err());
+        drop(permit);
+        assert!(acquire_install_permit().is_ok());
+        INSTALL_IN_PROGRESS.store(false, Ordering::Release);
     }
 }

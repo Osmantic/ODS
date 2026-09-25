@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-verifier-v1.schema.json",
+  "title": "Pixel backend-neutral deterministic outcome verifier v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "operation", "schemaVersion", "journeyId", "acceptanceCriteria", "checks", "forbiddenPhrases", "finalReply", "workspaceVerification", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-verifier-v1.schema.json"},
+    "operation": {"const": "pixel-portal-outcome-deterministic-verifier"},
+    "schemaVersion": {"const": 1},
+    "journeyId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+    "acceptanceCriteria": {
+      "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 1000}
+    },
+    "checks": {
+      "type": "array", "minItems": 1, "maxItems": 32,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["assertionId", "check"],
+        "properties": {
+          "assertionId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+          "check": {"enum": ["evidence-binds-source-snapshot", "command-exit-zero", "artifact-parses", "artifact-language-bounded", "evidence-covers-journey", "workspace-verification-passes", "final-reply-exact"]}
+        }
+      }
+    },
+    "forbiddenPhrases": {
+      "type": "array", "maxItems": 64,
+      "items": {"type": "string", "minLength": 1, "maxLength": 256}
+    },
+    "finalReply": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["sha256", "bytes", "normalization"],
+          "properties": {
+            "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "bytes": {"type": "integer", "minimum": 1, "maximum": 65536},
+            "normalization": {"const": "exact-utf8"}
+          }
+        }
+      ]
+    },
+    "workspaceVerification": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["mode", "checks", "immutablePathPrefixes", "maxRuntimeSeconds", "maxOutputBytes", "network", "boundary"],
+          "properties": {
+            "mode": {"const": "independent"},
+            "checks": {
+              "type": "array", "minItems": 1, "maxItems": 16,
+              "items": {"oneOf": [{"$ref": "#/$defs/patchCheck"}, {"$ref": "#/$defs/commandCheck"}]}
+            },
+            "immutablePathPrefixes": {
+              "type": "array", "maxItems": 64, "uniqueItems": true,
+              "items": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*/?$"}
+            },
+            "maxRuntimeSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+            "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+            "network": {"const": "none"},
+            "boundary": {"const": "Immutable controller-selected checks only. Worker output cannot alter criteria, commands, protected paths, budgets, network, or pass/fail rules."}
+          }
+        }
+      ]
+    },
+    "boundary": {"const": "Private controller-selected verifier definition only. It binds semantic acceptance to independent checks and grants no worker-selected test, execution, network, external-effect, merge, deployment, publication, completion, acceptance, or promotion authority."}
+  },
+  "$defs": {
+    "criterionIndexes": {
+      "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 0, "maximum": 31}
+    },
+    "patchCheck": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "criterionIndexes"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "kind": {"const": "patch-integrity"},
+        "criterionIndexes": {"$ref": "#/$defs/criterionIndexes"}
+      }
+    },
+    "commandCheck": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "criterionIndexes", "workingDirectory", "argv", "timeoutSeconds", "maxOutputBytes"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "kind": {"const": "command"},
+        "criterionIndexes": {"$ref": "#/$defs/criterionIndexes"},
+        "workingDirectory": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+        "argv": {
+          "type": "array", "minItems": 1, "maxItems": 64,
+          "prefixItems": [{"type": "string", "pattern": "^/(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9._+-]+$"}],
+          "items": {"type": "string", "minLength": 1, "maxLength": 4096}
+        },
+        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216}
+      }
+    }
+  }
+}

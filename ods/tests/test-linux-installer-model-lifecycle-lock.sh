@@ -57,14 +57,32 @@ complete_line="$(grep -n 'write_status "complete"' "$UPGRADER" | tail -1 | cut -
     || fail "upgrader must confirm lifecycle ownership before config promotion"
 (( bootstrap_cleanup_line < complete_line )) \
     || fail "upgrader completion must follow bootstrap cleanup"
-grep -q "trap 'release_model_lifecycle_lock; release_upgrade_lock' EXIT" "$UPGRADER" \
-    || fail "upgrader must retain and automatically release both lifecycle locks"
+grep -q "trap 'cleanup_bootstrap_pixel_model_transaction; release_model_router_swap_gate; release_model_lifecycle_lock; release_upgrade_lock' EXIT" "$UPGRADER" \
+    || fail "upgrader must clean up Pixel before automatically releasing the router gate and both lifecycle locks"
 finalization_locks="$(grep -c 'acquire_model_lifecycle_lock || fail "Could not serialize full-model finalization' "$UPGRADER")"
 [[ "$finalization_locks" -ge 3 ]] \
     || fail "every Linux path that publishes a final GGUF must first acquire the lifecycle lock"
 grep -q 'Download interrupted.*release_model_lifecycle_lock; release_upgrade_lock' "$UPGRADER" \
     || fail "interrupted finalization must release both lifecycle locks"
 pass "upgrader locks finalization/activation and retains ownership through cleanup"
+
+# Exercise the installed EXIT trap, including a fail-closed Pixel cleanup result.
+# Pixel may retain its durable hold, but unrelated shell locks must still release.
+python3 - "$UPGRADER" <<'PY'
+import pathlib, re, subprocess, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+trap = re.search(r"^    (trap '[^'\n]*' EXIT)$", source, re.M).group(1)
+expected = ["pixel", "router", "lifecycle", "upgrade"]
+for cleanup_rc in (0, 1):
+    script = "set -uo pipefail\n" + f"cleanup_bootstrap_pixel_model_transaction() {{ echo pixel; return {cleanup_rc}; }}\n"
+    script += "release_model_router_swap_gate() { echo router; }\n"
+    script += "release_model_lifecycle_lock() { echo lifecycle; }\n"
+    script += "release_upgrade_lock() { echo upgrade; }\n"
+    result = subprocess.run(["bash", "-c", script + trap + "\nexit 73\n"], text=True, capture_output=True)
+    assert result.returncode == 73, result
+    assert result.stdout.splitlines() == expected, result
+PY
+pass "actual EXIT trap cleans Pixel first and releases shell locks even if Pixel stays held"
 
 if ! command -v flock >/dev/null 2>&1; then
     echo "[SKIP] flock is unavailable; static lifecycle lock contracts passed, runtime contention test skipped"

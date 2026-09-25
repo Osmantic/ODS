@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/Kozea/Radicale",
+  "license": "GPL-3.0",
+  "source_ref": "v3.8.0",
+  "image": "python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "PyPI Radicale 3.8.0 with exact dependency versions; native bcrypt authentication, owner-only rights and persistent DAV collections. No automatic import or external account setup. HTTP health alone does not verify DAV synchronization."
+}

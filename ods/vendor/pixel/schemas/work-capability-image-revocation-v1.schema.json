@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-image-revocation-v1.schema.json",
+  "title": "Pixel Deep Work capability image admission revocation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "pack", "admissionReceiptSha256", "revokedAt", "enabled", "image", "residue", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-image-revocation-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-capability-image-revocation"},
+    "pack": {"$ref": "#/$defs/pack"},
+    "admissionReceiptSha256": {"$ref": "#/$defs/sha256"},
+    "revokedAt": {"type": "string", "format": "date-time"},
+    "enabled": {"const": false},
+    "image": {"const": {"ownedByPixel": false, "pulledByPixel": false, "retainedOnHost": true, "executedByAdmission": false}},
+    "residue": {"const": {"admission": false, "controllerRegistration": false, "healthAuthority": false}},
+    "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Content-free revocation of Pixel's admission for one unowned local image. The shared image is retained; revocation grants no deletion, trust, health probe, tool use, execution, reinstall, external effect, or completion authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "pack": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "packSha256", "treeSha256", "signerIdentity"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+        "packSha256": {"$ref": "#/$defs/sha256"},
+        "treeSha256": {"$ref": "#/$defs/sha256"},
+        "signerIdentity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$"}
+      }
+    },
+    "authority": {
+      "const": {
+        "grantsHealthProbe": false,
+        "grantsToolUse": false,
+        "grantsDataAccess": false,
+        "grantsImagePull": false,
+        "grantsExecution": false,
+        "grantsNetwork": false,
+        "grantsExternalEffects": false,
+        "grantsCompletion": false
+      }
+    }
+  }
+}

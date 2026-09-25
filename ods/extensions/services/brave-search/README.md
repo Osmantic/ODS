@@ -110,7 +110,7 @@ Parameters:
 |---|---|
 | `format` | Required. Only `json` is supported; anything else returns `400 unsupported_format` |
 | `q` | Required. Missing returns `400 missing_query_param_q` |
-| `pageno` | 1-based page (searxng semantics), mapped to Brave's 0-based offset, capped at page 10 |
+| `pageno` | 1-based page (searxng semantics), mapped to Brave's 0-based offset. Pages above 10 return empty results with a range explanation in unresponsive_engines, without an upstream request |
 | `categories` | Only `general` is servable. Other categories (`images`, `videos`, `news`, …) return empty results with an honest `unresponsive_engines` entry |
 | `engines` | If specified and `brave` is not among them, returns empty results with `unresponsive_engines` entries — the requested engines don't exist here |
 | `language`, `time_range`, `safesearch` | Accepted but ignored |

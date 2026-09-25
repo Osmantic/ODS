@@ -91,10 +91,12 @@ if not isinstance(data, dict):
 
 for value in data.values():
     if not isinstance(value, dict):
-        continue
+        print("invalid sessions index: each entry must be an object", file=sys.stderr)
+        raise SystemExit(1)
     session_id = value.get("sessionId")
     if not isinstance(session_id, str) or not session_id:
-        continue
+        print("invalid sessions index: each entry requires a non-empty string sessionId", file=sys.stderr)
+        raise SystemExit(1)
     if "\n" in session_id or "\r" in session_id:
         print("invalid sessions index: sessionId contains a line break", file=sys.stderr)
         raise SystemExit(1)
@@ -146,12 +148,16 @@ for f in "$SESSIONS_DIR"/*.jsonl; do
 
     # Check if this session is active
     IS_ACTIVE=false
-    for ID in "${ACTIVE_IDS[@]}"; do
-        if [ "$BASENAME" = "$ID" ]; then
-            IS_ACTIVE=true
-            break
-        fi
-    done
+    # Bash before 4.4 treats an initialized empty array as unset under
+    # `set -u`, so only expand it when the index contains active sessions.
+    if [[ ${#ACTIVE_IDS[@]} -gt 0 ]]; then
+        for ID in "${ACTIVE_IDS[@]}"; do
+            if [ "$BASENAME" = "$ID" ]; then
+                IS_ACTIVE=true
+                break
+            fi
+        done
+    fi
 
     if [ "$IS_ACTIVE" = false ]; then
         SIZE=$(du -h "$f" | cut -f1)

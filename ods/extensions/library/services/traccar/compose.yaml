@@ -1,0 +1,95 @@
+services:
+  traccar:
+    image: ods/traccar:6.15.3-local-v1
+    container_name: ods-traccar
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${TRACCAR_PORT:-11118}:8082
+    - 127.0.0.1:${TRACCAR_DEVICE_PORT:-11119}:5055
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://127.0.0.1:8082/api/server
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    - traccar-internal
+    user: 1000:1000
+    environment:
+      CONFIG_USE_ENVIRONMENT_VARIABLES: 'true'
+      DATABASE_PASSWORD: ${TRACCAR_DB_PASSWORD:?Set a 64-hex database password}
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - traccar-data:/opt/traccar/data
+    - traccar-media:/opt/traccar/media
+    depends_on:
+      traccar-db:
+        condition: service_healthy
+  traccar-db:
+    image: postgres:16-alpine@sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb
+    restart: unless-stopped
+    networks:
+    - traccar-internal
+    environment:
+      POSTGRES_DB: traccar
+      POSTGRES_USER: traccar
+      POSTGRES_PASSWORD: ${TRACCAR_DB_PASSWORD:?Set a 64-hex database password}
+    volumes:
+    - traccar-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - traccar
+      - -d
+      - traccar
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    container_name: ods-traccar-db
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+  traccar-internal:
+    internal: true
+volumes:
+  traccar-data: {}
+  traccar-media: {}
+  traccar-db-data: {}

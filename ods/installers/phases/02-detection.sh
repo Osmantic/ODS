@@ -14,7 +14,8 @@
 #           chapter(), ai(), ai_ok(), log(), warn(), success()
 # Provides: GPU_BACKEND, GPU_NAME, GPU_VRAM, GPU_COUNT, GPU_MEMORY_TYPE,
 #           TIER, TIER_NAME, LLM_MODEL, GGUF_FILE, GGUF_URL, MAX_CONTEXT,
-#           COMPOSE_FILE, COMPOSE_FLAGS, RAM_GB, DISK_AVAIL, BACKEND_ID,
+#           COMPOSE_FILE, COMPOSE_FLAGS, RAM_GB, MODEL_TIER_RAM_GB,
+#           DISK_AVAIL, BACKEND_ID,
 #           LLM_HEALTHCHECK_URL, LLM_PUBLIC_API_PORT,
 #           OPENCLAW_PROVIDER_NAME_DEFAULT, OPENCLAW_PROVIDER_URL_DEFAULT,
 #           GPU_TOPOLOGY_JSON, GPU_HAS_NVLINK, GPU_TOTAL_VRAM,
@@ -25,6 +26,7 @@
 # ============================================================================
 
 [[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "$SCRIPT_DIR/lib/safe-env.sh"
+. "$SCRIPT_DIR/installers/lib/wsl-memory.sh"
 
 ods_progress 12 "detection" "Detecting GPU hardware"
 chapter "SYSTEM DETECTION"
@@ -48,13 +50,9 @@ if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
     GPU_MEMORY_TYPE="none"
     TIER="CLOUD"
     if grep -qi microsoft /proc/version 2>/dev/null; then
-        _wsl_ram_bytes=""
-        if command -v powershell.exe &>/dev/null; then
-            _wsl_ram_bytes=$(powershell.exe -NoProfile -Command \
-                "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory" 2>/dev/null | tr -d '\r')
-        fi
-        if [[ -n "$_wsl_ram_bytes" && "$_wsl_ram_bytes" =~ ^[0-9]+$ ]]; then
-            RAM_KB=$((_wsl_ram_bytes / 1024))
+        _wsl_host_kb="$(ods_wsl_host_ram_kb)" || _wsl_host_kb=""
+        if [[ -n "$_wsl_host_kb" ]]; then
+            RAM_KB="$_wsl_host_kb"
         else
             RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
         fi
@@ -62,6 +60,7 @@ if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
         RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
     fi
     RAM_GB=$((RAM_KB / 1024 / 1024))
+    MODEL_TIER_RAM_GB="$RAM_GB"
     DISK_AVAIL=$(df -Pk "$HOME" 2>/dev/null | tail -1 | awk '{printf "%d", $4 / 1048576}')
     BACKEND_ID="cpu"
     LLM_HEALTHCHECK_URL="http://127.0.0.1:4000/health/readiness"
@@ -82,35 +81,28 @@ ai "Reading hardware telemetry..."
 
 load_capability_profile || true
 
-# RAM Detection (WSL2-aware: query Windows host RAM if available)
+# RAM detection. Runtime-profile eligibility must use the memory the VM can
+# actually address, not the Windows host's physical total. Keep a smaller
+# reserved value only for coarse tier selection; system_ram_min_gb profiles and
+# the persisted SYSTEM_RAM_GB contract describe actual addressable VM memory.
 if grep -qi microsoft /proc/version 2>/dev/null; then
-    _wsl_ram_kb=""
-    if command -v powershell.exe &>/dev/null; then
-        _wsl_ram_bytes=$(powershell.exe -NoProfile -Command \
-            "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory" 2>/dev/null | tr -d '\r')
-        if [[ -n "$_wsl_ram_bytes" && "$_wsl_ram_bytes" =~ ^[0-9]+$ ]]; then
-            _wsl_ram_kb=$((_wsl_ram_bytes / 1024))
-        fi
-    fi
-    if [[ -z "$_wsl_ram_kb" ]] && command -v wmic.exe &>/dev/null; then
-        _wsl_ram_kb=$(wmic.exe OS get TotalVisibleMemorySize /value 2>/dev/null \
-            | grep -oE '[0-9]+' | sed -n '1p')
-    fi
+    _wsl_ram_kb="$(ods_wsl_host_ram_kb)" || _wsl_ram_kb=""
+    _wsl_vm_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+    RAM_KB="$_wsl_vm_kb"
+    RAM_GB=$((RAM_KB / 1024 / 1024))
+    MODEL_TIER_RAM_GB="$(ods_wsl_model_ram_budget "$RAM_GB")"
+    _wsl_headroom_gb=$((RAM_GB - MODEL_TIER_RAM_GB))
     if [[ -n "$_wsl_ram_kb" && "$_wsl_ram_kb" =~ ^[0-9]+$ ]]; then
-        RAM_KB="$_wsl_ram_kb"
-        RAM_GB=$((RAM_KB / 1024 / 1024))
-        _wsl_vm_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-        _wsl_vm_gb=$((_wsl_vm_kb / 1024 / 1024))
-        log "WSL2 detected — Windows host RAM: ${RAM_GB}GB (WSL2 VM sees: ${_wsl_vm_gb}GB)"
+        _wsl_host_gb=$((_wsl_ram_kb / 1024 / 1024))
+        log "WSL2 detected — Windows host RAM: ${_wsl_host_gb}GB; VM RAM: ${RAM_GB}GB; tier budget: ${MODEL_TIER_RAM_GB}GB (${_wsl_headroom_gb}GB reserved for ODS services)"
     else
-        RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-        RAM_GB=$((RAM_KB / 1024 / 1024))
-        log "WSL2 detected — could not query Windows host RAM (VM sees: ${RAM_GB}GB)"
+        log "WSL2 detected — could not query Windows host RAM; VM RAM: ${RAM_GB}GB; tier budget: ${MODEL_TIER_RAM_GB}GB (${_wsl_headroom_gb}GB reserved for ODS services)"
         log "For correct tier selection: use --tier N or configure .wslconfig"
     fi
 else
     RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
     RAM_GB=$((RAM_KB / 1024 / 1024))
+    MODEL_TIER_RAM_GB="$RAM_GB"
     log "RAM: ${RAM_GB}GB"
 fi
 
@@ -264,6 +256,17 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
     else
         ai_warn "Could not determine driver version — continuing anyway"
     fi
+fi
+
+# The pinned Speaches CUDA image requires driver 575+, which is stricter than
+# the llama-server CUDA floor. Keep the primary NVIDIA LLM path enabled on
+# older drivers while selecting CPU Whisper and suppressing only its GPU
+# overlay. This mirrors the existing Windows installer contract.
+ods_configure_whisper_acceleration "$GPU_BACKEND" "${DRIVER_VERSION:-0}"
+if [[ "$WHISPER_ACCELERATION_FORCED_CPU" == "true" ]]; then
+    ai_warn "Whisper CUDA requires NVIDIA driver ${MIN_WHISPER_CUDA_DRIVER_VERSION}+; detected ${DRIVER_VERSION:-unknown}. Using CPU Whisper while keeping GPU inference enabled."
+elif [[ "$WHISPER_ACCELERATION" == "cpu" && "$GPU_BACKEND" == "nvidia" ]]; then
+    log "Whisper CPU acceleration explicitly selected; NVIDIA inference remains enabled"
 fi
 
 #-----------------------------------------------------------------------------
@@ -481,11 +484,11 @@ if [[ -z "$TIER" ]]; then
         fi
     elif [[ $GPU_VRAM -ge 40000 ]]; then
         TIER=4
-    elif [[ $GPU_VRAM -ge 20000 ]] || [[ $RAM_GB -ge 96 ]]; then
+    elif [[ $GPU_VRAM -ge 20000 ]] || [[ $MODEL_TIER_RAM_GB -ge 96 ]]; then
         TIER=3
-    elif [[ $GPU_VRAM -ge 12000 ]] || [[ $RAM_GB -ge 48 ]]; then
+    elif [[ $GPU_VRAM -ge 12000 ]] || [[ $MODEL_TIER_RAM_GB -ge 48 ]]; then
         TIER=2
-    elif [[ $GPU_VRAM -lt 4000 ]] && [[ $RAM_GB -lt 12 ]]; then
+    elif [[ $GPU_VRAM -lt 4000 ]] && [[ $MODEL_TIER_RAM_GB -lt 12 ]]; then
         TIER=0
     else
         TIER=1
@@ -546,18 +549,55 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
             fi
         fi
         if [[ -n "$_selector_python" ]]; then
-            _selector_env="$("$_selector_python" "$_selector_script" \
-                --catalog "$_selector_catalog" \
-                --backend "${GPU_BACKEND:-unknown}" \
-                --memory-type "${GPU_MEMORY_TYPE:-discrete}" \
-                --vram-mb "${GPU_VRAM:-0}" \
-                --ram-gb "${RAM_GB:-0}" \
-                --profile "${MODEL_PROFILE_EFFECTIVE:-${MODEL_PROFILE:-qwen}}" \
-                --tier "${TIER:-1}" \
-                --max-size-mb "${LLM_MODEL_SIZE_MB:-0}" \
-                --host-arch "${HOST_ARCH:-unknown}" \
-                --installable-only \
-                --env 2>>"$LOG_FILE" || true)"
+            PIXEL_AGENT_MODEL_READY=unknown
+            _pixel_default_selector=false
+            if declare -F ods_pixel_resolve_enablement >/dev/null 2>&1 \
+                && [[ "${ODS_MODE:-local}" == "local" ]] \
+                && [[ -z "${EXTERNAL_LLM_URL:-}" ]] \
+                && [[ "${LEMONADE_EXTERNAL:-false}" != "true" ]] \
+                && [[ "$(ods_pixel_resolve_enablement "${ENABLE_PIXEL:-auto}" 2>/dev/null || true)" == "pixel" ]]; then
+                _pixel_default_selector=true
+            fi
+            # Pixel adapts its prompt and tool surface to the selected route;
+            # catalog qualification is performance guidance, never an access
+            # gate. For the default agent, choose the strongest installable
+            # model that fits measured hardware instead of inheriting the
+            # bootstrap tier's download-size ceiling.
+            _selector_max_size_mb="${LLM_MODEL_SIZE_MB:-0}"
+            if [[ "$_pixel_default_selector" == true ]]; then
+                _selector_max_size_mb=0
+                # The selector overwrites this when its chosen model has an
+                # explicit Pixel capability verdict. Fail closed if selection
+                # itself cannot produce trusted metadata.
+                PIXEL_AGENT_MODEL_READY=false
+            fi
+            _run_catalog_selector() {
+                "$_selector_python" "$_selector_script" \
+                    --catalog "$_selector_catalog" \
+                    --backend "${GPU_BACKEND:-unknown}" \
+                    --memory-type "${GPU_MEMORY_TYPE:-discrete}" \
+                    --vram-mb "${GPU_VRAM:-0}" \
+                    --ram-gb "${RAM_GB:-0}" \
+                    --profile "${MODEL_PROFILE_EFFECTIVE:-${MODEL_PROFILE:-qwen}}" \
+                    --tier "${TIER:-1}" \
+                    --max-size-mb "$_selector_max_size_mb" \
+                    --host-arch "${HOST_ARCH:-unknown}" \
+                    --installable-only \
+                    "$@" \
+                    --env
+            }
+            _selector_status=0
+            _selector_env="$(_run_catalog_selector 2>>"$LOG_FILE")" || _selector_status=$?
+            if [[ "$_selector_status" -eq 2 ]]; then
+                error "No catalog model fits the detected memory and selected profile. Choose a smaller model profile or use cloud mode; refusing an unsafe tier-map fallback."
+                exit 1
+            fi
+            if [[ "$_pixel_default_selector" == true && -n "$_selector_env" ]]; then
+                log "Pixel default selected the strongest installable hardware-fit model; catalog qualification remains advisory"
+            fi
+            export PIXEL_AGENT_MODEL_READY
+            unset -f _run_catalog_selector
+            unset _selector_max_size_mb _pixel_default_selector
             if [[ -n "$_selector_env" ]]; then
                 if command -v load_model_selector_env_from_output >/dev/null 2>&1; then
                     load_model_selector_env_from_output <<< "$_selector_env"
@@ -572,6 +612,60 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
             log "Python unavailable for catalog model selector; using tier-map model ${LLM_MODEL}"
         fi
     fi
+fi
+
+# The tier/catalog result is a recommendation.  A valid local model already
+# activated through the Dashboard is operator state and must survive routine
+# installer reruns.  Keep those two concepts separate so updates can advertise
+# a newer recommendation without silently replacing the live agent model.
+INSTALLER_RECOMMENDED_MODEL="${LLM_MODEL:-}"
+INSTALLER_RECOMMENDED_GGUF="${GGUF_FILE:-}"
+INSTALLER_RECOMMENDED_CONTEXT="${MAX_CONTEXT:-}"
+MODEL_SELECTION_SOURCE="installer"
+if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${TIER:-}" != "CLOUD" ]]; then
+    _preserve_script="$SCRIPT_DIR/scripts/preserve-active-model.py"
+    if [[ -f "$_preserve_script" ]]; then
+        if [[ -z "${_selector_python:-}" ]]; then
+            if [[ -f "$SCRIPT_DIR/lib/python-cmd.sh" ]]; then
+                # shellcheck source=/dev/null
+                . "$SCRIPT_DIR/lib/python-cmd.sh"
+                _selector_python="$(ods_detect_python_cmd || true)"
+            elif command -v python3 >/dev/null 2>&1; then
+                _selector_python="python3"
+            fi
+        fi
+        if [[ -n "${_selector_python:-}" ]]; then
+            _preserved_model_env="$("$_selector_python" "$_preserve_script" \
+                --env "$INSTALL_DIR/.env" \
+                --catalog "$SCRIPT_DIR/config/model-library.json" \
+                --imports "$INSTALL_DIR/data/model-imports.json" \
+                --models-dir "$INSTALL_DIR/data/models" \
+                --state "$INSTALL_DIR/data/model-state.json" \
+                --backend "${GPU_BACKEND:-unknown}" \
+                --memory-type "${GPU_MEMORY_TYPE:-discrete}" \
+                --vram-mb "${GPU_VRAM:-0}" \
+                --ram-gb "${RAM_GB:-0}" \
+                --host-arch "${HOST_ARCH:-unknown}" \
+                2>>"$LOG_FILE" || true)"
+            if [[ -n "$_preserved_model_env" ]] && command -v load_model_selector_env_from_output >/dev/null 2>&1; then
+                # Remove every model-selector runtime value before loading the
+                # preserved active contract. The helper omits inactive optional
+                # LLAMA_* settings intentionally: exporting them as empty makes
+                # Compose pass an empty numeric value to llama.cpp.
+                unset MODEL_RUNTIME_PROFILE MODEL_RUNTIME_PROFILE_LABEL MODEL_RUNTIME_PROFILE_SOURCE
+                unset LLAMA_SERVER_IMAGE LLAMA_SERVER_MEMORY_LIMIT
+                unset LLAMA_CPP_RELEASE_TAG_OVERRIDE LLAMA_CPP_SERVER_BINARY
+                unset LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
+                unset LLAMA_ARG_N_CPU_MOE LLAMA_ARG_NO_CACHE_PROMPT
+                unset LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS LLAMA_ARG_SPEC_TYPE
+                unset LLAMA_ARG_SPEC_DRAFT_N_MAX LLAMA_ARG_SPLIT_MODE LLAMA_ARG_TENSOR_SPLIT
+                load_model_selector_env_from_output <<< "$_preserved_model_env"
+                log "Preserved active local model across installer rerun: ${LLM_MODEL} (${GGUF_FILE})"
+            fi
+        fi
+    fi
+elif [[ "${ODS_RESELECT_MODEL:-false}" == "true" ]]; then
+    log "Active-model preservation disabled by --reselect-model"
 fi
 
 # Display hardware summary with nice formatting

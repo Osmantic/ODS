@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/external-action-journal-event-v1.schema.json",
+  "title": "Pixel external action journal event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "actionId", "sequence", "previousEventSha256", "state", "recordedAt", "connector", "operation", "proposalSha256", "idempotencyKeySha256", "idempotencyMode", "providerTargetSha256", "attempt", "reasonCode", "observationSha256", "retryAllowed", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "kind": {"const": "pixel-external-action-journal-event"},
+    "actionId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,31}-[0-9]{13}-[a-f0-9]{8,32}$"},
+    "sequence": {"type": "integer", "minimum": 0, "maximum": 999999},
+    "previousEventSha256": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{64}$"}, {"type": "null"}]},
+    "state": {"enum": ["proposed", "submitting", "unknown", "reconciling", "succeeded", "failed", "canceled"]},
+    "recordedAt": {"type": "string", "format": "date-time"},
+    "connector": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$"},
+    "operation": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$"},
+    "proposalSha256": {"$ref": "#/$defs/hash"},
+    "idempotencyKeySha256": {"$ref": "#/$defs/hash"},
+    "idempotencyMode": {"enum": ["provider-idempotency-key", "deterministic-provider-object-id", "provider-reconciliation-marker", "internal-nonreplay"]},
+    "providerTargetSha256": {"$ref": "#/$defs/hash"},
+    "attempt": {"const": 1},
+    "reasonCode": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$"},
+    "observationSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+    "retryAllowed": {"type": "boolean"},
+    "boundary": {"const": "Content-free append-only custody for one bounded external action. It proves local state transitions and retry suppression, not provider acceptance, semantic correctness, operator approval, or completion without a terminal provider-bound observation."}
+  },
+  "allOf": [
+    {"if": {"properties": {"sequence": {"const": 0}}, "required": ["sequence"]}, "then": {"properties": {"state": {"const": "proposed"}, "previousEventSha256": {"const": null}}}},
+    {"if": {"properties": {"state": {"const": "proposed"}}, "required": ["state"]}, "then": {"properties": {"retryAllowed": {"const": true}}}, "else": {"properties": {"retryAllowed": {"const": false}}}},
+    {"if": {"properties": {"state": {"const": "succeeded"}}, "required": ["state"]}, "then": {"properties": {"observationSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}}
+  ],
+  "$defs": {"hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

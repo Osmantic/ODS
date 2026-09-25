@@ -1,0 +1,316 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "source": "pixel",
+      "documents": [
+        "docs/reference/cli.md",
+        "docs/reference/cli/README.md",
+        "docs/reference/cli/install-configure-maintain.md",
+        "docs/reference/cli/sources-external-actions.md",
+        "docs/reference/cli/operations.md",
+        "docs/reference/cli/frontier.md",
+        "docs/reference/cli/qualification-release-migration.md",
+        "docs/reference/cli/customization.md",
+        "docs/reference/cli/deep-work-local-work.md"
+      ]
+    },
+    {
+      "source": "schemas/",
+      "documents": ["docs/reference/schemas.md"]
+    },
+    {
+      "source": ".env.example",
+      "documents": ["docs/reference/configuration.md", "docs/reference/services-paths-and-ports.md"]
+    },
+    {
+      "source": "RELEASE-MANIFEST.json",
+      "documents": [
+        "docs/status.md",
+        "docs/use/deep-work.md",
+        "docs/releases/README.md",
+        "docs/releases/qualification.md",
+        "docs/releases/evidence-index.md",
+        "docs/reference/support-matrix.md"
+      ]
+    },
+    {
+      "source": "QUALIFICATION-MATRIX.json",
+      "documents": ["docs/status.md", "docs/releases/qualification.md", "docs/reference/support-matrix.md"]
+    },
+    {
+      "source": "OPENCLAW-COMPATIBILITY.json",
+      "documents": [
+        "docs/status.md",
+        "docs/releases/README.md",
+        "docs/releases/upstream-intake.md",
+        "docs/releases/evidence-index.md",
+        "docs/reference/support-matrix.md"
+      ]
+    },
+    {
+      "source": "scripts/docs/",
+      "documents": ["docs/contributing/documentation-contract.md", "docs/reference/document-inventory.md"]
+    },
+    {
+      "source": "scripts/bootstrap.sh",
+      "documents": ["docs/getting-started/requirements.md", "docs/getting-started/quickstart.md"]
+    },
+    {
+      "source": "DEPLOYMENT.md",
+      "documents": [
+        "docs/getting-started/requirements.md",
+        "docs/getting-started/quickstart.md",
+        "docs/getting-started/first-deployment.md",
+        "docs/getting-started/client-onboarding.md",
+        "docs/getting-started/post-install-checklist.md",
+        "docs/concepts/status-and-evidence.md"
+      ]
+    },
+    {
+      "source": "CONTROL-SURFACE.md",
+      "documents": [
+        "docs/getting-started/quickstart.md",
+        "docs/getting-started/first-deployment.md",
+        "docs/use/first-conversation.md",
+        "docs/concepts/status-and-evidence.md"
+      ]
+    },
+    {
+      "source": "control/server.py",
+      "documents": ["docs/use/first-conversation.md", "docs/use/control-surface.md"]
+    },
+    {
+      "source": "ACCEPTANCE-CHECKLIST.md",
+      "documents": ["docs/getting-started/post-install-checklist.md"]
+    },
+    {
+      "source": "QUALIFICATION.md",
+      "documents": [
+        "docs/concepts/status-and-evidence.md",
+        "docs/security/evaluations.md",
+        "docs/security/sealed-corpus.md",
+        "docs/releases/README.md",
+        "docs/releases/qualification.md",
+        "docs/releases/maintainer-runbook.md",
+        "docs/releases/failure-guide.md"
+      ]
+    },
+    {
+      "source": "OPERATIONS.md",
+      "documents": [
+        "docs/operations/runbook.md",
+        "docs/operations/command-cheat-sheet.md",
+        "docs/operations/verify-and-diagnose.md",
+        "docs/operations/backup-and-restore.md",
+        "docs/operations/update-and-rollback.md",
+        "docs/operations/monitoring-and-logs.md",
+        "docs/operations/troubleshooting.md",
+        "docs/operations/support-bundle.md",
+        "docs/operations/faq.md",
+        "docs/operations/decommission.md"
+      ]
+    },
+    {
+      "source": "UPGRADE.md",
+      "documents": [
+        "docs/operations/update-and-rollback.md",
+        "docs/operations/command-cheat-sheet.md",
+        "docs/operations/faq.md",
+        "docs/releases/README.md",
+        "docs/releases/maintainer-runbook.md",
+        "docs/releases/failure-guide.md"
+      ]
+    },
+    {
+      "source": "scripts/verify.sh",
+      "documents": ["docs/operations/runbook.md", "docs/operations/verify-and-diagnose.md", "docs/operations/monitoring-and-logs.md", "docs/operations/troubleshooting.md"]
+    },
+    {
+      "source": "scripts/backup-private-state.sh",
+      "documents": ["docs/operations/backup-and-restore.md"]
+    },
+    {
+      "source": "scripts/restore-private-state.sh",
+      "documents": ["docs/operations/backup-and-restore.md"]
+    },
+    {
+      "source": "SUPPORT.md",
+      "documents": ["docs/operations/support-bundle.md", "docs/operations/faq.md", "docs/operations/decommission.md"]
+    },
+    {
+      "source": "INCIDENT-RESPONSE.md",
+      "documents": [
+        "docs/operations/runbook.md",
+        "docs/operations/troubleshooting.md",
+        "docs/operations/decommission.md",
+        "docs/security/README.md",
+        "docs/security/assurance.md",
+        "docs/operations/incident-response.md"
+      ]
+    },
+    {
+      "source": "ARCHITECTURE.md",
+      "documents": [
+        "docs/concepts/what-is-pixel.md",
+        "docs/concepts/architecture-overview.md",
+        "docs/concepts/trust-authority-and-evidence.md",
+        "docs/reference/glossary.md"
+      ]
+    },
+    {
+      "source": "THREAT-MODEL.md",
+      "documents": [
+        "docs/concepts/architecture-overview.md",
+        "docs/concepts/trust-authority-and-evidence.md",
+        "docs/reference/glossary.md",
+        "docs/security/README.md",
+        "docs/security/threat-model.md",
+        "docs/security/boundary-reference.md"
+      ]
+    },
+    {
+      "source": "SECURITY.md",
+      "documents": [
+        "docs/security/README.md",
+        "docs/security/threat-model.md",
+        "docs/security/boundary-reference.md",
+        "docs/security/assurance.md",
+        "docs/getting-started/client-onboarding.md",
+        "docs/operations/gateway-token-rotation.md",
+        "docs/operations/incident-response.md"
+      ]
+    },
+    {
+      "source": "SECURITY-ASSURANCE.md",
+      "documents": [
+        "docs/security/README.md",
+        "docs/security/assurance.md",
+        "docs/security/evaluations.md",
+        "docs/releases/qualification.md",
+        "docs/releases/maintainer-runbook.md",
+        "docs/releases/failure-guide.md"
+      ]
+    },
+    {
+      "source": "SEALED-CORPUS-CONTRACT.md",
+      "documents": ["docs/security/sealed-corpus.md"]
+    },
+    {
+      "source": "DEEP-WORK.md",
+      "documents": ["docs/concepts/trust-authority-and-evidence.md", "docs/concepts/lifecycle-and-state.md", "docs/reference/glossary.md"]
+    },
+    {
+      "source": "schemas/control-status-v1.schema.json",
+      "documents": ["docs/concepts/capability-status-model.md"]
+    },
+    {
+      "source": "CONTRIBUTING.md",
+      "documents": [
+        "docs/contributing/codebase-map.md",
+        "docs/contributing/development-setup.md",
+        "docs/contributing/testing.md",
+        "docs/contributing/high-risk-change-map.md",
+        "docs/contributing/generated-files.md",
+        "docs/contributing/pull-request-guide.md"
+      ]
+    },
+    {
+      "source": "tests/static.sh",
+      "documents": ["docs/contributing/development-setup.md", "docs/contributing/testing.md"]
+    },
+    {
+      "source": "security-evals/",
+      "documents": ["docs/contributing/testing.md", "docs/contributing/high-risk-change-map.md"]
+    },
+    {
+      "source": "scripts/generate-release-files.mjs",
+      "documents": ["docs/contributing/generated-files.md"]
+    },
+    {
+      "source": ".github/workflows/",
+      "documents": ["docs/contributing/codebase-map.md", "docs/contributing/pull-request-guide.md"]
+    },
+    {
+      "source": "scripts/configure.mjs",
+      "documents": ["docs/configure/README.md", "docs/configure/deployment-profiles.md", "docs/configure/capability-profiles.md", "docs/configure/models-and-providers.md", "docs/configure/source-limbs.md", "docs/configure/operations-and-frontier.md", "docs/NATIVE-SEARCH.md"]
+    },
+    {
+      "source": "profiles/capabilities/",
+      "documents": ["docs/configure/capability-profiles.md"]
+    },
+    {
+      "source": "CLIENT-KIT.md",
+      "documents": ["docs/configure/client-overlays.md", "docs/getting-started/client-onboarding.md"]
+    },
+    {
+      "source": "CLIENT-ONBOARDING.md",
+      "documents": ["docs/configure/source-limbs.md", "docs/getting-started/client-onboarding.md"]
+    },
+    {
+      "source": "deploy/source-broker/",
+      "documents": ["docs/use/sources-and-proposals.md"]
+    },
+    {
+      "source": "OPERATIONS-LIMB.md",
+      "documents": ["docs/use/operations.md"]
+    },
+    {
+      "source": "FRONTIER-LIMB.md",
+      "documents": ["docs/use/frontier-review.md", "docs/extend/choose-an-extension-point.md", "docs/extend/frontier-task-packs.md"]
+    },
+    {
+      "source": "CUSTOMIZATION.md",
+      "documents": [
+        "docs/extend/choose-an-extension-point.md",
+        "docs/extend/projection-limbs.md",
+        "docs/extend/local-capability-packs.md",
+        "docs/extend/operations-action-packs.md",
+        "docs/extend/frontier-task-packs.md"
+      ]
+    },
+    {
+      "source": "scripts/limb-kit.py",
+      "documents": [
+        "docs/extend/choose-an-extension-point.md",
+        "docs/extend/projection-limbs.md",
+        "docs/extend/local-capability-packs.md",
+        "docs/extend/operations-action-packs.md",
+        "docs/extend/frontier-task-packs.md",
+        "docs/extend/examples/README.md"
+      ]
+    },
+    {
+      "source": "scripts/hash-gateway-extension.mjs",
+      "documents": ["docs/extend/gateway-extensions.md"]
+    },
+    {
+      "source": "UPSTREAM-INTAKE.md",
+      "documents": ["docs/releases/upstream-intake.md", "docs/releases/failure-guide.md"]
+    },
+    {
+      "source": "UPSTREAM-RELEASE-CHECKLIST.md",
+      "documents": ["docs/releases/upstream-intake.md", "docs/releases/maintainer-runbook.md"]
+    },
+    {
+      "source": "scripts/package-release.sh",
+      "documents": ["docs/releases/README.md", "docs/releases/maintainer-runbook.md", "docs/releases/failure-guide.md"]
+    },
+    {
+      "source": "scripts/release-update.py",
+      "documents": ["docs/releases/maintainer-runbook.md", "docs/releases/failure-guide.md"]
+    },
+    {
+      "source": "scripts/rotate-gateway-token.sh",
+      "documents": ["docs/operations/runbook.md", "docs/operations/gateway-token-rotation.md"]
+    },
+    {
+      "source": "scripts/tighten-ops-policy.mjs",
+      "documents": ["docs/operations/runbook.md"]
+    },
+    {
+      "source": "README.md",
+      "documents": ["docs/README.md"]
+    }
+  ]
+}

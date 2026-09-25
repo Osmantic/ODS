@@ -1,0 +1,144 @@
+services:
+  flarum:
+    image: ods/flarum:1.8.19-local-v1
+    container_name: ods-flarum
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${FLARUM_PORT:-11133}:8000
+    environment:
+      PUID: '1000'
+      PGID: '1000'
+      TZ: UTC
+      FLARUM_BASE_URL: http://localhost:${FLARUM_PORT:-11133}
+      FLARUM_FORUM_TITLE: ODS Community
+      FLARUM_DEBUG: 'false'
+      FLARUM_ANNOUNCEMENTS_DISABLED: 'true'
+      FLARUM_POWEREDBY_HEADER: 'false'
+      DB_HOST: flarum-db
+      DB_NAME: flarum
+      DB_USER: flarum
+      DB_PASSWORD: ${FLARUM_DB_PASSWORD:?Set a random 64-hex database password}
+    volumes:
+    - flarum-data:/data
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --show-error
+      - --max-time
+      - '10'
+      - http://127.0.0.1:8000/
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    - flarum-internal
+    depends_on:
+      flarum-db:
+        condition: service_healthy
+  flarum-db:
+    image: mariadb:11.4@sha256:70cc072b29b4a89ae07abb2d4da2c64678a7f2dfe092751bb51c87d67dc1338b
+    container_name: ods-flarum-db
+    restart: unless-stopped
+    command:
+    - mariadbd
+    - --character-set-server=utf8mb4
+    - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MARIADB_RANDOM_ROOT_PASSWORD: 'yes'
+      MARIADB_DATABASE: flarum
+      MARIADB_USER: flarum
+      MARIADB_PASSWORD: ${FLARUM_DB_PASSWORD:?Set a random 64-hex database password}
+    volumes:
+    - flarum-db-data:/var/lib/mysql
+    networks:
+    - flarum-internal
+    healthcheck:
+      test:
+      - CMD
+      - healthcheck.sh
+      - --connect
+      - --innodb_initialized
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '2.0'
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+  flarum-cron:
+    image: ods/flarum:1.8.19-local-v1
+    container_name: ods-flarum-cron
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    environment:
+      PUID: '1000'
+      PGID: '1000'
+      TZ: UTC
+      FLARUM_BASE_URL: http://localhost:${FLARUM_PORT:-11133}
+      FLARUM_FORUM_TITLE: ODS Community
+      FLARUM_DEBUG: 'false'
+      FLARUM_ANNOUNCEMENTS_DISABLED: 'true'
+      FLARUM_POWEREDBY_HEADER: 'false'
+      DB_HOST: flarum-db
+      DB_NAME: flarum
+      DB_USER: flarum
+      DB_PASSWORD: ${FLARUM_DB_PASSWORD:?Set a random 64-hex database password}
+      SIDECAR_CRON: '1'
+      CRON_SCHEDULE: '* * * * *'
+    volumes:
+    - flarum-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - flarum-internal
+    depends_on:
+      flarum:
+        condition: service_healthy
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+  flarum-internal:
+    internal: true
+volumes:
+  flarum-data: {}
+  flarum-db-data: {}

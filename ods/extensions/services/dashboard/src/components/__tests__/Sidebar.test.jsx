@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import { render } from '../../test/test-utils'
 import Sidebar from '../Sidebar' // eslint-disable-line no-unused-vars
 import { getSidebarExternalLinks } from '../../plugins/registry'
@@ -23,6 +23,7 @@ describe('Sidebar', () => {
   }
 
   beforeEach(() => {
+    getSidebarExternalLinks.mockReturnValue([])
     vi.stubGlobal('fetch', vi.fn(() =>
       Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
     ))
@@ -37,35 +38,34 @@ describe('Sidebar', () => {
     expect(screen.getByText('Dashboard')).toBeInTheDocument()
   })
 
-  test('shows service counts in footer', () => {
+  test('opens profile settings from the workspace footer', () => {
     render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
-    // 2 healthy out of 3 deployed (none are not_deployed)
-    expect(screen.getByText(/Online: 2\/3/)).toBeInTheDocument()
+    expect(screen.getByText('Your profile')).toBeInTheDocument()
+    expect(screen.getByRole('link',{name:'Edit your profile'})).toHaveAttribute('href','/settings?section=profile')
   })
 
-  test('shows VRAM bar with usage', () => {
+  test('leaves hardware telemetry on the Dashboard', () => {
     render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
-    expect(screen.getByText('VRAM')).toBeInTheDocument()
-    expect(screen.getByText('8.0/16 GB')).toBeInTheDocument()
+    expect(screen.queryByText('VRAM')).not.toBeInTheDocument()
   })
 
   test('hides nav labels when collapsed', () => {
     render(<Sidebar status={defaultStatus} collapsed={true} onToggle={() => {}} />)
-    expect(screen.queryByText('Dashboard')).not.toBeInTheDocument()
+    expect(document.querySelector('aside')).toHaveClass('is-collapsed')
+    expect(screen.getByRole('link', { name: 'Dashboard' })).toHaveAttribute('title', 'Dashboard')
   })
 
   test('uses the compact, accessible navigation treatment below the desktop breakpoint', () => {
     render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
 
-    expect(document.querySelector('aside')).toHaveClass('w-20', 'sm:w-64')
-    expect(screen.getByRole('link', { name: 'Dashboard' })).toHaveClass('justify-center', 'sm:justify-start')
-    expect(screen.getByText('Dashboard')).toHaveClass('hidden', 'sm:inline')
-    expect(screen.getByRole('button', { name: /collapse sidebar/i })).toHaveClass('hidden', 'sm:flex')
+    expect(document.querySelector('aside')).toHaveClass('pixel-sidebar')
+    expect(screen.getByText('Dashboard').closest('a')).toHaveClass('pixel-nav-item')
+    expect(screen.getByRole('button', { name: /collapse sidebar/i })).toBeInTheDocument()
   })
 
-  test('shows version in header', () => {
+  test('shows version once in the workspace footer', () => {
     render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
-    expect(screen.getAllByText(/v1\.0\.0/)).toHaveLength(2)
+    expect(screen.getAllByText('ODS 1.0.0')).toHaveLength(1)
   })
 
   test('keeps an always-visible OpenCode launcher in the default application list', () => {
@@ -83,7 +83,42 @@ describe('Sidebar', () => {
     render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
 
     expect(screen.getByText('OpenCode')).toBeInTheDocument()
-    expect(screen.getByText('OFFLINE')).toBeInTheDocument()
+    expect(screen.getByText('Offline')).toBeInTheDocument()
     expect(screen.getByText('OpenCode').closest('a')).not.toHaveAttribute('href')
+    const applications=screen.getByLabelText('Applications')
+    expect(applications).toHaveClass('pixel-nav-item')
+    expect(applications.querySelector('svg')).toBeInTheDocument()
+  })
+
+  test.each([
+    ['https://ods.example.test/openclaw?view=chat#recent', 'https://ods.example.test/openclaw?view=chat&token=a%2Bb%2Fc%3F#recent'],
+    ['https://ods.example.test/openclaw?token=old&view=chat#recent', 'https://ods.example.test/openclaw?token=a%2Bb%2Fc%3F&view=chat#recent'],
+    ['/openclaw?view=chat#recent', `${window.location.origin}/openclaw?view=chat&token=a%2Bb%2Fc%3F#recent`],
+  ])('preserves OpenClaw URL state and encodes the token for %s', async (rawUrl, expected) => {
+    getSidebarExternalLinks.mockReturnValue([
+      {
+        key: 'openclaw',
+        url: rawUrl,
+        icon: () => <span data-testid="openclaw-icon">OC</span>,
+        label: 'OpenClaw',
+        healthy: true,
+      },
+    ])
+    vi.stubGlobal('fetch', vi.fn((url) => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(
+        url === '/api/service-tokens' ? { openclaw: 'a+b/c?' } : [],
+      ),
+    })))
+
+    render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
+
+    const link = screen.getByText('OpenClaw').closest('a')
+    await waitFor(() => {
+      expect(link).toHaveAttribute(
+        'href',
+        expected,
+      )
+    })
   })
 })

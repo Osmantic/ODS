@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-backend-halt-review-v1.schema.json",
+  "title": "Pixel model-independent emergency backend halt review v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "status", "haltSha256", "confirmation", "observation", "effects", "privacy", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-backend-halt-review-v1.schema.json"},
+    "schemaVersion": {"const": 1}, "operation": {"const": "pixel-work-model-backend-halt-review"}, "status": {"const": "confirmation-required"},
+    "haltSha256": {"$ref": "#/$defs/sha256"},
+    "confirmation": {"type": "object", "additionalProperties": false, "required": ["option", "sha256"], "properties": {"option": {"const": "--confirm-halt-sha256"}, "sha256": {"$ref": "#/$defs/sha256"}}},
+    "observation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "identityBound", "hardenedBoundaryObserved", "privateNetworkBound", "activeWorkerPeersObserved"],
+      "properties": {
+        "state": {"enum": ["running", "already-halted", "absent"]}, "identityBound": {"type": "boolean"},
+        "hardenedBoundaryObserved": {"type": "boolean"}, "privateNetworkBound": {"type": "boolean"}, "activeWorkerPeersObserved": {"type": "boolean"}
+      }
+    },
+    "effects": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mayStopContainer", "mayInterruptActiveWorkers", "retainsContainer", "retainsNetwork", "readsModelBytes", "requiresImage", "removesResources", "pullsImage", "changesPolicy", "grantsExternalEffects"],
+      "properties": {
+        "mayStopContainer": {"type": "boolean"}, "mayInterruptActiveWorkers": {"type": "boolean"},
+        "retainsContainer": {"const": true}, "retainsNetwork": {"const": true}, "readsModelBytes": {"const": false}, "requiresImage": {"const": false},
+        "removesResources": {"const": false}, "pullsImage": {"const": false}, "changesPolicy": {"const": false}, "grantsExternalEffects": {"const": false}
+      }
+    },
+    "privacy": {"const": {"modelIdentifier": false, "backendIdentifier": false, "deviceIdentifiers": false, "paths": false, "hashesExceptConfirmation": false, "credentials": false, "prompts": false, "responses": false}},
+    "authority": {"const": {"grantsExecution": false, "startsContainer": false, "stopsContainer": false, "removesContainer": false, "removesNetwork": false, "pullsImage": false, "grantsDevices": false, "grantsCredentials": false, "grantsExternalEffects": false, "grantsCompletion": false}},
+    "boundary": {"const": "Content-free exact-confirmation review for a stop-only emergency halt of one statically identity-bound Pixel model backend. It reads no model bytes, requires no image, retains all resources for forensics, and grants no future authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

@@ -1,0 +1,21 @@
+name: Remote egress header contracts
+on:
+  pull_request:
+    paths:
+      - 'ods/bin/remote_provider/**'
+      - 'ods/extensions/services/remote-provider-egress/**'
+      - 'ods/tests/test_egress_connection_headers.py'
+      - '.github/workflows/test-egress-headers.yml'
+permissions:
+  contents: read
+jobs:
+  headers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r ods/extensions/services/remote-provider-egress/requirements.txt pytest
+      - run: python -m pytest -q ods/tests/test_egress_connection_headers.py
+      - run: python ods/tests/contracts/test-remote-provider-egress-service.py

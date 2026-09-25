@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-builder-runtime-v1.schema.json",
+  "title": "Pixel Builder code-intelligence runtime v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "contract", "platform", "minimumMemoryMiB", "features", "agentSurface", "artifacts", "systemPackages"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-builder-runtime-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "contract": {"const": "pixel-builder-code-intelligence-runtime-v1"},
+    "platform": {"const": "linux-x86_64"},
+    "minimumMemoryMiB": {"const": 2048},
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gdb", "debugpy", "pyright", "pythonCommand"],
+      "properties": {
+        "gdb": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["package", "packageVersion", "runtimeVersion", "entrypoint"],
+          "properties": {
+            "package": {"const": "gdb"},
+            "packageVersion": {"$ref": "#/$defs/packageVersion"},
+            "runtimeVersion": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+            "entrypoint": {"const": "/usr/bin/gdb"}
+          }
+        },
+        "debugpy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["package", "packageVersion", "runtimeVersion", "entrypoint", "module"],
+          "properties": {
+            "package": {"const": "python3-debugpy"},
+            "packageVersion": {"$ref": "#/$defs/packageVersion"},
+            "runtimeVersion": {"type": "string", "pattern": "^[A-Za-z0-9.+_-]{1,100}$"},
+            "entrypoint": {"const": "/usr/bin/python"},
+            "module": {"const": "debugpy.adapter"}
+          }
+        },
+        "pyright": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["artifact", "runtimeVersion", "entrypoint"],
+          "properties": {
+            "artifact": {"const": "pyright"},
+            "runtimeVersion": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+            "entrypoint": {"const": "/usr/local/bin/pyright-langserver"}
+          }
+        },
+        "pythonCommand": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["package", "packageVersion", "runtimeVersion", "entrypoint"],
+          "properties": {
+            "package": {"const": "python-is-python3"},
+            "packageVersion": {"$ref": "#/$defs/packageVersion"},
+            "runtimeVersion": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+            "entrypoint": {"const": "/usr/bin/python"}
+          }
+        }
+      }
+    },
+    "agentSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "definitionPath", "definitionSha256", "entrypointPath", "entrypointSha256", "configurationDirectory", "stateDirectory", "declaredTools", "runtimeTools", "blockedTools"],
+      "properties": {
+        "name": {"const": "task"},
+        "definitionPath": {"const": "/opt/pixel/deploy/work-runner/builder-agent.md"},
+        "definitionSha256": {"$ref": "#/$defs/sha256"},
+        "entrypointPath": {"const": "/opt/pixel/deploy/work-runner/builder-entrypoint.sh"},
+        "entrypointSha256": {"$ref": "#/$defs/sha256"},
+        "configurationDirectory": {"const": ".pixel-omp"},
+        "stateDirectory": {"const": "/tmp/agent"},
+        "declaredTools": {"const": ["read", "grep", "glob", "write", "edit", "bash", "eval", "lsp", "debug", "hub"]},
+        "runtimeTools": {"const": ["bash", "debug", "edit", "eval", "glob", "grep", "hub", "lsp", "read", "write", "yield"]},
+        "blockedTools": {"const": ["task", "todo", "web_search"]}
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {"$ref": "#/$defs/artifact"}
+    },
+    "systemPackages": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"$ref": "#/$defs/systemPackage"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "packageVersion": {"type": "string", "pattern": "^[A-Za-z0-9.+:~_-]{1,100}$"},
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "filename", "sha256", "integrity", "bytes", "url", "license"],
+      "properties": {
+        "name": {"const": "pyright"},
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+        "filename": {"const": "pyright-1.1.411.tgz"},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "integrity": {"type": "string", "pattern": "^sha512-[A-Za-z0-9+/]+={0,2}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1073741824},
+        "url": {"type": "string", "pattern": "^https://registry\\.npmjs\\.org/pyright/-/pyright-[0-9]+\\.[0-9]+\\.[0-9]+\\.tgz$"},
+        "license": {"const": "MIT"}
+      }
+    },
+    "systemPackage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"enum": ["gdb", "python-is-python3", "python3-debugpy"]},
+        "version": {"$ref": "#/$defs/packageVersion"}
+      }
+    }
+  }
+}

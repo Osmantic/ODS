@@ -1,0 +1,18 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-input-catalog-v1.schema.json",
+  "schemaVersion": 1,
+  "catalogId": "inputcatalog-1786366800000-abcdef123456",
+  "createdAt": "2026-08-10T13:00:00Z",
+  "entries": [
+    {
+      "id": "project",
+      "kind": "repository-snapshot",
+      "objectName": "0000000000000000000000000000000000000000000000000000000000000000.tar",
+      "contentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "bytes": 1048576,
+      "classification": "internal",
+      "mountMode": "read-only"
+    }
+  ],
+  "boundary": "Owner-selected content-addressed local input references only. The catalog grants no read, execution, lease, network, credential, external-effect, scope-expansion, or completion authority."
+}

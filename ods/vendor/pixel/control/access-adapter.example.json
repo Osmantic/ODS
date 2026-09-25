@@ -1,0 +1,17 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/control-access-adapter-v1.schema.json",
+  "schemaVersion": 1,
+  "listen": {"host": "127.0.0.1", "port": 43118},
+  "publicOrigin": "https://pixel.example.com",
+  "upstream": {"origin": "http://127.0.0.1:43117", "reviewTokenFile": "/run/pixel-portal/review-token"},
+  "access": {
+    "teamDomain": "example.cloudflareaccess.com",
+    "workspaceAudience": "replace_with_workspace_audience",
+    "approvalAudience": "replace_with_distinct_mfa_audience",
+    "allowedEmails": ["owner@example.com"],
+    "clockSkewSeconds": 30,
+    "jwksCacheSeconds": 3600
+  },
+  "limits": {"maxBodyBytes": 65536, "requestsPerMinute": 120},
+  "boundary": "Cloudflare Access-authenticated narrow origin adapter. It validates signed application JWTs and exact audiences before forwarding an allowlisted route to the loopback Pixel control service. Browser cookies, Access assertions, identity claims, credentials, arbitrary paths, and generic commands never cross to the control service. Approval routes require a distinct MFA-enforced Access application audience."
+}

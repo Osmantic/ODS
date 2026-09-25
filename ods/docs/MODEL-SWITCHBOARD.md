@@ -1,14 +1,20 @@
-# ODS Model Switchboard PR Plan
+# ODS Model Switchboard historical design plan
 
-Date: 2026-07-19
+Design date: 2026-07-19
+
+**Historical plan, not current implementation status.** The September promotion
+includes model-router and switchboard work. Statements below about unimplemented
+PRs and proposed rollout stages describe the July planning snapshot. For current
+operator behavior use [model management](MODEL-MANAGEMENT.md),
+[source updates](SOURCE-UPDATES.md), [Portal eligibility](PIXEL.md), and the
+[September promotion record](PUBLIC_BETA_PROMOTION_2026-09.md). A historical
+rollback proposal is not a supported native Pixel recovery procedure.
 
 Last audited: 2026-07-19; refreshed 2026-07-20 against post-merge `main` `5dd6f72d` (77-PR fix sweep + #1888 + #1766 + #1711 + #1887 + #1724 all merged)
 
 Status: proposed implementation stack. The lifecycle foundation ([#1711](https://github.com/Osmantic/ODS/pull/1711)), swap-safety manifest contract ([#1766](https://github.com/Osmantic/ODS/pull/1766)), transactional swap sync ([#1887](https://github.com/Osmantic/ODS/pull/1887)), and model management UI/actions ([#1724](https://github.com/Osmantic/ODS/pull/1724)) are already merged; the state store, data plane, reconciler, and consumer migrations in this plan are not implemented.
 
-Goal of record (local planning source): `C:\Users\conta\Desktop\ODS-MODEL-SWAP-DESIGN.md`
-
-Portability rule: the absolute paths in this header are evidence pointers for this workstation, not execution dependencies. PR 1 must add the accepted version of this plan at `ods/docs/MODEL-SWITCHBOARD.md`; subsequent PRs reference that repository file and update its decision/status table in place.
+Source of record: this repository document. Local planning files are not public evidence or execution dependencies.
 
 Research inputs:
 
@@ -16,7 +22,6 @@ Research inputs:
 - ODS GitHub `main` at `5dd6f72d` (contains the merged 77-PR fix sweep, #1888, #1766, #1711, #1887 content, and #1724)
 - Fleet harness `main` at `cb84c609fe897c1361967a844521fae7ab830848`
 - Lemonade `main` at `16dc27d2f3e249f2d826c97cde3f742df3b9d593`
-- Local Lemonade audit: `C:\Users\conta\Documents\Codex\2026-07-06\cl\LEMONADE_ROUTER_AUDIT.md`
 - [Lemonade router milestone #2389](https://github.com/lemonade-sdk/lemonade/issues/2389)
 - [Lemonade classifier wiring PR #2727](https://github.com/lemonade-sdk/lemonade/pull/2727)
 - [Lemonade router LRU isolation PR #2729](https://github.com/lemonade-sdk/lemonade/pull/2729)
@@ -93,7 +98,7 @@ Lemonade's deterministic `collection.router` behavior is a strong fit for AMD/Le
 
 ### LiteLLM alone
 
-LiteLLM already provides the public gateway and model aliases, but ODS v1.81.3 is configured from a read-only YAML mount with no database-backed management plane. Today that YAML contains the concrete model ID, so changing the alias still requires rewriting the file and restarting LiteLLM. Enabling LiteLLM's database management stack solely for one mutable local alias would add a database, migration, and admin surface to every ODS installation.
+LiteLLM already provides the public gateway and model aliases, but ODS's pinned LiteLLM is configured from a read-only YAML mount with no database-backed management plane. Today that YAML contains the concrete model ID, so changing the alias still requires rewriting the file and restarting LiteLLM. Enabling LiteLLM's database management stack solely for one mutable local alias would add a database, migration, and admin surface to every ODS installation.
 
 Keep LiteLLM for auth, OpenAI compatibility, policy, and provider translation. Put ODS's small mutable routing decision behind it, where ODS can test and version the behavior independently.
 
@@ -229,7 +234,27 @@ For Lemonade, capture and preserve `x_lemonade_route` and the `X-Lemonade-Route`
 
 For end-to-end app probes that do not expose upstream headers, the fleet prompt carries a signed marker: `[ODS_PROBE id=<lowercase-uuid> sig=<base64url>]`. The signature is unpadded base64url HMAC-SHA256 over the lowercase UUID bytes using the run-scoped `ODS_FLEET_PROBE_KEY`. The model-router records evidence only when that key is configured, the marker has exactly one canonical UUID/signature pair, and constant-time verification succeeds. Production installs without that test-only key ignore markers and expose no probe lookup data.
 
-The model-router keeps at most 2,048 evidence records for 15 minutes in memory. Each record contains only probe UUID, timestamp, consumer-visible requested alias, concrete route, backend, `routeSeq`, status, and response model. It never stores prompt text, messages, generated text, tokens, API keys, cookies, or authorization headers. `/internal/route-evidence/{probeId}` is reachable only on the Compose network and requires `Authorization: Bearer <ODS_ROUTER_INTERNAL_KEY>`; dashboard-api exposes the authenticated product proxy above.
+The model-router keeps at most 2,048 evidence records for 15 minutes in memory. Each record contains bounded route metadata (probe and request UUIDs, timestamp, router instance, requested alias, concrete route, endpoint/backend, path, `routeSeq`, status, response model and Lemonade route when available). Signed probes additionally record `offeredTools`: a versioned count and SHA256 fingerprint of the actual outgoing tool definitions, or an explicit unavailable result. It never stores prompt text, messages, generated text, tool names or schema bodies, tokens, API keys, cookies, or authorization headers. `/internal/route-evidence/{probeId}` is reachable only on the Compose network and requires `Authorization: Bearer <ODS_ROUTER_INTERNAL_KEY>`; dashboard-api exposes the authenticated, closed-field product proxy above.
+
+For an owned latency investigation, the same internal bearer can opt one signed probe into per-attempt evidence with `POST /internal/route-evidence/{probeId}/capture` and the exact JSON fields `{"ttlSeconds":900,"maxAttempts":16}`. This requires a configured signing key, a canonical probe UUID, a lifetime of 1–1,800 seconds and 1–16 attempts. An existing live lease returns 409; ordinary requests and unsigned markers never activate capture. At most 32 leases exist in memory; expiry, eviction, process restart or signing-key rotation makes their evidence unavailable. Capture is not a global request logger and is not exposed through the dashboard proxy.
+
+The existing internal GET then includes `upstreamAttempts`, even while an attempt is pending or after an upstream timeout. Every actual upstream send has its own sequence, router request ID, attempt number, route identity, monotonic start, elapsed milliseconds, HTTP status and transport outcome. Tool-protocol repair is a separate attempt. A complete transport does not establish task success, tool execution or backend inference quiescence. Streaming elapsed time includes downstream consumption; it is not a model-only generation measurement. Hashing preparation time is recorded separately.
+
+Each attempt fingerprints the exact forwarded body bytes and ordered message/tool components, with lengths and per-message role, content and tool-call fingerprints. Components use canonical JSON with sorted object keys and preserved array order; the body uses its exact wire serialization. Digests are HMAC-SHA256 under a domain-separated per-probe key, allowing comparison within that probe without persisting bodies or permitting cross-probe plaintext lookup. Components over the 2 MiB body or 256 message/tool bounds report unavailable; no payload text, tool names, secrets or exception text are retained. These byte counts and hashes are not token spans, nor evidence that a backend reused its cache. Capture failures never change or retry an inference request.
+
+The `offeredTools` boundary is `router-forwarded-tools-not-execution-proof`.
+It does not attest evaluated plugin code, backend schema acceptance or successful
+tool execution, and is not a complete running-release match. Encoding
+`json-sort-keys-ascii-v1` means SHA256 of Python JSON encoding of
+`{"present": "tools" in payload, "tools": payload.get("tools", [])}` with sorted
+object keys, preserved array order, compact separators, ASCII escapes and no
+NaN/Infinity. Missing and empty tools intentionally differ. More than 256 tools,
+more than 256 KiB of encoded definitions, or unencodable/non-list tools produce
+`state: unavailable` with null count/hash; inference is not blocked or changed.
+No tool fingerprint is computed for unsigned/unconfigured probes or added to
+ordinary token telemetry. Each probe UUID retains its latest recorded request,
+not a history of every model call; correlate `requestId` with `X-ODS-Request-Id`,
+and do not treat one record as proof of all offers in a multi-call agent turn.
 
 ### 3.5 Reload behavior
 
@@ -443,7 +468,7 @@ Primary changes:
 - Add `ods/config/model-router/endpoints.json`, generated at install from known runtime topology and mounted read-only. State selects only an `endpointId` from this file.
 - Include model-router in local, Lemonade, and hybrid Compose stacks; exclude it from cloud-only routing. It has no host port.
 - Change LiteLLM local/Lemonade templates to map `ods/current`, `default`, and the compatibility wildcard to model-router permanently when enabled.
-- Add `ODS_MODEL_SWITCHBOARD=legacy|observe|enabled`; ship `observe` by default in this PR. `legacy` renders the pre-switchboard LiteLLM config, `observe` runs router/state checks without consumer traffic, and `enabled` sends the stable aliases through model-router.
+- `ODS_MODEL_SWITCHBOARD=enabled` is the production default after live request-drain and rollback qualification. `observe` remains a non-routing diagnostic mode, and `legacy` renders the pre-switchboard LiteLLM configuration for explicit rollback.
 
 Required LiteLLM shape when enabled:
 

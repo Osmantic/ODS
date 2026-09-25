@@ -1,0 +1,56 @@
+services:
+  owncast:
+    image: ods/owncast:0.3.0-local-v1
+    container_name: ods-owncast
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${OWNCAST_PORT:-11129}:8080
+    - 127.0.0.1:${OWNCAST_RTMP_PORT:-11130}:1935
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://127.0.0.1:8080/api/status
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 101:101
+    environment:
+      OWNCAST_ADMIN_PASSWORD: ${OWNCAST_ADMIN_PASSWORD:?Set a random 64-hex administrator
+        password}
+      OWNCAST_STREAM_KEY: ${OWNCAST_STREAM_KEY:?Set a distinct random 64-hex stream
+        key}
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - owncast-data:/app/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  owncast-data: {}

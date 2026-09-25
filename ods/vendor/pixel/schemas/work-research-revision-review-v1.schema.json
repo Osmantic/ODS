@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-research-revision-review-v1.schema.json",
+  "title": "Pixel bounded dual-pass Researcher revision review v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "reviewSetId", "jobId", "claimId", "createdAt", "planSha256", "reportSha256", "deterministicVerificationSha256", "modelContractSha256", "inferenceContractSha256", "reviewPromptContractSha256", "passes", "consensus", "outcome", "privacy", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-research-revision-review-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "reviewSetId": {"type": "string", "pattern": "^researchrevisionreview-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "claimId": {"type": "string", "pattern": "^workclaim-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "reportSha256": {"$ref": "#/$defs/sha256"},
+    "deterministicVerificationSha256": {"$ref": "#/$defs/sha256"},
+    "modelContractSha256": {"$ref": "#/$defs/sha256"},
+    "inferenceContractSha256": {"$ref": "#/$defs/sha256"},
+    "reviewPromptContractSha256": {"$ref": "#/$defs/sha256"},
+    "passes": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "items": {"$ref": "#/$defs/pass"}
+    },
+    "consensus": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "findings", "unresolvedFindings", "readyForIndependentEvaluation", "independentlyScored", "backendOutputUsedAsScore"],
+      "properties": {
+        "method": {"const": "deterministic-conservative-two-pass"},
+        "findings": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"$ref": "#/$defs/consensusFinding"}},
+        "unresolvedFindings": {"type": "integer", "minimum": 0, "maximum": 100},
+        "readyForIndependentEvaluation": {"type": "boolean"},
+        "independentlyScored": {"const": false},
+        "backendOutputUsedAsScore": {"const": false}
+      }
+    },
+    "outcome": {"enum": ["revise", "ready-for-independent-evaluation", "unable-to-assess"]},
+    "privacy": {"const": {"publicContentOnly": true, "privateDataIncluded": false, "credentialsIncluded": false, "contentLeavesHost": false}},
+    "authority": {"const": {"grantsExecution": false, "grantsScore": false, "grantsAcceptance": false, "grantsCompletion": false, "grantsPublication": false, "grantsDeployment": false, "grantsExternalEffects": false, "grantsScopeExpansion": false}},
+    "boundary": {"const": "Two clean-context local-model critique passes over one exact public Researcher candidate, reduced by a deterministic conservative consensus for revision only. The passes may improve a later candidate but are not independent scoring, semantic verification, source truth, completion evidence, acceptance, publication, deployment, execution, external-effect, or scope authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "textBase64": {"type": "string", "minLength": 4, "maxLength": 16384, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"},
+    "findingId": {"type": "string", "pattern": "^finding-(?:[1-9]|[1-9][0-9]|100)$"},
+    "assessment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["findingId", "semanticSupport", "sourcePreference", "freshnessLabelAssessment", "confidencePermille", "uncertaintyAcknowledged", "requiredRevisionBase64"],
+      "properties": {
+        "findingId": {"$ref": "#/$defs/findingId"},
+        "semanticSupport": {"enum": ["supported", "partially-supported", "unsupported", "unknown"]},
+        "sourcePreference": {"enum": ["primary-preferred", "primary-unavailable-disclosed", "secondary-only-undisclosed", "unknown"]},
+        "freshnessLabelAssessment": {"enum": ["label-correct", "label-missing", "label-unsupported", "unknown"]},
+        "confidencePermille": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "uncertaintyAcknowledged": {"type": "boolean"},
+        "requiredRevisionBase64": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/textBase64"}]}
+      }
+    },
+    "pass": {
+      "type": "object", "additionalProperties": false,
+      "required": ["passId", "role", "contextIsolationReceiptSha256", "inferenceReceiptSha256", "freshContext", "workerTranscriptIncluded", "sameProductModel", "modelUsed", "findings", "disposition"],
+      "properties": {
+        "passId": {"enum": ["critic-pass-1", "critic-pass-2"]},
+        "role": {"enum": ["critic-a", "critic-b"]},
+        "contextIsolationReceiptSha256": {"$ref": "#/$defs/sha256"},
+        "inferenceReceiptSha256": {"$ref": "#/$defs/sha256"},
+        "freshContext": {"const": true},
+        "workerTranscriptIncluded": {"const": false},
+        "sameProductModel": {"const": true},
+        "modelUsed": {"const": true},
+        "findings": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"$ref": "#/$defs/assessment"}},
+        "disposition": {"enum": ["revise", "no-revision-requested", "unable-to-assess"]}
+      }
+    },
+    "consensusFinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["findingId", "semanticSupport", "sourcePreference", "freshnessLabelAssessment", "agreement", "requiresRevision"],
+      "properties": {
+        "findingId": {"$ref": "#/$defs/findingId"},
+        "semanticSupport": {"enum": ["supported", "partially-supported", "unsupported", "unknown"]},
+        "sourcePreference": {"enum": ["primary-preferred", "primary-unavailable-disclosed", "secondary-only-undisclosed", "unknown"]},
+        "freshnessLabelAssessment": {"enum": ["label-correct", "label-missing", "label-unsupported", "unknown"]},
+        "agreement": {"enum": ["unanimous", "disagreed"]},
+        "requiresRevision": {"type": "boolean"}
+      }
+    }
+  }
+}

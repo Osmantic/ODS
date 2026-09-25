@@ -1,0 +1,9 @@
+.portal-response-actions { display:flex; align-items:center; gap:8px; margin:7px 0 0 -6px; min-height:28px; color:rgb(var(--theme-text-muted)); }
+.portal-response-copy { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; width:28px; height:28px; padding:6px; border:0; border-radius:5px; background:transparent; box-shadow:none; color:inherit; cursor:pointer; opacity:.72; }
+.portal-response-copy:hover { color:rgb(var(--theme-text)); opacity:1; }
+.portal-response-copy:focus-visible { outline:2px solid rgb(var(--theme-text-muted)); outline-offset:2px; opacity:1; }
+.portal-response-copy:disabled { cursor:wait; opacity:.45; }
+.portal-response-copy-error { font-size:11px; line-height:1.5; overflow-wrap:anywhere; }
+.portal-response-copy-status { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+@media (pointer:coarse) { .portal-response-copy { width:40px; height:40px; opacity:1; } .portal-response-actions { margin-left:-12px; } }
+@media (forced-colors:active) { .portal-response-copy { color:ButtonText; opacity:1; } .portal-response-copy:focus-visible { outline-color:Highlight; } }

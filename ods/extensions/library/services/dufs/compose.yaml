@@ -1,0 +1,51 @@
+services:
+  dufs:
+    image: ods/dufs:0.46.0-local-v1
+    container_name: ods-dufs
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${DUFS_HTTP_PORT:-11069}:5000
+    healthcheck:
+      test:
+      - CMD
+      - /ods-launcher
+      - health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 65532:65532
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: []
+    entrypoint:
+    - /ods-launcher
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=32m
+    init: true
+    environment:
+      DUFS_PASSWORD: ${DUFS_PASSWORD:?Set the file access password}
+    volumes:
+    - dufs-data:/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  dufs-data: {}

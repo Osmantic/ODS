@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/jgraph/drawio",
+  "license": "Apache-2.0",
+  "image": "jgraph/drawio:31.4.6@sha256:4bd19d4bc36b65cabf1ae9c5d234597e564416b6c67f7d4db296c2df758fcb52",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Diagrams are saved through the browser to files or user-selected storage. No LLM is required; cloud storage integrations are optional."
+}

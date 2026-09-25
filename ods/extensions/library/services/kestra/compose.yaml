@@ -1,0 +1,108 @@
+services:
+  kestra:
+    image: ods/kestra:2.0.2-storage-v1
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ods-kestra
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${KESTRA_PORT:-11025}:8080
+    healthcheck:
+      test:
+      - CMD
+      - python3
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ping',timeout=8).close()
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    depends_on:
+      kestra-db:
+        condition: service_healthy
+    environment:
+      KESTRA_DATABASE_PASSWORD: ${KESTRA_DATABASE_PASSWORD:?Set a private database
+        password}
+      KESTRA_ADMIN_EMAIL: ${KESTRA_ADMIN_EMAIL:?Set the administrator email}
+      KESTRA_ADMIN_PASSWORD: ${KESTRA_ADMIN_PASSWORD:?Set the administrator password}
+      KESTRA_MANAGEMENT_PASSWORD: ${KESTRA_MANAGEMENT_PASSWORD:?Set the management
+        password}
+      KESTRA_URL: ${KESTRA_URL:-http://localhost:11025/}
+      KESTRA_CONFIGURATION: "datasources:\n  postgres:\n    url: jdbc:postgresql://kestra-db:5432/kestra\n\
+        \    driverClassName: org.postgresql.Driver\n    username: kestra\n    password:\
+        \ $${KESTRA_DATABASE_PASSWORD}\nendpoints:\n  all:\n    basic-auth:\n    \
+        \  username: ods-management\n      password: $${KESTRA_MANAGEMENT_PASSWORD}\n\
+        \  env:\n    enabled: false\nkestra:\n  server:\n    basic-auth:\n      username:\
+        \ $${KESTRA_ADMIN_EMAIL}\n      password: $${KESTRA_ADMIN_PASSWORD}\n    terminationGracePeriod:\
+        \ 45s\n  repository:\n    type: postgres\n  queue:\n    type: postgres\n \
+        \ storage:\n    type: local\n    local:\n      base-path: /app/storage\n \
+        \ tasks:\n    tmp-dir:\n      path: /tmp/kestra-wd/tmp\n  url: $${KESTRA_URL}\n\
+        \  tutorial-flows:\n    enabled: false\n  anonymous-usage-report:\n    enabled:\
+        \ false\n  ui-anonymous-usage-report:\n    enabled: false\n"
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=65.0
+    command:
+    - server
+    - standalone
+    stop_grace_period: 60s
+    volumes:
+    - kestra-storage:/app/storage
+    - kestra-work:/tmp/kestra-wd
+  kestra-db:
+    image: postgres:18-alpine@sha256:6c538e7206ea40ff740ef27883529390a690b6ead6ba96b44c67a9f7c638e8fd
+    container_name: ods-kestra-db
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - kestra
+      - -d
+      - kestra
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    environment:
+      POSTGRES_DB: kestra
+      POSTGRES_USER: kestra
+      POSTGRES_PASSWORD: ${KESTRA_DATABASE_PASSWORD:?Set a private database password}
+    volumes:
+    - kestra-db-data:/var/lib/postgresql
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  kestra-storage: {}
+  kestra-work: {}
+  kestra-db-data: {}

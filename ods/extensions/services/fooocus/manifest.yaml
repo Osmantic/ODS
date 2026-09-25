@@ -1,0 +1,41 @@
+schema_version: ods.services.v1
+
+service:
+  id: fooocus
+  name: Fooocus
+  aliases: [fooocus-ui, image, generation]
+  container_name: ods-fooocus
+  host_env: FOOOCUS_HOST
+  default_host: fooocus
+  port: 7865
+  external_port_env: FOOOCUS_PORT
+  external_port_default: 7865
+  health: /
+  ui_path: /
+  startup_check: true
+  startup_timeout: 600
+  type: docker
+  gpu_backends: [nvidia]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: "Local SDXL image generation using the official Fooocus container. Requires NVIDIA GPU passthrough on Linux or Windows WSL2; initial startup downloads models."
+  env_vars: []
+
+features:
+  - id: fooocus-image-generation
+    name: Image Generation
+    description: User-friendly image generation with Stable Diffusion
+    icon: Image
+    category: media
+    requirements:
+      services: [fooocus]
+      vram_gb: 8
+    enabled_services_all: [fooocus]
+    setup_time: Initial image and model downloads; see README
+    priority: 8
+    gpu_backends: [nvidia]
+    launch:
+      type: service
+      service: fooocus
+      path: /

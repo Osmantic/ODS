@@ -1,0 +1,49 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/historical-secret-review-v2.schema.json",
+  "schemaVersion": 2,
+  "operation": "pixel-historical-secret-review",
+  "repository": "Osmantic/Pixel",
+  "note": "Versioned strict reviewed-blob contract. Every entry is bound by exact blob SHA-1, raw payload SHA-256 over the exact git blob bytes, exact path, human review labels/reason, and the exact sorted audit_source scanner labels (empty when the source auditor does not flag the blob). All five entries are acknowledged synthetic or code-reference fixtures; the three with nonempty auditSourceLabels are the active-lineage audit_source fixtures. Content-free: digests, paths, labels, and reasons only, never matched literal values.",
+  "reviewedBlobs": [
+    {
+      "blobSha1": "38b816a524974fb53701c2a2cb31ceb4c1d8ffa3",
+      "payloadSha256": "7936e6c63333de693b740bc0159b99c70d1ff8d312fd6aa5ce3d722650767603",
+      "path": "scripts/upstream-runtime-probe.py",
+      "labels": ["non-placeholder gateway token"],
+      "auditSourceLabels": [],
+      "reason": "Code reference OPENCLAW_GATEWAY_TOKEN\": token assigning a runtime variable, not a literal token value."
+    },
+    {
+      "blobSha1": "708540b18b96bc13efa4389f8a4b6c17a958938a",
+      "payloadSha256": "40e5fa39f644969c0cb70856b72479f94355bdc97816dc5e2874ff76631e8772",
+      "path": "tests/test_scan_history_secrets.py",
+      "labels": ["AWS access key"],
+      "auditSourceLabels": ["aws-access-key"],
+      "reason": "Synthetic AWS-key literal in the history-scanner's own discrimination test fixture (commit 1f18cf6); the test was subsequently reworked to construct the value at runtime so no new literal recurs."
+    },
+    {
+      "blobSha1": "753d940eacb5af96667a164120e5735d45da0ed3",
+      "payloadSha256": "58b7f3a1b9e88cef4fb8a106f7f531003f2eafd8af7b9ab7692fa3321927b7a7",
+      "path": "tests/work-research-pressure.test.mjs",
+      "labels": ["AWS access key", "GitHub token", "private key"],
+      "auditSourceLabels": ["aws-access-key", "github-token", "private-key"],
+      "reason": "Synthetic credential-shaped strings in a redaction/secret-scanner test fixture (fake AWS/GitHub/RSA-header literals); reworded in the current tree."
+    },
+    {
+      "blobSha1": "96ba3882233a40bd856a79968d0a4ba37a44966d",
+      "payloadSha256": "bb5a51b2e108ba664f5d8b7fed35ac96242a235d1f6383c753a2d4440fa54975",
+      "path": "tests/test_source_audit.py",
+      "labels": ["non-placeholder gateway token"],
+      "auditSourceLabels": [],
+      "reason": "Synthetic canary constructed in a source-audit test (e.g. ghp_ + repeated chars); not a real credential."
+    },
+    {
+      "blobSha1": "99336e9a0a6ff88af71f1d6103b1f8e6012b3b3c",
+      "payloadSha256": "c535dbdc8a5ee1c513cb3a7a18836438943c7cfdc22120f839661b825b9b4c37",
+      "path": "tests/e2e.sh",
+      "labels": ["Google refresh token"],
+      "auditSourceLabels": ["google-refresh-token"],
+      "reason": "Explicit test-only auth material in an end-to-end fixture (refresh_token labeled test-only); not a real credential."
+    }
+  ]
+}

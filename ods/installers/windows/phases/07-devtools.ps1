@@ -39,55 +39,11 @@ if ($dryRun) {
 # Config helpers are sourced from installers/windows/lib/opencode-config.ps1.
 Write-AI "Setting up OpenCode AI coding assistant..."
 
-if (-not (Test-Path $script:OPENCODE_EXE)) {
-    Write-AI "Downloading OpenCode v$($script:OPENCODE_VERSION)..."
-    $_ocZip = Join-Path $env:TEMP $script:OPENCODE_ZIP
+. (Join-Path $PSScriptRoot '../lib/opencode-runtime.ps1')
+$_ocReady = Install-ODSOpenCode
+if ($_ocReady) { Write-AISuccess "OpenCode v$($script:OPENCODE_VERSION) ready" }
 
-    # Download with retry (resume-capable via curl.exe -C -)
-    if (-not (Test-Path $_ocZip)) {
-        $dlOk = Invoke-DownloadWithRetry `
-            -Url         $script:OPENCODE_URL `
-            -Destination $_ocZip `
-            -Label       "OpenCode v$($script:OPENCODE_VERSION)"
-        if (-not $dlOk) {
-            Write-AIWarn "OpenCode download failed after retries -- skipping (install manually later)."
-            Write-AI "  Manual: https://github.com/anomalyco/opencode/releases"
-        }
-    }
-
-    if (Test-Path $_ocZip) {
-        # Validate zip before extraction
-        $_zipCheck = Test-ZipIntegrity -Path $_ocZip
-        if (-not $_zipCheck.Valid) {
-            Write-AIWarn "OpenCode archive is corrupt: $($_zipCheck.ErrorMessage)"
-            Remove-Item $_ocZip -Force -ErrorAction SilentlyContinue
-            Write-AIWarn "Skipping OpenCode (re-run installer to retry)"
-        } else {
-            # Extract to ~/.opencode/bin/
-            New-Item -ItemType Directory -Path $script:OPENCODE_BIN -Force | Out-Null
-            if (Invoke-ExtractionWithRetry -ZipPath $_ocZip -DestinationPath $script:OPENCODE_BIN) {
-                # Zip may contain a subdirectory -- locate opencode.exe
-                $_ocExeFound = Get-ChildItem -Path $script:OPENCODE_BIN -Recurse -Filter "opencode.exe" |
-                    Select-Object -First 1
-                if ($_ocExeFound -and $_ocExeFound.FullName -ne $script:OPENCODE_EXE) {
-                    Move-Item -Path $_ocExeFound.FullName -Destination $script:OPENCODE_EXE -Force
-                }
-                if (Test-Path $script:OPENCODE_EXE) {
-                    Write-AISuccess "OpenCode v$($script:OPENCODE_VERSION) installed"
-                } else {
-                    Write-AIWarn "opencode.exe not found after extraction -- skipping"
-                }
-            } else {
-                Write-AIWarn "OpenCode extraction failed -- skipping"
-            }
-        }
-    }
-} else {
-    Write-AISuccess "OpenCode already installed ($($script:OPENCODE_EXE))"
-}
-
-# ── OpenCode configuration ────────────────────────────────────────────────────
-if (Test-Path $script:OPENCODE_EXE) {
+if ($_ocReady -and (Test-Path $script:OPENCODE_EXE)) {
     $_ocSync = Sync-WindowsOpenCodeConfigFromEnv `
         -InstallDir $installDir `
         -GpuBackend $gpuInfo.Backend `
@@ -117,6 +73,8 @@ if (Test-Path $script:OPENCODE_EXE) {
     $_ocLauncherContent = @"
 `$ErrorActionPreference = "Stop"
 Remove-Item Env:OPENCODE_SERVER_PASSWORD -ErrorAction SilentlyContinue
+`$env:OPENCODE_ENABLE_EXA = '1'
+# Preserve inherited OPENCODE_WEBSEARCH_PROVIDER; enabled Exa is the default.
 Set-Location -LiteralPath '$_ocDirLiteral'
 & '$_ocExeLiteral' web --port $($script:OPENCODE_PORT) --hostname 127.0.0.1
 exit `$LASTEXITCODE

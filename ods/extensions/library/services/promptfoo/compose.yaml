@@ -1,0 +1,43 @@
+services:
+  promptfoo:
+    image: ghcr.io/promptfoo/promptfoo:0.123.1@sha256:2dfddde000886e9a0bcce799478095a2e7d1e4438a6c6669ac04001e8ae29b85
+    container_name: ods-promptfoo
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${PROMPTFOO_PORT:-11003}:3000
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - const r=require('http').get('http://127.0.0.1:3000/health',s=>process.exit(s.statusCode>=200&&s.statusCode<400?0:1));r.on('error',()=>process.exit(1));r.setTimeout(8000,()=>{r.destroy();process.exit(1)})
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    volumes:
+    - promptfoo-data:/home/promptfoo/.promptfoo
+    environment:
+      PROMPTFOO_DISABLE_TELEMETRY: '1'
+      OPENAI_API_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_KEY: ${LITELLM_KEY:-no-key}
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  promptfoo-data: {}

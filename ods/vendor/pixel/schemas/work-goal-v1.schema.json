@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-v1.schema.json",
+  "title": "Pixel Deep Work durable goal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "goalId", "createdAt", "requester", "objective", "dataClassification", "milestones", "budgets", "completion", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "goalId": {"type": "string", "pattern": "^workgoal-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "requester": {"const": "pixel"},
+    "objective": {"type": "string", "minLength": 1, "maxLength": 8000},
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "milestones": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["milestoneId", "jobId", "jobSha256", "profile", "dependsOn"],
+        "properties": {
+          "milestoneId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+          "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+          "jobSha256": {"$ref": "#/$defs/sha256"},
+          "profile": {"enum": ["scout", "builder", "data-lab", "researcher", "public-project"]},
+          "dependsOn": {
+            "type": "array",
+            "maxItems": 63,
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}
+          }
+        }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxJobs", "maxRuntimeSeconds", "maxModelRequests", "maxInputTokens", "maxOutputTokens", "maxNetworkBytes", "maxArtifactBytes", "maxFailures"],
+      "properties": {
+        "maxJobs": {"type": "integer", "minimum": 1, "maximum": 64},
+        "maxRuntimeSeconds": {"type": "integer", "minimum": 1, "maximum": 31536000},
+        "maxModelRequests": {"type": "integer", "minimum": 1, "maximum": 6400000},
+        "maxInputTokens": {"type": "integer", "minimum": 1, "maximum": 128000000000},
+        "maxOutputTokens": {"type": "integer", "minimum": 1, "maximum": 32000000000},
+        "maxNetworkBytes": {"type": "integer", "minimum": 0, "maximum": 687194767360},
+        "maxArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 2199023255552},
+        "maxFailures": {"type": "integer", "minimum": 1, "maximum": 64000}
+      }
+    },
+    "completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "independentVerificationRequired", "workerClaimSufficient"],
+      "properties": {
+        "mode": {"const": "all-milestones-verified"},
+        "independentVerificationRequired": {"const": true},
+        "workerClaimSufficient": {"const": false}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grantsExecution", "grantsLease", "grantsScopeExpansion", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "grantsExecution": {"const": false},
+        "grantsLease": {"const": false},
+        "grantsScopeExpansion": {"const": false},
+        "grantsExternalEffects": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Private immutable long-horizon objective and exact child-job graph. It schedules no work by itself and grants no lease, credential, scope expansion, external effect, or completion authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

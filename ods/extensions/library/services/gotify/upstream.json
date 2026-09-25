@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/gotify/server",
+  "license": "MIT",
+  "image": "gotify/server:3.1.1@sha256:44fc5bbd1c0618878e33073d38c2c13126b48f245c3fe12236b1da48eb203b86",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/386",
+    "linux/arm",
+    "linux/riscv64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "MIT server with CC-BY-4.0 logo. Official multiarch binary, original serve command, nonroot prepared SQLite/image storage and required initial admin password. Registration closed, no automatic client, application token, recipient, plugin or OIDC connection."
+}

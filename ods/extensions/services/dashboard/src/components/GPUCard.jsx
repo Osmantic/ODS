@@ -9,7 +9,7 @@ function Bar({ percent, alert, available = true }) {
     : percent > 90
       ? 'bg-red-500'
       : percent > 70
-        ? 'bg-yellow-500'
+        ? 'bg-theme-text-secondary'
         : 'bg-indigo-500'
   return (
     <div className="h-1 bg-zinc-700 rounded-full overflow-hidden mt-1">
@@ -34,7 +34,7 @@ export const GPUCard = memo(function GPUCard({ gpu }) {
     : gpu.temperature_c >= 85
     ? 'text-red-400'
     : gpu.temperature_c >= 70
-      ? 'text-yellow-400'
+      ? 'text-theme-text-secondary'
       : 'text-zinc-400'
 
   return (

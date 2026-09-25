@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-chat-handoff-receipt-v1.schema.json",
+  "title": "Pixel private chat to Deep Work handoff receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "handoffId", "createdAt", "source", "target", "authority", "boundary", "receiptSha256"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/control-chat-handoff-receipt-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "handoffId": {"type": "string", "pattern": "^handoff-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["conversationId", "turnId", "turnRecordSha256", "settledAt"],
+      "properties": {
+        "conversationId": {"type": "string", "pattern": "^conversation-[0-9]{13}-[a-f0-9]{12}$"},
+        "turnId": {"type": "string", "pattern": "^turn-[0-9]{13}-[a-f0-9]{12}$"},
+        "turnRecordSha256": {"$ref": "#/$defs/sha256"},
+        "settledAt": {"type": "string", "format": "date-time"}
+      }
+    },
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["actionId", "authoringBindingSha256", "draftId", "reviewSha256", "goalDeclarationSha256", "milestoneCount", "profiles", "dataClassification"],
+      "properties": {
+        "actionId": {"type": "string", "pattern": "^control-[0-9]{13}-[a-f0-9]{12}$"},
+        "authoringBindingSha256": {"$ref": "#/$defs/sha256"},
+        "draftId": {"type": "string", "pattern": "^workdraft-[0-9]{13}-[a-f0-9]{12}$"},
+        "reviewSha256": {"$ref": "#/$defs/sha256"},
+        "goalDeclarationSha256": {"$ref": "#/$defs/sha256"},
+        "milestoneCount": {"type": "integer", "minimum": 1, "maximum": 64},
+        "profiles": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"enum": ["scout", "builder", "researcher", "data-lab"]}},
+        "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]}
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantsExecution", "grantsScheduling", "grantsLease", "grantsServiceActivation", "grantsExternalEffects", "grantsCompletion", "grantsScopeExpansion"],
+      "properties": {
+        "grantsExecution": {"const": false}, "grantsScheduling": {"const": false},
+        "grantsLease": {"const": false}, "grantsServiceActivation": {"const": false},
+        "grantsExternalEffects": {"const": false}, "grantsCompletion": {"const": false},
+        "grantsScopeExpansion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Private immutable receipt binding one exact settled Pixel chat turn to one exact inert Deep Work draft and goal declaration. It proves provenance only and grants no execution, scheduling, lease, service activation, external effect, completion, or scope expansion."},
+    "receiptSha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

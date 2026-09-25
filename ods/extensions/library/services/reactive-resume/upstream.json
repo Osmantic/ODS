@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/AmruthPillai/Reactive-Resume",
+  "license": "MIT",
+  "image": "amruthpillai/reactive-resume:v5.3.1@sha256:2f5205f30121c2ce8247baf80dbc105516033f5cd42dba872fc6f459622169d9",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official v-prefixed image, separate PostgreSQL 17 and persistent local uploads. Native startup migrations and account registration. No Browserless dependency in this version; browser-side PDF generation. No SMTP, OAuth, AI provider or Redis connection configured."
+}

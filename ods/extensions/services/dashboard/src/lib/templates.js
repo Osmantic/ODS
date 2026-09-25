@@ -24,7 +24,7 @@ export function getTemplateStatus(template, extensions) {
   const statuses = Object.values(serviceStatus)
   if (statuses.some(s => s === 'error')) return 'has_errors'
   if (statuses.some(s => s === 'installing' || s === 'setting_up')) return 'in_progress'
-  const allEnabled = statuses.every(s => s === 'enabled')
+  const allEnabled = statuses.every(s => s === 'enabled' || s === 'cli_installed')
   if (allEnabled) return 'applied'
   return 'available'
 }

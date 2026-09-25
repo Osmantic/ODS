@@ -21,6 +21,8 @@ LOG_FILE="$ODS_DIR/preflight-$(date +%Y%m%d-%H%M%S).log"
 # Safe .env loading (no eval; use lib/safe-env.sh)
 [[ -f "$ODS_DIR/lib/safe-env.sh" ]] && . "$ODS_DIR/lib/safe-env.sh"
 load_env_file "$ODS_DIR/.env"
+# shellcheck source=lib/preflight-llm-route.sh
+. "$ODS_DIR/lib/preflight-llm-route.sh"
 
 SERVICE_HOST="${SERVICE_HOST:-localhost}"
 
@@ -71,13 +73,6 @@ detect_backend() {
 }
 
 BACKEND=$(detect_backend)
-
-is_external_lemonade() {
-    local external="${LEMONADE_EXTERNAL:-false}"
-    local managed="${AMD_INFERENCE_MANAGED:-}"
-    local mode="${ODS_MODE:-local}"
-    [[ "${external,,}" == "true" ]] || [[ "${mode,,}" == "lemonade" && "${managed,,}" == "false" ]]
-}
 
 # Colors
 RED='\033[0;31m'
@@ -196,10 +191,10 @@ log ""
 # OLLAMA_PORT=11434 to .env automatically — it will be picked up via the
 # ${OLLAMA_PORT:-...} expansion below, so the fallback should be 8080.
 log "[4/8] Checking LLM endpoint..."
-if is_external_lemonade; then
+if ods_preflight_uses_litellm; then
     LLM_PORT="${LITELLM_PORT:-4000}"
     LLM_ENDPOINTS=("http://${SERVICE_HOST}:${LLM_PORT}/health/readiness" "http://127.0.0.1:${LLM_PORT}/health/readiness" "http://127.0.0.1:${LLM_PORT}/v1/models")
-    LLM_SERVICE_NAME="LiteLLM external Lemonade gateway"
+    LLM_SERVICE_NAME="LiteLLM gateway"
     LLM_CONTAINER_MATCH="ods-litellm"
     LLM_START_CMD="docker compose up -d litellm"
 else

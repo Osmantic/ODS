@@ -3,7 +3,7 @@ schema_version: ods.services.v1
 service:
   id: dify
   name: Dify
-  aliases: [llm-app, agent]
+  aliases: [llm-app, dify-agent]
   container_name: ods-dify
   host_env: DIFY_HOST
   default_host: dify

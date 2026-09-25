@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-pair-system-binding-v1.schema.json",
+  "title": "Pixel destination-bound paired-system configuration binding v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "status", "operationSha256", "currentConfigurationSha256", "pixelSystemConfigurationSha256", "pixelSystemPolicyBindingReceiptSha256", "proposedConfigurationSha256", "changes", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-pair-system-binding-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"enum": ["pixel-portal-outcome-pair-system-binding-review", "pixel-portal-outcome-pair-system-binding-apply"]},
+    "status": {"enum": ["confirmation-required", "pair-system-configuration-written"]},
+    "operationSha256": {"$ref": "#/$defs/hash"},
+    "currentConfigurationSha256": {"$ref": "#/$defs/hash"},
+    "pixelSystemConfigurationSha256": {"$ref": "#/$defs/hash"},
+    "pixelSystemPolicyBindingReceiptSha256": {"$ref": "#/$defs/hash"},
+    "proposedConfigurationSha256": {"$ref": "#/$defs/hash"},
+    "confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["option", "sha256"],
+      "properties": {
+        "option": {"const": "--confirm-operation-sha256"},
+        "sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "changes": {
+      "const": {
+        "writesNewPrivateConfiguration": true,
+        "changesOnlyPixelSystemAndPreflightPaths": true,
+        "requiresSuccessfulPixelPolicyBinding": true,
+        "editsCurrentConfiguration": false,
+        "startsModel": false,
+        "startsService": false,
+        "routesJob": false,
+        "usesNetwork": false,
+        "usesCredentials": false,
+        "externalEffects": false
+      }
+    },
+    "authority": {
+      "const": {
+        "grantsExecution": false,
+        "grantsModelStart": false,
+        "grantsServiceStart": false,
+        "grantsNetwork": false,
+        "grantsCredentials": false,
+        "grantsExternalEffects": false,
+        "grantsCompletion": false,
+        "grantsPublication": false,
+        "grantsDeployment": false,
+        "grantsAcceptance": false,
+        "grantsPromotion": false
+      }
+    },
+    "boundary": {"const": "Trusted-terminal review and destination-bound publication of one new owner-private Pixel/Codex pair configuration that changes only the selected Pixel system configuration and the unused preflight destination. It requires the exact successful Pixel policy-binding receipt, does not edit any current configuration, start a model, service, task, tool, or network, use credentials, perform an external effect, deploy, or claim completion, publication, acceptance, or promotion authority."}
+  },
+  "if": {
+    "properties": {"operation": {"const": "pixel-portal-outcome-pair-system-binding-review"}},
+    "required": ["operation"]
+  },
+  "then": {
+    "required": ["confirmation"],
+    "properties": {"status": {"const": "confirmation-required"}}
+  },
+  "else": {
+    "not": {"required": ["confirmation"]},
+    "properties": {"status": {"const": "pair-system-configuration-written"}}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

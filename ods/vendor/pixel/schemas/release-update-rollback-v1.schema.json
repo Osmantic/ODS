@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-rollback-v1.schema.json",
+  "title": "Pixel update-bound rollback claim receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "status", "candidateId", "product", "version", "restoreVersion", "activationHash", "activationResultSha256", "rollbackMarkerSha256", "trustedControllerOnly", "singleUse", "rollbackHash", "claimedAt", "claim", "activeDeploymentChanged", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-release-update-rollback"},
+    "status": {"const": "claimed"},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "product": {"const": "Pixel"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "restoreVersion": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "activationHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "activationResultSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rollbackMarkerSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "trustedControllerOnly": {"const": true},
+    "singleUse": {"const": true},
+    "rollbackHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "claimedAt": {"type": "string", "format": "date-time"},
+    "claim": {"const": "single-use-exclusive-create"},
+    "activeDeploymentChanged": {"const": false},
+    "boundary": {"const": "Single-use exact rollback claimed against the activated release and its unchanged rollback marker; trusted controller rollback has not yet run."}
+  }
+}

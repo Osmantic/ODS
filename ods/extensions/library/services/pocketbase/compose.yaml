@@ -1,0 +1,59 @@
+services:
+  pocketbase:
+    image: ods/pocketbase:0.40.4-local-v1
+    container_name: ods-pocketbase
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${POCKETBASE_PORT:-11068}:8090
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - --spider
+      - --quiet
+      - --timeout=5
+      - http://127.0.0.1:8090/api/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+    - serve
+    - --http=0.0.0.0:8090
+    - --dir=/workspace/pb_data
+    - --hooksDir=/workspace/pb_hooks
+    - --migrationsDir=/workspace/pb_migrations
+    - --publicDir=/workspace/pb_public
+    - --hooksWatch=false
+    entrypoint:
+    - /pocketbase
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=32m
+    init: true
+    volumes:
+    - pocketbase-workspace:/workspace
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  pocketbase-workspace: {}

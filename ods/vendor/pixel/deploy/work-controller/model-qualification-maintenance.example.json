@@ -1,0 +1,24 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-model-qualification-maintenance-v1.schema.json",
+  "schemaVersion": 1,
+  "qualificationDockerConfigPath": "/etc/pixel-work/model-qualification-docker.json",
+  "custody": {
+    "kind": "advisory-flock",
+    "lockPath": "/run/user/1000/pixel-model-guardian.lock",
+    "acquireTimeoutSeconds": 30
+  },
+  "production": {
+    "containerName": "pixel-production-model",
+    "containerId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "imageDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "expectedStartedAt": "2026-01-01T00:00:00Z",
+    "expectedRestartCount": 0,
+    "stopTimeoutSeconds": 120,
+    "restoreTimeoutSeconds": 3600,
+    "probeIntervalMilliseconds": 1000,
+    "readinessOrigin": "http://127.0.0.1:8000",
+    "readinessModelId": "DeepSeek-V4-Flash-0731",
+    "maxResponseBytes": 1048576
+  },
+  "boundary": "Owner-private exact maintenance binding for one production container and one local-model qualification operation. Configuration grants no stop, start, inference, credential, external network, external effect, deployment, completion, publication, acceptance, or promotion authority."
+}

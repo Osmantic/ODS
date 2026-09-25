@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/ClickHouse/ClickHouse",
+  "license": "Apache-2.0",
+  "image": "clickhouse/clickhouse-server:26.8.9.10@sha256:85ddbad63bd6779d4b3c64af17a0720c85e9dc6e5fa636f80bfdbb6096bdc5ab",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 26.8.9.10 LTS, required authenticated ods user, named data/log volumes, loopback HTTP only. CPU microarchitecture prerequisites apply (x86-64-v3 or supported ARMv8.2-A+RCpc), not just architecture. Native 9000 is not published."
+}

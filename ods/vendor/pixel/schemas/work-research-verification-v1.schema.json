@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-research-verification-v1.schema.json",
+  "title": "Pixel deterministic research citation verification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "verificationId", "jobId", "claimId", "createdAt", "planSha256", "batchSha256s", "reportSha256", "status", "verificationLevel", "semanticEntailmentVerified", "independent", "network", "modelUsed", "findings", "privateDataIncluded", "externalEffects", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-research-verification-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "verificationId": {"type": "string", "pattern": "^researchverification-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "claimId": {"type": "string", "pattern": "^workclaim-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "batchSha256s": {"type": "array", "minItems": 1, "maxItems": 200, "uniqueItems": true, "items": {"$ref": "#/$defs/sha256"}},
+    "reportSha256": {"$ref": "#/$defs/sha256"},
+    "status": {"enum": ["evidence-pass", "fail"]},
+    "verificationLevel": {"const": "deterministic-evidence-presence"},
+    "semanticEntailmentVerified": {"const": false},
+    "independent": {"const": true},
+    "network": {"const": "none"},
+    "modelUsed": {"const": false},
+    "findings": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"$ref": "#/$defs/finding"}},
+    "privateDataIncluded": {"const": false},
+    "externalEffects": {"const": false},
+    "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Independent offline proof of fetched-source integrity and exact evidence presence only. It grants no authority and does not claim semantic entailment, source truth, completeness, or publication readiness."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "finding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["findingId", "status", "citations"],
+      "properties": {
+        "findingId": {"type": "string", "pattern": "^finding-(?:[1-9]|[1-9][0-9]|100)$"},
+        "status": {"enum": ["pass", "fail"]},
+        "citations": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"$ref": "#/$defs/citation"}}
+      }
+    },
+    "citation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["batchSha256", "sourceId", "contentSha256", "receiptSha256", "evidenceSha256", "evidenceBytes", "offset", "status"],
+      "properties": {
+        "batchSha256": {"$ref": "#/$defs/sha256"},
+        "sourceId": {"type": "string", "pattern": "^source-[a-f0-9]{16}$"},
+        "contentSha256": {"$ref": "#/$defs/sha256"},
+        "receiptSha256": {"$ref": "#/$defs/sha256"},
+        "evidenceSha256": {"$ref": "#/$defs/sha256"},
+        "evidenceBytes": {"type": "integer", "minimum": 1, "maximum": 12288},
+        "offset": {"type": "integer", "minimum": -1, "maximum": 20971520},
+        "status": {"enum": ["present", "not-found"]}
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["directNetwork", "credentials", "externalWrites", "accounts", "messages", "publish", "purchase", "policyMutation", "scopeExpansion"],
+      "properties": {
+        "directNetwork": {"const": false}, "credentials": {"const": false}, "externalWrites": {"const": false},
+        "accounts": {"const": false}, "messages": {"const": false}, "publish": {"const": false},
+        "purchase": {"const": false}, "policyMutation": {"const": false}, "scopeExpansion": {"const": false}
+      }
+    }
+  }
+}

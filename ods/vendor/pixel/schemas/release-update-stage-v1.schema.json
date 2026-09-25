@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-stage-v1.schema.json",
+  "title": "Pixel verified release staging receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "candidateId", "product", "version", "currentVersion", "relation", "channel", "publisherIdentity", "sourceCommit", "sourceTree", "minimumUpgradablePixel", "upgradeEligible", "host", "artifacts", "envelopeSha256", "signatureSha256", "preparedAt", "candidateCodeExtracted", "candidateCodeExecuted", "activationAuthority", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "status": {"enum": ["prepared", "already-prepared"]},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "product": {"const": "Pixel"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "currentVersion": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "relation": {"const": "upgrade"},
+    "channel": {"const": "stable"},
+    "publisherIdentity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$"},
+    "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sourceTree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "minimumUpgradablePixel": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "upgradeEligible": {"const": true},
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "versionId", "label", "supported"],
+      "properties": {
+        "id": {"enum": ["ubuntu", "debian"]},
+        "versionId": {"enum": ["24.04", "12"]},
+        "label": {"enum": ["Ubuntu 24.04 LTS", "Debian 12"]},
+        "supported": {"const": true}
+      },
+      "allOf": [
+        {"if": {"properties": {"id": {"const": "ubuntu"}}}, "then": {"properties": {"versionId": {"const": "24.04"}, "label": {"const": "Ubuntu 24.04 LTS"}}}},
+        {"if": {"properties": {"id": {"const": "debian"}}}, "then": {"properties": {"versionId": {"const": "12"}, "label": {"const": "Debian 12"}}}}
+      ]
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["archive", "sbom", "provenance"],
+      "properties": {
+        "archive": {"$ref": "#/$defs/archive"},
+        "sbom": {"$ref": "#/$defs/sbom"},
+        "provenance": {"$ref": "#/$defs/provenance"}
+      }
+    },
+    "envelopeSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "signatureSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "preparedAt": {"type": "string", "format": "date-time"},
+    "candidateCodeExtracted": {"const": false},
+    "candidateCodeExecuted": {"const": false},
+    "activationAuthority": {"const": "external-exact-confirmation-only"},
+    "boundary": {"const": "Verified release bytes staged privately without extraction or execution; activation requires a separate exact confirmation."}
+  },
+  "$defs": {
+    "archive": {
+      "type": "object", "additionalProperties": false, "required": ["name", "sha256", "bytes"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}\\.tar\\.gz$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 536870912}
+      }
+    },
+    "sbom": {
+      "type": "object", "additionalProperties": false, "required": ["name", "sha256", "bytes"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}\\.cdx\\.json$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 33554432}
+      }
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false, "required": ["name", "sha256", "bytes"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}\\.intoto\\.jsonl$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 2097152}
+      }
+    }
+  }
+}

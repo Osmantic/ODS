@@ -3,9 +3,10 @@
 # ODS Installer — Phase 07: Developer Tools
 # ============================================================================
 # Part of: installers/phases/
-# Purpose: Install Claude Code, Codex CLI, and OpenCode
+# Purpose: Install developer CLIs and, when selected, the OpenCode extension
 #
 # Expects: DRY_RUN, INSTALL_DIR, LOG_FILE, LLM_MODEL, MAX_CONTEXT,
+#           ENABLE_OPENCODE,
 #           PKG_MANAGER,
 #           ai(), ai_ok(), ai_warn(), log()
 # Provides: (developer tools installed to ~/.npm-global)
@@ -15,24 +16,30 @@
 # ============================================================================
 
 ods_progress 42 "devtools" "Installing developer tools"
+# shellcheck source=../lib/node-runtime.sh
+. "$SCRIPT_DIR/installers/lib/node-runtime.sh"
 if $DRY_RUN; then
-    log "[DRY RUN] Would install AI developer tools (Claude Code, Codex CLI, OpenCode)"
-    log "[DRY RUN] Would configure OpenCode for local llama-server (user-level systemd service on port 3003)"
+    log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
+    if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
+        log "[DRY RUN] Would install and configure the optional OpenCode browser IDE (user-level systemd service on port 3003)"
+    else
+        log "[DRY RUN] OpenCode extension is disabled; it would not be installed or started"
+    fi
     log "[DRY RUN] Would install ODS host agent systemd service (system-mode, port 7710)"
     log "[DRY RUN] Would install ODS mDNS announcer systemd service (if zeroconf available)"
 else
     ai "Installing AI developer tools..."
 
     # Ensure Node.js/npm is available (needed for Claude Code and Codex)
-    if ! command -v npm &> /dev/null; then
+    if ! ods_linux_node_tools_available; then
         # Node.js install needs root. When sudo isn't usable (rootless box, or
         # non-interactive without cached/passwordless sudo), skip it with a clear
         # warning instead of failing the install. The optional AI dev-tool CLIs
-        # (Claude Code / Codex / OpenCode) simply won't be installed; core ODS is
+        # (Claude Code / Codex) simply won't be installed; core ODS is
         # unaffected. ods_sudo() below also skips these calls when sudo is absent.
         if ! ods_sudo_available; then
             ai_warn "sudo unavailable — skipping Node.js install (optional dev-tool CLIs will be skipped)."
-            ai "  Install Node.js 22+ yourself and re-run to add Claude Code / Codex / OpenCode."
+            ai "  Install Node.js 22+ yourself and re-run to add Claude Code / Codex."
         else
             ai "Installing Node.js..."
             case "$PKG_MANAGER" in
@@ -62,7 +69,7 @@ else
         fi
     fi
 
-    if command -v npm &> /dev/null; then
+    if ods_linux_node_tools_available; then
         # Set up user-level npm global prefix (no sudo needed)
         NPM_GLOBAL_DIR="$HOME/.npm-global"
         if [[ ! -d "$NPM_GLOBAL_DIR" ]]; then
@@ -96,10 +103,11 @@ else
             ai "Added ~/.npm-global/bin to PATH in ~/.bashrc"
         fi
     else
-        ai_warn "npm not available — skipping Claude Code and Codex CLI install"
-        ai "  Install later: npm i -g @anthropic-ai/claude-code @openai/codex"
+        ai_warn "Linux Node.js 20+ and npm are not available — skipping Claude Code and Codex CLI install"
+        ai "  Install Linux Node.js 22+ and re-run to add Claude Code / Codex."
     fi
 
+    if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
     _opencode_candidate_is_file() {
         local candidate="$1"
         [[ -n "$candidate" && "$candidate" == /* && -x "$candidate" && ! -d "$candidate" ]]
@@ -122,19 +130,13 @@ else
 
     # ── OpenCode (local agentic coding platform) ──
     OPENCODE_BIN="$(_find_opencode_bin || true)"
-    if [[ -z "$OPENCODE_BIN" ]]; then
-        ai "Installing OpenCode..."
-        tmpfile=$(mktemp /tmp/opencode-install.XXXXXX.sh)
-        if curl -fsSL --max-time 300 https://opencode.ai/install -o "$tmpfile" 2>/dev/null && bash "$tmpfile" >> "$LOG_FILE" 2>&1; then
-            OPENCODE_BIN="$(_find_opencode_bin || true)"
-            ai_ok "OpenCode installer completed"
-        else
-            ai_warn "OpenCode install failed — install later with: curl -fsSL https://opencode.ai/install | bash"
-        fi
-        rm -f "$tmpfile"
-        [[ -n "$OPENCODE_BIN" ]] && ai_ok "OpenCode installed ($OPENCODE_BIN)" || ai_warn "OpenCode installer completed but opencode was not found"
+    # shellcheck source=../lib/opencode-runtime.sh
+    . "$SCRIPT_DIR/installers/lib/opencode-runtime.sh"
+    if OPENCODE_BIN="$(ods_install_opencode "$OPENCODE_BIN")"; then
+        ai_ok "Reviewed OpenCode release installed ($OPENCODE_BIN)"
     else
-        ai_ok "OpenCode already installed ($OPENCODE_BIN)"
+        OPENCODE_BIN=""
+        ai_warn "OpenCode upgrade failed; existing binary/configuration preserved. Re-run after resolving the download or binary error."
     fi
 
     # Configure OpenCode to use local llama-server
@@ -150,6 +152,8 @@ else
             [[ -z "${ODS_MODEL_SWITCHBOARD:-}" ]] && ODS_MODEL_SWITCHBOARD=$(grep -m1 '^ODS_MODEL_SWITCHBOARD=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             [[ -z "${LITELLM_KEY:-}" ]] && LITELLM_KEY=$(grep -m1 '^LITELLM_KEY=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             [[ -z "${LITELLM_PORT:-}" ]] && LITELLM_PORT=$(grep -m1 '^LITELLM_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2-)
+            [[ -z "${EXTERNAL_LLM_URL:-}" ]] && EXTERNAL_LLM_URL=$(grep -m1 '^EXTERNAL_LLM_URL=' "$INSTALL_DIR/.env" | cut -d= -f2-)
+            [[ -z "${EXTERNAL_LLM_MODEL:-}" ]] && EXTERNAL_LLM_MODEL=$(grep -m1 '^EXTERNAL_LLM_MODEL=' "$INSTALL_DIR/.env" | cut -d= -f2-)
         fi
         # Route through LiteLLM on AMD/Lemonade, direct to llama-server otherwise.
         #
@@ -172,12 +176,22 @@ else
         _opencode_model_id="${LLM_MODEL}"
         _opencode_model_name="${LLM_MODEL}"
         _opencode_provider_name="llama-server (local)"
-        if [[ "${ODS_MODEL_SWITCHBOARD:-observe}" == "enabled" ]]; then
+        if [[ "${ODS_MODEL_SWITCHBOARD:-enabled}" == "enabled" ]]; then
             _opencode_url="http://127.0.0.1:${LITELLM_PORT:-4000}/v1"
             _opencode_key="${LITELLM_KEY:-}"
             _opencode_model_id="ods/current"
             _opencode_model_name="ods/current"
             _opencode_provider_name="ODS switchboard"
+        elif [[ -n "${EXTERNAL_LLM_URL:-}" && -n "${EXTERNAL_LLM_MODEL:-}" ]]; then
+            # Generic external providers are materialized behind the same
+            # authenticated LiteLLM gateway as Pixel. Pointing OpenCode at the
+            # stale local tier port produces either connection failures or the
+            # misleading LiteLLM "No connected db" auth error.
+            _opencode_url="http://127.0.0.1:${LITELLM_PORT:-4000}/v1"
+            _opencode_key="${LITELLM_KEY:-}"
+            _opencode_model_id="$EXTERNAL_LLM_MODEL"
+            _opencode_model_name="$EXTERNAL_LLM_MODEL"
+            _opencode_provider_name="External LLM via ODS gateway"
         elif [[ "${ODS_MODE:-local}" == "lemonade" ]]; then
             _opencode_url="http://127.0.0.1:${LITELLM_PORT:-4000}/v1"
             _opencode_key="${LITELLM_KEY:-no-key}"
@@ -186,9 +200,20 @@ else
             _opencode_key="no-key"
         fi
         if [[ -z "${_opencode_key:-}" ]]; then
-            ai_err "OpenCode switchboard config requires LITELLM_KEY, but it is empty."
+            ai_bad "OpenCode gateway config requires LITELLM_KEY, but it is empty."
             exit 1
         fi
+        # OpenCode reserves `limit.output` from `limit.context` when deciding
+        # whether to compact. Reserving the entire context for output causes
+        # a trivial completed chat to enter an unbounded compaction/continue
+        # loop on 32K installs. Keep at least three quarters for the prompt.
+        _opencode_context="${MAX_CONTEXT:-65536}"
+        if [[ ! "$_opencode_context" =~ ^[0-9]+$ ]] || (( _opencode_context < 1024 )); then
+            ai_bad "OpenCode requires a numeric context of at least 1024 tokens."
+            exit 1
+        fi
+        _opencode_output_limit=$(( _opencode_context / 4 ))
+        (( _opencode_output_limit <= 32768 )) || _opencode_output_limit=32768
 
         # Writes a fresh opencode.json from the template. Used for first-install
         # and as deterministic recovery when the jq rewrite path finds an
@@ -211,8 +236,8 @@ else
         "${_opencode_model_id}": {
           "name": "${_opencode_model_name}",
           "limit": {
-            "context": ${MAX_CONTEXT:-65536},
-            "output": 32768
+            "context": ${_opencode_context},
+            "output": ${_opencode_output_limit}
           }
         }
       }
@@ -234,7 +259,8 @@ OPENCODE_EOF
                     --arg model_id "$_opencode_model_id" \
                     --arg model_name "$_opencode_model_name" \
                     --arg provider_name "$_opencode_provider_name" \
-                    --argjson context "${MAX_CONTEXT:-65536}" \
+                    --argjson context "$_opencode_context" \
+                    --argjson output "$_opencode_output_limit" \
                     '.["$schema"] = "https://opencode.ai/config.json"
                      | .model = ("llama-server/" + $model_id)
                      | .small_model = ("llama-server/" + $model_id)
@@ -246,7 +272,7 @@ OPENCODE_EOF
                      | .provider["llama-server"].models = {
                          ($model_id): {
                            "name": $model_name,
-                           "limit": {"context": $context, "output": ([32768, $context] | min)}
+                           "limit": {"context": $context, "output": $output}
                          }
                        }' \
                     "$OPENCODE_CONFIG_DIR/opencode.json" > "$_opencode_tmp" 2>/dev/null; then
@@ -290,20 +316,32 @@ OPENCODE_EOF
                 _sed_i "s|__HOME__|${_home_esc}|g" "$svc_tmp"
                 _sed_i "s|__OPENCODE_BIN__|${_opencode_bin_esc}|g" "$svc_tmp"
                 _sed_i "s|__OPENCODE_BIN_DIR__|${_opencode_bin_dir_esc}|g" "$svc_tmp"
-                cp "$svc_tmp" "$SYSTEMD_USER_DIR/opencode-web.service"
+                if cp "$svc_tmp" "$SYSTEMD_USER_DIR/opencode-web.service"; then
+                    ods_restart_opencode_service >> "$LOG_FILE" 2>&1 && \
+                        ai_ok "OpenCode Web UI service restarted with the updated binary/configuration (port 3003)" || \
+                        ai_warn "OpenCode Web UI service failed to restart"
+                else
+                    ai_warn "OpenCode unit update failed; previous service left unchanged"
+                fi
                 rm -f "$svc_tmp"
             fi
-
-            systemctl --user daemon-reload 2>/dev/null || true
-            systemctl --user enable --now opencode-web.service >> "$LOG_FILE" 2>&1 && \
-                ai_ok "OpenCode Web UI service installed (user-level, port 3003)" || \
-                ai_warn "OpenCode Web UI service failed to start"
 
             # Enable lingering so service survives logout
             loginctl enable-linger "$(whoami)" 2>/dev/null || \
                 sudo -n loginctl enable-linger "$(whoami)" 2>/dev/null || \
                 ai_warn "Could not enable linger. OpenCode may stop after logout. Run: loginctl enable-linger $(whoami)"
         fi
+    fi
+    else
+        # A rerun with --no-opencode must not leave an earlier ODS-managed
+        # browser IDE running. Preserve the binary and user configuration so
+        # an explicit future opt-in is reversible, but retire the managed unit.
+        if ods_systemctl_user is-active --quiet opencode-web.service 2>/dev/null \
+            || ods_systemctl_user is-enabled --quiet opencode-web.service 2>/dev/null; then
+            ods_systemctl_user disable --now opencode-web.service >> "$LOG_FILE" 2>&1 || \
+                ai_warn "Could not stop the previously enabled OpenCode extension"
+        fi
+        log "OpenCode extension disabled; skipped installation and startup"
     fi
 fi
 
@@ -342,10 +380,10 @@ if [[ -f "$INSTALL_DIR/bin/ods-host-agent.py" ]]; then
         if systemctl status >/dev/null 2>&1 || [[ -d /run/systemd/system ]]; then
             # Migrate any pre-existing user-mode unit (idempotent — no-op if absent).
             if [[ -f "$HOME/.config/systemd/user/ods-host-agent.service" ]]; then
-                systemctl --user stop ods-host-agent.service 2>/dev/null || true
-                systemctl --user disable ods-host-agent.service 2>/dev/null || true
+                ods_systemctl_user stop ods-host-agent.service 2>/dev/null || true
+                ods_systemctl_user disable ods-host-agent.service 2>/dev/null || true
                 rm -f "$HOME/.config/systemd/user/ods-host-agent.service"
-                systemctl --user daemon-reload 2>/dev/null || true
+                ods_systemctl_user daemon-reload 2>/dev/null || true
                 ai_ok "Migrated host agent from --user mode to system mode"
             fi
 

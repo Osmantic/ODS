@@ -1,0 +1,50 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: mapshaper
+  name: Mapshaper
+  aliases: []
+  container_name: ods-mapshaper
+  host_env: MAPSHAPER_HOST
+  default_host: mapshaper
+  port: 8080
+  external_port_env: MAPSHAPER_PORT
+  external_port_default: 11080
+  health: /
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Import and edit geographic datasets, simplify boundaries and export
+    map-ready GeoJSON, TopoJSON and other supported formats.
+  env_vars: []
+  ui_path: /
+tags:
+- maps
+- gis
+- geojson
+- open-source
+features:
+- id: mapshaper-geodata
+  name: Mapshaper
+  description: Import and edit geographic datasets, simplify boundaries and export
+    map-ready GeoJSON, TopoJSON and other supported formats.
+  icon: Map
+  category: productivity
+  requirements:
+    services:
+    - mapshaper
+    vram_gb: 0
+  enabled_services_all:
+  - mapshaper
+  setup_time: Initial source build; see README
+  priority: 48
+  launch:
+    type: service
+    service: mapshaper
+    path: /

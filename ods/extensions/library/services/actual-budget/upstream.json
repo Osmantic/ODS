@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/actualbudget/actual",
+  "license": "MIT",
+  "image": "ghcr.io/actualbudget/actual-server:26.9.0@sha256:552beab3dec8c93d46b8b9245612d63c3f123b8a45063a474f53e229b17621d3",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 26.9.0 server/client image using its prepared UID 1001 data directory. Password-only login and native status health checker. First-run password setup, persistent server/budget files, no bank provider or remote credentials configured."
+}

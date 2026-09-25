@@ -1,0 +1,86 @@
+name: Native LLM bridge contracts
+
+on:
+  pull_request:
+    paths:
+      - 'ods/bin/ods-macos-llm-bridge.py'
+      - 'ods/tests/test_macos_llm_bridge.py'
+      - 'ods/tests/test_bridge_denied_admission.py'
+      - 'ods/installers/macos/**'
+      - 'ods/tests/test_macos_pixel_native_install.py'
+      - 'ods/tests/test_macos_pixel_native_uninstall.py'
+      - 'ods/tests/test_macos_pixel_ops_account.py'
+      - 'ods/tests/test-macos-uninstall-launchagents.sh'
+      - 'ods/ods-uninstall.sh'
+      - 'ods/tests/test_macos_pixel_native_update.py'
+      - 'ods/tests/test_macos_pixel_controller_repair.py'
+      - 'ods/tests/test_macos_pixel_controller_held_proof.py'
+      - 'ods/tests/test_macos_pixel_native_finalize.py'
+      - 'ods/tests/test_macos_pixel_access_install.py'
+      - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
+      - 'ods/tests/test_pixel_startup_reproof.py'
+      - 'ods/tests/test_macos_memory_budget.py'
+      - 'ods/tests/test_macos_pixel_ops_state.py'
+      - 'ods/tests/test_macos_pixel_ops_state_live.py'
+      - 'ods/bin/ods-host-agent.py'
+      - '.github/workflows/test-macos-bridge.yml'
+  push:
+    branches: [main, public-beta]
+    paths:
+      - 'ods/bin/ods-macos-llm-bridge.py'
+      - 'ods/tests/test_macos_llm_bridge.py'
+      - 'ods/tests/test_bridge_denied_admission.py'
+      - 'ods/installers/macos/**'
+      - 'ods/tests/test_macos_pixel_native_install.py'
+      - 'ods/tests/test_macos_pixel_native_uninstall.py'
+      - 'ods/tests/test_macos_pixel_ops_account.py'
+      - 'ods/tests/test-macos-uninstall-launchagents.sh'
+      - 'ods/ods-uninstall.sh'
+      - 'ods/tests/test_macos_pixel_native_update.py'
+      - 'ods/tests/test_macos_pixel_controller_repair.py'
+      - 'ods/tests/test_macos_pixel_controller_held_proof.py'
+      - 'ods/tests/test_macos_pixel_native_finalize.py'
+      - 'ods/tests/test_macos_pixel_access_install.py'
+      - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
+      - 'ods/tests/test_pixel_startup_reproof.py'
+      - 'ods/tests/test_macos_memory_budget.py'
+      - 'ods/tests/test_macos_pixel_ops_state.py'
+      - 'ods/tests/test_macos_pixel_ops_state_live.py'
+      - 'ods/bin/ods-host-agent.py'
+      - '.github/workflows/test-macos-bridge.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  socket-contracts:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install 'pytest>=8,<9' 'PyYAML>=6,<7'
+      - name: Verify native retirement precedes destructive uninstall
+        run: bash ods/tests/test-macos-uninstall-launchagents.sh
+      - name: Verify bridge admission and real HTTP forwarding
+        run: python -m pytest -q ods/tests/test_bridge_denied_admission.py ods/tests/test_macos_llm_bridge.py
+      - name: Verify native installer, update and startup contracts
+        run: >-
+          python -m pytest -q
+          ods/tests/test_macos_pixel_native_install.py
+          ods/tests/test_macos_pixel_native_uninstall.py
+          ods/tests/test_macos_pixel_ops_account.py
+          ods/tests/test_macos_pixel_native_update.py
+          ods/tests/test_macos_pixel_controller_repair.py
+          ods/tests/test_macos_pixel_controller_held_proof.py
+          ods/tests/test_macos_pixel_native_finalize.py
+          ods/tests/test_macos_pixel_access_install.py
+          ods/tests/test_macos_pixel_runtime_upgrade.py
+          ods/tests/test_pixel_startup_reproof.py
+          ods/tests/test_macos_memory_budget.py
+          ods/tests/test_macos_pixel_ops_state.py

@@ -1,6 +1,6 @@
 # ODS Support Matrix
 
-Last updated: 2026-05-25
+Last updated: 2026-09-23
 
 ## What Works Today
 
@@ -27,6 +27,25 @@ classes, and any deferred or skipped phases.
 - `Tier A` — fully supported and actively tested in this repo
 - `Tier B` — supported (works end-to-end, broader validation ongoing)
 - `Tier C` — experimental or planned (installer diagnostics only, no runtime)
+
+## Agent selection matrix
+
+The ODS platform matrix above is broader than Pixel's current qualification.
+Agent gating never changes whether the rest of ODS is supported.
+
+| Host/runtime | Default agent result |
+|--------------|----------------------|
+| Ubuntu 24.04/26.04 or Debian 12, PID1 systemd, model route through the authenticated ODS gateway | Pixel preferred; Hermes remains available |
+| WSL2 running a qualified distro with systemd, using the ODS Linux installer | Same Pixel host path as Linux; Docker Desktop alone does not install it |
+| Apple Silicon macOS, using the ODS macOS installer | Native Pixel enabled by default, with Docker ingress/sandbox services; Hermes disabled while Pixel is selected |
+| Qualified Pixel host using an external OpenAI-compatible or Lemonade endpoint | Pixel uses the selected upstream through the authenticated ODS LiteLLM gateway |
+| Other supported Linux distributions or WSL1 | Hermes fallback |
+| Native Windows PowerShell installer | Hermes; Pixel edge/relay are disabled because no Pixel host runtime is installed |
+
+Pixel source and its verified install bundle ship in the public ODS repository.
+Installation needs neither access to `Osmantic/Pixel` nor a separate license
+acknowledgement flag. See [PIXEL.md](PIXEL.md) for technical qualification and
+the bundled [Pixel License for ODS](../vendor/pixel/LICENSE.md).
 
 ## Platform Matrix (detailed)
 
@@ -57,10 +76,12 @@ classes, and any deferred or skipped phases.
 ## Current Truth
 
 - **Linux, Windows, and macOS are fully supported.**
+- Pixel uses the native macOS path on Apple Silicon or the qualified Linux/WSL2
+  systemd path above. Agent eligibility is distinct from overall ODS support.
 - Linux + NVIDIA is supported and validated on real high-memory NVIDIA hardware; broader distro coverage now runs through CI, private Docker containers, and private Incus VMs.
 - Windows installs via `.\install.ps1` with Docker Desktop + WSL2 backend. Windows AMD local inference is host-managed and uses Vulkan today, either through legacy Lemonade Server or native `llama-server` fallback. Windows support is not inferred from Linux/macOS; treat it as release-current only when a Windows fleet target produces artifacts for that candidate.
 - Windows native installer UX is Tier B (delegated via Docker Desktop + WSL2).
-- macOS installs via `./install.sh` — llama-server runs natively with Metal acceleration, all other services in Docker.
+- macOS installs via `./install.sh`: native Metal inference, a native Pixel gateway and managed host helpers, plus Docker UI, ingress, sandbox and supporting services. Native Pixel does not require a separate Lima VM or Linux systemd.
 - AMD runtime diagnostics are explicit: `.env` records runtime, location, selected backend, supported backends, and whether ODS manages the process. ODS supports its managed AMD Lemonade path and a Linux external Lemonade SDK wrapper path for existing Lemonade installs; see [LEMONADE-SDK-COMPAT.md](LEMONADE-SDK-COMPAT.md).
 - AMD discrete GPUs beyond the documented Strix Halo path should be treated as validation-required until the repo has tier/model benchmarks for that hardware.
 - **Intel Arc (SYCL) is Tier C / experimental.** The installer auto-detects and selects the correct compose overlay and tier. Runtime works on A770/A750 (Linux). ComfyUI and Whisper GPU acceleration are not yet available for Arc. See [INTEL-ARC-GUIDE.md](INTEL-ARC-GUIDE.md) for limitations.

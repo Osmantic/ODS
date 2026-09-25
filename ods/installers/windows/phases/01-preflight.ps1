@@ -39,7 +39,7 @@ if ($_isAdmin) {
         $adminChoice = Read-Host "  Continue as Administrator anyway? [y/N]"
         if ($adminChoice -notmatch "^[yY]") {
             Write-AI "Exiting. Re-run this installer as your normal user account."
-            exit 0
+            throw "ODS_INSTALL_ABORTED"
         }
     }
     Write-AIWarn "Continuing as Administrator. You may need to fix ownership later."

@@ -232,15 +232,27 @@ test_disk_space() {
 check_port_conflict() {
     local port="$1"
     local name="${2:-unknown}"
+    local listener_found=false
 
     if lsof -i ":${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+        listener_found=true
+    # macOS can hide root-owned listeners from an unprivileged lsof process.
+    # A bounded loopback handshake still proves that the port cannot be bound.
+    elif command -v nc >/dev/null 2>&1 \
+        && nc -z -w 1 127.0.0.1 "$port" >/dev/null 2>&1; then
+        listener_found=true
+    fi
+
+    if $listener_found; then
         local pid
         pid=$(lsof -t -i ":${port}" -sTCP:LISTEN 2>/dev/null | head -1)
         local proc_name
-        proc_name=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
+        if [[ "$pid" =~ ^[0-9]+$ ]]; then
+            proc_name=$(ps -p "$pid" -o comm= 2>/dev/null || true)
+        fi
         PORT_CONFLICT=true
-        PORT_CONFLICT_PID="$pid"
-        PORT_CONFLICT_PROC="$proc_name"
+        PORT_CONFLICT_PID="${pid:-}"
+        PORT_CONFLICT_PROC="${proc_name:-$name}"
         return 0
     fi
     PORT_CONFLICT=false

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/runtime-attestation-v1.schema.json",
+  "title": "Pixel content-free runtime attestation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "status", "verifiedAt", "pixel", "source", "qualification", "release", "configuration", "runtime", "profiles", "connectors", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "kind": {"const": "pixel-runtime-attestation"},
+    "status": {"enum": ["verified", "limited"]},
+    "verifiedAt": {"type": "string", "format": "date-time"},
+    "pixel": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"},
+    "source": {
+      "type": "object", "additionalProperties": false, "required": ["state", "commit", "tree"],
+      "properties": {
+        "state": {"enum": ["git-clean", "unavailable"]},
+        "commit": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{40}$"}, {"type": "null"}]},
+        "tree": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{40}$"}, {"type": "null"}]}
+      }
+    },
+    "qualification": {
+      "type": "object", "additionalProperties": false, "required": ["recordStatus", "sourceCommit", "qualifiedAt", "relationship"],
+      "properties": {
+        "recordStatus": {"oneOf": [{"enum": ["supported", "candidate", "blocked", "retired"]}, {"type": "null"}]},
+        "sourceCommit": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{40}$"}, {"type": "null"}]},
+        "qualifiedAt": {"oneOf": [{"type": "string", "format": "date"}, {"type": "null"}]},
+        "relationship": {"enum": ["same-source", "qualified-ancestor", "unverified", "unavailable"]}
+      }
+    },
+    "release": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceIdentitySha256", "deploymentInputsSha256", "sourceRuntimeSha256", "installManifestSha256", "releaseManifestSha256", "compatibilityManifestSha256", "qualificationMatrixSha256"],
+      "properties": {
+        "sourceIdentitySha256": {"$ref": "#/$defs/hash"},
+        "deploymentInputsSha256": {"$ref": "#/$defs/hash"},
+        "sourceRuntimeSha256": {"$ref": "#/$defs/hash"},
+        "installManifestSha256": {"$ref": "#/$defs/hash"},
+        "releaseManifestSha256": {"$ref": "#/$defs/hash"},
+        "compatibilityManifestSha256": {"$ref": "#/$defs/hash"},
+        "qualificationMatrixSha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "configuration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["generatedDeploymentSha256", "activeOpenClawSha256"],
+      "properties": {"generatedDeploymentSha256": {"$ref": "#/$defs/hash"}, "activeOpenClawSha256": {"$ref": "#/$defs/hash"}}
+    },
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "openclaw", "routeClass", "providerIdSha256", "modelIdSha256", "contextWindow", "maxOutputTokens", "reasoning", "endpointChecks"],
+      "properties": {
+        "state": {"const": "gateway-verified-model-unproven"},
+        "openclaw": {"type": "string", "pattern": "^[0-9]{4}\\.[0-9]+\\.[0-9]+(?:-[0-9]+)?$"},
+        "routeClass": {"enum": ["local", "configured"]},
+        "providerIdSha256": {"$ref": "#/$defs/hash"},
+        "modelIdSha256": {"$ref": "#/$defs/hash"},
+        "contextWindow": {"type": "integer", "minimum": 4096, "maximum": 10000000},
+        "maxOutputTokens": {"type": "integer", "minimum": 256, "maximum": 1000000},
+        "reasoning": {"type": "boolean"},
+        "endpointChecks": {"enum": ["verified", "skipped"]}
+      }
+    },
+    "profiles": {
+      "type": "object", "additionalProperties": false, "required": ["deployment", "capability"],
+      "properties": {
+        "deployment": {"enum": ["prepared", "reference"]},
+        "capability": {"enum": ["minimal", "chief-of-staff", "research", "engineering-operator"]}
+      }
+    },
+    "connectors": {
+      "type": "array", "minItems": 6, "maxItems": 6,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["id", "state"],
+        "properties": {"id": {"enum": ["email", "calendar", "social", "web", "operations", "frontier"]}, "state": {"enum": ["enabled-verified", "disabled-verified"]}}
+      }
+    },
+    "boundary": {"const": "Content-free verification receipt for one observed local deployment. It binds source, installed manifests, configuration, profiles, and connector checks. Model capability remains unproven until a separate exact real-backend qualification receipt exists."}
+  },
+  "$defs": {"hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

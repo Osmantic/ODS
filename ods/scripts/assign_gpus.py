@@ -221,7 +221,7 @@ def span_subsets(all_gpus: list, rank_matrix: dict, model_size_mb: float, ordere
     )
 
 
-def assign_services(all_gpus: list, llama_gpus: list, rank_matrix: dict, enabled_services: list, vendor: str = "nvidia") -> tuple:
+def assign_services(all_gpus: list, llama_gpus: list, rank_matrix: dict, enabled_services: list, model_size_mb: float, vendor: str = "nvidia") -> tuple:
     """
     Assign remaining GPUs to non-llama services.
     Returns (service_assignments dict, final_llama_gpus list, strategy str).
@@ -231,7 +231,7 @@ def assign_services(all_gpus: list, llama_gpus: list, rank_matrix: dict, enabled
       remaining == 1  → all 3 services share remaining[0]           → colocated
       remaining == 2  → whisper → [0], comfyui+embeddings → [1]    → colocated
       remaining >= 3  → whisper → [0], comfyui → [1], emb → [2]    → dedicated
-                        remaining[3:] → back to llama
+                        remaining[3:] → back to llama if the expanded group fits
 
     AMD APU+dGPU hybrid: if mixed memory types (unified + discrete), prefer APU
     GPUs for auxiliary services (lower bandwidth but sufficient for whisper/embeddings).
@@ -283,9 +283,13 @@ def assign_services(all_gpus: list, llama_gpus: list, rank_matrix: dict, enabled
             assignments["comfyui"] = ServiceAssignment(gpus=[remaining[1]])
         if "embeddings" in enabled_services:
             assignments["embeddings"] = ServiceAssignment(gpus=[remaining[2]])
-        # Push extras back to llama so no GPU sits idle
+        # Return spare devices only when the expanded LLM group still fits.
         if len(remaining) > 3:
-            final_llama_gpus = final_llama_gpus + remaining[3:]
+            expanded = compute_subset(final_llama_gpus + remaining[3:], rank_matrix)
+            # Adding a mostly occupied device can make an equal layer split fail
+            # even though the originally selected LLM group comfortably fits.
+            if subset_can_host_equal_split(expanded, model_size_mb):
+                final_llama_gpus = expanded.gpus
         strategy = "dedicated"
 
     assignments["llama_server"] = ServiceAssignment(gpus=final_llama_gpus)
@@ -463,6 +467,10 @@ def main():
     model_size_mb    = args.model_size
     gpu_count        = topology.get("gpu_count", 0)
 
+    if not math.isfinite(model_size_mb) or model_size_mb <= 0:
+        print("ERROR: --model-size must be a finite positive number", file=sys.stderr)
+        sys.exit(1)
+
     if gpu_count == 0:
         print("ERROR: no GPUs found in topology", file=sys.stderr)
         sys.exit(1)
@@ -529,7 +537,7 @@ def main():
                     llama_subset = discrete_subset
 
     service_assignments, final_llama_gpus, strategy = assign_services(
-        gpus, llama_subset.gpus, rank_matrix, enabled_services, vendor=vendor
+        gpus, llama_subset.gpus, rank_matrix, enabled_services, model_size_mb, vendor=vendor
     )
 
     #  Phase 3: Llama parallelism

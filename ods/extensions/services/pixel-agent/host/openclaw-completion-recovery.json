@@ -1,0 +1,10 @@
+{
+  "sourceSha256": "804e67cf1501798a9487afff06ea91388aed9183318bde4887c5d386ef853d35",
+  "patchedSha256": "4d5dc3c0fcdf17826f7fbd8fdbc7342071c2efea04abe64e0d81b0b3daedbf75",
+  "replacements": [
+    [
+      "if (persistedCliTurnTranscript && !suppressVisibleSessionEffects) sessionEntry = await (await loadCliCompactionRuntime()).runCliTurnCompactionLifecycle(",
+      "if (transcriptPersistenceRunner === \"cli\" && persistedCliTurnTranscript && !suppressVisibleSessionEffects) sessionEntry = await (await loadCliCompactionRuntime()).runCliTurnCompactionLifecycle("
+    ]
+  ]
+}

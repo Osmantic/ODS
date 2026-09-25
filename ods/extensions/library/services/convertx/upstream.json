@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/C4illin/ConvertX",
+  "license": "AGPL-3.0",
+  "image": "ghcr.io/c4illin/convertx:v0.18.0@sha256:b515b04bfd25298a5cdc775b2fcd48b9399bab658ce13e2598b65df1b16098c8",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official multiarch image, original Bun startup, nonroot owned data/home and read access to image-bundled root pipx environment for MarkItDown. First-account setup retained, subsequent registration closed, authenticated local HTTP, two conversion processes and 24-hour cleanup. Bundled converters retain individual licenses. Format conversion and platform runtime unverified."
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-codex-result-v1.schema.json",
+  "title": "Pixel content-free Codex work execution result v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "resultId", "createdAt", "authorizationId", "authorizationSha256", "claimSha256", "planId", "planSha256", "capsuleSha256", "status", "invocation", "usage", "output", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-codex-result-v1.schema.json"}, "schemaVersion": {"const": 1},
+    "resultId": {"type": "string", "pattern": "^workcodexresult-[0-9]{13}-[a-f0-9]{12}$"}, "createdAt": {"type": "string", "format": "date-time"},
+    "authorizationId": {"type": "string", "pattern": "^workcodexauth-[0-9]{13}-[a-f0-9]{12}$"}, "authorizationSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "claimSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "planId": {"type": "string", "pattern": "^workcodexplan-[0-9]{13}-[a-f0-9]{12}$"}, "planSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "capsuleSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "status": {"enum": ["succeeded", "provider-failed", "invalid-output", "budget-exceeded", "inconclusive"]},
+    "invocation": {"type": "object", "additionalProperties": false, "required": ["source", "adapterInvoked", "externalState", "attempts"], "properties": {"source": {"enum": ["mock", "codex-cli"]}, "adapterInvoked": {"const": true}, "externalState": {"enum": ["not-invoked", "invoked-once", "uncertain"]}, "attempts": {"const": 1}}},
+    "usage": {"type": "object", "additionalProperties": false, "required": ["reported", "inputTokens", "outputTokens"], "properties": {"reported": {"type": "boolean"}, "inputTokens": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000000}, "outputTokens": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000000}}},
+    "output": {"type": "object", "additionalProperties": false, "required": ["storedPrivately", "sanitizedSha256", "rehydratedSha256", "referencedPlaceholders"], "properties": {"storedPrivately": {"type": "boolean"}, "sanitizedSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}, "rehydratedSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}, "referencedPlaceholders": {"type": "integer", "minimum": 0, "maximum": 4096}}},
+    "authority": {"const": {"tools": false, "localExecution": false, "merge": false, "deployment": false, "publication": false, "message": false, "purchase": false, "production": false, "policyMutation": false, "scopeExpansion": false, "verification": false, "completion": false}},
+    "boundary": {"const": "Content-free execution evidence only. Any stored advisory output is private and untrusted; success proves schema and boundary validation, not correctness, local verification, completion, or authority."}
+  }
+}

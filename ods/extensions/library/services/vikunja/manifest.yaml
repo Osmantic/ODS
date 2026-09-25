@@ -1,0 +1,62 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: vikunja
+  name: Vikunja
+  aliases: []
+  container_name: ods-vikunja
+  host_env: VIKUNJA_HOST
+  default_host: vikunja
+  port: 3456
+  external_port_env: VIKUNJA_PORT
+  external_port_default: 11031
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Organize projects, tasks, due dates and attachments in a local collaborative
+    planning workspace.
+  env_vars:
+  - key: VIKUNJA_SERVICE_SECRET
+    required: true
+    secret: true
+    description: Persistent random signing secret; generate at least 32 random bytes.
+  - key: VIKUNJA_SERVICE_PUBLICURL
+    required: false
+    default: http://localhost:11031/
+    description: Exact browser URL including port and trailing slash.
+  - key: VIKUNJA_SERVICE_ENABLEREGISTRATION
+    required: false
+    default: 'true'
+    description: Allow first account creation; set false after creating the required
+      accounts.
+  ui_path: /
+tags:
+- productivity
+- local
+- open-source
+features:
+- id: vikunja-workspace
+  name: Vikunja
+  description: Organize projects, tasks, due dates and attachments in a local collaborative
+    planning workspace.
+  icon: ListTodo
+  category: productivity
+  requirements:
+    services:
+    - vikunja
+    vram_gb: 0
+  enabled_services_all:
+  - vikunja
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: vikunja
+    path: /

@@ -10,6 +10,13 @@ import httpx
 import pytest
 
 from helpers import (
+    string_extract_domain_names_safe,
+    dict_key_path_setter_safe,
+    numeric_safe_geometric_mean,
+    list_deduplicate_by_key_safe,
+    string_snake_to_pascal_case_safe,
+    dict_flatten_nested_safe,
+    numeric_exponential_moving_average_safe,
     get_model_info, get_bootstrap_status, _update_lifetime_tokens,
     get_uptime, get_cpu_metrics, get_ram_metrics,
     check_service_health, get_all_services,
@@ -19,6 +26,15 @@ from helpers import (
     _get_httpx_client, _get_lifetime_tokens, record_model_performance,
 )
 from models import BootstrapStatus, ServiceStatus, DiskUsage
+
+
+@pytest.fixture(autouse=True)
+def reset_metrics_sampler(monkeypatch):
+    import helpers
+    monkeypatch.setattr(helpers, "_prev_tokens", {})
+    monkeypatch.setattr(helpers, "_llama_metrics_sample", {})
+    monkeypatch.setattr(helpers, "_llama_metrics_lock", None)
+    monkeypatch.setattr(helpers, "_metrics_wall_clock", lambda: 1000.0)
 
 
 # --- get_model_info ---
@@ -370,12 +386,22 @@ class TestGetCpuMetrics:
         result = get_cpu_metrics()
         assert "percent" in result
         assert "temp_c" in result
-        assert isinstance(result["percent"], (int, float))
+        assert result["percent"] is None or isinstance(result["percent"], (int, float))
 
     def test_returns_defaults_on_unsupported_platform(self, monkeypatch):
         monkeypatch.setattr("helpers.platform.system", lambda: "UnknownOS")
         result = get_cpu_metrics()
-        assert result == {"percent": 0, "temp_c": None}
+        assert result == {"percent": None, "temp_c": None}
+
+    def test_linux_cpu_metrics_handles_corrupt_sensor(self, monkeypatch):
+        from unittest.mock import mock_open
+        _fake_stat = "cpu  100 200 300 400 500 600 700 800\n"
+        monkeypatch.setattr("builtins.open", mock_open(read_data="corrupted_not_a_number\n"))
+        monkeypatch.setattr("glob.glob", lambda pat: ["/sys/class/thermal/thermal_zone0/type"])
+        from helpers import _get_cpu_metrics_linux
+        res = _get_cpu_metrics_linux()
+        assert res["temp_c"] is None
+        assert res["percent"] is None
 
 
 class TestGetRamMetrics:
@@ -389,13 +415,65 @@ class TestGetRamMetrics:
     def test_returns_defaults_on_unsupported_platform(self, monkeypatch):
         monkeypatch.setattr("helpers.platform.system", lambda: "UnknownOS")
         result = get_ram_metrics()
-        assert result == {"used_gb": 0, "total_gb": 0, "percent": 0}
+        assert result == {"used_gb": None, "total_gb": None, "percent": None}
+
+    def test_linux_ram_metrics_clamps_bounds(self, monkeypatch):
+        from unittest.mock import mock_open
+        fake_mem = "MemTotal:        16000000 kB\nMemAvailable:    18000000 kB\n"
+        monkeypatch.setattr("builtins.open", mock_open(read_data=fake_mem))
+        from helpers import _get_ram_metrics_linux
+        res = _get_ram_metrics_linux()
+        assert res["used_gb"] == 0
+        assert res["percent"] == 0.0
 
 
 # --- check_service_health ---
 
 
 class TestCheckServiceHealth:
+
+    @pytest.mark.asyncio
+    async def test_authenticated_health_resolves_current_secret_without_redirects(self, mock_aiohttp_session, monkeypatch):
+        session = mock_aiohttp_session(status=200)
+        monkeypatch.setattr('helpers._get_aio_session', AsyncMock(return_value=session))
+        secrets = iter(['first-test-key', 'rotated-test-key'])
+        monkeypatch.setattr('helpers.read_live_env_value', lambda _: next(secrets))
+        config = {**self._CONFIG, 'host': 'test-svc', 'health_auth_env': 'TEST_SVC_API_KEY'}
+        for expected in ['first-test-key', 'rotated-test-key']:
+            result = await check_service_health('test-svc', config)
+            assert result.status == 'healthy'
+            assert expected not in result.model_dump_json()
+            assert session.get.call_args.kwargs['headers']['Authorization'] == 'Bearer ' + expected
+            assert session.get.call_args.kwargs['allow_redirects'] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('code', [302, 401, 403, 500])
+    async def test_authenticated_health_does_not_accept_redirect_or_auth_failure(self, mock_aiohttp_session, monkeypatch, code):
+        session = mock_aiohttp_session(status=code)
+        monkeypatch.setattr('helpers._get_aio_session', AsyncMock(return_value=session))
+        monkeypatch.setattr('helpers.read_live_env_value', lambda _: 'test-key')
+        result = await check_service_health('test-svc', {**self._CONFIG, 'host': 'test-svc', 'health_auth_env': 'TEST_SVC_API_KEY'})
+        assert result.status == 'unhealthy'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('token', ['', 'bad\r\nheader', 'has space', 'x' * 8193, None])
+    async def test_invalid_health_credential_never_sends_a_request(self, mock_aiohttp_session, monkeypatch, token):
+        session = mock_aiohttp_session(status=200)
+        monkeypatch.setattr('helpers._get_aio_session', AsyncMock(return_value=session))
+        monkeypatch.setattr('helpers.read_live_env_value', lambda _: token)
+        result = await check_service_health('test-svc', {**self._CONFIG, 'host': 'test-svc', 'health_auth_env': 'TEST_SVC_API_KEY'})
+        assert result.status == 'unhealthy'
+        session.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('field,value', [('host', 'remote.example'), ('health_auth_env', 'LITELLM_KEY'), ('health_auth_env', 42)])
+    async def test_health_auth_cannot_read_another_service_secret(self, mock_aiohttp_session, monkeypatch, field, value):
+        session = mock_aiohttp_session(status=200)
+        monkeypatch.setattr('helpers._get_aio_session', AsyncMock(return_value=session))
+        monkeypatch.setattr('helpers.read_live_env_value', lambda _: pytest.fail('Must not resolve foreign credentials'))
+        result = await check_service_health('test-svc', {**self._CONFIG, 'host': 'test-svc', 'health_auth_env': 'TEST_SVC_API_KEY', field: value})
+        assert result.status == 'unhealthy'
+        session.get.assert_not_called()
 
     _CONFIG = {
         "name": "test-svc",
@@ -404,6 +482,29 @@ class TestCheckServiceHealth:
         "health": "/health",
         "host": "localhost",
     }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field,value", [
+        ("port", "invalid"), ("port", True), ("port", 8080.5),
+        ("port", -1), ("port", 65536), ("external_port", "invalid"),
+        ("health_port", "invalid"), ("health_port", 0),
+        ("health_port", 65536), ("health_port", float("inf")),
+        ("health", 42), ("health", None), ("health", []),
+    ])
+    async def test_bad_config_returns_down_without_guessing_an_endpoint(self, monkeypatch, field, value):
+        get_session = AsyncMock()
+        monkeypatch.setattr("helpers._get_aio_session", get_session)
+        result = await check_service_health("test-svc", {**self._CONFIG, field: value})
+        assert result.status == "down"
+        get_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_health_path_preserves_root_probe(self, mock_aiohttp_session, monkeypatch):
+        session = mock_aiohttp_session(status=200)
+        monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
+        result = await check_service_health("test-svc", {**self._CONFIG, "health": "", "health_port": "9091"})
+        assert result.status == "healthy"
+        assert session.get.call_args[0][0] == "http://localhost:9091/"
 
     @pytest.mark.asyncio
     async def test_healthy_on_200(self, mock_aiohttp_session, monkeypatch):
@@ -474,6 +575,25 @@ class TestCheckServiceHealth:
         session.get = MagicMock(side_effect=OSError("connection refused"))
         monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
 
+        result = await check_service_health("test-svc", self._CONFIG)
+        assert result.status == "down"
+
+    @pytest.mark.asyncio
+    async def test_normalizes_health_endpoint_without_leading_slash(self, mock_aiohttp_session, monkeypatch):
+        session = mock_aiohttp_session(status=200)
+        monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
+        cfg = dict(self._CONFIG, health="api/health")
+        result = await check_service_health("test-svc", cfg)
+        assert result.status == "healthy"
+        session.get.assert_called_once()
+        url = session.get.call_args[0][0]
+        assert url == "http://localhost:8080/api/health"
+
+    @pytest.mark.asyncio
+    async def test_down_on_value_error(self, monkeypatch):
+        session = MagicMock()
+        session.get = MagicMock(side_effect=ValueError("Invalid URL"))
+        monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
         result = await check_service_health("test-svc", self._CONFIG)
         assert result.status == "down"
 
@@ -615,10 +735,10 @@ class TestGetLlamaMetrics:
         result = await get_llama_metrics(model_hint="test-model")
         assert "tokens_per_second" in result
         assert "lifetime_tokens" in result
-        assert isinstance(result["tokens_per_second"], (int, float))
+        assert result["tokens_per_second"] is None  # first observation has no interval
 
     @pytest.mark.asyncio
-    async def test_returns_zero_on_failure(self, monkeypatch):
+    async def test_returns_unknown_on_failure(self, monkeypatch):
         fake_services = {
             "llama-server": {"host": "localhost", "port": 8080, "health": "/health", "name": "llama-server"},
         }
@@ -632,7 +752,7 @@ class TestGetLlamaMetrics:
         monkeypatch.setattr("helpers.httpx.AsyncClient", lambda **kw: mock_client)
 
         result = await get_llama_metrics(model_hint="test-model")
-        assert result["tokens_per_second"] == 0
+        assert result["tokens_per_second"] is None
 
     @pytest.mark.asyncio
     async def test_invalid_success_payload_does_not_reset_persistent_counter(
@@ -660,8 +780,13 @@ class TestGetLlamaMetrics:
         result = await get_llama_metrics(model_hint="test-model")
 
         assert result == {
-            "tokens_per_second": 0,
+            "tokens_per_second": None,
             "lifetime_tokens": 100,
+            "throughput_mode": "generation_interval",
+            "throughput_model": "test-model",
+            "throughput_state": "unavailable",
+            "throughput_sampled_at": None,
+            "inference_active": None,
             "token_count_mode": "cumulative",
         }
         assert helpers._get_lifetime_tokens() == 100
@@ -671,7 +796,7 @@ class TestGetLlamaMetrics:
     async def test_returns_fallback_when_llama_server_not_in_services(self, monkeypatch):
         monkeypatch.setattr("helpers.SERVICES", {})
         result = await get_llama_metrics(model_hint="test-model")
-        assert result["tokens_per_second"] == 0
+        assert result["tokens_per_second"] is None
         assert result["token_count_mode"] == "cumulative"
 
 
@@ -679,6 +804,73 @@ class TestGetLlamaMetrics:
 
 
 class TestGetLoadedModel:
+
+    @pytest.mark.asyncio
+    async def test_generic_external_lemonade_uses_loaded_health_not_first_available(self, monkeypatch):
+        monkeypatch.setattr("helpers.SERVICES", {
+            "llama-server": {"host": "host.docker.internal", "port": 8000},
+        })
+        monkeypatch.setattr("helpers.LLM_BACKEND", "external")
+        monkeypatch.setattr("helpers._LLM_API_PREFIX", "/v1")
+        monkeypatch.setenv("EXTERNAL_LLM_PROVIDER", "openai-compatible")
+        seen = []
+
+        async def get(url):
+            seen.append(url)
+            response = MagicMock(status_code=200)
+            response.json.return_value = {
+                "status": "ok", "model_loaded": "Qwen3.6-35B-A3B-GGUF",
+            }
+            return response
+
+        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=MagicMock(get=get)))
+
+        assert await get_loaded_model() == "Qwen3.6-35B-A3B-GGUF"
+        assert seen == ["http://host.docker.internal:8000/api/v1/health"]
+
+    @pytest.mark.asyncio
+    async def test_generic_external_lemonade_unloaded_is_not_available_first(self, monkeypatch):
+        monkeypatch.setattr("helpers.SERVICES", {
+            "llama-server": {"host": "host.docker.internal", "port": 8000},
+        })
+        monkeypatch.setattr("helpers.LLM_BACKEND", "external")
+        monkeypatch.setenv("EXTERNAL_LLM_PROVIDER", "openai-compatible")
+        seen = []
+
+        async def get(url):
+            seen.append(url)
+            response = MagicMock(status_code=200)
+            response.json.return_value = {"status": "ok", "model_loaded": None}
+            return response
+
+        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=MagicMock(get=get)))
+
+        assert await get_loaded_model() is None
+        assert seen == ["http://host.docker.internal:8000/api/v1/health"]
+
+    @pytest.mark.asyncio
+    async def test_generic_external_does_not_guess_first_when_health_unavailable(self, monkeypatch):
+        monkeypatch.setattr("helpers.SERVICES", {
+            "llama-server": {"host": "host.docker.internal", "port": 8000},
+        })
+        monkeypatch.setattr("helpers.LLM_BACKEND", "external")
+        monkeypatch.setattr("helpers._LLM_API_PREFIX", "/v1")
+        monkeypatch.setenv("EXTERNAL_LLM_PROVIDER", "openai-compatible")
+        seen = []
+
+        async def get(url):
+            seen.append(url)
+            response = MagicMock(status_code=404)
+            response.json.return_value = {"data": [{"id": "Gemma-4-E2B-it-GGUF"}]}
+            return response
+
+        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=MagicMock(get=get)))
+
+        assert await get_loaded_model() is None
+        assert seen == [
+            "http://host.docker.internal:8000/api/v1/health",
+            "http://host.docker.internal:8000/v1/models",
+        ]
 
     @pytest.mark.asyncio
     async def test_returns_none_when_llama_server_not_in_services(self, monkeypatch):
@@ -1152,7 +1344,7 @@ class TestGetLlamaMetricsTPS:
 
         monkeypatch.setattr("helpers.httpx.AsyncClient", lambda **kw: mock_client)
 
-        result = await get_llama_metrics(model_hint="test")
+        result = await helpers._fetch_llama_metrics(model_hint="test")
         # 100 tokens / 5 seconds = 20.0 tps
         assert result["tokens_per_second"] == 20.0
 
@@ -1191,12 +1383,16 @@ class TestGetLlamaMetricsTPS:
         mock_client.get = AsyncMock(return_value=mock_response)
         monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=mock_client))
 
-        result = await get_llama_metrics(model_hint="test")
+        result = await helpers._fetch_llama_metrics(model_hint="test")
 
-        assert result["tokens_per_second"] == 0.0
+        assert result["tokens_per_second"] == (0.0 if current_count == previous_count else None)
 
 
 class TestLemonadeMetrics:
+    @pytest.fixture(autouse=True)
+    def loaded_model(self, monkeypatch):
+        monkeypatch.setattr("helpers.get_loaded_model", AsyncMock(return_value="lemonade-model"))
+
     @pytest.mark.asyncio
     async def test_host_stats_report_real_tps_and_latest_completion_tokens(
         self, monkeypatch, tmp_path,
@@ -1228,6 +1424,11 @@ class TestLemonadeMetrics:
             "tokens_per_second": 188.5,
             "lifetime_tokens": 7,
             "token_count_mode": "latest_completion",
+            "throughput_mode": "latest_completion",
+            "throughput_model": "lemonade-model",
+            "throughput_state": "measured",
+            "throughput_sampled_at": 1000.0,
+            "inference_active": None,
         }
         assert not token_file.exists()
 
@@ -1253,9 +1454,14 @@ class TestLemonadeMetrics:
         result = await helpers.get_llama_metrics()
 
         assert result == {
-            "tokens_per_second": 0.0,
+            "tokens_per_second": None,
             "lifetime_tokens": 36,
             "token_count_mode": "latest_completion",
+            "throughput_mode": "latest_completion",
+            "throughput_model": "lemonade-model",
+            "throughput_state": "unavailable",
+            "throughput_sampled_at": None,
+            "inference_active": None,
         }
 
     @pytest.mark.asyncio
@@ -1277,9 +1483,14 @@ class TestLemonadeMetrics:
         result = await helpers.get_llama_metrics()
 
         assert result == {
-            "tokens_per_second": 0,
-            "lifetime_tokens": 0,
+            "tokens_per_second": None,
+            "lifetime_tokens": None,
             "token_count_mode": "unavailable",
+            "throughput_mode": "latest_completion",
+            "throughput_model": "lemonade-model",
+            "throughput_state": "unavailable",
+            "throughput_sampled_at": None,
+            "inference_active": None,
         }
 
     @pytest.mark.asyncio
@@ -1316,6 +1527,11 @@ class TestLemonadeMetrics:
             "tokens_per_second": 33.3,
             "lifetime_tokens": 5,
             "token_count_mode": "latest_completion",
+            "throughput_mode": "latest_completion",
+            "throughput_model": "lemonade-model",
+            "throughput_state": "measured",
+            "throughput_sampled_at": 1000.0,
+            "inference_active": None,
         }
         assert [call.args[0] for call in client.get.await_args_list] == [
             "http://llama-server:8080/api/v1/stats",
@@ -1607,3 +1823,129 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+
+class TestStringExtractDomainNamesSafe:
+    def test_extract_valid_domains(self):
+        text = "Check https://api.example.com/v1 and http://test.org for updates"
+        res = string_extract_domain_names_safe(text)
+        assert res == ["api.example.com", "test.org"]
+
+    def test_invalid_types_and_none(self):
+        assert string_extract_domain_names_safe(None) == []
+        assert string_extract_domain_names_safe(12345) == []
+        assert string_extract_domain_names_safe("") == []
+
+
+class TestDictKeyPathSetterSafe:
+    def test_set_nested_key_success(self):
+        d = {"a": {"b": 1}}
+        res = dict_key_path_setter_safe(d, ["a", "c"], 2)
+        assert res == {"a": {"b": 1, "c": 2}}
+
+    def test_none_dict_and_invalid_path(self):
+        assert dict_key_path_setter_safe(None, ["x", "y"], 10) == {"x": {"y": 10}}
+        d = {"a": 1}
+        assert dict_key_path_setter_safe(d, [], 5) == {"a": 1}
+
+
+class TestNumericSafeGeometricMean:
+    def test_valid_geometric_mean(self):
+        assert abs(numeric_safe_geometric_mean([4, 9]) - 6.0) < 1e-6
+
+    def test_invalid_types_negatives_none(self):
+        assert numeric_safe_geometric_mean(None) == 0.0
+        assert numeric_safe_geometric_mean([-1, -5, 0]) == 0.0
+        assert numeric_safe_geometric_mean(["a", None, float('nan')]) == 0.0
+
+
+class TestListDeduplicateByKeySafe:
+    def test_dedup_dicts_by_key(self):
+        items = [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}, {"id": 1, "v": "c"}]
+        res = list_deduplicate_by_key_safe(items, "id")
+        assert res == [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}]
+
+    def test_invalid_inputs(self):
+        assert list_deduplicate_by_key_safe(None, "id") == []
+        assert list_deduplicate_by_key_safe([{"a": [1, 2]}, {"a": [1, 2]}], "a") == [{"a": [1, 2]}]
+
+
+class TestStringSnakeToPascalCaseSafe:
+    def test_valid_snake_and_kebab(self):
+        assert string_snake_to_pascal_case_safe("dashboard_api_service") == "DashboardApiService"
+        assert string_snake_to_pascal_case_safe("kebab-case-string") == "KebabCaseString"
+
+    def test_invalid_types_and_empty(self):
+        assert string_snake_to_pascal_case_safe(None) == ""
+        assert string_snake_to_pascal_case_safe(123) == ""
+        assert string_snake_to_pascal_case_safe("__double___underscores__") == "DoubleUnderscores"
+
+
+class TestDictFlattenNestedSafe:
+    def test_flatten_success(self):
+        d = {"a": {"b": {"c": 1}}}
+        res = dict_flatten_nested_safe(d)
+        assert res == {"a.b.c": 1}
+
+    def test_max_depth_and_none(self):
+        assert dict_flatten_nested_safe(None) == {}
+        d = {"a": {"b": {"c": 1}}}
+        res = dict_flatten_nested_safe(d, max_depth=1)
+        assert res == {"a": {"b": {"c": 1}}}
+
+
+class TestNumericExponentialMovingAverageSafe:
+    def test_ema_computation(self):
+        vals = [10.0, 20.0, 30.0]
+        res = numeric_exponential_moving_average_safe(vals, alpha=0.5)
+        assert len(res) == 3
+        assert res[0] == 10.0
+        assert res[1] == 15.0
+
+    def test_invalid_types_and_alpha(self):
+        assert numeric_exponential_moving_average_safe(None) == []
+        assert numeric_exponential_moving_average_safe([1, 2, 3], alpha=-1) != []
+def test_numeric_helpers_bound_nonfinite_and_huge_integers():
+    import math
+    import sys
+    huge = 10 ** 1000
+    assert numeric_safe_geometric_mean([huge, 4, 9, True, float("inf")]) == pytest.approx(6)
+    assert numeric_safe_geometric_mean([sys.float_info.max] * 4) == sys.float_info.max
+    assert numeric_safe_geometric_mean([sys.float_info.max] + [5e-324] * 1000) > 0
+    result = numeric_exponential_moving_average_safe(
+        [huge, sys.float_info.max, -sys.float_info.max, float("nan")], alpha=0.5)
+    assert result == [sys.float_info.max, 0.0]
+    assert all(math.isfinite(item) for item in result)
+    assert numeric_exponential_moving_average_safe([1, 2], alpha=huge) == pytest.approx([1, 1.2])
+
+
+def test_domain_extractor_does_not_accept_partial_invalid_labels():
+    assert string_extract_domain_names_safe("a" * 64 + ".com -bad.org good.example.com.") == ["good.example.com"]
+    assert string_extract_domain_names_safe("x" * 65537) == []
+
+
+def test_invalid_dictionary_path_is_atomic():
+    value = {"existing": 1}
+    assert dict_key_path_setter_safe(value, ["new", []], 2) == {"existing": 1}
+    assert dict_key_path_setter_safe(value, ["x"] * 129, 2) == {"existing": 1}
+
+
+def test_deduplication_preserves_missing_and_different_value_types():
+    records = [{"id": [1]}, {"id": "[1]"}, {"id": [1]}, {"a": 1}, {"b": 2}]
+    assert list_deduplicate_by_key_safe(records, "id") == [records[0], records[1], records[3], records[4]]
+    assert list_deduplicate_by_key_safe(records, []) == records
+
+
+def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
+    cycle = {}
+    cycle["self"] = cycle
+    result = dict_flatten_nested_safe(cycle, max_depth=100000)
+    assert list(result) == ["self"]
+    assert result["self"] is cycle
+    assert dict_flatten_nested_safe({"empty": {}}) == {"empty": {}}
+    nested = {"leaf": 1}
+    for _ in range(1500):
+        nested = {"child": nested}
+    result = dict_flatten_nested_safe(nested, max_depth=100000)
+    assert len(next(iter(result)).split(".")) == 128

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-qualification-execution-tombstone-v1.schema.json",
+  "title": "Pixel qualification execution tombstone v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "candidateId", "product", "version", "baselineVersion", "sourceCommit", "sourceTree", "activationHash", "claimedAt", "extractedTreeSha256", "rehashedTreeSha256", "candidateCodeExecuted", "terminalPromotionEvidence", "executionObserved", "networkUsed", "publicationAuthority", "productionActivationAuthority", "compatibilityMutationAuthority", "productionStateChanged", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-release-qualification-execution-tombstone"},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "product": {"const": "Pixel"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "baselineVersion": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sourceTree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "activationHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "claimedAt": {"type": "string", "format": "date-time"},
+    "extractedTreeSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rehashedTreeSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "candidateCodeExecuted": {"const": false},
+    "terminalPromotionEvidence": {"const": false},
+    "executionObserved": {"const": false},
+    "networkUsed": {"const": false},
+    "publicationAuthority": {"const": false},
+    "productionActivationAuthority": {"const": false},
+    "compatibilityMutationAuthority": {"const": false},
+    "productionStateChanged": {"const": false},
+    "boundary": {"const": "Content-free execution tombstone proving this host-run acquisition slice never executed candidate programs, produced no terminal promotion evidence, and changed no production state."}
+  }
+}

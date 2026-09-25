@@ -7,19 +7,54 @@
 # Matches the CRT narrator voice from installers/lib/ui.sh
 # ============================================================================
 
+function Test-ODSCinematicUI {
+    $mode = [Environment]::GetEnvironmentVariable("ODS_UI_MODE")
+    if ([string]::IsNullOrWhiteSpace($mode)) { $mode = "auto" }
+
+    if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("NO_COLOR")) -or
+        -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("ODS_INSTALLER_GUI"))) {
+        return $false
+    }
+    $nonInteractiveValue = Get-Variable -Name nonInteractive -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if ($nonInteractiveValue) { return $false }
+    if ($mode -eq "plain") { return $false }
+    if ($mode -eq "cinematic") { return $true }
+    if ($mode -ne "auto") { return $false }
+    if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("CI"))) { return $false }
+
+    try { return -not [Console]::IsOutputRedirected } catch { return $true }
+}
+
+function Write-ODSStaticLine {
+    if (-not (Test-ODSCinematicUI)) { return }
+    # Keep this source ASCII-clean so Windows PowerShell 5.1 does not require a
+    # UTF-8 BOM to parse the installer correctly.
+    $glyphs = @(".", ":", "*", "#")
+    $noise = -join (1..63 | ForEach-Object { $glyphs[(Get-Random -Minimum 0 -Maximum $glyphs.Count)] })
+    Write-Host "  $noise" -ForegroundColor Magenta
+    Start-Sleep -Milliseconds 300
+}
+
 function Write-ODSBanner {
+    if (Test-ODSCinematicUI) { Clear-Host }
     $banner = @"
 
-   OOOOO  DDDD   SSSSS
-  OO   OO DD DD SS
-  OO   OO DD DD  SSS
-  OO   OO DD DD    SS
-   OOOOO  DDDD  SSSS
+    ____   ____    _____
+   / __ \ / __ \  / ___/
+  / / / // / / /  \__ \
+ / /_/ // /_/ /  ___/ /
+ \____//_____/  /____/
 
 "@
     Write-Host $banner -ForegroundColor Green
-    Write-Host "  ODSGATE Windows Installer v$($script:ODS_VERSION)" -ForegroundColor White
-    Write-Host "  One command to a full local AI stack." -ForegroundColor DarkGray
+    Write-ODSStaticLine
+    Write-Host "  O D S G A T E" -ForegroundColor Magenta -NoNewline
+    Write-Host "   Local AI // Sovereign Intelligence // $((Get-Date).Year)" -ForegroundColor Green
+    Write-Host "  Windows // ODS v$($script:ODS_VERSION)" -ForegroundColor DarkGray
+    Write-ODSStaticLine
+    Write-Host ""
+    Write-Host "  Signal acquired." -ForegroundColor Green
+    Write-Host "  I will guide the installation. Stay with me." -ForegroundColor Green
     Write-Host ""
 }
 
@@ -30,11 +65,37 @@ function Write-Phase {
         [string]$Name,
         [string]$Estimate = ""
     )
+    $displayPhase = $Phase
+    $displayTotal = $Total
+    $displayName = $Name
+    if ($Total -eq 13) {
+        if ($Phase -le 3) { $displayPhase = $Phase }
+        elseif ($Phase -le 7) { $displayPhase = 4 }
+        elseif ($Phase -eq 8) { $displayPhase = 5 }
+        else { $displayPhase = 6 }
+        $displayTotal = 6
+        $displayName = @{
+            1 = "PRE-FLIGHT CHECKS"
+            2 = "HARDWARE DETECTION"
+            3 = "FEATURE SELECTION"
+            4 = "SYSTEM SETUP"
+            5 = "STARTING SERVICES"
+            6 = "SYSTEMS ONLINE"
+        }[$displayPhase]
+    }
+
+    $lastDisplayPhase = Get-Variable -Name ODS_LAST_DISPLAY_PHASE -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if ($lastDisplayPhase -eq $displayPhase) {
+        Write-AI "Setup step: $Name"
+        return
+    }
+    $script:ODS_LAST_DISPLAY_PHASE = $displayPhase
+
     $elapsed = ((Get-Date) - $script:INSTALL_START).ToString("hh\:mm\:ss")
     Write-Host ""
-    Write-Host "  ODSGATE SEQUENCE [$elapsed]" -ForegroundColor DarkGray -NoNewline
-    Write-Host "  PHASE $Phase/$Total" -ForegroundColor White -NoNewline
-    Write-Host " -- $Name" -ForegroundColor Green
+    Write-Host "  ODSGATE SEQUENCE [$elapsed]" -ForegroundColor Magenta -NoNewline
+    Write-Host "  PHASE $displayPhase/$displayTotal" -ForegroundColor White -NoNewline
+    Write-Host " -- $displayName" -ForegroundColor Green
     if ($Estimate) {
         Write-Host "  Estimated: $Estimate" -ForegroundColor DarkGray
     }
@@ -175,6 +236,119 @@ function Get-ODSPythonDownloadCommand {
         }
     }
     return $null
+}
+
+function Test-ODSBootstrapUpgradeActive {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ModelFile
+    )
+
+    $installNeedle = ($InstallDir -replace "\\", "/").TrimEnd("/").ToLowerInvariant()
+    $bashInstallNeedle = $installNeedle
+    if ($installNeedle -match '^([a-z]):/(.*)$') {
+        $bashInstallNeedle = "/$($Matches[1])/$($Matches[2])"
+    }
+    $modelNeedle = $ModelFile.ToLowerInvariant()
+    $partNeedle = ((Join-Path (Join-Path $InstallDir "data\models") "$ModelFile.part") -replace "\\", "/").ToLowerInvariant()
+    $bashPartNeedle = $partNeedle
+    if ($partNeedle -match '^([a-z]):/(.*)$') {
+        $bashPartNeedle = "/$($Matches[1])/$($Matches[2])"
+    }
+    $wrapperPath = Join-Path $InstallDir "logs\bootstrap-run.sh"
+    $wrapperNeedle = ($wrapperPath -replace "\\", "/").ToLowerInvariant()
+
+    try {
+        $task = Get-ScheduledTask -TaskName "ODSModelUpgrade" -ErrorAction Stop
+        if ($task.State.ToString() -eq "Running") {
+            $taskMatchesInstall = $false
+            foreach ($action in @($task.Actions)) {
+                $arguments = ([string]$action.Arguments -replace "\\", "/").ToLowerInvariant()
+                if ($arguments.Contains($wrapperNeedle)) {
+                    $taskMatchesInstall = $true
+                    break
+                }
+            }
+            if ($taskMatchesInstall) {
+                try {
+                    $wrapperContent = (Get-Content -LiteralPath $wrapperPath -Raw -ErrorAction Stop).ToLowerInvariant()
+                    if ($wrapperContent.Contains("bootstrap-upgrade.sh") -and
+                        $wrapperContent.Contains($modelNeedle)) {
+                        return $true
+                    }
+                } catch {
+                    # A running task owned by this install is unsafe to race if
+                    # its launcher cannot be inspected conclusively.
+                    return $true
+                }
+            }
+        }
+    } catch {
+        # The direct-launch fallback intentionally has no Scheduled Task. Check
+        # the live Windows command line below before deciding the handoff is idle.
+    }
+
+    try {
+        foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
+            $commandLine = [string]$process.CommandLine
+            if ([string]::IsNullOrWhiteSpace($commandLine)) { continue }
+            $normalized = ($commandLine -replace "\\", "/").ToLowerInvariant()
+            $scriptOwner = $normalized.Contains("bootstrap-upgrade.sh") -and
+                ($normalized.Contains($installNeedle) -or $normalized.Contains($bashInstallNeedle)) -and
+                $normalized.Contains($modelNeedle)
+            $partWriter = $normalized.Contains($partNeedle) -or $normalized.Contains($bashPartNeedle)
+            if ($scriptOwner -or $partWriter) {
+                return $true
+            }
+        }
+    } catch {
+        # Failure to enumerate processes is not affirmative evidence that a
+        # bootstrap owner exists. The shared part-file check remains guarded by
+        # the Scheduled Task path on normal Windows installs.
+    }
+    return $false
+}
+
+function Wait-ODSBootstrapDownloadHandoff {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ModelFile,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
+
+        [int]$WaitSeconds = 7200
+    )
+
+    if ($WaitSeconds -lt 1) { $WaitSeconds = 7200 }
+    $wasActive = Test-ODSBootstrapUpgradeActive -InstallDir $InstallDir -ModelFile $ModelFile
+    if (-not $wasActive) {
+        return [pscustomobject]@{ WasActive = $false; Completed = (Test-Path -LiteralPath $Destination); TimedOut = $false }
+    }
+
+    Write-AI "A background download already owns $ModelFile; waiting for a safe handoff instead of opening the same .part file twice..."
+    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Test-ODSBootstrapUpgradeActive -InstallDir $InstallDir -ModelFile $ModelFile)) {
+            $completed = Test-Path -LiteralPath $Destination -PathType Leaf
+            if ($completed) {
+                Write-AISuccess "Background model download completed; reusing $ModelFile"
+            } else {
+                Write-AIWarn "Background model download stopped before completion; resuming its preserved partial safely."
+            }
+            return [pscustomobject]@{ WasActive = $true; Completed = $completed; TimedOut = $false }
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    Write-AIError "Background model download did not release $ModelFile within $WaitSeconds seconds."
+    return [pscustomobject]@{ WasActive = $true; Completed = $false; TimedOut = $true }
 }
 
 function Invoke-ODSHuggingFaceDownloadFallback {
@@ -399,7 +573,7 @@ function Write-SuccessCard {
     Write-Host ""
     Write-Host ("  " + ("=" * 60)) -ForegroundColor Green
     Write-Host ""
-    Write-Host "       THE GATEWAY IS OPEN" -ForegroundColor White
+    Write-Host "       THE ODS GATEWAY IS OPEN" -ForegroundColor Magenta
     Write-Host ""
     Write-Host "       Chat UI:    " -ForegroundColor DarkGray -NoNewline
     Write-Host "http://localhost:$WebUIPort" -ForegroundColor White
@@ -429,6 +603,12 @@ function Write-SuccessCard {
     Write-Host ""
     $elapsed = ((Get-Date) - $script:INSTALL_START).ToString("mm\:ss")
     Write-Host "       Install completed in $elapsed" -ForegroundColor DarkGray
+    $cloudModeValue = Get-Variable -Name cloudMode -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if ($cloudModeValue) {
+        Write-Host "       Cloud mode is active; configured providers may receive prompts and responses." -ForegroundColor DarkGray
+    } else {
+        Write-Host "       Local inference runs on this machine by default." -ForegroundColor DarkGray
+    }
     Write-Host ""
     Write-Host ("  " + ("=" * 60)) -ForegroundColor Green
     Write-Host ""

@@ -1,0 +1,128 @@
+services:
+  karakeep:
+    image: ghcr.io/karakeep-app/karakeep:release@sha256:b069e4307dec06ea06d16989c6861c30a1ff208568be44ed5fb5d422cd3e950c
+    container_name: ods-karakeep
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${KARAKEEP_PORT:-11019}:3000
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - --quiet
+      - --spider
+      - http://127.0.0.1:3000/api/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    volumes:
+    - karakeep-data:/data
+    depends_on:
+      karakeep-search:
+        condition: service_healthy
+      karakeep-chrome:
+        condition: service_started
+    environment:
+      DATA_DIR: /data
+      NEXTAUTH_URL: ${KARAKEEP_URL:-http://localhost:11019}
+      NEXTAUTH_SECRET: ${KARAKEEP_AUTH_SECRET:?Set a persistent random session secret}
+      MEILI_ADDR: http://karakeep-search:7700
+      MEILI_MASTER_KEY: ${KARAKEEP_SEARCH_KEY:?Set a private search index key}
+      BROWSER_WEB_URL: http://karakeep-chrome:9222
+      OPENAI_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_KEY: ${LITELLM_KEY:-no-key}
+      INFERENCE_TEXT_MODEL: ods/current
+      INFERENCE_IMAGE_MODEL: ods/current
+      CHAT_MODEL: ods/current
+      INFERENCE_SUPPORTS_STRUCTURED_OUTPUT: 'false'
+      INFERENCE_JOB_TIMEOUT_SEC: '600'
+      OPENAI_TIMEOUT_SEC: '540'
+      INFERENCE_NUM_WORKERS: '1'
+      CRAWLER_NUM_WORKERS: '1'
+      OCR_USE_LLM: 'false'
+      EMBEDDING_ENABLE_AUTO_INDEXING: 'false'
+      SEMANTIC_SEARCH_ENABLED: 'false'
+      DISABLE_SIGNUPS: ${KARAKEEP_DISABLE_SIGNUPS:-false}
+      DISABLE_NEW_RELEASE_CHECK: 'true'
+  karakeep-chrome:
+    image: ghcr.io/karakeep-app/karakeep-chrome:release@sha256:5b19bbb160e9ff60681a3abd97e1c4ec9f64212301410de658c3900ab7ef31e7
+    container_name: ods-karakeep-chrome
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    init: true
+    command:
+    - --disable-gpu
+    - --disable-dev-shm-usage
+    - --hide-scrollbars
+    - --disable-blink-features=AutomationControlled
+    - --window-size=1440,900
+  karakeep-search:
+    image: getmeili/meilisearch:v1.41.0@sha256:860fa4baed04ae1c235de870edab0c8006227546dea1bbb6411fbfc5e27cf1db
+    container_name: ods-karakeep-search
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - http://127.0.0.1:7700/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    volumes:
+    - karakeep-search-data:/meili_data
+    environment:
+      MEILI_ENV: production
+      MEILI_NO_ANALYTICS: 'true'
+      MEILI_MASTER_KEY: ${KARAKEEP_SEARCH_KEY:?Set a private search index key}
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  karakeep-data: {}
+  karakeep-search-data: {}

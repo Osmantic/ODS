@@ -20,8 +20,8 @@ set -e
 CONFIG=/root/.cache/lemonade/config.json
 if [ -f "$CONFIG" ] && [ -n "${LEMONADE_CTX_SIZE:-}" ]; then
     python3 - <<PYEOF
-import json, sys, os
-p = "$CONFIG"
+import json, sys, os, stat, tempfile
+p = os.path.realpath("$CONFIG")
 want = int(os.environ.get("LEMONADE_CTX_SIZE", "0"))
 if want <= 0:
     sys.exit(0)
@@ -32,8 +32,21 @@ if current == want:
     sys.exit(0)
 print(f"[lemonade-entrypoint] updating ctx_size: {current} -> {want}", flush=True)
 cfg["ctx_size"] = want
-with open(p, "w") as f:
-    json.dump(cfg, f, indent=2)
+# Keep the last complete cache until the replacement has been fully written.
+# Resolving the path above preserves an operator's existing config symlink.
+fd, temporary = tempfile.mkstemp(prefix=".lemonade-config-", suffix=".tmp", dir=os.path.dirname(p))
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.flush()
+        os.fchmod(f.fileno(), stat.S_IMODE(os.stat(p).st_mode))
+        os.fsync(f.fileno())
+    os.replace(temporary, p)
+finally:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
 PYEOF
 fi
 

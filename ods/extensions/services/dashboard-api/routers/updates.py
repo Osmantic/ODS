@@ -13,7 +13,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
 from config import INSTALL_DIR
-from env_values import strip_matching_quotes
+from env_values import parse_env_value
 from host_agent_client import (
     AgentHTTPError,
     AgentUnavailable,
@@ -49,7 +49,9 @@ def _read_current_version() -> str:
         try:
             for line in _read_utf8(env_file).splitlines():
                 if line.startswith("ODS_VERSION="):
-                    return strip_matching_quotes(line.split("=", 1)[1])
+                    version = parse_env_value(line.split("=", 1)[1])
+                    if version.strip():
+                        return version
         except OSError:
             pass
     version_file = Path(INSTALL_DIR) / ".version"
@@ -61,7 +63,8 @@ def _read_current_version() -> str:
                     data = json.loads(raw)
                     if isinstance(data, dict) and data.get("version"):
                         return str(data["version"])
-                return raw
+                else:
+                    return raw
         except (OSError, json.JSONDecodeError, ValueError):
             pass
     manifest_file = Path(INSTALL_DIR) / "manifest.json"
@@ -71,7 +74,6 @@ def _read_current_version() -> str:
             version = (
                 data.get("release", {}).get("version")
                 or data.get("ods_version")
-                or data.get("manifestVersion")
             )
             if version:
                 return str(version)
@@ -140,35 +142,73 @@ def _normalize_version(value: Optional[str]) -> str:
     either form, so strip a leading ``v`` (and surrounding whitespace) to keep
     ``current`` and ``latest`` on the same footing.
     """
-    return (value or "").strip().lstrip("v")
+    if not isinstance(value, str):
+        return ""
+    return value.strip().removeprefix("v")
 
 
-def _build_version_result(current: str, payload: Optional[dict]) -> dict:
+def _version_order(value: str) -> Optional[tuple]:
+    """SemVer precedence; unknown builds cannot prove that an update is newer."""
+    match = re.fullmatch(
+        r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+        r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?", _normalize_version(value),
+    )
+    if not match:
+        return None
+    core = tuple(int(match[i]) for i in (1, 2, 3))
+    prerelease = match[4]
+    if prerelease is None:
+        return core + (1, ())
+    identifiers = prerelease.split(".")
+    if any(part.isdigit() and len(part) > 1 and part.startswith("0") for part in identifiers):
+        return None
+    return core + (0, tuple((0, int(part)) if part.isdigit() else (1, part) for part in identifiers))
+
+
+def _build_version_result(current: str, payload: Optional[dict], check_status: str = "checked") -> dict:
     current = _normalize_version(current)
     result = {
         "current": current,
         "latest": None,
         "update_available": False,
         "changelog_url": None,
-        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "checked_at": None,
+        "check_status": check_status if payload else ("checking" if check_status == "checking" else "unavailable"),
     }
     if not payload:
         return result
 
     latest = _normalize_version(payload.get("latest"))
-    if not latest:
+    latest_order = _version_order(latest)
+    if latest_order is None:
+        result["check_status"] = "unavailable"
         return result
 
     result["latest"] = latest
     result["changelog_url"] = payload.get("changelog_url")
     result["checked_at"] = payload.get("checked_at") or result["checked_at"]
 
-    current_parts = [int(x) for x in current.split(".") if x.isdigit()][:3]
-    latest_parts = [int(x) for x in latest.split(".") if x.isdigit()][:3]
-    current_parts += [0] * (3 - len(current_parts))
-    latest_parts += [0] * (3 - len(latest_parts))
-    result["update_available"] = latest_parts > current_parts
+    current_order = _version_order(current)
+    if current_order is None or current == "0.0.0":
+        result["check_status"] = "current-unknown"
+    else:
+        result["update_available"] = check_status == "checked" and latest_order > current_order
     return result
+
+
+def _release_payload(response: httpx.Response) -> dict:
+    response.raise_for_status()
+    data = response.json()
+    if (not isinstance(data, dict) or data.get("draft") or data.get("prerelease")
+            or _version_order(data.get("tag_name")) is None
+            or _version_order(data.get("tag_name"))[3] != 1):
+        raise ValueError("GitHub did not return a stable release")
+    return {
+        "latest": _normalize_version(data["tag_name"]),
+        "changelog_url": data.get("html_url"),
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 async def _refresh_release_cache() -> Optional[dict]:
@@ -179,19 +219,14 @@ async def _refresh_release_cache() -> Optional[dict]:
                 f"{_GITHUB_RELEASES_API}/latest",
                 headers=_GITHUB_HEADERS,
             )
-        data = response.json()
-        payload = {
-            "latest": data.get("tag_name", "").lstrip("v"),
-            "changelog_url": data.get("html_url"),
-            "checked_at": datetime.now(timezone.utc).isoformat(),
-        }
+        payload = _release_payload(response)
         _version_cache = {
             "expires_at": time.monotonic() + _VERSION_CACHE_TTL,
             "payload": payload,
         }
         return payload
     except (httpx.HTTPError, httpx.TimeoutException, json.JSONDecodeError, OSError, ValueError):
-        return _get_cached_release_payload(allow_stale=True)
+        return None
 
 
 def _ensure_release_refresh() -> asyncio.Task:
@@ -202,25 +237,25 @@ def _ensure_release_refresh() -> asyncio.Task:
 
 
 @router.get("/api/version", response_model=VersionInfo, dependencies=[Depends(verify_api_key)])
-async def get_version():
+async def get_version(force: bool = False):
     """Get current ODS version without blocking page load on GitHub."""
     current = await asyncio.to_thread(_read_current_version)
     cached = _get_cached_release_payload()
-    if cached:
+    if cached and not force:
         return _build_version_result(current, cached)
 
     stale = _get_cached_release_payload(allow_stale=True)
     refresh_task = _ensure_release_refresh()
 
-    if stale:
-        return _build_version_result(current, stale)
+    if stale and not force:
+        return _build_version_result(current, stale, "stale")
 
     try:
-        payload = await asyncio.wait_for(asyncio.shield(refresh_task), timeout=1.25)
-        return _build_version_result(current, payload)
+        payload = await asyncio.wait_for(asyncio.shield(refresh_task), timeout=6.0 if force else 1.25)
+        return _build_version_result(current, payload or stale, "checked" if payload else "stale" if stale else "unavailable")
     except asyncio.TimeoutError:
         logger.debug("Version refresh still in progress; returning local version immediately")
-        return _build_version_result(current, None)
+        return _build_version_result(current, stale, "stale" if stale else "checking")
 
 
 @router.get("/api/releases/manifest", dependencies=[Depends(verify_api_key)])
@@ -232,6 +267,7 @@ async def get_release_manifest():
                 f"{_GITHUB_RELEASES_API}?per_page=5",
                 headers=_GITHUB_HEADERS,
             )
+        resp.raise_for_status()
         releases = resp.json()
         if not isinstance(releases, list):
             raise httpx.HTTPError(f"unexpected releases response: {type(releases).__name__}")
@@ -268,23 +304,8 @@ async def get_update_dry_run():
     install_path = Path(INSTALL_DIR)
 
     # ── current version ───────────────────────────────────────────────────────
-    current = "0.0.0"
+    current = _normalize_version(await asyncio.to_thread(_read_current_version))
     env_file = install_path / ".env"
-    version_file = install_path / ".version"
-
-    if env_file.exists():
-        for line in _read_utf8(env_file).splitlines():
-            if line.startswith("ODS_VERSION="):
-                current = strip_matching_quotes(line.split("=", 1)[1])
-                break
-    if current == "0.0.0" and version_file.exists():
-        try:
-            raw = _read_utf8(version_file).strip()
-            parsed = json.loads(raw) if raw.startswith("{") else None
-            current = (parsed or {}).get("version", raw) or raw or "0.0.0"
-        except (json.JSONDecodeError, OSError):
-            pass
-    current = _normalize_version(current)
 
     # ── latest version from GitHub ────────────────────────────────────────────
     latest: Optional[str] = None
@@ -298,13 +319,12 @@ async def get_update_dry_run():
                 f"{_GITHUB_RELEASES_API}/latest",
                 headers=_GITHUB_HEADERS,
             )
-        data = resp.json()
-        latest = _normalize_version(data.get("tag_name")) or None
-        changelog_url = data.get("html_url") or None
-        if latest:
-            def _parts(v: str) -> list[int]:
-                return ([int(x) for x in v.split(".") if x.isdigit()][:3] + [0, 0, 0])[:3]
-            update_available = _parts(latest) > _parts(current)
+        version = _build_version_result(current, _release_payload(resp))
+        latest = version["latest"]
+        changelog_url = version["changelog_url"]
+        update_available = version["update_available"]
+        if version["check_status"] == "current-unknown":
+            version_check_error = "Installed version is unknown; automatic version comparison is unavailable."
     except (httpx.HTTPError, httpx.TimeoutException, OSError, json.JSONDecodeError, ValueError) as e:
         version_check_error = f"Could not reach GitHub: {e}"
 

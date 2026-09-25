@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-brief-v1.schema.json",
+  "title": "Pixel Deep Work guided goal brief v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "objective", "dataClassification", "milestones", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-brief-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "objective": {"type": "string", "minLength": 1, "maxLength": 8000},
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "milestones": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["milestoneId", "kind", "objective", "doneWhen", "dependsOn", "inputIds", "effort"],
+        "properties": {
+          "milestoneId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+          "kind": {"enum": ["inspect", "build", "research", "analyze-data"]},
+          "objective": {"type": "string", "minLength": 1, "maxLength": 8000},
+          "doneWhen": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1, "maxLength": 1000}
+          },
+          "dependsOn": {
+            "type": "array",
+            "maxItems": 63,
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}
+          },
+          "inputIds": {
+            "type": "array",
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}
+          },
+          "effort": {"enum": ["quick", "standard", "deep"]},
+          "research": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["allowedDomains", "deniedDomains", "sourceTypes"],
+            "properties": {
+              "allowedDomains": {"$ref": "#/$defs/domains"},
+              "deniedDomains": {"$ref": "#/$defs/domains"},
+              "sourceTypes": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "uniqueItems": true,
+                "items": {"enum": ["web", "news", "academic", "forum"]}
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"kind": {"const": "research"}}, "required": ["kind"]},
+            "then": {"required": ["research"]},
+            "else": {"not": {"required": ["research"]}}
+          }
+        ]
+      }
+    },
+    "boundary": {"const": "Owner-authored plain-language goal structure and selected local input references only. Drafting derives bounded job proposals from private policy but grants no execution, lease, retry, scheduling, credential, scope expansion, external effect, or completion authority."}
+  },
+  "$defs": {
+    "domains": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))+$"}
+    }
+  }
+}

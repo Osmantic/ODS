@@ -59,9 +59,18 @@ macos_configure_port_bridge() {
 </plist>
 BRIDGE_PLIST_EOF
 
-    local bootstrap_err bootstrap_rc
-    bootstrap_err="$(launchctl bootstrap "gui/$(id -u)" "$plist" 2>&1)" \
-        && bootstrap_rc=0 || bootstrap_rc=$?
+    # bootout is asynchronous: on a forced reinstall launchd can still be
+    # tearing down the prior service when bootstrap reaches the new plist.
+    # macOS reports that short-lived collision as rc=5. Retry only that code;
+    # a malformed plist or another error must still fail the install.
+    local bootstrap_err bootstrap_rc bootstrap_attempt
+    for bootstrap_attempt in 1 2 3 4 5 6; do
+        bootstrap_err="$(launchctl bootstrap "gui/$(id -u)" "$plist" 2>&1)" \
+            && bootstrap_rc=0 || bootstrap_rc=$?
+        [[ "$bootstrap_rc" -eq 0 ]] && break
+        [[ "$bootstrap_rc" -eq 5 && "$bootstrap_attempt" -lt 6 ]] || break
+        sleep 1
+    done
     if [[ "$bootstrap_rc" -ne 0 ]]; then
         ai_err "${description} LaunchAgent failed (rc=${bootstrap_rc}): ${bootstrap_err}"
         return 1

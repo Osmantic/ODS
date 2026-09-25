@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-recovery-guide-v1.schema.json",
+  "title": "Pixel content-free backup and incident recovery guide v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAt", "state", "backup", "incident", "privacy", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "state": {"enum": ["ready", "attention", "containment", "unavailable"]},
+    "backup": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "creationEnabled", "lastCreation", "validation", "rehearsal", "restore",
+        "nextActionCode", "browserCanReadArtifact", "browserCanDecrypt",
+        "browserCanRehearse", "browserCanRestore"
+      ],
+      "properties": {
+        "creationEnabled": {"type": ["boolean", "null"]},
+        "lastCreation": {"enum": ["none", "succeeded", "failed", "unavailable"]},
+        "validation": {"const": "terminal-required"},
+        "rehearsal": {"const": "terminal-required"},
+        "restore": {"const": "terminal-exact-confirmation-required"},
+        "nextActionCode": {
+          "enum": [
+            "enable-private-backup-policy", "create-encrypted-backup",
+            "validate-and-rehearse-backup-in-terminal", "inspect-private-backup-log",
+            "inspect-private-control-state"
+          ]
+        },
+        "browserCanReadArtifact": {"const": false},
+        "browserCanDecrypt": {"const": false},
+        "browserCanRehearse": {"const": false},
+        "browserCanRestore": {"const": false}
+      },
+      "allOf": [
+        {"if": {"properties": {"lastCreation": {"const": "succeeded"}}, "required": ["lastCreation"]}, "then": {"properties": {"nextActionCode": {"const": "validate-and-rehearse-backup-in-terminal"}}}},
+        {"if": {"properties": {"lastCreation": {"const": "failed"}}, "required": ["lastCreation"]}, "then": {"properties": {"nextActionCode": {"const": "inspect-private-backup-log"}}}},
+        {"if": {"properties": {"lastCreation": {"const": "unavailable"}}, "required": ["lastCreation"]}, "then": {"properties": {"creationEnabled": {"type": "null"}, "nextActionCode": {"const": "inspect-private-control-state"}}}},
+        {"if": {"properties": {"lastCreation": {"const": "none"}, "creationEnabled": {"const": true}}, "required": ["lastCreation", "creationEnabled"]}, "then": {"properties": {"nextActionCode": {"const": "create-encrypted-backup"}}}},
+        {"if": {"properties": {"lastCreation": {"const": "none"}, "creationEnabled": {"const": false}}, "required": ["lastCreation", "creationEnabled"]}, "then": {"properties": {"nextActionCode": {"const": "enable-private-backup-policy"}}}}
+      ]
+    },
+    "incident": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "state", "openIncidents", "criticalIncidents", "recovery", "nextActionCodes",
+        "operationsResume", "frontierResume", "pauseStateVerified",
+        "browserCanReadEvidence", "browserCanRecover", "browserCanResume"
+      ],
+      "properties": {
+        "state": {"enum": ["clear", "attention", "containment", "unavailable"]},
+        "openIncidents": {"type": ["integer", "null"], "minimum": 0, "maximum": 100},
+        "criticalIncidents": {"type": ["integer", "null"], "minimum": 0, "maximum": 100},
+        "recovery": {"enum": ["not-required", "inspect-private-evidence", "re-establish-containment", "unavailable"]},
+        "nextActionCodes": {
+          "type": "array", "maxItems": 7, "uniqueItems": true,
+          "items": {
+            "enum": [
+              "inspect-private-deployment-log", "inspect-private-health-log",
+              "inspect-private-update-log", "inspect-private-backup-log",
+              "keep-operations-paused", "keep-frontier-paused", "contain-deep-work-from-terminal",
+              "cancel-deep-work-from-terminal", "inspect-private-deep-work-resume-log",
+              "inspect-private-deep-work-draft-log"
+            ]
+          }
+        },
+        "operationsResume": {"enum": ["not-indicated", "containment-not-confirmed", "terminal-state-review-required", "unavailable"]},
+        "frontierResume": {"enum": ["not-indicated", "containment-not-confirmed", "terminal-state-review-required", "unavailable"]},
+        "pauseStateVerified": {"const": false},
+        "browserCanReadEvidence": {"const": false},
+        "browserCanRecover": {"const": false},
+        "browserCanResume": {"const": false}
+      },
+      "allOf": [
+        {"if": {"properties": {"state": {"const": "clear"}}, "required": ["state"]}, "then": {"properties": {"openIncidents": {"const": 0}, "criticalIncidents": {"const": 0}, "recovery": {"const": "not-required"}, "nextActionCodes": {"maxItems": 0}}}},
+        {"if": {"properties": {"state": {"const": "attention"}}, "required": ["state"]}, "then": {"properties": {"openIncidents": {"type": "integer", "minimum": 1}, "criticalIncidents": {"const": 0}, "recovery": {"const": "inspect-private-evidence"}, "nextActionCodes": {"minItems": 1}}}},
+        {"if": {"properties": {"state": {"const": "containment"}}, "required": ["state"]}, "then": {"properties": {"openIncidents": {"type": "integer", "minimum": 1}, "criticalIncidents": {"type": "integer", "minimum": 1}, "recovery": {"const": "re-establish-containment"}, "nextActionCodes": {"minItems": 1}}}},
+        {"if": {"properties": {"state": {"const": "unavailable"}}, "required": ["state"]}, "then": {"properties": {"openIncidents": {"type": "null"}, "criticalIncidents": {"type": "null"}, "recovery": {"const": "unavailable"}, "nextActionCodes": {"maxItems": 0}, "operationsResume": {"const": "unavailable"}, "frontierResume": {"const": "unavailable"}}}}
+      ]
+    },
+    "privacy": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "localPathsProjected", "backupRecipientsProjected", "hashesProjected",
+        "pauseReasonsProjected", "actionIdentitiesProjected", "privateEvidenceProjected"
+      ],
+      "properties": {
+        "localPathsProjected": {"const": false},
+        "backupRecipientsProjected": {"const": false},
+        "hashesProjected": {"const": false},
+        "pauseReasonsProjected": {"const": false},
+        "actionIdentitiesProjected": {"const": false},
+        "privateEvidenceProjected": {"const": false}
+      }
+    },
+    "boundary": {
+      "const": "Content-free recovery orientation only; backup artifacts, decryption identities, private evidence, restore, incident recovery, and authority resume remain trusted terminal workflows. No path, recipient, hash, reason, action identity, or private content is projected."
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"state": {"const": "unavailable"}}, "required": ["state"]},
+      "then": {"properties": {"backup": {"properties": {"lastCreation": {"const": "unavailable"}}}, "incident": {"properties": {"state": {"const": "unavailable"}}}}},
+      "else": {"properties": {"backup": {"properties": {"creationEnabled": {"type": "boolean"}, "lastCreation": {"enum": ["none", "succeeded", "failed"]}}}, "incident": {"properties": {"state": {"enum": ["clear", "attention", "containment"]}}}}}
+    },
+    {"if": {"properties": {"state": {"const": "ready"}}, "required": ["state"]}, "then": {"properties": {"incident": {"properties": {"state": {"const": "clear"}, "operationsResume": {"const": "not-indicated"}, "frontierResume": {"const": "not-indicated"}}}}}},
+    {"if": {"properties": {"state": {"const": "containment"}}, "required": ["state"]}, "then": {"properties": {"incident": {"properties": {"state": {"const": "containment"}}}}}},
+    {
+      "if": {"properties": {"state": {"const": "attention"}}, "required": ["state"]},
+      "then": {
+        "anyOf": [
+          {"properties": {"incident": {"properties": {"state": {"const": "attention"}}}}},
+          {"properties": {"incident": {"properties": {"state": {"const": "clear"}, "operationsResume": {"const": "terminal-state-review-required"}}}}},
+          {"properties": {"incident": {"properties": {"state": {"const": "clear"}, "frontierResume": {"const": "terminal-state-review-required"}}}}}
+        ]
+      }
+    }
+  ]
+}

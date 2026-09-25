@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-campaign-maintenance-v1.schema.json",
+  "title": "Pixel bounded local-model campaign maintenance configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "pythonPath", "dockerPath", "sourceRoot", "sourceCommit", "candidateSourceArchiveSha256", "materializationRoot", "pairConfigurationPath", "outputRoot", "campaign", "custody", "production", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-campaign-maintenance-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "pythonPath": {"$ref": "#/$defs/path"},
+    "dockerPath": {"$ref": "#/$defs/path"},
+    "sourceRoot": {"$ref": "#/$defs/path"},
+    "sourceCommit": {"type": "string", "pattern": "^[a-f0-9]{40}$", "not": {"const": "0000000000000000000000000000000000000000"}},
+    "candidateSourceArchiveSha256": {"$ref": "#/$defs/sha256"},
+    "materializationRoot": {"$ref": "#/$defs/path"},
+    "pairConfigurationPath": {"$ref": "#/$defs/path"},
+    "outputRoot": {"$ref": "#/$defs/path"},
+    "campaign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxPairs", "partition", "freezeTuning", "runtimeCondition", "timeoutSeconds"],
+      "properties": {
+        "maxPairs": {"type": "integer", "minimum": 1, "maximum": 500},
+        "partition": {"enum": ["tuning", "held-out"]},
+        "freezeTuning": {"type": "boolean"},
+        "runtimeCondition": {"enum": ["cold-first-request", "warm-neutral-probe"]},
+        "timeoutSeconds": {"type": "integer", "minimum": 300, "maximum": 604800}
+      },
+      "allOf": [{"if": {"properties": {"partition": {"const": "held-out"}}, "required": ["partition"]}, "then": {"properties": {"freezeTuning": {"const": false}}}}]
+    },
+    "custody": {"$ref": "#/$defs/custody"},
+    "production": {"$ref": "#/$defs/production"},
+    "boundary": {"const": "Owner-private exact maintenance binding for one production container and one bounded resumable local DSV4 comparison campaign batch. Configuration grants no stop, start, task, model, tool, credential, external network, external effect, deployment, completion, publication, acceptance, or promotion authority."}
+  },
+  "$defs": {
+    "path": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\\u0000\\r\\n]+$"},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$", "not": {"const": "0000000000000000000000000000000000000000000000000000000000000000"}},
+    "custody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "lockPath", "acquireTimeoutSeconds"],
+      "properties": {
+        "kind": {"const": "advisory-flock"},
+        "lockPath": {"$ref": "#/$defs/path"},
+        "acquireTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 300}
+      }
+    },
+    "production": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["containerName", "containerId", "imageDigest", "expectedStartedAt", "expectedRestartCount", "stopTimeoutSeconds", "restoreTimeoutSeconds", "probeIntervalMilliseconds", "readinessOrigin", "readinessModelId", "maxResponseBytes"],
+      "properties": {
+        "containerName": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$"},
+        "containerId": {"$ref": "#/$defs/sha256"},
+        "imageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$", "not": {"const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}},
+        "expectedStartedAt": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$"},
+        "expectedRestartCount": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "stopTimeoutSeconds": {"type": "integer", "minimum": 10, "maximum": 600},
+        "restoreTimeoutSeconds": {"type": "integer", "minimum": 60, "maximum": 7200},
+        "probeIntervalMilliseconds": {"type": "integer", "minimum": 250, "maximum": 10000},
+        "readinessOrigin": {"type": "string", "pattern": "^http://127\\.0\\.0\\.1:[0-9]{4,5}$"},
+        "readinessModelId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:+/-]{0,127}$"},
+        "maxResponseBytes": {"type": "integer", "minimum": 1024, "maximum": 1048576}
+      }
+    }
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-research-retrieval-v1.schema.json",
+  "title": "Pixel Web Courier research retrieval receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "retrievalId", "requestId", "jobId", "claimId", "queryId", "searchEvidenceSha256", "planSha256", "sourceId", "canonicalUrlSha256", "createdAt", "transport", "status", "responseName", "contentSha256", "bytes", "networkBytes", "mediaType", "finalUrl", "redirects", "dnsPinned", "safeMethodsOnly", "reason", "contentStoredBeyondJob", "credentialsExposed", "externalWritesPerformed", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-research-retrieval-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "retrievalId": {"type": "string", "pattern": "^researchretrieval-[0-9]{13}-[a-f0-9]{12}$"},
+    "requestId": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "claimId": {"type": "string", "pattern": "^workclaim-[0-9]{13}-[a-f0-9]{12}$"},
+    "queryId": {"type": "string", "pattern": "^researchquery-[0-9]{13}-[a-f0-9]{12}$"},
+    "searchEvidenceSha256": {"$ref": "#/$defs/sha256"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "sourceId": {"type": "string", "pattern": "^source-[a-f0-9]{16}$"},
+    "canonicalUrlSha256": {"$ref": "#/$defs/sha256"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "transport": {"enum": ["web-courier", "offline-fixture"]},
+    "status": {"enum": ["fetched", "rejected", "error"]},
+    "responseName": {"type": "string", "pattern": "^res-[a-f0-9]{32}\\.md$"},
+    "contentSha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+    "bytes": {"type": "integer", "minimum": 0, "maximum": 20971520},
+    "networkBytes": {"type": "integer", "minimum": 0, "maximum": 20971520},
+    "mediaType": {"enum": [null, "text/plain"]},
+    "finalUrl": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 9, "maxLength": 4096, "pattern": "^https://"}]},
+    "redirects": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 5}]},
+    "dnsPinned": {"type": "boolean"},
+    "safeMethodsOnly": {"type": "boolean"},
+    "reason": {"enum": [null, "policy", "network", "size", "media", "integrity"]},
+    "contentStoredBeyondJob": {"const": false},
+    "credentialsExposed": {"const": false},
+    "externalWritesPerformed": {"const": false},
+    "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Content-free research retrieval evidence. Transport and byte accounting are explicit; fetched content remains untrusted job-scoped data and grants no instruction or action authority."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "fetched"}}, "required": ["status"]},
+      "then": {"properties": {
+        "contentSha256": {"type": "string"}, "bytes": {"minimum": 1}, "mediaType": {"const": "text/plain"},
+        "finalUrl": {"type": "string"}, "redirects": {"type": "integer"}, "reason": {"type": "null"}
+      }},
+      "else": {"properties": {
+        "contentSha256": {"type": "null"}, "bytes": {"const": 0}, "networkBytes": {"const": 0}, "mediaType": {"type": "null"},
+        "finalUrl": {"type": "null"}, "redirects": {"type": "null"}, "dnsPinned": {"const": false},
+        "safeMethodsOnly": {"const": false}, "reason": {"enum": ["policy", "network", "size", "media", "integrity"]}
+      }}
+    },
+    {
+      "if": {"properties": {"status": {"const": "fetched"}, "transport": {"const": "web-courier"}}, "required": ["status", "transport"]},
+      "then": {"properties": {"networkBytes": {"minimum": 1}, "dnsPinned": {"const": true}, "safeMethodsOnly": {"const": true}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "fetched"}, "transport": {"const": "offline-fixture"}}, "required": ["status", "transport"]},
+      "then": {"properties": {"networkBytes": {"const": 0}, "redirects": {"const": 0}, "dnsPinned": {"const": false}, "safeMethodsOnly": {"const": false}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["directNetwork", "credentials", "externalWrites", "accounts", "messages", "publish", "purchase", "policyMutation", "scopeExpansion"],
+      "properties": {
+        "directNetwork": {"const": false}, "credentials": {"const": false}, "externalWrites": {"const": false},
+        "accounts": {"const": false}, "messages": {"const": false}, "publish": {"const": false},
+        "purchase": {"const": false}, "policyMutation": {"const": false}, "scopeExpansion": {"const": false}
+      }
+    }
+  }
+}

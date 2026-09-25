@@ -24,15 +24,17 @@ export INSTALL_PHASE="init"
 cleanup_on_error() {
     local exit_code=$?
     echo ""
-    echo -e "\033[0;31m[ERROR] Installation failed during phase: ${INSTALL_PHASE}\033[0m"
-    echo -e "\033[0;33m        Log file: ${LOG_FILE:-/tmp/ods-install.log}\033[0m"
+    echo -e "${RED:-}[ERROR] Installation failed during phase: ${INSTALL_PHASE}${NC:-}"
+    echo -e "${AMB:-}        Log file: ${LOG_FILE:-/tmp/ods-install.log}${NC:-}"
     echo ""
     echo "The install did not complete. Partial state may exist at:"
     echo "  ${INSTALL_DIR:-~/ods}"
     echo ""
-    echo "To retry, run the installer again. It will resume safely."
-    echo "To start fresh, remove the install directory first:"
-    echo "  rm -rf ${INSTALL_DIR:-~/ods} && ./install.sh"
+    echo "Keep this directory and its recovery receipts intact."
+    echo "Review the failed phase and log before retrying; some phases require recovery."
+    echo "For a fresh install, use the installed ods-uninstall.sh and resolve any"
+    echo "cleanup refusal before reinstalling. Do not delete the directory manually:"
+    echo "ODS services and protected Pixel state may exist outside it."
     exit "$exit_code"
 }
 trap cleanup_on_error ERR
@@ -48,16 +50,16 @@ interrupt_handler() {
     now=$(date +%s)
     if (( now - LAST_SIGINT <= 3 )); then
         echo ""
-        echo -e "\033[0;33m[!] Install cancelled by user.\033[0m"
+        echo -e "${AMB:-}[!] Install cancelled by user.${NC:-}"
         if declare -F cancel_active_download >/dev/null 2>&1; then
             cancel_active_download
         fi
-        echo -e "\033[0;32m    Log file: ${LOG_FILE:-/tmp/ods-install.log}\033[0m"
+        echo -e "${GRN:-}    Log file: ${LOG_FILE:-/tmp/ods-install.log}${NC:-}"
         exit 130
     fi
     LAST_SIGINT=$now
     echo ""
-    echo -e "\033[0;33m[!] Press Ctrl+C again within 3 seconds to cancel the install.\033[0m"
+    echo -e "${AMB:-}[!] Press Ctrl+C again within 3 seconds to cancel the install.${NC:-}"
 }
 trap interrupt_handler INT
 # Ignore Ctrl+Z (SIGTSTP) entirely — backgrounding the installer breaks things
@@ -72,6 +74,7 @@ if [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]]; then
 fi
 
 source "$SCRIPT_DIR/installers/lib/constants.sh"
+source "$SCRIPT_DIR/installers/lib/secure-log.sh"
 source "$SCRIPT_DIR/installers/lib/logging.sh"
 source "$SCRIPT_DIR/installers/lib/ui.sh"
 source "$SCRIPT_DIR/installers/lib/sudo.sh"
@@ -87,7 +90,12 @@ source "$SCRIPT_DIR/installers/lib/packaging.sh"
 source "$SCRIPT_DIR/installers/lib/python-runtime.sh"
 source "$SCRIPT_DIR/installers/lib/progress.sh"
 source "$SCRIPT_DIR/installers/lib/model-lifecycle-lock.sh"
+source "$SCRIPT_DIR/installers/lib/cli-link.sh"
+source "$SCRIPT_DIR/installers/lib/install-mode.sh"
 source "$SCRIPT_DIR/installers/lib/external-services.sh"
+source "$SCRIPT_DIR/installers/lib/pixel-integration.sh"
+source "$SCRIPT_DIR/installers/lib/pixel-host-install.sh"
+source "$SCRIPT_DIR/lib/pixel-uninstall.sh"
 if [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]]; then 
     source "$SCRIPT_DIR/lib/service-registry.sh" 
 fi
@@ -103,14 +111,15 @@ ENABLE_VOICE=true
 ENABLE_WORKFLOWS=true
 ENABLE_RAG=true
 ENABLE_RECOMMENDED=true
-# Default agent flipped to Hermes Agent (Nous Research) on 2026-05-12.
-# OpenClaw is deprecated and will be removed in the next release; new
-# installs no longer enable it by default. Users who explicitly pass
-# --openclaw or upgrade an existing install with OpenClaw enabled keep
-# it working until the removal release. See docs/MIGRATION-OPENCLAW-TO-HERMES.md.
+# Pixel is the core conversational experience on qualified Linux hosts after a separate
+# written license agreement is acknowledged. Existing ODS tools remain available.
+# OpenClaw is deprecated and remains explicit opt-in.
 ENABLE_HERMES=true
+ENABLE_PIXEL="${ENABLE_PIXEL:-auto}"
+PIXEL_EXPLICIT=false
 ENABLE_OPENCLAW=false
 OPENCLAW_EXPLICIT=false
+ENABLE_OPENCODE=false
 ENABLE_COMFYUI=true
 ENABLE_APE=true
 ENABLE_PERPLEXICA=true
@@ -124,6 +133,8 @@ ENABLE_BRAVE_SEARCH=false
 # the Custom menu, or post-install `ods enable langfuse`.
 ENABLE_LANGFUSE=false
 INTERACTIVE=true
+ODS_MODE_EXPLICIT=false
+[[ -n "${ODS_MODE:-}" ]] && ODS_MODE_EXPLICIT=true
 ODS_MODE="${ODS_MODE:-local}"
 LEMONADE_EXTERNAL="${LEMONADE_EXTERNAL:-false}"
 LEMONADE_BASE_URL="${LEMONADE_BASE_URL:-}"
@@ -139,6 +150,7 @@ EXTERNAL_LLM_PROVIDER="${EXTERNAL_LLM_PROVIDER:-auto}"
 EXTERNAL_LLM_MODEL="${EXTERNAL_LLM_MODEL:-}"
 EXTERNAL_LLM_AUTO_REUSE="${EXTERNAL_LLM_AUTO_REUSE:-false}"
 EXTERNAL_LLM_DISABLE=false
+ODS_RESELECT_MODEL="${ODS_RESELECT_MODEL:-false}"
 
 usage() {
     cat << EOF
@@ -159,15 +171,16 @@ Options:
     --lemonade-api-key K
                       API key LiteLLM should send to the existing Lemonade server
     --external-llm-url U
-                      Reuse an OpenAI-compatible Ollama or LM Studio endpoint
+                      Reuse an OpenAI-compatible local or LAN endpoint
     --external-llm-provider P
-                      External provider: auto, ollama, or lmstudio
+                      External provider: auto, ollama, lmstudio, or openai-compatible
     --external-llm-model M
                       Exact model id exposed by the external provider
     --reuse-external-llm
                       Allow non-interactive reuse of a detected matching model
     --no-external-llm
                       Disable a persisted external LLM selection on this rerun
+    --reselect-model  Replace a valid active local model with the current installer recommendation
     --voice           Enable voice services (Whisper + Kokoro)
     --no-voice        Disable voice services
     --workflows       Enable n8n workflow automation
@@ -176,10 +189,14 @@ Options:
     --no-rag          Disable RAG / Qdrant
     --recommended     Enable LiteLLM + SearXNG + Token Spy support services
     --no-recommended  Disable recommended support services
-    --hermes          Enable Hermes Agent (default; new default agent as of 2026-05-12)
+    --hermes          Enable Hermes Agent alongside Pixel
     --no-hermes       Disable Hermes Agent
+    --pixel           Require Pixel alongside the existing ODS tools on a qualified Linux host
+    --no-pixel        Disable Pixel; keep the other configured ODS tools
     --openclaw        Enable OpenClaw (DEPRECATED — see docs/MIGRATION-OPENCLAW-TO-HERMES.md)
     --no-openclaw     Disable OpenClaw
+    --opencode        Enable the optional OpenCode browser IDE
+    --no-opencode     Disable the optional OpenCode browser IDE (default)
     --comfyui         Enable ComfyUI image generation
     --no-comfyui      Disable ComfyUI image generation (saves ~34GB)
     --odsforge      Deprecated no-op; ODSForge has been removed
@@ -223,15 +240,16 @@ while [[ $# -gt 0 ]]; do
         --skip-docker) SKIP_DOCKER=true; shift ;;
         --force) FORCE=true; shift ;;
         --tier) TIER="$2"; shift 2 ;;
-        --cloud) ODS_MODE="cloud"; shift ;;
-        --use-existing-lemonade) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; shift ;;
-        --lemonade-url) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; LEMONADE_BASE_URL="$2"; shift 2 ;;
+        --cloud) ODS_MODE="cloud"; ODS_MODE_EXPLICIT=true; shift ;;
+        --use-existing-lemonade) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; shift ;;
+        --lemonade-url) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; LEMONADE_BASE_URL="$2"; shift 2 ;;
         --lemonade-api-key) LEMONADE_API_KEY="$2"; shift 2 ;;
         --external-llm-url) EXTERNAL_LLM_URL="$2"; shift 2 ;;
         --external-llm-provider) EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
         --external-llm-model) EXTERNAL_LLM_MODEL="$2"; shift 2 ;;
         --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
         --no-external-llm) EXTERNAL_LLM_DISABLE=true; shift ;;
+        --reselect-model) ODS_RESELECT_MODEL=true; shift ;;
         --voice) ENABLE_VOICE=true; shift ;;
         --no-voice) ENABLE_VOICE=false; shift ;;
         --workflows) ENABLE_WORKFLOWS=true; shift ;;
@@ -242,17 +260,21 @@ while [[ $# -gt 0 ]]; do
         --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
         --hermes) ENABLE_HERMES=true; shift ;;
         --no-hermes) ENABLE_HERMES=false; shift ;;
+        --pixel) ENABLE_PIXEL=true; PIXEL_EXPLICIT=true; shift ;;
+        --no-pixel) ENABLE_PIXEL=false; PIXEL_EXPLICIT=true; shift ;;
         --openclaw) ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
         --no-openclaw) ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
+        --opencode) ENABLE_OPENCODE=true; shift ;;
+        --no-opencode) ENABLE_OPENCODE=false; shift ;;
         --comfyui) ENABLE_COMFYUI=true; shift ;;
         --no-comfyui) ENABLE_COMFYUI=false; shift ;;
-        --odsforge) warn "ODSForge has been removed; ignoring --odsforge"; shift ;;
-        --no-odsforge) warn "ODSForge has been removed; ignoring --no-odsforge"; shift ;;
+        --odsforge) printf '%s\n' '[WARN] ODSForge has been removed; ignoring --odsforge' >&2; shift ;;
+        --no-odsforge) printf '%s\n' '[WARN] ODSForge has been removed; ignoring --no-odsforge' >&2; shift ;;
         --langfuse) ENABLE_LANGFUSE=true; shift ;;
         # NOTE: with --all, --no-langfuse must appear AFTER --all on the command
         # line (flag processing is case-loop ordered, matching comfyui).
         --no-langfuse) ENABLE_LANGFUSE=false; shift ;;
-        # --all enables Hermes (the new default agent) but NOT OpenClaw —
+        # --all enables the Hermes fallback but NOT deprecated OpenClaw —
         # the deprecated agent is opt-in via --openclaw for the deprecation
         # release. Will be dropped entirely in the removal release.
         # ENABLE_ODS_PROXY is included so magic-link invite URLs
@@ -261,16 +283,33 @@ while [[ $# -gt 0 ]]; do
         # nothing serves it, and a phone clicking the invite gets
         # "site can't be reached." Operators who don't want the LAN-facing
         # surface can set ENABLE_ODS_PROXY=false in .env after install.
-        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; shift ;;
+        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; shift ;;
         --non-interactive) INTERACTIVE=false; shift ;;
         --offline) OFFLINE_MODE=true; shift ;;
         --lan) BIND_ADDRESS="0.0.0.0"; BIND_ADDRESS_EXPLICIT=true; shift ;;
         --no-bootstrap) NO_BOOTSTRAP=true; shift ;;
         --summary-json) SUMMARY_JSON_FILE="$2"; shift 2 ;;
         -h|--help) usage ;;
-        *) error "Unknown option: $1" ;;
+        *) printf '[ERROR] Unknown option: %s\n' "$1" >&2; exit 1 ;;
     esac
 done
+
+# Help and malformed options exit without creating a log. Every remaining
+# path prepares a private diagnostic file before the first logging call.
+if ! ods_prepare_install_log "$LOG_FILE"; then
+    exit 1
+fi
+
+# Argument parsing establishes interactivity. Resolve the presentation once so
+# non-interactive/CI/GUI output cannot inherit terminal color from a real TTY.
+ods_apply_presentation_mode
+
+_requested_ods_mode="$ODS_MODE"
+ODS_MODE="$(ods_preserve_existing_install_mode "$ODS_MODE" "$ODS_MODE_EXPLICIT" "$INSTALL_DIR/.env")"
+if [[ "$ODS_MODE_EXPLICIT" != "true" && "$ODS_MODE" != "$_requested_ods_mode" ]]; then
+    log "Existing ODS mode detected; preserving ODS_MODE=$ODS_MODE for this installer rerun"
+fi
+unset _requested_ods_mode
 
 if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
     ODS_MODE="lemonade"
@@ -279,7 +318,7 @@ if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
 fi
 
 export EXTERNAL_LLM_URL EXTERNAL_LLM_PROVIDER EXTERNAL_LLM_MODEL
-export EXTERNAL_LLM_AUTO_REUSE EXTERNAL_LLM_DISABLE
+export EXTERNAL_LLM_AUTO_REUSE EXTERNAL_LLM_DISABLE ODS_RESELECT_MODEL
 
 # OpenClaw deprecation back-compat: preserve OpenClaw on UPGRADES of installs
 # that previously had it enabled. The earlier heuristic — "does the compose

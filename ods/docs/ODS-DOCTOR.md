@@ -76,6 +76,12 @@ ods doctor --json > report.json
 
 - **capability_profile**: Hardware detection snapshot
 - **preflight**: Blocker/warning analysis
+  - Installer preflight requires the full tier disk floor before images and
+    models are downloaded.
+  - Doctor evaluates an already-installed runtime: falling below the tier's
+    install recommendation is a warning, while less than 10GB free remains a
+    blocker so updates, logs, and container writes cannot silently exhaust the
+    filesystem.
 - **install_artifacts**: Presence and paths for installer evidence such as
   `.env`, `.compose-flags`, `logs/compose-launch.txt`, `logs/compose-up.log`,
   and the latest `install-report-*.txt`.
@@ -135,8 +141,8 @@ JSON.
 ODS supports several deployment shapes, but support cases often fail
 when the install metadata and runtime routing disagree. For example, cloud mode
 should not start or target ODS's managed `llama-server`, and external
-Lemonade should route ODS services through LiteLLM while leaving Lemonade
-itself host-managed.
+Lemonade should remain host-managed while ODS keeps LiteLLM and model-router
+available for clients, Pixel, and model switching.
 
 ODS Doctor records those expectations under `runtime.inference_contract` and
 adds diagnoses when the evidence contradicts the selected mode:
@@ -150,17 +156,19 @@ adds diagnoses when the evidence contradicts the selected mode:
   at local `llama-server`.
 - `ODS-RUNTIME-CLOUD-GATEWAY-BYPASS`: cloud mode points ODS services somewhere
   other than the LiteLLM gateway.
-- `ODS-RUNTIME-EXTERNAL-LEMONADE-CLOUD-OVERLAY-MISSING`: external Lemonade is
-  active while cached `.compose-flags` lacks the cloud overlay that profiles
-  out managed local inference.
+- `ODS-RUNTIME-EXTERNAL-LEMONADE-CLOUD-OVERLAY-CONFLICT`: external Lemonade is
+  active while cached `.compose-flags` includes the cloud overlay, which
+  incorrectly profiles out model-router. The dedicated Lemonade overlay
+  profiles out only managed `llama-server`.
 - `ODS-RUNTIME-EXTERNAL-LEMONADE-OVERLAY-MISSING`: external Lemonade is active
   while cached `.compose-flags` lacks `docker-compose.lemonade-external.yml`.
 - `ODS-RUNTIME-EXTERNAL-LEMONADE-LOCAL-ROUTE`: external Lemonade still routes
   clients to local `llama-server`.
 - `ODS-RUNTIME-LOCAL-CLOUD-OVERLAY`: local mode still has the cloud overlay in
   cached `.compose-flags`.
-- `ODS-RUNTIME-LOCAL-LITELLM-ROUTE`: non-AMD local mode unexpectedly routes
-  through LiteLLM.
+- `ODS-RUNTIME-LOCAL-LITELLM-ROUTE`: non-AMD managed-local mode unexpectedly
+  routes through LiteLLM. Explicit `LLM_BACKEND=external` /
+  `EXTERNAL_LLM_URL` installs expect LiteLLM and do not emit this warning.
 
 The support bundle embeds the same contract evidence in
 `manifest/evidence.json`. Its Compose validation resolves the stack with the

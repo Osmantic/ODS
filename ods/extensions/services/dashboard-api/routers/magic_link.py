@@ -1,8 +1,9 @@
 """Magic-link auth - generate QR-friendly URLs for owner and guest access.
 
 Provides the storage, lifecycle, and redemption plumbing for temporary guest
-links and revoke-only owner cards. Redemption sets an audited dashboard-api
-session cookie and redirects to the token's target surface.
+links and revoke-only owner cards. Redemption redirects to the token's target
+surface. Owner cards and Hermes invites also set the signed ``ods-session``
+cookie; chat-only guest invites do not, because Open WebUI has its own sign-in.
 
 Endpoints:
   POST   /api/auth/magic-link/generate   admin → create token, return URL + QR data
@@ -725,22 +726,6 @@ def redeem_magic_link(token: str, request: Request, response: Response) -> Redir
     ip = _client_ip(request)
     _check_rate_limit(ip)
 
-    # Pre-flight: if ODS_SESSION_SECRET isn't configured, refuse the
-    # redemption BEFORE marking the token used. Otherwise a misconfigured
-    # install burns a single-use invite on every attempt — the user can't
-    # retry, can't recover, and the admin has to mint a new link. The
-    # 503 is honest about it being a server misconfig, not a user error.
-    if not session_signer.is_configured():
-        logger.error(
-            "magic-link redemption refused: ODS_SESSION_SECRET is not "
-            "configured. Set it in .env (32+ random bytes) and restart "
-            "dashboard-api."
-        )
-        raise HTTPException(
-            status_code=503,
-            detail="Session signing is not configured on this server. Ask the operator.",
-        )
-
     # Constant-shape failure response. We construct the success path inside
     # the lock and only commit if every check passes.
     token_hash = _hash_token(token)
@@ -764,6 +749,22 @@ def redeem_magic_link(token: str, request: Request, response: Response) -> Redir
             _record_failure(ip)
             raise HTTPException(status_code=404, detail="Invalid or expired magic link")
         redirect_to = _redirect_url(record)
+        issues_session = _issues_session(record)
+
+        # Pre-flight: if a session is due but ODS_SESSION_SECRET isn't
+        # configured, refuse the redemption BEFORE marking the token used.
+        # Otherwise a misconfigured install burns a single-use invite on every
+        # attempt. The 503 is honest about it being a server misconfig.
+        if issues_session and not session_signer.is_configured():
+            logger.error(
+                "magic-link redemption refused: ODS_SESSION_SECRET is not "
+                "configured. Set it in .env (32+ random bytes) and restart "
+                "dashboard-api."
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Session signing is not configured on this server. Ask the operator.",
+            )
 
         # Success — record the redemption and persist.
         user_agent = request.headers.get("user-agent", "")[:200]
@@ -778,16 +779,12 @@ def redeem_magic_link(token: str, request: Request, response: Response) -> Redir
 
         _write_store(store)
 
-    # Build the response. The session cookie is HMAC-signed via
-    # session_signer.issue() — guarded by is_configured() above so we
-    # don't reach this line without a usable secret.
-    session_token = session_signer.issue(ttl_seconds=SESSION_TTL_SECONDS)
     secure_cookie = request_uses_https(request)
     cookie_domain = _cookie_domain(record.get("url_mode", "auto"))
 
     logger.info(
-        "magic-link redeemed target=%s type=%s scope=%s ip=%s redirecting=%s",
-        record["target_username"], record["token_type"], record["scope"], ip, redirect_to,
+        "magic-link redeemed target=%s type=%s scope=%s session=%s ip=%s redirecting=%s",
+        record["target_username"], record["token_type"], record["scope"], issues_session, ip, redirect_to,
     )
 
     redirect = RedirectResponse(url=redirect_to, status_code=302)
@@ -805,11 +802,14 @@ def redeem_magic_link(token: str, request: Request, response: Response) -> Redir
     if cookie_domain:
         cookie_kwargs["domain"] = cookie_domain
 
-    redirect.set_cookie(
-        key=SESSION_COOKIE_NAME,
-        value=session_token,
-        **cookie_kwargs,
-    )
+    if issues_session:
+        # HMAC-signed via session_signer.issue(); the pre-flight above
+        # guarantees a usable secret whenever a session is due.
+        redirect.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=session_signer.issue(ttl_seconds=SESSION_TTL_SECONDS),
+            **cookie_kwargs,
+        )
     # Hint to the chat UI which user this redemption was for; Open WebUI
     # ignores unknown cookies but a future integration can read this.
     target_user_kwargs: dict = dict(
@@ -877,6 +877,17 @@ def revoke_magic_link(token_hash_prefix: str) -> dict:
 
 
 # --- Helpers ---
+
+
+def _issues_session(record: dict) -> bool:
+    """Only owner cards and Hermes invites carry an ``ods-session``.
+
+    That cookie is what ODS Talk and the optional Hermes gate accept, and it
+    has no role or scope inside it. A chat-only guest invite lands in Open
+    WebUI, which has its own sign-in, so it needs no ODS session at all;
+    issuing one let a temporary chat guest drive the shared Hermes agent.
+    """
+    return record.get("token_type") == "owner" or record.get("scope") == "hermes"
 
 
 def _client_ip(request: Request) -> str:

@@ -264,19 +264,32 @@ function Set-ODSWindowsHermesRuntimeModel {
     }
     $hermesBaseUrl = Get-WindowsODSEnvValue `
         -EnvMap $runtimeEnv -Keys @("HERMES_LLM_BASE_URL") `
-        -Default $(if ($cloudMode -or $gpuInfo.Backend -eq "amd" -or $switchboardEnabled) {
+        -Default $(if ($cloudMode) {
+            "http://litellm:4000/v1"
+        } elseif ($switchboardEnabled) {
+            "http://model-router:9099/v1"
+        } elseif ($gpuInfo.Backend -eq "amd") {
             "http://litellm:4000/v1"
         } else {
             "http://llama-server:8080/v1"
         })
+    $hermesApiKey = Get-WindowsODSEnvValue `
+        -EnvMap $runtimeEnv -Keys @("HERMES_LLM_API_KEY") `
+        -Default $(if ($switchboardEnabled -and -not $cloudMode) {
+            "no-key"
+        } elseif ($cloudMode -or $gpuInfo.Backend -eq "amd") {
+            Get-WindowsODSEnvValue -EnvMap $runtimeEnv -Keys @("LITELLM_KEY") -Default ""
+        } else {
+            "sk-ods-hermes-local"
+        })
     $hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
     $hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
     $hermesRequestTimeout = $(if ($cloudMode -and -not $switchboardEnabled) { 180 } else { 900 })
-    $templateUpdated = Update-HermesConfigFile -Path $hermesTemplate -Model $ModelId -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) `
+    $templateUpdated = Update-HermesConfigFile -Path $hermesTemplate -Model $ModelId -BaseUrl $hermesBaseUrl -ApiKey $hermesApiKey -ContextLength ([int]$tierConfig.MaxContext) `
         -RequestTimeoutSeconds $hermesRequestTimeout `
         -LemonadeCompact:($gpuInfo.Backend -eq "amd")
     $liveUpdated = Update-HermesConfigFile `
-        -Path $hermesLive -Model $ModelId -BaseUrl $hermesBaseUrl `
+        -Path $hermesLive -Model $ModelId -BaseUrl $hermesBaseUrl -ApiKey $hermesApiKey `
         -ContextLength ([int]$tierConfig.MaxContext) `
         -RequestTimeoutSeconds $hermesRequestTimeout `
         -LemonadeCompact:($gpuInfo.Backend -eq "amd")
@@ -345,6 +358,20 @@ if ($dryRun) {
             }
 
             if ($needsDownload) {
+                $handoffWait = Get-ODSPositiveIntEnv -Name "ODS_BOOTSTRAP_HANDOFF_WAIT_SECONDS" -Default 7200
+                $handoff = Wait-ODSBootstrapDownloadHandoff `
+                    -InstallDir $installDir `
+                    -ModelFile $tierConfig.GgufFile `
+                    -Destination $modelPath `
+                    -WaitSeconds $handoffWait
+                if ($handoff.TimedOut) {
+                    Write-AIError "Refusing to race the active bootstrap downloader. Re-run the installer after it finishes."
+                    exit 1
+                }
+                $needsDownload = -not (Test-Path -LiteralPath $modelPath -PathType Leaf)
+            }
+
+            if ($needsDownload) {
                 $dlOk = Invoke-DownloadWithRetry -Url $tierConfig.GgufUrl `
                     -Destination $modelPath -Label "Downloading $($tierConfig.GgufFile)" -MaxRetries 4
                 if (-not $dlOk) {
@@ -373,8 +400,12 @@ if ($dryRun) {
             $envPath = Join-Path $installDir ".env"
             if (Test-Path $envPath) {
                 $envContent = Get-Content $envPath -Raw
-                $envContent = $envContent -replace "(?m)^GGUF_FILE=.*$", "GGUF_FILE=$($tierConfig.GgufFile)"
-                $envContent = $envContent -replace "(?m)^LLM_MODEL=.*$", "LLM_MODEL=$($tierConfig.LlmModel)"
+                # Same .NET group-substitution hazard as Update-HermesConfigFile:
+                # '$' in a replacement string is a token, not a literal.
+                $ggufReplacement = "$($tierConfig.GgufFile)".Replace('$', '$$')
+                $llmModelReplacement = "$($tierConfig.LlmModel)".Replace('$', '$$')
+                $envContent = $envContent -replace "(?m)^GGUF_FILE=.*$", "GGUF_FILE=$ggufReplacement"
+                $envContent = $envContent -replace "(?m)^LLM_MODEL=.*$", "LLM_MODEL=$llmModelReplacement"
                 $envContent = $envContent -replace "(?m)^MAX_CONTEXT=.*$", "MAX_CONTEXT=$($tierConfig.MaxContext)"
                 $envContent = $envContent -replace "(?m)^CTX_SIZE=.*$", "CTX_SIZE=$($tierConfig.MaxContext)"
                 [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
@@ -1688,7 +1719,7 @@ litellm_settings:
             $hasHermesImageOverride = -not [string]::IsNullOrWhiteSpace($envHermesImage)
             $envHermesFallbackImage = Get-ODSEnvValueFromFile -Path $_envCheck -Key "HERMES_AGENT_IMAGE_FALLBACK"
             if ([string]::IsNullOrWhiteSpace($envHermesImage)) {
-                $envHermesImage = "nousresearch/hermes-agent:v2026.6.5"
+                $envHermesImage = "nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
             }
 
             Write-AI "Validating Hermes Agent image tag before startup..."
@@ -1735,7 +1766,7 @@ litellm_settings:
         # `up -d`. llama-server runs natively on Windows (Lemonade or Vulkan
         # binary) so it is not built here. ComfyUI is only locally built on
         # NVIDIA; the Windows AMD stack uses a prebuilt image overlay.
-        $_buildServices = @("dashboard", "dashboard-api", "model-router", "remote-provider-egress", "remote-provider-ssh-tunnel")
+        $_buildServices = @("dashboard", "dashboard-api", "model-router", "remote-provider-egress", "remote-provider-ssh-tunnel", "pixel-inference")
         if (Test-ODSWindowsServiceEnabled -ServiceId "ape" -Plan $servicePlan) {
             $_buildServices += "ape"
         }
@@ -1756,6 +1787,30 @@ litellm_settings:
 
         Push-Location $installDir
         try {
+            $_composeServicesDockerArgs = @($script:ODSWindowsDockerClientArgs)
+            $_enabledComposeServices = @(
+                & docker @_composeServicesDockerArgs compose @composeFlags config --services 2>> $_buildLog
+            )
+            if ($LASTEXITCODE -ne 0) {
+                Write-AIError "Could not resolve Windows compose services before local image rebuilds."
+                Write-AI "Inspect compose config with: cd '$installDir'; docker compose $($composeFlags -join ' ') config --services"
+                exit 1
+            }
+            $_enabledComposeServices = @(
+                $_enabledComposeServices |
+                    ForEach-Object { ([string]$_).Trim() } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $_selectedBuildServices = @()
+            foreach ($_svc in $_buildServices) {
+                if ($_enabledComposeServices -contains $_svc) {
+                    $_selectedBuildServices += $_svc
+                } else {
+                    Write-AI "Skipping local image build for disabled service: $_svc"
+                }
+            }
+            $_buildServices = $_selectedBuildServices
+
             Write-AI "Rebuilding local-built images (no-cache)..."
             $_failedBuildServices = @()
             $_legacyBuilderServices = @()
@@ -2153,6 +2208,13 @@ if (-not $cloudMode) {
         } catch {
             $llmReady.Ok = $false
             $llmReady.Detail = "completion succeeded, but the resolved Lemonade model configuration could not be persisted: $_"
+        }
+    }
+    if ($llmReady.Ok) {
+        $routeReady = Test-WindowsSwitchboardReadiness -EnvMap (Get-WindowsODSEnvMap -InstallDir $installDir)
+        if (-not $routeReady.Ok) {
+            $llmReady.Ok = $false
+            $llmReady.Detail = $routeReady.Detail
         }
     }
     if ($llmReady.Ok) {

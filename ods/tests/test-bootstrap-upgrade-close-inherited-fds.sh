@@ -30,7 +30,7 @@ assert_fd_close_spawn() {
         || fail "$label: helper must include a numeric fallback that covers common FD 200 flock wrappers"
 
     awk '
-        /Start the long-lived downloader from a child shell/ { in_block=1; close_seen=0; exec_seen=0 }
+        /(Start the long-lived downloader|Start the portable daemon) from a child shell/ { in_block=1; close_seen=0; exec_seen=0 }
         in_block && /close_inherited_fds_for_daemon/ { close_seen=1 }
         in_block && (/exec[[:space:]]+nohup[[:space:]]+bash/ || /_macos_launch_detached_bootstrap_upgrade/) && close_seen { exec_seen=1 }
         in_block && /^[[:space:]]*\)[[:space:]]*&/ { exit(exec_seen ? 0 : 1) }
@@ -88,6 +88,37 @@ assert_runtime_lock_release() {
 
 assert_fd_close_spawn "$ROOT_DIR/installers/phases/11-services.sh"   "linux/wsl phase 11"
 assert_fd_close_spawn "$ROOT_DIR/installers/macos/install-macos.sh" "macos installer"
+
+linux_phase="$ROOT_DIR/installers/phases/11-services.sh"
+uninstaller="$ROOT_DIR/ods-uninstall.sh"
+grep -q 'systemd-run --user --unit="${_upgrade_unit%.service}" --no-block' "$linux_phase" \
+    || fail "linux phase 11: remote installs must prefer a user service outside the SSH session cgroup"
+grep -q -- '--property=Restart=on-failure' "$linux_phase" \
+    || fail "linux phase 11: model upgrade service must recover from abnormal bridge/session termination"
+grep -q -- '--property=RestartPreventExitStatus=1' "$linux_phase" \
+    || fail "linux phase 11: genuine bounded upgrade failures must remain terminal"
+grep -q -- '--property=RestartSec=2s' "$linux_phase" \
+    || fail "linux phase 11: abnormal model upgrade restart must use a bounded delay"
+if grep -q -- '--collect' "$linux_phase"; then
+    fail "linux phase 11: model upgrade service must retain terminal metadata for diagnosis"
+fi
+grep -q 'StandardOutput=append:$_upgrade_log' "$linux_phase" \
+    || fail "linux phase 11: transient model upgrade must retain its durable log"
+grep -q 'XDG_RUNTIME_DIR=$_upgrade_runtime_dir' "$linux_phase" \
+    || fail "linux phase 11: service launch must reconstruct the owner runtime directory"
+grep -q 'DBUS_SESSION_BUS_ADDRESS=unix:path=$_upgrade_runtime_dir/bus' "$linux_phase" \
+    || fail "linux phase 11: service launch must reconstruct the owner user-bus address"
+grep -q "trap .*exit 75.*HUP TERM INT" "$ROOT_DIR/scripts/bootstrap-upgrade.sh" \
+    || fail "bootstrap upgrade must identify session interruption as supervisor-retryable"
+grep -q 'DBUS_SESSION_BUS_ADDRESS="unix:path=$_ods_uninstall_runtime_dir/bus"' "$uninstaller" \
+    || fail "uninstaller: model-upgrade cleanup must reach the owner user manager without login-session variables"
+grep -q 'systemctl --user stop ods-model-upgrade.service' "$uninstaller" \
+    || fail "uninstaller: transient model upgrade service must stop before install-tree removal"
+systemd_line="$(grep -n 'systemd-run --user --unit=' "$linux_phase" | head -1 | cut -d: -f1)"
+nohup_line="$(grep -n 'exec nohup bash "$SCRIPT_DIR/scripts/bootstrap-upgrade.sh"' "$linux_phase" | tail -1 | cut -d: -f1)"
+[[ "$systemd_line" =~ ^[0-9]+$ && "$nohup_line" =~ ^[0-9]+$ && "$systemd_line" -lt "$nohup_line" ]] \
+    || fail "linux phase 11: systemd user service must be preferred before the portable nohup fallback"
+pass "linux model upgrade survives SSH cgroup teardown and remains uninstallable"
 
 # flock(1) is util-linux and does not exist on macOS. The static spawn-site
 # checks above cover the product contract on every platform; the runtime

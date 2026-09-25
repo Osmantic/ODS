@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/syncthing/syncthing",
+  "license": "MPL-2.0",
+  "image": "syncthing/syncthing:2.1.5@sha256:397aa00b92b48d65540ea3ae3cbf271b87bdccbe07a0b7bd7d2debc3a7b29138",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Required initial GUI password supplied through native stdin hash generation. Nonroot named storage, no initial shared folders or paired peers, first-run discovery/relay/NAT/reporting disabled. Subsequent owner settings preserved. No host folders mounted or files sent."
+}

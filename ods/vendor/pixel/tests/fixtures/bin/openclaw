@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+# shellcheck source=scripts/generated/release.env
+source "$ROOT/scripts/generated/release.env"
+openclaw_version=${PIXEL_FAKE_OPENCLAW_VERSION:-$PIXEL_GENERATED_OPENCLAW_VERSION}
+case "${1:-}" in
+  --version) echo "OpenClaw $openclaw_version" ;;
+  plugins)
+    if [[ ${2:-} == registry && ${3:-} == --refresh && ${4:-} == --json ]]; then
+      [[ -z ${PIXEL_FAKE_PLUGIN_REGISTRY_LOG:-} ]] || printf 'refresh\n' >> "$PIXEL_FAKE_PLUGIN_REGISTRY_LOG"
+      printf '%s\n' '{"status":"refreshed"}'
+    elif [[ ${2:-} == inspect ]]; then
+      if [[ ${4:-} == --json && -n ${PIXEL_FAKE_PLUGIN_BASE:-} ]]; then
+        id=${3:?plugin id required}
+        if [[ "$id" == pixel-source-broker || "$id" == pixel-operations-broker ]]; then
+          relative=plugin; [[ "$id" == pixel-operations-broker ]] && relative=plugin-ops
+          root=${PIXEL_FAKE_CUSTOM_PLUGIN_ROOT:-$(realpath -e "$PIXEL_INSTALL_DIR/current/$relative")}
+          version=${PIXEL_FAKE_CUSTOM_PLUGIN_VERSION:-$PIXEL_RELEASE_VERSION}
+        else
+          relative=$id; [[ "$id" == llama-cpp ]] && relative=llama-cpp
+          root="$PIXEL_FAKE_PLUGIN_BASE/$relative"
+          case "$id" in
+            discord) version=$PIXEL_GENERATED_DISCORD_PLUGIN_VERSION ;;
+            searxng) version=$PIXEL_GENERATED_SEARXNG_PLUGIN_VERSION ;;
+            llama-cpp) version=$PIXEL_GENERATED_LLAMA_PLUGIN_VERSION ;;
+            *) echo "fake openclaw: unknown plugin id: $id" >&2; exit 2 ;;
+          esac
+        fi
+        node - "$id" "$root" "$version" <<'NODE'
+const [id, rootDir, version] = process.argv.slice(2);
+console.log(JSON.stringify({plugin:{id,status:'loaded',version,rootDir},install:{source:'archive',version}}));
+NODE
+      fi
+    else
+      echo "fake openclaw: unsupported plugins arguments: ${*:2}" >&2; exit 2
+    fi
+    ;;
+  agents) echo "pixel Pixel" ;;
+  config)
+    [[ ${2:-} == validate ]]
+    [[ -z ${PIXEL_FAKE_CONFIG_STATE_LOG:-} ]] || printf '%s\n' "$OPENCLAW_STATE_DIR" >> "$PIXEL_FAKE_CONFIG_STATE_LOG"
+    node -e 'JSON.parse(require("fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH,"utf8"))'
+    echo "Configuration valid"
+    ;;
+  *) echo "fake openclaw: unsupported arguments: $*" >&2; exit 2 ;;
+esac

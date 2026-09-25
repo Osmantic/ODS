@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/keycloak/keycloak",
+  "license": "Apache-2.0",
+  "source_ref": "26.7.4",
+  "image": "quay.io/keycloak/keycloak:latest@sha256:82a77884f3af238beab1e7afd63b5f530e1b5c0590bd7aa60b40a40463e29b2c",
+  "registry_checked_at": "2026-09-20",
+  "platforms": ["linux/amd64", "linux/arm64"],
+  "runtime_validation": "pending",
+  "notes": "Official optimized PostgreSQL image with native readiness/database checks, temporary bootstrap administrator and local canonical issuer. No application clients, users or federation provisioned."
+}

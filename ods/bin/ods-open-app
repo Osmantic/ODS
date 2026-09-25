@@ -1,0 +1,44 @@
+#!/usr/bin/python3
+"""Request an approved app launch from the authenticated owner GUI agent."""
+import argparse
+import json
+from pathlib import Path
+import shlex
+import urllib.error
+import urllib.request
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('bundle_id')
+    args = parser.parse_args()
+    install = Path(__file__).resolve().parents[1]
+    values = {}
+    for line in (install / '.env').read_text().splitlines():
+        if line.startswith(('ODS_AGENT_KEY=', 'DASHBOARD_API_KEY=')):
+            name, _, value = line.partition('=')
+            parsed = shlex.split(value)
+            values[name] = parsed[0] if parsed else ''
+    key = values.get('ODS_AGENT_KEY') or values.get('DASHBOARD_API_KEY')
+    if not key:
+        raise RuntimeError('owner-credential-unavailable')
+    request = urllib.request.Request('http://127.0.0.1:7711/v1/pixel/apps/open',
+        data=json.dumps({'bundleId': args.bundle_id}).encode(),
+        headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+    client = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        response = client.open(request, timeout=45)
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        value = json.load(response)
+        print(json.dumps(value))
+        return 0 if response.status == 200 and value.get('status') == 'launch-requested' else 1
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, RuntimeError):
+        print(json.dumps({'error': 'app-launch-request-unavailable'}))
+        raise SystemExit(1)

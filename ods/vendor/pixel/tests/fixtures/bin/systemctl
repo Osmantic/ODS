@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ ${1:-} == --user ]] && shift
+cmd="${1:-}"
+shift || true
+
+if [[ -n "${PIXEL_FAKE_SYSTEMCTL_LOG:-}" ]]; then
+  printf '%s%s\n' "$cmd" "${*:+ $*}" >> "$PIXEL_FAKE_SYSTEMCTL_LOG"
+fi
+
+fail_cmd() {
+  local name="$1"
+  [[ "${!name:-0}" == "1" ]]
+}
+
+case "$cmd" in
+  daemon-reload) fail_cmd PIXEL_FAKE_SYSTEMCTL_FAIL_RELOAD && { echo "fake systemctl: reload failed" >&2; exit 5; } ; exit 0 ;;
+  enable) fail_cmd PIXEL_FAKE_SYSTEMCTL_FAIL_ENABLE && { echo "fake systemctl: enable failed" >&2; exit 5; } ; exit 0 ;;
+  disable) fail_cmd PIXEL_FAKE_SYSTEMCTL_FAIL_DISABLE && { echo "fake systemctl: disable failed" >&2; exit 5; } ; exit 0 ;;
+  start) fail_cmd PIXEL_FAKE_SYSTEMCTL_FAIL_START && { echo "fake systemctl: start failed" >&2; exit 5; } ; exit 0 ;;
+  restart) fail_cmd PIXEL_FAKE_SYSTEMCTL_FAIL_RESTART && { echo "fake systemctl: restart failed" >&2; exit 5; } ; exit 0 ;;
+  stop) fail_cmd PIXEL_FAKE_SYSTEMCTL_FAIL_STOP && { echo "fake systemctl: stop failed" >&2; exit 5; } ; exit 0 ;;
+  is-active)
+    if [[ "${PIXEL_FAKE_SYSTEMCTL_FAIL_IS_ACTIVE:-0}" == "1" ]]; then exit 5; fi
+    state="${PIXEL_FAKE_IS_ACTIVE:-active}"
+    echo "$state"
+    [[ "$state" == "active" ]]
+    ;;
+  is-enabled)
+    if [[ "${PIXEL_FAKE_SYSTEMCTL_FAIL_IS_ENABLED:-0}" == "1" ]]; then exit 5; fi
+    state="${PIXEL_FAKE_IS_ENABLED:-enabled}"
+    echo "$state"
+    [[ "$state" == "enabled" ]]
+    ;;
+  show)
+    prop=""
+    for a in "$@"; do
+      case "$a" in
+        --property=*) prop="${a#--property=}" ;;
+      esac
+    done
+    active="${PIXEL_FAKE_SHOW_ACTIVE_STATE:-inactive}"
+    sub="${PIXEL_FAKE_SHOW_SUB_STATE:-dead}"
+    pid="${PIXEL_FAKE_SHOW_MAIN_PID:-0}"
+    inv="${PIXEL_FAKE_SHOW_INVOCATION_ID:-00000000000000000000000000000000}"
+    cg="${PIXEL_FAKE_SHOW_CONTROL_GROUP:-/user.slice/user-1000.slice/user@1000.service/app.slice}"
+    fp="${PIXEL_FAKE_SHOW_FRAGMENT_PATH:-}"
+    if [[ -z "$fp" ]]; then
+      # Derive a plausible fragment path only when none is set; tests may pin it.
+      fp="/tmp/fake-systemd-user/$(basename "${2:-pixel-maintenance-recovery.service}" 2>/dev/null || echo pixel-maintenance-recovery.service)"
+    fi
+    if [[ -n "$prop" ]]; then
+      IFS=',' read -ra keys <<< "$prop"
+      for k in "${keys[@]}"; do
+        case "$k" in
+          ActiveState) echo "ActiveState=$active" ;;
+          SubState) echo "SubState=$sub" ;;
+          MainPID) echo "MainPID=$pid" ;;
+          InvocationID) echo "InvocationID=$inv" ;;
+          ControlGroup) echo "ControlGroup=$cg" ;;
+          FragmentPath) echo "FragmentPath=$fp" ;;
+          *) echo "fake systemctl: unknown show property $k" >&2; exit 2 ;;
+        esac
+      done
+    else
+      echo "ActiveState=$active"
+      echo "SubState=$sub"
+      echo "MainPID=$pid"
+      echo "InvocationID=$inv"
+      echo "ControlGroup=$cg"
+      echo "FragmentPath=$fp"
+    fi
+    exit 0 ;;
+  *) echo "fake systemctl: unsupported arguments: $cmd $*" >&2; exit 2 ;;
+esac

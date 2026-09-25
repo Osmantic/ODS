@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/sigoden/dufs",
+  "license": "MIT OR Apache-2.0",
+  "image": "sigoden/dufs:v0.46.0@sha256:8dd3b750015734703e64b55641fb7d2254c112e0ff3967074766177dc15dc982",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official multiarch scratch binary plus static credential/health launcher, single authenticated rw account in dedicated owned storage. Explicit upload/delete/search/archive permissions; no outside-root symlinks or host directory mounts."
+}

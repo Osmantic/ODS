@@ -1,0 +1,15 @@
+{
+  "repository": "https://orthanc.uclouvain.be/hg/orthanc/",
+  "license": "GPL-3.0-or-later; enabled viewer/plugins AGPL-3.0-or-later",
+  "source_ref": "official-image-pinned-by-digest",
+  "image": "orthancteam/orthanc:latest@sha256:1ca07ad4a70f67f815e55a558e76718d572ed9d0571268a3fbc1516a9155c5ca",
+  "image_recipe_repository": "https://github.com/orthanc-server/orthanc-builder",
+  "image_recipe_review_ref": "73bdedd0362aa41a6e3652e857c9bfb30795b456",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Authenticated local DICOM archive. Native UID999 startup and database health, persistent SQLite/index/object storage. No DICOM listener, modality, patient data, external PACS or model access configured."
+}

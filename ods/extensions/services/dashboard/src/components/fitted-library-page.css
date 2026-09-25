@@ -1,0 +1,4 @@
+.fitted-library-page { display:flex; flex-direction:column; min-width:0; }
+.extensions-page-footer { margin-top:auto; padding-top:12px; display:flex; flex-direction:column; align-items:center; gap:4px; }
+.extensions-page-footer > span { font-size:10px; color:#78828b; font-variant-numeric:tabular-nums; }
+.extensions-page-footer .dashboard-pagination { padding:0; margin:0; }

@@ -284,7 +284,12 @@ download_tier() {
     warn "Estimated download time: ${est_minutes}-$((est_minutes * 2)) minutes (depends on connection)"
     echo ""
     
-    read -p "Continue? [Y/n] " -n 1 -r
+    # `--tier X` is a documented non-interactive invocation but still reaches
+    # this confirmation. Under `set -euo pipefail` a closed stdin (CI, a pipe,
+    # nohup) makes read return non-zero and abort the whole script before the
+    # download; tolerate EOF and proceed, since the tier was chosen explicitly
+    # and the prompt defaults to yes ([Y/n]).
+    read -p "Continue? [Y/n] " -n 1 -r || REPLY=""
     echo
     if [[ $REPLY =~ ^[Nn]$ ]]; then
         echo "Cancelled."

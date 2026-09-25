@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/yuzutech/kroki",
+  "license": "MIT",
+  "image": "yuzutech/kroki:0.32.1@sha256:6980bfb218b48b74ea14b888d9c7e8c032d1cb6325f3292277abdf62483abd9d",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/arm64",
+    "linux/amd64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official bundled server under upstream kroki user. API-only, secure mode, PlantUML external includes disabled, bounded Java heap and command timeout. Diagram engines retain their own licenses. No Mermaid/Excalidraw/diagrams.net companion services configured."
+}

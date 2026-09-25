@@ -1,0 +1,57 @@
+services:
+  kanboard:
+    image: ods/kanboard:1.2.54-local-v1
+    container_name: ods-kanboard
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${KANBOARD_PORT:-11063}:80
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --max-time
+      - '5'
+      - http://127.0.0.1/healthcheck.php
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    environment:
+      KANBOARD_INITIAL_PASSWORD: ${KANBOARD_INITIAL_PASSWORD:?Set the initial administrator
+        password}
+    volumes:
+    - kanboard-data:/var/www/app/data
+    - kanboard-plugins:/var/www/app/plugins
+    - kanboard-tls:/etc/nginx/ssl
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint:
+    - /bin/sh
+    - /ods-start.sh
+    command: []
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  kanboard-data: {}
+  kanboard-plugins: {}
+  kanboard-tls: {}

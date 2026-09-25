@@ -1,30 +1,10 @@
-# Hermes Auth Proxy — Caddy config
+# Hermes Proxy — Caddy config
 #
-# Sits in front of the ods-hermes container. Gates LAN access by
-# verifying the `ods-session` cookie against dashboard-api's
-# /api/auth/verify-session endpoint — which validates the cookie's
-# HMAC signature against ODS_SESSION_SECRET (see session_signer.py).
+# Default installs open Hermes without an owner card. Set
+# HERMES_REQUIRE_OWNER_CARD=true to require a signed ods-session cookie.
+# Hermes remains internal-only; its own API/session-token checks still run.
+# ODS Talk and dashboard authentication are independent of this setting.
 #
-# An earlier draft of this file only checked that the cookie HEADER
-# was present (`header_regexp Cookie ods-session=[^;]+`). That's
-# trivially bypassed — any LAN user can set `Cookie: ods-session=foo`
-# in curl or devtools and slip past the gate. We now do real signature
-# verification by delegating to dashboard-api via forward_auth.
-#
-# Flow:
-#   1. Request arrives on :9120
-#   2. /health, /healthz, and /favicon.ico — always answered (so health
-#      checks work; /healthz is the k8s-convention path that ods-fleet-test
-#      and other standard health checkers probe)
-#   3. /auth/* — static owner-card help assets (always served)
-#   4. Everything else: forward_auth to dashboard-api/api/auth/verify-session
-#      - 2xx → reverse-proxy to ods-hermes:9119
-#               (Hermes's own X-Hermes-Session-Token check still runs)
-#      - 401 → 303 redirect to /auth/required (the owner-card help page)
-#
-# This is auth GATING, not user identification. Once past the gate,
-# all users share the same Hermes instance (same memories, skills,
-# persona). See docs/HERMES-SSO.md for the explicit limitation.
 {
 	# Disable Caddy's auto-HTTPS — ODS's TLS is handled at the
 	# Tailscale layer (PR-12) or by an explicit operator-side reverse
@@ -50,8 +30,15 @@
 	}
 	# Caddy's global directive order would otherwise run forward_auth before
 	# these local handle blocks. Keep the literal order so health, favicon,
-	# and invite-help assets remain public, while every other path is gated.
+	# and invite-help assets remain public, before the optional session gate.
 	route {
+		# Explicit ODS sign-in on this Hermes origin. The API verifies the
+		# signed ODS session before issuing any host-only Hermes cookies.
+		@ods_login path /auth/ods
+		handle @ods_login {
+			rewrite * /api/auth/hermes-session
+			reverse_proxy {$ODS_AUTH_UPSTREAM:ods-dashboard-api:3002}
+		}
 		# Cheap health endpoints for Docker / dashboard / k8s probes. NEVER
 		# gate on the cookie — health checks are anonymous by design. Match
 		# both /health (Docker / our dashboard) and /healthz (k8s convention,
@@ -98,33 +85,36 @@
 		# ODS_AUTH_UPSTREAM defaults to the in-network dashboard-api
 		# hostname (which only the compose bridge can resolve); operators
 		# can override via env if dashboard-api lives elsewhere.
-		forward_auth {$ODS_AUTH_UPSTREAM:ods-dashboard-api:3002} {
-			uri /api/auth/verify-session
-			copy_headers Cookie
-			# Strip WebSocket upgrade headers from the auth sub-request.
-			# Hermes's in-browser chat opens WebSockets to /api/ws +
-			# /api/pty + /api/events. Without these strips, Caddy
-			# propagates the Upgrade/Connection/Sec-WebSocket-* headers
-			# to the verify-session sub-request, dashboard-api's FastAPI
-			# treats it as a malformed WS handshake (no WS handler at
-			# that path), returns 403, and forward_auth bounces the user
-			# to /auth/required even though their cookie is valid. The
-			# auth sub-request is plain HTTP regardless of what protocol
-			# the original request is; force that here.
-			header_up -Connection
-			header_up -Upgrade
-			header_up -Sec-Websocket-Key
-			header_up -Sec-Websocket-Version
-			header_up -Sec-Websocket-Protocol
-			header_up -Sec-Websocket-Extensions
+		@owner_card_required expression {$HERMES_REQUIRE_OWNER_CARD:false}
+		route @owner_card_required {
+			forward_auth {$ODS_AUTH_UPSTREAM:ods-dashboard-api:3002} {
+				uri /api/auth/verify-session
+				copy_headers Cookie
+				# Strip WebSocket upgrade headers from the auth sub-request.
+				# Hermes's in-browser chat opens WebSockets to /api/ws +
+				# /api/pty + /api/events. Without these strips, Caddy
+				# propagates the Upgrade/Connection/Sec-WebSocket-* headers
+				# to the verify-session sub-request, dashboard-api's FastAPI
+				# treats it as a malformed WS handshake (no WS handler at
+				# that path), returns 403, and forward_auth bounces the user
+				# to /auth/required even though their cookie is valid. The
+				# auth sub-request is plain HTTP regardless of what protocol
+				# the original request is; force that here.
+				header_up -Connection
+				header_up -Upgrade
+				header_up -Sec-Websocket-Key
+				header_up -Sec-Websocket-Version
+				header_up -Sec-Websocket-Protocol
+				header_up -Sec-Websocket-Extensions
 
-			@denied status 401 403
-			handle_response @denied {
-				# The leading `*` is intentional. Without an explicit matcher,
-				# Caddy parses `/auth/required` as a path matcher and `303` as
-				# the redirect target, so unauthenticated `/` requests fall
-				# through to Hermes instead of being bounced to the invite page.
-				redir * /auth/required 303
+				@denied status 401 403
+				handle_response @denied {
+					# The leading `*` is intentional. Without an explicit matcher,
+					# Caddy parses `/auth/required` as a path matcher and `303` as
+					# the redirect target, so unauthenticated `/` requests fall
+					# through to Hermes instead of being bounced to the invite page.
+					redir * /auth/required 303
+				}
 			}
 		}
 

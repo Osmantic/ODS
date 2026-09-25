@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-provider-neutral-corpus-v1.schema.json",
+  "title": "Pixel versioned neutral provider qualification corpus",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "corpusVersion",
+    "lane",
+    "model",
+    "cases",
+    "corpusSha256",
+    "boundary"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://osmantic.com/pixel/schemas/work-provider-neutral-corpus-v1.schema.json"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "corpusVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "lane": {
+      "enum": [
+        "local-only",
+        "moonshot-kimi",
+        "openai",
+        "anthropic",
+        "openrouter"
+      ]
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "corpusSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "caseId",
+          "task",
+          "requestCount",
+          "caseSha256",
+          "expected",
+          "base"
+        ],
+        "properties": {
+          "caseId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "task": {
+            "enum": [
+              "structural-review",
+              "patch-proposal",
+              "tool-choice-continuation",
+              "long-context-sentinel",
+              "failure-triage",
+              "output-capacity"
+            ]
+          },
+          "requestCount": {
+            "enum": [
+              1,
+              2
+            ]
+          },
+          "caseSha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "expected": {},
+          "base": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input": {
+            "type": "object"
+          },
+          "inputSha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "firstRequest": {
+            "type": "object"
+          },
+          "firstRequestSha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "toolName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "toolArguments": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "syntheticToolResult": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "followUpUser": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "requestCount": {
+                  "const": 1
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "input",
+                "inputSha256"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "requestCount": {
+                  "const": 2
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "firstRequest",
+                "firstRequestSha256",
+                "toolName",
+                "toolArguments",
+                "syntheticToolResult",
+                "followUpUser"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "boundary": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  }
+}

@@ -1,0 +1,103 @@
+name: Portal runtime contracts
+
+on:
+  pull_request:
+    paths:
+      - 'ods/bin/**'
+      - 'ods/extensions/services/pixel-agent/**'
+      - 'ods/extensions/services/pixel-edge/**'
+      - 'ods/extensions/services/dashboard/src/pages/Pixel.jsx'
+      - 'ods/installers/**'
+      - '.github/workflows/portal-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview-browser:
+    # Keep Chromium's OS sandbox enabled. Ubuntu 24.04's AppArmor policy
+    # rejects this standalone browser's user namespaces before tests start.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '22'
+      - name: Install pinned browser test runtime
+        run: npm install --prefix "$RUNNER_TEMP/preview-browser" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org playwright@1.62.1
+      - name: Install Chromium and operating-system dependencies
+        run: node "$RUNNER_TEMP/preview-browser/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Verify preview interactions and isolation in Chromium
+        env:
+          NODE_PATH: ${{ runner.temp }}/preview-browser/node_modules
+        run: node --test --test-timeout=120000 ods/extensions/services/pixel-agent/tests/preview_browser.test.cjs
+  compaction-lock:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '24'
+      - run: node --test ods/extensions/services/pixel-agent/tests/compaction_lock.test.mjs
+      - run: node --test ods/extensions/services/pixel-agent/tests/read_range.test.mjs
+      - run: node --test ods/extensions/services/pixel-agent/tests/persisted_tool_model_projection.test.mjs ods/extensions/services/pixel-agent/tests/exec_completion_feedback.test.mjs
+      - name: Verify bounded preview delivery across platforms
+        run: |
+          node --test ods/extensions/services/pixel-agent/tests/preview_delivery_recovery.test.mjs
+          node --test --test-name-pattern="saved project|automatic preview|publication .*not retried|concurrent finalizers" ods/extensions/services/pixel-agent/tests/tool_loop_guard.test.mjs
+      - name: Install pinned read-tool runtime for integration
+        shell: bash
+        run: npm install --prefix "$RUNNER_TEMP/read-runtime" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org openclaw@2026.6.33
+      - name: Verify real file reads and range failures
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_read_range.integration.mjs
+      - name: Verify native compaction lock and abort ownership
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_compaction_abort.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_lock.integration.mjs
+      - name: Verify capability bootstrap with the actual pinned runtime
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node ods/extensions/services/pixel-agent/tests/runtime_bootstrap_capabilities.integration.mjs
+      - name: Verify premature completion with real Pixel runtime
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_preview_delivery.integration.mjs
+      - name: Verify tool feedback reaches the next real provider request
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs
+  runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install pytest aiohttp httpx pyyaml
+      - name: Agent JavaScript contracts
+        run: node --test --test-timeout=120000 ods/extensions/services/pixel-agent/tests/*.test.mjs
+      - name: Agent host contracts
+        run: python -m pytest -q ods/extensions/services/pixel-agent/tests
+      - name: Edge contracts
+        run: python -m pytest -q ods/extensions/services/pixel-edge/tests

@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/shlinkio/shlink",
+  "license": "MIT",
+  "source_ref": "v5.1.6",
+  "image": "shlinkio/shlink:stable@sha256:666cc24edf7290cca17019d2ef654c301695a646e2db82d4d116c3cd954d8232",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Pinned stable tag reports 5.1.6. Native startup/migrations preserved, private PostgreSQL, required API credential, explicit bounded workers. No GeoLite download/title crawling/external analytics setup. API-only, local redirects; no bundled web client."
+}

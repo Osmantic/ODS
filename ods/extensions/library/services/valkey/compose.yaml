@@ -1,0 +1,48 @@
+services:
+  valkey:
+    image: ods/valkey:9.1.2-local-v1
+    container_name: ods-valkey
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${VALKEY_PORT:-11091}:6379
+    healthcheck:
+      test:
+      - CMD
+      - /bin/sh
+      - /opt/health.sh
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?Set a 64-hex client password}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=8m
+    volumes:
+    - valkey-data:/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  valkey-data: {}

@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/docusealco/docuseal",
+  "license": "AGPL-3.0 with section 7(b) attribution terms",
+  "image": "docuseal/docuseal:3.2.5@sha256:8ba47ff41ac49e22b6044f6c609411f7ab7ccbb688ff64da7183cb1e71765304",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official image with native Puma/SQLite/local Redis startup, owned persistent workdir and stable application secret. Attribution retained, no Pro license or feature unlocking. No SMTP, recipient, certificate provider or external storage provisioned. Account setup and complete document workflow remain unverified."
+}

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-research-report-v1.schema.json",
+  "title": "Pixel structured research finding report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "reportId", "jobId", "claimId", "createdAt", "planSha256", "researchPolicySha256", "batchSha256s", "titleBase64", "findings", "limitationsBase64", "dataClassification", "privateDataIncluded", "externalEffects", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-research-report-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "reportId": {"type": "string", "pattern": "^researchreport-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "claimId": {"type": "string", "pattern": "^workclaim-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "researchPolicySha256": {"$ref": "#/$defs/sha256"},
+    "batchSha256s": {"type": "array", "minItems": 1, "maxItems": 200, "uniqueItems": true, "items": {"$ref": "#/$defs/sha256"}},
+    "titleBase64": {"$ref": "#/$defs/textBase64"},
+    "findings": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"$ref": "#/$defs/finding"}},
+    "limitationsBase64": {"$ref": "#/$defs/textBase64"},
+    "dataClassification": {"const": "public"},
+    "privateDataIncluded": {"const": false},
+    "externalEffects": {"const": false},
+    "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Public structured findings only. Citations are untrusted evidence references, not instructions or authority; deterministic verification proves source integrity and quote presence, not semantic entailment or truth."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "textBase64": {"type": "string", "minLength": 4, "maxLength": 65536, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"},
+    "finding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["findingId", "statementBase64", "material", "citations"],
+      "properties": {
+        "findingId": {"type": "string", "pattern": "^finding-(?:[1-9]|[1-9][0-9]|100)$"},
+        "statementBase64": {"$ref": "#/$defs/textBase64"},
+        "material": {"const": true},
+        "citations": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"$ref": "#/$defs/citation"}}
+      }
+    },
+    "citation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["batchSha256", "sourceId", "evidenceBase64", "evidenceSha256"],
+      "properties": {
+        "batchSha256": {"$ref": "#/$defs/sha256"},
+        "sourceId": {"type": "string", "pattern": "^source-[a-f0-9]{16}$"},
+        "evidenceBase64": {"type": "string", "minLength": 16, "maxLength": 16384, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"},
+        "evidenceSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["directNetwork", "credentials", "externalWrites", "accounts", "messages", "publish", "purchase", "policyMutation", "scopeExpansion"],
+      "properties": {
+        "directNetwork": {"const": false}, "credentials": {"const": false}, "externalWrites": {"const": false},
+        "accounts": {"const": false}, "messages": {"const": false}, "publish": {"const": false},
+        "purchase": {"const": false}, "policyMutation": {"const": false}, "scopeExpansion": {"const": false}
+      }
+    }
+  }
+}

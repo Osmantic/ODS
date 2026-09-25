@@ -1,0 +1,5 @@
+{
+  "name": "chief-of-staff",
+  "description": "Email, Calendar, and public web research with external approval for Calendar changes.",
+  "limbs": { "email": true, "calendar": true, "social": false, "web": true, "operations": false, "frontier": false }
+}

@@ -23,11 +23,19 @@ $phaseText = Get-Content -LiteralPath $phasePath -Raw
 if ($phaseText -notmatch [regex]::Escape('$env:WEBUI_PORT = "9090"')) {
     throw "Phase 04 does not show valid PowerShell syntax for WEBUI_PORT overrides"
 }
+if ($phaseText -match 'Stop-WindowsODSLemonadePortConflicts|Stop-Process\s+-Id') {
+    throw "Windows preflight must not stop an unrelated native Lemonade process"
+}
+if ($phaseText -notmatch [regex]::Escape('if ($NonInteractive -and -not $Force -and -not $DryRun)')) {
+    throw "Non-interactive Windows preflight must reject occupied selected ports"
+}
 
 foreach ($name in @(
     "Resolve-WindowsLlmPreflightPort",
     "Test-WindowsPortInUse",
-    "Test-WindowsODSLemonadeOwnsPort"
+    "Test-WindowsODSLemonadeOwnsPort",
+    "Get-WindowsODSSelectedPortConflicts",
+    "Assert-WindowsODSSelectedPortAvailability"
 )) {
     $functionAst = $ast.Find({
         param($node)
@@ -292,6 +300,59 @@ try {
     if ($null -eq $savedLlamaPort) { Remove-Item Env:LLAMA_SERVER_PORT -ErrorAction SilentlyContinue } else { $env:LLAMA_SERVER_PORT = $savedLlamaPort }
     if ($null -eq $savedWebuiPort) { Remove-Item Env:WEBUI_PORT -ErrorAction SilentlyContinue } else { $env:WEBUI_PORT = $savedWebuiPort }
 }
+
+# A separate Lemonade runtime may be active without occupying any selected ODS
+# port. Preflight must leave it alone, including for dry-run/non-interactive use.
+$script:mockListeners = @{
+    9000 = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
+    13305 = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
+}
+function Test-WindowsPortInUse {
+    param([int]$Port)
+    if ($script:mockListeners.ContainsKey($Port)) { return $script:mockListeners[$Port] }
+    return @{ InUse = $false; ProcessId = 0; ProcessName = "" }
+}
+function Stop-Process { throw "Preflight must never stop a process" }
+function Write-AI { param([string]$Message) }
+function Write-AIError { param([string]$Message) }
+function Write-AISuccess { param([string]$Message) }
+
+$selectedPorts = [ordered]@{
+    "Open WebUI (chat)" = 3000
+    "Dashboard" = 3001
+    "llama-server (LLM)" = 11434
+}
+$conflicts = @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $selectedPorts)
+Assert-Equal $conflicts.Count 0 "Unrelated Lemonade ports are not selected-port conflicts"
+Assert-Equal (Assert-WindowsODSSelectedPortAvailability -Conflicts $conflicts -NonInteractive -DryRun) `
+    $true "Dry-run leaves unrelated Lemonade running"
+
+$script:mockListeners[3000] = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
+$conflicts = @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $selectedPorts)
+Assert-Equal $conflicts.Count 1 "Actual selected-port collision is detected"
+if ($conflicts[0] -notmatch 'Port 3000 .*LemonadeServer.*PID 4242') {
+    throw "Selected-port conflict did not identify the owner and port"
+}
+$aborted = $false
+try {
+    $null = Assert-WindowsODSSelectedPortAvailability -Conflicts $conflicts -NonInteractive
+} catch {
+    $aborted = ($_.Exception.Message -eq "ODS_INSTALL_ABORTED")
+}
+Assert-Equal $aborted $true "Non-interactive install fails closed on actual selected-port collision"
+Assert-Equal (Assert-WindowsODSSelectedPortAvailability -Conflicts $conflicts -NonInteractive -DryRun) `
+    $false "Dry-run reports actual selected-port collision without stopping the owner"
+
+function Get-WindowsODSLemonadeProcesses {
+    return @([pscustomobject]@{ ProcessId = 4242; Name = "LemonadeServer.exe" })
+}
+$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
+$amdPort = [ordered]@{ "Lemonade (LLM)" = 8080 }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -UsesNativeLemonade).Count `
+    0 "Native AMD installation reuses its own Lemonade listener"
+$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4343; ProcessName = "OtherServer" }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -UsesNativeLemonade).Count `
+    1 "Native AMD installation rejects a foreign listener"
 
 Write-Host "[PASS] Windows service port preflight and env generation"
 $global:LASTEXITCODE = 0

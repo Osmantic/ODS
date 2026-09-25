@@ -11,22 +11,25 @@ It never returns catalog tok/s estimates as observed performance.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from env_values import strip_matching_quotes
+from env_values import parse_env_value, strip_matching_quotes
 from gguf_inspector import inspect_gguf
-from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
+from model_mtp import mtp_metadata
+from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT, PIXEL_MIN_CONTEXT
 from helpers import (
     get_model_performance_samples,
     get_recorded_model_performance,
     is_plausible_single_request_tps,
 )
-from model_memory import required_model_memory_gb
+from model_memory import context_fitting_model, memory_metadata, required_model_memory_gb
 from models import GPUInfo
 
 
@@ -143,7 +146,7 @@ def read_env_file_value(key: str, install_dir: str | Path) -> str:
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
-                return strip_matching_quotes(line.split("=", 1)[1])
+                return parse_env_value(line.split("=", 1)[1])
     except OSError:
         pass
     return ""
@@ -172,6 +175,11 @@ def read_context_length(install_dir: str | Path, default: int = 32768) -> int:
 
 def model_files_dir(data_dir: str | Path) -> Path:
     return Path(data_dir) / "models"
+
+
+def installed_model_path(data_dir: str | Path, filename: str) -> Path | None:
+    from model_stores import resolve_model_file
+    return resolve_model_file(Path(data_dir), filename, container=Path("/.dockerenv").exists())
 
 
 def _model_aliases(model: dict[str, Any]) -> set[str]:
@@ -236,6 +244,7 @@ def normalize_catalog_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
         aliases.add(str(raw["llm_model_name"]))
 
     model = {
+        **memory_metadata(raw),
         "id": str(model_id),
         "name": raw.get("name") or str(model_id),
         "family": raw.get("family"),
@@ -258,6 +267,7 @@ def normalize_catalog_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
         "active_params_b": raw.get("active_params_b"),
         "tokens_per_sec_estimate": raw.get("tokens_per_sec_estimate"),
         "runtime_profiles": raw.get("runtime_profiles") if isinstance(raw.get("runtime_profiles"), list) else [],
+        "mtp": raw.get("mtp") if isinstance(raw.get("mtp"), dict) else {},
         "app_compatibility": raw.get("app_compatibility") if isinstance(raw.get("app_compatibility"), dict) else {},
         "catalog_source": raw.get("source") or "ods",
         "source_repo": raw.get("source_repo"),
@@ -361,11 +371,41 @@ def _compatibility_scope_matches(raw: Any, runtime_context: Optional[dict[str, A
     return True
 
 
+def _fresh_compatibility_override(raw: dict[str, Any]) -> bool:
+    """Do not promote an undated, malformed, or expired host-specific claim."""
+    expires_at = raw.get("expiresAt")
+    if not isinstance(expires_at, str):
+        return False
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return expiry.tzinfo is not None and expiry > datetime.now(timezone.utc)
+
+
 def _app_compatibility_entry(
     raw: Any,
     default_label: str,
     runtime_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        # A fresh positive result on one host must not erase an older negative
+        # result on other hosts. Only an explicitly host-scoped override can
+        # replace the default record for a matching runtime context.
+        overrides = raw.get("scopedOverrides")
+        if isinstance(overrides, list):
+            for override in overrides:
+                if (
+                    isinstance(override, dict)
+                    and _scope_values(
+                        override, "hostScope", "host_scope", "fleetHostScope", "fleet_host_scope"
+                    )
+                    and str(override.get("status") or "").strip()
+                    and _fresh_compatibility_override(override)
+                    and _compatibility_scope_matches(override, runtime_context)
+                ):
+                    raw = override
+                    break
     if isinstance(raw, dict) and not _compatibility_scope_matches(raw, runtime_context):
         return {
             "status": "unknown",
@@ -404,20 +444,21 @@ def _app_compatibility_payload_key(key: Any) -> str:
     if not raw:
         return ""
     aliases = {
-        "agent_viability": "agentViability",
-        "hermes_talk": "hermesTalk",
-        "openai_chat": "openaiChat",
+        "agent-viability": "agentViability",
+        "hermes-talk": "hermesTalk",
+        "openai-chat": "openaiChat",
+        "pixel-agent": "pixelAgent",
     }
     if raw in aliases:
         return aliases[raw]
-    parts = [part for part in raw.split("_") if part]
+    parts = [part for part in raw.split("-") if part]
     if not parts:
         return ""
     return parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
 
 
 def _app_compatibility_default_label(key: Any) -> str:
-    parts = [part for part in normalize_key(str(key or "")).split("_") if part]
+    parts = [part for part in normalize_key(str(key or "")).split("-") if part]
     if not parts:
         return "App compatibility untested"
     acronyms = {"api": "API", "llm": "LLM", "ui": "UI"}
@@ -458,6 +499,7 @@ def model_app_compatibility(
         "openaiChat": _app_compatibility_entry(raw.get("openai_chat"), "Direct chat untested", runtime_context),
         "hermesTalk": hermes_talk,
         "agentViability": _agent_viability_entry(raw.get("agent_viability"), hermes_talk, runtime_context),
+        "pixelAgent": _app_compatibility_entry(raw.get("pixel_agent"), "Portal agent untested", runtime_context),
     }
     for raw_key, raw_value in raw.items():
         payload_key = _app_compatibility_payload_key(raw_key)
@@ -478,6 +520,11 @@ def model_app_compatibility(
         compatibility["agentViability"] = {
             "status": "not_agent_viable",
             "label": "Too slow for agents",
+            "reason": exact_speed_block["reason"],
+        }
+        compatibility["pixelAgent"] = {
+            "status": "not_agent_viable",
+            "label": "Too slow for Portal",
             "reason": exact_speed_block["reason"],
         }
     return compatibility
@@ -667,10 +714,11 @@ def _selector_required_memory_gb(model: dict[str, Any]) -> float:
     return required_model_memory_gb(model)
 
 
-def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo],
-                              system_ram_gb: int | None = None) -> dict[str, Any] | None:
+def _hardware_matching_runtime_profiles(model: dict[str, Any], gpu_info: Optional[GPUInfo],
+                                       system_ram_gb: int | None = None) -> list[dict[str, Any]]:
+    """Return profiles anchored to the detected GPU before system-RAM filtering."""
     if not gpu_info:
-        return None
+        return []
     backend = normalize_key(gpu_info.gpu_backend)
     memory_type = (
         "unified"
@@ -682,6 +730,7 @@ def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo]
     host_arch = _normalize_host_arch(platform.machine())
     vram_gb = float(gpu_info.memory_total_mb or 0) / 1024.0
     ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
+    matches: list[dict[str, Any]] = []
     for profile in model.get("runtime_profiles", []) or []:
         if not isinstance(profile, dict):
             continue
@@ -694,11 +743,28 @@ def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo]
         if required_memory_type and required_memory_type != memory_type:
             continue
         try:
+            # Above a profile's RAM ceiling, use the generic fit calculation
+            # instead of rejecting this model as a failed RAM prerequisite.
+            if profile.get("system_ram_max_gb") is not None and float(ram_gb or 0) > float(profile["system_ram_max_gb"]):
+                continue
             if profile.get("vram_min_gb") is not None and vram_gb < float(profile["vram_min_gb"]):
                 continue
             if profile.get("vram_max_gb") is not None and vram_gb > float(profile["vram_max_gb"]):
                 continue
+        except (TypeError, ValueError):
+            continue
+        matches.append(profile)
+    return matches
+
+
+def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo],
+                              system_ram_gb: int | None = None) -> dict[str, Any] | None:
+    ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
+    for profile in _hardware_matching_runtime_profiles(model, gpu_info, ram_gb):
+        try:
             if profile.get("system_ram_min_gb") is not None and float(ram_gb or 0) < float(profile["system_ram_min_gb"]):
+                continue
+            if profile.get("system_ram_max_gb") is not None and float(ram_gb or 0) > float(profile["system_ram_max_gb"]):
                 continue
         except (TypeError, ValueError):
             continue
@@ -797,13 +863,17 @@ def _context_options(
     ]
 
 
-def _usable_model_memory_gb(gpu_info: Optional[GPUInfo]) -> float:
+def _usable_model_memory_gb(gpu_info: Optional[GPUInfo], system_ram_gb: int | None = None) -> float:
     if not gpu_info:
         return 0.0
     total_gb = gpu_info.memory_total_mb / 1024
     backend = normalize_key(gpu_info.gpu_backend)
-    if backend == "apple" or "strix-halo" in normalize_key(gpu_info.name):
-        return max(total_gb * 0.55, 2.0)
+    if backend == "apple" or normalize_key(gpu_info.memory_type) == "unified" or "strix-halo" in normalize_key(gpu_info.name):
+        ram_gb = system_ram_gb if system_ram_gb is not None else total_gb
+        return max(ram_gb * 0.55, 2.0)
+    if backend in {"cpu", "none", "unknown"} or total_gb <= 0:
+        ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
+        return min(max(ram_gb * 0.35, 3.0), 8.0)
     return total_gb
 
 
@@ -1177,7 +1247,7 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
         return []
 
     normalized_profile = _model_profile(explicit_profile=profile)
-    capacity_gb = _usable_model_memory_gb(gpu_info) if gpu_info else 4.0
+    capacity_gb = _usable_model_memory_gb(gpu_info, system_ram_gb) if gpu_info else 4.0
 
     candidates = []
     for model in catalog:
@@ -1186,7 +1256,10 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
         if not _family_allowed_for_profile(model, normalized_profile):
             continue
         runtime_profile = _matching_runtime_profile(model, gpu_info, system_ram_gb)
+        if runtime_profile is None and _hardware_matching_runtime_profiles(model, gpu_info, system_ram_gb):
+            continue
         candidate_model = {**model, "_runtime_profile": runtime_profile} if runtime_profile else model
+        candidate_model = context_fitting_model(candidate_model, capacity_gb)
         required = _effective_required_memory_gb(candidate_model, runtime_profile)
         fits = _fits_declared_vram(required, capacity_gb)
         if not fits:
@@ -1200,7 +1273,16 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
         fallback_pool = [
             model for model in catalog
             if (not installable_only or model.get("gguf_url")) and _family_allowed_for_profile(model, normalized_profile)
-        ] or catalog
+            and _fits_declared_vram(_selector_required_memory_gb(model), capacity_gb)
+            and not _hardware_matching_runtime_profiles(model, gpu_info, system_ram_gb)
+        ] or [
+            model for model in catalog
+            if not _hardware_matching_runtime_profiles(model, gpu_info, system_ram_gb)
+            and (not installable_only or model.get("gguf_url"))
+            and _fits_declared_vram(_selector_required_memory_gb(model), capacity_gb)
+        ]
+        if not fallback_pool:
+            return []
         fallback = min(fallback_pool, key=lambda m: float(m.get("vram_required_gb") or 999))
         candidates = [{"model": fallback, "score": -1.0}]
 
@@ -1257,11 +1339,60 @@ def _downloaded_catalog_path(model: dict[str, Any], downloaded_files: dict[str, 
         ]
         downloaded = bool(part_paths) and all(part_paths)
         seen = {str(part.get("file", "")).lower() for part in parts if isinstance(part, dict)}
-        return downloaded, part_paths[0] if downloaded else None, seen if downloaded else set()
+        # A shard belongs to this catalog entry even before the whole download
+        # finishes; it must never become a standalone installed-model option.
+        return downloaded, part_paths[0] if downloaded else None, seen
 
     gguf = str(model["gguf"]).lower()
     path = downloaded_files.get(gguf)
     return bool(path), path, {gguf} if path else set()
+
+
+def _measured_native_activation(model, path, data_root, install_dir, gpu_info, system_ram_gb):
+    """Separate a proven native load from the generic all-GPU fit estimate."""
+    if path is None or not gpu_info:
+        return None
+    value = lambda key: read_env_file_value(key, install_dir) or read_env_value(key, install_dir)
+    if (value("AMD_INFERENCE_LOCATION") != "host"
+            or not value("AMD_INFERENCE_RUNTIME_MODE").startswith("windows-")
+            or value("LLM_BACKEND") != "lemonade"
+            or value("AMD_INFERENCE_MANAGED").lower() == "false"
+            or value("LEMONADE_EXTERNAL").lower() == "true"):
+        return None
+    from model_stores import registered_stores, safe_artifact
+    for store in registered_stores(data_root, container=Path("/.dockerenv").exists()):
+        if store["path"].resolve() != path.parent.resolve():
+            continue
+        profiles = store.get("profiles", {})
+        row = profiles.get(path.name) if isinstance(profiles, dict) else None
+        fit = row.get("memoryQualification") if isinstance(row, dict) else None
+        if not isinstance(fit, dict) or fit.get("source") != "measured-native" or fit.get("schemaVersion") != 1:
+            continue
+        if (fit.get("runtimeMode") != "lemonade" or fit.get("gpuLayers") != "99"
+                or fit.get("runtimeBackend") != row.get("backend")
+                or fit.get("qualificationSignature") != row.get("qualificationSignature")
+                or any(not re.fullmatch(r"[0-9a-f]{64}", str(fit.get(key, ""))) for key in ("modelSha256", "runtimeSha256", "executionSignature", "visionProjectorSha256"))
+                or any(fit.get(key) != row.get(key) for key in ("modelSha256", "runtimeSha256", "contextLength", "draftTokens"))
+                or (model.get("gguf_sha256") and model["gguf_sha256"] != fit["modelSha256"])):
+            continue
+        hardware = fit.get("hardware", {})
+        if (not isinstance(hardware, dict) or normalize_key(hardware.get("name")) != normalize_key(gpu_info.name)
+                or hardware.get("backend") != gpu_info.gpu_backend
+                or type(hardware.get("memoryTotalMB")) is not int
+                or gpu_info.memory_total_mb + 256 < hardware["memoryTotalMB"]
+                or type(hardware.get("systemRamGB")) is not int or system_ram_gb < hardware["systemRamGB"]):
+            continue
+        projector = safe_artifact(store["path"], fit.get("visionProjectorFile"))
+        try:
+            if (projector is None or projector.stat().st_size != fit.get("visionProjectorSize")
+                    or abs(projector.stat().st_mtime_ns - int(fit.get("visionProjectorMtimeNs", 0))) > 1_000_000_000):
+                continue
+        except (OSError, TypeError, ValueError):
+            continue
+        return {"available":True, "mode":"native-profile", "source":"measured-native",
+            "contextLength":fit["contextLength"], "label":"Verified native profile",
+            "measuredAt":fit.get("measuredAt")}
+    return None
 
 
 def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str], live_tps: float,
@@ -1306,14 +1437,9 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             for name, value in downloaded_files_override.items()
         }
     else:
-        downloaded_files = {}
-        if models_dir.exists():
-            for p in models_dir.iterdir():
-                try:
-                    if p.is_file() and p.name.lower().endswith(".gguf") and p.stat().st_size > 0:
-                        downloaded_files[p.name.lower()] = p
-                except OSError:
-                    continue
+        from model_stores import scan_model_files
+        downloaded_files = {name.lower(): path for name, path in scan_model_files(
+            data_root, container=Path("/.dockerenv").exists()).items()}
 
     gpu_data = None
     free_gb = 0.0
@@ -1342,13 +1468,23 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         if is_loaded:
             current_model_id = model["id"]
         metadata = inspect_gguf(path) if path else {"exists": False, "readable": False, "quantization": model.get("quantization", "unknown")}
+        activation_support = _measured_native_activation(model, path, data_root, install_dir, gpu_info, install_ram_gb) if metadata.get("readable") else None
         runtime_profile = _matching_runtime_profile(model, gpu_info, install_ram_gb or None)
+        profile_ram_ineligible = bool(
+            runtime_profile is None
+            and _hardware_matching_runtime_profiles(model, gpu_info, install_ram_gb or None)
+        )
+        if not runtime_profile and not profile_ram_ineligible:
+            model = context_fitting_model(
+                model, _usable_model_memory_gb(gpu_info, install_ram_gb or None) if gpu_info else 4.0,
+            )
         profile_context = _effective_context_length(model, runtime_profile)
         configured_context = recommendation.get("contextLength") if is_configured else None
         actual_context = (
             context_length
             if is_loaded and context_length
             else configured_context
+            or (activation_support["contextLength"] if activation_support else None)
             or profile_context
             or model.get("context_length")
         )
@@ -1362,17 +1498,21 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
                 else 0
             )
         )
+        memory_model = {**model, **metadata}
         context_model = {
-            **model,
+            **memory_model,
+            "context_length": actual_context,
             "max_context_length": max_context_length,
             "context_limit_known": context_limit_known,
         }
         vram_required = float(model["vram_required_gb"])
-        selector_required = _effective_required_memory_gb({**model, "context_length": actual_context}, runtime_profile)
+        selector_required = _effective_required_memory_gb(
+            {**memory_model, "context_length": actual_context}, runtime_profile
+        )
         if gpu_info:
             capacity_gb = _usable_model_memory_gb(gpu_info)
-            fits_total = bool(_fits_declared_vram(selector_required, capacity_gb) or is_loaded)
-            fits_current = bool(_fits_declared_vram(selector_required, free_gb) or is_loaded)
+            fits_total = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, capacity_gb)) or is_loaded)
+            fits_current = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, free_gb)) or is_loaded)
         else:
             fits_total = bool(_fits_declared_vram(selector_required, 4.0) or is_loaded)
             fits_current = False
@@ -1426,6 +1566,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             "activeParamsB": model.get("active_params_b"),
             "publisher": model_publisher(model),
             "metadata": {
+                "mtp": mtp_metadata(model, metadata),
                 "source": "gguf" if metadata.get("readable") else "catalog",
                 "catalogSource": model.get("catalog_source") or "ods",
                 "sourceRepo": model.get("source_repo"),
@@ -1450,6 +1591,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             "configured": is_configured,
             "recommendation": model_recommendation,
             "fitsVram": fits_total,
+            "activationSupport": activation_support,
             "fitsCurrentVram": fits_current,
             "fitLabel": runtime_profile.get("fit_label") if runtime_profile else ("Fits GPU" if fits_total else "Too large"),
             "runtimeProfile": {
@@ -1487,6 +1629,33 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         }
         append_model(fallback, path, "downloaded")
 
+    if isinstance(loaded_model, str) and loaded_model.strip() and current_model_id is None:
+        # An external runtime can report a model that is neither in our catalog
+        # nor an inspectable local GGUF. Show what is actually running without
+        # borrowing a different quantization's size, fit, or activation claims.
+        response_models.append({
+            "id": f"runtime-{hashlib.sha256(loaded_model.encode('utf-8')).hexdigest()[:12]}",
+            "name": loaded_model,
+            "gguf": None,
+            "downloadUrl": None,
+            "size": None,
+            "sizeGb": None,
+            "vramRequired": None,
+            "estimatedRequired": None,
+            "contextLength": context_length,
+            "specialty": "Runtime",
+            "description": "Reported as loaded by the model runtime; not an ODS catalog or inspected local model.",
+            "metadata": {"source": "runtime", "catalogSource": "runtime", "readable": False},
+            "appCompatibility": {},
+            "status": "loaded",
+            "recommended": False,
+            "configured": False,
+            "fitsVram": None,
+            "activationSupport": None,
+            "fitsCurrentVram": None,
+            "performance": None,
+        })
+
     return {
         "models": response_models,
         "gpu": gpu_data,
@@ -1495,6 +1664,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         "configuredModel": configured_model_id,
         "hermesMinimumContext": HERMES_MIN_CONTEXT,
         "hermesTargetContext": HERMES_TARGET_CONTEXT,
+        "pixelMinimumContext": PIXEL_MIN_CONTEXT,
         "recommendationPolicy": recommendation.get("selectionPolicy") or _DEFAULT_RECOMMENDATION_POLICY,
         "recommendationAlternatives": [
             _recommendation_alternative(model, gpu_info)

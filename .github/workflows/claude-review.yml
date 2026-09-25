@@ -22,7 +22,9 @@ on:
     types: [created]
 
 concurrency:
-  group: claude-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  # A normal status comment creates a skipped issue_comment run. Keep that run
+  # from cancelling the in-flight pull_request review for the same PR.
+  group: claude-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: true
 
 permissions:

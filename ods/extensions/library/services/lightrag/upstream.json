@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/HKUDS/LightRAG",
+  "license": "MIT",
+  "image": "ghcr.io/hkuds/lightrag:v1.5.7@sha256:5bdbd524931b011df246fe20888d110cef691e6804c12cde636a2b746d7de27e",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Pinned v1.5.7, nonroot named-volume storage, ODS current-model gateway and shared TEI embeddings. Required real dimensions/input/context budgets; API whitelist restricted to health. TEI architecture constraints and model extraction quality remain deployment prerequisites."
+}

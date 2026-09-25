@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/presenton/presenton",
+  "license": "Apache-2.0",
+  "image": "ghcr.io/presenton/presenton:latest@sha256:ff59562c2e7683f64f892eb798e32bfcdedd05a94f05c2302ececed94119c77a",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/arm64",
+    "linux/amd64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Create the first administrator in the local UI. Image generation is disabled by default, so no stock-image or paid image key is required. The active ODS model must support the structured output required by Presenton."
+}

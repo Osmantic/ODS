@@ -1,0 +1,9 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/control-work-launch-config-v1.schema.json",
+  "schemaVersion": 1,
+  "environmentFile": "/etc/pixel/work-goal-environment.json",
+  "draftDirectory": "/var/lib/pixel-work-controller/drafts",
+  "launchDirectory": "/var/lib/pixel-work-controller/launches",
+  "maxLaunches": 32,
+  "boundary": "Owner-private fixed paths for exact Deep Work launch preparation only. The browser cannot supply, view, or alter these paths and gains no staging, scheduling, execution, service, credential, external-effect, scope-expansion, or completion authority."
+}

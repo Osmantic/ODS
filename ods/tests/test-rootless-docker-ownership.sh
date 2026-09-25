@@ -62,6 +62,50 @@ pass "rootless config ownership repair rejects symlinks"
 ) || fail "docker-info failure was treated as rootful"
 pass "indeterminate Docker rootless state fails closed"
 
+(
+    source "$LIB"
+    unset ODS_ASSUME_ROOTLESS
+    # A fresh installer process has not inherited its new docker group yet.
+    # Phase 05 has already selected and verified the sudo-backed wrapper.
+    docker() { return 1; }
+    docker_run() {
+        [[ "$*" == "info --format {{json .SecurityOptions}}" ]] || return 1
+        printf '%s\n' '["name=seccomp,profile=builtin"]'
+    }
+    state_rc=0
+    ods_docker_rootless_state || state_rc=$?
+    [[ "$state_rc" -eq 1 ]]
+) || fail "fresh-install Docker detection ignored the selected command"
+pass "fresh-install Docker detection uses the verified installer command"
+
+(
+    source "$LIB"
+    unset ODS_ASSUME_ROOTLESS
+    docker() { return 1; }
+    docker_run() { printf '%s\n' '["name=rootless"]'; }
+    ods_docker_rootless_state
+) || fail "selected-command rootless detection"
+pass "selected-command rootless detection preserves ownership mode"
+
+(
+    source "$LIB"
+    unset ODS_ASSUME_ROOTLESS
+    docker() {
+        # Mirrors the real CLI: an empty template result on stdout, then the
+        # connection error (and a template error) on stderr.
+        echo ""
+        echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2
+        echo "template: :1:7: executing \"\" at <.Host.Security.Rootless>: can't evaluate field Host in type system.dockerInfo" >&2
+        return 1
+    }
+    state_rc=0
+    probe_err="$(ods_docker_rootless_state 2>&1)" || state_rc=$?
+    [[ "$state_rc" -eq 2 ]] || exit 1
+    [[ "$probe_err" == *"Could not determine whether Docker is running in rootless mode"* ]] || exit 1
+    [[ "$probe_err" == *"docker info: Cannot connect to the Docker daemon"* ]] || exit 1
+) || fail "daemon-unreachable probe did not surface docker's own error"
+pass "indeterminate rootless state reports why docker info failed"
+
 INSTALL_DIR="$TMP_DIR/ods"
 mkdir -p "$INSTALL_DIR/data"/{ape,privacy-shield,token-spy,n8n,whisper,hermes,comfyui}
 mkdir -p "$INSTALL_DIR/data/langfuse"/{postgres,clickhouse}
@@ -139,8 +183,8 @@ pass "Hermes keeps UID 10000 and mode 0700"
 
 : > "$CALLS"
 cat > "$INSTALL_DIR/.env" <<'EOF'
-UID=12001
-GID=12002
+ODS_UID=12001
+ODS_GID=12002
 EOF
 (
     source "$LIB"
@@ -156,11 +200,31 @@ EOF
 grep -q '^data/privacy-shield|12001:12002$' "$CALLS" || fail "Privacy Shield ignored UID/GID override"
 grep -q '^data/n8n|12001:12002$' "$CALLS" || fail "n8n ignored UID/GID override"
 grep -q '^data/hermes|12001:12002$' "$CALLS" || fail "Hermes ignored UID/GID override"
-pass "compose UID/GID overrides are preserved"
+pass "compose ODS_UID/ODS_GID overrides are preserved"
 
 cat > "$INSTALL_DIR/.env" <<'EOF'
-UID=""
-GID=''
+UID=13001
+GID=13002
+EOF
+: > "$CALLS"
+(
+    source "$LIB"
+    ods_docker_rootless_state() { return 0; }
+    uname() { printf 'Linux\n'; }
+    _ods_rootless_ensure_helper_image() { return 0; }
+    _ods_rootless_fix_directory() {
+        printf '%s|%s\n' "$2" "$3" >> "$CALLS"
+    }
+    ODS_ROOTLESS_COMPOSE_FLAGS="-f extensions/services/n8n/compose.yaml -f extensions/services/hermes/compose.yaml"
+    ods_fix_rootless_ownership "$INSTALL_DIR"
+)
+grep -q '^data/n8n|13001:13002$' "$CALLS" || fail "n8n ignored legacy UID/GID override"
+grep -q '^data/hermes|13001:13002$' "$CALLS" || fail "Hermes ignored legacy UID/GID override"
+pass "legacy UID/GID overrides remain compatible until installer migration"
+
+cat > "$INSTALL_DIR/.env" <<'EOF'
+ODS_UID=""
+ODS_GID=''
 EOF
 : > "$CALLS"
 (
@@ -181,8 +245,8 @@ grep -q '^data/hermes|10000:10000$' "$CALLS" \
 pass "empty UID/GID overrides follow compose default semantics"
 
 cat > "$INSTALL_DIR/.env" <<'EOF'
-UID=not-a-number
-GID=12002
+ODS_UID=not-a-number
+ODS_GID=12002
 EOF
 (
     source "$LIB"

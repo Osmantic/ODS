@@ -122,6 +122,88 @@ function Write-Utf8NoBom {
     [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
 }
 
+function Protect-ODSPrivateEnvFile {
+    param([string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'The ODS credential file must be a regular file.'
+    }
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        $acl = [IO.FileSystemAclExtensions]::GetAccessControl($item, [Security.AccessControl.AccessControlSections]::Access)
+    } else {
+        $acl = $item.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
+    }
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
+        $acl.RemoveAccessRuleSpecific($rule)
+    }
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl.SetAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow'))
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        [IO.FileSystemAclExtensions]::SetAccessControl($item, $acl)
+    } else {
+        $item.SetAccessControl($acl)
+    }
+    $verified = Get-Acl -LiteralPath $Path
+    $rules = @($verified.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    if (-not $verified.AreAccessRulesProtected -or $rules.Count -ne 1 -or
+        $rules[0].IdentityReference -ne $sid -or $rules[0].IsInherited -or
+        $rules[0].AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        $rules[0].FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+        throw 'Could not verify current-user-only access to the ODS credential file.'
+    }
+}
+
+function Write-ODSPrivateEnvFile {
+    param([string]$Path, [string]$Content)
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        $parent = Split-Path -Parent $Path
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        $existed = Test-Path -LiteralPath $Path
+        if ($existed) {
+            # File.Replace preserves destination metadata. Verify its private
+            # DACL before publication, but never overwrite the old file's bytes:
+            # tightening a DACL cannot revoke already-open reader handles.
+            Protect-ODSPrivateEnvFile $Path
+        }
+        $temporary = Join-Path $parent ('.ods-private-env-' + [guid]::NewGuid().ToString('N'))
+        $security = [Security.AccessControl.FileSecurity]::new()
+        $security.SetAccessRuleProtection($true, $false)
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow'))
+        $stream = $null
+        try {
+            # Supply the DACL at CreateNew so even the empty staging file never
+            # inherits public read access. Keep the handle until payload flush.
+            if ($PSVersionTable.PSEdition -eq 'Core') {
+                $stream = [IO.FileSystemAclExtensions]::Create([IO.FileInfo]::new($temporary),
+                    [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::FullControl,
+                    [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $security)
+            } else {
+                $stream = [IO.FileStream]::new($temporary, [IO.FileMode]::CreateNew,
+                    [Security.AccessControl.FileSystemRights]::FullControl,
+                    [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $security)
+            }
+            Protect-ODSPrivateEnvFile $temporary
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Content)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+            $stream.Dispose()
+            $stream = $null
+            if ($existed) {
+                [IO.File]::Replace($temporary, $Path, [System.Management.Automation.Language.NullString]::Value)
+            } else {
+                [IO.File]::Move($temporary, $Path)
+            }
+        } finally {
+            if ($null -ne $stream) { $stream.Dispose() }
+            if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+        }
+        return
+    }
+    Write-Utf8NoBom -Path $Path -Content $Content
+}
+
 function Get-WindowsODSRuntimeConfigRenderer {
     [CmdletBinding()]
     param(
@@ -346,12 +428,19 @@ function Write-WindowsODSLemonadeLiteLlmConfig {
         "--gpu-backend", "amd",
         "--lemonade-model-id", $ModelId,
         "--lemonade-api-base", $lemonadeApiBase,
-        "--litellm-key", $ApiKey,
         "--output-root", $InstallDir,
         "--write"
     )
-    $renderOutput = & $python.FilePath @renderArgs 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $previousRendererKey = [Environment]::GetEnvironmentVariable("ODS_RENDER_LITELLM_KEY", "Process")
+    try {
+        [Environment]::SetEnvironmentVariable("ODS_RENDER_LITELLM_KEY", $ApiKey, "Process")
+        $renderOutput = & $python.FilePath @renderArgs 2>&1
+        $renderExitCode = $LASTEXITCODE
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable("ODS_RENDER_LITELLM_KEY", $previousRendererKey, "Process")
+    }
+    if ($renderExitCode -ne 0) {
         throw "Runtime config renderer failed for Windows Lemonade route: $($renderOutput -join "`n")"
     }
 
@@ -403,7 +492,7 @@ function Set-WindowsODSLemonadeModelConfiguration {
         }
         $envContent += "$assignment$newline"
     }
-    Write-Utf8NoBom -Path $envPath -Content $envContent
+    Write-ODSPrivateEnvFile -Path $envPath -Content $envContent
 
     if ([string]::IsNullOrWhiteSpace($Port)) {
         $portMatch = [regex]::Match($envContent, '(?m)^AMD_INFERENCE_PORT=([^\r\n]*)')
@@ -513,7 +602,8 @@ function New-ODSEnv {
         # `ods enable langfuse` edits survive.
         [bool]$EnableLangfuse = $false,
         [bool]$EnableLan = $false,
-        [bool]$EnableODSProxy = $false
+        [bool]$EnableODSProxy = $false,
+        [bool]$EnableWebSearch = $true
     )
 
     # Preserve existing secrets on re-install (mirrors Linux _env_get logic)
@@ -683,14 +773,14 @@ function New-ODSEnv {
     $difySecretKey    = Get-EnvOrNew "DIFY_SECRET_KEY"           (New-SecureHex -Bytes 32)
     $qdrantApiKey     = Get-EnvOrNew "QDRANT_API_KEY"            (New-SecureHex -Bytes 32)
     $opencodePassword = Get-EnvOrNew "OPENCODE_SERVER_PASSWORD"  (New-SecureBase64 -Bytes 16)
-    $switchboardModeDefault = if ([string]::IsNullOrWhiteSpace($SwitchboardMode)) { "observe" } else { $SwitchboardMode.Trim().ToLowerInvariant() }
+    $switchboardModeDefault = if ([string]::IsNullOrWhiteSpace($SwitchboardMode)) { "enabled" } else { $SwitchboardMode.Trim().ToLowerInvariant() }
     if ($switchboardModeDefault -notin @("legacy", "observe", "enabled")) {
-        $switchboardModeDefault = "observe"
+        $switchboardModeDefault = "enabled"
     }
     $switchboardMode = Get-EnvOrNew "ODS_MODEL_SWITCHBOARD" $switchboardModeDefault
     $switchboardMode = $switchboardMode.Trim().ToLowerInvariant()
     if ($switchboardMode -notin @("legacy", "observe", "enabled")) {
-        $switchboardMode = "observe"
+        $switchboardMode = "enabled"
     }
     $cpuBudget = Get-LlamaCpuBudget -GpuBackend $(if ($GpuBackend -eq "none") { "cpu" } else { $GpuBackend })
     $llamaCpuLimit = Select-AutoCpuValue -Key "LLAMA_CPU_LIMIT" -Detected $cpuBudget.Limit
@@ -717,6 +807,7 @@ function New-ODSEnv {
     $langfusePort              = Get-EnvOrNew "LANGFUSE_PORT"              "3006"
     $langfuseDefault           = if ($EnableLangfuse) { "true" } else { "false" }
     $langfuseEnabled           = Get-EnvOrNew "LANGFUSE_ENABLED"           $langfuseDefault
+    $enableWebSearchValue      = if ($EnableWebSearch) { "true" } else { "false" }
     $langfuseNextauthSecret    = Get-EnvOrNew "LANGFUSE_NEXTAUTH_SECRET"   (New-SecureHex -Bytes 32)
     $langfuseSalt              = Get-EnvOrNew "LANGFUSE_SALT"              (New-SecureHex -Bytes 32)
     $langfuseEncryptionKey     = Get-EnvOrNew "LANGFUSE_ENCRYPTION_KEY"    (New-SecureHex -Bytes 32)
@@ -756,6 +847,12 @@ function New-ODSEnv {
     }
     $existingLemonadeModel = Get-EnvOrNew "LEMONADE_MODEL" ""
     $existingGgufFile = Get-EnvOrNew "GGUF_FILE" ""
+    $existingModelStore = ([string](Get-EnvOrNew "ODS_ACTIVE_MODEL_STORE" "default")).Trim().Trim('"').Trim("'")
+    $preservedModelStore = 'default'
+    if ($existingGgufFile.Trim('"').Trim("'") -eq [string]$TierConfig.GgufFile -and
+        $existingModelStore -match '^[a-z][a-z0-9-]{0,47}$') {
+        $preservedModelStore = $existingModelStore
+    }
     $effectiveLemonadeModel = $existingLemonadeModel
     if ($windowsAmdLemonade) {
         $effectiveLemonadeModel = $(if (-not [string]::IsNullOrWhiteSpace($LemonadeModel)) {
@@ -793,17 +890,21 @@ function New-ODSEnv {
         "http://llama-server:8080"
     })
 
-    # Hermes streams through the OpenAI-compatible provider. On Windows AMD
-    # Lemonade, direct streaming against Lemonade can close chunked responses
-    # early; LiteLLM normalizes that path and already fronts the same runtime
-    # for Open WebUI. Match the Linux AMD behavior and authenticate with the
-    # LiteLLM master key whenever Hermes targets LiteLLM.
-    $hermesUsesLiteLlm = ($windowsAmdLemonade -or $ODSMode -eq "cloud")
-    if ($switchboardMode -eq "enabled") {
-        $hermesUsesLiteLlm = $true
-    }
-    $hermesLlmBaseUrl = $(if ($hermesUsesLiteLlm) { "http://litellm:4000/v1" } else { "$llmApiUrl$llmApiBasePath" })
-    $hermesLlmApiKey = $(if ($hermesUsesLiteLlm) { $litellmKey } else { "sk-ods-hermes-local" })
+    # Hermes streams through the OpenAI-compatible provider. Local switchboard
+    # installs use model-router directly so client cancellation reaches the
+    # active backend request; cloud installs still use authenticated LiteLLM.
+    # Windows AMD without the switchboard keeps LiteLLM's Lemonade stream
+    # normalization rather than calling the native runtime directly.
+    $hermesUsesModelRouter = ($switchboardMode -eq "enabled" -and $ODSMode -ne "cloud")
+    $hermesUsesLiteLlm = (-not $hermesUsesModelRouter -and ($windowsAmdLemonade -or $ODSMode -eq "cloud"))
+    $hermesLlmBaseUrl = $(if ($hermesUsesModelRouter) {
+        "http://model-router:9099/v1"
+    } elseif ($hermesUsesLiteLlm) {
+        "http://litellm:4000/v1"
+    } else {
+        "$llmApiUrl$llmApiBasePath"
+    })
+    $hermesLlmApiKey = $(if ($hermesUsesModelRouter) { "no-key" } elseif ($hermesUsesLiteLlm) { $litellmKey } else { "sk-ods-hermes-local" })
     $openWebuiLlmBaseUrl = Get-EnvOrNew "OPEN_WEBUI_LLM_BASE_URL" $(if ($switchboardMode -eq "enabled") { "http://litellm:4000" } else { "" })
     $openWebuiLlmApiKey = Get-EnvOrNew "OPEN_WEBUI_LLM_API_KEY" $(if ($switchboardMode -eq "enabled") { $litellmKey } else { "" })
 
@@ -913,6 +1014,8 @@ ODS_AGENT_HOST=$(Get-EnvOrNew "ODS_AGENT_HOST" "host.docker.internal")
 # The dashboard-api container must call the host agent over Docker Desktop's
 # host gateway. Bearer auth still protects every host-agent endpoint.
 ODS_AGENT_BIND=$(Get-EnvOrNew "ODS_AGENT_BIND" "0.0.0.0")
+# Docker Desktop presents host-owned lifecycle secrets through its root group.
+REMOTE_PROVIDER_DATA_GID=0
 
 #=== LLM Backend Mode ===
 ODS_MODE=$effectiveODSMode
@@ -940,6 +1043,7 @@ MINIMAX_API_KEY=$(Get-EnvOrNew "MINIMAX_API_KEY" "")
 MODEL_PROFILE=$(Get-EnvOrNew "MODEL_PROFILE" "$(if ($TierConfig.ModelProfileRequested) { $TierConfig.ModelProfileRequested } else { "qwen" })")
 LLM_MODEL=$($TierConfig.LlmModel)
 GGUF_FILE=$($TierConfig.GgufFile)
+ODS_ACTIVE_MODEL_STORE=$preservedModelStore
 LEMONADE_MODEL=$effectiveLemonadeModel
 MAX_CONTEXT=$($TierConfig.MaxContext)
 CTX_SIZE=$($TierConfig.MaxContext)
@@ -1005,6 +1109,7 @@ SEARXNG_PORT=8888
 HERMES_LLM_BASE_URL=$hermesLlmBaseUrl
 HERMES_LLM_API_KEY=$hermesLlmApiKey
 HERMES_LANGUAGE=en
+HERMES_REQUIRE_OWNER_CARD=$(Get-EnvOrNew "HERMES_REQUIRE_OWNER_CARD" $(if ($env:HERMES_REQUIRE_OWNER_CARD) { $env:HERMES_REQUIRE_OWNER_CARD } else { "false" }))
 HERMES_PROXY_PORT=9120
 HERMES_PROXY_UPSTREAM=ods-hermes:9119
 ODS_AUTH_UPSTREAM=ods-dashboard-api:3002
@@ -1053,7 +1158,7 @@ EMBEDDINGS_MEMORY_LIMIT=$embeddingsMemoryLimit
 #=== Web UI Settings ===
 # Loopback installs open directly. LAN installs require a login by default.
 WEBUI_AUTH=$webuiAuth
-ENABLE_WEB_SEARCH=true
+ENABLE_WEB_SEARCH=$enableWebSearchValue
 WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===
@@ -1087,7 +1192,7 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
         Remove-Item -LiteralPath $envPath -Recurse -Force
         Write-AIWarn "Removed malformed .env directory from a previous partial install."
     }
-    Write-Utf8NoBom -Path $envPath -Content $envContent
+    Write-ODSPrivateEnvFile -Path $envPath -Content $envContent
 
     if ($effectiveODSMode -eq "local") {
         $litellmDir = Join-Path (Join-Path $InstallDir "config") "litellm"
@@ -1160,22 +1265,6 @@ litellm_settings:
     $routerPayload = [ordered]@{ endpoints = $routerEndpoints }
     Write-Utf8NoBom -Path (Join-Path $modelRouterDir "endpoints.json") -Content (($routerPayload | ConvertTo-Json -Depth 6) + "`n")
 
-    # Restrict .env to current user only (Windows ACL equivalent of chmod 600)
-    try {
-        # Retrieve only the DACL (Access) to avoid requiring SeSecurityPrivilege
-        $acl = [System.IO.File]::GetAccessControl($envPath, [System.Security.AccessControl.AccessControlSections]::Access)
-        $acl.SetAccessRuleProtection($true, $false)  # Disable inheritance
-        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            $currentUser, "FullControl", "Allow"
-        )
-        $acl.SetAccessRule($rule)
-        [System.IO.File]::SetAccessControl($envPath, $acl)
-    } catch {
-        # ACL restriction failed -- not fatal, just warn
-        Write-AIWarn "Could not restrict .env permissions: $_"
-    }
-
     return @{
         SearxngSecret  = $searxngSecret
         OpenclawToken  = $openclawToken
@@ -1209,11 +1298,17 @@ search:
     - html
     - json
 engines:
+  - name: bing
+    # Requalify before enabling: https://github.com/searxng/searxng/pull/6671
+    disabled: true
   - name: duckduckgo
     disabled: false
   - name: google
     disabled: false
   - name: brave
+    disabled: false
+  - name: seznam
+    # Independent general-web fallback when major engines block this household IP.
     disabled: false
   - name: wikipedia
     disabled: false

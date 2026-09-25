@@ -13,12 +13,14 @@ services:
       - OPENAI_BASE_URL=${HERMES_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}/v1}
       - OPENAI_API_KEY=${HERMES_LLM_API_KEY:-${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}}
       - ODS_MODE=${ODS_MODE:-local}
-      - ODS_MODEL_SWITCHBOARD=${ODS_MODEL_SWITCHBOARD:-observe}
+      - ODS_MODEL_SWITCHBOARD=${ODS_MODEL_SWITCHBOARD:-enabled}
       - LLM_BACKEND=${LLM_BACKEND:-llama-server}
       - AMD_INFERENCE_RUNTIME=${AMD_INFERENCE_RUNTIME:-}
       - LLM_MODEL=${LLM_MODEL:-}
       - GGUF_FILE=${GGUF_FILE:-}
       - LEMONADE_MODEL=${LEMONADE_MODEL:-}
+      - EXTERNAL_LLM_URL=${EXTERNAL_LLM_URL:-}
+      - EXTERNAL_LLM_MODEL=${EXTERNAL_LLM_MODEL:-}
       - HOSTNAME=0.0.0.0
       - PERPLEXICA_SCRAPE_URL_MAX_CHARS=${PERPLEXICA_SCRAPE_URL_MAX_CHARS:-30000}
     entrypoint: ["/bin/sh", "-c", "until [ -f /app/ods-entrypoint.sh ]; do sleep 0.5; done; exec /bin/sh /app/ods-entrypoint.sh \"$@\"", "ods-entrypoint"]

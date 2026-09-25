@@ -6,14 +6,16 @@
 # Purpose: Interactive feature selection menu
 #
 # Expects: INTERACTIVE, DRY_RUN, TIER, ENABLE_VOICE, ENABLE_WORKFLOWS,
-#           ENABLE_RAG, ENABLE_HERMES, ENABLE_OPENCLAW, GPU_COUNT, GPU_BACKEND,
+#           ENABLE_RAG, ENABLE_HERMES, ENABLE_OPENCLAW, ENABLE_OPENCODE,
+#           GPU_COUNT, GPU_BACKEND,
 #           HOST_ARCH, HOST_PAGE_SIZE,
 #           GPU_TOPOLOGY_JSON, LLM_MODEL_SIZE_MB, SCRIPT_DIR, VERBOSE, DEBUG,
 #           GPU_INDICES, GPU_UUIDS (arrays from topology),
 #           show_phase(), show_install_menu(), chapter(), bootline(),
 #           success(), log(), warn(), error(), signal()
 # Provides: ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_EMBEDDINGS,
-#           ENABLE_QDRANT, ENABLE_HERMES, ENABLE_OPENCLAW, OPENCLAW_CONFIG, GPU_ASSIGNMENT_JSON,
+#           ENABLE_QDRANT, ENABLE_HERMES, ENABLE_OPENCLAW, ENABLE_SEARXNG,
+#           ENABLE_WEB_SEARCH, OPENCLAW_CONFIG, GPU_ASSIGNMENT_JSON,
 #           LLAMA_SERVER_GPU_UUIDS, WHISPER_GPU_UUID, COMFYUI_GPU_UUID,
 #           EMBEDDINGS_GPU_UUID, LLAMA_ARG_SPLIT_MODE, LLAMA_ARG_TENSOR_SPLIT
 #
@@ -29,9 +31,21 @@ if (( BASH_VERSINFO[0] < 4 )); then
     return 1 2>/dev/null || exit 1
 fi
 
+# Keep this phase independently sourceable by contract tests and maintenance
+# callers. install-core.sh normally imports the Pixel helpers first, but the
+# phase owns the dependency it invokes.
+if ! declare -F ods_pixel_resolve_enablement >/dev/null 2>&1; then
+    # shellcheck source=../lib/pixel-integration.sh
+    _phase03_source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "$_phase03_source_dir/../lib/pixel-integration.sh"
+    unset _phase03_source_dir
+fi
+
 ods_progress 18 "features" "Selecting features"
-if $INTERACTIVE && ! $DRY_RUN; then
+if declare -F show_phase >/dev/null 2>&1; then
     show_phase 2 6 "Feature Selection" "~1 minute"
+fi
+if $INTERACTIVE && ! $DRY_RUN; then
     show_install_menu
 
     # Only show individual feature prompts for Custom installs
@@ -59,8 +73,9 @@ if $INTERACTIVE && ! $DRY_RUN; then
         _phase03_prompt_bool ENABLE_VOICE "Enable voice (Whisper STT + Kokoro TTS)?"
         _phase03_prompt_bool ENABLE_WORKFLOWS "Enable n8n workflow automation?"
         _phase03_prompt_bool ENABLE_RAG "Enable Qdrant vector database (for RAG)?"
-        _phase03_prompt_bool ENABLE_HERMES "Enable Hermes Agent (default AI agent framework)?"
+        _phase03_prompt_bool ENABLE_HERMES "Enable Hermes Agent?"
         _phase03_prompt_bool ENABLE_OPENCLAW "Enable OpenClaw AI agent framework (DEPRECATED - Hermes replaces it)?"
+        _phase03_prompt_bool ENABLE_OPENCODE "Enable the OpenCode browser IDE extension?"
         _phase03_prompt_bool ENABLE_COMFYUI "Enable image generation (ComfyUI + SDXL Lightning, ~6.5GB)?"
         _phase03_prompt_bool ENABLE_LANGFUSE "Enable Langfuse (LLM observability + telemetry, ~500MB)?"
 
@@ -76,6 +91,10 @@ if $INTERACTIVE && ! $DRY_RUN; then
             esac
         fi
     fi
+else
+    if declare -F ai >/dev/null 2>&1; then
+        ai "Using feature selections from flags and installer defaults."
+    fi
 fi
 
 # Tier safety net: disable ComfyUI on Tier 0/1 in non-interactive mode.
@@ -88,6 +107,36 @@ if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]]; then
             ;;
     esac
 fi
+
+# Pixel is the preferred agent on qualified hosts. ODS platform support is
+# unchanged; auto mode falls back to Hermes without failing.
+if ! PIXEL_AGENT_MODE="$(ods_pixel_resolve_enablement "${ENABLE_PIXEL:-auto}" 2>/dev/null)"; then
+    ai_bad "Pixel was explicitly required, but this host is not qualified."
+    ai "Pixel requires Ubuntu 24.04/26.04 or Debian 12 with PID1 systemd."
+    return 1 2>/dev/null || exit 1
+fi
+ENABLE_PIXEL_RUNTIME=false
+if [[ "$PIXEL_AGENT_MODE" == "pixel" ]]; then
+    _pixel_model_route_class="$(ods_pixel_model_route_class \
+        "${ODS_MODE:-local}" "${EXTERNAL_LLM_URL:-}" "${LEMONADE_EXTERNAL:-false}")" || {
+        ai_bad "Pixel received an unsupported ODS model route."
+        return 1 2>/dev/null || exit 1
+    }
+    if [[ "${PIXEL_AGENT_MODEL_READY:-unknown}" == "false" \
+        && "$_pixel_model_route_class" == "local" ]]; then
+        ENABLE_PIXEL_RUNTIME=true
+        ai_warn "Portal adaptive mode will use this best-fit local model."
+        ai_warn "Every callable model remains selectable; catalog testing is performance guidance, not an access gate."
+        log "Pixel selected in adaptive mode on an untested local model; Hermes remains available as rollback when enabled"
+    else
+        ENABLE_PIXEL_RUNTIME=true
+        log "Pixel enabled as the core conversational experience alongside existing ODS tools on the managed ODS model route; Hermes remains available as rollback when enabled"
+    fi
+    unset _pixel_model_route_class
+else
+    log "Pixel is unavailable or disabled; existing ODS tools remain available"
+fi
+export PIXEL_AGENT_MODE ENABLE_PIXEL_RUNTIME ENABLE_PIXEL
 
 if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
     HERMES_CONTEXT_SIZE="${HERMES_CONTEXT_SIZE:-65536}"
@@ -110,12 +159,16 @@ fi
 # only gates cosmetic things (image pre-pull, health checks, summary URLs)
 # and the service still starts. Every optional service must be listed here
 # or the user can't opt out of it.
-_sync_extension_compose() {
-    local flag="$1" svc_dir="$2" label="$3" reason="$4"
-    local compose="$SCRIPT_DIR/extensions/services/$svc_dir/compose.yaml"
+_sync_extension_compose_at() {
+    local root="$1" flag="$2" svc_dir="$3" label="$4" reason="$5"
+    local compose="$root/extensions/services/$svc_dir/compose.yaml"
     if [[ "$flag" == "true" ]]; then
         # Re-enable if previously disabled (re-install with different options)
-        if [[ ! -f "$compose" && -f "${compose}.disabled" ]]; then
+        if [[ -f "$compose" ]]; then
+            # An upgrade copy does not prune the prior state file. Make the
+            # selected enabled state authoritative when both names exist.
+            rm -f -- "${compose}.disabled"
+        elif [[ -f "${compose}.disabled" ]]; then
             mv "${compose}.disabled" "$compose"
             log "$label compose re-enabled"
         fi
@@ -123,9 +176,24 @@ _sync_extension_compose() {
         # Disable — prevents resolve-compose-stack.sh from including a compose
         # file whose image was never built/pulled, blocking ALL containers.
         if [[ -f "$compose" ]]; then
+            rm -f -- "${compose}.disabled"
             mv "$compose" "${compose}.disabled"
             log "$label compose disabled ($reason)"
         fi
+    fi
+}
+
+_sync_extension_compose() {
+    local flag="$1" svc_dir="$2" label="$3" reason="$4"
+    _sync_extension_compose_at "$SCRIPT_DIR" "$flag" "$svc_dir" "$label" "$reason"
+
+    # On an upgrade, Phase 06 deliberately preserves runtime data and does not
+    # use rsync --delete. Reconcile the existing installed tree now as well so
+    # its stale opposite state cannot survive the later source copy and cause
+    # resolve-compose-stack.sh to launch a service the user disabled.
+    if [[ -n "${INSTALL_DIR:-}" && "$INSTALL_DIR" != "$SCRIPT_DIR" \
+        && -d "$INSTALL_DIR/extensions/services/$svc_dir" ]]; then
+        _sync_extension_compose_at "$INSTALL_DIR" "$flag" "$svc_dir" "$label" "$reason"
     fi
 }
 
@@ -163,9 +231,49 @@ if ! $DRY_RUN; then
     if [[ "${ENABLE_HERMES:-false}" != "true" && "${ENABLE_OPENCLAW:-false}" != "true" ]]; then
         ENABLE_APE=false
     fi
-    _sync_extension_compose "${ENABLE_RECOMMENDED:-}" litellm    "LiteLLM"       "recommended services not enabled"
-    _sync_extension_compose "${ENABLE_RECOMMENDED:-}" searxng    "SearXNG"       "recommended services not enabled"
+    _pixel_support_services="${ENABLE_RECOMMENDED:-false}"
+    [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && _pixel_support_services=true
+    [[ -n "${EXTERNAL_LLM_URL:-}" ]] && _pixel_support_services=true
+    # With the default ODS_MODEL_SWITCHBOARD=enabled, phase 06 routes Open WebUI
+    # through the gateway (OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000), so it
+    # must run even when recommended services are off. Resolve the mode as
+    # phase 06 does: an existing .env value wins on reruns, then the caller's
+    # value, then the default; anything but legacy or observe means enabled.
+    _switchboard_mode=""
+    if [[ -f "${INSTALL_DIR:-}/.env" ]]; then
+        _switchboard_mode="$(awk -F= '$1 == "ODS_MODEL_SWITCHBOARD" { print substr($0, index($0, "=") + 1); exit }' \
+            "$INSTALL_DIR/.env" 2>/dev/null | tr -d '\r' || true)"
+        _switchboard_mode="${_switchboard_mode%% #*}"
+        _switchboard_mode="${_switchboard_mode#"${_switchboard_mode%%[![:space:]]*}"}"
+        _switchboard_mode="${_switchboard_mode%"${_switchboard_mode##*[![:space:]]}"}"
+        # Only exact modes can disable the gateway. Do not turn invalid
+        # quoted values such as 'legacy # literal' or ' legacy ' into legacy.
+        case "$_switchboard_mode" in
+            \"legacy\"|\'legacy\') _switchboard_mode=legacy ;;
+            \"observe\"|\'observe\') _switchboard_mode=observe ;;
+            \"\"|\'\') _switchboard_mode="" ;;
+        esac
+    fi
+    [[ -n "$_switchboard_mode" ]] || _switchboard_mode="${ODS_MODEL_SWITCHBOARD:-enabled}"
+    [[ "$_switchboard_mode" == "legacy" || "$_switchboard_mode" == "observe" ]] || _pixel_support_services=true
+    unset _switchboard_mode
+    _sync_extension_compose "$_pixel_support_services" litellm    "LiteLLM"       "no enabled feature routes through the LiteLLM gateway"
+    # SearXNG backs Pixel, Open WebUI web search, Perplexica, and agent web tools.
+    # It is not only a recommended extra — --no-recommended with Perplexica
+    # still needs the search backend.
+    if [[ "${ENABLE_RECOMMENDED:-false}" == "true" ||
+          "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ||
+          "${ENABLE_PERPLEXICA:-false}" == "true" ||
+          "${ENABLE_HERMES:-false}" == "true" ||
+          "${ENABLE_OPENCLAW:-false}" == "true" ]]; then
+        ENABLE_SEARXNG=true
+    else
+        ENABLE_SEARXNG=false
+    fi
+    ENABLE_WEB_SEARCH="$ENABLE_SEARXNG"
+    _sync_extension_compose "${ENABLE_SEARXNG:-}"     searxng    "SearXNG"       "web search backend not required"
     _sync_extension_compose "${ENABLE_RECOMMENDED:-}" token-spy  "Token Spy"     "recommended services not enabled"
+    unset _pixel_support_services
     _sync_extension_compose "${ENABLE_VOICE:-}"      whisper    "Whisper (STT)" "voice not enabled"
     _sync_extension_compose "${ENABLE_VOICE:-}"      tts        "Kokoro (TTS)"  "voice not enabled"
     _sync_extension_compose "${ENABLE_WORKFLOWS:-}"  n8n        "n8n"           "workflows not enabled"
@@ -180,6 +288,8 @@ if ! $DRY_RUN; then
     # is exposed on the LAN with no auth. Same flag drives both.
     _sync_extension_compose "${ENABLE_HERMES:-}"     hermes        "Hermes Agent"  "Hermes agent not enabled"
     _sync_extension_compose "${ENABLE_HERMES:-}"     hermes-proxy  "Hermes proxy"  "Hermes agent not enabled"
+    _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-edge "Pixel edge" "Pixel host not qualified"
+    _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-model-relay "Pixel model relay" "Pixel host not qualified"
     _sync_extension_compose "${ENABLE_OPENCLAW:-}"   openclaw   "OpenClaw"      "agent framework not enabled"
     _sync_extension_compose "${ENABLE_APE:-}"        ape        "APE"           "agent governance not enabled"
     _sync_extension_compose "${ENABLE_COMFYUI:-}"    comfyui    "ComfyUI"       "image generation not enabled"
@@ -225,6 +335,21 @@ if [[ "$ENABLE_OPENCLAW" == "true" ]]; then
 fi
 
 log "All services enabled (core install)"
+
+# No GPU (CPU-only) — nothing to assign. Say so plainly instead of falling
+# into the single-GPU branch below and logging "Single GPU detected".
+if [[ "${GPU_COUNT:-0}" -eq 0 ]]; then
+    log "No GPU detected — skipping GPU assignment (CPU-only mode)."
+    return
+fi
+
+# An external model is already served outside this install. Reserving VRAM
+# for the tier's ODS-managed llama model can fail on a fully utilized host,
+# even though this install will not launch that model at all.
+if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
+    log "External LLM selected — skipping ODS-managed model GPU assignment."
+    return
+fi
 
 # Single GPU — generate a trivial assignment so the dashboard API can map
 # the GPU UUID to services (without this, /api/gpu/detailed shows empty
@@ -561,7 +686,7 @@ fi
 if [[ "$VENDOR" == "nvidia" ]]; then
     LLAMA_SERVER_GPU_UUIDS=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.llama_server.gpus // [] | join(",")')
     if [[ -z "$LLAMA_SERVER_GPU_UUIDS" ]]; then
-        warn "LLAMA_SERVER_GPU_UUIDS is empty — NVIDIA_VISIBLE_DEVICES will fall back to 'all' (all GPUs visible to llama-server)"
+        error "GPU assignment did not select any NVIDIA device for llama-server"
     fi
     WHISPER_GPU_UUID=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.whisper.gpus[0]?')
     COMFYUI_GPU_UUID=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.comfyui.gpus[0]?')
@@ -592,8 +717,12 @@ LLAMA_ARG_TENSOR_SPLIT=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '
     end
   end')
 
-# Persist topology for the dashboard API (mounted read-only at /ods/config)
-mkdir -p "$INSTALL_DIR/config"
-cp "$TOPOLOGY_FILE" "$INSTALL_DIR/config/gpu-topology.json"
-chmod 644 "$INSTALL_DIR/config/gpu-topology.json"
+# Persist topology for the dashboard API (mounted read-only at /ods/config).
+# A dry run may calculate the assignment, but must not create or replace
+# anything in the installation directory.
+if ! $DRY_RUN; then
+    mkdir -p "$INSTALL_DIR/config"
+    cp "$TOPOLOGY_FILE" "$INSTALL_DIR/config/gpu-topology.json"
+    chmod 644 "$INSTALL_DIR/config/gpu-topology.json"
+fi
 rm -f "$TOPOLOGY_FILE"

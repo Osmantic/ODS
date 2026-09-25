@@ -1,3 +1,6 @@
+[extend]
+useDefault = true
+
 [[rules]]
   id = "langfuse-project-public-key"
   description = "Langfuse project public key"
@@ -9,11 +12,3 @@
   description = "Langfuse project secret key"
   regex = '''sk-lf-[0-9a-f]+\b'''
   keywords = ["sk-lf-"]
-
-[allowlist]
-  description = "Installer key-generation templates (not real secrets)"
-  paths = [
-    '''ods/installers/phases/06-directories\.sh''',
-    '''ods/installers/macos/lib/env-generator\.sh''',
-    '''ods/installers/windows/lib/env-generator\.ps1''',
-  ]

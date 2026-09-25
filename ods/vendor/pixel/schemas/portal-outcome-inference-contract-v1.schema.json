@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-inference-contract-v1.schema.json",
+  "title": "Pixel private exact shared-inference comparison contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "sampling", "request", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-inference-contract-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-portal-outcome-inference-contract"},
+    "sampling": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source", "temperaturePermille", "topPPermille", "topK", "minPPermille", "repeatPenaltyPermille", "seed", "reasoningEffort", "reasoningVisibility"],
+      "properties": {
+        "source": {"const": "request-boundary-enforced"},
+        "temperaturePermille": {"type": "integer", "minimum": 0, "maximum": 2000},
+        "topPPermille": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "topK": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "minPPermille": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "repeatPenaltyPermille": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "reasoningEffort": {"enum": ["backend-default", "low", "medium", "high", "max"]},
+        "reasoningVisibility": {"const": "hidden"}
+      }
+    },
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["wireApi", "stream", "maxOutputTokens", "toolEncoding", "requestFieldPolicySha256", "promptCachePolicy"],
+      "properties": {
+        "wireApi": {"enum": ["openai-responses", "openai-chat-completions"]},
+        "stream": {"type": "boolean"},
+        "maxOutputTokens": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "toolEncoding": {"const": "function"}, "requestFieldPolicySha256": {"$ref": "#/$defs/hash"},
+        "promptCachePolicy": {"const": "empty-at-run-start"}
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantsInference", "grantsToolUse", "grantsExecution", "grantsCompletion"],
+      "properties": {
+        "grantsInference": {"const": false}, "grantsToolUse": {"const": false},
+        "grantsExecution": {"const": false}, "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Private exact shared-inference identity for controlled harness comparison only. Exact request-boundary enforcement and run evidence are required; this contract grants no inference, tool, execution, completion, publication, deployment, acceptance, or promotion authority."}
+  },
+  "$defs": {"hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

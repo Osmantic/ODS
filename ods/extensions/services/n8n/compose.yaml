@@ -3,11 +3,16 @@ services:
     image: n8nio/n8n:2.6.4
     container_name: ods-n8n
     restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
+    user: "${N8N_RUN_USER:-${ODS_UID:-1000}:${ODS_GID:-1000}}"
     security_opt:
       - no-new-privileges:true
     entrypoint: ["tini", "--", "/bin/sh", "/opt/ods/n8n-entrypoint.sh"]
     environment:
+      # A host UID may not exist in the image passwd database (for example,
+      # Colima's 501). The image's /home/node is not traversable by that UID;
+      # keep the persistent data mount at n8n's resolved user-folder path.
+      - HOME=/tmp
+      - N8N_USER_FOLDER=/tmp
       - N8N_DEFAULT_ADMIN_EMAIL=${N8N_USER:?N8N_USER must be set in .env}
       - N8N_DEFAULT_ADMIN_PASSWORD=${N8N_PASS:?N8N_PASS must be set in .env}
       - N8N_HOST=${N8N_HOST:-localhost}
@@ -21,8 +26,8 @@ services:
     volumes:
       - ./extensions/services/n8n/n8n-cookie-policy.sh:/opt/ods/n8n-cookie-policy.sh:ro,z
       - ./extensions/services/n8n/n8n-entrypoint.sh:/opt/ods/n8n-entrypoint.sh:ro,z
-      - ./data/n8n:/home/node/.n8n:z
-      - ./config/n8n:/home/node/workflows:z
+      - ./data/n8n:/tmp/.n8n:z
+      - ./config/n8n:/tmp/workflows:z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${N8N_PORT:-5678}:5678"
     deploy:

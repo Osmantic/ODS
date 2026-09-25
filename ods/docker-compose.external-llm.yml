@@ -25,6 +25,10 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       LLM_BACKEND: external
+      EXTERNAL_LLM_CONTAINER_URL: "${EXTERNAL_LLM_CONTAINER_URL}"
+      EXTERNAL_LLM_PROVIDER: "${EXTERNAL_LLM_PROVIDER:-openai-compatible}"
+      EXTERNAL_LLM_MODEL: "${EXTERNAL_LLM_MODEL:-}"
+      ODS_MODEL_SWITCHBOARD: "${ODS_MODEL_SWITCHBOARD:-observe}"
       LLM_API_BASE_PATH: /v1
       ODS_TALK_VISION_URL: "${EXTERNAL_LLM_CONTAINER_URL}/v1"
       AMD_INFERENCE_RUNTIME: ""

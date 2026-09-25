@@ -1,0 +1,68 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: hedgedoc
+  name: HedgeDoc
+  aliases: []
+  container_name: ods-hedgedoc
+  host_env: HEDGEDOC_HOST
+  default_host: hedgedoc
+  port: 3000
+  external_port_env: HEDGEDOC_PORT
+  external_port_default: 11043
+  health: /_health
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Edit Markdown collaboratively with revision history, account-based
+    permissions and persistent uploaded attachments.
+  env_vars:
+  - key: HEDGEDOC_DATABASE_PASSWORD
+    required: true
+    secret: true
+    description: Persistent password for the dedicated notes database.
+  - key: HEDGEDOC_SESSION_SECRET
+    required: true
+    secret: true
+    description: Persistent random session signing secret; use at least 32 random
+      characters.
+  - key: HEDGEDOC_DOMAIN
+    required: false
+    default: localhost:11043
+    description: Browser hostname and port, without scheme. Update with the published
+      port.
+  - key: HEDGEDOC_ALLOW_REGISTER
+    required: false
+    default: 'false'
+    description: Allow local email/password account registration; false keeps account
+      creation in the upstream CLI.
+  ui_path: /
+tags:
+- collaboration
+- markdown
+- open-source
+features:
+- id: hedgedoc-workspace
+  name: HedgeDoc
+  description: Edit Markdown collaboratively with revision history, account-based
+    permissions and persistent uploaded attachments.
+  icon: FilePenLine
+  category: productivity
+  requirements:
+    services:
+    - hedgedoc
+    vram_gb: 0
+  enabled_services_all:
+  - hedgedoc
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: hedgedoc
+    path: /

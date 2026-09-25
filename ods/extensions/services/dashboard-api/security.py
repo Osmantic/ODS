@@ -26,12 +26,14 @@ security_scheme = HTTPBearer(auto_error=False)
 
 
 def request_uses_https(request: Request) -> bool:
-    """Return the original client scheme across the supported proxy hops."""
+    """Choose Secure cookies when either the socket or first proxy hop is HTTPS.
+
+    Forwarded headers can strengthen this flag, never weaken direct TLS or
+    authorize a request. The edge proxy must overwrite client-supplied headers.
+    """
     forwarded_proto = request.headers.get("x-forwarded-proto", "")
-    if forwarded_proto:
-        original_proto = forwarded_proto.split(",", 1)[0].strip().lower()
-        return original_proto == "https"
-    return request.url.scheme.lower() == "https"
+    original_proto = forwarded_proto.split(",", 1)[0].strip().lower()
+    return request.url.scheme.lower() == "https" or original_proto == "https"
 
 
 async def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(security_scheme)):

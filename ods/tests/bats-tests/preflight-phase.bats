@@ -48,6 +48,28 @@ teardown() {
     rm -rf "$BATS_TEST_TMPDIR/ods" "$BATS_TEST_TMPDIR/install-target"
 }
 
+install_preflight_tool_stubs() {
+    mkdir -p "$BATS_TEST_TMPDIR/bin"
+    cat > "$BATS_TEST_TMPDIR/bin/curl" << 'MOCK'
+#!/bin/bash
+if [[ " $* " == *" --version "* ]]; then
+    echo "curl 8.0.0"
+    exit 0
+fi
+case "${*: -1}" in
+    https://github.com) printf '200' ;;
+    https://registry-1.docker.io/v2/) printf '401' ;;
+    *) exit 7 ;;
+esac
+MOCK
+    cat > "$BATS_TEST_TMPDIR/bin/jq" << 'MOCK'
+#!/bin/bash
+echo "jq-1.7"
+MOCK
+    chmod +x "$BATS_TEST_TMPDIR/bin/curl" "$BATS_TEST_TMPDIR/bin/jq"
+    export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+}
+
 # ── Root check ──────────────────────────────────────────────────────────────
 
 @test "preflight: fails when run as root" {
@@ -140,21 +162,7 @@ teardown() {
 
 @test "preflight: passes when compose files exist" {
     touch "$SCRIPT_DIR/docker-compose.base.yml"
-    # Create a fake curl in PATH
-    mkdir -p "$BATS_TEST_TMPDIR/bin"
-    cat > "$BATS_TEST_TMPDIR/bin/curl" << 'MOCK'
-#!/bin/bash
-echo "curl 8.0.0"
-MOCK
-    chmod +x "$BATS_TEST_TMPDIR/bin/curl"
-    export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
-
-    # Create fake jq
-    cat > "$BATS_TEST_TMPDIR/bin/jq" << 'MOCK'
-#!/bin/bash
-echo "jq-1.7"
-MOCK
-    chmod +x "$BATS_TEST_TMPDIR/bin/jq"
+    install_preflight_tool_stubs
 
     # Source the phase script (it will exit on error, so we capture)
     run bash -c '
@@ -190,12 +198,8 @@ MOCK
     touch "$SCRIPT_DIR/docker-compose.base.yml"
     mkdir -p "$INSTALL_DIR"
 
-    # Stub curl and jq so the phase script doesn't try to auto-install them via sudo
-    mkdir -p "$BATS_TEST_TMPDIR/bin"
-    printf '#!/bin/bash\necho "curl 8.0.0"\n' > "$BATS_TEST_TMPDIR/bin/curl"
-    printf '#!/bin/bash\necho "jq-1.7"\n'     > "$BATS_TEST_TMPDIR/bin/jq"
-    chmod +x "$BATS_TEST_TMPDIR/bin/curl" "$BATS_TEST_TMPDIR/bin/jq"
-    export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    # Stub successful required-network probes and required tools.
+    install_preflight_tool_stubs
 
     run bash -c '
         export SCRIPT_DIR="'"$SCRIPT_DIR"'"
@@ -227,20 +231,9 @@ MOCK
 
 @test "preflight: warns about missing optional tools" {
     touch "$SCRIPT_DIR/docker-compose.base.yml"
-    mkdir -p "$BATS_TEST_TMPDIR/bin"
-
-    # Create curl and jq, then shadow command -v rsync so the warning path is deterministic
-    cat > "$BATS_TEST_TMPDIR/bin/curl" << 'MOCK'
-#!/bin/bash
-echo "curl 8.0.0"
-MOCK
-    chmod +x "$BATS_TEST_TMPDIR/bin/curl"
-    cat > "$BATS_TEST_TMPDIR/bin/jq" << 'MOCK'
-#!/bin/bash
-echo "jq-1.7"
-MOCK
-    chmod +x "$BATS_TEST_TMPDIR/bin/jq"
-    export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    # Stub successful required-network probes, then shadow command -v rsync so
+    # the optional-tool warning path remains deterministic.
+    install_preflight_tool_stubs
 
     run bash -c '
         export SCRIPT_DIR="'"$SCRIPT_DIR"'"

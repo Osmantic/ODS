@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "candidateManifestSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "intakeSourceCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "generalReview": {
+    "decision": "compatible",
+    "reviewer": "reviewer-identity",
+    "reviewedAt": "2026-01-01T00:00:00Z",
+    "rationale": "Every normalized interface and implementation group was reviewed against Pixel's authority and capability contracts."
+  },
+  "decisions": [
+    {
+      "id": "0123456789abcdef",
+      "decision": "compatible",
+      "risk": "none",
+      "reviewer": "reviewer-identity",
+      "reviewedAt": "2026-01-01T00:00:00Z",
+      "rationale": "The conservative signal is implementation churn only; the externally enforced authority and refusal behavior is unchanged."
+    }
+  ]
+}

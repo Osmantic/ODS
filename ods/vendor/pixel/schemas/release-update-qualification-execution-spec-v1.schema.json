@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-qualification-execution-spec-v1.schema.json",
+  "title": "Pixel qualification execution spec v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "operation",
+    "candidateId",
+    "probe",
+    "probeRelativePath",
+    "probeSha256",
+    "argv",
+    "timeoutSeconds",
+    "workdir",
+    "environment",
+    "runtime",
+    "network",
+    "readOnlyRoot",
+    "sourceBindReadOnly",
+    "capDropAll",
+    "noNewPrivileges",
+    "pidsLimit",
+    "memory",
+    "cpus",
+    "scratch",
+    "sourceTreeSha256",
+    "boundary",
+    "logDriver",
+    "entrypoint"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "operation": {
+      "const": "pixel-release-qualification-execution-spec"
+    },
+    "candidateId": {
+      "type": "string",
+      "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"
+    },
+    "probe": {
+      "type": "string",
+      "pattern": "^/candidate/"
+    },
+    "probeRelativePath": {
+      "type": "string"
+    },
+    "probeSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "argv": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "string"
+      }
+    },
+    "timeoutSeconds": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 3600
+    },
+    "workdir": {
+      "const": "/scratch"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sandbox",
+        "image",
+        "imageDigest",
+        "containerName",
+        "uid",
+        "gid"
+      ],
+      "properties": {
+        "sandbox": {
+          "const": "docker"
+        },
+        "image": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$"
+        },
+        "imageDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "containerName": {
+          "type": "string",
+          "pattern": "^pixel-qual-exec-[0-9a-f]{20}$"
+        },
+        "uid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "gid": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "network": {
+      "const": "none"
+    },
+    "readOnlyRoot": {
+      "const": true
+    },
+    "sourceBindReadOnly": {
+      "const": true
+    },
+    "capDropAll": {
+      "const": true
+    },
+    "noNewPrivileges": {
+      "const": true
+    },
+    "pidsLimit": {
+      "const": 64
+    },
+    "memory": {
+      "const": "256m"
+    },
+    "cpus": {
+      "const": "1"
+    },
+    "scratch": {
+      "type": "string",
+      "pattern": "^/scratch:rw,size=64m,mode=0700,uid=[0-9]+,gid=[0-9]+$"
+    },
+    "sourceTreeSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "boundary": {
+      "const": "Qualification-root-only fixed, durable, owner-private execution specification for one claimed host-run; written with O_EXCL and fsynced before the execution claim, it fixes probe, argv, cwd, environment, image, sandbox, resource, and container-name contract, and grants no production, publication, compatibility, or promotion authority."
+    },
+    "logDriver": {
+      "const": "none"
+    },
+    "entrypoint": {
+      "const": "/usr/bin/env"
+    }
+  }
+}

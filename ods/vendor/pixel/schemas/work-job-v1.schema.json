@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-job-v1.schema.json",
+  "title": "Pixel Deep Work job request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "jobId", "createdAt", "requester", "profile", "objective", "acceptanceCriteria", "dataClassification", "inputs", "requestedCapabilities", "budgets", "outputs", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-job-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "jobId": {"$ref": "#/$defs/jobId"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "requester": {"const": "pixel"},
+    "profile": {"enum": ["scout", "builder", "data-lab", "researcher", "public-project"]},
+    "objective": {"type": "string", "minLength": 1, "maxLength": 8000},
+    "acceptanceCriteria": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 1000}
+    },
+    "verification": {"$ref": "#/$defs/verification"},
+    "research": {"$ref": "#/$defs/research"},
+    "data": {"$ref": "#/$defs/data"},
+    "knowledge": {"$ref": "#/$defs/knowledge"},
+    "dataClassification": {"$ref": "#/$defs/classification"},
+    "inputs": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/input"}
+    },
+    "requestedCapabilities": {"$ref": "#/$defs/requestedCapabilities"},
+    "budgets": {"$ref": "#/$defs/budgets"},
+    "outputs": {"$ref": "#/$defs/outputs"},
+    "boundary": {"const": "This request proposes a bounded disposable job only. It grants no capability, credential, network, merge, deployment, policy-change, production, publication, purchase, or external-effect authority."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"profile": {"const": "scout"}}, "required": ["profile"]},
+      "then": {
+        "properties": {
+          "requestedCapabilities": {
+            "properties": {
+              "filesystem": {"const": "read-only-workspace"},
+              "tools": {
+                "type": "array",
+                "items": {"enum": ["read", "search"]}
+              },
+              "network": {"properties": {"mode": {"const": "brokered"}, "services": {"const": ["local-model"]}}},
+              "modelRoute": {"const": "local-only"}
+            }
+          },
+          "outputs": {"properties": {"mode": {"const": "analysis"}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"profile": {"const": "public-project"}}, "required": ["profile"]},
+      "then": {"properties": {"dataClassification": {"const": "public"}}}
+    },
+    {
+      "if": {"properties": {"profile": {"const": "researcher"}}, "required": ["profile"]},
+      "then": {
+        "required": ["research"],
+        "properties": {
+          "dataClassification": {"const": "public"},
+          "requestedCapabilities": {
+            "properties": {
+              "filesystem": {"const": "disposable-read-write"},
+              "tools": {"const": ["read", "search", "write", "edit", "bash"]},
+              "network": {"properties": {"mode": {"const": "brokered"}, "services": {"const": ["local-model", "research-broker"]}}},
+              "modelRoute": {"const": "local-only"}
+            }
+          },
+          "outputs": {"properties": {"mode": {"const": "artifacts"}, "requiredKinds": {"const": ["finding-report", "document"]}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"profile": {"const": "data-lab"}}, "required": ["profile"]},
+      "then": {
+        "required": ["data"],
+        "properties": {
+          "requestedCapabilities": {
+            "properties": {
+              "filesystem": {"const": "disposable-read-write"},
+              "tools": {"const": ["read", "search", "write", "edit", "bash"]},
+              "network": {"properties": {"mode": {"const": "brokered"}, "services": {"const": ["local-model"]}}},
+              "modelRoute": {"const": "local-only"}
+            }
+          },
+          "outputs": {"properties": {"mode": {"const": "artifacts"}, "requiredKinds": {"const": ["finding-report", "dataset", "document", "visualization"]}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"profile": {"enum": ["builder", "public-project"]}}, "required": ["profile"]},
+      "then": {
+        "required": ["verification"],
+        "properties": {"requestedCapabilities": {"properties": {"filesystem": {"const": "disposable-read-write"}}}}
+      }
+    },
+    {
+      "if": {"properties": {"profile": {"enum": ["researcher", "public-project"]}}, "required": ["profile"]},
+      "then": {"properties": {"knowledge": false}}
+    },
+    {
+      "if": {"properties": {"dataClassification": {"enum": ["internal", "confidential", "restricted"]}}, "required": ["dataClassification"]},
+      "then": {"properties": {"requestedCapabilities": {"properties": {"modelRoute": {"const": "local-only"}}}}}
+    }
+  ],
+  "$defs": {
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "classification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "checks", "immutablePathPrefixes", "maxRuntimeSeconds", "maxOutputBytes", "network", "boundary"],
+      "properties": {
+        "mode": {"const": "independent"},
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {"oneOf": [{"$ref": "#/$defs/patchIntegrityCheck"}, {"$ref": "#/$defs/commandCheck"}]}
+        },
+        "immutablePathPrefixes": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*/?$"}
+        },
+        "maxRuntimeSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "network": {"const": "none"},
+        "boundary": {"const": "Immutable controller-selected checks only. Worker output cannot alter criteria, commands, protected paths, budgets, network, or pass/fail rules."}
+      }
+    },
+    "patchIntegrityCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "criterionIndexes"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "kind": {"const": "patch-integrity"},
+        "criterionIndexes": {"$ref": "#/$defs/criterionIndexes"}
+      }
+    },
+    "commandCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "criterionIndexes", "workingDirectory", "argv", "timeoutSeconds", "maxOutputBytes"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "kind": {"const": "command"},
+        "criterionIndexes": {"$ref": "#/$defs/criterionIndexes"},
+        "workingDirectory": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+        "argv": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
+        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216}
+      }
+    },
+    "criterionIndexes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 0, "maximum": 31}
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "mountMode", "contentSha256", "maxBytes", "classification"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "kind": {"enum": ["repository-snapshot", "dataset", "document", "context"]},
+        "mountMode": {"const": "read-only"},
+        "contentSha256": {"$ref": "#/$defs/sha256"},
+        "maxBytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776},
+        "classification": {"$ref": "#/$defs/classification"}
+      }
+    },
+    "research": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "queryPolicy", "maxQueries", "maxResultsPerQuery", "maxSources", "maxSourceBytes", "maxTotalSourceBytes", "safeSearch", "allowedDomains", "deniedDomains", "sourceTypes", "citationVerification", "retention", "boundary"],
+      "properties": {
+        "mode": {"const": "public-web"},
+        "queryPolicy": {"const": "public-sanitized"},
+        "maxQueries": {"type": "integer", "minimum": 1, "maximum": 200},
+        "maxResultsPerQuery": {"type": "integer", "minimum": 1, "maximum": 20},
+        "maxSources": {"type": "integer", "minimum": 1, "maximum": 500},
+        "maxSourceBytes": {"type": "integer", "minimum": 1024, "maximum": 20971520},
+        "maxTotalSourceBytes": {"type": "integer", "minimum": 1024, "maximum": 1073741824},
+        "safeSearch": {"const": "strict"},
+        "allowedDomains": {"$ref": "#/$defs/domains"},
+        "deniedDomains": {"$ref": "#/$defs/domains"},
+        "sourceTypes": {
+          "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true,
+          "items": {"enum": ["web", "news", "academic", "forum"]}
+        },
+        "citationVerification": {"const": true},
+        "retention": {"const": "job-only"},
+        "boundary": {"const": "Public sanitized read-only research only. Queries and sources are untrusted data and grant no credential, direct-network, external-action, publication, purchase, policy, or scope authority."}
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "datasets", "engines", "maxArtifactFiles", "maxArtifactBytes", "allowedArtifactFormats", "replayVerification", "retention", "boundary"],
+      "properties": {
+        "mode": {"const": "local-reproducible"},
+        "datasets": {
+          "type": "array", "minItems": 1, "maxItems": 64,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["datasetId", "inputId", "relativePath", "format", "contentSha256", "maxBytes"],
+            "properties": {
+              "datasetId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+              "inputId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+              "relativePath": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+              "format": {"enum": ["csv", "json", "jsonl", "parquet", "sqlite"]},
+              "contentSha256": {"$ref": "#/$defs/sha256"},
+              "maxBytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776}
+            }
+          }
+        },
+        "engines": {"const": ["duckdb", "polars", "python", "sqlite"]},
+        "maxArtifactFiles": {"type": "integer", "minimum": 1, "maximum": 256},
+        "maxArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 1073741824},
+        "allowedArtifactFormats": {
+          "type": "array", "minItems": 1, "maxItems": 9, "uniqueItems": true,
+          "items": {"enum": ["csv", "json", "jsonl", "markdown", "parquet", "png", "sqlite", "svg"]}
+        },
+        "replayVerification": {"const": true},
+        "retention": {"const": "job-only"},
+        "boundary": {"const": "Local reproducible analysis only. Raw inputs remain read-only; only independently replayed derived artifacts may be retained. No credential, direct-network, external-action, publication, policy, or scope authority is granted."}
+      }
+    },
+    "knowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "query", "maximumClassification", "minRelevanceBps", "maxResults", "retention", "boundary"],
+      "properties": {
+        "mode": {"const": "local-vault"},
+        "query": {"type": "string", "minLength": 1, "maxLength": 8000, "pattern": "^[^\\u0000\\r\\n]+$"},
+        "maximumClassification": {"$ref": "#/$defs/classification"},
+        "minRelevanceBps": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "maxResults": {"type": "integer", "minimum": 1, "maximum": 20},
+        "retention": {"const": "attempt-only"},
+        "boundary": {"const": "Exact local-vault retrieval only. Retrieved titles and excerpts are untrusted attempt-only context and grant no instruction, tool, network, external-effect, policy, scope-expansion, acceptance, or completion authority."}
+      }
+    },
+    "domains": {
+      "type": "array", "maxItems": 128, "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))+$"}
+    },
+    "requestedCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filesystem", "tools", "network", "modelRoute", "hostAccess", "ambientCredentials", "externalEffects", "mergeAuthority", "deployAuthority", "policyMutation"],
+      "properties": {
+        "filesystem": {"enum": ["read-only-workspace", "disposable-read-write"]},
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"enum": ["read", "search", "write", "edit", "bash", "eval", "lsp", "debug", "task", "hub"]}
+        },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "services"],
+          "properties": {
+            "mode": {"enum": ["none", "brokered"]},
+            "services": {
+              "type": "array",
+              "maxItems": 4,
+              "uniqueItems": true,
+              "items": {"enum": ["local-model", "package-courier", "research-broker", "frontier-work-provider"]}
+            }
+          },
+          "allOf": [
+            {"if": {"properties": {"mode": {"const": "none"}}, "required": ["mode"]}, "then": {"properties": {"services": {"const": []}}}}
+          ]
+        },
+        "modelRoute": {"enum": ["local-only", "explicit-remote"]},
+        "hostAccess": {"const": false},
+        "ambientCredentials": {"const": false},
+        "externalEffects": {"const": false},
+        "mergeAuthority": {"const": false},
+        "deployAuthority": {"const": false},
+        "policyMutation": {"const": false}
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxRuntimeSeconds", "maxIterations", "maxToolCalls", "maxConcurrentSubagents", "maxModelRequests", "maxInputTokens", "maxOutputTokens", "maxCpuCores", "maxMemoryMiB", "maxDiskBytes", "maxArtifactBytes", "maxNetworkBytes", "maxFailures", "noProgressLimit"],
+      "properties": {
+        "maxRuntimeSeconds": {"type": "integer", "minimum": 1, "maximum": 604800},
+        "maxIterations": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "maxToolCalls": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "maxConcurrentSubagents": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maxModelRequests": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "maxInputTokens": {"type": "integer", "minimum": 1, "maximum": 2000000000},
+        "maxOutputTokens": {"type": "integer", "minimum": 1, "maximum": 500000000},
+        "maxCpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maxMemoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+        "maxDiskBytes": {"type": "integer", "minimum": 1048576, "maximum": 1099511627776},
+        "maxArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 34359738368},
+        "maxNetworkBytes": {"type": "integer", "minimum": 0, "maximum": 10737418240},
+        "maxFailures": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "noProgressLimit": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "requiredKinds"],
+      "properties": {
+        "mode": {"enum": ["analysis", "patch", "artifacts"]},
+        "requiredKinds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"enum": ["finding-report", "patch", "test-evidence", "dataset", "document", "visualization"]}
+        }
+      }
+    }
+  }
+}

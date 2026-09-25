@@ -12,7 +12,8 @@ Thanks for wanting to contribute. ODS is open source and we welcome help from ev
 3. Make your changes, test them locally, and commit.
 4. Open a **pull request** against `main`.
 
-No CLA, no hoops.
+Original Apache-licensed ODS contributions do not require a CLA. Contributions
+to separately licensed components must follow the [component terms](#license).
 
 ## Forks and Custom Editions
 
@@ -72,4 +73,16 @@ Not sure about something? Open a thread in [GitHub Discussions](https://github.c
 
 ## License
 
-By contributing, you agree that your work will be licensed under the [Apache License 2.0](LICENSE).
+ODS is mixed-license. Contributions to original ODS code are offered under the
+[Apache License 2.0](LICENSE), except where a file or component has a separate
+notice. Pixel source in `ods/vendor/pixel/` has an
+[ODS-specific source-available license](ods/vendor/pixel/LICENSE.md); the Apache
+contribution statement does not apply to that component or relicense third-party
+material. Before accepting a Pixel contribution, maintainers and the contributor
+must establish the applicable inbound terms and the contributor's right to offer
+the change. Do not assume that contributing Pixel code makes it Apache-licensed.
+
+Retain upstream copyright and license notices. For copied code, artwork, fonts,
+or model artifacts, identify the source, version, rights holder and applicable
+terms in the PR. See [Licensing](ods/LICENSING.md) and the
+[third-party review](ods/docs/THIRD-PARTY-LICENSING.md).

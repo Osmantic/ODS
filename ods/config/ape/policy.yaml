@@ -16,6 +16,11 @@
 #                      "action: require_approval" (a third decision tier; the
 #                      /verify response gains optional `decision` and
 #                      `approval_token` fields, retried through POST /approve).
+#                      Pending approval tokens expire after 15 minutes. A granted
+#                      one-shot retry expires 15 minutes after approval. Restart
+#                      does not renew either window; expired requests must be
+#                      verified again. These runtime limits cannot be disabled
+#                      by this policy file.
 #   circuit_breaker  — trips to deny-all when the deny ratio over a rolling
 #                      window is too high; tripped state is persisted across
 #                      restarts under /data/ape/state.json.

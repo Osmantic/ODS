@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/frontier-live-receipt-v1.schema.json",
+  "title": "Pixel content-free Frontier live-qualification receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "qualificationId", "status", "outcome", "checkedAt", "authMode", "billingBoundary", "syntheticOnly", "authorizationBound", "exactApprovalBound", "maxProviderCalls", "providerCallsObserved", "providerCallCeilingHeld", "usage", "cost", "privacy"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "qualificationId": {"type": "string", "pattern": "^qualification-[0-9]{13}-[a-f0-9]{12}$"},
+    "status": {"enum": ["pass", "fail", "inconclusive"]},
+    "outcome": {"enum": ["provider-success", "provider-failed", "provider-cancelled", "provider-not-invoked", "interrupted-after-approval", "evidence-inconsistent"]},
+    "checkedAt": {"type": "string", "format": "date-time"},
+    "authMode": {"enum": ["chatgpt", "api-key"]},
+    "billingBoundary": {"enum": ["chatgpt-plan-or-credits", "platform-api"]},
+    "syntheticOnly": {"const": true},
+    "authorizationBound": {"const": true},
+    "exactApprovalBound": {"const": true},
+    "maxProviderCalls": {"const": 1},
+    "providerCallsObserved": {"type": "integer", "minimum": 0, "maximum": 200000},
+    "providerCallCeilingHeld": {"type": "boolean"},
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available", "inputTokens", "outputTokens"],
+      "properties": {
+        "available": {"type": "boolean"},
+        "inputTokens": {"type": ["integer", "null"], "minimum": 0},
+        "outputTokens": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "currency", "estimatedAmountMicros"],
+      "properties": {
+        "mode": {"enum": ["subscription", "metered"]},
+        "currency": {"type": ["string", "null"], "enum": ["USD", null]},
+        "estimatedAmountMicros": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "privacy": {"const": "Content-free qualification evidence; no prompt, response, credential, account, job, provider, or model identifier."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "pass"}}, "required": ["status"]},
+      "then": {"properties": {"outcome": {"const": "provider-success"}, "providerCallsObserved": {"const": 1}, "providerCallCeilingHeld": {"const": true}, "usage": {"properties": {"available": {"const": true}, "inputTokens": {"type": "integer", "minimum": 0, "maximum": 12000}, "outputTokens": {"type": "integer", "minimum": 0, "maximum": 256}}}}}
+    },
+    {
+      "if": {"properties": {"outcome": {"const": "provider-success"}}, "required": ["outcome"]},
+      "then": {"properties": {"status": {"const": "pass"}}}
+    },
+    {
+      "if": {"properties": {"usage": {"properties": {"available": {"const": false}}, "required": ["available"]}}, "required": ["usage"]},
+      "then": {"properties": {"usage": {"properties": {"inputTokens": {"const": null}, "outputTokens": {"const": null}}}, "cost": {"properties": {"estimatedAmountMicros": {"const": null}}}}},
+      "else": {"properties": {"usage": {"properties": {"inputTokens": {"type": "integer"}, "outputTokens": {"type": "integer"}}}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "inconclusive"}}, "required": ["status"]},
+      "then": {"properties": {"outcome": {"const": "interrupted-after-approval"}}},
+      "else": {"properties": {"outcome": {"not": {"const": "interrupted-after-approval"}}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "fail"}}, "required": ["status"]},
+      "then": {"properties": {"outcome": {"enum": ["provider-failed", "provider-cancelled", "provider-not-invoked", "evidence-inconsistent"]}}}
+    },
+    {
+      "if": {"properties": {"providerCallsObserved": {"maximum": 1}}, "required": ["providerCallsObserved"]},
+      "then": {"properties": {"providerCallCeilingHeld": {"const": true}}},
+      "else": {"properties": {"providerCallCeilingHeld": {"const": false}, "status": {"const": "fail"}, "outcome": {"const": "evidence-inconsistent"}}}
+    },
+    {
+      "if": {"properties": {"authMode": {"const": "chatgpt"}}, "required": ["authMode"]},
+      "then": {"properties": {"billingBoundary": {"const": "chatgpt-plan-or-credits"}, "cost": {"properties": {"mode": {"const": "subscription"}, "currency": {"const": null}, "estimatedAmountMicros": {"const": null}}}}},
+      "else": {"properties": {"billingBoundary": {"const": "platform-api"}, "cost": {"properties": {"mode": {"const": "metered"}, "currency": {"const": "USD"}, "estimatedAmountMicros": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000}}}}}
+    }
+  ]
+}

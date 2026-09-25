@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-capability-receipt-v1.schema.json",
+  "title": "Pixel empirical model capability receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "qualificationId", "observedAt", "expiresAt", "model", "suite", "observations", "envelope", "status", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-capability-receipt-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "qualificationId": {"type": "string", "pattern": "^modelqual-[0-9]{13}-[a-f0-9]{12}$"},
+    "observedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "model": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "id", "modelArtifactSha256", "backendImageDigest", "backendVersion", "acceleratorClass", "promptContractSha256", "toolSchemaSha256", "contextWindow", "supportsVision"],
+      "properties": {
+        "provider": {"enum": ["llama.cpp", "ollama", "vllm", "openai-compatible-local"]},
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:+/-]{0,127}$"},
+        "modelArtifactSha256": {"$ref": "#/$defs/sha256"},
+        "backendImageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "backendVersion": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}$"},
+        "acceleratorClass": {"enum": ["cpu", "nvidia-cuda", "amd-rocm", "intel-xpu", "apple-metal", "other-local"]},
+        "promptContractSha256": {"$ref": "#/$defs/sha256"},
+        "toolSchemaSha256": {"$ref": "#/$defs/sha256"},
+        "contextWindow": {"type": "integer", "minimum": 1024, "maximum": 2000000},
+        "supportsVision": {"type": "boolean"}
+      }
+    },
+    "suite": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "casesSha256", "evaluatorSha256", "casesTotal", "requiredCategories"],
+      "properties": {
+        "id": {"const": "pixel-local-model-capability"},
+        "version": {"const": 1},
+        "casesSha256": {"$ref": "#/$defs/sha256"},
+        "evaluatorSha256": {"$ref": "#/$defs/sha256"},
+        "casesTotal": {"type": "integer", "minimum": 6, "maximum": 256},
+        "requiredCategories": {"const": ["argument-fidelity", "context-retention", "recovery-discipline", "structured-output", "tool-selection", "usage-accounting"]}
+      }
+    },
+    "observations": {
+      "type": "object", "additionalProperties": false,
+      "required": ["caseResults", "casesPassed", "casesFailed", "inputTokens", "outputTokens", "usageSource", "medianLatencyMs", "intentMutationObserved", "categoryPass", "profilePass"],
+      "properties": {
+        "caseResults": {
+          "type": "array", "minItems": 6, "maxItems": 256,
+          "items": {"$ref": "#/$defs/caseResult"}
+        },
+        "casesPassed": {"type": "integer", "minimum": 0, "maximum": 256},
+        "casesFailed": {"type": "integer", "minimum": 0, "maximum": 256},
+        "inputTokens": {"type": "integer", "minimum": 0, "maximum": 2000000000},
+        "outputTokens": {"type": "integer", "minimum": 0, "maximum": 500000000},
+        "usageSource": {"enum": ["backend-observed", "estimated"]},
+        "medianLatencyMs": {"type": "integer", "minimum": 0, "maximum": 86400000},
+        "intentMutationObserved": {"type": "boolean"},
+        "categoryPass": {
+          "type": "object", "additionalProperties": false,
+          "required": ["argument-fidelity", "context-retention", "recovery-discipline", "structured-output", "tool-selection", "usage-accounting"],
+          "properties": {
+            "argument-fidelity": {"type": "boolean"},
+            "context-retention": {"type": "boolean"},
+            "recovery-discipline": {"type": "boolean"},
+            "structured-output": {"type": "boolean"},
+            "tool-selection": {"type": "boolean"},
+            "usage-accounting": {"type": "boolean"}
+          }
+        },
+        "profilePass": {
+          "type": "object", "additionalProperties": false,
+          "required": ["assistant", "scout", "builder", "data-lab", "researcher"],
+          "properties": {
+            "assistant": {"type": "boolean"},
+            "scout": {"type": "boolean"},
+            "builder": {"type": "boolean"},
+            "data-lab": {"type": "boolean"},
+            "researcher": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    "envelope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["eligibleProfiles", "maxContextTokens", "maxOutputTokens", "structuredOutput", "toolSelection", "argumentFidelity", "contextRetention", "recoveryDiscipline", "exactUsage"],
+      "properties": {
+        "eligibleProfiles": {"type": "array", "maxItems": 5, "uniqueItems": true, "items": {"enum": ["assistant", "scout", "builder", "data-lab", "researcher"]}},
+        "maxContextTokens": {"type": "integer", "minimum": 0, "maximum": 2000000},
+        "maxOutputTokens": {"type": "integer", "minimum": 0, "maximum": 500000000},
+        "structuredOutput": {"type": "boolean"},
+        "toolSelection": {"type": "boolean"},
+        "argumentFidelity": {"type": "boolean"},
+        "contextRetention": {"type": "boolean"},
+        "recoveryDiscipline": {"type": "boolean"},
+        "exactUsage": {"type": "boolean"}
+      }
+    },
+    "status": {"enum": ["qualified", "degraded", "failed"]},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantsExecution", "grantsNetwork", "grantsCredentials", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "grantsExecution": {"const": false},
+        "grantsNetwork": {"const": false},
+        "grantsCredentials": {"const": false},
+        "grantsExternalEffects": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Content-free empirical capability evidence for one exact model/backend/prompt/tool contract. It grants no execution, data, credential, network, external-effect, or completion authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "caseResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "category", "profiles", "caseSha256", "passed", "failureClass", "intentMutationObserved", "inputTokens", "outputTokens", "usageSource", "latencyMs", "contextTokensTested", "outputTokensRequired"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "category": {"enum": ["argument-fidelity", "context-retention", "recovery-discipline", "structured-output", "tool-selection", "usage-accounting"]},
+        "profiles": {"type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": {"enum": ["assistant", "scout", "builder", "data-lab", "researcher"]}},
+        "caseSha256": {"$ref": "#/$defs/sha256"},
+        "passed": {"type": "boolean"},
+        "failureClass": {"enum": ["pass", "invocation-failed", "missing-response", "finish-reason-mismatch", "unexpected-tool-call", "content-type-mismatch", "content-mismatch", "json-parse-failed", "json-value-mismatch", "tool-call-shape-mismatch", "tool-arguments-parse-failed", "tool-name-mismatch", "tool-arguments-mismatch", "usage-missing", "output-underflow"]},
+        "intentMutationObserved": {"type": "boolean"},
+        "inputTokens": {"type": "integer", "minimum": 0, "maximum": 2000000000},
+        "outputTokens": {"type": "integer", "minimum": 0, "maximum": 500000000},
+        "usageSource": {"enum": ["backend-observed", "estimated"]},
+        "latencyMs": {"type": "integer", "minimum": 0, "maximum": 86400000},
+        "contextTokensTested": {"type": "integer", "minimum": 1, "maximum": 2000000},
+        "outputTokensRequired": {"type": "integer", "minimum": 1, "maximum": 500000000}
+      }
+    }
+  }
+}

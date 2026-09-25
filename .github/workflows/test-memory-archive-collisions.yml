@@ -1,0 +1,25 @@
+name: Memory Shepherd archive preservation
+
+on:
+  pull_request:
+    paths:
+      - 'ods/memory-shepherd/**'
+      - 'ods/tests/test-memory-shepherd-archive-collisions.py'
+      - '.github/workflows/test-memory-archive-collisions.yml'
+  push:
+    branches: [main, public-beta]
+    paths:
+      - 'ods/memory-shepherd/**'
+      - 'ods/tests/test-memory-shepherd-archive-collisions.py'
+      - '.github/workflows/test-memory-archive-collisions.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  archive-preservation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Preserve earlier archives across local and remote resets
+        run: sudo python3 ods/tests/test-memory-shepherd-archive-collisions.py

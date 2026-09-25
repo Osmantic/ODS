@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-data-report-v1.schema.json",
+  "title": "Pixel finalized Data Lab report v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "reportId", "jobId", "claimId", "planSha256", "workspaceSha256", "createdAt", "manifestSha256", "recipeSha256", "title", "summary", "methodology", "artifacts", "findings", "limitations", "dataClassification", "privateDataIncluded", "externalEffects", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-data-report-v1.schema.json"}, "schemaVersion": {"const": 1},
+    "reportId": {"type": "string", "pattern": "^data-report-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "claimId": {"type": "string", "pattern": "^workclaim-[0-9]{13}-[a-f0-9]{12}$"},
+    "planSha256": {"$ref": "#/$defs/sha256"}, "workspaceSha256": {"$ref": "#/$defs/sha256"},
+    "createdAt": {"type": "string", "format": "date-time"}, "manifestSha256": {"$ref": "#/$defs/sha256"}, "recipeSha256": {"$ref": "#/$defs/sha256"},
+    "title": {"type": "string", "minLength": 1, "maxLength": 500}, "summary": {"type": "string", "minLength": 1, "maxLength": 20000},
+    "methodology": {"type": "string", "minLength": 1, "maxLength": 20000},
+    "artifacts": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"$ref": "#/$defs/reportArtifact"}},
+    "findings": {
+      "type": "array", "minItems": 1, "maxItems": 128,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["findingId", "statement", "evidence"],
+        "properties": {
+          "findingId": {"type": "string", "pattern": "^finding-[1-9][0-9]{0,2}$"}, "statement": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "evidence": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "object", "additionalProperties": false, "required": ["artifactId", "path", "sha256"], "properties": {"artifactId": {"type": "string", "pattern": "^artifact-[1-9][0-9]{0,2}$"}, "path": {"type": "string", "pattern": "^artifacts/[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"}, "sha256": {"$ref": "#/$defs/sha256"}}}}
+        }
+      }
+    },
+    "limitations": {"type": "string", "minLength": 1, "maxLength": 10000},
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]}, "privateDataIncluded": {"type": "boolean"}, "externalEffects": {"const": false},
+    "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Finalized local Data Lab report bound to exact derived artifacts. Exact replay proves reproducibility, not semantic truth; publication, external action, policy change, and completion remain outside worker authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "reportArtifact": {"type": "object", "additionalProperties": false, "required": ["artifactId", "path", "kind", "format", "mediaType", "bytes", "sha256", "purpose"], "properties": {
+      "artifactId": {"type": "string", "pattern": "^artifact-[1-9][0-9]{0,2}$"}, "path": {"type": "string", "pattern": "^artifacts/[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+      "kind": {"enum": ["dataset", "document", "visualization"]}, "format": {"enum": ["csv", "json", "jsonl", "markdown", "parquet", "png", "sqlite", "svg"]},
+      "mediaType": {"type": "string", "minLength": 1, "maxLength": 100}, "bytes": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}, "purpose": {"type": "string", "minLength": 1, "maxLength": 1000}
+    }},
+    "authority": {"type": "object", "additionalProperties": false, "required": ["rawInputMutation", "hostAccess", "network", "credentials", "externalEffects", "publish", "policyMutation", "scopeExpansion"], "properties": {
+      "rawInputMutation": {"const": false}, "hostAccess": {"const": false}, "network": {"const": false}, "credentials": {"const": false},
+      "externalEffects": {"const": false}, "publish": {"const": false}, "policyMutation": {"const": false}, "scopeExpansion": {"const": false}
+    }}
+  }
+}

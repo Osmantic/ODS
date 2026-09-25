@@ -46,6 +46,12 @@ Environment variables (set in `.env`):
 > `scripts/repair/repair-perplexica.sh <perplexica-url> <model-name>` from the
 > installed `ods` directory.
 
+> **Embedding model:** When both embedding defaults are unselected, ODS selects
+> Perplexica's existing Transformers `Xenova/all-MiniLM-L6-v2` model if the app
+> advertises it. Existing or partly configured owner selections are preserved.
+> If the built-in model is unavailable or a selection is incomplete, choose a
+> provider and embedding model in Perplexica Settings before delegating research.
+
 ## Architecture
 
 ```

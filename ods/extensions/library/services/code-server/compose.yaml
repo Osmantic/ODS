@@ -1,0 +1,61 @@
+services:
+  code-server:
+    image: ods/code-server:4.138.0-workspace-v1
+    container_name: ods-code-server
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${CODE_SERVER_PORT:-11030}:8080
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --output
+      - /dev/null
+      - --max-time
+      - '5'
+      - http://127.0.0.1:8080/healthz
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      PASSWORD: ${CODE_SERVER_PASSWORD:?Set a strong editor password}
+    volumes:
+    - code-server-home:/home/coder
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint:
+    - /usr/bin/dumb-init
+    - --
+    - /usr/bin/code-server
+    command:
+    - --bind-addr
+    - 0.0.0.0:8080
+    - --auth
+    - password
+    - --disable-telemetry
+    - /home/coder/Playground
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  code-server-home: {}

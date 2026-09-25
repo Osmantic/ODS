@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE properties SYSTEM 'http://java.sun.com/dtd/properties.dtd'>
+<properties>
+    <entry key='database.driver'>org.postgresql.Driver</entry>
+    <entry key='database.url'>jdbc:postgresql://traccar-db:5432/traccar</entry>
+    <entry key='database.user'>traccar</entry>
+    <entry key='web.port'>8082</entry>
+    <entry key='protocols.enable'>osmand</entry>
+    <entry key='osmand.port'>5055</entry>
+    <entry key='logger.console'>true</entry>
+    <entry key='geocoder.enable'>false</entry>
+</properties>

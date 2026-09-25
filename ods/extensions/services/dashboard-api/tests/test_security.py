@@ -2,10 +2,23 @@
 
 import pytest
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials
 
 import security
+
+
+@pytest.mark.parametrize("scheme,forwarded,expected", [
+    ("http", "", False), ("http", "http", False),
+    ("http", "https", True), ("http", "HTTPS, http", True),
+    ("http", "http, https", False), ("http", "https-invalid", False),
+    ("https", "", True), ("https", "http", True),
+])
+def test_cookie_transport_cannot_downgrade_direct_https(scheme, forwarded, expected):
+    request = Request({"type": "http", "scheme": scheme, "path": "/",
+                       "server": ("ods.test", 443 if scheme == "https" else 80),
+                       "headers": [(b"x-forwarded-proto", forwarded.encode("ascii"))]})
+    assert security.request_uses_https(request) is expected
 
 
 class TestVerifyApiKey:

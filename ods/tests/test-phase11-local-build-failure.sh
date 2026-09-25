@@ -91,6 +91,7 @@ export ODS_DOCKER_BUILD_RETRY_DELAY_SECONDS=0
 ai_bad() { printf 'ERROR: %s\n' "$*" >> "$LOG_FILE"; }
 ai() { printf '%s\n' "$*" >> "$LOG_FILE"; }
 ai_warn() { printf 'WARN: %s\n' "$*" >> "$LOG_FILE"; }
+ui_status_line() { printf '[%s] %s\n' "$1" "$2"; }
 spin_task() {
     local pid="$1" rc=0
     wait "$pid" || rc=$?

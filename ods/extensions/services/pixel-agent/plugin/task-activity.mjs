@@ -1,0 +1,173 @@
+import {displayForActivity} from './activity-display.mjs';
+// Bounded public host observations for the Pixel workbench. Only explicitly
+// selected/filtered metadata and excerpts enter this projection. Token counts are
+// optional numeric measurements from the final model response, never estimates.
+const RUN = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const noEarlierThan = (observed, floor) => observed < floor ? floor : observed;
+const ORDER = ['read', 'agent', 'run', 'edit', 'browser', 'preview', 'action', 'unknown'];
+const KINDS = new Map([
+  ...['read', 'ls', 'glob', 'grep'].map(name => [name, 'read']),
+  ...['write', 'edit', 'apply_patch', 'pixel_ods_workspace_bundle'].map(name => [name, 'edit']),
+  ...['exec', 'process', 'shell', 'bash', 'eval', 'lsp', 'debug'].map(name => [name, 'run']),
+  ...['task', 'hub', 'sessions_spawn', 'sessions_send'].map(name => [name, 'agent']),
+  ...['browser', 'web_search', 'web_fetch', 'pixel_ods_web_extract', 'pixel_ods_research'].map(name => [name, 'browser']),
+  ['pixel_ods_workspace_preview', 'preview'],
+  ...['pixel_ods_status', 'pixel_ods_apps_list', 'pixel_ods_host_observe', 'pixel_ods_extensions'].map(name => [name, 'read']),
+  ...['pixel_ops_run', 'pixel_ops_workflow_submit', 'pixel_ods_download_promote'].map(name => [name, 'action']),
+]);
+
+function kindFor(event, context) {
+  let name = context?.toolName ?? event?.toolName;
+  if (name === 'tool_call' && typeof event?.params?.id === 'string') {
+    const id = event.params.id;
+    name = id.startsWith('openclaw:core:') ? id.slice('openclaw:core:'.length) : id;
+    // Extension IDs may be fully qualified; use only the closed name map.
+    if (!KINDS.has(name) && /^[a-z0-9_-]+:[a-z0-9_-]+:[a-z0-9_-]+$/i.test(id)) name = id.split(':').at(-1);
+  }
+  return KINDS.get(name) ?? 'unknown';
+}
+
+function failedResult(event) {
+  if (event?.error) return true;
+  let result = event?.result;
+  for (let depth = 0; depth < 3 && result && typeof result === 'object'; depth++) {
+    const details = result.details;
+    if (result.isError === true || details?.ok === false || details?.success === false
+      || ['failed', 'error', 'blocked'].includes(details?.status)
+      || (Number.isInteger(details?.exitCode) && details.exitCode !== 0)) return true;
+    result = details?.result;
+  }
+  return false;
+}
+
+export function createTaskActivity({agentId = 'pixel', now = () => new Date().toISOString(), maximumRuns = 64, maximumCalls = 512, goalForRun = () => null, projectsForSession = () => []} = {}) {
+  const runs = new Map();
+  const identify = (event, context) => context?.agentId === agentId ? context.runId ?? event?.runId : undefined;
+  function knownRun(event, context) {
+    const run=runs.get(identify(event,context));
+    const key=context?.sessionKey;
+    // Some HTTP turns acquire their session key only at the first tool hook.
+    // A conflicting key must never reassign this run to another conversation.
+    if(run && typeof key==='string' && key.startsWith(`agent:${agentId}:openai-user:ods-`)
+        && /^[a-f0-9]{64}$/.test(key.slice(`agent:${agentId}:openai-user:ods-`.length))) {
+      if(run.sessionKey && run.sessionKey!==key) {run.sessionConflict=true;run.sessionKey=undefined;}
+      else if(!run.sessionConflict) run.sessionKey=key;
+    }
+    return run;
+  }
+  function begin(event, context) {
+    const id = identify(event, context);
+    if (!RUN.test(id ?? '')) return;
+    if (runs.has(id)) {
+      const run = knownRun(event, context);
+      const freshPromptBuild = event && typeof event === 'object' && !run.promptBuildEvents.has(event);
+      if (event && typeof event === 'object') run.promptBuildEvents.add(event);
+      // OpenClaw emits agent_end for each embedded attempt, including a
+      // context-overflow precheck that it subsequently compacts and retries.
+      // Only a fresh owned before_prompt_build may reopen a failed attempt.
+      // Preserve all prior tool failures and the original request start time.
+      if (freshPromptBuild && typeof event.prompt === 'string' && event.prompt.trim()
+          && run.state === 'failed' && run.finishedAt && !run.sessionConflict
+          && typeof run.sessionId === 'string' && run.sessionId
+          && context?.sessionId === run.sessionId
+          && typeof run.sessionKey === 'string' && run.sessionKey
+          && context?.sessionKey === run.sessionKey) {
+        run.state = 'running';
+        run.finishedAt = null;
+      }
+      return;
+    }
+    while (runs.size >= maximumRuns) {
+      const settled = [...runs].find(([, run]) => run.state !== 'running');
+      if (!settled) return;
+      runs.delete(settled[0]);
+    }
+    const promptBuildEvents = new WeakSet();
+    if (event && typeof event === 'object') promptBuildEvents.add(event);
+    runs.set(id, {runId:id, sessionId:context?.sessionId, sessionKey:context?.sessionKey, promptBuildEvents,
+      startedAt:now(), finishedAt:null, state:'running', calls:new Map(), truncated:false, context:null});
+  }
+  function record(event, context, outcome) {
+    const run = knownRun(event, context);
+    let callId = context?.toolCallId ?? event?.toolCallId;
+    if (!run || typeof callId !== 'string' || !callId || callId.length > 256) return;
+    const toolName = context?.toolName ?? event?.toolName;
+    // The pinned Tool Search runtime emits hooks for both the outer tool_call
+    // and its inner execution. Correlate its explicit parent ID, not arguments
+    // or timing, so one invocation is not displayed as two calls.
+    if (callId.startsWith('tool_search_code:') && typeof toolName === 'string') {
+      const parents = [...run.calls].filter(([parentId, call]) => {
+        if (!call.wrapped || call.kind !== kindFor(event, context)) return false;
+        const parent = parentId.trim().replace(/[^A-Za-z0-9_.:-]+/g, '_').slice(0,120) || 'call';
+        const prefix = `tool_search_code:${parent}:${toolName}:`;
+        return callId.startsWith(prefix) && /^[1-9][0-9]*$/.test(callId.slice(prefix.length));
+      });
+      if (parents.length === 1) callId = parents[0][0];
+    }
+    const existing = run.calls.get(callId);
+    if (!existing && run.calls.size >= maximumCalls) { run.truncated = true; return; }
+    // A blocked attempt must not later become a successful effect because a
+    // wrapper emitted an after-hook. Duplicate hook delivery is idempotent.
+    if (existing?.outcome === 'blocked' || (existing && outcome === 'running' && existing.outcome !== 'running')) return;
+    const display=outcome==='blocked' ? null : displayForActivity(event,context,existing?.display);
+    // WSL/host clock sync can move wall time backwards between the tool hooks.
+    // Keep the public receipt monotonic or ingress rejects the entire answer.
+    const observedAt=now();
+    const startedAt=existing?.startedAt ?? noEarlierThan(observedAt,run.startedAt);
+    const finishedAt=outcome==='running' ? null : existing?.finishedAt ?? noEarlierThan(observedAt,startedAt);
+    run.calls.set(callId, {kind:existing?.kind ?? kindFor(event, context), outcome, display, startedAt, finishedAt, wrapped:existing?.wrapped ?? toolName === 'tool_call'});
+  }
+  return {
+    begin,
+    modelOutput(event, context) {
+      const run = knownRun(event, context);
+      if (!run) return;
+      // event.usage is cumulative across tool turns; it is NOT occupancy.
+      const usage = event?.lastAssistant?.usage;
+      const valid = value => Number.isSafeInteger(value) && value >= 0 && value <= 10_000_000;
+      const window = event?.contextTokenBudget;
+      if (!valid(window) || window < 1 || !usage || !valid(usage.input) || !valid(usage.output)) return;
+      if (['cacheRead','cacheWrite'].some(key => usage[key] !== undefined && !valid(usage[key]))) return;
+      const used = usage.input + usage.output + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+      // All-zero usage is a common sentinel from providers without telemetry.
+      if (used > 0 && valid(used)) run.context = {used, window, measuredAt:noEarlierThan(now(),run.startedAt)};
+    },
+    activeForUser(user) {
+      if (typeof user !== 'string' || !/^ods-[a-f0-9]{64}$/.test(user)) return null;
+      const matches = [...runs.values()].filter(run => run.state === 'running' && run.sessionKey === `agent:${agentId}:openai-user:${user}`);
+      // Ambiguity is not evidence: never guess which run belongs to this turn.
+      return matches.length === 1 ? this.projection(matches[0].runId) : null;
+    },
+    before(event, context, blocked = false) { record(event, context, blocked ? 'blocked' : 'running'); },
+    after(event, context) { record(event, context, failedResult(event) ? 'failed' : 'completed'); },
+    finish(event, context) {
+      const run = knownRun(event, context);
+      if (!run) return;
+      if (run.finishedAt) return;
+      run.finishedAt = [...run.calls.values()].reduce((latest,call)=>
+        noEarlierThan(latest,call.finishedAt ?? call.startedAt),noEarlierThan(now(),run.startedAt));
+      run.state = event?.success === true ? 'completed' : event?.success === false || event?.error ? 'failed' : 'finished';
+    },
+    projection(id) {
+      const run = runs.get(id);
+      if (!run) return null;
+      const groups = new Map();
+      for (const call of run.calls.values()) {
+        const group = groups.get(call.kind) ?? {kind:call.kind, calls:0, failures:0, blocked:0};
+        group.calls++;
+        if (['failed', 'blocked'].includes(call.outcome)) group.failures++;
+        if (call.outcome === 'blocked') group.blocked++;
+        groups.set(call.kind, group);
+      }
+      const activities = ORDER.filter(kind => groups.has(kind)).map(kind => groups.get(kind));
+      const events = [...run.calls.values()].map((call, index) => ({sequence:index + 1, kind:call.kind,
+        state:call.outcome, startedAt:call.startedAt, finishedAt:call.finishedAt, display:call.display})).slice(-24);
+      return {schemaVersion:4, runId:run.runId, startedAt:run.startedAt, finishedAt:run.finishedAt,
+        state:run.state, calls:run.calls.size,
+        failures:activities.reduce((sum, item) => sum + item.failures, 0),
+        blocked:activities.reduce((sum, item) => sum + item.blocked, 0),
+        truncated:run.truncated, activities, events, context:run.context, goal:goalForRun(id),
+        projects:projectsForSession(run.sessionKey).filter(project=>!run.finishedAt || project.observedAt<=run.finishedAt)};
+    },
+  };
+}

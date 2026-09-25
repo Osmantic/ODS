@@ -20,6 +20,10 @@ import { Link } from 'react-router-dom'
 import { useModels } from '../hooks/useModels'
 import { useDownloadProgress } from '../hooks/useDownloadProgress'
 import HuggingFaceModelBrowser from '../components/model-library/HuggingFaceModelBrowser'
+import ExternalLemonadeAdoption from '../components/ExternalLemonadeAdoption'
+import MetalMetricIcon from '../components/MetalMetricIcon'
+import FittedLibraryPage from '../components/FittedLibraryPage'
+import './models-refined.css'
 
 const PAGE_SIZE = 10
 const DOWNLOAD_STATUS_TIMEOUT_MS = 15000
@@ -54,19 +58,23 @@ function catalogModelIdForProgress(models, progressModel) {
   return fileMatch?.id ?? null
 }
 
-export default function Models() {
+export default function Models({ compact = false }) {
   const downloadProgress = useDownloadProgress()
   const {
     models,
     gpu,
     currentModel,
+    loadedModel,
     configuredModel,
     odsMode,
     configuredMode,
+    llmBackend,
+    externalLemonade,
     canActivateModels,
     activationModeError,
     recommendationAlternatives,
     hermesMinimumContext,
+    pixelMinimumContext,
     loading,
     error,
     actionLoading,
@@ -148,7 +156,7 @@ export default function Models() {
   )
   const odsCatalogModels = useMemo(
     () => models
-      .filter(model => model.metadata?.catalogSource !== 'huggingface')
+      .filter(model => model.metadata?.catalogSource !== 'huggingface' && model.metadata?.source !== 'runtime')
       .sort((left, right) => Number(Boolean(right.recommended)) - Number(Boolean(left.recommended)) || Number(Boolean(right.fitsVram)) - Number(Boolean(left.fitsVram))),
     [models]
   )
@@ -232,12 +240,23 @@ export default function Models() {
   }
 
   const pendingModelActions = actionLoadingModels ?? (actionLoading ? [actionLoading] : [])
-  const visibleDownloadProgress = downloadProgress.progress || (downloadStartFailure && {
+  const visibleDownloadProgress = downloadProgress.progress || (downloadProgress.statusError && {
+    status: 'error',
+    error: downloadProgress.statusError,
+  }) || (downloadStartFailure && {
     status: 'error',
     model: downloadStartFailure.modelId,
     error: downloadStartFailure.error,
   })
   const retryModelId = catalogModelIdForProgress(models, visibleDownloadProgress?.model)
+  const renderModel = model => <ModelTableRow key={model.id} compact={compact} model={model} gpu={gpu}
+    canActivateModels={canActivateModels} activationModeError={activationModeError}
+    hermesMinimumContext={hermesMinimumContext} pixelMinimumContext={pixelMinimumContext}
+    isCurrentModel={model.id === currentModel} isLoading={pendingModelActions.includes(model.id)}
+    loadBusy={pendingModelActions.length > 0} activationBusy={Boolean(activationLoading)}
+    downloadBusy={downloadProgress.isDownloading || !!downloadStarting} downloadStarting={downloadStarting === model.id}
+    onDownload={() => handleDownload(model.id)} onLoad={() => setActivationConfigModel(model)}
+    onBenchmark={() => benchmarkModel(model.id)} onDelete={() => setDeleteConfirmModel(model)}/>
 
   if (loading) {
     return (
@@ -258,10 +277,10 @@ export default function Models() {
   }
 
   return (
-    <div className="p-3 sm:p-6 lg:p-8">
-      <header className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <div className={compact ? 'models-refined' : 'p-3 sm:p-6 lg:p-8'}>
+      {compact ? <header className="models-toolbar"><h2>Your models</h2><button type="button" className="models-browse-link" onClick={() => { setLibraryScope('recommended'); libraryRef.current?.scrollIntoView?.({ block: 'start' }) }}>Browse {odsCatalogModels.length} {odsCatalogModels.length === 1 ? 'model' : 'models'} ↓</button><span>Runtime: {formatModeLabel(odsMode)}{configuredMode !== odsMode ? ` / configured ${formatModeLabel(configuredMode)}` : ''}</span><button className="pixel-metal-control" title="Refresh models" onClick={refresh}><MetalMetricIcon icon={RefreshCw} size={14}/></button></header> : <header className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-theme-text">Models</h1>
+          {!compact && <h1 className="text-2xl font-bold text-theme-text">Models</h1>}
           <p className="mt-1 text-sm text-theme-text-muted">
             Discover, filter, and deploy the right model for your workflow.
           </p>
@@ -289,7 +308,7 @@ export default function Models() {
             <RefreshCw size={16} />
           </button>
         </div>
-      </header>
+      </header>}
 
       {error && (
         <div className="mb-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
@@ -298,18 +317,18 @@ export default function Models() {
       )}
 
       {!canActivateModels && (
-        <section className="mb-5 flex flex-col gap-3 rounded-xl border border-amber-400/25 bg-amber-500/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <section className={compact ? 'models-external-notice' : 'mb-5 flex flex-col gap-3 rounded-xl border border-theme-border bg-theme-text-secondary/10 p-4 sm:flex-row sm:items-center sm:justify-between'}>
           <div className="flex min-w-0 items-start gap-3">
-            <AlertCircle size={18} className="mt-0.5 shrink-0 text-amber-300" />
+            <AlertCircle size={18} className="mt-0.5 shrink-0 text-theme-text-secondary" />
             <div>
-              <p className="text-sm font-semibold text-amber-100">Local model runtime unavailable</p>
-              <p className="mt-1 text-sm text-amber-100/75">{activationModeError}</p>
-              <p className="mt-1 text-xs text-amber-100/60">Model downloads and deletion remain available.</p>
+              <p className="text-sm font-semibold text-theme-text-secondary">{llmBackend === 'external' ? 'Model changes managed externally' : 'Local model runtime unavailable'}</p>
+              <p className="mt-1 text-sm text-theme-text-secondary/75">{activationModeError}</p>
+              {!compact && <p className="mt-1 text-xs text-theme-text-secondary/60">Model downloads and deletion remain available.</p>}
             </div>
           </div>
           <Link
             to="/settings"
-            className="inline-flex h-8 shrink-0 items-center justify-center rounded-md border border-amber-500/25 bg-theme-bg/45 px-3 text-xs font-semibold text-amber-500 transition-colors hover:border-amber-500/45"
+            className="inline-flex h-8 shrink-0 items-center justify-center rounded-md border border-theme-border bg-theme-bg/45 px-3 text-xs font-semibold text-theme-text-secondary transition-colors hover:border-theme-border"
           >
             Review runtime settings
           </Link>
@@ -327,20 +346,28 @@ export default function Models() {
       )}
 
       <CurrentModelPanel
+        compact={compact}
         model={activeModel}
-        currentModel={currentModel}
+        currentModel={currentModel || loadedModel}
         gpu={gpu}
       />
 
-      {!currentModel && configuredModel && (
-        <section className="mb-4 rounded-xl border border-amber-400/25 bg-amber-500/10 p-4">
+      <ExternalLemonadeAdoption
+        enabled={odsMode === 'lemonade' && externalLemonade === true}
+        minimumContext={pixelMinimumContext}
+        onSettled={refresh}
+        compact={compact}
+      />
+
+      {!currentModel && !loadedModel && configuredModel && (
+        <section className="mb-4 rounded-xl border border-theme-border bg-theme-text-secondary/10 p-4">
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm text-amber-200">
+            <div className="text-sm text-theme-text-secondary">
               <AlertCircle size={14} className="mr-2 inline" />
               Selected during install: <strong>{configuredModel}</strong>. Run a benchmark after first launch for local tok/s.
             </div>
             {recommendationAlternatives.length > 0 && (
-              <div className="text-xs text-amber-100/70">
+              <div className="text-xs text-theme-text-secondary/70">
                 Top catalog fit: {recommendationAlternatives.slice(0, 3).map(item => item.name).join(' / ')}
               </div>
             )}
@@ -348,18 +375,20 @@ export default function Models() {
         </section>
       )}
 
+      <div ref={libraryRef}>
       <ModelSourceTabs
+        compact={compact}
         value={libraryScope}
         onChange={setLibraryScope}
         installedCount={installedModels.length}
         recommendedCount={odsCatalogModels.length}
       />
+      </div>
 
       {libraryScope === 'huggingface' ? (
         <section
-          ref={libraryRef}
-          className="rounded-lg border p-4 sm:p-5"
-          style={TECH_PANEL_STYLE}
+          className={compact ? 'models-hub' : 'rounded-lg border p-4 sm:p-5'}
+          style={compact ? undefined : TECH_PANEL_STYLE}
         >
           <HuggingFaceModelBrowser
             gpu={gpu}
@@ -368,8 +397,10 @@ export default function Models() {
           />
         </section>
       ) : (
-      <div className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
-        <ModelsFilterPanel
+      <div className={compact ? 'models-library' : 'grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]'}>
+        {compact && <label className="models-search"><Search size={15} aria-hidden="true"/><input aria-label="Search models" placeholder="Search models..." value={query} onChange={event => setQuery(event.target.value)}/></label>}
+        <details open={compact ? undefined : true} className="model-filter-disclosure"><summary>{compact && <MetalMetricIcon icon={SlidersHorizontal} size={13}/>}Filters</summary><ModelsFilterPanel
+          compact={compact}
           query={query}
           setQuery={setQuery}
           categoryFilter={categoryFilter}
@@ -390,16 +421,18 @@ export default function Models() {
             setSpeedFilter('any')
             setContextFloor(0)
           }}
-        />
+        /></details>
 
-        <section
-          ref={libraryRef}
+        {compact ? <>
+          <div className="models-results"><span>{libraryScope === 'installed' ? 'On this device' : 'ODS recommended'}</span><span>{filteredModels.length} {filteredModels.length === 1 ? 'model' : 'models'}</span></div>
+          {filteredModels.length ? <FittedLibraryPage key={`${libraryScope}:${query}:${categoryFilter}:${compatibilityFilter}:${speedFilter}:${contextFloor}`} items={filteredModels} label="Model library" minimumItems={6}>{items => <div className="models-list">{items.map(renderModel)}</div>}</FittedLibraryPage> : <p className="models-empty">No models match the current filters.</p>}
+        </> : <section
           className="overflow-hidden rounded-xl border"
           style={TECH_PANEL_STYLE}
         >
           <div className="min-w-full overflow-x-auto">
-            <div className="lg:min-w-[1074px]">
-              <div className="hidden grid-cols-[minmax(250px,1.7fr)_184px_70px_110px_120px_90px_130px] gap-5 border-b border-theme-border px-5 py-3 text-[9px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/75 lg:grid">
+            <div className={compact ? 'min-w-0' : 'lg:min-w-[1074px]'}>
+              <div className={`${compact ? 'hidden' : 'hidden lg:grid'} grid-cols-[minmax(250px,1.7fr)_184px_70px_110px_120px_90px_130px] gap-5 border-b border-theme-border px-5 py-3 text-[9px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/75`}>
                 <span>Model</span>
                 <span>Actions</span>
                 <span>Size</span>
@@ -410,29 +443,7 @@ export default function Models() {
               </div>
 
               <div className="divide-y divide-theme-border">
-                {visibleModels.map((model, index) => {
-                  const rowId = `${model.id || model.name || 'model'}:${startIndex + index}`
-                  return (
-                    <ModelTableRow
-                      key={rowId}
-                      model={model}
-                      gpu={gpu}
-                      canActivateModels={canActivateModels}
-                      activationModeError={activationModeError}
-                      hermesMinimumContext={hermesMinimumContext}
-                      isCurrentModel={model.id === currentModel}
-                      isLoading={pendingModelActions.includes(model.id)}
-                      loadBusy={pendingModelActions.length > 0}
-                      activationBusy={Boolean(activationLoading)}
-                      downloadBusy={downloadProgress.isDownloading || !!downloadStarting}
-                      downloadStarting={downloadStarting === model.id}
-                      onDownload={() => handleDownload(model.id)}
-                      onLoad={() => setActivationConfigModel(model)}
-                      onBenchmark={() => benchmarkModel(model.id)}
-                      onDelete={() => setDeleteConfirmModel(model)}
-                    />
-                  )
-                })}
+                {visibleModels.map(renderModel)}
               </div>
 
               {filteredModels.length === 0 && (
@@ -449,7 +460,7 @@ export default function Models() {
             </span>
             <Pagination page={safePage} pageCount={pageCount} onChange={setPage} />
           </div>
-        </section>
+        </section>}
       </div>
       )}
 
@@ -464,6 +475,7 @@ export default function Models() {
         <ModelActivationDialog
           model={activationConfigModel}
           gpu={gpu}
+          pixelMinimumContext={pixelMinimumContext}
           hermesMinimumContext={hermesMinimumContext}
           isCurrentModel={activationConfigModel.id === currentModel}
           onCancel={() => setActivationConfigModel(null)}
@@ -474,12 +486,22 @@ export default function Models() {
   )
 }
 
-function CurrentModelPanel({ model, currentModel, gpu }) {
+function CurrentModelPanel({ model, currentModel, gpu, compact = false }) {
   const modelLabel = currentModel || model?.id
   const speed = getSpeedDisplay(model)
   const context = model ? formatContext(model.contextLength) : '--'
   const memory = model ? getMemoryMeta(model, gpu) : null
   const statusLabel = currentModel ? 'Currently running' : 'Model runtime'
+
+  if (compact) return (
+    <section className="models-active" aria-label="Model runtime">
+      <header><span className={currentModel ? 'models-live' : ''}>{statusLabel}</span><Link to="/dashboard">Dashboard <ChevronRight size={12}/></Link></header>
+      <div className="models-active-name"><MetalMetricIcon icon={Box} size={22}/><strong title={modelLabel}>{model?.name || modelLabel || 'No model running'}</strong></div>
+      {currentModel && <>
+        <dl><div><dt>Context</dt><dd>{context}</dd></div>{memory && <div><dt>VRAM estimate</dt><dd>{memory.label}</dd></div>}</dl>
+      </>}
+    </section>
+  )
 
   return (
     <section className="mb-4 rounded-xl border p-4" style={TECH_TILE_STYLE}>
@@ -505,7 +527,7 @@ function CurrentModelPanel({ model, currentModel, gpu }) {
         <ModelSpeedVisual model={model} speed={speed} compact />
 
         <Link
-          to="/"
+          to="/dashboard"
           className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-theme-border bg-theme-bg/45 px-3 text-xs font-semibold text-theme-text transition-colors hover:border-theme-accent/35 hover:bg-theme-accent/10"
         >
           Dashboard
@@ -515,7 +537,7 @@ function CurrentModelPanel({ model, currentModel, gpu }) {
   )
 }
 
-function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) {
+function ModelSourceTabs({ value, onChange, installedCount, recommendedCount, compact = false }) {
   const tabs = [
     {
       id: 'installed',
@@ -530,7 +552,7 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
       label: 'ODS Recommended',
       detail: 'Curated catalog',
       count: recommendedCount,
-      image: '/osmantic-os-icon-192.png',
+      image: '/osmantic-isolated-os.png',
       tone: 'purple',
     },
     {
@@ -542,32 +564,33 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
       tone: 'amber',
     },
   ]
+  if (compact) return <div className="portal-model-tabs" role="tablist" aria-label="Model sources">{tabs.map(tab => <button key={tab.id} role="tab" aria-selected={value === tab.id} onClick={() => onChange(tab.id)}>{tab.label}{tab.count !== null && <small>{tab.count}</small>}</button>)}</div>
   const activeStyles = {
     emerald: {
       borderColor: 'rgba(52, 211, 153, 0.48)',
-      background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(76, 29, 149, 0.14))',
-      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), 0 0 28px rgba(16,185,129,0.1)',
+      background: '#1d1e1f',
+      boxShadow: 'none',
     },
     purple: {
-      borderColor: 'rgba(184, 100, 255, 0.58)',
-      background: 'linear-gradient(135deg, rgba(126, 34, 206, 0.22), rgba(71, 25, 120, 0.16))',
-      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), 0 0 30px rgba(157,0,255,0.15)',
+      borderColor: '#777c85',
+      background: '#1d1e1f',
+      boxShadow: 'none',
     },
     amber: {
-      borderColor: 'rgba(251, 191, 106, 0.72)',
-      background: 'linear-gradient(135deg, rgba(120, 53, 15, 0.2), rgba(126, 34, 206, 0.22))',
-      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1), 0 0 32px rgba(251,191,36,0.14)',
+      borderColor: 'rgb(var(--theme-text-secondary) / 0.72)',
+      background: '#1d1e1f',
+      boxShadow: 'none',
     },
   }
   const iconStyles = {
     emerald: 'border-emerald-300/20 bg-emerald-400/10 text-emerald-200',
     purple: 'border-theme-accent/25 bg-theme-accent/10 text-theme-accent-light',
-    amber: 'border-amber-300/20 bg-amber-300/10 text-amber-100',
+    amber: 'border-theme-border bg-theme-text-secondary/10 text-theme-text-secondary',
   }
   const indicatorStyles = {
     emerald: 'bg-emerald-300 shadow-[0_0_10px_rgba(110,231,183,0.75)]',
-    purple: 'bg-theme-accent-light shadow-[0_0_10px_rgba(192,132,252,0.8)]',
-    amber: 'bg-amber-200 shadow-[0_0_12px_rgba(253,230,138,0.9)]',
+    purple: 'bg-theme-accent-light',
+    amber: 'bg-theme-text-secondary shadow-none',
   }
   return (
     <div
@@ -594,12 +617,12 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
           >
             <span className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ${iconStyles[tone]}`}>
               {image
-                ? <img src={image} alt="" className={image === '/osmantic-os-icon-192.png' ? 'h-10 w-10 object-contain' : 'h-8 w-8 object-contain'} />
+                ? <img src={image} alt="" className={image === '/osmantic-isolated-os.png' ? 'h-10 w-10 object-contain grayscale mix-blend-screen' : 'h-8 w-8 object-contain'} />
                 : <Icon size={27} strokeWidth={1.75} />}
             </span>
             <span className="min-w-0 flex-1">
               <span className="block text-[13px] font-semibold leading-4 text-theme-text sm:text-[15px] sm:leading-5">{label}</span>
-              <span className={`mt-1 block truncate text-xs ${active && tone === 'amber' ? 'text-amber-200/80' : 'text-theme-text-muted/70'}`}>{detail}</span>
+              <span className={`mt-1 block truncate text-xs ${active && tone === 'amber' ? 'text-theme-text-secondary/80' : 'text-theme-text-muted/70'}`}>{detail}</span>
             </span>
             {count !== null && (
               <span className="flex h-10 min-w-10 shrink-0 items-center justify-end border-l border-theme-border pl-3 font-mono text-lg font-semibold text-theme-accent">
@@ -615,6 +638,7 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
 }
 
 function ModelsFilterPanel({
+  compact = false,
   query,
   setQuery,
   categoryFilter,
@@ -644,7 +668,7 @@ function ModelsFilterPanel({
           </button>
         </div>
 
-        <label className="relative block">
+        {!compact && <label className="relative block">
           <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-theme-text-muted" />
           <input
             value={query}
@@ -652,7 +676,7 @@ function ModelsFilterPanel({
             placeholder="Search models..."
             className="h-9 w-full rounded-lg border border-theme-border bg-theme-bg/45 pl-9 pr-3 text-xs text-theme-text outline-none transition-colors placeholder:text-theme-text-muted/60 focus:border-theme-accent/45"
           />
-        </label>
+        </label>}
 
         <div className="mt-5">
           <SectionLabel>Categories</SectionLabel>
@@ -781,11 +805,13 @@ function FilterChip({ active, onClick, children }) {
 }
 
 function ModelTableRow({
+  compact = false,
   model,
   gpu,
   canActivateModels,
   activationModeError,
   hermesMinimumContext,
+  pixelMinimumContext,
   isCurrentModel,
   isLoading,
   loadBusy,
@@ -799,21 +825,34 @@ function ModelTableRow({
 }) {
   const isLoaded = model.status === 'loaded' || isCurrentModel
   const isDownloaded = model.status === 'downloaded'
+  const isRuntimeManaged = model.metadata?.source === 'runtime'
   const memory = getMemoryMeta(model, gpu)
-  const compatibility = getCompatibilityMeta(model, memory, hermesMinimumContext)
+  const compatibility = getCompatibilityMeta(model, memory, pixelMinimumContext)
   const speed = getSpeedDisplay(model)
   const tags = getModelTags(model, hermesMinimumContext)
   const iconTone = getIconTone(model, compatibility)
   const performanceBadge = getPerformanceBadge(model)
-  const runDisabledReason = getRunDisabledReason({
+  const runDisabledReason = isRuntimeManaged ? null : getRunDisabledReason({
     model,
     gpu,
     canActivateModels,
     activationModeError,
     hermesMinimumContext,
+    pixelMinimumContext,
     loadBusy,
     activationBusy,
   })
+
+  if (compact) return <article className="model-entry" aria-label={model.name}>
+    <header><span className="model-entry-symbol"><ModelPublisherIcon model={model} tone={iconTone}/></span><div><h3 title={model.name}>{model.name}</h3><span>{model.quantization || 'Quantization unspecified'}{model.size ? ` · ${model.size}` : ''}</span></div><span className={isLoaded ? 'models-live model-state' : 'model-state'}>{isLoaded ? 'Active' : isDownloaded ? 'Installed' : 'Available'}</span></header>
+    <dl className="model-entry-metrics"><div><dt>Context</dt><dd>{formatContext(model.contextLength)}</dd></div><div><dt>VRAM estimate</dt><dd>{memory.value}</dd></div><div className="model-speed-reading"><dt>Speed</dt><dd>{speed.label}</dd></div></dl>
+    <div className="model-fit"><span>{compatibility.label}</span><span>{compatibility.detail}</span></div>
+    <footer><div className="model-entry-actions">
+      <PrimaryAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} downloadBusy={downloadBusy} downloadStarting={downloadStarting} runDisabledReason={runDisabledReason} hermesMinimumContext={hermesMinimumContext} onDownload={onDownload} onLoad={onLoad} onBenchmark={onBenchmark}/>
+      {isLoaded && !isRuntimeManaged && <button aria-label={`Configure context for ${model.name}`} title={`Configure context for ${model.name}`} disabled={activationBusy} onClick={onLoad}><MetalMetricIcon icon={SlidersHorizontal} size={14}/></button>}
+      <DeleteAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} onDelete={onDelete}/>
+    </div><details className="model-entry-details"><summary>Details <ChevronRight size={12}/></summary><div><p>{model.description || 'No description available.'}</p><p>{tags.join(' · ')}</p>{performanceBadge && <p>{performanceBadge.label}</p>}<p>{compatibility.label}: {compatibility.detail}</p>{runDisabledReason && <p>{runDisabledReason}</p>}</div></details></footer>
+  </article>
 
   return (
     <div className="grid grid-cols-2 gap-x-3 gap-y-4 px-3 py-4 transition-colors hover:bg-theme-surface-hover/70 sm:grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(250px,1.7fr)_184px_70px_110px_120px_90px_130px] lg:gap-5 lg:px-5 lg:py-3.5">
@@ -851,7 +890,7 @@ function ModelTableRow({
           onLoad={onLoad}
           onBenchmark={onBenchmark}
         />
-        {isLoaded && (
+        {isLoaded && !isRuntimeManaged && (
           <button
             type="button"
             onClick={onLoad}
@@ -926,6 +965,10 @@ function PrimaryAction({
   onLoad,
   onBenchmark,
 }) {
+  if (model.metadata?.source === 'runtime') {
+    return <span className="text-xs text-theme-text-muted">Managed by runtime</span>
+  }
+
   if (isLoading) {
     return (
       <button disabled className="inline-flex h-8 min-w-24 items-center justify-center gap-2 rounded-md bg-theme-accent/20 px-3 text-xs font-semibold text-theme-accent">
@@ -952,8 +995,6 @@ function PrimaryAction({
 
   if (isDownloaded) {
     const runDisabled = Boolean(runDisabledReason)
-    const directChatBlocked = isOpenAiChatBlocked(getOpenAiChatCompatibility(model))
-    const buttonLabel = directChatBlocked ? 'Chat Unsupported' : 'Run'
     return (
       <span className="inline-flex" title={runDisabledReason || `Run ${model.name}`}>
         <button
@@ -967,8 +1008,8 @@ function PrimaryAction({
               : 'cursor-not-allowed border border-theme-border bg-theme-bg/45 text-theme-text-muted'
           }`}
         >
-          {directChatBlocked ? <AlertCircle size={13} /> : <Play size={13} />}
-          {buttonLabel}
+          <Play size={13} />
+          Run
         </button>
       </span>
     )
@@ -1081,13 +1122,22 @@ function DeleteModelDialog({ model, onCancel, onConfirm }) {
 function ModelActivationDialog({
   model,
   gpu,
+  pixelMinimumContext,
   hermesMinimumContext,
   isCurrentModel,
   onCancel,
   onConfirm,
 }) {
   const options = getContextOptions(model, gpu)
-  const initialContext = Number(model.contextLength || options[0]?.contextLength || 8192)
+  const fittingOptions = options.filter(option => option.fitsVram === true)
+  const hermesFit = fittingOptions.filter(option => option.contextLength >= Number(hermesMinimumContext || 65536))
+  const pixelFit = fittingOptions.filter(option => option.contextLength >= Number(pixelMinimumContext || 16384))
+  const bestShorterContext = Math.max(0, ...(hermesFit.length ? hermesFit : pixelFit).map(option => option.contextLength))
+  const initialContext = Number(
+    model.fitsVram === false && !model.recommended && bestShorterContext > 0
+      ? bestShorterContext
+      : model.contextLength || options[0]?.contextLength || 8192
+  )
   const [selectedContext, setSelectedContext] = useState(initialContext)
   const [customContext, setCustomContext] = useState(String(initialContext))
   const selected = options.find(option => option.contextLength === selectedContext)
@@ -1098,7 +1148,21 @@ function ModelActivationDialog({
   const contextValid = Number.isSafeInteger(selectedContext)
     && selectedContext >= 1024
   const sameContext = contextValid && isCurrentModel && selectedContext === currentContext
-  const hermesReady = selectedContext >= Number(hermesMinimumContext || 65536)
+  const openAiChat = getOpenAiChatCompatibility(model)
+  const pixelAgent = getPixelAgentCompatibility(model)
+  const agentViability = getAgentViabilityCompatibility(model)
+  const pixelContextReady = selectedContext >= Number(pixelMinimumContext || 16384)
+  const appProfile = isOpenAiChatBlocked(openAiChat)
+    ? { label: 'Portal adaptive', tone: 'text-theme-accent-light' }
+    : isAgentViabilityBlocked(pixelAgent)
+    ? { label: 'Portal adaptive', tone: 'text-theme-accent-light' }
+    : isAgentViabilityBlocked(agentViability)
+      ? { label: 'Portal adaptive', tone: 'text-theme-accent-light' }
+      : !pixelContextReady
+        ? { label: `Portal compact · ${formatContext(selectedContext)}`, tone: 'text-theme-text-secondary' }
+        : isPixelAgentVerified(pixelAgent)
+          ? { label: 'Portal verified', tone: 'text-emerald-400' }
+          : { label: 'Portal adaptive', tone: 'text-theme-accent-light' }
   const memoryCapacity = Number(gpu?.vramTotal || 0)
   const exceedsMemory = selected?.fitsVram === false
   const exceedsDeclaredLimit = declaredLimit > 0 && selectedContext > declaredLimit
@@ -1221,20 +1285,20 @@ function ModelActivationDialog({
             />
             <ContextMetric
               label="App profile"
-              value={hermesReady ? 'Hermes ready' : 'Chat only'}
-              tone={hermesReady ? 'text-emerald-400' : 'text-amber-300'}
+              value={appProfile.label}
+              tone={appProfile.tone}
             />
           </div>
 
           {exceedsMemory && (
-            <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-400/25 bg-amber-500/10 px-3 py-2.5 text-xs text-theme-text-secondary">
-              <AlertCircle size={15} className="mt-0.5 shrink-0 text-amber-400" />
+            <div className="mt-4 flex items-start gap-2 rounded-lg border border-theme-border bg-theme-text-secondary/10 px-3 py-2.5 text-xs text-theme-text-secondary">
+              <AlertCircle size={15} className="mt-0.5 shrink-0 text-theme-text-secondary" />
               This context exceeds the reported GPU memory estimate. Activation may use system memory or roll back.
             </div>
           )}
           {contextValid && exceedsDeclaredLimit && (
-            <div className="mt-3 flex items-start gap-2 rounded-lg border border-orange-400/25 bg-orange-500/10 px-3 py-2.5 text-xs text-theme-text-secondary">
-              <AlertCircle size={15} className="mt-0.5 shrink-0 text-orange-400" />
+            <div className="mt-3 flex items-start gap-2 rounded-lg border border-theme-border bg-theme-text-secondary/10 px-3 py-2.5 text-xs text-theme-text-secondary">
+              <AlertCircle size={15} className="mt-0.5 shrink-0 text-theme-text-secondary" />
               This override exceeds the model&apos;s declared context. The runtime may reject it or roll back.
             </div>
           )}
@@ -1255,7 +1319,7 @@ function ModelActivationDialog({
             <button
               type="button"
               onClick={() => onConfirm(selectedContext)}
-              disabled={!contextValid || sameContext}
+              disabled={!contextValid || sameContext || (model.fitsVram === false && !model.recommended && selected?.fitsVram === false)}
               className="inline-flex h-9 min-w-28 items-center justify-center gap-2 rounded-md bg-theme-accent px-4 text-xs font-semibold text-white shadow-[0_0_18px_rgba(168,85,247,0.28)] transition-colors hover:bg-theme-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Play size={13} />
@@ -1310,7 +1374,7 @@ function MobileMetricLabel({ children }) {
 }
 
 function DownloadProgressBar({ progress, helpers, onRetry }) {
-  const { formatBytes, formatEta, cancelDownload, cancelError, isCancelling } = helpers
+  const { formatBytes, formatEta, cancelDownload, cancelError, statusError, isCancelling } = helpers
 
   if (progress.error) {
     const cancelled = progress.status === 'cancelled'
@@ -1380,9 +1444,15 @@ function DownloadProgressBar({ progress, helpers, onRetry }) {
         </p>
       )}
 
+      {statusError && (
+        <p role="alert" className="mb-3 text-sm text-theme-text-secondary">
+          {statusError}
+        </p>
+      )}
+
       <div className="h-2.5 overflow-hidden rounded-full bg-theme-border">
         <div
-          className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300"
+          className="h-full rounded-full bg-theme-accent transition-all duration-300"
           style={{ width: `${progress.percent || 0}%` }}
         />
       </div>
@@ -1439,23 +1509,25 @@ function getRunDisabledReason({
   canActivateModels,
   activationModeError,
   hermesMinimumContext,
+  pixelMinimumContext,
   loadBusy,
   activationBusy,
 }) {
   if (!canActivateModels) {
     return activationModeError || 'The local model runtime is unavailable. Review runtime settings before running this model.'
   }
-  const openAiChat = getOpenAiChatCompatibility(model)
-  if (isOpenAiChatBlocked(openAiChat)) {
-    return openAiChat.reason || 'This model is not currently validated for direct local chat.'
-  }
   if (model.fitsVram !== true && !model.recommended) {
-    const required = Number(model.estimatedRequired || model.vramRequired || 0)
-    const total = Number(gpu?.vramTotal || 0)
-    if (required > 0 && total > 0) {
-      return `Requires ${formatNumber(required)} GB VRAM; the detected GPU has ${formatNumber(total)} GB total.`
+    const shorterContextFits = getContextOptions(model, gpu).some(option =>
+      option.fitsVram === true && option.contextLength >= Number(pixelMinimumContext || 16384)
+    )
+    if (!shorterContextFits) {
+      const required = Number(model.estimatedRequired || model.vramRequired || 0)
+      const total = Number(gpu?.vramTotal || 0)
+      if (required > 0 && total > 0) {
+        return `Requires ${formatNumber(required)} GB VRAM; the detected GPU has ${formatNumber(total)} GB total.`
+      }
+      return 'This model does not fit the detected GPU memory.'
     }
-    return 'This model does not fit the detected GPU memory.'
   }
   if (activationBusy) return 'Wait for the current model swap to finish.'
   if (loadBusy) return 'Another model action is in progress.'
@@ -1483,7 +1555,7 @@ function ModelSpeedVisual({ model, speed, compact = false }) {
 
   const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ')
   const area = `${path} L 100 30 L 0 30 Z`
-  const stroke = speed.tone === 'orange' ? '#f59e0b' : '#a855f7'
+  const stroke = '#aeb5c0'
 
   return (
     <svg viewBox="0 0 100 30" className={sizeClass} aria-hidden="true">
@@ -1505,7 +1577,7 @@ function Badge({ children, tone = 'neutral', subdued = false }) {
       ? 'border-theme-border bg-theme-bg/35 text-theme-text-muted'
       : 'border-theme-border bg-theme-surface-hover text-theme-text-secondary',
     green: 'border-emerald-400/20 bg-emerald-500/12 text-emerald-300',
-    amber: 'border-amber-400/25 bg-amber-500/12 text-amber-300',
+    amber: 'border-theme-border bg-theme-text-secondary/12 text-theme-text-secondary',
     red: 'border-red-400/25 bg-red-500/12 text-red-300',
     purple: 'border-theme-accent/25 bg-theme-accent/12 text-theme-accent-light',
   }
@@ -1666,8 +1738,17 @@ function getMemoryMeta(model, gpu) {
   }
 }
 
-function getCompatibilityMeta(model, memory, hermesMinimumContext = 0) {
+function getCompatibilityMeta(model, memory, pixelMinimumContext = 0) {
+  if (model?.metadata?.source === 'runtime') {
+    return { label: 'Runtime managed', detail: 'Fit not verified by ODS', tone: 'purple' }
+  }
   if (!model?.fitsVram) {
+    const shorterContextFits = Array.isArray(model?.contextOptions) && model.contextOptions.some(option =>
+      option?.fitsVram === true && Number(option?.contextLength || 0) >= Number(pixelMinimumContext || 16384)
+    )
+    if (shorterContextFits) {
+      return { label: 'Shorter context', detail: 'Fits GPU', tone: 'amber' }
+    }
     const nearLimit = memory.total > 0 && memory.required <= memory.total * 1.08
     return {
       label: nearLimit ? 'High VRAM' : 'Too large',
@@ -1678,17 +1759,17 @@ function getCompatibilityMeta(model, memory, hermesMinimumContext = 0) {
   const openAiChat = getOpenAiChatCompatibility(model)
   if (isOpenAiChatBlocked(openAiChat)) {
     return {
-      label: 'Unavailable',
-      detail: 'Chat blocked',
-      tone: 'red',
+      label: 'Portal adaptive',
+      detail: 'Capability varies',
+      tone: 'purple',
     }
   }
   const agentViability = getAgentViabilityCompatibility(model)
   if (isAgentViabilityBlocked(agentViability)) {
     return {
-      label: 'Direct chat only',
-      detail: 'Agent blocked',
-      tone: 'amber',
+      label: 'Portal adaptive',
+      detail: 'Capability varies',
+      tone: 'purple',
     }
   }
   const appBlock = getBlockedAppCompatibility(model)
@@ -1699,18 +1780,33 @@ function getCompatibilityMeta(model, memory, hermesMinimumContext = 0) {
       tone: 'amber',
     }
   }
+  const pixelAgent = getPixelAgentCompatibility(model)
+  if (isAgentViabilityBlocked(pixelAgent)) {
+    return {
+      label: 'Portal adaptive',
+      detail: 'Available to use',
+      tone: 'purple',
+    }
+  }
   const contextLength = Number(model?.contextLength || 0)
-  const minimumContext = Number(hermesMinimumContext || 0)
+  const minimumContext = Number(pixelMinimumContext || 0)
   if (minimumContext > 0 && contextLength > 0 && contextLength < minimumContext) {
     return {
-      label: 'Direct chat only',
-      detail: `Needs ${formatContext(minimumContext)}`,
+      label: 'Portal compact',
+      detail: `${formatContext(contextLength)} context`,
       tone: 'amber',
+    }
+  }
+  if (!isPixelAgentVerified(pixelAgent)) {
+    return {
+      label: 'Portal adaptive',
+      detail: 'Available to use',
+      tone: 'purple',
     }
   }
   const talkCompatibility = getHermesTalkCompatibility(model)
   if (isHermesTalkVerified(talkCompatibility)) {
-    return { label: 'Talk ready', detail: model.recommended || model.status === 'loaded' ? 'Best' : 'Verified', tone: 'green' }
+    return { label: 'Portal verified', detail: model.recommended || model.status === 'loaded' ? 'Best' : 'Verified', tone: 'green' }
   }
   if (model.recommended || model.status === 'loaded') {
     return { label: model.fitLabel || 'Fits GPU', detail: 'Best', tone: 'green' }
@@ -1729,6 +1825,10 @@ function getOpenAiChatCompatibility(model) {
 
 function getAgentViabilityCompatibility(model) {
   return model?.appCompatibility?.agentViability || getHermesTalkCompatibility(model)
+}
+
+function getPixelAgentCompatibility(model) {
+  return model?.appCompatibility?.pixelAgent || null
 }
 
 function getBlockedAppCompatibility(model) {
@@ -1779,6 +1879,7 @@ const CORE_MODEL_COMPATIBILITY_KEYS = new Set([
   'agentViability',
   'hermesTalk',
   'openaiChat',
+  'pixelAgent',
 ])
 
 function isHermesTalkBlocked(compatibility) {
@@ -1789,6 +1890,11 @@ function isHermesTalkBlocked(compatibility) {
 function isHermesTalkVerified(compatibility) {
   const status = String(compatibility?.status || '').toLowerCase()
   return ['supported', 'verified'].includes(status)
+}
+
+function isPixelAgentVerified(compatibility) {
+  const status = String(compatibility?.status || '').toLowerCase()
+  return ['pixel_agent_viable', 'supported', 'verified'].includes(status)
 }
 
 function getSpeedDisplay(model) {
@@ -1854,8 +1960,9 @@ function getModelTags(model, hermesMinimumContext) {
 }
 
 function getIconTone(model, compatibility) {
-  if (!model?.fitsVram) return { border: 'border-orange-400/35', bg: 'bg-orange-500/10', text: 'text-orange-400' }
-  if (compatibility.tone === 'amber') return { border: 'border-amber-400/35', bg: 'bg-amber-500/10', text: 'text-amber-300' }
+  if (model?.metadata?.source === 'runtime') return { border: 'border-purple-400/35', bg: 'bg-purple-500/10', text: 'text-purple-400' }
+  if (!model?.fitsVram) return { border: 'border-theme-border', bg: 'bg-theme-text-secondary/10', text: 'text-theme-text-secondary' }
+  if (compatibility.tone === 'amber') return { border: 'border-theme-border', bg: 'bg-theme-text-secondary/10', text: 'text-theme-text-secondary' }
   if (compatibility.detail === 'Best') return { border: 'border-theme-accent/35', bg: 'bg-theme-accent/10', text: 'text-theme-accent' }
   return { border: 'border-emerald-400/30', bg: 'bg-emerald-500/10', text: 'text-emerald-400' }
 }

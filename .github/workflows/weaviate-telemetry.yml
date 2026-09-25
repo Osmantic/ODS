@@ -1,0 +1,23 @@
+name: Weaviate telemetry contract
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/weaviate/**'
+      - 'ods/tests/test_weaviate_telemetry.py'
+      - '.github/workflows/weaviate-telemetry.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest
+      - run: python -m pytest ods/tests/test_weaviate_telemetry.py -q -s
+        env:
+          ODS_TEST_WEAVIATE_TELEMETRY: '1'

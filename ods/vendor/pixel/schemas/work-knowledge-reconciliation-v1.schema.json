@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-knowledge-reconciliation-v1.schema.json",
+  "title": "Pixel Deep Work knowledge-vault deletion-ledger reconciliation receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "reconciliationId", "vaultId", "reconciledAt", "authoritativeDeletionHeadSha256", "applied", "alreadyPresent", "residualCiphertext", "state", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-knowledge-reconciliation-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "reconciliationId": {"type": "string", "pattern": "^workknowledgereconcile-[0-9]{13}-[a-f0-9]{12}$"},
+    "vaultId": {"type": "string", "pattern": "^knowledgevault-[a-f0-9]{12}$"},
+    "reconciledAt": {"type": "string", "format": "date-time"},
+    "authoritativeDeletionHeadSha256": {"$ref": "#/$defs/sha256"},
+    "applied": {"$ref": "#/$defs/entries"},
+    "alreadyPresent": {"$ref": "#/$defs/entries"},
+    "residualCiphertext": {"const": false},
+    "state": {"const": "committed"},
+    "authority": {"const": {"applyAuthoritativeTombstones": true, "network": false, "externalEffects": false, "scopeExpansion": false, "completion": false}},
+    "boundary": {"const": "Content-free receipt for atomically reconciling an authoritative deletion ledger into one restored local vault. It grants no restore, network, cross-vault, external-effect, scope-expansion, or completion authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "tenant": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+    "entries": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourceId", "clientId", "tombstoneSha256"],
+        "properties": {
+          "sourceId": {"type": "string", "pattern": "^workknowledgesource-[0-9]{13}-[a-f0-9]{12}$"},
+          "clientId": {"$ref": "#/$defs/tenant"},
+          "tombstoneSha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    }
+  }
+}

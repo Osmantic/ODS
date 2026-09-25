@@ -1,0 +1,53 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: pdfding
+  name: PdfDing
+  aliases: []
+  container_name: ods-pdfding
+  host_env: PDFDING_HOST
+  default_host: pdfding
+  port: 8000
+  external_port_env: PDFDING_PORT
+  external_port_default: 11058
+  health: /healthz
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Organize PDFs with collections and tags, read with saved progress,
+    and annotate documents in a persistent local library.
+  env_vars:
+  - key: PDFDING_SECRET_KEY
+    required: true
+    secret: true
+    description: Persistent random Django signing secret, at least 32 characters.
+  ui_path: /
+tags:
+- documents
+- pdf
+- open-source
+features:
+- id: pdfding-library
+  name: PdfDing
+  description: Organize PDFs with collections and tags, read with saved progress,
+    and annotate documents in a persistent local library.
+  icon: FileText
+  category: productivity
+  requirements:
+    services:
+    - pdfding
+    vram_gb: 0
+  enabled_services_all:
+  - pdfding
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: pdfding
+    path: /

@@ -109,8 +109,10 @@ fi
 # ---------------------------------------------------------------------------
 if command -v pwsh >/dev/null 2>&1; then
     echo "[contract] behavioral: missing backing file => readiness NOT ok"
+    PS_ROOT="$ROOT_DIR"
+    if command -v cygpath >/dev/null 2>&1; then PS_ROOT="$(cygpath -m "$ROOT_DIR")"; fi
     OUT="$(pwsh -NoProfile -Command "
-        . '$ROOT_DIR/$LIB'
+        . '$PS_ROOT/$LIB'
         # Dead endpoint so the completion cannot succeed; nonexistent GGUF file.
         \$ep = @{ ChatCompletionsUrl = 'http://127.0.0.1:1/api/v1/chat/completions' }
         \$r = Test-WindowsLlmModelReadiness -Endpoint \$ep -InstallDir 'C:\\__ods_nope__' \`

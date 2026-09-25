@@ -1,0 +1,54 @@
+services:
+  rabbitmq:
+    image: ods/rabbitmq:4.3.6-local-v1
+    container_name: ods-rabbitmq
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${RABBITMQ_PORT:-11105}:15672
+    - 127.0.0.1:${RABBITMQ_AMQP_PORT:-11106}:5672
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    environment:
+      RABBITMQ_DEFAULT_USER: ods_admin
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_ADMIN_PASSWORD:?Set the 64-hex administrator
+        password}
+      RABBITMQ_DEFAULT_VHOST: ods
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_NODE_SECRET:?Set a distinct stable 64-hex
+        node secret}
+      RABBITMQ_NODENAME: rabbit@ods-rabbitmq
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - rabbitmq-data:/var/lib/rabbitmq
+    hostname: ods-rabbitmq
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  rabbitmq-data: {}

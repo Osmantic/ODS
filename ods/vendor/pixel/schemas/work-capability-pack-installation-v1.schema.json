@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-pack-installation-v1.schema.json",
+  "title": "Pixel Deep Work capability-pack installation receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "pack", "signatureSha256", "allowedSignersSha256", "installedAt", "enabled", "image", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-pack-installation-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-capability-pack-installation"},
+    "pack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "packSha256", "treeSha256", "signerIdentity"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+        "packSha256": {"$ref": "#/$defs/sha256"},
+        "treeSha256": {"$ref": "#/$defs/sha256"},
+        "signerIdentity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$"}
+      }
+    },
+    "signatureSha256": {"$ref": "#/$defs/sha256"},
+    "allowedSignersSha256": {"$ref": "#/$defs/sha256"},
+    "installedAt": {"type": "string", "format": "date-time"},
+    "enabled": {"const": false},
+    "image": {
+      "const": {"pulled": false, "inspected": false, "executed": false}
+    },
+    "authority": {
+      "const": {
+        "grantsToolUse": false,
+        "grantsDataAccess": false,
+        "grantsImagePull": false,
+        "grantsExecution": false,
+        "grantsNetwork": false,
+        "grantsExternalEffects": false,
+        "grantsCompletion": false
+      }
+    },
+    "boundary": {
+      "const": "Verified private installation of one signed capability declaration. Installation is disabled and grants no tool use, data access, image pull, execution, network, external effect, or completion authority."
+    }
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

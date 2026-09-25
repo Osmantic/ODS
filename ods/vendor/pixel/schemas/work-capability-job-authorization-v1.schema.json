@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-job-authorization-v1.schema.json",
+  "title": "Pixel Deep Work job capability authorization v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "authorizationId", "jobId", "authorizedAt", "expiresAt", "planSha256", "leaseSha256", "consumptionSha256", "checkpointSha256", "controllerPolicySha256", "pack", "tools", "dataClassification", "maxSessions", "grantLifetimeMs", "limits", "watchdog", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-job-authorization-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "authorizationId": {"type": "string", "pattern": "^workcapauth-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "authorizedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "leaseSha256": {"$ref": "#/$defs/sha256"},
+    "consumptionSha256": {"$ref": "#/$defs/sha256"},
+    "checkpointSha256": {"$ref": "#/$defs/sha256"},
+    "controllerPolicySha256": {"$ref": "#/$defs/sha256"},
+    "pack": {"$ref": "#/$defs/pack"},
+    "tools": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "object", "additionalProperties": false, "required": ["name", "effectClass"], "properties": {"name": {"$ref": "#/$defs/tool"}, "effectClass": {"enum": ["read-only", "workspace"]}}}},
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "maxSessions": {"type": "integer", "minimum": 1, "maximum": 4096},
+    "grantLifetimeMs": {"type": "integer", "minimum": 100, "maximum": 3600000},
+    "limits": {"$ref": "#/$defs/limits"},
+    "watchdog": {"$ref": "#/$defs/watchdog"},
+    "authority": {"const": {"grantsToolCall": false, "grantsCredentials": false, "grantsNetwork": false, "grantsExternalEffects": false, "grantsScopeExpansion": false, "grantsCompletion": false}},
+    "boundary": {"const": "Exact job, consumed lease, running checkpoint, signed pack, tool, classification, resource, and watchdog envelope. It grants no call by itself; each call still requires a fresh single-use grant and continue decision."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "tool": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"},
+    "pack": {"type": "object", "additionalProperties": false, "required": ["id", "version", "packSha256", "treeSha256"], "properties": {"id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}, "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"}, "packSha256": {"$ref": "#/$defs/sha256"}, "treeSha256": {"$ref": "#/$defs/sha256"}}},
+    "limits": {"type": "object", "additionalProperties": false, "required": ["maxInputBytes", "maxOutputBytes", "maxRuntimeMs", "maxCalls", "maxMemoryMiB", "maxCpuCores", "maxPids", "maxWorkspaceBytes"], "properties": {"maxInputBytes": {"type": "integer", "minimum": 1, "maximum": 1048576}, "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216}, "maxRuntimeMs": {"type": "integer", "minimum": 100, "maximum": 3600000}, "maxCalls": {"const": 1}, "maxMemoryMiB": {"type": "integer", "minimum": 64, "maximum": 8192}, "maxCpuCores": {"type": "number", "minimum": 0.1, "maximum": 8}, "maxPids": {"type": "integer", "minimum": 16, "maximum": 512}, "maxWorkspaceBytes": {"type": "integer", "minimum": 0, "maximum": 34359738368}}},
+    "watchdog": {"type": "object", "additionalProperties": false, "required": ["maxToolCalls", "maxFailures", "maxRepeatedEquivalent", "maxRepeatedFailure", "maxEventsWithoutVerifiedProgress"], "properties": {"maxToolCalls": {"type": "integer", "minimum": 1, "maximum": 4096}, "maxFailures": {"type": "integer", "minimum": 1, "maximum": 1000000}, "maxRepeatedEquivalent": {"type": "integer", "minimum": 2, "maximum": 100}, "maxRepeatedFailure": {"type": "integer", "minimum": 1, "maximum": 100}, "maxEventsWithoutVerifiedProgress": {"type": "integer", "minimum": 4, "maximum": 1000000}}}
+  }
+}

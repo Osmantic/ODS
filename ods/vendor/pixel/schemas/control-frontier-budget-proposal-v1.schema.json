@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-frontier-budget-proposal-v1.schema.json",
+  "title": "Pixel local-control exact Frontier budget proposal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "proposalId", "createdAt", "expiresAt", "authMode", "billingBoundary", "policySha256", "currentBudgets", "proposedBudgets", "directions", "increasesPotentialSpend", "activation", "browserCanApply", "browserCanActivate", "approvalBoundary", "proposalHash"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "proposalId": {"type": "string", "pattern": "^frontier-budget-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "authMode": {"enum": ["chatgpt", "api-key"]},
+    "billingBoundary": {"enum": ["chatgpt-plan", "platform-api"]},
+    "policySha256": {"$ref": "#/$defs/hash"},
+    "currentBudgets": {"$ref": "#/$defs/currentBudgets"},
+    "proposedBudgets": {"$ref": "#/$defs/proposedBudgets"},
+    "directions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["windowSeconds", "maxJobs", "maxInputTokens", "maxOutputTokens", "maxFailures", "maxEstimatedCostMicros"],
+      "properties": {
+        "windowSeconds": {"$ref": "#/$defs/direction"},
+        "maxJobs": {"$ref": "#/$defs/direction"},
+        "maxInputTokens": {"$ref": "#/$defs/direction"},
+        "maxOutputTokens": {"$ref": "#/$defs/direction"},
+        "maxFailures": {"$ref": "#/$defs/direction"},
+        "maxEstimatedCostMicros": {"$ref": "#/$defs/direction"}
+      }
+    },
+    "increasesPotentialSpend": {"type": "boolean"},
+    "activation": {"const": "configure-plan-apply-required"},
+    "browserCanApply": {"const": false},
+    "browserCanActivate": {"const": false},
+    "approvalBoundary": {"const": "Draft only; applying this exact proposal requires its ID and SHA-256 hash plus --confirm in the trusted terminal. Application edits only the private source policy and does not configure, activate, restart, authenticate, approve, or call a provider."},
+    "proposalHash": {"$ref": "#/$defs/hash"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"authMode": {"const": "chatgpt"}}, "required": ["authMode"]},
+      "then": {
+        "properties": {
+          "billingBoundary": {"const": "chatgpt-plan"},
+          "currentBudgets": {"properties": {"maxEstimatedCostMicros": {"type": "null"}}},
+          "proposedBudgets": {"properties": {"maxEstimatedCostMicros": {"type": "null"}}}
+        }
+      },
+      "else": {
+        "properties": {
+          "billingBoundary": {"const": "platform-api"},
+          "currentBudgets": {"properties": {"maxEstimatedCostMicros": {"type": "integer"}}},
+          "proposedBudgets": {"properties": {"maxEstimatedCostMicros": {"type": "integer"}}}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "direction": {"enum": ["increase", "decrease", "same"]},
+    "currentBudgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["windowSeconds", "maxJobs", "maxInputTokens", "maxOutputTokens", "maxFailures", "maxEstimatedCostMicros"],
+      "properties": {
+        "windowSeconds": {"type": "integer", "minimum": 60, "maximum": 2678400},
+        "maxJobs": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "maxInputTokens": {"type": "integer", "minimum": 128, "maximum": 1000000000},
+        "maxOutputTokens": {"type": "integer", "minimum": 64, "maximum": 1000000000},
+        "maxFailures": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "maxEstimatedCostMicros": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000000000}
+      }
+    },
+    "proposedBudgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["windowSeconds", "maxJobs", "maxInputTokens", "maxOutputTokens", "maxFailures", "maxEstimatedCostMicros"],
+      "properties": {
+        "windowSeconds": {"type": "integer", "minimum": 60, "maximum": 2678400},
+        "maxJobs": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "maxInputTokens": {"type": "integer", "minimum": 128, "maximum": 10000000},
+        "maxOutputTokens": {"type": "integer", "minimum": 64, "maximum": 2000000},
+        "maxFailures": {"type": "integer", "minimum": 1, "maximum": 100},
+        "maxEstimatedCostMicros": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000000}
+      }
+    }
+  }
+}

@@ -1,0 +1,107 @@
+services:
+  etherpad:
+    image: etherpad/etherpad:3.3.5@sha256:a6d531c512c0442b89865e2882aa030d19fef2ee967298656f1cb966400d04d8
+    container_name: ods-etherpad
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${ETHERPAD_PORT:-11070}:9001
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - fetch('http://127.0.0.1:9001/health',{signal:AbortSignal.timeout(5000),redirect:'manual'}).then(r=>{if(r.status!==200)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    environment:
+      NODE_ENV: production
+      ADMIN_PASSWORD: ${ETHERPAD_ADMIN_PASSWORD:?Set admin password}
+      USER_PASSWORD: ${ETHERPAD_USER_PASSWORD:?Set editor password}
+      ADMIN_SECRET: ${ETHERPAD_ADMIN_SECRET:?Set admin OAuth client secret}
+      USER_SECRET: ${ETHERPAD_USER_SECRET:?Set user OAuth client secret}
+      SSO_ISSUER: http://localhost:${ETHERPAD_PORT:-11070}
+      ADMIN_REDIRECT: http://localhost:${ETHERPAD_PORT:-11070}/admin/
+      USER_REDIRECT: http://localhost:${ETHERPAD_PORT:-11070}/
+      REQUIRE_AUTHENTICATION: 'true'
+      REQUIRE_AUTHORIZATION: 'true'
+      SHOW_SETTINGS_IN_ADMIN_PAGE: 'false'
+      ENABLE_METRICS: 'false'
+      DISABLE_IP_LOGGING: 'true'
+      TRUST_PROXY: 'false'
+      DB_TYPE: postgres
+      DB_HOST: etherpad-db
+      DB_PORT: '5432'
+      DB_NAME: etherpad
+      DB_USER: etherpad
+      DB_PASS: ${ETHERPAD_DATABASE_PASSWORD:?Set database password}
+      DEFAULT_PAD_TEXT: ' '
+      SOFFICE: 'null'
+      UPDATES_TIER: notify
+      UPDATES_REQUIRE_ADMIN_FOR_STATUS: 'true'
+    volumes:
+    - etherpad-var:/opt/etherpad-lite/var
+    - etherpad-plugins:/opt/etherpad-lite/src/plugin_packages
+    init: true
+    command:
+    - sh
+    - -ec
+    - test -f var/ods-settings.json || cp settings.json var/ods-settings.json; cd
+      src && exec node --require tsx/cjs node/server.ts --settings ../var/ods-settings.json
+    depends_on:
+      etherpad-db:
+        condition: service_healthy
+  etherpad-db:
+    image: postgres:16-alpine@sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb
+    restart: unless-stopped
+    networks:
+    - ods-network
+    environment:
+      POSTGRES_DB: etherpad
+      POSTGRES_USER: etherpad
+      POSTGRES_PASSWORD: ${ETHERPAD_DATABASE_PASSWORD:?Set database password}
+    volumes:
+    - etherpad-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - etherpad
+      - -d
+      - etherpad
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  etherpad-var: {}
+  etherpad-plugins: {}
+  etherpad-db-data: {}

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 
 const POLL_INTERVAL = 5000 // 5 seconds
+const STATUS_REQUEST_TIMEOUT_MS = 12000
 
 // Mock data for development/demo - gated behind VITE_USE_MOCK_DATA env var
 const USE_MOCK_DATA = import.meta.env.VITE_USE_MOCK_DATA === 'true'
@@ -30,7 +31,7 @@ function getMockStatus() {
     },
     bootstrap: null, // null means no bootstrap in progress
     uptime: 7200, // seconds
-    version: '1.0.0',
+    version: '3.0.0',
     tier: 'Professional'
   }
 }
@@ -53,7 +54,6 @@ export function useSystemStatus() {
   // Guard against overlapping fetches — if the API is slow (e.g.
   // llama-server under inference load) we skip the next poll rather
   // than stacking concurrent requests that can amplify the problem.
-  const fetchInFlight = useRef(false)
   // Allow the very first fetch to run even on a hidden tab so that
   // users who open the dashboard in a background window (multi-monitor,
   // restored session, browser automation) don't see a permanently stuck
@@ -62,6 +62,9 @@ export function useSystemStatus() {
   const hasInitialData = useRef(false)
 
   useEffect(() => {
+    let cancelled = false
+    let fetchInFlight = false
+    let activeRequest = null
     const fetchStatus = async () => {
       if (USE_MOCK_DATA) {
         setLoading(false)
@@ -73,21 +76,39 @@ export function useSystemStatus() {
       if (document.hidden && hasInitialData.current) return
 
       // Skip this tick if the previous fetch hasn't returned yet.
-      if (fetchInFlight.current) return
-      fetchInFlight.current = true
+      if (cancelled || fetchInFlight) return
+      fetchInFlight = true
+      const controller = new AbortController()
+      activeRequest = controller
+      let rejectAbort
+      const aborted = new Promise((_, reject) => {
+        rejectAbort = () => reject(new Error('Status request timed out'))
+        controller.signal.addEventListener('abort', rejectAbort, { once: true })
+      })
+      const timeout = setTimeout(() => controller.abort(), STATUS_REQUEST_TIMEOUT_MS)
 
       try {
-        const response = await fetch('/api/status')
-        if (!response.ok) throw new Error('Failed to fetch status')
-        const data = await response.json()
-        setStatus(data)
+        const pending = (async () => {
+          const response = await fetch('/api/status', { signal: controller.signal })
+          if (!response.ok) throw new Error('Failed to fetch status')
+          return response.json()
+        })()
+        const data = await Promise.race([pending, aborted])
+        if (cancelled) return
+        setStatus({...data, clientTelemetry:{sampledAt:Date.now(),stale:false}})
         setError(null)
         hasInitialData.current = true
       } catch (err) {
-        setError(err.message)
+        if (!cancelled) {
+          setError(err?.name === 'AbortError' ? 'Status request timed out' : err.message)
+          setStatus(previous => ({...previous,clientTelemetry:{...previous.clientTelemetry,stale:true}}))
+        }
       } finally {
-        fetchInFlight.current = false
-        setLoading(false)
+        clearTimeout(timeout)
+        controller.signal.removeEventListener('abort', rejectAbort)
+        if (activeRequest === controller) activeRequest = null
+        fetchInFlight = false
+        if (!cancelled) setLoading(false)
       }
     }
 
@@ -99,6 +120,9 @@ export function useSystemStatus() {
     document.addEventListener('visibilitychange', onVisibility)
 
     return () => {
+      cancelled = true
+      activeRequest?.abort()
+      activeRequest = null
       clearInterval(interval)
       document.removeEventListener('visibilitychange', onVisibility)
     }

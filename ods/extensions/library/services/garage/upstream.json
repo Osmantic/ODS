@@ -1,0 +1,13 @@
+{
+  "repository": "https://git.deuxfleurs.fr/Deuxfleurs/garage",
+  "license": "AGPL-3.0",
+  "source_ref": "v2.3.0",
+  "image": "dxflrs/garage:v2.3.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official static binary in pinned Alpine; native single-node layout, separate persistent metadata/data, loopback S3 and container-local RPC/admin. No public buckets, accounts or project bindings preseeded. Local development has no replication redundancy."
+}

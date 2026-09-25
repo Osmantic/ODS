@@ -1,0 +1,89 @@
+services:
+  umami:
+    image: ods/umami:3.4.0-local-v1
+    container_name: ods-umami
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${UMAMI_PORT:-11056}:3000
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --max-time
+      - '5'
+      - http://127.0.0.1:3000/api/heartbeat
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1001:1001
+    environment:
+      UMAMI_INITIAL_PASSWORD: ${UMAMI_INITIAL_PASSWORD:?Set UMAMI_INITIAL_PASSWORD}
+      UMAMI_DATABASE_PASSWORD: ${UMAMI_DATABASE_PASSWORD:?Set UMAMI_DATABASE_PASSWORD}
+      UMAMI_APP_SECRET: ${UMAMI_APP_SECRET:?Set UMAMI_APP_SECRET}
+      UMAMI_TWO_FACTOR_KEY: ${UMAMI_TWO_FACTOR_KEY:?Set UMAMI_TWO_FACTOR_KEY}
+      HOSTNAME: 0.0.0.0
+      PORT: '3000'
+      DISABLE_TELEMETRY: '1'
+      DISABLE_UPDATES: '1'
+      NEXT_TELEMETRY_DISABLED: '1'
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      umami-db:
+        condition: service_healthy
+  umami-db:
+    image: postgres:16-alpine@sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb
+    restart: unless-stopped
+    networks:
+    - ods-network
+    environment:
+      POSTGRES_DB: umami
+      POSTGRES_USER: umami
+      POSTGRES_PASSWORD: ${UMAMI_DATABASE_PASSWORD:?Set database password}
+    volumes:
+    - umami-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - umami
+      - -d
+      - umami
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  umami-db-data: {}

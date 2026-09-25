@@ -112,3 +112,31 @@ MOCK
     assert_output --partial "test-image image is unavailable: missing/image:tag"
     assert_output --partial "set LLAMA_SERVER_IMAGE to a valid image"
 }
+
+@test "docker_image_available: a stalled local daemon still reaches the registry probe" {
+    export DOCKER_IMAGE_CHECK_TIMEOUT=0.2
+    export PROBE_TRACE="$BATS_TEST_TMPDIR/probe-trace"
+    cat > "$DOCKER_CMD" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$PROBE_TRACE"
+if [[ "$1" == image ]]; then
+    sleep 2
+fi
+exit 0
+MOCK
+    run docker_image_available "remote/image:present"
+    assert_success
+    assert_equal "$(cat "$PROBE_TRACE")" $'image\nmanifest'
+}
+
+@test "validate_docker_image_or_fallback: stalled daemon and registry reject the image" {
+    export DOCKER_IMAGE_CHECK_TIMEOUT=0.2
+    cat > "$DOCKER_CMD" <<'MOCK'
+#!/usr/bin/env bash
+sleep 2
+exit 0
+MOCK
+    run validate_docker_image_or_fallback selected "stalled/image:tag" "test-image"
+    assert_failure
+    assert_output --partial "test-image image is unavailable"
+}

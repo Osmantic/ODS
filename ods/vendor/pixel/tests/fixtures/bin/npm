@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ ${1:-} == ci ]] || { echo "fake npm only supports ci" >&2; exit 2; }
+mkdir -p node_modules/typebox
+printf '{"name":"typebox","version":"1.0.59"}\n' > node_modules/typebox/package.json

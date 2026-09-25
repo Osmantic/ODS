@@ -1,6 +1,6 @@
 # ODS Architecture
 
-> Version 2.6.0 | Fully local AI stack deployed on user hardware with a single command
+> Version 3.0.0 | Fully local AI stack deployed on user hardware with a single command
 
 ## Overview
 

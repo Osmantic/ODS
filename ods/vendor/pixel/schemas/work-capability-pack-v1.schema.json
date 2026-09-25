@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-pack-v1.schema.json",
+  "title": "Pixel Deep Work isolated capability pack v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "kind", "id", "version", "name", "description", "provenance", "protocol", "adapter", "tools", "data", "limits", "lifecycle", "security", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-pack-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "kind": {"const": "deep-work-capability-pack"},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+    "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 100},
+    "description": {"type": "string", "minLength": 1, "maxLength": 500},
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["treeSha256", "signerIdentity", "signatureNamespace"],
+      "properties": {
+        "treeSha256": {"$ref": "#/$defs/sha256"},
+        "signerIdentity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$"},
+        "signatureNamespace": {"const": "pixel-work-capability-pack"}
+      }
+    },
+    "protocol": {"const": {"name": "mcp", "version": "2026-07-28", "transport": "stdio-newline-jsonrpc"}},
+    "adapter": {
+      "type": "object", "additionalProperties": false,
+      "required": ["imageRef", "imageDigest", "imageId", "os", "architecture", "executablePath", "executableSha256", "executableBytes", "arguments", "uid", "gid", "serverName", "serverVersion", "workspace"],
+      "properties": {
+        "imageRef": {
+          "type": "string",
+          "oneOf": [
+            {"pattern": "^[a-z0-9][a-z0-9._/:+-]{1,255}@sha256:[a-f0-9]{64}$"},
+            {"pattern": "^sha256:[a-f0-9]{64}$"}
+          ]
+        },
+        "imageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "imageId": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "os": {"const": "linux"},
+        "architecture": {"enum": ["amd64", "arm64"]},
+        "executablePath": {"type": "string", "pattern": "^/[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*$"},
+        "executableSha256": {"$ref": "#/$defs/sha256"},
+        "executableBytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "arguments": {"type": "array", "maxItems": 32, "items": {"type": "string", "pattern": "^[A-Za-z0-9._/:+=-]{1,256}$"}},
+        "uid": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "gid": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "serverName": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+        "serverVersion": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}$"},
+        "workspace": {"enum": ["none", "disposable-read-write"]}
+      }
+    },
+    "tools": {
+      "type": "array", "minItems": 1, "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "title", "description", "inputSchema", "inputSchemaSha256", "outputSchema", "outputSchemaSha256", "effectClass"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"},
+          "title": {"type": "string", "minLength": 1, "maxLength": 100},
+          "description": {"type": "string", "minLength": 1, "maxLength": 500},
+          "inputSchema": {"type": "object"},
+          "inputSchemaSha256": {"$ref": "#/$defs/sha256"},
+          "outputSchema": {"type": "object"},
+          "outputSchemaSha256": {"$ref": "#/$defs/sha256"},
+          "effectClass": {"enum": ["read-only", "workspace"]}
+        }
+      }
+    },
+    "data": {
+      "type": "object", "additionalProperties": false,
+      "required": ["acceptedClassifications", "returnedClassifications", "rawRetention"],
+      "properties": {
+        "acceptedClassifications": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"enum": ["public", "internal", "confidential", "restricted"]}},
+        "returnedClassifications": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"enum": ["public", "internal", "confidential", "restricted"]}},
+        "rawRetention": {"const": "job-only"}
+      }
+    },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxInputBytes", "maxOutputBytes", "maxFrameBytes", "maxStdoutBytes", "maxStderrBytes", "maxRuntimeMs", "shutdownTimeoutMs", "maxCalls", "maxMemoryMiB", "maxCpuCores", "maxPids", "maxWorkspaceBytes"],
+      "properties": {
+        "maxInputBytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "maxFrameBytes": {"type": "integer", "minimum": 1024, "maximum": 16777216},
+        "maxStdoutBytes": {"type": "integer", "minimum": 4096, "maximum": 67108864},
+        "maxStderrBytes": {"type": "integer", "minimum": 0, "maximum": 16777216},
+        "maxRuntimeMs": {"type": "integer", "minimum": 100, "maximum": 3600000},
+        "shutdownTimeoutMs": {"type": "integer", "minimum": 100, "maximum": 30000},
+        "maxCalls": {"const": 1},
+        "maxMemoryMiB": {"type": "integer", "minimum": 64, "maximum": 8192},
+        "maxCpuCores": {"type": "number", "minimum": 0.1, "maximum": 8},
+        "maxPids": {"type": "integer", "minimum": 16, "maximum": 512},
+        "maxWorkspaceBytes": {"type": "integer", "minimum": 0, "maximum": 34359738368}
+      }
+    },
+    "lifecycle": {
+      "const": {
+        "concurrency": 1,
+        "reset": "fresh-container-per-session",
+        "health": {
+          "probe": "mcp-discovery-and-tools-list",
+          "workspace": false,
+          "toolCalls": 0,
+          "maxConsecutiveFailures": 3
+        },
+        "cleanup": {
+          "container": "force-remove-then-inspect-absent",
+          "workspace": "remove-then-inspect-absent"
+        },
+        "audit": {
+          "projection": "content-free",
+          "rawStdout": false,
+          "rawStderr": false,
+          "toolArguments": false,
+          "toolResults": false
+        }
+      }
+    },
+    "security": {
+      "const": {
+        "freshHome": true, "inheritEnvironment": false, "inheritFileDescriptors": false,
+        "network": "none", "networkDestinations": [], "credentials": [], "hostFilesystem": false,
+        "dockerSocket": false, "sshAgent": false, "browser": false, "externalEffects": false,
+        "sampling": false, "elicitation": false, "resources": false, "prompts": false,
+        "tasks": false, "serverRequests": false
+      }
+    },
+    "boundary": {"const": "Signed declaration for one isolated credential-free MCP stdio adapter. The declaration itself is disabled and grants no tool call, workspace, data, network, external-effect, or completion authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

@@ -1,0 +1,8 @@
+FROM python:3.11-slim
+WORKDIR /source
+COPY workspace_preview.py unix_peer.py /source/
+COPY preview_inspection.py preview_inspection_protocol.py /source/
+RUN mkdir /previews && chmod 0700 /previews
+ENV PYTHONDONTWRITEBYTECODE=1
+USER 65534:65534
+ENTRYPOINT ["python3", "/source/workspace_preview.py"]

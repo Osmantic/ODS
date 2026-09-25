@@ -1,0 +1,47 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: kroki
+  name: Kroki
+  aliases: []
+  container_name: ods-kroki
+  host_env: KROKI_HOST
+  default_host: kroki
+  port: 8000
+  external_port_env: KROKI_PORT
+  external_port_default: 11072
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Render textual Graphviz, PlantUML, D2 and other bundled diagram formats
+    through a local HTTP API.
+  env_vars: []
+  external_link: false
+tags:
+- diagrams
+- rendering
+- open-source
+features:
+- id: kroki-rendering
+  name: Kroki API
+  description: Render textual Graphviz, PlantUML, D2 and other bundled diagram formats
+    through a local HTTP API.
+  icon: Workflow
+  category: productivity
+  requirements:
+    services:
+    - kroki
+    vram_gb: 0
+  enabled_services_all:
+  - kroki
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: none

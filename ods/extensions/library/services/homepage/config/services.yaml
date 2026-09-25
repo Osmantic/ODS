@@ -1,0 +1,4 @@
+- ODS:
+    - Portal:
+        href: "{{HOMEPAGE_VAR_ODS_URL}}"
+        description: Open this ODS installation

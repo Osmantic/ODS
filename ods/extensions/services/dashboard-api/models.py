@@ -5,7 +5,7 @@ from typing import Annotated, Any, Optional
 from pydantic import BaseModel, Field
 
 from config import GPU_BACKEND
-from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
+from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT, PIXEL_MIN_CONTEXT
 
 
 class GPUInfo(BaseModel):
@@ -107,6 +107,7 @@ class VersionInfo(BaseModel):
     update_available: bool = False
     changelog_url: Optional[str] = None
     checked_at: Optional[str] = None
+    check_status: str = "unavailable"
 
 
 class UpdateAction(BaseModel):
@@ -182,11 +183,11 @@ class ModelLibraryEntry(BaseModel):
     downloadUrl: Optional[str] = None
     downloadSha256: Optional[str] = None
     llmModelName: Optional[str] = None
-    size: str
-    sizeGb: float
-    vramRequired: float
+    size: Optional[str]
+    sizeGb: Optional[float]
+    vramRequired: Optional[float]
     estimatedRequired: Optional[float] = None
-    contextLength: int
+    contextLength: Optional[int]
     maxContextLength: Optional[int] = None
     contextOptions: list[dict[str, Any]] = Field(default_factory=list)
     specialty: str
@@ -204,8 +205,9 @@ class ModelLibraryEntry(BaseModel):
     recommended: bool = False
     configured: bool = False
     recommendation: Optional[dict[str, Any]] = None
-    fitsVram: bool
-    fitsCurrentVram: bool
+    fitsVram: Optional[bool]
+    activationSupport: Optional[dict[str, Any]] = None
+    fitsCurrentVram: Optional[bool]
     performance: Optional[dict[str, Any]] = None
     performanceLabel: Optional[str] = None
 
@@ -225,9 +227,11 @@ class ModelLibraryResponse(BaseModel):
     configuredModel: Optional[str] = None
     hermesMinimumContext: int = HERMES_MIN_CONTEXT
     hermesTargetContext: int = HERMES_TARGET_CONTEXT
+    pixelMinimumContext: int = PIXEL_MIN_CONTEXT
     recommendationPolicy: Optional[str] = None
     recommendationAlternatives: list[dict[str, Any]] = Field(default_factory=list)
     modelLifecycle: Optional[dict[str, Any]] = None
     odsMode: str = "unknown"
     configuredMode: str = "unknown"
     llmBackend: str = "unknown"
+    externalLemonade: bool = False

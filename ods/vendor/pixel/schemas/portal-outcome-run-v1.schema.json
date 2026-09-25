@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-run-v1.schema.json",
+  "title": "Pixel private real-backend portal outcome run v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "runId", "journeyId", "backend", "synthetic", "selfGraded", "startedAt", "finishedAt", "task", "executionIdentity", "execution", "interaction", "evidence", "assertions", "dimensions", "artifacts", "safetyFindings", "verifier", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-run-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-portal-outcome-run"},
+    "runId": {"type": "string", "pattern": "^outcomerun-[0-9]{13}-[a-f0-9]{12}$"},
+    "journeyId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+    "backend": {"enum": ["pixel", "codex"]},
+    "synthetic": {"const": false},
+    "selfGraded": {"const": false},
+    "startedAt": {"type": "string", "format": "date-time"},
+    "finishedAt": {"type": "string", "format": "date-time"},
+    "task": {
+      "type": "object", "additionalProperties": false,
+      "required": ["comparisonLane", "corpusSha256", "journeySha256", "taskSpecificationSha256", "taskAdmissionSha256", "userRequestSha256", "sourceSnapshotSha256", "environmentSha256", "toolPolicySha256", "verifierSha256", "sharedModelContractSha256", "sharedInferenceContractSha256", "researchFixtureSha256", "capabilitiesSha256", "budgetsSha256", "dataRoute", "effectBoundary", "scenario"],
+      "properties": {
+        "comparisonLane": {"enum": ["product-default", "same-model-harness"]},
+        "corpusSha256": {"$ref": "#/$defs/hash"}, "journeySha256": {"$ref": "#/$defs/hash"},
+        "taskSpecificationSha256": {"$ref": "#/$defs/hash"}, "taskAdmissionSha256": {"$ref": "#/$defs/hash"},
+        "userRequestSha256": {"$ref": "#/$defs/hash"}, "sourceSnapshotSha256": {"$ref": "#/$defs/hash"},
+        "environmentSha256": {"$ref": "#/$defs/hash"}, "toolPolicySha256": {"$ref": "#/$defs/hash"},
+        "verifierSha256": {"$ref": "#/$defs/hash"}, "capabilitiesSha256": {"$ref": "#/$defs/hash"},
+        "sharedModelContractSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "sharedInferenceContractSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "researchFixtureSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "budgetsSha256": {"$ref": "#/$defs/hash"},
+        "dataRoute": {"enum": ["local-only", "brokered-public", "sanitized-remote", "authorized-provider"]},
+        "effectBoundary": {"enum": ["none", "read-only", "local-state-change", "external-write"]},
+        "scenario": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "fault", "seedSha256"],
+          "properties": {
+            "kind": {"enum": ["baseline", "fault-injection"]},
+            "fault": {"oneOf": [{"type": "null"}, {"enum": ["stale-memory", "source-unavailable", "prompt-injection", "malformed-output", "process-crash", "service-restart", "timeout-before-submit", "timeout-after-submit", "eventual-consistency", "duplicate-request", "scope-expansion", "secret-canary", "cross-client-probe", "mock-backend", "self-grade", "artifact-substitution"]}]},
+            "seedSha256": {"$ref": "#/$defs/hash"}
+          },
+          "allOf": [
+            {"if": {"properties": {"kind": {"const": "baseline"}}, "required": ["kind"]}, "then": {"properties": {"fault": {"type": "null"}}}},
+            {"if": {"properties": {"kind": {"const": "fault-injection"}}, "required": ["kind"]}, "then": {"properties": {"fault": {"type": "string"}}}}
+          ]
+        }
+      }
+      ,"allOf": [
+        {"if": {"properties": {"comparisonLane": {"const": "same-model-harness"}}, "required": ["comparisonLane"]}, "then": {"properties": {"sharedModelContractSha256": {"$ref": "#/$defs/hash"}, "sharedInferenceContractSha256": {"$ref": "#/$defs/hash"}}}},
+        {"if": {"properties": {"comparisonLane": {"const": "product-default"}}, "required": ["comparisonLane"]}, "then": {"properties": {"sharedModelContractSha256": {"type": "null"}, "sharedInferenceContractSha256": {"type": "null"}}}}
+      ]
+    },
+    "executionIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["harnessContractSha256", "modelContractSha256", "inferenceContractSha256", "toolPolicySha256", "freshRuntimeStartSha256", "runtimeCondition", "runtimeControlSha256", "interactionMode", "crossRunStateObserved"],
+      "properties": {
+        "harnessContractSha256": {"$ref": "#/$defs/hash"},
+        "modelContractSha256": {"$ref": "#/$defs/hash"},
+        "inferenceContractSha256": {"$ref": "#/$defs/hash"},
+        "toolPolicySha256": {"$ref": "#/$defs/hash"},
+        "freshRuntimeStartSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "runtimeCondition": {"enum": ["cold-first-request", "warm-neutral-probe"]},
+        "runtimeControlSha256": {"$ref": "#/$defs/hash"},
+        "interactionMode": {"const": "single-admission-noninteractive"},
+        "crossRunStateObserved": {"const": false}
+      }
+    },
+    "execution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "realBackend", "realTools", "exitCode", "latencyMs", "operatorInterventions", "operatorAttentionRequests", "approvalRequests", "scopeExpansionRequests", "interruptions", "toolCalls", "modelRequests", "inputTokens", "outputTokens", "externalWrites"],
+      "properties": {
+        "status": {"enum": ["completed", "failed", "safety-blocked"]},
+        "realBackend": {"const": true}, "realTools": {"const": true},
+        "exitCode": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 255}, {"type": "null"}]},
+        "latencyMs": {"type": "integer", "minimum": 0, "maximum": 31536000000},
+        "operatorInterventions": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "operatorAttentionRequests": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "approvalRequests": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "scopeExpansionRequests": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "interruptions": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "toolCalls": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+        "modelRequests": {"type": "integer", "minimum": 0, "maximum": 10000000},
+        "inputTokens": {"type": "integer", "minimum": 0, "maximum": 1000000000000},
+        "outputTokens": {"type": "integer", "minimum": 0, "maximum": 1000000000000},
+        "externalWrites": {"type": "integer", "minimum": 0, "maximum": 1000000}
+      }
+    },
+    "interaction": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "mode", "source", "observationSha256", "operatorInputsAfterAdmission", "operatorAttentionRequests", "approvalRequests", "scopeExpansionRequests", "safetyBlocks", "interruptions", "complete", "workerSelfReported", "boundary"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "mode": {"const": "single-admission-noninteractive"},
+        "source": {"enum": ["pixel-assistant-conversation-v1", "pixel-builder-checkpoint-v1", "pixel-controller-ledger-v1", "pixel-researcher-lifecycle-v1", "codex-jsonl-closed-stdin-v1"]},
+        "observationSha256": {"$ref": "#/$defs/hash"},
+        "operatorInputsAfterAdmission": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "operatorAttentionRequests": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "approvalRequests": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "scopeExpansionRequests": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "safetyBlocks": {"type": "integer", "minimum": 0, "maximum": 1},
+        "interruptions": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "complete": {"const": true},
+        "workerSelfReported": {"const": false},
+        "boundary": {"const": "Content-free mechanically observed interaction telemetry for one single-admission noninteractive comparison run. It records only event classes, counts, and an observation digest; it contains no prompt, response, tool argument, result, path, credential, provider content, approval authority, or completion authority."}
+      }
+    },
+    "evidence": {
+      "type": "array", "minItems": 2, "maxItems": 32,
+      "items": {"$ref": "#/$defs/evidence"}
+    },
+    "assertions": {
+      "type": "array", "minItems": 3, "maxItems": 32,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "status", "evidencePath", "evidenceSha256"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+          "status": {"enum": ["pass", "fail", "not-exercised"]},
+          "evidencePath": {"$ref": "#/$defs/path"}, "evidenceSha256": {"$ref": "#/$defs/hash"}
+        }
+      }
+    },
+    "dimensions": {
+      "type": "array", "minItems": 7, "maxItems": 7,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "score", "evidencePath", "evidenceSha256"],
+        "properties": {
+          "id": {"enum": ["outcome-completeness", "correctness", "artifact-quality", "recovery", "operator-effort", "latency", "resource-use"]},
+          "score": {"type": "integer", "minimum": 0, "maximum": 4},
+          "evidencePath": {"$ref": "#/$defs/path"}, "evidenceSha256": {"$ref": "#/$defs/hash"}
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array", "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["kind", "relativePath", "sha256", "bytes"],
+        "properties": {
+          "kind": {"enum": ["finding-report", "patch", "test-evidence", "dataset", "document", "visualization", "action-receipt", "run-transcript"]},
+          "relativePath": {"$ref": "#/$defs/path"}, "sha256": {"$ref": "#/$defs/hash"},
+          "bytes": {"type": "integer", "minimum": 1, "maximum": 1073741824}
+        }
+      }
+    },
+    "safetyFindings": {
+      "type": "array", "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["severity", "code", "evidencePath", "evidenceSha256"],
+        "properties": {
+          "severity": {"enum": ["P0", "P1", "P2", "P3"]},
+          "code": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+          "evidencePath": {"$ref": "#/$defs/path"}, "evidenceSha256": {"$ref": "#/$defs/hash"}
+        }
+      }
+    },
+    "verifier": {
+      "type": "object", "additionalProperties": false,
+      "required": ["independent", "kind", "backendOutputUsedAsScore", "evidencePath", "evidenceSha256"],
+      "properties": {
+        "independent": {"const": true},
+        "kind": {"enum": ["deterministic-verifier", "independent-human", "combined"]},
+        "backendOutputUsedAsScore": {"const": false},
+        "evidencePath": {"$ref": "#/$defs/path"}, "evidenceSha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scopeExpansionDetected", "privateDataSentRemote", "unreconciledExternalWrite", "safetyBoundaryRelaxed"],
+      "properties": {
+        "scopeExpansionDetected": {"type": "boolean"}, "privateDataSentRemote": {"type": "boolean"},
+        "unreconciledExternalWrite": {"type": "boolean"}, "safetyBoundaryRelaxed": {"const": false}
+      }
+    },
+    "boundary": {"const": "Private exact run evidence only; it grants no model, tool, provider, external-effect, publication, deployment, acceptance, or promotion authority."}
+  },
+  "allOf": [
+    {"if": {"properties": {"task": {"properties": {"comparisonLane": {"const": "same-model-harness"}}}}, "required": ["task"]}, "then": {"properties": {"executionIdentity": {"properties": {"freshRuntimeStartSha256": {"$ref": "#/$defs/hash"}}}}}}
+  ],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "path": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "relativePath", "sha256", "bytes"],
+      "properties": {
+        "type": {"enum": ["exact-source", "runtime-environment", "typed-call", "command-exit", "artifact-digest", "independent-verifier", "source-provenance", "observation-time", "provider-identifier", "action-journal", "checkpoint-lineage", "privacy-route", "citation-coverage", "cleanup-proof"]},
+        "relativePath": {"$ref": "#/$defs/path"}, "sha256": {"$ref": "#/$defs/hash"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1073741824}
+      }
+    }
+  }
+}

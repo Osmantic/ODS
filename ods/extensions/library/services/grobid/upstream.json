@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/grobidOrg/grobid",
+  "license": "Apache-2.0",
+  "image": "grobid/grobid:0.9.0-crf@sha256:24ba90eb1c959f65d812bcdb2cf79c677fa5fd7b95235de616b8bc9fa1317849",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "CPU CRF edition with bundled models; does not enable the separate GPU deep-learning pipeline. Upload papers in the web console or call the API. Results are returned to the client, not archived by GROBID."
+}

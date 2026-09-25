@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/LibreTranslate/LibreTranslate",
+  "license": "AGPL-3.0",
+  "image": "libretranslate/libretranslate:v1.9.6@sha256:1de2d7056bb8ad607a412f4563d9abe324ff632b43b5be9428bcc8e213aebb32",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Downloads the selected Argos language models on first start; afterwards translation runs locally. The default language set is English, Portuguese and Spanish."
+}

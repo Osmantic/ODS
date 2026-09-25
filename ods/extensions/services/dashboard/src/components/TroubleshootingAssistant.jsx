@@ -134,7 +134,7 @@ export function TroubleshootingAssistant({ serviceStatus }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <AlertCircle className="w-5 h-5 text-amber-400" />
+        <AlertCircle className="w-5 h-5 text-theme-text-secondary" />
         <h3 className="text-sm font-medium text-theme-text">Troubleshooting Assistant</h3>
       </div>
 
@@ -150,14 +150,14 @@ export function TroubleshootingAssistant({ serviceStatus }) {
 
       {/* Relevant issues first */}
       {relevantIssues.length > 0 && !search && (
-        <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
-          <p className="text-xs text-amber-300 font-medium mb-2">Detected potential issues:</p>
+        <div className="p-3 bg-theme-text-secondary/10 border border-theme-border rounded-lg">
+          <p className="text-xs text-theme-text-secondary font-medium mb-2">Detected potential issues:</p>
           <div className="space-y-1">
             {relevantIssues.map(issue => (
               <button
                 key={issue.id}
                 onClick={() => setExpanded(expanded === issue.id ? null : issue.id)}
-                className="w-full text-left text-sm text-amber-200 hover:text-amber-100 flex items-center gap-2"
+                className="w-full text-left text-sm text-theme-text-secondary hover:text-theme-text-secondary flex items-center gap-2"
               >
                 <ChevronDown className="w-3 h-3" />
                 {issue.title}
@@ -185,7 +185,7 @@ export function TroubleshootingAssistant({ serviceStatus }) {
               <div>
                 <span className="text-sm font-medium text-theme-text">{issue.title}</span>
                 {relevantIssues.includes(issue) && (
-                  <span className="ml-2 text-xs text-amber-400">(may be relevant)</span>
+                  <span className="ml-2 text-xs text-theme-text-secondary">(may be relevant)</span>
                 )}
               </div>
               {expanded === issue.id ? (

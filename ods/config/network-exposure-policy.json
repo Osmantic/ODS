@@ -53,8 +53,8 @@
     "hermes-proxy": {
       "risk": "autonomous-agent-gateway",
       "lan_exposure": "operator-controlled",
-      "auth_required": true,
-      "notes": "Caddy forward_auth gate in front of Hermes."
+      "auth_required": false,
+      "notes": "Hermes opens directly by default on the configured BIND_ADDRESS. Set HERMES_REQUIRE_OWNER_CARD=true for signed ODS-session gating. Internal Hermes API/session-token checks remain enabled."
     },
     "langfuse": {
       "risk": "observability-data-ui",
@@ -73,6 +73,24 @@
       "lan_exposure": "operator-controlled",
       "auth_required": false,
       "notes": "Local OpenAI-compatible inference API."
+    },
+    "model-router": {
+      "risk": "model-routing-internal-api",
+      "lan_exposure": "none",
+      "auth_required": false,
+      "notes": "Internal-only stable model route for ODS services; it must not publish a host port."
+    },
+    "pixel-inference": {
+      "risk": "scoped-model-inference-api",
+      "lan_exposure": "none",
+      "auth_required": true,
+      "notes": "Optional loopback-only inference sharing; per-device expiring revocable keys. Remote clients require an explicitly trusted tunnel or separately secured HTTPS transport. Never grants agent or administration access."
+    },
+    "pixel-model-relay": {
+      "risk": "scoped-model-inference-api",
+      "lan_exposure": "none",
+      "auth_required": true,
+      "notes": "Pixel-only authenticated inference relay bound to host loopback; never expose it on LAN or grant agent or administrative control."
     },
     "n8n": {
       "risk": "workflow-automation-ui",
@@ -103,6 +121,12 @@
       "lan_exposure": "operator-controlled",
       "auth_required": false,
       "notes": "Deep research UI backed by search and local inference."
+    },
+    "pixel-edge": {
+      "risk": "autonomous-agent-internal-gateway",
+      "lan_exposure": "none",
+      "auth_required": true,
+      "notes": "Internal-only authenticated OpenAI-compatible bridge to the host Pixel ingress Unix socket; it must not publish a host port."
     },
     "privacy-shield": {
       "risk": "privacy-proxy",
@@ -157,6 +181,12 @@
       "lan_exposure": "operator-controlled",
       "auth_required": false,
       "notes": "Speech-to-text model API; audio may be sensitive."
+    },
+    "fooocus": {
+      "risk": "image-generation-ui",
+      "lan_exposure": "operator-controlled",
+      "auth_required": false,
+      "notes": "NVIDIA-only image generation UI; default loopback binding. No application authentication is provisioned; keep local or place behind an authenticated proxy before changing exposure."
     }
   }
 }

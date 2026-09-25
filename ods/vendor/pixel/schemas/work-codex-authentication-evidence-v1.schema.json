@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-codex-authentication-evidence-v1.schema.json",
+  "title": "Pixel external MFA evidence for one Codex work plan v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "evidenceId", "issuedAt", "expiresAt", "issuer", "audience", "issuerKeySha256", "planId", "planSha256", "challengeNonce", "provider", "authentication", "confirmation", "signatureAlgorithm", "signature", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-codex-authentication-evidence-v1.schema.json"}, "schemaVersion": {"const": 1},
+    "evidenceId": {"type": "string", "pattern": "^workcodexauthn-[0-9]{13}-[a-f0-9]{12}$"},
+    "issuedAt": {"type": "string", "format": "date-time"}, "expiresAt": {"type": "string", "format": "date-time"},
+    "issuer": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{1,127}$"},
+    "audience": {"const": "pixel-work-codex-authorization"},
+    "issuerKeySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "planId": {"type": "string", "pattern": "^workcodexplan-[0-9]{13}-[a-f0-9]{12}$"}, "planSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "challengeNonce": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+    "provider": {
+      "type": "object", "additionalProperties": false, "required": ["authMode", "model", "billingBoundary", "transportSha256"],
+      "properties": {"authMode": {"enum": ["chatgpt", "api-key"]}, "model": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$"}, "billingBoundary": {"enum": ["chatgpt-plan-or-credits-not-api-billing", "separately-billed-api-platform"]}, "transportSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+    },
+    "authentication": {
+      "type": "object", "additionalProperties": false,
+      "required": ["primaryFactor", "secondFactor", "freshAuthentication", "authenticationAgeSeconds", "credentialsVisibleToPixel"],
+      "properties": {"primaryFactor": {"const": "password"}, "secondFactor": {"enum": ["totp-authenticator-app", "email-one-time-code"]}, "freshAuthentication": {"const": true}, "authenticationAgeSeconds": {"type": "integer", "minimum": 0, "maximum": 300}, "credentialsVisibleToPixel": {"const": false}}
+    },
+    "confirmation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["planInspected", "dataOwnerConfirmed", "billingAcknowledgment", "typedChallengeSha256"],
+      "properties": {"planInspected": {"const": true}, "dataOwnerConfirmed": {"const": true}, "billingAcknowledgment": {"enum": ["chatgpt-plan-or-credits", "separately-billed-api-platform"]}, "typedChallengeSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+    },
+    "signatureAlgorithm": {"const": "ed25519"}, "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$"},
+    "boundary": {"const": "External identity-provider evidence only. It attests fresh password plus approved MFA and one exact inspected Codex work plan; Pixel receives no password, one-time code, session token, provider credential, identity claim, tool authority, or external-effect authority."}
+  }
+}

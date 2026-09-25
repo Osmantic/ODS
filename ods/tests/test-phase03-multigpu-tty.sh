@@ -47,7 +47,7 @@ cat >"$tmp_dir/harness.sh" <<'HARNESS'
 set -euo pipefail
 
 INTERACTIVE=true
-DRY_RUN=false
+DRY_RUN="${HARNESS_DRY_RUN:-false}"
 INSTALL_CHOICE=1
 TIER=1
 ODS_MODE=local
@@ -67,7 +67,7 @@ GPU_COUNT=3
 GPU_BACKEND=nvidia
 HOST_ARCH=amd64
 HOST_PAGE_SIZE=4096
-INSTALL_DIR="$HARNESS_TMP/install"
+INSTALL_DIR="${HARNESS_INSTALL_DIR:-$HARNESS_TMP/install}"
 SCRIPT_DIR="$HARNESS_TMP"
 LLM_MODEL_SIZE_MB=6000
 MAX_CONTEXT=8192
@@ -155,6 +155,30 @@ run_with_closed_stdin() {
 
 run_with_closed_stdin automatic '1\n' 'SUCCESS: Assignment complete'
 pass "automatic assignment completes with closed stdin"
+[[ -f "$tmp_dir/install/config/gpu-topology.json" ]] || fail "real assignment did not persist GPU topology"
+jq -e '.gpu_count == 3' "$tmp_dir/install/config/gpu-topology.json" >/dev/null \
+    || fail "persisted GPU topology does not match the detected topology"
+pass "real assignment persists the detected GPU topology"
+
+dry_run_target="$tmp_dir/dry-run-target"
+env FEATURES_PHASE="$FEATURES_PHASE" HARNESS_TMP="$tmp_dir" \
+    HARNESS_DRY_RUN=true HARNESS_INSTALL_DIR="$dry_run_target" \
+    bash "$tmp_dir/harness.sh" </dev/null >"$tmp_dir/dry-run.log" 2>&1 \
+    || { cat "$tmp_dir/dry-run.log" >&2; fail "dry run failed"; }
+grep -Fq 'PHASE03_COMPLETED' "$tmp_dir/dry-run.log" \
+    || fail "dry run did not complete phase 03"
+[[ ! -e "$dry_run_target" ]] || fail "dry run created a fresh installation directory"
+pass "dry run leaves a fresh installation target absent"
+
+mkdir -p "$dry_run_target/config"
+printf 'existing topology\n' >"$dry_run_target/config/gpu-topology.json"
+env FEATURES_PHASE="$FEATURES_PHASE" HARNESS_TMP="$tmp_dir" \
+    HARNESS_DRY_RUN=true HARNESS_INSTALL_DIR="$dry_run_target" \
+    bash "$tmp_dir/harness.sh" </dev/null >"$tmp_dir/dry-run-existing.log" 2>&1 \
+    || { cat "$tmp_dir/dry-run-existing.log" >&2; fail "existing-target dry run failed"; }
+[[ "$(cat "$dry_run_target/config/gpu-topology.json")" == 'existing topology' ]] \
+    || fail "dry run replaced an existing GPU topology"
+pass "dry run preserves an existing GPU topology"
 
 run_with_closed_stdin automatic-default '\n' 'SUCCESS: Assignment complete'
 pass "empty mode selection keeps the automatic default with closed stdin"

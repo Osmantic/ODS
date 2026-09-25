@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/promotion-readiness-v1.schema.json",
+  "title": "Pixel content-free promotion readiness evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "pixel", "sourceCommit", "sourceTree", "releaseManifestSha256", "qualificationMatrixSha256", "generatedAt", "status", "consecutivePasses", "requiredConsecutivePasses", "gates", "privacy", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-promotion-readiness"},
+    "pixel": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "sourceCommit": {"$ref": "#/$defs/commit"},
+    "sourceTree": {"$ref": "#/$defs/commit"},
+    "releaseManifestSha256": {"$ref": "#/$defs/hash"},
+    "qualificationMatrixSha256": {"$ref": "#/$defs/hash"},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["pass", "blocked"]},
+    "consecutivePasses": {"type": "integer", "minimum": 0, "maximum": 1000},
+    "requiredConsecutivePasses": {"const": 2},
+    "gates": {
+      "type": "array", "minItems": 12, "maxItems": 12,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "status", "evidenceSha256"],
+        "properties": {
+          "id": {"enum": ["automated-release-matrix", "supported-host-systemd-matrix", "deep-work-event-horizon", "recovery-security-matrix", "model-capability-contract", "outcome-parity", "signed-release-lifecycle", "owner-usability", "frontier-live-qualification", "multi-provider-local-first", "historical-secret-closure", "distribution-license"]},
+          "status": {"enum": ["pass", "blocked"]},
+          "evidenceSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]}
+        },
+        "allOf": [
+          {"if": {"properties": {"status": {"const": "pass"}}, "required": ["status"]}, "then": {"properties": {"evidenceSha256": {"$ref": "#/$defs/hash"}}}},
+          {"if": {"properties": {"status": {"const": "blocked"}}, "required": ["status"]}, "then": {"properties": {"evidenceSha256": {"type": "null"}}}}
+        ]
+      },
+      "allOf": [
+        {"contains": {"properties": {"id": {"const": "automated-release-matrix"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "supported-host-systemd-matrix"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "deep-work-event-horizon"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "recovery-security-matrix"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "model-capability-contract"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "outcome-parity"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "signed-release-lifecycle"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "owner-usability"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "frontier-live-qualification"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "multi-provider-local-first"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "historical-secret-closure"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "distribution-license"}}, "required": ["id"]}}
+      ]
+    },
+    "privacy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pathsIncluded", "credentialsIncluded", "hostIdentityIncluded", "modelIdentityIncluded", "providerContentIncluded"],
+      "properties": {
+        "pathsIncluded": {"const": false}, "credentialsIncluded": {"const": false},
+        "hostIdentityIncluded": {"const": false}, "modelIdentityIncluded": {"const": false},
+        "providerContentIncluded": {"const": false}
+      }
+    },
+    "boundary": {"const": "Content-free readiness index only; evidence authenticity and private details remain in separately reviewed owner-controlled records."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "pass"}}, "required": ["status"]},
+      "then": {
+        "properties": {
+          "consecutivePasses": {"minimum": 2},
+          "gates": {"items": {"properties": {"status": {"const": "pass"}}}}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

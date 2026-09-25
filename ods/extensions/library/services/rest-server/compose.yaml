@@ -1,0 +1,48 @@
+services:
+  rest-server:
+    image: ods/rest-server:0.14.0-local-v1
+    container_name: ods-rest-server
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${REST_SERVER_PORT:-11144}:8000
+    healthcheck:
+      test:
+      - CMD
+      - sh
+      - /ods-health.sh
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    environment:
+      REST_SERVER_PASSWORD: ${REST_SERVER_PASSWORD:?Set a random 64-hex transport
+        password}
+    volumes:
+    - rest-server-data:/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  rest-server-data: {}

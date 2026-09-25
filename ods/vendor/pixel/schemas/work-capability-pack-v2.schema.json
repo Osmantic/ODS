@@ -1,0 +1,914 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-pack-v2.schema.json",
+  "title": "Pixel Deep Work broad-tools capability pack v2 (admission-only foundation)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "kind",
+    "id",
+    "version",
+    "name",
+    "description",
+    "provenance",
+    "protocol",
+    "adapter",
+    "tools",
+    "data",
+    "limits",
+    "lifecycle",
+    "security",
+    "boundary"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://osmantic.com/pixel/schemas/work-capability-pack-v2.schema.json"
+    },
+    "schemaVersion": {
+      "const": 2
+    },
+    "kind": {
+      "const": "deep-work-capability-pack"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,62}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "treeSha256",
+        "signerIdentity",
+        "signatureNamespace",
+        "admissionOnly"
+      ],
+      "properties": {
+        "treeSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "signerIdentity": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$"
+        },
+        "signatureNamespace": {
+          "const": "pixel-work-capability-pack"
+        },
+        "admissionOnly": {
+          "const": true
+        }
+      }
+    },
+    "protocol": {
+      "const": {
+        "name": "mcp",
+        "version": "2026-07-28",
+        "transport": "stdio-newline-jsonrpc"
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "imageRef",
+        "imageDigest",
+        "imageId",
+        "os",
+        "architecture",
+        "executablePath",
+        "executableSha256",
+        "executableBytes",
+        "arguments",
+        "uid",
+        "gid",
+        "serverName",
+        "serverVersion",
+        "workspace"
+      ],
+      "properties": {
+        "imageRef": {
+          "type": "string",
+          "oneOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9._/:+-]{1,255}@sha256:[a-f0-9]{64}$"
+            },
+            {
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          ]
+        },
+        "imageDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "imageId": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "os": {
+          "const": "linux"
+        },
+        "architecture": {
+          "enum": [
+            "amd64",
+            "arm64"
+          ]
+        },
+        "executablePath": {
+          "type": "string",
+          "pattern": "^/[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*$"
+        },
+        "executableSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "executableBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "arguments": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._/:+=-]{1,256}$"
+          }
+        },
+        "uid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "gid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "serverName": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+        },
+        "serverVersion": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}$"
+        },
+        "workspace": {
+          "enum": [
+            "none",
+            "disposable-read-write"
+          ]
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "title",
+          "description",
+          "effectClass",
+          "inputSchema",
+          "inputSchemaSha256",
+          "outputSchema",
+          "outputSchemaSha256",
+          "binding"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "inputSchema": {
+            "type": "object"
+          },
+          "inputSchemaSha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "outputSchema": {
+            "type": "object"
+          },
+          "outputSchemaSha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "effectClass": {
+            "enum": [
+              "read-only",
+              "workspace",
+              "brokered-network",
+              "external"
+            ]
+          },
+          "binding": {
+            "oneOf": [
+              {"type": "null"},
+              {"$ref": "#/$defs/toolBinding"}
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "effectClass": {
+                  "const": "workspace"
+                }
+              },
+              "required": [
+                "effectClass"
+              ]
+            },
+            "then": {
+              "properties": {
+                "binding": {
+                  "const": null
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "effectClass": {"const": "read-only"},
+                "binding": {"type": "object"}
+              },
+              "required": ["effectClass", "binding"]
+            },
+            "then": {
+              "properties": {
+                "binding": {
+                  "properties": {"targetClass": {"const": "ssh"}},
+                  "required": ["targetClass"]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "effectClass": {
+                  "enum": [
+                    "brokered-network",
+                    "external"
+                  ]
+                }
+              },
+              "required": [
+                "effectClass"
+              ]
+            },
+            "then": {
+              "properties": {
+                "binding": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "binding"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acceptedClassifications",
+        "returnedClassifications",
+        "rawRetention"
+      ],
+      "properties": {
+        "acceptedClassifications": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "public",
+              "internal",
+              "confidential",
+              "restricted"
+            ]
+          }
+        },
+        "returnedClassifications": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "public",
+              "internal",
+              "confidential",
+              "restricted"
+            ]
+          }
+        },
+        "rawRetention": {
+          "const": "job-only"
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxInputBytes",
+        "maxOutputBytes",
+        "maxFrameBytes",
+        "maxStdoutBytes",
+        "maxStderrBytes",
+        "maxRuntimeMs",
+        "shutdownTimeoutMs",
+        "maxCalls",
+        "maxMemoryMiB",
+        "maxCpuCores",
+        "maxPids",
+        "maxWorkspaceBytes"
+      ],
+      "properties": {
+        "maxInputBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "maxOutputBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "maxFrameBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 16777216
+        },
+        "maxStdoutBytes": {
+          "type": "integer",
+          "minimum": 4096,
+          "maximum": 67108864
+        },
+        "maxStderrBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16777216
+        },
+        "maxRuntimeMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 3600000
+        },
+        "shutdownTimeoutMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 30000
+        },
+        "maxCalls": {
+          "const": 1
+        },
+        "maxMemoryMiB": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 8192
+        },
+        "maxCpuCores": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 8
+        },
+        "maxPids": {
+          "type": "integer",
+          "minimum": 16,
+          "maximum": 512
+        },
+        "maxWorkspaceBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 34359738368
+        }
+      }
+    },
+    "lifecycle": {
+      "const": {
+        "concurrency": 1,
+        "reset": "fresh-container-per-session",
+        "health": {
+          "probe": "mcp-discovery-and-tools-list",
+          "workspace": false,
+          "toolCalls": 0,
+          "maxConsecutiveFailures": 3
+        },
+        "cleanup": {
+          "container": "force-remove-then-inspect-absent",
+          "workspace": "remove-then-inspect-absent"
+        },
+        "audit": {
+          "projection": "content-free",
+          "rawStdout": false,
+          "rawStderr": false,
+          "toolArguments": false,
+          "toolResults": false
+        }
+      }
+    },
+    "budgets": {
+      "$ref": "#/$defs/budgets"
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "networkMode",
+        "networkDestinations",
+        "credentialRefs",
+        "hostFilesystem",
+        "dockerSocket",
+        "sshAgent",
+        "browser",
+        "externalEffects",
+        "admissionOnly"
+      ],
+      "properties": {
+        "networkMode": {
+          "enum": [
+            "none",
+            "brokered",
+            "public",
+            "private-allowlist"
+          ]
+        },
+        "networkDestinations": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:/+-]+$"
+          }
+        },
+        "credentialRefs": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+          }
+        },
+        "hostFilesystem": {
+          "const": false
+        },
+        "dockerSocket": {
+          "const": false
+        },
+        "sshAgent": {
+          "const": false
+        },
+        "browser": {
+          "const": false
+        },
+        "externalEffects": {
+          "const": false
+        },
+        "admissionOnly": {
+          "const": true
+        }
+      }
+    },
+    "boundary": {
+      "const": "Admission-only signed broad-tools capability declaration v2. The declaration itself is disabled and grants no tool call, workspace, data, network, external-effect, credential, egress, or completion authority."
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "toolBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "targetClass",
+        "scope",
+        "egress",
+        "credentials",
+        "idempotency",
+        "approval",
+        "inputClassification",
+        "outputClassification",
+        "budgets",
+        "receipt",
+        "neverEgress"
+      ],
+      "properties": {
+        "targetClass": {
+          "enum": [
+            "public-api",
+            "private-lan",
+            "local-filesystem",
+            "local-process",
+            "ssh",
+            "browser",
+            "mailbox",
+            "download",
+            "file",
+            "api",
+            "shell"
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "egress": {
+          "$ref": "#/$defs/egress"
+        },
+        "credentials": {
+          "$ref": "#/$defs/credentials"
+        },
+        "idempotency": {
+          "$ref": "#/$defs/idempotency"
+        },
+        "approval": {
+          "$ref": "#/$defs/approval"
+        },
+        "inputClassification": {
+          "enum": [
+            "public",
+            "internal",
+            "confidential",
+            "restricted"
+          ]
+        },
+        "outputClassification": {
+          "enum": [
+            "public",
+            "internal",
+            "confidential",
+            "restricted"
+          ]
+        },
+        "budgets": {
+          "$ref": "#/$defs/budgets"
+        },
+        "receipt": {
+          "$ref": "#/$defs/receiptContract"
+        },
+        "neverEgress": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_.-]{0,127}$"
+          }
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "endpoints",
+        "destinations"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "public",
+            "private-allowlist"
+          ]
+        },
+        "endpoints": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?:https?|wss?)://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]*)?$"
+          }
+        },
+        "destinations": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:/+-]+$"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "public"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "endpoints": {
+                "minItems": 1
+              },
+              "destinations": {
+                "const": []
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "private-allowlist"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "endpoints": {
+                "const": []
+              },
+              "destinations": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "egress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "destinations"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "none",
+            "public",
+            "private-allowlist"
+          ]
+        },
+        "destinations": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:/+-]+$"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "none"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "destinations": {
+                "const": []
+              }
+            }
+          }
+        }
+      ]
+    },
+    "credentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "refs"
+      ],
+      "properties": {
+        "refs": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+          }
+        }
+      }
+    },
+    "idempotency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "keys"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "keys": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "required": {
+                "const": true
+              }
+            },
+            "required": [
+              "required"
+            ]
+          },
+          "then": {
+            "properties": {
+              "keys": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "required": {
+                "const": false
+              }
+            },
+            "required": [
+              "required"
+            ]
+          },
+          "then": {
+            "properties": {
+              "keys": {
+                "const": []
+              }
+            }
+          }
+        }
+      ]
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "mode"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "mode": {
+          "enum": [
+            "operator-approval"
+          ]
+        }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "perRun",
+        "cumulative"
+      ],
+      "properties": {
+        "perRun": {
+          "$ref": "#/$defs/budget"
+        },
+        "cumulative": {
+          "$ref": "#/$defs/budget"
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxCalls",
+        "maxBytes",
+        "maxDurationMs"
+      ],
+      "properties": {
+        "maxCalls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1099511627776
+        },
+        "maxDurationMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      }
+    },
+    "receiptContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "form"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "form": {
+          "enum": [
+            "content-free",
+            "structured-bounded",
+            "pixel-receipt-v1"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "required": {
+                "const": false
+              }
+            },
+            "required": [
+              "required"
+            ]
+          },
+          "then": {
+            "properties": {
+              "form": {
+                "const": "content-free"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

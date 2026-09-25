@@ -1,0 +1,27 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-goal-brief-v1.schema.json",
+  "schemaVersion": 1,
+  "objective": "Inspect a local project, improve it, and independently review the result.",
+  "dataClassification": "internal",
+  "milestones": [
+    {
+      "milestoneId": "assess",
+      "kind": "inspect",
+      "objective": "Understand the supplied project and identify the highest-impact bounded improvement.",
+      "doneWhen": ["Return a concise finding report with evidence from the supplied snapshot"],
+      "dependsOn": [],
+      "inputIds": ["project"],
+      "effort": "quick"
+    },
+    {
+      "milestoneId": "build",
+      "kind": "build",
+      "objective": "Implement the selected improvement inside a disposable copy of the supplied project.",
+      "doneWhen": ["Return a bounded patch", "Return independent test evidence"],
+      "dependsOn": ["assess"],
+      "inputIds": ["project"],
+      "effort": "standard"
+    }
+  ],
+  "boundary": "Owner-authored plain-language goal structure and selected local input references only. Drafting derives bounded job proposals from private policy but grants no execution, lease, retry, scheduling, credential, scope expansion, external effect, or completion authority."
+}

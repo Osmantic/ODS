@@ -44,21 +44,33 @@ if ! command -v curl &> /dev/null; then
 fi
 log "curl: $(curl --version 2>/dev/null | sed -n '1p')"
 
-if ! command -v jq &> /dev/null; then
-    log "jq not found - attempting auto-install..."
-    if ! ods_sudo_available; then
-        error "jq is required but not installed and privileged package installation is unavailable. Install jq first, then re-run ODS."
-    fi
-    case "$PKG_MANAGER" in
-        dnf)    ods_sudo dnf install -y jq ;;
-        pacman) ods_sudo pacman -S --noconfirm jq ;;
-        zypper) ods_sudo zypper install -y jq ;;
-        apk)    ods_sudo apk add jq ;;
-        *)      ods_sudo apt-get install -y jq ;;
-    esac
-    command -v jq &> /dev/null || error "Failed to install jq automatically. Install it manually and re-run."
-fi
-log "jq: $(jq --version 2>/dev/null)"
+source "$SCRIPT_DIR/installers/lib/preflight-jq.sh"
+ods_preflight_require_jq
+
+# Fail early with a target-specific diagnosis instead of allowing a later
+# image/model download to look like an unexplained installer hang.
+_phase01_check_required_network() {
+    [[ "${OFFLINE_MODE:-false}" == "true" ]] && return 0
+    local target target_name url status
+    for target in "GitHub|https://github.com" "Docker Hub|https://registry-1.docker.io/v2/"; do
+        IFS='|' read -r target_name url <<< "$target"
+        if ! status="$(curl -sS --connect-timeout 5 --max-time 10 -o /dev/null \
+            -w '%{http_code}' "$url")"; then
+            error "Could not reach ${target_name}. Check DNS, proxy, or captive-portal access, then re-run the installer."
+        fi
+        # Docker Registry v2 intentionally challenges anonymous clients with
+        # 401 plus WWW-Authenticate. That is positive reachability evidence,
+        # not an outage. GitHub must still return a successful/redirect class,
+        # and unexpected registry responses remain fail-closed.
+        if [[ ! "$status" =~ ^[23][0-9]{2}$ ]] \
+            && [[ "$target_name" != "Docker Hub" || "$status" != "401" ]]; then
+            error "Could not reach ${target_name}. Check DNS, proxy, or captive-portal access, then re-run the installer."
+        fi
+    done
+    log "Required network targets resolved: GitHub and Docker Hub"
+}
+
+_phase01_check_required_network
 
 # Check optional tools (warn but don't fail)
 OPTIONAL_TOOLS_MISSING=""
@@ -132,14 +144,16 @@ _ods_is_related_install_dir() {
 }
 
 _ods_related_compose_containers() {
+    local reinstall_root="${1:-}"
     command -v docker >/dev/null 2>&1 || return 0
 
     docker ps -a \
-        --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}' \
+        --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}|{{.Label "com.docker.compose.project.working_dir"}}' \
         2>/dev/null |
-        awk -F '|' '
+        awk -F '|' -v reinstall_root="$reinstall_root" '
             $2 != "" {
                 project = $2
+                if (reinstall_root == "" || $4 != reinstall_root) foreign[project] = 1
                 if (names[project] == "") {
                     names[project] = $1
                 } else {
@@ -151,7 +165,7 @@ _ods_related_compose_containers() {
             }
             END {
                 for (project in names) {
-                    if (open_webui[project] && dashboard_api[project] && inference[project]) {
+                    if (open_webui[project] && dashboard_api[project] && inference[project] && foreign[project]) {
                         print names[project]
                     }
                 }

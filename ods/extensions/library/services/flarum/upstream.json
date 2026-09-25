@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/flarum/framework",
+  "license": "MIT",
+  "source_ref": "v1.8.19",
+  "image": "crazymax/flarum:latest@sha256:ad36568eb237b3ae35106e12c77b17e418ea8c0648a8fcf0e0ced19fe936d97f",
+  "image_repository": "https://github.com/crazy-max/docker-flarum",
+  "image_source_ref": "044c3e966b04b001743c3fe8cca4026f6e7bdab2",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Community-maintained image with native S6 startup, private MariaDB and scheduler sidecar. Native flarum/flarum first login must be changed. No SMTP configured."
+}

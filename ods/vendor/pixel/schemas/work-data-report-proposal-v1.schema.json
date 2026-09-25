@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-data-report-proposal-v1.schema.json",
+  "title": "Pixel untrusted Data Lab report proposal v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "title", "summary", "methodology", "artifacts", "findings", "limitations", "dataClassification", "privateDataIncluded", "externalEffects", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-data-report-proposal-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "title": {"type": "string", "minLength": 1, "maxLength": 500},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 20000},
+    "methodology": {"type": "string", "minLength": 1, "maxLength": 20000},
+    "artifacts": {
+      "type": "array", "minItems": 1, "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["path", "purpose"],
+        "properties": {
+          "path": {"type": "string", "pattern": "^artifacts/[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+          "purpose": {"type": "string", "minLength": 1, "maxLength": 1000}
+        }
+      }
+    },
+    "findings": {
+      "type": "array", "minItems": 1, "maxItems": 128,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["statement", "evidencePaths"],
+        "properties": {
+          "statement": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "evidencePaths": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "pattern": "^artifacts/[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"}}
+        }
+      }
+    },
+    "limitations": {"type": "string", "minLength": 1, "maxLength": 10000},
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "privateDataIncluded": {"type": "boolean"}, "externalEffects": {"const": false},
+    "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Untrusted local Data Lab proposal only. It grants no truth, verification, publication, action, policy, or completion authority and must be bound to exact artifacts and independently replayed by Pixel."}
+  },
+  "$defs": {
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rawInputMutation", "hostAccess", "network", "credentials", "externalEffects", "publish", "policyMutation", "scopeExpansion"],
+      "properties": {
+        "rawInputMutation": {"const": false}, "hostAccess": {"const": false}, "network": {"const": false},
+        "credentials": {"const": false}, "externalEffects": {"const": false}, "publish": {"const": false},
+        "policyMutation": {"const": false}, "scopeExpansion": {"const": false}
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+services:
+  grocy:
+    image: ods/grocy:4.7.1-local-v1
+    container_name: ods-grocy
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${GROCY_PORT:-11132}:80
+    environment:
+      PUID: '1000'
+      PGID: '1000'
+      TZ: ${GROCY_TZ:-Etc/UTC}
+      UMASK: '077'
+    volumes:
+    - grocy-config:/config
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --show-error
+      - --max-time
+      - '10'
+      - http://127.0.0.1/
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  grocy-config: {}

@@ -47,6 +47,18 @@ if ! grep -Fq "$expected_entrypoint" "$compose_file"; then
     printf 'FAIL n8n entrypoint must run through /bin/sh for Windows bind mounts\n' >&2
     failures=$((failures + 1))
 fi
+for required_setting in 'HOME=/tmp' 'N8N_USER_FOLDER=/tmp'; do
+    if ! grep -Fq -- "- $required_setting" "$compose_file"; then
+        printf 'FAIL n8n must set %s for arbitrary host UIDs\n' "$required_setting" >&2
+        failures=$((failures + 1))
+    fi
+done
+for required_mount in './data/n8n:/tmp/.n8n:z' './config/n8n:/tmp/workflows:z'; do
+    if ! grep -Fq -- "- $required_mount" "$compose_file"; then
+        printf 'FAIL n8n must mount %s outside the image-owned home\n' "$required_mount" >&2
+        failures=$((failures + 1))
+    fi
+done
 
 if ((failures > 0)); then
     printf '%d n8n cookie policy test(s) failed\n' "$failures" >&2

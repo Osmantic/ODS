@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-update-status-v1.schema.json",
+  "title": "Pixel content-free update workspace status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "generatedAt", "state", "currentVersion", "candidateVersions",
+    "counts", "recoveryRequired", "migration", "nextActionCode", "evidence", "privacy", "boundary"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "state": {
+      "enum": [
+        "not-configured", "idle", "prepared", "rehearsed", "activation-recorded",
+        "rollback-recorded", "recovery-required", "cleaned", "unavailable"
+      ]
+    },
+    "currentVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"},
+    "candidateVersions": {
+      "type": "array", "maxItems": 10, "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[0-9]{1,6}(?:\\.[0-9]{1,6}){2}$"}
+    },
+    "counts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["prepared", "rehearsed", "activations", "cleanupHistory"],
+      "properties": {
+        "prepared": {"type": ["integer", "null"], "minimum": 0, "maximum": 10},
+        "rehearsed": {"type": ["integer", "null"], "minimum": 0, "maximum": 10},
+        "activations": {"type": ["integer", "null"], "minimum": 0, "maximum": 10},
+        "cleanupHistory": {"type": ["integer", "null"], "minimum": 0, "maximum": 10}
+      }
+    },
+    "recoveryRequired": {"type": ["boolean", "null"]},
+    "migration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "browserCanVerify", "browserCanMigrate"],
+      "properties": {
+        "state": {
+          "enum": [
+            "not-applicable", "terminal-verification-required", "terminal-receipt-review-required",
+            "recovery-required", "unavailable"
+          ]
+        },
+        "browserCanVerify": {"const": false},
+        "browserCanMigrate": {"const": false}
+      }
+    },
+    "nextActionCode": {
+      "enum": [
+        "none", "configure-pixel", "rehearse-update-in-terminal", "verify-migration-in-terminal",
+        "review-terminal-update-receipts", "run-terminal-update-recovery", "inspect-private-update-state"
+      ]
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["level", "signaturesVerified", "receiptContentsProjected"],
+      "properties": {
+        "level": {"enum": ["private-filesystem-shape", "unavailable"]},
+        "signaturesVerified": {"const": false},
+        "receiptContentsProjected": {"const": false}
+      }
+    },
+    "privacy": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "localPathsProjected", "hashesProjected", "signerIdentityProjected",
+        "privateReceiptContentProjected", "browserCanActivate", "browserCanRollback", "browserCanRecover"
+      ],
+      "properties": {
+        "localPathsProjected": {"const": false},
+        "hashesProjected": {"const": false},
+        "signerIdentityProjected": {"const": false},
+        "privateReceiptContentProjected": {"const": false},
+        "browserCanActivate": {"const": false},
+        "browserCanRollback": {"const": false},
+        "browserCanRecover": {"const": false}
+      }
+    },
+    "boundary": {
+      "const": "Read-only release-workspace orientation only; signatures, migrations, activation, rollback, recovery, and cleanup remain exact terminal workflows. No path, hash, signer, source, or private receipt content is projected."
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"state": {"const": "unavailable"}}, "required": ["state"]},
+      "then": {
+        "properties": {
+          "candidateVersions": {"maxItems": 0},
+          "counts": {
+            "properties": {
+              "prepared": {"type": "null"},
+              "rehearsed": {"type": "null"},
+              "activations": {"type": "null"},
+              "cleanupHistory": {"type": "null"}
+            }
+          },
+          "recoveryRequired": {"type": "null"},
+          "migration": {"properties": {"state": {"const": "unavailable"}}},
+          "nextActionCode": {"const": "inspect-private-update-state"},
+          "evidence": {"properties": {"level": {"const": "unavailable"}}}
+        }
+      },
+      "else": {
+        "properties": {
+          "recoveryRequired": {"type": "boolean"},
+          "evidence": {"properties": {"level": {"const": "private-filesystem-shape"}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "recovery-required"}}, "required": ["state"]},
+      "then": {
+        "properties": {
+          "recoveryRequired": {"const": true},
+          "migration": {"properties": {"state": {"const": "recovery-required"}}},
+          "nextActionCode": {"const": "run-terminal-update-recovery"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "not-configured", "idle", "prepared", "rehearsed",
+              "activation-recorded", "rollback-recorded", "cleaned"
+            ]
+          }
+        },
+        "required": ["state"]
+      },
+      "then": {"properties": {"recoveryRequired": {"const": false}}}
+    },
+    {
+      "if": {"properties": {"state": {"const": "not-configured"}}, "required": ["state"]},
+      "then": {
+        "properties": {
+          "candidateVersions": {"maxItems": 0},
+          "counts": {
+            "properties": {
+              "prepared": {"const": 0}, "rehearsed": {"const": 0},
+              "activations": {"const": 0}, "cleanupHistory": {"const": 0}
+            }
+          },
+          "migration": {"properties": {"state": {"const": "not-applicable"}}},
+          "nextActionCode": {"const": "configure-pixel"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "idle"}}, "required": ["state"]},
+      "then": {
+        "properties": {
+          "candidateVersions": {"maxItems": 0},
+          "counts": {
+            "properties": {
+              "prepared": {"const": 0}, "rehearsed": {"const": 0},
+              "activations": {"const": 0}, "cleanupHistory": {"const": 0}
+            }
+          },
+          "migration": {"properties": {"state": {"const": "not-applicable"}}},
+          "nextActionCode": {"const": "none"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "prepared"}}, "required": ["state"]},
+      "then": {
+        "properties": {
+          "candidateVersions": {"minItems": 1},
+          "counts": {"properties": {"prepared": {"type": "integer", "minimum": 1}}},
+          "migration": {"properties": {"state": {"const": "terminal-verification-required"}}},
+          "nextActionCode": {"const": "rehearse-update-in-terminal"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "rehearsed"}}, "required": ["state"]},
+      "then": {
+        "properties": {
+          "candidateVersions": {"minItems": 1},
+          "counts": {
+            "properties": {
+              "prepared": {"type": "integer", "minimum": 1},
+              "rehearsed": {"type": "integer", "minimum": 1}
+            }
+          },
+          "migration": {"properties": {"state": {"const": "terminal-verification-required"}}},
+          "nextActionCode": {"const": "verify-migration-in-terminal"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"state": {"enum": ["activation-recorded", "rollback-recorded"]}},
+        "required": ["state"]
+      },
+      "then": {
+        "properties": {
+          "candidateVersions": {"minItems": 1},
+          "counts": {
+            "properties": {
+              "prepared": {"type": "integer", "minimum": 1},
+              "rehearsed": {"type": "integer", "minimum": 1},
+              "activations": {"type": "integer", "minimum": 1}
+            }
+          },
+          "migration": {"properties": {"state": {"const": "terminal-receipt-review-required"}}},
+          "nextActionCode": {"const": "review-terminal-update-receipts"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "cleaned"}}, "required": ["state"]},
+      "then": {
+        "properties": {
+          "candidateVersions": {"maxItems": 0},
+          "counts": {
+            "properties": {
+              "prepared": {"const": 0}, "rehearsed": {"const": 0},
+              "activations": {"const": 0},
+              "cleanupHistory": {"type": "integer", "minimum": 1}
+            }
+          },
+          "migration": {"properties": {"state": {"const": "not-applicable"}}},
+          "nextActionCode": {"const": "none"}
+        }
+      }
+    }
+  ]
+}

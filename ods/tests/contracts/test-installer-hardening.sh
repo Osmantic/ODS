@@ -228,11 +228,21 @@ assert_contains "$bootstrap" 'ods_ref_is_exact_sha' "bootstrap should detect exa
 assert_contains "$bootstrap" 'checkout_requested_sha_ref "\$ODS_REF"' "bootstrap should checkout exact SHA refs after cloning"
 assert_contains "$bootstrap" 'BOOTSTRAP_FORCE=false' "bootstrap should parse --force before incomplete install prompts"
 assert_contains "$bootstrap" 'BOOTSTRAP_NON_INTERACTIVE=false' "bootstrap should parse --non-interactive before incomplete install prompts"
+assert_contains "$bootstrap" '"\$\{BOOTSTRAP_NON_INTERACTIVE\}" == "true"' "bootstrap non-interactive output should disable ANSI even on a TTY"
+assert_contains "$bootstrap" '-n "\$\{ODS_INSTALLER_GUI:-\}"' "bootstrap GUI output should disable ANSI even on a TTY"
+assert_contains "$bootstrap" '"\$\{ODS_UI_MODE:-auto\}" == "plain"' "bootstrap should honor the shared plain presentation mode"
 assert_contains "$bootstrap" 'Removing incomplete install because --force was provided' "bootstrap --force should remove incomplete install dirs without prompting"
 assert_contains "$bootstrap" 'Re-run with --force to remove it automatically' "bootstrap --non-interactive should fail with a force hint instead of prompting"
 assert_contains "$bootstrap" 'remove_install_dir()' "bootstrap should centralize incomplete install cleanup"
 assert_contains "$bootstrap" 'sudo -n rm -rf -- "\$target_dir"' "bootstrap --force should retry root-owned container data cleanup with sudo -n"
 assert_contains "$bootstrap" 'root-owned container data' "bootstrap sudo fallback should explain root-owned Docker data cleanup"
+assert_contains "$bootstrap" 'validate_force_reinstall_target()' "bootstrap should fingerprint a complete install before forced replacement"
+assert_contains "$bootstrap" 'candidate_uninstaller="\$TEMP_DIR/repo/ods/ods-uninstall.sh"' "bootstrap should stage the requested candidate uninstaller"
+assert_contains "$bootstrap" 'candidate_uninstall_args=\(--install-dir "\$INSTALL_DIR" --force\)' "bootstrap should target the existing install with the candidate uninstaller"
+assert_contains "$bootstrap" 'candidate_uninstall_args\+=\(--non-interactive\)' "bootstrap should propagate non-interactive mode to the candidate uninstaller"
+assert_contains "$bootstrap" 'bash "\$candidate_uninstaller" "\${candidate_uninstall_args\[@\]}"' "bootstrap should run the candidate uninstaller with bounded arguments"
+assert_contains "ods-uninstall.sh" 'validate_requested_install_dir()' "candidate uninstaller should independently validate a requested install target"
+assert_contains "ods-uninstall.sh" '--install-dir)' "candidate uninstaller should accept an explicit install target"
 
 echo "[contract] public bootstrap can install from an exact commit SHA"
 sha_repo="$tmpdir/sha-ref-repo"
@@ -246,6 +256,25 @@ set -euo pipefail
 printf '%s\n' first-commit > "${ODS_TEST_BOOTSTRAP_INSTALL_MARKER:?}"
 EOF
 chmod +x "$sha_repo/ods/install.sh"
+cat > "$sha_repo/ods/ods-uninstall.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == "--install-dir" && -n "${2:-}" ]]
+install_dir="$2"
+shift 2
+[[ "${1:-}" == "--force" ]]
+shift
+[[ "${1:-}" == "--non-interactive" ]]
+shift
+[[ "$#" -eq 0 ]]
+[[ "$install_dir" == "${ODS_TEST_EXPECTED_INSTALL_DIR:?}" ]]
+printf '%s\n' candidate > "${ODS_TEST_CANDIDATE_UNINSTALL_MARKER:?}"
+if [[ "${ODS_TEST_CANDIDATE_UNINSTALL_FAIL:-false}" == "true" ]]; then
+  exit 92
+fi
+rm -rf -- "$install_dir"
+EOF
+chmod +x "$sha_repo/ods/ods-uninstall.sh"
 git -C "$sha_repo" init -q
 git -C "$sha_repo" add ods
 git -C "$sha_repo" \
@@ -291,6 +320,122 @@ fi
 grep -qF first-commit "$sha_marker" \
   || { cat "$tmpdir/bootstrap-sha.out"; echo "[FAIL] bootstrap did not install the exact SHA payload"; exit 1; }
 assert_not_contains "$tmpdir/bootstrap-sha.out" 'Remote branch .* not found' "bootstrap treated an exact SHA as a branch name"
+
+echo "[contract] forced reinstall uses the requested candidate uninstaller"
+reinstall_dir="$tmpdir/reinstall-target"
+reinstall_marker="$tmpdir/reinstall-marker"
+candidate_uninstall_marker="$tmpdir/candidate-uninstall-marker"
+old_uninstall_marker="$tmpdir/old-uninstall-marker"
+mkdir -p "$reinstall_dir"
+touch "$reinstall_dir/.env" "$reinstall_dir/ods-cli" "$reinstall_dir/docker-compose.yml"
+cat > "$reinstall_dir/ods-uninstall.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' old > "$old_uninstall_marker"
+exit 91
+EOF
+chmod +x "$reinstall_dir/ods-uninstall.sh"
+
+if ! PATH="$tmpdir/bin:$PATH" \
+    HOME="$sha_home" \
+    ODS_BOOTSTRAP_ROOT="$sha_home" \
+    ODS_REPO_URL="file://$sha_repo" \
+    ODS_REF="$sha_ref" \
+    ODS_INSTALL_DIR="$reinstall_dir" \
+    ODS_ALLOW_LEGACY_PARALLEL=1 \
+    ODS_TEST_EXPECTED_INSTALL_DIR="$reinstall_dir" \
+    ODS_TEST_CANDIDATE_UNINSTALL_MARKER="$candidate_uninstall_marker" \
+    ODS_TEST_BOOTSTRAP_INSTALL_MARKER="$reinstall_marker" \
+    OSTYPE=linux-gnu \
+    bash get-ods.sh --non-interactive --force >"$tmpdir/bootstrap-reinstall.out" 2>&1; then
+  cat "$tmpdir/bootstrap-reinstall.out"
+  echo "[FAIL] bootstrap candidate-driven reinstall failed"
+  exit 1
+fi
+grep -qF candidate "$candidate_uninstall_marker" \
+  || { cat "$tmpdir/bootstrap-reinstall.out"; echo "[FAIL] requested candidate uninstaller was not invoked"; exit 1; }
+[[ ! -e "$old_uninstall_marker" ]] \
+  || { cat "$tmpdir/bootstrap-reinstall.out"; echo "[FAIL] installed stale uninstaller was invoked"; exit 1; }
+grep -qF first-commit "$reinstall_marker" \
+  || { cat "$tmpdir/bootstrap-reinstall.out"; echo "[FAIL] reinstall did not launch the exact requested payload"; exit 1; }
+
+echo "[contract] failed candidate uninstall prevents candidate overlay"
+failed_reinstall_dir="$tmpdir/failed-reinstall-target"
+failed_candidate_marker="$tmpdir/failed-candidate-marker"
+mkdir -p "$failed_reinstall_dir"
+touch "$failed_reinstall_dir/.env" "$failed_reinstall_dir/ods-cli" \
+  "$failed_reinstall_dir/docker-compose.yml" "$failed_reinstall_dir/preserve-me"
+cp "$reinstall_dir/ods-uninstall.sh" "$failed_reinstall_dir/ods-uninstall.sh"
+set +e
+PATH="$tmpdir/bin:$PATH" \
+    HOME="$sha_home" \
+    ODS_BOOTSTRAP_ROOT="$sha_home" \
+    ODS_REPO_URL="file://$sha_repo" \
+    ODS_REF="$sha_ref" \
+    ODS_INSTALL_DIR="$failed_reinstall_dir" \
+    ODS_ALLOW_LEGACY_PARALLEL=1 \
+    ODS_TEST_EXPECTED_INSTALL_DIR="$failed_reinstall_dir" \
+    ODS_TEST_CANDIDATE_UNINSTALL_MARKER="$failed_candidate_marker" \
+    ODS_TEST_CANDIDATE_UNINSTALL_FAIL=true \
+    ODS_TEST_BOOTSTRAP_INSTALL_MARKER="$reinstall_marker" \
+    OSTYPE=linux-gnu \
+    bash get-ods.sh --non-interactive --force >"$tmpdir/bootstrap-reinstall-fail.out" 2>&1
+failed_reinstall_rc=$?
+set -e
+[[ "$failed_reinstall_rc" -ne 0 ]] \
+  || { cat "$tmpdir/bootstrap-reinstall-fail.out"; echo "[FAIL] failed candidate uninstall was accepted"; exit 1; }
+[[ -f "$failed_reinstall_dir/preserve-me" && -f "$failed_reinstall_dir/.env" ]] \
+  || { cat "$tmpdir/bootstrap-reinstall-fail.out"; echo "[FAIL] failed candidate uninstall mutated the existing install"; exit 1; }
+
+echo "[contract] forced reinstall rejects a symlinked compose fingerprint"
+unsafe_reinstall_dir="$tmpdir/unsafe-reinstall-target"
+unsafe_candidate_marker="$tmpdir/unsafe-candidate-marker"
+mkdir -p "$unsafe_reinstall_dir"
+touch "$unsafe_reinstall_dir/.env" "$unsafe_reinstall_dir/ods-cli" \
+  "$unsafe_reinstall_dir/compose-outside.yml" "$unsafe_reinstall_dir/preserve-me"
+cp "$reinstall_dir/ods-uninstall.sh" "$unsafe_reinstall_dir/ods-uninstall.sh"
+ln -s "$unsafe_reinstall_dir/compose-outside.yml" "$unsafe_reinstall_dir/docker-compose.yml"
+set +e
+PATH="$tmpdir/bin:$PATH" \
+    HOME="$sha_home" \
+    ODS_BOOTSTRAP_ROOT="$sha_home" \
+    ODS_REPO_URL="file://$sha_repo" \
+    ODS_REF="$sha_ref" \
+    ODS_INSTALL_DIR="$unsafe_reinstall_dir" \
+    ODS_ALLOW_LEGACY_PARALLEL=1 \
+    ODS_TEST_EXPECTED_INSTALL_DIR="$unsafe_reinstall_dir" \
+    ODS_TEST_CANDIDATE_UNINSTALL_MARKER="$unsafe_candidate_marker" \
+    ODS_TEST_BOOTSTRAP_INSTALL_MARKER="$reinstall_marker" \
+    OSTYPE=linux-gnu \
+    bash get-ods.sh --non-interactive --force >"$tmpdir/bootstrap-reinstall-unsafe.out" 2>&1
+unsafe_reinstall_rc=$?
+set -e
+[[ "$unsafe_reinstall_rc" -ne 0 ]] \
+  || { cat "$tmpdir/bootstrap-reinstall-unsafe.out"; echo "[FAIL] unsafe reinstall fingerprint was accepted"; exit 1; }
+[[ ! -e "$unsafe_candidate_marker" && -f "$unsafe_reinstall_dir/preserve-me" ]] \
+  || { cat "$tmpdir/bootstrap-reinstall-unsafe.out"; echo "[FAIL] unsafe reinstall target was mutated"; exit 1; }
+
+echo "[contract] forced reinstall rejects the bootstrap root"
+bootstrap_root_target="$tmpdir/bootstrap-root-target"
+mkdir -p "$bootstrap_root_target"
+touch "$bootstrap_root_target/.env" "$bootstrap_root_target/ods-cli" \
+  "$bootstrap_root_target/docker-compose.yml" "$bootstrap_root_target/preserve-me"
+cp "$reinstall_dir/ods-uninstall.sh" "$bootstrap_root_target/ods-uninstall.sh"
+set +e
+PATH="$tmpdir/bin:$PATH" \
+    HOME="$bootstrap_root_target" \
+    ODS_REPO_URL="file://$sha_repo" \
+    ODS_REF="$sha_ref" \
+    ODS_INSTALL_DIR="$bootstrap_root_target/" \
+    ODS_ALLOW_LEGACY_PARALLEL=1 \
+    ODS_TEST_EXPECTED_INSTALL_DIR="$bootstrap_root_target/" \
+    ODS_TEST_CANDIDATE_UNINSTALL_MARKER="$unsafe_candidate_marker" \
+    ODS_TEST_BOOTSTRAP_INSTALL_MARKER="$reinstall_marker" \
+    OSTYPE=linux-gnu \
+    bash get-ods.sh --non-interactive --force >"$tmpdir/bootstrap-reinstall-root.out" 2>&1
+bootstrap_root_rc=$?
+set -e
+[[ "$bootstrap_root_rc" -ne 0 && -f "$bootstrap_root_target/preserve-me" ]] \
+  || { cat "$tmpdir/bootstrap-reinstall-root.out"; echo "[FAIL] bootstrap root reinstall target was accepted or mutated"; exit 1; }
 
 echo "[contract] runtime dispatcher supports non-gnu Linux OSTYPE"
 dispatcher_common="installers/common.sh"
@@ -486,11 +631,10 @@ print("windows-native-llama-runtime-limited")
 PY
 assert_contains "$tmpdir/windows-upgrade-launcher.out" 'windows-upgrade-launcher-supervised' "Windows installer should supervise the full-model upgrade in the scheduled task"
 win_phase04="installers/windows/phases/04-requirements.ps1"
-assert_contains "$win_phase04" 'function Stop-WindowsODSLemonadePortConflicts' "Windows requirements phase should stop native Lemonade conflicts"
-assert_contains "$win_phase04" 'Native Lemonade is running but this install uses Docker-backed inference' "Windows requirements phase should explain non-AMD Lemonade conflicts"
+assert_contains "$win_phase04" 'function Get-WindowsODSLemonadeProcesses' "Windows requirements phase should identify a managed AMD Lemonade listener"
 assert_contains "$win_phase04" '\$gpuInfo\.Backend -eq "amd" -and -not \$cloudMode' "Windows requirements phase should preserve AMD/Lemonade native runtime"
-assert_contains "$win_phase04" 'Stop-Process -Id \(\[int\]\$_proc\.ProcessId\)' "Windows requirements phase should stop detected Lemonade processes"
-assert_contains "$win_phase04" 'Stop-WindowsODSLemonadePortConflicts `' "Windows requirements phase should run Lemonade cleanup before port scan"
+assert_not_contains "$win_phase04" 'Stop-WindowsODSLemonadePortConflicts|Stop-Process -Id' "Windows installer must not kill unrelated Lemonade during preflight or dry-run"
+assert_contains "$win_phase04" 'if \(\$NonInteractive -and -not \$Force -and -not \$DryRun\)' "Non-interactive Windows installs should fail closed on occupied selected ports"
 assert_contains "installers/windows/ods.ps1" 'Invoke-ODSSttModelDownloadTrigger' "ods.ps1 repair voice should trigger STT preload through a bounded helper"
 assert_not_contains "installers/windows/ods.ps1" 'Invoke-WebRequest -Method POST -Uri \$voice\.SttModelUrl -TimeoutSec 3600' "ods.ps1 repair voice should not block on the long STT preload POST"
 assert_contains "installers/windows/ods.ps1" 'Start-ODSLemonadeDirectProcess -Contract \$launchContract -DiagnosticLogPath \$diagnosticLog' "ods.ps1 should use the shared detached direct Lemonade fallback"
@@ -521,9 +665,9 @@ assert_contains "$host_agent" 'Get-ODSPortOwners' "host-agent should snapshot Le
 assert_not_contains "$host_agent" '\$existingTaskMatches' "host-agent should not reuse a stale Lemonade task contract"
 assert_not_contains "$host_agent" '\$argString = "serve --port .*--no-tray' "host-agent must not embed obsolete Lemonade 10.7 arguments"
 
-echo "[contract] Windows Lemonade Hermes uses LiteLLM compact path"
+echo "[contract] Windows Lemonade Hermes uses cancellable model-router path"
 phase06_win="installers/windows/phases/06-directories.ps1"
-assert_contains "$phase06_win" 'http://litellm:4000/v1' "Windows AMD Hermes should route through LiteLLM, not direct Lemonade"
+assert_contains "installers/windows/lib/env-generator.ps1" 'http://model-router:9099/v1' "Windows AMD Hermes should route through model-router, not direct Lemonade"
 assert_contains "$phase06_win" 'local-lemonade' "Windows AMD Hermes should render compact local profile"
 assert_contains "$phase06_win" 'disabled_toolsets:' "Windows AMD Hermes should compact optional toolsets"
 assert_contains "$phase06_win" 'extensions-library-bundle\\services' "Windows installer should consider public-bootstrap extensions-library bundle"
@@ -538,6 +682,13 @@ assert_contains "$phase06" 'export INSTALL_PHASE="06-directories/\$\{step\}"' "p
 for step in create-directories copy-source copy-extensions-library generate-env validate-env generate-searxng-config; do
   assert_contains "$phase06" "_phase06_step \"$step\"" "phase 06 missing substep: $step"
 done
+assert_contains "installers/phases/06-directories.sh" 'chmod 0755 "\$_pixel_exec_control_path"' "Linux installer does not normalize WSL-mounted Pixel execution-control modes"
+assert_contains "installers/phases/06-directories.sh" '! -L "\$_pixel_exec_control_path"' "Linux installer may normalize a symlinked Pixel execution-control helper"
+assert_contains "installers/phases/06-directories.sh" 'find -P "\$_installed_code_root"' "Linux installer does not normalize WSL-mounted product code modes"
+assert_contains "installers/phases/06-directories.sh" '"\$INSTALL_DIR/bin"' "Linux installer does not normalize installed command modes"
+assert_contains "installers/phases/06-directories.sh" 'find -P "\$INSTALL_DIR" -maxdepth 1' "Linux installer does not normalize root executable modes"
+assert_contains "installers/phases/06-directories.sh" 'chmod go-w \{\} \+' "Linux installer leaves copied product code ambiently writable"
+assert_contains "installers/phases/06-directories.sh" 'find -P "\$INSTALL_DIR/data/extensions-library"' "Linux installer does not normalize copied extension-library modes"
 
 echo "[contract] Windows phase 06 stages the extension library"
 win_phase06="installers/windows/phases/06-directories.ps1"
@@ -693,6 +844,10 @@ assert_contains "installers/phases/11-services.sh" 'ps -q' "Linux installer does
 assert_contains "installers/phases/11-services.sh" 'Docker Compose did not create any managed containers' "Linux installer does not fail loud on zero managed containers"
 assert_not_contains "installers/phases/11-services.sh" '_phase11_assert_managed_containers false' "Linux zero-container path must write a compose failure report"
 assert_contains "installers/phases/11-services.sh" '_phase11_compose_failure_is_delayed_health' "Linux installer does not distinguish delayed health from generic compose failure"
+assert_contains "installers/phases/11-services.sh" '_phase11_recreate_exited_services' "Linux installer does not repair stale exited compose containers"
+assert_contains "installers/phases/11-services.sh" 'ps --status exited --services' "Linux exited-container recovery is not scoped to compose-owned exited services"
+assert_contains "installers/phases/11-services.sh" 'up -d --no-deps' "Linux exited-container recovery can restart dependencies"
+assert_contains "installers/phases/11-services.sh" 'force-recreate --no-build --pull never' "Linux exited-container recovery does not force a bounded container refresh"
 assert_contains "installers/phases/11-services.sh" 'dependency failed to start: container ods-\(llama-server\|llama-ready\|llama-server-ready\) is unhealthy' "Linux delayed-health grace is not scoped to LLM health-gate failures"
 assert_contains "installers/phases/11-services.sh" '_compose_started_with_delayed_health=true' "Linux installer does not continue after delayed compose health with managed containers"
 assert_contains "installers/phases/11-services.sh" 'COMPOSE_STARTED_WITH_DELAYED_HEALTH=true' "Linux installer does not mark delayed compose health for strict phase 12 recovery"
@@ -736,7 +891,7 @@ assert_contains "installers/macos/install-macos.sh" 'ODS_DOCKER_BUILD_MAX_ATTEMP
 assert_contains "installers/macos/install-macos.sh" '_macos_build_failed=\$\(\(_macos_build_failed \+ 1\)\)' "macOS installer does not count failed required local image builds"
 assert_contains "installers/macos/install-macos.sh" 'refusing to launch stale images' "macOS installer can still launch stale images after required local builds fail"
 assert_not_contains "installers/macos/install-macos.sh" 'wait .*\|\| ai_warn "Build failed' "macOS installer still treats required local build failures as warnings"
-assert_contains "installers/macos/install-macos.sh" 'colima start --network-address --network-preferred-route' "macOS installer does not prefer the private Colima vmnet route"
+assert_contains "installers/macos/install-macos.sh" '_active_colima start --network-address --network-preferred-route' "macOS installer does not preserve the active profile while enabling the private Colima vmnet route"
 assert_contains "installers/macos/install-macos.sh" 'ODS_MACOS_HOST_GATEWAY' "macOS installer does not persist the private Colima host gateway"
 assert_contains "installers/macos/install-macos.sh" '_configure_macos_host_agent_bridge' "macOS installer does not bridge host-agent actions over private Colima networking"
 assert_contains "installers/macos/install-macos.sh" 'source "\$\{LIB_DIR\}/bridge-manager\.sh"' "macOS installer does not source shared bridge lifecycle code"
@@ -750,6 +905,13 @@ assert_contains "extensions/services/litellm/compose.apple.yaml" 'ODS_MACOS_HOST
 assert_contains "installers/windows/install-windows.ps1" 'Assert-ODSWindowsManagedContainers' "Windows installer does not assert compose-managed containers"
 assert_contains "installers/windows/install-windows.ps1" 'Docker Compose did not create any managed Windows containers' "Windows installer does not fail loud on zero managed containers"
 assert_contains "installers/windows/install-windows.ps1" 'dashboard", "dashboard-api", "open-webui' "Windows installer does not require core container services"
+assert_contains "bin/ods-host-agent.py" '0o640' "remote-provider lifecycle secrets must be group-readable only to hardened provider services"
+assert_contains "bin/ods-host-agent.py" '_repair_remote_provider_secret_permissions' "legacy remote-provider secrets are not repaired for provider access"
+assert_contains "docker-compose.base.yml" 'REMOTE_PROVIDER_DATA_GID' "remote-provider services must receive the installation data group"
+assert_contains "installers/phases/06-directories.sh" 'REMOTE_PROVIDER_DATA_GID=\$\(id -g' "Linux installer does not derive the current installation data group"
+assert_not_contains "installers/phases/06-directories.sh" 'REMOTE_PROVIDER_DATA_GID=\$\(_env_get' "Linux installer may preserve a stale remote-provider data group"
+assert_contains "installers/windows/lib/env-generator.ps1" 'REMOTE_PROVIDER_DATA_GID=0' "Windows installer does not derive the Docker Desktop provider group"
+assert_not_contains "installers/windows/lib/env-generator.ps1" 'REMOTE_PROVIDER_DATA_GID=\$\(Get-EnvOrNew' "Windows installer may preserve a stale remote-provider data group"
 assert_contains "installers/windows/install-windows.ps1" 'Invoke-ODSWindowsComposeImagePreflight' "Windows installer does not preflight compose images before launch"
 assert_contains "installers/windows/install-windows.ps1" '--pull", "never' "Windows installer still allows implicit compose pulls during install launch"
 

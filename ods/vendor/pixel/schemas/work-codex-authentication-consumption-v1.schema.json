@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-codex-authentication-consumption-v1.schema.json",
+  "title": "Pixel content-free external MFA evidence consumption v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "evidenceId", "evidenceSha256", "consumedAt", "authorizationId", "planId", "planSha256", "secondFactor", "singleUseConsumed", "credentialsStored", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-codex-authentication-consumption-v1.schema.json"}, "schemaVersion": {"const": 1},
+    "evidenceId": {"type": "string", "pattern": "^workcodexauthn-[0-9]{13}-[a-f0-9]{12}$"}, "evidenceSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "consumedAt": {"type": "string", "format": "date-time"}, "authorizationId": {"type": "string", "pattern": "^workcodexauth-[0-9]{13}-[a-f0-9]{12}$"},
+    "planId": {"type": "string", "pattern": "^workcodexplan-[0-9]{13}-[a-f0-9]{12}$"}, "planSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "secondFactor": {"enum": ["totp-authenticator-app", "email-one-time-code"]}, "singleUseConsumed": {"const": true}, "credentialsStored": {"const": false},
+    "boundary": {"const": "Content-free one-use MFA evidence tombstone. It stores no password, one-time code, session token, signature, identity claim, provider credential, prompt, capsule, or output and grants only creation of the bound advisory authorization."}
+  }
+}

@@ -20,6 +20,7 @@ from remote_provider.egress import (
     DEFAULT_MAX_BODY_BYTES,
     DEFAULT_SECRET_PATH,
     EgressError,
+    connection_header_names,
     load_route_state,
     prepare_upstream_request,
     provider_secret_status,
@@ -142,10 +143,11 @@ def _probe_error_response(exc: ProbeError) -> JSONResponse:
 
 
 def _response_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    excluded = _HOP_BY_HOP_RESPONSE_HEADERS | connection_header_names(headers)
     return {
         name: value
         for name, value in headers.items()
-        if name.lower() not in _HOP_BY_HOP_RESPONSE_HEADERS
+        if name.lower() not in excluded
     }
 
 
@@ -346,7 +348,7 @@ async def forward(full_path: str, request: Request) -> Response:
         upstream_request = prepare_upstream_request(
             method=request.method,
             path=path,
-            headers=dict(request.headers),
+            headers=request.headers,
             body=await request.body(),
             route=route,
             provider_secret=secret,
@@ -387,11 +389,12 @@ async def forward(full_path: str, request: Request) -> Response:
                 finally:
                     await upstream.aclose()
 
+            response_headers = _response_headers(upstream.headers)
             return StreamingResponse(
                 stream_body(),
                 status_code=upstream.status_code,
-                media_type=upstream.headers.get("content-type", "text/event-stream"),
-                headers={**_response_headers(upstream.headers), **ods_headers},
+                media_type=response_headers.get("content-type", "text/event-stream"),
+                headers={**response_headers, **ods_headers},
             )
 
         req = client.build_request(
@@ -415,11 +418,12 @@ async def forward(full_path: str, request: Request) -> Response:
                 f"remote provider unavailable: {exc}",
             )
         )
+    response_headers = _response_headers(upstream.headers)
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,
-        media_type=upstream.headers.get("content-type", "application/json"),
-        headers={**_response_headers(upstream.headers), **ods_headers},
+        media_type=response_headers.get("content-type", "application/json"),
+        headers={**response_headers, **ods_headers},
     )
 
 

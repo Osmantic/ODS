@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/open-webui/pipelines",
+  "license": "MIT",
+  "source_ref": "039f9c54f8e9f9bcbabde02c2c853e80d25c79e4",
+  "image": "ghcr.io/open-webui/pipelines:main@sha256:b48e9bc338ce2be0acfbeff01810db72408a12f07739f9e3879c1f2b00952d6e",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official image built 2025-08-18, not presented as recent. Required API key, nonroot direct native ASGI startup, persistent empty pipeline directory/user dependencies. No preset pipelines, downloads, model routing or GPU claim."
+}

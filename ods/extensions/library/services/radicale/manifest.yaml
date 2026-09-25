@@ -1,0 +1,56 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: radicale
+  name: Radicale
+  aliases: []
+  container_name: ods-radicale
+  host_env: RADICALE_HOST
+  default_host: radicale
+  port: 5232
+  external_port_env: RADICALE_PORT
+  external_port_default: 11097
+  health: /.web/
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Private CalDAV calendars and CardDAV contacts with authenticated collection
+    management.
+  env_vars:
+  - key: RADICALE_PASSWORD
+    required: true
+    secret: true
+    description: 64-hex password for DAV account ods; rotation requires updating configured
+      clients.
+  ui_path: /.web/
+tags:
+- calendar
+- contacts
+- caldav
+- carddav
+- open-source
+features:
+- id: radicale-dav
+  name: Radicale
+  description: Private CalDAV calendars and CardDAV contacts with authenticated collection
+    management.
+  icon: CalendarDays
+  category: productivity
+  requirements:
+    services:
+    - radicale
+    vram_gb: 0
+  enabled_services_all:
+  - radicale
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: radicale
+    path: /.web/

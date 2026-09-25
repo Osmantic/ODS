@@ -148,7 +148,12 @@ when host inference health is unavailable.
 ### `GET /v1/service/health`
 
 Return a read-only Docker lifecycle and declared healthcheck snapshot for ODS
-containers. Compose service labels are preferred over container-name parsing.
+containers. Both this endpoint and `GET /v1/service/stats` include explicitly
+declared Docker container names from installed extension manifests, even when
+the name does not start with `ods-`. User extension definitions take precedence
+over built-ins. Declared names map to their extension service ID; other `ods-`
+containers retain Compose-label or name-based identification. Unrelated names
+and custom names from non-Docker definitions are excluded.
 
 **Authentication:** Required
 
@@ -254,6 +259,11 @@ Stop an extension container. Runs `docker compose stop <service_id>`.
 ### `POST /v1/extension/logs`
 
 Fetch recent container logs. Uses `docker logs --tail N ods-<service_id>` directly (bypasses compose for speed).
+
+Both this endpoint and `POST /v1/service/logs` capture stdout and stderr through
+one pipe in the order emitted by `docker logs`. The response retains the latest
+50,000 characters of that combined output, so stderr diagnostics remain visible
+when the container also writes normal output to stdout.
 
 **Authentication:** Required
 

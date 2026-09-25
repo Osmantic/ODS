@@ -106,6 +106,7 @@ describe('Dashboard system overview', () => {
     }
     installFetchMock()
     localStorage.clear()
+    localStorage.setItem('ods-system-overview-history-v2', '[]')
   })
 
   afterEach(() => {
@@ -121,8 +122,172 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('System Status')).toBeInTheDocument()
     expect(screen.getByText('TOKENS PER SECOND')).toBeInTheDocument()
     expect(screen.getByText('TOKENS GENERATED')).toBeInTheDocument()
-    expect(screen.getByText('Live Throughput')).toBeInTheDocument()
+    expect(screen.getAllByText('Runtime reading').length).toBeGreaterThan(0)
     expect(screen.getByText('Accumulated Output')).toBeInTheDocument()
+  })
+
+  it.each([[8.25, '8.3 tok/s'], [0, '0.0 tok/s'], [null, '—'], [undefined, '—']])('shows a real compact throughput reading for %s', async (tokensPerSecond, expected) => {
+    render(<Dashboard compact status={{...baseStatus, inference:{...baseStatus.inference, tokensPerSecond}}} loading={false}/>)
+    const row = screen.getByText('Tokens / second').closest('.dashboard-metric-row')
+    expect(within(row).getByText(expected)).toBeVisible()
+    expect(within(row).getByText(tokensPerSecond == null ? 'Telemetry unavailable' : 'Runtime reading')).toBeVisible()
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
+  it.each([[0, '0.0'], [null, '—'], [undefined, '—']])('keeps full throughput reading %s distinct from unavailable history', async (tokensPerSecond, expected) => {
+    await renderDashboard({...baseStatus, inference:{...baseStatus.inference, tokensPerSecond, lifetimeTokens:null}})
+    const throughput = screen.getByRole('img', {name:'TOKENS PER SECOND chart'}).parentElement
+    const generated = screen.getByRole('img', {name:'TOKENS GENERATED chart'}).parentElement
+    expect(within(throughput).getByText(expected)).toBeVisible()
+    expect(within(generated).getByText('—')).toBeVisible()
+    const samples = JSON.parse(localStorage.getItem('ods-system-overview-history-v2'))
+    expect(samples.at(-1)).toMatchObject({tokensPerSecond:tokensPerSecond ?? null,totalTokens:null})
+    if(tokensPerSecond == null) expect(within(throughput).queryByText(/↓ 100/)).toBeNull()
+  })
+
+  it('does not reuse legacy history that represented unavailable telemetry as zero', async () => {
+    localStorage.setItem('ods-system-overview-history-v1', JSON.stringify([
+      {t:Date.now()-6000,tokensPerSecond:0,totalTokens:0},
+      {t:Date.now()-3000,tokensPerSecond:0,totalTokens:0},
+    ]))
+    await renderDashboard({...baseStatus,inference:undefined})
+    expect(screen.getByRole('img',{name:'TOKENS PER SECOND chart'}).querySelector('path')).toBeNull()
+  })
+
+  it('breaks the throughput chart across unavailable readings without losing valid counts', async () => {
+    const now=Date.now()
+    localStorage.setItem('ods-system-overview-history-v2', JSON.stringify([8,8,null,8,8].map((value,index)=>({
+      t:now-30000+index*5000,tokensPerSecond:value,totalTokens:100+index,tokenCountMode:'cumulative',model:'qwen',
+    }))))
+    await renderDashboard()
+    const chart=screen.getByRole('img',{name:'TOKENS PER SECOND chart'})
+    const line=chart.querySelector('path[fill="none"]')
+    expect(line.getAttribute('d').match(/M /g)).toHaveLength(2)
+    expect(line.getAttribute('d')).not.toMatch(/NaN/)
+    const generated=screen.getByRole('img',{name:'TOKENS GENERATED chart'})
+    expect(generated.querySelector('path[fill="none"]').getAttribute('d').match(/M /g)).toHaveLength(1)
+  })
+
+  it('records fresh identical telemetry polls so an idle measured zero develops a history', async () => {
+    const clock=vi.spyOn(Date,'now').mockReturnValue(1800000000000)
+    const inference={...baseStatus.inference,tokensPerSecond:0}
+    const view=render(<Dashboard status={{...baseStatus,inference}} loading={false}/>)
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+    clock.mockReturnValue(1800000005000)
+    view.rerender(<Dashboard status={{...baseStatus,inference:{...inference}}} loading={false}/>)
+    const samples=JSON.parse(localStorage.getItem('ods-system-overview-history-v2'))
+    expect(samples.slice(-2).map(sample=>[sample.t,sample.tokensPerSecond])).toEqual([[1800000000000,0],[1800000005000,0]])
+  })
+
+  it('shows missing CPU utilization and an available unified GPU temperature truthfully', async () => {
+    render(<Dashboard compact status={{...baseStatus,cpu:{percent:null},gpu:{name:'AMD Radeon 8060S',memoryType:'unified',utilization:null,temperature:72}}} loading={false}/>)
+    const cpu=screen.getByText('CPU').closest('.dashboard-metric-row')
+    expect(within(cpu).getByText('—')).toBeVisible()
+    expect(within(cpu).getByText('telemetry unavailable')).toBeVisible()
+    const thermal=screen.getByText('GPU Temp').closest('.dashboard-metric-row')
+    expect(within(thermal).getByText('72°C')).toBeVisible()
+    expect(within(thermal).getByText('warm')).toBeVisible()
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
+  it.each([false,true])('labels preserved readings stale in compact=%s without appending a live sample', async compact => {
+    const inference={...baseStatus.inference}
+    const status={...baseStatus,inference,clientTelemetry:{sampledAt:1800000000000,stale:false}}
+    const view=render(<Dashboard status={status} loading={false} compact={compact}/>)
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+    const history=localStorage.getItem('ods-system-overview-history-v2')
+    view.rerender(<Dashboard status={{...status,clientTelemetry:{...status.clientTelemetry,stale:true}}} loading={false} compact={compact}/>)
+    expect(screen.getByRole('status',{name:'Telemetry freshness'})).toHaveTextContent('last known readings received at')
+    expect(screen.getByRole('status',{name:'Telemetry freshness'}).querySelector('time')).toHaveAttribute('dateTime','2027-01-15T08:00:00.000Z')
+    expect(localStorage.getItem('ods-system-overview-history-v2')).toBe(history)
+    if(compact) expect(screen.getByText('Last known rate · telemetry unavailable')).toBeVisible()
+    else expect(screen.getAllByText('Last known rate · telemetry unavailable').length).toBeGreaterThan(0)
+    view.rerender(<Dashboard status={{...status,inference:{...inference}}} loading={false} compact={compact}/>)
+    expect(screen.queryByRole('status',{name:'Telemetry freshness'})).toBeNull()
+  })
+
+  it.each([['generation_interval','Generation interval'],['latest_completion','Latest completion'],['live_output_interval','Live output interval']])('labels %s throughput by its actual measurement window', async (throughputMode,label) => {
+    await renderDashboard({...baseStatus,inference:{...baseStatus.inference,throughputMode}})
+    expect(screen.getAllByText(label).length).toBeGreaterThan(0)
+    expect(screen.queryByText('Live Throughput')).toBeNull()
+  })
+
+  it.each([['host','Host'],['wsl','WSL'],['vm','Virtual machine'],['container','Container'],['unknown','Scope unavailable']])('labels CPU and RAM scope %s from the API', async (scope,label) => {
+    render(<Dashboard compact status={{...baseStatus,cpu:{percent:38,scope},ram:{used_gb:4,total_gb:8,percent:50,scope}}} loading={false}/>)
+    expect(screen.getByText(`${label} · utilization`)).toBeVisible()
+    expect(screen.getByText(`of 8 GB · ${label}`)).toBeVisible()
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
+  it('retains the last run rate without inventing fresh throughput samples between runs', async () => {
+    const clock=vi.spyOn(Date,'now').mockReturnValue(1800000000000)
+    const inference={...baseStatus.inference,tokensPerSecond:24.8,throughputState:'measured',throughputSampledAt:1800000000,throughputMode:'generation_interval'}
+    const view=render(<Dashboard status={{...baseStatus,inference}} loading={false}/>)
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+    const history=localStorage.getItem('ods-system-overview-history-v2')
+    clock.mockReturnValue(1800000005000)
+    view.rerender(<Dashboard status={{...baseStatus,inference:{...inference,throughputState:'retained'}}} loading={false}/>)
+    expect(screen.getAllByText('Last run').length).toBeGreaterThan(0)
+    expect(screen.getByText('24.8')).toBeVisible()
+    expect(localStorage.getItem('ods-system-overview-history-v2')).toBe(history)
+    clock.mockReturnValue(1800000010000)
+    view.rerender(<Dashboard status={{...baseStatus,inference:{...inference,throughputSampledAt:1800000010}}} loading={false}/>)
+    expect(JSON.parse(localStorage.getItem('ods-system-overview-history-v2'))).toHaveLength(2)
+  })
+
+  it('keeps a held rate visible but marks failed inference telemetry unavailable and does not record the held value again', async () => {
+    const clock=vi.spyOn(Date,'now').mockReturnValue(1800000000000)
+    const inference={...baseStatus.inference,tokensPerSecond:24.8,throughputState:'measured',throughputSampledAt:1800000000}
+    const view=render(<Dashboard status={{...baseStatus,inference}} loading={false}/>)
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+    clock.mockReturnValue(1800000005000)
+    view.rerender(<Dashboard status={{...baseStatus,inference:{...inference,throughputState:'unavailable'}}} loading={false}/>)
+    expect(screen.getByText('24.8')).toBeVisible()
+    expect(screen.getAllByText('Last known rate · telemetry unavailable').length).toBeGreaterThan(0)
+    const history=JSON.parse(localStorage.getItem('ods-system-overview-history-v2'))
+    expect(history.map(row=>row.tokensPerSecond)).toEqual([24.8,null])
+  })
+
+  it('never carries previous model throughput history into a new model', async () => {
+    const view=render(<Dashboard status={baseStatus} loading={false}/>)
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+    view.rerender(<Dashboard status={{...baseStatus,inference:{...baseStatus.inference,loadedModel:'new-model',tokensPerSecond:null}}} loading={false}/>)
+    const history=JSON.parse(localStorage.getItem('ods-system-overview-history-v2'))
+    expect(history.every(row=>row.model==='new-model' && row.tokensPerSecond===null)).toBe(true)
+    expect(screen.getByRole('img',{name:'TOKENS PER SECOND chart'}).querySelector('path')).toBeNull()
+  })
+
+  it('keeps an unavailable unified GPU thermal sensor visible without inventing a temperature', async () => {
+    render(<Dashboard compact status={{...baseStatus,gpu:{name:'Apple M4',memoryType:'unified',utilization:null,temperature:null}}} loading={false}/>)
+    const thermal=screen.getByText('GPU Temp').closest('.dashboard-metric-row')
+    expect(within(thermal).getByText('—')).toBeVisible()
+    expect(within(thermal).getByText('telemetry unavailable')).toBeVisible()
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
+  it('binds held throughput to its measured model during a discovery outage rather than a configured fallback', async () => {
+    const clock=vi.spyOn(Date,'now').mockReturnValue(1800000000000)
+    const inference={...baseStatus.inference,tokensPerSecond:24.8,throughputState:'measured',throughputSampledAt:1800000000,throughputModel:'actual-owner'}
+    const view=render(<Dashboard status={{...baseStatus,inference}} loading={false}/>)
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+    clock.mockReturnValue(1800000005000)
+    view.rerender(<Dashboard status={{...baseStatus,inference:{...inference,loadedModel:'configured-fallback',throughputState:'unavailable'}}} loading={false}/>)
+    let history=JSON.parse(localStorage.getItem('ods-system-overview-history-v2'))
+    expect(history.map(row=>[row.model,row.tokensPerSecond])).toEqual([['actual-owner',24.8],['actual-owner',null]])
+    clock.mockReturnValue(1800000010000)
+    view.rerender(<Dashboard status={{...baseStatus,inference:{...inference,loadedModel:'configured-fallback',throughputModel:'new-owner',throughputSampledAt:1800000010}}} loading={false}/>)
+    history=JSON.parse(localStorage.getItem('ods-system-overview-history-v2'))
+    expect(history).toHaveLength(1)
+    expect(history[0]).toMatchObject({model:'new-owner',tokensPerSecond:24.8})
+  })
+
+  it.each([[73,'73°C'],[0,'0°C'],[null,'—'],[undefined,'—']])('shows CPU thermal reading %s without substituting GPU or system temperature', async (temp_c,expected) => {
+    render(<Dashboard compact status={{...baseStatus,cpu:{percent:38,temp_c},gpu:{name:'GPU',temperature:55,memoryType:'discrete'}}} loading={false}/>)
+    const thermal=screen.getByText('CPU Temp').closest('.dashboard-metric-row')
+    expect(within(thermal).getByText(expected)).toBeVisible()
+    expect(within(thermal).getByText(temp_c == null ? 'telemetry unavailable' : 'sensor reading')).toBeVisible()
+    expect(within(thermal).queryByText('55°C')).toBeNull()
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
   })
 
   it('uses theme-responsive surfaces instead of fixed dark dashboard panels', async () => {
@@ -157,6 +322,22 @@ describe('Dashboard system overview', () => {
     expect(screen.queryByText('0%')).not.toBeInTheDocument()
   })
 
+  it('renders the real discrete VRAM reading independently of system RAM in the overview', async () => {
+    render(<Dashboard compact status={{ ...baseStatus, gpu: { name:'AMD Radeon RX 9070 XT', memoryType:'discrete', vramUsed:7.8, vramTotal:15.8, utilization:16 }, ram:{used_gb:41,total_gb:96,percent:43} }} loading={false} />)
+    const row = screen.getByText('VRAM').closest('.dashboard-metric-row')
+    expect(within(row).getByText('7.8 GB')).toBeVisible()
+    expect(within(row).getByText('of 15.8 GB')).toBeVisible()
+    expect(within(row).queryByText('41 GB')).toBeNull()
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
+  it('does not identify an AMD unified GPU as Apple Silicon', async () => {
+    await renderDashboard({ ...baseStatus, gpu:{ name:'AMD Radeon 8060S Graphics', memoryType:'unified', utilization:61, vramUsed:9, vramTotal:96 }, ram:{used_gb:40,total_gb:128,percent:31} })
+    expect(screen.getByText('GPU memory')).toBeVisible()
+    expect(screen.getByText('9.0 GB')).toBeVisible()
+    expect(screen.queryByText('Apple Silicon')).toBeNull()
+  })
+
   it('labels Lemonade output as the latest completion instead of a cumulative total', async () => {
     await renderDashboard({
       ...baseStatus,
@@ -173,9 +354,9 @@ describe('Dashboard system overview', () => {
   })
 
   it('does not mix cumulative history into latest-completion charts', async () => {
-    localStorage.setItem('ods-system-overview-history-v1', JSON.stringify([{
+    localStorage.setItem('ods-system-overview-history-v2', JSON.stringify([{
       t: Date.now() - 1000,
-      tokensPerSecond: 20,
+      tokensPerSecond: 20, model:'qwen',
       totalTokens: 900000,
       tokenCountMode: 'cumulative',
     }]))
@@ -190,7 +371,7 @@ describe('Dashboard system overview', () => {
     })
 
     await waitFor(() => {
-      const stored = JSON.parse(localStorage.getItem('ods-system-overview-history-v1'))
+      const stored = JSON.parse(localStorage.getItem('ods-system-overview-history-v2'))
       expect(stored).toHaveLength(1)
       expect(stored[0]).toMatchObject({
         totalTokens: 36,
@@ -465,6 +646,25 @@ describe('Dashboard system overview', () => {
     expect(within(row).getAllByText('—')).toHaveLength(2)
   })
 
+  it('shows measured auxiliary containers without granting service restart actions', async () => {
+    mockResources = {
+      services: [{
+        id: 'librechat-mongodb', name: 'librechat-mongodb', type: 'docker',
+        restartable: false,
+        restart_unavailable_reason: 'Service is not declared in the active manifest set',
+        container: { container_name: 'ods-librechat-mongodb', cpu_percent: 4, memory_used_mb: 256 },
+        disk: null,
+      }],
+    }
+    await renderDashboard({ ...baseStatus, services: [] })
+    const row = await screen.findByTestId('service-row-librechat-mongodb')
+    expect(within(row).getByText('4.0%')).toBeInTheDocument()
+    expect(within(row).getByText('256 MB')).toBeInTheDocument()
+    expect(within(row).queryByRole('button', { name: /actions/ })).not.toBeInTheDocument()
+    expect(within(row).getByTitle('Service is not declared in the active manifest set')).toBeInTheDocument()
+    expect(restartCalls).toHaveLength(0)
+  })
+
   it('restarts a service from the row actions menu', async () => {
     restartDeferred = createDeferred()
     mockResources = {
@@ -488,7 +688,7 @@ describe('Dashboard system overview', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /Restart service/i }))
 
     const restartingPill = await within(row).findByText('Restarting')
-    expect(restartingPill.className).toContain('text-amber-300')
+    expect(restartingPill.className).toContain('text-theme-text-secondary')
     expect(within(row).queryByText('Online')).not.toBeInTheDocument()
 
     restartDeferred.resolve()
@@ -567,9 +767,9 @@ describe('Dashboard system overview', () => {
 
   it('shows a red downward delta when real throughput history drops', async () => {
     const now = Date.now()
-    localStorage.setItem('ods-system-overview-history-v1', JSON.stringify([
-      { t: now - 300000, tokensPerSecond: 20, totalTokens: 4000 },
-      { t: now - 60000, tokensPerSecond: 10, totalTokens: 4500 },
+    localStorage.setItem('ods-system-overview-history-v2', JSON.stringify([
+      { t: now - 300000, tokensPerSecond: 20, model:'qwen', totalTokens: 4000 },
+      { t: now - 60000, tokensPerSecond: 10, model:'qwen', totalTokens: 4500 },
     ]))
 
     await renderDashboard({ ...baseStatus, inference: { ...baseStatus.inference, tokensPerSecond: 10 } })

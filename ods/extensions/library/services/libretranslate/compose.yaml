@@ -1,0 +1,41 @@
+services:
+  libretranslate:
+    image: libretranslate/libretranslate:v1.9.6@sha256:1de2d7056bb8ad607a412f4563d9abe324ff632b43b5be9428bcc8e213aebb32
+    container_name: ods-libretranslate
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${LIBRETRANSLATE_PORT:-11008}:5000
+    healthcheck:
+      test:
+      - CMD
+      - ./venv/bin/python
+      - scripts/healthcheck.py
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 600s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    volumes:
+    - libretranslate-models:/home/libretranslate/.local
+    environment:
+      LT_LOAD_ONLY: ${LIBRETRANSLATE_LANGUAGES:-en,pt,es}
+      LT_UPDATE_MODELS: 'true'
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  libretranslate-models: {}

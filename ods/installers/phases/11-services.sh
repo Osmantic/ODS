@@ -10,12 +10,21 @@
 #           GGUF_FILE, GGUF_URL, LLM_MODEL, MAX_CONTEXT,
 #           DOCKER_COMPOSE_CMD, COMPOSE_FLAGS, BGRN, RED, AMB, NC,
 #           show_phase(), bootline(), signal(), ai(), ai_ok(), ai_bad(),
-#           ai_warn(), log(), spin_task()
+#           ai_warn(), log(), spin_task(), ui_status_line()
 # Provides: Running Docker Compose stack
 #
 # Modder notes:
 #   Change model download logic or compose launch flags here.
 # ============================================================================
+
+# Keep standalone phase harnesses usable; production defines this in ui.sh.
+if ! declare -F ui_status_line >/dev/null 2>&1; then
+    ui_status_line() {
+        local kind="$1" message="$2" label
+        case "$kind" in ok) label="OK" ;; warn) label="WARN" ;; error) label="ERROR" ;; *) label="INFO" ;; esac
+        printf '  [%s] %s\n' "$label" "$message"
+    }
+fi
 
 _phase11_build_local_images() {
     local -a build_services=("$@")
@@ -77,7 +86,7 @@ except Exception:
                 break
             fi
 
-            printf "\r  ${AMB}⚠${NC} %-60s\n" "$svc build failed (attempt $attempt/$max_attempts)"
+            ui_status_line warn "$svc build failed (attempt $attempt/$max_attempts)"
             if (( attempt < max_attempts )); then
                 ai_warn "$svc build failed; retrying in ${retry_delay}s (attempt $((attempt + 1))/$max_attempts)..."
                 sleep "$retry_delay"
@@ -85,7 +94,7 @@ except Exception:
         done
 
         if $build_failed; then
-            printf "\r  ${AMB}⚠${NC} %-60s\n" "$svc build failed or image missing"
+            ui_status_line warn "$svc build failed or image missing"
             {
                 echo ""
                 echo "===== $svc build log tail ($build_log) ====="
@@ -94,7 +103,7 @@ except Exception:
             ai "Build log: $build_log"
             failed_build_services+=("$svc")
         else
-            printf "\r  ${BGRN}✓${NC} %-60s\n" "$svc built"
+            ui_status_line ok "$svc built"
         fi
     done
 
@@ -103,6 +112,44 @@ except Exception:
         ai "Refusing to start an image left by an earlier install. Fix the build error and rerun the installer."
         return 1
     fi
+}
+
+# A stopped container can retain a Docker Desktop file-bind identity whose
+# source disappeared when the installer refreshed the same install tree. A
+# plain compose up tries to start that stale container and fails before the
+# service can be healthy. Recreate only compose-owned services that are already
+# exited; running services and their dependencies remain untouched.
+_phase11_recreate_exited_services() {
+    local exited_output service
+    local -a exited_services=()
+    local -A observed_services=()
+
+    if ! exited_output="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" \
+        ps --status exited --services 2>>"$LOG_FILE")"; then
+        log "Could not enumerate exited compose services for bounded launch recovery."
+        return 1
+    fi
+
+    while IFS= read -r service; do
+        [[ -n "$service" ]] || continue
+        if [[ ! "$service" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]; then
+            log "Refusing malformed exited compose service name during launch recovery."
+            return 1
+        fi
+        [[ -z "${observed_services[$service]:-}" ]] || continue
+        observed_services[$service]=1
+        exited_services+=("$service")
+        if (( ${#exited_services[@]} > 64 )); then
+            log "Refusing more than 64 exited compose services during launch recovery."
+            return 1
+        fi
+    done <<< "$exited_output"
+
+    (( ${#exited_services[@]} > 0 )) || return 0
+    ai_warn "Recreating exited service container(s) with stale runtime state: ${exited_services[*]}"
+    $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --no-deps \
+        --force-recreate --no-build --pull never "${exited_services[@]}" \
+        >> "$LOG_FILE" 2>&1
 }
 
 _phase11_download_hf_artifact() {
@@ -331,7 +378,7 @@ else
         _phase11_env_set MAX_CONTEXT "$MAX_CONTEXT"
         _phase11_env_set CTX_SIZE "$MAX_CONTEXT"
         _phase11_env_set AUDIO_STT_MODEL "Systran/faster-whisper-base"
-        _phase11_env_set LLAMA_SERVER_IMAGE "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b8248}"
+        _phase11_env_set LLAMA_SERVER_IMAGE "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014}"
         ai_ok "Rewrote .env for CPU fallback"
     }
 
@@ -769,37 +816,37 @@ else
                     # fires. A spurious "Model downloaded" line then misleads
                     # later phases that depend on the file existing.
                     if mv "$ODS_ACTIVE_DOWNLOAD_PART" "$GGUF_DIR/$GGUF_FILE" && [[ -s "$GGUF_DIR/$GGUF_FILE" ]]; then
-                        printf "\r  ${BGRN}✓${NC} %-60s\n" "Model downloaded: $GGUF_FILE"
+                        ui_status_line ok "Model downloaded: $GGUF_FILE"
                         _dl_success=true
                         break
                     else
                         rm -f "$GGUF_DIR/$GGUF_FILE" 2>/dev/null || true
-                        printf "\r  ${AMB}⚠${NC} %-60s\n" "Download claimed to succeed but $GGUF_FILE is missing/empty"
+                        ui_status_line warn "Download claimed to succeed but $GGUF_FILE is missing/empty"
                     fi
                 else
                     ODS_ACTIVE_DOWNLOAD_PID=""
                     if _phase11_download_hf_artifact "$GGUF_URL" "$ODS_ACTIVE_DOWNLOAD_PART" "$INSTALL_DIR/logs/model-download.log"; then
                         if mv "$ODS_ACTIVE_DOWNLOAD_PART" "$GGUF_DIR/$GGUF_FILE" && [[ -s "$GGUF_DIR/$GGUF_FILE" ]]; then
-                            printf "\r  ${BGRN}✓${NC} %-60s\n" "Model downloaded via Hugging Face client: $GGUF_FILE"
+                            ui_status_line ok "Model downloaded via Hugging Face client: $GGUF_FILE"
                             _dl_success=true
                             break
                         else
                             rm -f "$GGUF_DIR/$GGUF_FILE" 2>/dev/null || true
-                            printf "\r  ${AMB}⚠${NC} %-60s\n" "Hugging Face fallback completed but $GGUF_FILE is missing/empty"
+                            ui_status_line warn "Hugging Face fallback completed but $GGUF_FILE is missing/empty"
                         fi
                     fi
                 fi
-                printf "\r  ${AMB}⚠${NC} %-60s\n" "Download attempt $_attempt failed"
+                ui_status_line warn "Download attempt $_attempt failed"
                 sleep 3
             done
 
             if [[ "$_dl_success" != "true" ]] && _phase11_model_file_valid "$GGUF_DIR/$GGUF_FILE" "$GGUF_SHA256"; then
-                printf "\r  ${BGRN}✓${NC} %-60s\n" "Model present after download retries: $GGUF_FILE"
+                ui_status_line ok "Model present after download retries: $GGUF_FILE"
                 _dl_success=true
             fi
 
             if [[ "$_dl_success" != "true" ]]; then
-                printf "\r  ${RED}✗${NC} %-60s\n" "Download failed after 3 attempts: $GGUF_FILE"
+                ui_status_line error "Download failed after 3 attempts: $GGUF_FILE"
                 # Nothing above deletes the .part, so the bytes already on disk
                 # are still usable. Users who do not know that re-download from
                 # zero or clear the directory by hand.
@@ -817,7 +864,7 @@ else
                             ai_warn "Could not compute checksum for downloaded file"
                             ai_warn "Proceeding without verification (file may be corrupt)"
                         else
-                            printf "\r  ${RED}✗${NC} %-60s\n" "Downloaded file is corrupt (SHA256 mismatch)"
+                            ui_status_line error "Downloaded file is corrupt (SHA256 mismatch)"
                             ai "  Expected: $GGUF_SHA256"
                             ai "  Got:      $ACTUAL_HASH"
                             rm -f "$GGUF_DIR/$GGUF_FILE"
@@ -873,7 +920,7 @@ else
         fi
         # NVIDIA ComfyUI also needs output/input/workflows bind-mount dirs
         if [[ "$GPU_BACKEND" == "nvidia" ]]; then
-            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows}
+            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows,user}
         fi
 
         SDXL_MODEL="sdxl_lightning_4step.safetensors"
@@ -1017,7 +1064,7 @@ MODELS_INI_EOF
         if [[ -f "$_hermes_tpl" ]]; then
             # Model name: cloud mode uses the routed model id; Lemonade
             # prefixes GGUF files with "extra."; llama.cpp uses the file name.
-            _hermes_switchboard_mode="$(printf '%s' "${ODS_MODEL_SWITCHBOARD:-observe}" | tr '[:upper:]' '[:lower:]')"
+            _hermes_switchboard_mode="$(printf '%s' "${ODS_MODEL_SWITCHBOARD:-enabled}" | tr '[:upper:]' '[:lower:]')"
             if [[ "$_hermes_switchboard_mode" == "enabled" ]]; then
                 _hermes_model="ods/current"
             elif [[ "${ODS_MODE:-local}" == "cloud" ]]; then
@@ -1032,20 +1079,15 @@ MODELS_INI_EOF
             if [[ "${GPU_BACKEND:-}" == "amd" && "${ODS_MODE:-local}" != "cloud" ]] && ! _phase11_external_lemonade; then
                 _hermes_model="extra.$GGUF_FILE"
             fi
-            # base_url: on AMD/Lemonade hosts, route Hermes through litellm
-            # instead of direct-to-Lemonade. Lemonade is strict about model
-            # names and rejects concurrent connections that show up during a
-            # multi-step agent loop (web_search → reason → tool result →
-            # reason …), which results in APIConnectionError mid-tool-loop.
-            # litellm's "*" wildcard model_list normalises the model name and
-            # adds upstream retry logic. On non-AMD Linux installs there's a
-            # sibling llama-server container that takes any model name; on
-            # macOS install-macos.sh handles the host.docker.internal swap.
+            # Local switchboard mode routes Hermes through model-router so a
+            # disconnected Talk request cancels the backend operation instead
+            # of leaving LiteLLM retries alive. Cloud/external and legacy AMD
+            # modes retain their authenticated/normalised LiteLLM paths.
             _hermes_base_url=""
             _hermes_api_key=""
             if [[ "$_hermes_switchboard_mode" == "enabled" ]]; then
-                _hermes_base_url="${HERMES_LLM_BASE_URL:-http://litellm:4000/v1}"
-                _hermes_api_key="${HERMES_LLM_API_KEY:-${LITELLM_KEY:-}}"
+                _hermes_base_url="${HERMES_LLM_BASE_URL:-http://model-router:9099/v1}"
+                _hermes_api_key="${HERMES_LLM_API_KEY:-no-key}"
             elif [[ "${ODS_MODE:-local}" == "cloud" ]]; then
                 _hermes_base_url="${HERMES_LLM_BASE_URL:-http://litellm:4000/v1}"
                 _hermes_api_key="${HERMES_LLM_API_KEY:-${LITELLM_KEY:-}}"
@@ -1139,6 +1181,12 @@ MODELS_INI_EOF
         ai_ok "All service dependencies satisfied"
     fi
 
+    # Pixel's edge compose fragment requires the exact numeric GID of the
+    # private ingress group. Resolve it before Compose interpolation/validation.
+    if ! ods_pixel_prepare_runtime_identity; then
+        exit 1
+    fi
+
     # ── Compose syntax validation ──────────────────────────────
     ai "Validating compose stack configuration..."
     if ! $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --quiet 1>/dev/null 2>"$LOG_FILE.compose-check"; then
@@ -1163,7 +1211,7 @@ MODELS_INI_EOF
     compose_ok=false
     # Build local images individually so every failure is reported before the
     # installer refuses to launch any potentially stale image.
-    _candidate_build_services=(dashboard dashboard-api model-router remote-provider-egress remote-provider-ssh-tunnel ape token-spy privacy-shield brave-search)
+    _candidate_build_services=(dashboard dashboard-api model-router remote-provider-egress remote-provider-ssh-tunnel ape token-spy privacy-shield brave-search pixel-edge pixel-model-relay pixel-inference)
     [[ "$ENABLE_COMFYUI" == "true" ]] && _candidate_build_services+=(comfyui)
     [[ "$GPU_BACKEND" == "amd" ]] && _candidate_build_services+=(llama-server)
     if ! _enabled_compose_services="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --services 2>>"$LOG_FILE")"; then
@@ -1197,6 +1245,13 @@ MODELS_INI_EOF
     if ! _phase11_pre_pull_compose_images; then
         exit 1
     fi
+    # Install and verify the host Pixel gateway/ingress before Open WebUI is
+    # launched with Pixel as its default provider. This fails closed: users
+    # never receive a selectable but nonfunctional default agent.
+    if ! ods_pixel_install_default_agent; then
+        ai_bad "Pixel default-agent setup failed before the ODS stack launch."
+        exit 1
+    fi
     _phase11_write_compose_launch_record
     for _attempt in 1 2 3; do
         $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build --pull never >> "$LOG_FILE" 2>&1 &
@@ -1206,7 +1261,10 @@ MODELS_INI_EOF
             break
         fi
         if [[ $_attempt -lt 3 ]]; then
-            printf "\r  ${AMB}⚠${NC} %-60s\n" "Some services still starting..."
+            if ! _phase11_recreate_exited_services; then
+                log "Bounded exited-service recreation did not complete; continuing the normal launch retry."
+            fi
+            ui_status_line warn "Some services still starting..."
             ai_warn "Some containers need more time. Waiting 30s before retry..."
             sleep 30
         fi
@@ -1218,7 +1276,16 @@ MODELS_INI_EOF
     $DOCKER_CMD start $($DOCKER_CMD ps -a --filter status=created -q) 2>/dev/null || true
     # Step 2: wait for services to stabilize, then compose pass
     sleep 10
-    $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build --pull never >> "$LOG_FILE" 2>&1 || true
+    # Preserve the recovery result. A successful recovery must be allowed to
+    # clear an earlier transient compose failure; a failed recovery must not
+    # be hidden behind the installer success path.
+    _phase11_recovery_compose_ok=false
+    if $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build --pull never >> "$LOG_FILE" 2>&1; then
+        _phase11_recovery_compose_ok=true
+    fi
+    if ! $compose_ok && $_phase11_recovery_compose_ok; then
+        compose_ok=true
+    fi
     # Step 3: catch any stragglers from the second pass
     $DOCKER_CMD start $($DOCKER_CMD ps -a --filter status=created -q) 2>/dev/null || true
 
@@ -1270,14 +1337,14 @@ MODELS_INI_EOF
 
     if $compose_ok; then
         if $_compose_started_with_delayed_health; then
-            printf "\r  ${AMB}⚠${NC} %-60s\n" "Containers launched; waiting on health checks"
+            ui_status_line warn "Containers launched; waiting on health checks"
             echo ""
             ai_warn "Some containers are still becoming healthy. Continuing to the longer health checks."
         else
             if ! _phase11_assert_managed_containers; then
                 exit 1
             fi
-            printf "\r  ${BGRN}✓${NC} %-60s\n" "All containers launched"
+            ui_status_line ok "All containers launched"
             echo ""
             ai_ok "Services started (llama-server)"
         fi
@@ -1300,7 +1367,7 @@ MODELS_INI_EOF
             fi
         fi
     else
-        printf "\r  ${RED}✗${NC} %-60s\n" "Some containers failed to launch"
+        ui_status_line error "Some containers failed to launch"
         echo ""
         ai_warn "Some services failed. Check: docker compose logs"
         ai_warn "Log file: $LOG_FILE"
@@ -1346,18 +1413,63 @@ MODELS_INI_EOF
             warn "Could not persist bootstrap-upgrade retry metadata"
         chmod 600 "$_bootstrap_upgrade_args" 2>/dev/null || true
 
-        # Start the long-lived downloader from a child shell that closes inherited
-        # non-stdio FDs first. Otherwise caller-owned advisory locks (FD 9, FD
-        # 200, etc.) can stay held until the model download exits.
-        (
-            _phase11_close_inherited_fds_for_daemon
-            exec nohup bash "$SCRIPT_DIR/scripts/bootstrap-upgrade.sh" \
-                "$INSTALL_DIR" "$FULL_GGUF_FILE" "$FULL_GGUF_URL" \
-                "$FULL_GGUF_SHA256" "$FULL_LLM_MODEL" "$FULL_MAX_CONTEXT" \
-                "$BOOTSTRAP_GGUF_FILE" \
-                > "$INSTALL_DIR/logs/model-upgrade.log" 2>&1
-        ) &
-        _upgrade_pid=$!
+        # An SSH or other service-scoped installer can have its whole login
+        # cgroup reaped as soon as the foreground install exits.  nohup only
+        # ignores SIGHUP; it does not move the downloader out of that cgroup.
+        # Prefer a transient user service so the promised background upgrade
+        # survives non-interactive installs.  Keep the portable nohup fallback
+        # for hosts without a reachable systemd user manager.
+        _upgrade_unit=ods-model-upgrade.service
+        _upgrade_log="$INSTALL_DIR/logs/model-upgrade.log"
+        _upgrade_pid=""
+        _upgrade_systemd_started=false
+        _upgrade_uid="$(id -u)"
+        _upgrade_runtime_dir="/run/user/$_upgrade_uid"
+        _upgrade_systemd_env=(env \
+            "XDG_RUNTIME_DIR=$_upgrade_runtime_dir" \
+            "DBUS_SESSION_BUS_ADDRESS=unix:path=$_upgrade_runtime_dir/bus")
+        if command -v systemd-run >/dev/null 2>&1 \
+            && [[ -d "$_upgrade_runtime_dir" && -S "$_upgrade_runtime_dir/bus" ]] \
+            && "${_upgrade_systemd_env[@]}" systemctl --user show-environment >/dev/null 2>&1; then
+            "${_upgrade_systemd_env[@]}" systemctl --user stop "$_upgrade_unit" >/dev/null 2>&1 || true
+            "${_upgrade_systemd_env[@]}" systemctl --user reset-failed "$_upgrade_unit" >/dev/null 2>&1 || true
+            if "${_upgrade_systemd_env[@]}" systemd-run --user --unit="${_upgrade_unit%.service}" --no-block \
+                --property=Type=exec \
+                --property=Restart=on-failure \
+                --property=RestartPreventExitStatus=1 \
+                --property=RestartSec=2s \
+                --property="StandardOutput=append:$_upgrade_log" \
+                --property="StandardError=append:$_upgrade_log" \
+                bash "$SCRIPT_DIR/scripts/bootstrap-upgrade.sh" \
+                    "$INSTALL_DIR" "$FULL_GGUF_FILE" "$FULL_GGUF_URL" \
+                    "$FULL_GGUF_SHA256" "$FULL_LLM_MODEL" "$FULL_MAX_CONTEXT" \
+                    "$BOOTSTRAP_GGUF_FILE" >/dev/null; then
+                _upgrade_systemd_started=true
+                for _ in {1..50}; do
+                    _upgrade_pid="$("${_upgrade_systemd_env[@]}" systemctl --user show "$_upgrade_unit" \
+                        --property=MainPID --value 2>/dev/null || true)"
+                    [[ "$_upgrade_pid" =~ ^[1-9][0-9]*$ ]] && break
+                    sleep 0.1
+                done
+            fi
+        fi
+        if [[ ! "$_upgrade_pid" =~ ^[1-9][0-9]*$ ]]; then
+            if [[ "$_upgrade_systemd_started" == true ]]; then
+                "${_upgrade_systemd_env[@]}" systemctl --user stop "$_upgrade_unit" >/dev/null 2>&1 || true
+            fi
+            # Start the portable daemon from a child shell that closes inherited
+            # non-stdio FDs first. Otherwise caller-owned advisory locks (FD 9,
+            # FD 200, etc.) can stay held until the model download exits.
+            (
+                _phase11_close_inherited_fds_for_daemon
+                exec nohup bash "$SCRIPT_DIR/scripts/bootstrap-upgrade.sh" \
+                    "$INSTALL_DIR" "$FULL_GGUF_FILE" "$FULL_GGUF_URL" \
+                    "$FULL_GGUF_SHA256" "$FULL_LLM_MODEL" "$FULL_MAX_CONTEXT" \
+                    "$BOOTSTRAP_GGUF_FILE" \
+                    > "$_upgrade_log" 2>&1
+            ) &
+            _upgrade_pid=$!
+        fi
 
         if command -v bg_task_start &>/dev/null; then
             bg_task_start "full-model-download" "$_upgrade_pid" \

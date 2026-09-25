@@ -1,0 +1,53 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: gatus
+  name: Gatus
+  aliases: []
+  container_name: ods-gatus
+  host_env: GATUS_HOST
+  default_host: gatus
+  port: 8080
+  external_port_env: GATUS_PORT
+  external_port_default: 11064
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Monitor an explicitly selected HTTP endpoint and retain availability
+    and response-time history.
+  env_vars:
+  - key: GATUS_ENDPOINT
+    required: true
+    description: HTTP(S) endpoint reachable from the container that should return
+      200. No embedded credentials.
+  ui_path: /
+tags:
+- monitoring
+- uptime
+- open-source
+features:
+- id: gatus-monitoring
+  name: Gatus
+  description: Monitor an explicitly selected HTTP endpoint and retain availability
+    and response-time history.
+  icon: Activity
+  category: productivity
+  requirements:
+    services:
+    - gatus
+    vram_gb: 0
+  enabled_services_all:
+  - gatus
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: gatus
+    path: /

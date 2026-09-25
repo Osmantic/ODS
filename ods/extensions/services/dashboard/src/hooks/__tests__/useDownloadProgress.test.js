@@ -168,6 +168,51 @@ describe('useDownloadProgress', () => {
     })
   })
 
+  test('keeps the last progress snapshot and exposes an HTTP polling error', async () => {
+    fetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          status: 'downloading',
+          model: 'test-model',
+          bytesDownloaded: 5,
+          bytesTotal: 10,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({ detail: 'Download worker is restarting.' }),
+      })
+
+    const { result } = renderHook(() => useDownloadProgress())
+    await waitFor(() => expect(result.current.progress?.percent).toBe(50))
+
+    await act(async () => {
+      await result.current.refresh()
+    })
+
+    expect(result.current.statusError).toBe('Download worker is restarting.')
+    expect(result.current.progress).toMatchObject({
+      model: 'test-model',
+      status: 'downloading',
+      percent: 50,
+    })
+  })
+
+  test('surfaces a transport failure from the initial status request', async () => {
+    fetch.mockRejectedValue(new Error('connection refused'))
+
+    const { result } = renderHook(() => useDownloadProgress())
+
+    await waitFor(() => {
+      expect(result.current.statusError).toBe(
+        'Download status unavailable: connection refused',
+      )
+    })
+    expect(result.current.progress).toBeNull()
+  })
+
   test('cancelDownload posts to the cancel endpoint and refreshes terminal status', async () => {
     let cancelled = false
     fetch.mockImplementation((url, options) => {
@@ -195,7 +240,9 @@ describe('useDownloadProgress', () => {
       await result.current.cancelDownload()
     })
 
-    expect(fetch).toHaveBeenCalledWith('/api/models/download/cancel', { method: 'POST' })
+    expect(fetch).toHaveBeenCalledWith('/api/models/download/cancel', {
+      method: 'POST', signal: expect.any(AbortSignal),
+    })
     expect(result.current.isDownloading).toBe(false)
     expect(result.current.progress).toMatchObject({
       status: 'cancelled',
@@ -290,6 +337,20 @@ describe('useDownloadProgress', () => {
     expect(result.current.formatBytes(512)).toBe('512 B')
     expect(result.current.formatBytes(0)).toBe('0 B')
     expect(result.current.formatBytes(null)).toBe('0 B')
+  })
+
+  test('retains transfer progress after an invalid JSON receipt and recovers on a fresh poll', async () => {
+    fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'downloading', model: 'current', bytesDownloaded: 1, bytesTotal: 2 }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => { throw new SyntaxError('Invalid progress JSON') } })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'idle' }) })
+    const { result } = renderHook(() => useDownloadProgress())
+    await waitFor(() => expect(result.current.progress?.percent).toBe(50))
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.statusError).toBe('Download status unavailable: Invalid progress JSON')
+    expect(result.current.progress).toMatchObject({ model: 'current', percent: 50 })
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.statusError).toBeNull()
+    expect(result.current.progress).toBeNull()
   })
 
   test('formatEta formats minutes and seconds', () => {

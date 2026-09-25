@@ -1,0 +1,501 @@
+{
+  "$schema": "./schemas/openclaw-compatibility-v1.schema.json",
+  "schemaVersion": 1,
+  "combinations": [
+    {
+      "pixel": "4.3.27",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "candidate",
+      "qualifiedAt": "2026-09-14",
+      "evidence": {
+        "sourceCommit": "5983c27edb1c41d6e944abd13b6e6f780dd6cb4c",
+        "liveAudit": "LIVE-AUDIT-4.3.27.md"
+      }
+    },
+    {
+      "pixel": "4.3.26",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-09-03",
+      "evidence": {
+        "sourceCommit": "5d906c8b2dd29100b5850872b953d2a5d057f204",
+        "liveAudit": "LIVE-AUDIT-4.3.26.md"
+      }
+    },
+    {
+      "pixel": "4.3.25",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-09-03",
+      "evidence": {
+        "sourceCommit": "005e837549b7c37fc9759cf953dc8341cabbc951",
+        "liveAudit": "LIVE-AUDIT-4.3.25.md"
+      }
+    },
+    {
+      "pixel": "4.3.24",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-09-03",
+      "evidence": {
+        "sourceCommit": "4b44d844fccd9c4cf6a2db320dcfba1e8da74cb1",
+        "liveAudit": "LIVE-AUDIT-4.3.24.md"
+      }
+    },
+    {
+      "pixel": "4.3.23",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-09-02",
+      "evidence": {
+        "sourceCommit": "c1e31c4601bc705f13da8e4440c8043f4fb06efa",
+        "liveAudit": "LIVE-AUDIT-4.3.23.md"
+      }
+    },
+    {
+      "pixel": "4.3.22",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-09-02",
+      "evidence": {
+        "sourceCommit": "988a14495fdf3c46acc916769b58b1aae8895b58",
+        "liveAudit": "LIVE-AUDIT-4.3.22.md"
+      }
+    },
+    {
+      "pixel": "4.3.21",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-09-01",
+      "evidence": {
+        "sourceCommit": "2694b841e8f85840beb37a07755918d351455fc5",
+        "liveAudit": "LIVE-AUDIT-4.3.21.md"
+      }
+    },
+    {
+      "pixel": "4.3.20",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-09-01",
+      "evidence": {
+        "sourceCommit": "34bf02f39305582e7b706aadb59064f0a8b11673",
+        "liveAudit": "LIVE-AUDIT-4.3.20.md"
+      }
+    },
+    {
+      "pixel": "4.3.19",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-09-01",
+      "evidence": {
+        "sourceCommit": "d52d9e0f8d78fc37e3a765042015a2f52c35b618",
+        "liveAudit": "LIVE-AUDIT-4.3.19.md"
+      }
+    },
+    {
+      "pixel": "4.3.18",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-09-01",
+      "evidence": {
+        "sourceCommit": "f6b4472607f4007c689e5588454e31bdf2ff68bc",
+        "liveAudit": "LIVE-AUDIT-4.3.18.md"
+      }
+    },
+    {
+      "pixel": "4.3.17",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-09-01",
+      "evidence": {
+        "sourceCommit": "5232349c92ecdd44f6c1ee4f8c3ededa2851d526",
+        "liveAudit": "LIVE-AUDIT-4.3.17.md"
+      }
+    },
+    {
+      "pixel": "4.3.16",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-31",
+      "evidence": {
+        "sourceCommit": "5da16517864c4165eac7752d7fc836d5b0035115",
+        "liveAudit": "LIVE-AUDIT-4.3.16.md"
+      }
+    },
+    {
+      "pixel": "4.3.15",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-31",
+      "evidence": {
+        "sourceCommit": "9ff3da2f2fc018504814b49761a05c7491ac71f7",
+        "liveAudit": "LIVE-AUDIT-4.3.15.md"
+      }
+    },
+    {
+      "pixel": "4.3.14",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-31",
+      "evidence": {
+        "sourceCommit": "622d4fb18fc8a244dd7d24a83149e1c65475dd13",
+        "liveAudit": "LIVE-AUDIT-4.3.14.md"
+      }
+    },
+    {
+      "pixel": "4.3.13",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "candidate",
+      "qualifiedAt": "2026-08-26",
+      "evidence": {
+        "sourceCommit": "019de422a057f65fdd73ab8f7dd933cd1988b880",
+        "liveAudit": "LIVE-AUDIT-4.3.13.md"
+      }
+    },
+    {
+      "pixel": "4.3.12",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-26",
+      "evidence": {
+        "sourceCommit": "d2c639484d9c15e06f4c57644140fcc31c4a10bb",
+        "liveAudit": "LIVE-AUDIT-4.3.12.md"
+      }
+    },
+    {
+      "pixel": "4.3.11",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "retired",
+      "qualifiedAt": "2026-08-26",
+      "evidence": {
+        "sourceCommit": "7b0638bf709e76323cfafddf90eb81628f33aa47",
+        "liveAudit": "LIVE-AUDIT-4.3.11.md"
+      }
+    },
+    {
+      "pixel": "4.3.9",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "blocked",
+      "qualifiedAt": "2026-08-26",
+      "evidence": {
+        "sourceCommit": "9240f0261b403c54afd27fab1eece42e967166a0",
+        "liveAudit": "LIVE-AUDIT-4.3.9.md"
+      }
+    },
+    {
+      "pixel": "4.3.8",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "blocked",
+      "qualifiedAt": "2026-08-25",
+      "evidence": {
+        "sourceCommit": "434673d1d241b7ea4a4da1fcf97fbfde9724c076",
+        "liveAudit": "LIVE-AUDIT-4.3.8.md"
+      }
+    },
+    {
+      "pixel": "4.3.7",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "blocked",
+      "qualifiedAt": "2026-08-25",
+      "evidence": {
+        "sourceCommit": "75716d85ff1a473fcff1f199d4564c46479d1d2a",
+        "liveAudit": "LIVE-AUDIT-4.3.7.md"
+      }
+    },
+    {
+      "pixel": "4.3.6",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "blocked",
+      "qualifiedAt": "2026-08-25",
+      "evidence": {
+        "sourceCommit": "9b2ce2e0a199a114f7b3c49445bb5864f12ec2bb",
+        "liveAudit": "LIVE-AUDIT-4.3.6.md"
+      }
+    },
+    {
+      "pixel": "4.3.5",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-25",
+      "evidence": {
+        "sourceCommit": "85d1ef71a2b4d945b276520a3643f853c8b25491",
+        "liveAudit": "LIVE-AUDIT-4.3.5.md"
+      }
+    },
+    {
+      "pixel": "4.3.4",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-25",
+      "evidence": {
+        "sourceCommit": "0dc1f93c1d8f77809ca805d3bc4b1f457d13205e",
+        "liveAudit": "LIVE-AUDIT-4.3.4.md"
+      }
+    },
+    {
+      "pixel": "4.3.3",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-25",
+      "evidence": {
+        "sourceCommit": "4952f444dd5fa55a1653f815d361d41be921bcb0",
+        "liveAudit": "LIVE-AUDIT-4.3.3.md"
+      }
+    },
+    {
+      "pixel": "4.3.2",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-25",
+      "evidence": {
+        "sourceCommit": "fd44da125549578548797d2b4938f880d9b7f9cd",
+        "liveAudit": "LIVE-AUDIT-4.3.2.md"
+      }
+    },
+    {
+      "pixel": "4.3.1",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-25",
+      "evidence": {
+        "sourceCommit": "685d09c10264f3d28766443f2415a71a16b07e8f",
+        "liveAudit": "LIVE-AUDIT-4.3.1.md"
+      }
+    },
+    {
+      "pixel": "4.3.0",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-24",
+      "evidence": {
+        "sourceCommit": "8061263a3e63626b10d2748e3b0bcff71ce8272a",
+        "liveAudit": "LIVE-AUDIT-4.3.0.md"
+      }
+    },
+    {
+      "pixel": "4.2.0",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-23",
+      "evidence": {
+        "sourceCommit": "2c756a57367c1d1eafdc1d8c8bcdb4f3c449fd01",
+        "liveAudit": "LIVE-AUDIT-4.2.0.md"
+      }
+    },
+    {
+      "pixel": "4.1.0",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "candidate",
+      "qualifiedAt": "2026-08-11",
+      "evidence": {
+        "sourceCommit": "0b1d6e51632aed5bd14c140c42cdf0bf46df5621",
+        "liveAudit": "LIVE-AUDIT-4.1.0.md"
+      }
+    },
+    {
+      "pixel": "4.0.0",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "candidate",
+      "qualifiedAt": "2026-08-10",
+      "evidence": {
+        "sourceCommit": "69f0cbaaeeaef85e914792cb6db157cc6197474d",
+        "liveAudit": "LIVE-AUDIT-4.0.0.md"
+      }
+    },
+    {
+      "pixel": "3.2.2",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-07",
+      "evidence": {
+        "sourceCommit": "95b044bd51738f3e11e05b3693dd94738e53b034",
+        "liveAudit": "LIVE-AUDIT.md"
+      }
+    },
+    {
+      "pixel": "3.2.1",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-07",
+      "evidence": {
+        "sourceCommit": "bf7e9689b2fcb43c9c5d846708b8c4a99c370577",
+        "liveAudit": "LIVE-AUDIT.md"
+      }
+    },
+    {
+      "pixel": "3.2.0",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "supported",
+      "qualifiedAt": "2026-08-05",
+      "evidence": {
+        "sourceCommit": "f324c433f9b322958fbb99546442756e7de8f7d0",
+        "liveAudit": "LIVE-AUDIT.md"
+      }
+    }
+  ]
+}

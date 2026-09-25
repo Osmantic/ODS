@@ -82,7 +82,7 @@ while IFS= read -r -d '' pyfile; do
             fi
         fi
     done
-done < <(find extensions/services -name "*.py" -print0)
+done < <(find extensions/services -type d \( -name node_modules -o -name .venv -o -name venv \) -prune -o -type f -name "*.py" -print0)
 
 # Check JavaScript files
 while IFS= read -r -d '' jsfile; do
@@ -93,7 +93,7 @@ while IFS= read -r -d '' jsfile; do
             fail "Potential hardcoded secret in $(basename "$jsfile")" "$(grep -iE "$pattern" "$jsfile" | head -1 | sed 's/^[[:space:]]*//')"
         fi
     done
-done < <(find extensions/services -name "*.js" -print0)
+done < <(find extensions/services -type d \( -name node_modules -o -name .venv -o -name venv \) -prune -o -type f -name "*.js" -print0)
 
 # Check configuration files
 config_files=(config/**/*.json config/**/*.yaml config/**/*.yml extensions/services/*/config/*.json)

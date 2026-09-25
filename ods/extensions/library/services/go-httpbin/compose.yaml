@@ -1,0 +1,45 @@
+services:
+  go-httpbin:
+    image: ods/go-httpbin:2.25.0-health-v1
+    container_name: ods-go-httpbin
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${GO_HTTPBIN_PORT:-11044}:8080
+    healthcheck:
+      test:
+      - CMD
+      - /bin/ods-health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 65532:65532
+    environment:
+      HOST: 0.0.0.0
+      PORT: '8080'
+      MAX_BODY_SIZE: '1048576'
+      MAX_DURATION: 10s
+      ALLOWED_REDIRECT_DOMAINS: localhost,127.0.0.1,go-httpbin
+      LOG_LEVEL: WARN
+    build:
+      context: .
+      dockerfile: Dockerfile
+    read_only: true
+networks:
+  ods-network:
+    external: true
+    name: ods-network
