@@ -419,7 +419,14 @@ export function useModels() {
     let activationError = null
     let targetLoaded = false
     const requestedContextLength = Number(options.contextLength || 0) || null
+    // A reload targets the model that is already running, so the first poll
+    // would match before the server even starts. Wait until the server
+    // answered or the reload's activation was seen in progress.
+    const reload = options.reload === true
+    let activationAnswered = false
+    let reloadObserved = false
     const activationMatches = (data) => {
+      if (reload && !activationAnswered && !reloadObserved) return false
       if (
         data?.currentModel !== modelId ||
         data?.activationReadyModel !== modelId ||
@@ -434,16 +441,17 @@ export function useModels() {
       method: 'POST',
       signal: controller.signal,
     }
-    if (requestedContextLength) {
+    if (requestedContextLength || reload) {
       activationRequestOptions.headers = { 'Content-Type': 'application/json' }
       activationRequestOptions.body = JSON.stringify({
-        context_length: requestedContextLength,
+        ...(requestedContextLength ? { context_length: requestedContextLength } : {}),
+        // Without it, the running model at its current context is a no-op.
+        ...(reload ? { reload: true } : {}),
       })
     }
     // The server answers the POST only after the model and its consumers are
     // committed. Confirm right away instead of waiting out the poll interval;
     // a joined in-flight activation or a dropped connection keeps polling.
-    let activationAnswered = false
     let wakeActivationPoll = () => {}
     let activationWake = new Promise(resolve => { wakeActivationPoll = resolve })
     const activationRequest = fetch(`/api/models/${encodeURIComponent(modelId)}/load`, activationRequestOptions)
@@ -495,6 +503,7 @@ export function useModels() {
         if (activationError) break
         const data = await fetchModels({ signal: controller.signal })
         if (controller.signal.aborted) return
+        if (hasActiveModelActivation(data)) reloadObserved = true
         if (activationMatches(data)) {
           targetLoaded = true
           break

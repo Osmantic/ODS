@@ -26,22 +26,21 @@ FIXTURES = ROOT / "tests" / "fixtures" / "llama-placement"
 LAPTOP_PARTIAL = FIXTURES / "laptop-rtx5070-9b-64k-partial-b9014.txt"
 LAPTOP_RESIDENT = FIXTURES / "laptop-rtx5070-9b-64k-fit512-resident-b9014.txt"
 MAC_RESIDENT = FIXTURES / "mac-mini-m4-9b-metal-resident-b8210.txt"
-TOWER_RESIDENT = FIXTURES / "tower-rtx5090-27b-64k-resident-docker-timestamps-b9014.txt"
+TOWER_RESIDENT = FIXTURES / "tower-rtx5090-27b-32k-resident-docker-timestamps-b9014.txt"
 TOWER2_RESIDENT = FIXTURES / "tower2-2xrtxpro6000-coder-next-128k-resident-docker-timestamps-b9014.txt"
+# Complete loads (start line, placement, "model loaded") on one RTX PRO 6000.
+B9014_RESIDENT = FIXTURES / "tower2-rtxpro6000-qwen35-2b-resident-b9014.txt"
+B11146_LV4_RESIDENT = FIXTURES / "tower2-rtxpro6000-qwen35-2b-resident-lv4-b11146.txt"
+B11146_DEFAULT_VERBOSITY = FIXTURES / "tower2-rtxpro6000-qwen35-2b-default-verbosity-b11146.txt"
 
 spec = importlib.util.spec_from_file_location("llama_gpu_residency", SCRIPT)
 residency = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(residency)
 
 
-def verdict(log_text: str, args: list[str] | None = None, env: dict[str, str] | None = None) -> dict:
-    args, env = args or [], env or {}
-    return residency.evaluate(
-        residency.parse_placement(log_text),
-        residency.offload_declarations(args, env),
-        residency.requested_gpu_layers(args, env),
-        "test",
-    )
+def verdict(log_text: str, args: list[str] | None = None, env: dict[str, str] | None = None,
+            server_ready: bool = False) -> dict:
+    return residency.judge(log_text, args or [], env or {}, "test", server_ready)
 
 
 class ParsePlacement(unittest.TestCase):
@@ -59,10 +58,24 @@ class ParsePlacement(unittest.TestCase):
             result["fit"],
             {"projected_mib": 6492, "free_mib": 6860, "target_mib": 1024, "shortfall_mib": 656},
         )
+        self.assertEqual((result["ubatch"], result["context_size"], result["gpu_compute_buffer_mib"]),
+                         (512, 65536, 493.0))
+        self.assertEqual(result["llama_build"], 9014)
         self.assertIn("29/33 layers on GPU", result["message"])
-        self.assertIn("1024 MiB safety margin", result["fix_hint"])
-        self.assertIn("moved 4 layers to the CPU", result["fix_hint"])
-        self.assertIn("ods restart llama-server", result["fix_hint"])
+
+    def test_laptop_fix_is_the_fit_margin_not_closing_programs(self):
+        # The GPU was idle: 6492 MiB needed, 6860 MiB free. Only llama.cpp's
+        # 1024 MiB margin pushed layers out, so freeing VRAM cannot help.
+        result = verdict(LAPTOP_PARTIAL.read_text())
+        self.assertEqual(result["remedy"], "refit")
+        hint = result["fix_hint"]
+        self.assertIn("The GPU had room for the whole model", hint)
+        self.assertIn("keeps 1024 MiB free as a safety margin and moved 4 layers to the CPU", hint)
+        self.assertIn("Closing other programs will not change this", hint)
+        self.assertIn("Reload on GPU", hint)
+        self.assertIn("LLAMA_ARG_FIT_TARGET=512 and LLAMA_ARG_UBATCH=256", hint)
+        self.assertNotIn("close them", hint)
+        self.assertNotIn("smaller model", hint)
 
     def test_laptop_with_smaller_margin_is_resident(self):
         result = verdict(LAPTOP_RESIDENT.read_text())
@@ -71,7 +84,8 @@ class ParsePlacement(unittest.TestCase):
         # Token embeddings stay in host memory on a full offload.
         self.assertEqual(result["cpu_model_buffer_mib"], 545.62)
         self.assertEqual(result["cpu_kv_buffer_mib"], 0.0)
-        self.assertEqual(result["fit"], {"projected_mib": 6246, "free_mib": 6860})
+        self.assertEqual(result["fit"], {"projected_mib": 6246, "free_mib": 6860, "target_mib": 512})
+        self.assertEqual(result["ubatch"], 256)
         self.assertEqual(result["fix_hint"], "")
 
     def test_metal_b8210_log_is_resident(self):
@@ -80,7 +94,8 @@ class ParsePlacement(unittest.TestCase):
         self.assertEqual((result["layers_on_gpu"], result["layers_total"]), (33, 33))
         self.assertEqual(result["gpu_model_buffer_mib"], 5406.91)
         self.assertEqual(result["gpu_kv_buffer_mib"], 2048.0)
-        self.assertEqual(result["fit"], {"projected_mib": 7452, "free_mib": 12073})
+        self.assertEqual(result["fit"], {"projected_mib": 7452, "free_mib": 12073, "target_mib": 1024})
+        self.assertEqual(result["llama_build"], 8210)
 
     def test_docker_timestamped_log_is_resident(self):
         result = verdict(TOWER_RESIDENT.read_text())
@@ -109,14 +124,18 @@ class ParsePlacement(unittest.TestCase):
         self.assertEqual((result["layers_on_gpu"], result["layers_total"]), (33, 33))
         self.assertEqual(result["cpu_model_buffer_mib"], 545.62)
 
-    def test_log_without_placement_lines_is_unknown_not_pass(self):
-        # Lemonade's bundled llama.cpp and newer builds do not print them.
-        stripped = "\n".join(
-            line for line in LAPTOP_PARTIAL.read_text().splitlines() if "offloaded" not in line
-        )
-        result = verdict(stripped)
-        self.assertEqual(result["status"], "unknown")
-        self.assertNotIn("layers_on_gpu", result)
+    def test_complete_b9014_load_is_resident(self):
+        result = verdict(B9014_RESIDENT.read_text())
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual((result["layers_on_gpu"], result["layers_total"]), (25, 25))
+        self.assertEqual((result["llama_build"], result["log_verbosity"]), (9014, None))
+
+    def test_b11146_at_verbosity_4_is_resident(self):
+        result = verdict(B11146_LV4_RESIDENT.read_text())
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual((result["layers_on_gpu"], result["layers_total"]), (25, 25))
+        self.assertEqual((result["llama_build"], result["log_verbosity"]), (11146, 4))
+        self.assertEqual(result["fit"], {"projected_mib": 2106, "free_mib": 68971, "target_mib": 1024})
 
     def test_pinned_host_model_buffer_counts_as_system_ram(self):
         log = textwrap.dedent("""\
@@ -125,6 +144,75 @@ class ParsePlacement(unittest.TestCase):
             load_tensors:        CUDA0 model buffer size =  3000.00 MiB
         """)
         self.assertEqual(verdict(log)["cpu_model_buffer_mib"], 1500.0)
+
+
+def without_placement(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if "offloaded" not in line)
+
+
+# llama-server's request log once the model is serving (b9014 wording).
+SERVING_ONLY = textwrap.dedent("""\
+    srv  update_slots: all slots are idle
+    slot launch_slot_: id  0 | task 7 | processing task, is_child = 0
+    slot      release: id  0 | task 7 | stop processing: n_tokens = 28, truncated = 0
+""")
+
+
+class UnreadablePlacement(unittest.TestCase):
+    """A loaded ODS-managed GPU model whose placement the log does not state fails."""
+
+    def test_b11146_at_default_verbosity_fails_unverified(self):
+        # From b9151 llama.cpp logs placement only at verbosity 4: this load
+        # went fine, but nothing says where the layers are.
+        result = verdict(B11146_DEFAULT_VERBOSITY.read_text())
+        self.assertEqual(result["status"], "unverified")
+        self.assertNotIn("layers_on_gpu", result)
+        self.assertEqual(result["log_verbosity"], 3)
+        self.assertIn("logged at verbosity 3", result["message"])
+        self.assertIn("LLAMA_ARG_LOG_VERBOSITY", result["fix_hint"])
+
+    def test_loaded_model_without_placement_line_fails_unverified(self):
+        stripped = without_placement(B9014_RESIDENT.read_text())
+        result = verdict(stripped)
+        self.assertEqual(result["status"], "unverified")
+        self.assertIn("b9014 printed no 'offloaded N/M layers to GPU' line", result["message"])
+        self.assertIn("image ODS pins", result["fix_hint"])
+
+    def test_server_answering_health_counts_as_loaded(self):
+        # The laptop excerpt ends before "model loaded"; /health settles it.
+        stripped = without_placement(LAPTOP_PARTIAL.read_text())
+        self.assertEqual(verdict(stripped)["status"], "unknown")
+        self.assertEqual(verdict(stripped, server_ready=True)["status"], "unverified")
+
+    def test_quiet_build_reading_the_old_env_name_is_named(self):
+        log = "\n".join([
+            "0.00.1 I common_params_print_info: build 9200 (abc1234) with GNU 14.2.0 for Linux x86_64",
+            "0.00.2 I log_info: verbosity = 3 (adjust with the `-lv N` CLI arg)",
+            "0.00.3 I srv    load_model: loading model '/models/m.gguf'",
+            "0.01.0 I srv  llama_server: model loaded",
+        ])
+        result = verdict(log)
+        self.assertEqual(result["status"], "unverified")
+        self.assertIn("reads LLAMA_LOG_VERBOSITY", result["fix_hint"])
+
+    def test_unrecognized_load_start_with_a_ready_line_fails(self):
+        # "model loaded" follows the load section, so this is not rotation:
+        # the build's start line is one ODS does not know.
+        result = verdict("srv  llama_server: model loaded\n" + SERVING_ONLY, server_ready=True)
+        self.assertEqual(result["status"], "unverified")
+        self.assertIn("no model-load section that ODS recognizes", result["message"])
+
+    def test_rotated_out_load_section_is_unknown_not_fail(self):
+        result = verdict(SERVING_ONLY, server_ready=True)
+        self.assertEqual(result["status"], "unknown")
+        self.assertIn("rotated out", result["message"])
+        self.assertIn("ods restart llama-server", result["fix_hint"])
+
+    def test_load_in_progress_is_unknown(self):
+        partial_load = "\n".join(B9014_RESIDENT.read_text().splitlines()[:20])
+        result = verdict(partial_load)
+        self.assertEqual(result["status"], "unknown")
+        self.assertIn("has not finished loading", result["message"])
 
 
 class OffloadDeclarations(unittest.TestCase):
@@ -183,6 +271,57 @@ class OffloadDeclarations(unittest.TestCase):
         self.assertIn("safety margin", result["fix_hint"])
 
 
+def fit_log(projected: int, free: int, target: int, ubatch: int, compute: float, on_gpu: int = 30) -> str:
+    """A spilled load in llama.cpp b9014's wording, with chosen fit numbers."""
+    shortfall = projected - free + target
+    return "\n".join([
+        "main: loading model",
+        f"common_params_fit_impl: projected to use {projected} MiB of device memory vs. {free} MiB of free device memory",
+        f"common_params_fit_impl: cannot meet free memory target of {target} MiB, need to reduce device memory by {shortfall} MiB",
+        f"load_tensors: offloaded {on_gpu}/33 layers to GPU",
+        "load_tensors:   CPU_Mapped model buffer size =  1200.00 MiB",
+        "load_tensors:        CUDA0 model buffer size =  4000.00 MiB",
+        f"llama_context: n_ubatch      = {ubatch}",
+        f"sched_reserve:      CUDA0 compute buffer size =   {compute:.2f} MiB",
+        "sched_reserve:  CUDA_Host compute buffer size =   150.00 MiB",
+        "main: model loaded",
+    ])
+
+
+class FixAdvice(unittest.TestCase):
+    """The fix follows llama.cpp's own fit numbers, not a generic "free VRAM"."""
+
+    def test_margin_and_micro_batch_can_make_room_without_freeing_the_gpu(self):
+        # 7000 MiB needed, 6900 free: over budget even without a margin, but
+        # -ub 256 halves the 1400 MiB compute buffer and a 512 MiB margin fits.
+        result = verdict(fit_log(7000, 6900, 1024, 512, 1400))
+        self.assertEqual(result["remedy"], "refit")
+        self.assertIn("A 512 MiB margin and -ub 256", result["fix_hint"])
+        self.assertIn("LLAMA_ARG_FIT_TARGET=512", result["fix_hint"])
+        self.assertNotIn("close them", result["fix_hint"])
+
+    def test_other_programs_holding_vram_get_the_free_or_shrink_fix(self):
+        # tower1's F5: a leftover container held 20 GB; 20013 needed, 10810 free.
+        result = verdict(fit_log(20013, 10810, 1024, 512, 500, on_gpu=16))
+        self.assertEqual(result["remedy"], "free_or_shrink")
+        self.assertIn("only 10810 MiB was free", result["fix_hint"])
+        self.assertIn("close them", result["fix_hint"])
+        self.assertNotIn("LLAMA_ARG_FIT_TARGET", result["fix_hint"])
+
+    def test_refit_settings_already_in_effect_are_not_advised_again(self):
+        # V1f settings and a desktop now holding 500 MiB of the laptop's GPU.
+        result = verdict(fit_log(6246, 6360, 512, 256, 246.5, on_gpu=32))
+        self.assertEqual(result["remedy"], "free_or_shrink")
+        self.assertNotIn("LLAMA_ARG_UBATCH", result["fix_hint"])
+
+    def test_no_fit_projection_gives_both_fixes(self):
+        log = "load_tensors: offloaded 20/33 layers to GPU\nload_tensors:   CPU_Mapped model buffer size =  900.00 MiB\n"
+        result = verdict(log)
+        self.assertEqual(result["remedy"], "unknown")
+        self.assertIn("LLAMA_ARG_FIT_TARGET", result["fix_hint"])
+        self.assertIn("close them", result["fix_hint"])
+
+
 # llama.cpp b9014 common/fit.cpp prints this per-device plan when it keeps a
 # MoE layer on the GPU but moves its expert weights to system memory; the load
 # log then still reports every layer as offloaded.
@@ -201,6 +340,9 @@ class HiddenSpills(unittest.TestCase):
         self.assertEqual(result["moe_overflow_layers"], 12)
         self.assertEqual(result["status"], "fail")
         self.assertIn("MoE expert weights of 12 layers", result["message"])
+        # Every layer is on the GPU: the message must not claim otherwise.
+        self.assertIn("all 49 layers are on the GPU", result["message"])
+        self.assertNotIn("partly on CPU", result["message"])
         self.assertIn("moved part of the model to the CPU", result["fix_hint"])
 
     def test_declared_moe_offload_explains_expert_overflow(self):
@@ -221,7 +363,8 @@ class HiddenSpills(unittest.TestCase):
             with self.subTest(args=args):
                 result = verdict(log, args)
                 self.assertEqual(result["status"], "fail")
-                self.assertIn("KV cache in system RAM", result["message"])
+                self.assertIn("1088 MiB of KV cache is in system RAM", result["message"])
+                self.assertIn("all 33 layers are on the GPU", result["message"])
 
 
 FAKE_DOCKER = """#!/usr/bin/env bash
@@ -232,6 +375,7 @@ if [[ "$1" == inspect ]]; then
     case "$3" in
         '{{.State.Running}}') echo true ;;
         '{{.State.StartedAt}}') echo 2026-09-25T12:06:55.123456789Z ;;
+        '{{.Config.Image}}') echo "${FAKE_DOCKER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014}" ;;
         '{{json .Args}}') echo '["--model","/models/Qwen3.5-9B-Q4_K_M.gguf","--n-gpu-layers","auto","--ctx-size","65536"]' ;;
         '{{json .Config.Env}}') echo '["LLAMA_ARG_CACHE_TYPE_K=q8_0","DASHBOARD_API_KEY=not-a-real-secret-fixture","LLAMA_ARG_N_CPU_MOE=0","PATH=/usr/bin"]' ;;
         *) exit 9 ;;
@@ -277,6 +421,19 @@ class DockerCollection(unittest.TestCase):
     def test_resident_container_passes(self):
         result, _ = self.run_cli(LAPTOP_RESIDENT)
         self.assertEqual(result["status"], "pass")
+
+    @unittest.skipIf(os.name == "nt", "fake docker is a bash script")
+    def test_lemonade_container_is_skipped(self):
+        # AMD installs run Lemonade in the llama-server container; it does not
+        # log placement, and that is not a failure.
+        result, _ = self.run_cli(B11146_DEFAULT_VERBOSITY, FAKE_DOCKER_IMAGE="ods-lemonade-server:latest")
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("Lemonade", result["message"])
+
+    @unittest.skipIf(os.name == "nt", "fake docker is a bash script")
+    def test_managed_container_without_placement_lines_fails(self):
+        result, _ = self.run_cli(B11146_DEFAULT_VERBOSITY)
+        self.assertEqual(result["status"], "unverified")
 
     @unittest.skipIf(os.name == "nt", "fake docker is a bash script")
     def test_container_removed_mid_check_is_skipped(self):

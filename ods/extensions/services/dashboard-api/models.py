@@ -221,13 +221,22 @@ class ModelLibraryGpu(BaseModel):
 class ModelRuntimePlacement(BaseModel):
     """llama-server's load-time layer placement, from the host agent."""
 
-    layersOnGpu: int
-    layersTotal: int
+    # None only in the unverified state: the model loaded but its log does
+    # not say where the layers are.
+    layersOnGpu: Optional[int] = None
+    layersTotal: Optional[int] = None
     cpuWeightMiB: Optional[float] = None
-    fullyResident: bool
+    # KV cache and MoE expert weights in system memory with every layer on
+    # the GPU (a spill the layer count does not show).
+    cpuKvMiB: Optional[float] = None
+    overflowingLayers: Optional[int] = None
+    fullyResident: Optional[bool] = None
     intentionalOffload: bool = False
-    # resident | intentional | partial | cpu_only (model_placement.py)
+    # resident | intentional | partial | cpu_only | unverified (model_placement.py)
     state: str
+    # For a spill: refit | free_or_shrink | set_auto_layers, or None.
+    remedy: Optional[str] = None
+    fitTargetMiB: Optional[int] = None
     detail: Optional[str] = None
 
 

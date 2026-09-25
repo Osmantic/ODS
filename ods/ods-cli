@@ -2649,13 +2649,15 @@ residency_status = gpu_residency.get('status')
 residency_message = gpu_residency.get('message', '')
 if residency_status in ('pass', 'intentional'):
     print(f"  {GREEN}✓{NC} GPU residency: {residency_message}")
-elif residency_status == 'fail':
+elif residency_status in ('fail', 'unverified'):
     print(f"  {RED}✗{NC} GPU residency: {residency_message}")
     if gpu_residency.get('fix_hint'):
         print(f"    Fix: {gpu_residency['fix_hint']}")
     has_failures = True
 elif residency_status == 'unknown':
     print(f"  {YELLOW}?{NC} GPU residency: {residency_message}")
+    if gpu_residency.get('fix_hint'):
+        print(f"    Check: {gpu_residency['fix_hint']}")
 
 dgx_check = runtime.get('dgx_spark_cuda_arch_check', {})
 dgx_status = dgx_check.get('status')

@@ -48,7 +48,7 @@ from host_agent_client import (
     request_json as request_agent_json,
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
-from model_placement import is_unintended_cpu_placement, runtime_placement
+from model_placement import is_unproven_gpu_placement, runtime_placement
 from pixel_runtime_state import pixel_stream_active
 from performance_oracle import (
     build_models_payload,
@@ -589,6 +589,17 @@ def _already_active_model(model_id: str, model: dict) -> tuple[bool, str | None]
         ):
             return True, loaded_model
     return False, loaded_model
+
+
+def _requested_reload(body: dict[str, Any] | None) -> bool:
+    """``{"reload": true}`` activates the running model again at its context.
+
+    Otherwise that request is a no-op ("already_active"). The dashboard sends
+    it from "Reload on GPU" when the running model is partly on the CPU, so
+    the host agent fits the model to the GPU again; ods doctor gives the same
+    advice when llama.cpp's default fit margin caused the spill.
+    """
+    return isinstance(body, dict) and body.get("reload") is True
 
 
 def _requested_activation_context(
@@ -1424,13 +1435,14 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     placement = _visible_runtime_placement(agent_status, payload, gpu_info, loaded_model)
     payload["runtime"] = {"placement": placement}
     sample_key = (loaded_model, metrics.get("throughput_sampled_at"))
-    # A speed measured while layers sit on the CPU is not this GPU's speed for
-    # the model; recording it would under-rate the model for every later
-    # recommendation on this hardware.
+    # A speed measured while layers sit on the CPU, or while the log cannot
+    # say where they are, is not known to be this GPU's speed for the model;
+    # recording it would under-rate the model for every later recommendation
+    # on this hardware.
     if (gpu_info and loaded_model and live_tps > 0
             and sample_key[1] is not None and sample_key != _last_recorded_throughput_sample
             and loaded_entry.get("metadata", {}).get("source") != "runtime"
-            and not is_unintended_cpu_placement(placement)):
+            and not is_unproven_gpu_placement(placement)):
         _last_recorded_throughput_sample = sample_key
         signature = build_sample_signature(
             loaded_entry or {"id": loaded_model, "gguf": _read_active_model()},
@@ -2238,7 +2250,7 @@ def load_model(
     if already_active and (
         requested_context is None
         or requested_context == _verified_activation_context(loaded_model)
-    ):
+    ) and not _requested_reload(body):
         response: dict[str, Any] = {
             "status": "already_active",
             "model_id": model_id,

@@ -81,6 +81,18 @@ services:
       # LLAMA_ARG_SPEC_DRAFT_TYPE_K/V instead and pass them as flags.
       - LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K
       - LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V
+      # Log verbosity 4 keeps llama.cpp's "offloaded N/M layers to GPU",
+      # buffer and fit lines in the load log, the only place placement is
+      # reported (ods doctor, the host agent and the fleet gate read it).
+      # From b9151 llama.cpp logs them at verbosity 4 (trace) instead of the
+      # default 3, and b9360 and later read this name. The pinned b9014 image
+      # ignores it (it reads LLAMA_LOG_VERBOSITY, where 4 means debug) and
+      # prints placement at its default. On b11146, 4 logs about as many lines
+      # per request as b9014 does at its default. A value below 4 on a newer
+      # build makes ods doctor fail "GPU residency: unverified".
+      # tests/contracts/test-llama-placement-log.py ties each pinned build to
+      # a captured load log.
+      - LLAMA_ARG_LOG_VERBOSITY=${LLAMA_ARG_LOG_VERBOSITY:-4}
     security_opt:
       - no-new-privileges:true
     logging: *default-logging
