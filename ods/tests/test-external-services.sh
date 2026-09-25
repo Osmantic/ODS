@@ -313,6 +313,9 @@ run_phase06_env_cycle() (
     source "$install_dir/installers/lib/detection.sh"
     # shellcheck source=../installers/lib/progress.sh
     source "$install_dir/installers/lib/progress.sh"
+    # Match install-core's privilege helpers; sudo itself is stubbed below.
+    # shellcheck source=../installers/lib/sudo.sh
+    source "$install_dir/installers/lib/sudo.sh"
 
     ods_progress() { :; }
     ai() { :; }
@@ -418,6 +421,7 @@ run_phase06_amd_external() (
     source "$install_dir/installers/lib/ui.sh"
     source "$install_dir/installers/lib/detection.sh"
     source "$install_dir/installers/lib/progress.sh"
+    source "$install_dir/installers/lib/sudo.sh"
 
     ods_progress() { :; }
     ai() { :; }
