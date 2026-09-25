@@ -513,8 +513,13 @@ act as a capability gate:
   reads the top public results in parallel through the same guarded reader, or
   reads up to five given public URLs. It returns short query-focused excerpts
   with host read receipts, the pages' same-site links and the unopened results
-  as leads, within the per-result size cap. It makes no model calls and counts
-  one search plus its page reads against the response's web allowance.
+  as leads, within the per-result size cap. A page that lists many dated
+  entries is marked as a listing, and the links it gives an entry's own site
+  (the entry's title, an "official site" link) are listed too. It makes no
+  model calls and counts one search plus its page reads against the response's
+  web allowance. When the owner asks for a source per item and the answer
+  supports an item only with a listing, Pixel is asked once to read and cite
+  the item's own page or to state that it was unavailable.
 - `pixel_ods_download_promote` can publish one already-successful, exact broker
   download into one new relative path in Pixel's workspace. It cannot fetch,
   transform, overwrite, execute, or select an arbitrary host file.

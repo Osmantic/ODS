@@ -475,7 +475,8 @@ because its search returns page text. `pixel_ods_search_read`
   a window only lines with a distinctive term, a requested fact or a date
   are kept, with their neighbours. Same-site links on those lines, never
   the site root, are listed as `[L#]` leads, dated or term-bearing links
-  first.
+  first. An off-site link is listed only when it gives one dated entry its
+  own page (see Listings below), and then it ranks first.
 - The output is at most 5,000 characters and never more than the live
   `contextLimits.toolResultMaxChars` minus 800. Leads are dropped first, then
   links, then excerpt length; an excerpt that still does not fit is omitted.
@@ -521,6 +522,69 @@ The tool is offered only where the runtime search API exists and the
 operator's configuration permits both the search and page reads (page reads not
 disabled or denied, `web_search` enabled and not denied, no trusted
 environment proxy for web fetches).
+
+### Listings and per-item sources
+
+Fleet evidence (tower1 round 091, integration build `2f89f3ea`): asked for
+"a direct official source URL" for each of three Philadelphia events, Pixel
+answered in 3 calls and 23 s, but cited an aggregator's live-music list for
+one event and the same Visit Philadelphia season guide for two. On `main` the
+same journey took 17 calls and cited venue pages. Every cited page had been
+read, so the read-receipt check passed the answer. The guide links each
+entry's title to the entry's own site, but `search_read` listed only
+same-site links, so the model never saw those own pages.
+
+- **Listings** (`plugin/source-kind.mjs`). A read page that names at least
+  five distinct dated entries is a listing: a calendar, a season guide, an
+  aggregator's list. Each dated line is keyed by its own words without dates,
+  times and filler; a bare date line takes the nearest line above that names
+  something. A schedule of one event's dates, or a detail page with a short
+  sidebar, stays under five. `search_read` marks a listing on its host line
+  (`| listing: N dated entries`) and in `details.pages[].listing`, and adds
+  one fixed header sentence: a listing is a lead for each entry, not that
+  entry's own page.
+- **Own-page links.** An off-site link is kept when it sits within 400
+  characters of a date, its label is not an action ("Buy tickets"), and it is
+  either an "official site" link or the entry's title (at least half its line)
+  naming the link's host or path: "DesignPhiladelphia Festival" to
+  designphiladelphia.org, "Halloween Nights at Eastern State Penitentiary" to
+  easternstate.org. Maps, social sites, ticket buttons, links inside a
+  sentence and footer partners are not kept, and a subdomain of the same site
+  is not off-site. Such links print as `[L#]` next to the entry title;
+  `details.pages[].ownLinks` keeps up to 48 per listing (URLs only; through
+  Tool Search, where the model also sees `details`, only the printed ones).
+- **Per-item source check** (`plugin/item-sources.mjs`, called from
+  `before_agent_finalize` after the completion checks pass). It applies only
+  when the owner asked for a source per item ("for each ... a direct official
+  source URL", "the official link for each event"), not to "cite your
+  sources". An item is a citation whose segment names a subject and a date or
+  number (the same segmentation as the host citation check). An item is
+  flagged when its only cited page is a listing read in this run, unless the
+  page is the item's own (its host is named after the item, or its path names
+  it twice) or the answer says plainly that the item's own page was
+  unavailable, next to the item or in a note that names it ("the official site
+  returned 403"). The owner's own request words (the city, "events") never
+  identify an item. Flagged items get one continuation per run: it names each
+  item, its listing, and the item's own page when a listing read in the run
+  links one, and asks for one `search_read` call with those URLs, one search
+  for an item without one, or an honest limitation. The check reads no page,
+  never rewrites the answer, and runs only while a page read beyond the host
+  citation check's reserve is left. After the continuation the answer is
+  delivered as it is.
+
+Replaying round 091 with this change (the recorded prompt, search arguments
+and result list, both recorded `pixel_ods_web_extract` results and the
+recorded answer; page bodies from same-day snapshots through the real reader
+and the OpenClaw 2026.6.33 extractor): the first call marks the aggregator
+and the guide as listings and prints `DesignPhiladelphia Festival [L6]`; the
+recorded answer gets one continuation naming designphiladelphia.org and
+easternstate.org for the two guide items; one `urls` call reads both with
+receipts, 4 tool calls in all. Main's passing round-089 answer (three venue
+detail pages) is accepted unchanged; round 090's answer gets one continuation
+for its Mt. Joy item, which cites an aggregator's tour page, while its film
+festival item passes on its stated 403. `tests/item_sources.test.mjs` covers
+the listing and own-link rules, the round 091 replay, one continuation at
+most, honest unavailability, and requests without a per-item source.
 
 HTML extraction for every guarded read runs in a short-lived worker thread
 (`plugin/html-extraction.mjs`) that loads the SDK's own extractor, verified by
