@@ -352,8 +352,12 @@ because its search returns page text. `pixel_ods_search_read`
 - Each read page yields a short excerpt: line-aligned windows ranked by query
   terms and by the facts the request names (dates, times, prices, board power,
   memory, frame rates). Terms that appear on most of a page's windows
-  (navigation, footers) count less. Same-site links inside those windows,
-  never the site root, are listed as `[L#]` leads.
+  (navigation, footers) count less, and words that name a fact ("events",
+  "price") are matched by that fact's pattern rather than as terms. Inside
+  a window only lines with a distinctive term, a requested fact or a date
+  are kept, with their neighbours. Same-site links on those lines, never
+  the site root, are listed as `[L#]` leads, dated or term-bearing links
+  first.
 - The output is at most 5,000 characters and never more than the live
   `contextLimits.toolResultMaxChars` minus 800. Leads are dropped first, then
   links, then excerpt length; an excerpt that still does not fit is omitted.
