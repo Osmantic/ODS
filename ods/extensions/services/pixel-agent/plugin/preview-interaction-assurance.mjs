@@ -30,7 +30,10 @@ function boundReceipt(params, result, preview) {
   if (!preview || !result?.details) return undefined;
   const request = normalizeWorkspacePreviewInspectionParams(params);
   if (request.siteId !== preview.siteId || request.sha256 !== preview.sha256) return undefined;
-  return {request, receipt: validateWorkspacePreviewInspectionReceipt(result.details, request)};
+  // Requested texts are outside the plan hash; the receipt echoes the ones sent.
+  const echoed = result.details.requestedText?.texts;
+  const sent = Array.isArray(echoed) ? {...request, texts: echoed.map(entry => entry?.text)} : request;
+  return {request, receipt: validateWorkspacePreviewInspectionReceipt(result.details, sent)};
 }
 
 // Passing steps on a page that threw uncaught script errors are not verified
@@ -50,6 +53,18 @@ export function boundInspectionPageErrors(params, result, preview) {
   try {
     const {receipt} = boundReceipt(params, result, preview) ?? {};
     return inspectionPageErrors(receipt) ? Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256}) : undefined;
+  } catch { return undefined; }
+}
+
+// Owner-requested text that this snapshot's inspection found in the page but
+// not visible when it loads: [] when each located text was visible, undefined
+// without such evidence. Failed steps do not void it; it is separate evidence.
+export function boundHiddenRequestedText(params, result, preview) {
+  try {
+    const texts = boundReceipt(params, result, preview)?.receipt?.requestedText?.texts;
+    return Array.isArray(texts)
+      ? Object.freeze(texts.filter(entry => entry.status === 'hidden').map(entry => Object.freeze({...entry})))
+      : undefined;
   } catch { return undefined; }
 }
 

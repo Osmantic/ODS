@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Night Garden FLEET-eaa39f42e9 Revised</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      min-height: 100vh;
+      color: #e4e4e4;
+      line-height: 1.6;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: clamp(1.5rem, 5vw, 2.5rem);
+      margin-bottom: 40px;
+      color: #ffc107;
+      text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+      letter-spacing: 2px;
+    }
+
+    .events-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 24px;
+      margin-bottom: 32px;
+    }
+
+    .event-card {
+      background: linear-gradient(145deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.05));
+      border-radius: 16px;
+      padding: 24px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(10px);
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    .event-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 12px 24px rgba(0, 0, 0, 0.3);
+    }
+
+    .event-card h2 {
+      font-size: 1.4rem;
+      margin-bottom: 12px;
+      color: #fff;
+    }
+
+    .event-card .time {
+      display: inline-block;
+      background: linear-gradient(90deg, #ffc107, #ff9800);
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      margin-bottom: 12px;
+      font-weight: 500;
+    }
+
+    .event-card .description {
+      color: #b8b8b8;
+      font-size: 0.95rem;
+    }
+
+    .event-card.sold-out {
+      background: linear-gradient(145deg, rgba(200, 50, 50, 0.2), rgba(150, 40, 40, 0.1));
+      border-color: rgba(200, 50, 50, 0.3);
+    }
+
+    .event-card.sold-out .time {
+      background: linear-gradient(90deg, #e74c3c, #c0392b);
+    }
+
+    .sold-out-badge {
+      display: inline-block;
+      background: #e74c3c;
+      color: white;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 12px;
+    }
+
+    .show-sold-out-container {
+      display: flex;
+      justify-content: center;
+      margin-top: 24px;
+    }
+
+    .show-sold-out-btn {
+      background: linear-gradient(90deg, #ffc107, #ff9800);
+      color: #1a1a2e;
+      border: none;
+      padding: 14px 32px;
+      border-radius: 30px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 15px rgba(255, 193, 7, 0.4);
+      outline: none;
+    }
+
+    .show-sold-out-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(255, 193, 7, 0.6);
+    }
+
+    .show-sold-out-btn:focus {
+      box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.4), 0 4px 15px rgba(255, 193, 7, 0.4);
+    }
+
+    .show-sold-out-btn:active {
+      transform: translateY(0);
+    }
+
+    .sold-out-section {
+      display: none;
+    }
+
+    .sold-out-section.visible {
+      display: block;
+      animation: fadeIn 0.5s ease;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @media (max-width: 480px) {
+      body {
+        padding: 16px;
+      }
+
+      .events-grid {
+        grid-template-columns: 1fr;
+        gap: 20px;
+      }
+
+      .event-card {
+        padding: 20px;
+      }
+
+      .show-sold-out-btn {
+        padding: 12px 28px;
+        font-size: 0.95rem;
+      }
+    }
+
+    .site-footer {
+      text-align: center;
+      padding: 24px;
+      margin-top: 24px;
+      color: #ffc107;
+      font-size: 0.9rem;
+      border-top: 1px solid rgba(255, 193, 7, 0.3);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .event-card,
+      .show-sold-out-btn,
+      .sold-out-section {
+        transition: none;
+        animation: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Night Garden FLEET-eaa39f42e9 Revised</h1>
+
+    <div class="events-grid">
+      <article class="event-card">
+        <span class="time">6:00 AM - 8:00 AM</span>
+        <h2>Dawn jazz</h2>
+        <p class="description">Begin your day with smooth jazz melodies under the morning sky. Local artists perform classic and contemporary jazz in the garden's serene amphitheater.</p>
+      </article>
+
+      <article class="event-card">
+        <span class="time">7:00 PM - 9:00 PM</span>
+        <h2>River lantern walk</h2>
+        <p class="description">Stroll along the illuminated river path with your own floating lantern. A peaceful evening experience with guided meditation stops and tea service.</p>
+      </article>
+    </div>
+
+    <div class="show-sold-out-container">
+      <button type="button" class="show-sold-out-btn" id="showSoldOutBtn" aria-expanded="false">
+        Show sold out
+      </button>
+    </div>
+
+    <div class="sold-out-section" id="soldOutSection" aria-labelledby="showSoldOutBtn">
+      <footer class="site-footer">
+        <p>FLEET-eaa39f42e9 edited successfully</p>
+      </footer>
+      <div class="events-grid" style="margin-top: 24px;">
+        <article class="event-card sold-out">
+          <span class="sold-out-badge">Sold Out</span>
+          <span class="time">12:00 AM - 2:00 AM</span>
+          <h2>Midnight sold-out concert</h2>
+          <p class="description">An exclusive midnight performance featuring international guest artists. This event has reached capacity. Join our waitlist for future shows.</p>
+        </article>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const btn = document.getElementById('showSoldOutBtn');
+      const section = document.getElementById('soldOutSection');
+
+      if (btn && section) {
+        btn.addEventListener('click', function() {
+          const isExpanded = btn.getAttribute('aria-expanded') === 'true';
+          
+          if (isExpanded) {
+            section.classList.remove('visible');
+            btn.setAttribute('aria-expanded', 'false');
+            btn.textContent = 'Show sold out';
+          } else {
+            section.classList.add('visible');
+            btn.setAttribute('aria-expanded', 'true');
+            btn.textContent = 'Hide sold out';
+          }
+        });
+
+        btn.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            btn.click();
+          }
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

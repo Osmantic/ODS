@@ -8,10 +8,13 @@
 // while the other listed items are exact headings, is reported the same way,
 // as is a listed card name that is no heading at all beside such headings.
 // File names the owner lists for a named, published directory are checked
-// against the receipt's complete published path list.
+// against the receipt's complete published path list. A browser inspection of
+// the snapshot adds requested text that is on the page but not visible when
+// it loads, reported the same way.
 import {createHash} from 'node:crypto';
 import * as fs from 'node:fs';
 import path from 'node:path';
+import {hiddenTextDescription} from './workspace-preview-inspect.mjs';
 
 const MAX_OWNER_CHARS = 12000;
 export const MAX_REQUESTED_LITERALS = 12;
@@ -262,6 +265,39 @@ export function extractRequestedLiterals(ownerText) {
     literals.push(Object.freeze({...literal, targets: Object.freeze(literal.targets)}));
   }
   return Object.freeze(literals);
+}
+
+// Text the owner asked to start hidden, collapsed, revealed on click or
+// rotating is not required to be visible when the page loads.
+const REVEAL_CUE = words(String.raw`hid(?:e|es|den|ing)|collaps(?:e|es|ed|ing|ible)|reveal(?:s|ed|ing)?|toggl(?:e|es|ed|ing)|` +
+  String.raw`expand(?:s|ed|ing|able)?|accordions?|drop-?downs?|modals?|pop-?ups?|dialogs?|tooltips?|carousels?|sliders?|` +
+  String.raw`slideshows?|rotat(?:e|es|ed|ing)|on\s+(?:click|hover|scroll)|when\s+(?:clicked|pressed|hovered|scrolled)|` +
+  String.raw`after\s+(?:clicking|pressing|scrolling)|escond\p{L}*|ocult\p{L}*|recolh\p{L}*|revel\p{L}*|expand\p{L}*|` +
+  String.raw`carross\p{L}*|ao\s+clicar`);
+
+// The requested texts a browser inspection checks for visibility when the
+// page loads: page copy only (never file names, nor a title for the browser
+// tab alone), minus any text whose sentence asks for it to start hidden.
+export function requestedLoadTexts(ownerText, literals) {
+  if (!Array.isArray(literals) || !literals.length) return Object.freeze([]);
+  const lines = ownerProse(ownerText).split('\n').map(folded);
+  const revealed = text => {
+    const needle = folded(text);
+    return lines.some(line => {
+      for (let at = line.indexOf(needle); needle && at >= 0; at = line.indexOf(needle, at + 1)) {
+        const after = at + needle.length, stop = line.slice(after).search(/[.!?;](?=\s|$)/);
+        const sentence = line.slice(sentenceStart(line, 0, at), at) + ' ' + line.slice(after, stop < 0 ? line.length : after + stop);
+        if (REVEAL_CUE.test(sentence)) return true;
+      }
+      return false;
+    });
+  };
+  const seen = new Set();
+  return Object.freeze(literals
+    .filter(literal => literal.match !== 'file' && (!literal.targets.includes('page title') || literal.targets.includes('h1')) &&
+      !revealed(literal.text))
+    .map(literal => canonicalText(literal.text))
+    .filter(text => text && !seen.has(folded(text)) && seen.add(folded(text))));
 }
 
 const NAMED_ENTITIES = {amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0',copy:'©',reg:'®',trade:'™',
@@ -553,10 +589,25 @@ export function requestedTextCheck(literals, preview, {receipt, trackedContent, 
   }
 }
 
-const absent = check => check.missing.filter(miss => !miss.heading && !miss.unheaded && !miss.file);
+// Browser evidence for this snapshot replaces its earlier hidden-text misses:
+// each entry is {text, element, reason, culprit?, colors?} from an inspection
+// receipt bound to the same site and snapshot. An empty list clears them.
+export function withHiddenRequestedText(check, preview, hidden) {
+  if (!Array.isArray(hidden) || !preview || !/^[a-f0-9]{64}$/.test(preview.sha256 ?? '')) return check;
+  const bound = check?.siteId === preview.siteId && check.sha256 === preview.sha256 ? check : undefined;
+  if (!bound && !hidden.length) return check;
+  return Object.freeze({siteId: preview.siteId, sha256: preview.sha256, missing: Object.freeze([
+    ...(bound?.missing ?? []).filter(miss => !miss.hidden),
+    ...hidden.map(entry => Object.freeze({text: entry.text, hidden: Object.freeze({...entry})})),
+  ])});
+}
+
+const absent = check => check.missing.filter(miss => !miss.heading && !miss.unheaded && !miss.file && !miss.hidden);
 const inHeadings = check => check.missing.filter(miss => miss.heading);
 const unheaded = check => check.missing.filter(miss => miss.unheaded);
 const unpublished = check => check.missing.filter(miss => miss.file);
+const invisible = check => check.missing.filter(miss => miss.hidden);
+const invisibleList = misses => misses.map(miss => hiddenTextDescription(miss.hidden)).join('; ');
 const missingList = misses => misses
   .map(miss => JSON.stringify(miss.text) + (miss.target ? ` (${miss.target})` : '')).join(', ');
 const nameList = misses => JSON.stringify([...new Set(misses.map(miss => miss.text))]);
@@ -568,9 +619,12 @@ const sentences = parts => parts.filter(Boolean).join(' ');
 // the snapshot's own heading text and directory, so per-slot coaching dedupe applies.
 export function requestedTextInstruction(preview, check) {
   if (!boundMisses(preview, check)) return undefined;
-  const missing = absent(check), names = unheaded(check), files = unpublished(check);
+  const missing = absent(check), names = unheaded(check), files = unpublished(check), hidden = invisible(check);
   return sentences([
     missing.length && `Requested text not found: ${missingList(missing)}. Use the owner's exact wording, republish and re-inspect.`,
+    hidden.length && `Requested text is on the page but not visible when it loads: ${invisibleList(hidden)}. ` +
+      'Make each one visible without a click (not inside hidden, collapsed or transparent content, ' +
+      'and not the color of its background), then republish and re-inspect.',
     ...inHeadings(check).map(miss => `${JSON.stringify(miss.text)} appears only inside a longer heading ` +
       `(${JSON.stringify(miss.heading)}); use the exact name as the heading, then republish and re-inspect.`),
     names.length && `Requested names are on the page but not as headings, while other listed items are: ${nameList(names)}. ` +
@@ -610,11 +664,20 @@ export const REQUESTED_FILE_REVISION_INSTRUCTION = [
   'instead of retyping it), republish that directory with pixel_ods_workspace_preview, and keep everything else unchanged.',
 ];
 
+// The same for requested text that is on the page but not visible when it loads.
+export const REQUESTED_VISIBLE_TEXT_REVISION_INSTRUCTION = [
+  'Requested text is still not visible when the published page loads: ',
+  '. Show it without a click (move it out of hidden, collapsed or transparent content, or give it a color that differs ' +
+  'from its background), republish with pixel_ods_workspace_preview, inspect the new snapshot, and keep everything else unchanged.',
+];
+
 export function requestedTextRevisionInstruction(preview, check) {
   if (!boundMisses(preview, check)) return undefined;
   const missing = absent(check), headings = inHeadings(check), names = unheaded(check), files = unpublished(check);
+  const hidden = invisible(check);
   return sentences([
     missing.length && REQUESTED_TEXT_REVISION_INSTRUCTION.join(nameList(missing)),
+    hidden.length && REQUESTED_VISIBLE_TEXT_REVISION_INSTRUCTION.join(nameList(hidden)),
     headings.length && REQUESTED_HEADING_REVISION_INSTRUCTION.join(nameList(headings)),
     names.length && REQUESTED_ITEM_HEADING_REVISION_INSTRUCTION.join(nameList(names)),
     files.length && REQUESTED_FILE_REVISION_INSTRUCTION.join(nameList(files)),
@@ -624,8 +687,10 @@ export function requestedTextRevisionInstruction(preview, check) {
 export function requestedTextDeliveryNote(preview, check) {
   if (!boundMisses(preview, check)) return undefined;
   const missing = absent(check), headings = inHeadings(check), names = unheaded(check), files = unpublished(check);
+  const hidden = invisible(check);
   return sentences([
     missing.length && `The published page does not contain text the owner requested: ${missingList(missing)}.`,
+    hidden.length && `The published page contains requested text that is not visible when it loads: ${invisibleList(hidden)}.`,
     headings.length && 'The published page uses requested names only inside longer headings: ' +
       `${headings.map(miss => `${JSON.stringify(miss.text)} (${JSON.stringify(miss.heading)})`).join(', ')}.`,
     names.length && `The published page shows requested names, but not as headings like the other listed items: ${missingList(names)}.`,

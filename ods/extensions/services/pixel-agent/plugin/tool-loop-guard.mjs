@@ -37,11 +37,12 @@ import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
-  boundInspectionPageErrors, pageErrorRepairInstruction, visibilityInspectionMatches, visibilityInspectionInstruction } from './preview-interaction-assurance.mjs';
+  boundInspectionPageErrors, pageErrorRepairInstruction, visibilityInspectionMatches, visibilityInspectionInstruction,
+  boundHiddenRequestedText } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
-  requestedTextDeliveryNote } from './requested-literals.mjs';
+  requestedTextDeliveryNote, requestedLoadTexts, withHiddenRequestedText } from './requested-literals.mjs';
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -9383,6 +9384,7 @@ export function createToolLoopGuard({
               inheritedVisibility.ownerIntent === ownerIntent));
         // Checked only against a successful publication; never gates publishing.
         state.requestedLiterals = extractRequestedLiterals(ownerIntent);
+        state.requestedLoadTexts = requestedLoadTexts(ownerIntent, state.requestedLiterals);
         state.workspacePreviewMode = state.workspacePreviewRequired
           ? (trustedSessionPreview ? "continuation" : workspacePreviewMode(event?.messages, event?.prompt))
           : undefined;
@@ -9793,6 +9795,12 @@ export function createToolLoopGuard({
         // Selects the repair instruction only; bound to this exact snapshot.
         state.workspaceInspectionPageErrors = !event?.error
           ? boundInspectionPageErrors(inspected.params, inspected.result, state.workspacePreview) : undefined;
+        // Requested text on the page but not visible when it loads is a
+        // requested-text miss of this snapshot; completion waits on it.
+        const hiddenText = !event?.error
+          ? boundHiddenRequestedText(inspected.params, inspected.result, state.workspacePreview) : undefined;
+        if (hiddenText) state.workspaceRequestedTextCheck =
+          withHiddenRequestedText(state.workspaceRequestedTextCheck, state.workspacePreview, hiddenText);
       }
     }
     const refusedCall = state.previewRevalidationRefusedCalls?.delete(toolCallId) === true && failedToolOutcome(event);
@@ -12237,6 +12245,18 @@ export function createToolLoopGuard({
     verifyCitedPages,
     // Read-only host-verification records for one run (diagnostics and tests).
     citationVerificationForRun: runId => [...(runs.get(runId)?.hostCitationVerifications ?? [])],
+    // The owner-requested texts for the newest pending inspection call with
+    // exactly these arguments, when it inspects that run's published snapshot.
+    requestedTextsForInspection(params) {
+      let texts = [];
+      for (const pending of pendingToolRuns.values()) {
+        if (pending.selectedToolName !== PREVIEW_INSPECTION_TOOL || !isDeepStrictEqual(pending.selectedParams, params)) continue;
+        const preview = runs.get(pending.runId)?.workspacePreview;
+        texts = preview && preview.siteId === params?.siteId && preview.sha256 === params?.sha256
+          ? [...(runs.get(pending.runId).requestedLoadTexts ?? [])] : [];
+      }
+      return texts;
+    },
     endPreviewRevalidation,
     observeAgentEnd,
     promptContextForRun,
