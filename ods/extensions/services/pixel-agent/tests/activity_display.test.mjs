@@ -5,6 +5,30 @@ import {createActivityTool,displayForActivity} from '../plugin/activity-display.
 import {parseTaskActivity} from '../host/task_activity_schema.mjs';
 const runId='chatcmpl_11111111-2222-4333-8444-555555555555';
 const context={agentId:'pixel',runId,toolCallId:'call-1',toolName:'tool_call'};
+
+test('ordinary read and failed execution supply live progress without a narration tool',()=>{
+ const tracker=createTaskActivity();tracker.begin({},context);
+ const read={params:{id:'openclaw:core:read',args:{path:'src/main.js'}}};
+ tracker.before(read,context);
+ const running=tracker.projection(runId);
+ assert.ok(parseTaskActivity(running,runId));
+ assert.equal(running.state,'running');
+ assert.equal(running.calls,1);
+ assert.equal(running.events[0].display.detail,'main.js');
+ tracker.after({...read,result:{content:[{type:'text',text:'private source bytes'}]}},context);
+ const execContext={...context,toolCallId:'call-2'};
+ const exec={params:{id:'openclaw:core:exec',args:{command:'npm test'}}};
+ tracker.before(exec,execContext);
+ tracker.after({...exec,error:'failed',result:{details:{status:'completed',exitCode:1}}},execContext);
+ const failedCheck=tracker.projection(runId);
+ assert.ok(parseTaskActivity(failedCheck,runId));
+ assert.equal(failedCheck.calls,2);
+ assert.equal(failedCheck.failures,1);
+ assert.equal(failedCheck.state,'running','tool completion is not verified task completion');
+ assert.doesNotMatch(JSON.stringify(failedCheck),/private source bytes|pixel_ods_activity/);
+ tracker.finish({success:false},context);
+ assert.equal(tracker.projection(runId).state,'failed');
+});
 test('public updates and search sources survive the complete projection without raw output',async()=>{
  const tracker=createTaskActivity();tracker.begin({},context);
  const event={params:{id:'pixel_ods_research',args:{query:'Documentação oficial'}}};
