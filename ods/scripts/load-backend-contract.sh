@@ -6,6 +6,20 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BACKEND_ID=""
 ENV_MODE="false"
 
+usage() {
+    cat <<'USAGE'
+Usage: load-backend-contract.sh --backend BACKEND [OPTIONS]
+
+Load the backend contract JSON for a given backend from
+config/backends/<BACKEND>.json.
+
+Options:
+  --backend BACKEND   Backend id (e.g. nvidia, amd, apple, cpu) — required
+  --env                Emit output as shell-sourceable KEY=VALUE pairs
+  -h, --help           Show this help message and exit
+USAGE
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --backend)
@@ -15,6 +29,10 @@ while [[ $# -gt 0 ]]; do
         --env)
             ENV_MODE="true"
             shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
             ;;
         *)
             echo "Unknown argument: $1" >&2
