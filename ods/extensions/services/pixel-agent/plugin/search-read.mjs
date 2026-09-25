@@ -28,7 +28,11 @@
 // Page text never carries host metadata, and host lines never carry page
 // text: each page's host line (tag, URL, status) precedes its own
 // untrusted-content boundary, the page title is printed inside it, page lines
-// are indented, and marker-like text inside the page is neutralised.
+// are indented, and marker-like text inside the page is neutralised. The
+// model also sees `details` when it calls the tool through Tool Search's
+// tool_call, so `details` holds no page-supplied text outside a boundary:
+// search results carry only their URLs, and a receipted page's title is kept
+// in its own untrusted-content envelope (pageTitle unwraps it for the host).
 
 import {randomBytes} from 'node:crypto';
 import {isIP} from 'node:net';
@@ -610,6 +614,9 @@ const titleOf = value => {
   return title && title.length > SEARCH_READ_LIMITS.maxTitleChars
     ? `${title.slice(0, SEARCH_READ_LIMITS.maxTitleChars - 1).trimEnd()}…` : title;
 };
+// A page title for `details`, in the same envelope as the page's excerpt.
+const enveloped = (id, title) =>
+  `<<<EXTERNAL_UNTRUSTED_CONTENT id="${id}">>>\n---\n${title}\n<<<END_EXTERNAL_UNTRUSTED_CONTENT id="${id}">>>`;
 const utcMinute = date => `${date.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 
 function assemble(state, {excerptChars, linksPerPage, leadCount}) {
@@ -847,10 +854,9 @@ export function createSearchReadTool({
       } else {
         pages = valid.urls.slice(0, granted).map(url => ({url}));
       }
-      const results = rows.slice(0, SEARCH_READ_LIMITS.maxResults).map(row => {
-        const title = titleOf(unwrappedSnippet(row.title));
-        return {url: row.url, ...(title ? {title} : {})};
-      });
+      // Only the URLs: a result title is page-supplied text, and the model can
+      // see `details` through Tool Search. Leads print theirs inside a boundary.
+      const results = rows.slice(0, SEARCH_READ_LIMITS.maxResults).map(row => ({url: row.url}));
       if (valid.mode === 'search' && !rows.length) {
         return textResult(`Search "${neutralized(valid.query).replace(/"/g, "'")}" returned no results, so no pages were read. ` +
           'That does not prove the information is absent. Try one shorter query for one entity and one fact; do not ' +
@@ -934,7 +940,7 @@ export function createSearchReadTool({
             match: page.omitted ? 'omitted' : excerpt?.match ?? 'none', links: receipt ? excerpt.links.length : 0,
             responseTruncated: page.truncated} : {}),
           ...(page.outcome !== 'read' ? {reason: page.reason, ...(page.status ? {status: page.status} : {})} : {}),
-          ...(receipt && titleOf(page.title) ? {title: titleOf(page.title)} : {}),
+          ...(receipt && titleOf(page.title) ? {title: enveloped(id, neutralized(titleOf(page.title)))} : {}),
         };
       });
       return textResult(text, {
