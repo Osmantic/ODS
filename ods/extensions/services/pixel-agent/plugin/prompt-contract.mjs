@@ -27,6 +27,7 @@ import {
   workspacePreviewMode,
 } from "./tool-loop-guard.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "./agent-skills.mjs";
+import { formatTurnGuidance } from "./turn-guidance.mjs";
 
 const PLAYGROUND_PROJECT_CONTRACT =
   "For a new project, choose one short descriptive folder under Playground, for example Playground/snake-game or Playground/weather-tool, and create every project file there. This is a real workspace folder, not a display label. Use the exact canonical paths returned by tools, including any collision suffix, for later reads, edits, exec workdir and preview relativeDirectory. Preserve explicitly requested paths and existing projects in their current locations; never move them into Playground. Keep shell commands relative to the chosen workdir; never invent host-specific paths.";
@@ -315,9 +316,12 @@ export function promptContractForAgent(
   const conversationContract = conversationContractForExecution(leanPrompt
     ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT, executionHost);
   const teamRole=managedTeamRole(event);
-  if(teamRole==='Coordinator')return {appendSystemContext:'Plan the team size only. Choose the smallest useful number of workers, from 1 to 6. Honor an explicitly requested number within that limit. Return only JSON with one integer field, count. Do not perform the task, ask questions, or use tools.'};
-  if(teamRole && teamRole!=='Builder')return {appendSystemContext:
-    `You are a read-only ${teamRole} in the owner's managed team. Analyze the supplied request and earlier teammates' actual reports. Return concise findings in the owner's language. Do not repeat the earlier answer: identify concrete corrections, unsupported claims and remaining limitations. For research or current factual claims, consult primary sources with web search/fetch and cite what you actually verified. A teammate's prose is not proof. Subjective rankings require explicit criteria, not a purported objective winner. Do not carry out the Builder's implementation again. Do not create files, run commands, publish previews, or operate services: those tools are unavailable to your role. For a purely creative writing task, review the supplied text directly. If a necessary owner preference is missing, use pixel_ods_ask_user and wait. Never invent tool results or claim verification you did not perform.`};
+  // A team role is sticky for its session (managedTeamRole also scans history),
+  // so its whole contract is session-stable system text.
+  const roleContract=text=>({appendSystemContext:text, systemContext:text, turnContext:''});
+  if(teamRole==='Coordinator')return roleContract('Plan the team size only. Choose the smallest useful number of workers, from 1 to 6. Honor an explicitly requested number within that limit. Return only JSON with one integer field, count. Do not perform the task, ask questions, or use tools.');
+  if(teamRole && teamRole!=='Builder')return roleContract(
+    `You are a read-only ${teamRole} in the owner's managed team. Analyze the supplied request and earlier teammates' actual reports. Return concise findings in the owner's language. Do not repeat the earlier answer: identify concrete corrections, unsupported claims and remaining limitations. For research or current factual claims, consult primary sources with web search/fetch and cite what you actually verified. A teammate's prose is not proof. Subjective rankings require explicit criteria, not a purported objective winner. Do not carry out the Builder's implementation again. Do not create files, run commands, publish previews, or operate services: those tools are unavailable to your role. For a purely creative writing task, review the supplied text directly. If a necessary owner preference is missing, use pixel_ods_ask_user and wait. Never invent tool results or claim verification you did not perform.`);
   const recovery = needsLoopRecovery(event?.messages)
     ? ` ${ODS_LOOP_RECOVERY_CONTRACT}`
     : "";
@@ -396,8 +400,44 @@ export function promptContractForAgent(
         : "";
   const project = !workspacePreview && workspaceToolsRequested
     ? ` ${PLAYGROUND_PROJECT_CONTRACT}` : "";
+  const selected = `${githubSource}${githubExtension}${extensionInventory}${extensionCatalog}${operationsContinuation}${operationsInventory}${operationsRequest}${exactDownload}${workspacePreview}${workspaceGuide}${project}${recovery}${verification}${privateUrl}`;
   return {
+    // Combined text, kept for classification tests and diagnostics.
     appendSystemContext:
-      `${extensionLifecycle ? `${extensionLifecycle} ` : ""}${conversationContract}${githubSource}${githubExtension}${extensionInventory}${extensionCatalog}${operationsContinuation}${operationsInventory}${operationsRequest}${exactDownload}${workspacePreview}${workspaceGuide}${project}${recovery}${verification}${privateUrl}`,
+      `${extensionLifecycle ? `${extensionLifecycle} ` : ""}${conversationContract}${selected}`,
+    // What the hook actually sends: the conversation contract depends only on
+    // configuration, while everything above was selected for this message.
+    systemContext: conversationContract,
+    turnContext: `${extensionLifecycle ? `${extensionLifecycle} ` : ""}${selected}`.trim(),
+  };
+}
+
+// The system prompt precedes the whole conversation, so any byte that changes
+// between owner messages makes a local server re-read every earlier turn; on
+// hybrid models (Qwen3.5/3.6, Qwen3-Coder-Next) that is a full re-prefill.
+// Keep system space byte-identical for a session and carry per-message
+// guidance in the current user turn, as OpenClaw's before_prompt_build
+// contract prescribes. OpenClaw applies appendContext to the current owner
+// message only; turn-guidance.mjs stores it with that message so that later
+// requests replay exactly what the model saw.
+export function composePromptBuildResult(
+  contract,
+  { activity = "", execution = "", goal = "", repositoryEvidence = "" } = {}
+) {
+  if (!contract) return undefined;
+  const join = (parts, separator) => parts
+    .map(part => (typeof part === "string" ? part.trim() : ""))
+    .filter(Boolean)
+    .join(separator);
+  const systemContext = typeof contract.systemContext === "string"
+    ? contract.systemContext : contract.appendSystemContext;
+  const turnContext = typeof contract.systemContext === "string"
+    ? contract.turnContext : "";
+  // Labelled so that ODS recognises its own text once it is stored with the
+  // owner message (turn-guidance.mjs) and never mistakes it for owner prose.
+  const appendContext = formatTurnGuidance(join([goal, turnContext, repositoryEvidence], "\n\n"));
+  return {
+    appendSystemContext: join([activity, systemContext, execution], " "),
+    ...(appendContext ? { appendContext } : {}),
   };
 }

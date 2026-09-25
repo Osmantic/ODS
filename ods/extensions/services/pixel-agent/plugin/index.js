@@ -34,7 +34,8 @@ import {
   statusFileFromEnv,
   statusPayload,
 } from "./projection.mjs";
-import { promptContractForAgent } from "./prompt-contract.mjs";
+import { composePromptBuildResult, promptContractForAgent } from "./prompt-contract.mjs";
+import { createTurnGuidancePersistence, withoutPersistedTurnGuidance } from "./turn-guidance.mjs";
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import {
@@ -326,7 +327,12 @@ export default definePluginEntry({
     // OpenClaw does not replay arbitrary plugin tools after an empty model
     // continuation. Give the Pixel agent an explicit, trusted prompt contract
     // so every ODS lookup is followed by a user-visible answer.
-    api.on("before_prompt_build", async (event, context) => {
+    const turnGuidance = createTurnGuidancePersistence({agentId: AGENT_ID});
+    api.on("before_prompt_build", async (rawEvent, context) => {
+      // Earlier owner messages are stored with the guidance the model saw;
+      // classify owner prose only.
+      const ownerMessages = withoutPersistedTurnGuidance(rawEvent?.messages);
+      const event = ownerMessages === rawEvent?.messages ? rawEvent : {...rawEvent, messages: ownerMessages};
       const privateBrowserAccess = privateBrowserAccessForAgent(api.config, AGENT_ID);
       const workspaceRoot = api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
         ?? api.config?.agents?.defaults?.workspace;
@@ -342,8 +348,23 @@ export default definePluginEntry({
       });
       const repositoryEvidence = contract ? await extensionRepositoryContext(event,
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
-      return contract ? { ...contract, ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : undefined;
+      // Only configuration-derived text may enter system space; the goal,
+      // message-selected contracts and repository evidence ride on this turn.
+      const result = composePromptBuildResult(contract, {
+        activity: ACTIVITY_CONTRACT,
+        execution: executionContext(),
+        goal: goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : "",
+        repositoryEvidence,
+      });
+      turnGuidance.remember(context, rawEvent?.prompt, result?.appendContext);
+      return result;
     });
+    // Store the owner message exactly as the model received it, so the next
+    // owner turn replays the same bytes instead of a shorter message.
+    api.on("before_message_write", (event, context) =>
+      turnGuidance.beforeMessageWrite(event, context)
+    );
+    api.on("agent_end", (_event, context) => turnGuidance.forget(context));
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
     );
