@@ -31,8 +31,14 @@ def persist_key(path: str, key: str) -> None:
         try:
             os.chmod(path, 0o600)
         except Exception:
-            # Best-effort only (may fail on some mounts/platforms)
-            pass
+            # Best-effort only (may fail on some mounts/platforms), but the
+            # key is left world-readable if this silently fails — log it so
+            # the gap is visible instead of invisible.
+            logging.warning(
+                "Failed to chmod 0600 %s; the key file may be readable by "
+                "other local users on this host",
+                path,
+            )
     except Exception:
         logging.exception("Failed to persist generated SHIELD_API_KEY")
 
