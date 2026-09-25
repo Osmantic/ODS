@@ -243,6 +243,11 @@ export function createCompletionAssurance() {
         : 'I could not execute the requested action after two recovery attempts. The task is incomplete; I do not have sufficient tool evidence to report a verified result.';
       return {action:'finalize', reason:'Bounded completion recovery exhausted.'};
     },
+    // Read-only attribution check for an answer that cannot be revised (the
+    // tool-limit finalization turn): cited links without a current-run read.
+    unverifiedCitations(text) {
+      return readsRequired ? unreadCitations(String(text ?? ''), new Set([...opened, ...browserSnapshots])) : [];
+    },
     get terminal() { return terminal; },
     get terminalStatus() { return terminalStatus; },
   };
