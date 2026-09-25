@@ -454,6 +454,7 @@ def residency_summary(residency: dict[str, Any] | None) -> dict[str, Any] | None
         "reserveMiB": record.get("reserveMiB"),
         "fitTargetMiB": record.get("fitTargetMiB"),
         "otherUsedMiB": record.get("otherUsedMiB"),
+        "vramOversubscribedMiB": record.get("vramOversubscribedMiB"),
         "requiredGb": record.get("requiredGb"),
         "platform": record.get("platform"),
     }

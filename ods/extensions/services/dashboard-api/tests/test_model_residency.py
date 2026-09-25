@@ -633,12 +633,12 @@ def test_known_non_resident_8gb_profiles_are_not_offered_as_fitting():
         assert config["fits"] is False, model_id
 
 
-def test_other_gpu_users_are_budgeted():
+def test_other_gpu_users_are_budgeted_on_native_linux():
     model = _catalog_by_id()["qwen3.5-9b-q4"]
     profile = next(p for p in model["runtime_profiles"] if p["id"] == "nvidia-8gb-64k-q8-kv")
-    idle = resident_configuration(model, total_vram_mb=LAPTOP_TOTAL_MIB, runtime_profile=profile, gpu_platform="wsl")
+    idle = resident_configuration(model, total_vram_mb=LAPTOP_TOTAL_MIB, runtime_profile=profile, gpu_platform="linux")
     busy = resident_configuration(
-        model, total_vram_mb=LAPTOP_TOTAL_MIB, runtime_profile=profile, gpu_platform="wsl",
+        model, total_vram_mb=LAPTOP_TOTAL_MIB, runtime_profile=profile, gpu_platform="linux",
         other_used_mib=400,
     )
     assert idle["fits"] and idle["overrides"] == {} and idle["idleFits"]
@@ -651,22 +651,83 @@ def test_other_gpu_users_are_budgeted():
     # fits, yet the model itself fits the idle GPU: the smallest allowed
     # configuration is offered for a caller that loads anyway and reports.
     blocked = resident_configuration(
-        model, total_vram_mb=LAPTOP_TOTAL_MIB, runtime_profile=profile, gpu_platform="wsl",
+        model, total_vram_mb=LAPTOP_TOTAL_MIB, runtime_profile=profile, gpu_platform="linux",
         other_used_mib=2500,
     )
     assert blocked["fits"] is False and blocked["idleFits"] is True
     assert blocked["bestEffort"]["steps"] == ["ubatch 128", "KV cache q4_0"]
     assert blocked["bestEffort"]["contextLength"] == 65536
+    assert busy["residency"]["vramOversubscribedMiB"] == 0.0
 
 
-@pytest.mark.parametrize("platform", ["wsl", "linux"])
+@pytest.mark.parametrize(
+    ("held_mib", "oversubscribed_mib"),
+    # The fleet check's holders (405 and 1049 MiB, 2026-09-25) and a larger one.
+    [(0, 0.0), (405, 0.0), (1049, 5.03), (1500, 456.03)],
+)
+def test_wsl_other_gpu_users_do_not_shrink_the_plan(held_mib, oversubscribed_mib):
+    """Under WSL CUDA offers llama.cpp the same budget beside other processes.
+
+    The laptop logged 6860 MiB free beside 0, 405 and 1049 MiB held by
+    another WSL process and loaded the V1f profile 33/33 at full speed. The
+    plan stays the idle one; only physical oversubscription (other processes
+    + llama.cpp's projection + its fit target against the 7802 MiB the driver
+    leaves) is computed, for a report.
+    """
+    model = _catalog_by_id()["qwen3.5-9b-q4"]
+    profile = next(p for p in model["runtime_profiles"] if p["id"] == "nvidia-8gb-64k-q8-kv")
+    config = resident_configuration(
+        model, total_vram_mb=LAPTOP_TOTAL_MIB, runtime_profile=profile, gpu_platform="wsl",
+        other_used_mib=held_mib,
+    )
+    assert config["fits"] is True and config["idleFits"] is True
+    assert config["overrides"] == {} and config["steps"] == []
+    residency = config["residency"]
+    assert residency["otherUsedMiB"] == held_mib
+    assert residency["budgetedOtherUsedMiB"] == 0.0
+    assert residency["availableMiB"] == LAPTOP_TOTAL_MIB - platform_reserve_mib(LAPTOP_TOTAL_MIB, "wsl")
+    assert residency["vramOversubscribedMiB"] == pytest.approx(oversubscribed_mib, abs=0.01)
+    # Native Windows and native Linux keep budgeting the same memory.
+    for native in ("windows", "linux"):
+        busy = resident_configuration(
+            model, total_vram_mb=LAPTOP_TOTAL_MIB, runtime_profile=profile, gpu_platform=native,
+            other_used_mib=held_mib,
+        )
+        assert busy["residency"]["budgetedOtherUsedMiB"] == held_mib
+        if held_mib >= 405:
+            assert "LLAMA_ARG_CACHE_TYPE_K" in (busy["overrides"] or (busy["bestEffort"] or {}).get("overrides", {}))
+
+
+def test_wsl_installer_keeps_the_profile_and_reports_oversubscription():
+    """select-model on the laptop under WSL beside 1500 MiB held elsewhere."""
+    result = subprocess.run(
+        [
+            sys.executable, str(ROOT / "scripts" / "select-model.py"),
+            "--catalog", str(CATALOG), "--backend", "nvidia", "--memory-type", "discrete",
+            "--vram-mb", str(LAPTOP_TOTAL_MIB), "--ram-gb", "31", "--profile", "qwen", "--tier", "2",
+            "--host-arch", "amd64", "--installable-only", "--min-context", "65536",
+            "--platform", "wsl", "--other-used-mib", "1500", "--env",
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    env = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    assert env["MODEL_RUNTIME_PROFILE"] == '"nvidia-8gb-64k-q8-kv"'
+    assert env["LLAMA_ARG_CACHE_TYPE_K"] == '"q8_0"'
+    assert env["LLAMA_ARG_UBATCH"] == '"256"'
+    assert env["LLAMA_ARG_FIT_TARGET"] == '"512"'
+    assert "oversubscribed by about 456 MiB" in env["MODEL_RECOMMENDATION_REASON"]
+
+
+@pytest.mark.parametrize("platform", ["windows", "linux"])
 @pytest.mark.parametrize("desktop_mib", [300, 600, 900])
 def test_8gb_default_absorbs_a_desktop_drawn_on_the_nvidia_gpu(platform, desktop_mib):
     """A desktop on the dGPU (300-900 MiB) never changes the 8 GB default.
 
-    The installer measures memory already in use and plans the settings
-    around it: ubatch 128 and a q4_0 KV cache free up to ~635 MiB at the 64K
-    floor. What still does not fit is loaded anyway and reported after load.
+    Native Windows and native Linux: the installer measures memory already
+    in use and plans the settings around it: ubatch 128 and a q4_0 KV cache
+    free up to ~635 MiB at the 64K floor. What still does not fit is loaded
+    anyway and reported after load. (Under WSL the desktop does not shrink
+    llama.cpp's budget; see test_wsl_other_gpu_users_do_not_shrink_the_plan.)
     """
     selector, ranked = _installer_selection(
         LAPTOP_TOTAL_MIB, platform, 1, other_used_mib=desktop_mib,

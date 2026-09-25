@@ -9470,9 +9470,13 @@ class TestGpuResidencyActivation:
         library.write_text(json.dumps(catalog), encoding="utf-8")
 
     def test_memory_held_by_other_processes_never_refuses_activation(self, monkeypatch):
-        """3 GB held elsewhere: no 409, the smallest allowed settings, reported."""
+        """3 GB held elsewhere: no 409, the smallest allowed settings, reported.
+
+        Native Linux, where memory other processes hold shrinks what CUDA
+        offers llama.cpp (under WSL it does not; see the WSL tests below).
+        """
         self._residency_catalog()
-        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "wsl")
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "linux")
         monkeypatch.setattr(
             _mod,
             "_nvidia_gpu_memory_snapshot",
@@ -9494,10 +9498,11 @@ class TestGpuResidencyActivation:
         # Nothing smaller is allowed, so there is no pointless relaunch.
         assert [launch["gguf"] for launch in runtime.launches] == ["new-model.gguf"]
 
-    def test_preflight_refuses_a_model_too_large_for_the_idle_gpu(self, monkeypatch):
+    @pytest.mark.parametrize("gpu_platform", ["linux", "wsl"])
+    def test_preflight_refuses_a_model_too_large_for_the_idle_gpu(self, monkeypatch, gpu_platform):
         """A 409 only when the model cannot fit even with nothing else on the GPU."""
         self._residency_catalog(gpu_weights_mib=15272.77, kv_bytes_per_token_f16=65536)
-        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "wsl")
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: gpu_platform)
         monkeypatch.setattr(
             _mod,
             "_nvidia_gpu_memory_snapshot",
@@ -9510,13 +9515,18 @@ class TestGpuResidencyActivation:
         assert payload["code"] == "model_not_gpu_resident"
         assert "even with nothing else using it" in payload["error"]
         assert payload["gpuResidency"]["otherUsedMiB"] == 900.0
-        assert payload["gpuResidency"]["idleBudgetMiB"] > payload["gpuResidency"]["budgetMiB"]
+        if gpu_platform == "wsl":
+            # Other WSL processes do not shrink llama.cpp's budget.
+            assert payload["gpuResidency"]["idleBudgetMiB"] == payload["gpuResidency"]["budgetMiB"]
+        else:
+            assert payload["gpuResidency"]["idleBudgetMiB"] == payload["gpuResidency"]["budgetMiB"] + 900.0
         assert self.restarts == []
         assert self.env_path.read_text(encoding="utf-8") == self.env_text
 
     def test_preflight_plans_a_resident_configuration_around_other_gpu_users(self, monkeypatch):
+        """Native Linux: 400 MiB held elsewhere shrinks the plan to q4_0 KV."""
         self._residency_catalog()
-        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "wsl")
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "linux")
         monkeypatch.setattr(
             _mod,
             "_nvidia_gpu_memory_snapshot",
@@ -9548,6 +9558,113 @@ class TestGpuResidencyActivation:
         assert receipt["residencyPreflight"]["otherUsedMiB"] == 400.0
         assert "KV cache q4_0" in receipt["residencyPreflight"]["steps"]
         assert len(self.restarts) == 1
+
+    def _wsl_laptop_beside(self, monkeypatch, held_mib):
+        """The RTX 5070 Laptop under WSL, V1f profile, another process holding memory.
+
+        The load log is the one captured on the laptop (llama.cpp b9014,
+        ubatch 256, fit target 512): 6246 MiB projected against 6860 MiB free.
+        The fleet check (2026-09-25) measured that same 6860 MiB free beside
+        405 and 1049 MiB held by another WSL process, 33/33 at full speed.
+        """
+        library = self.install_dir / "config" / "model-library.json"
+        catalog = json.loads(library.read_text(encoding="utf-8"))
+        catalog["models"][0].update({
+            "name": "Target 9B",
+            "context_length": 65536,
+            "size_mb": 5760,
+            "gpu_residency": dict(_QWEN35_9B_RESIDENCY["gpu_residency"]),
+            "runtime_profiles": [{
+                "id": "nvidia-8gb-64k-q8-kv",
+                "backend": "nvidia",
+                "context_length": 65536,
+                "env": {
+                    "LLAMA_PARALLEL": "1",
+                    "LLAMA_ARG_FLASH_ATTN": "on",
+                    "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+                    "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+                    "LLAMA_ARG_UBATCH": "256",
+                    "LLAMA_ARG_FIT_TARGET": "512",
+                },
+            }],
+        })
+        library.write_text(json.dumps(catalog), encoding="utf-8")
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "wsl")
+        monkeypatch.setattr(_mod, "_nvidia_vram_gb", lambda: 7.96)
+        monkeypatch.setattr(
+            _mod, "_nvidia_gpu_memory_snapshot",
+            lambda: {"gpus": 1, "totalMiB": 8151.0, "usedMiB": float(held_mib)},
+        )
+        captured = (_CAPTURED_LAPTOP_LOGS / "laptop-rtx5070-wsl-b9014-v1f-ub256-fitt512.txt").read_text(
+            encoding="utf-8",
+        ).replace("/models/Qwen3.5-9B-Q4_K_M.gguf", "/models/new-model.gguf")
+        monkeypatch.setattr(_mod, "_read_llama_runtime_log", lambda env, **_k: (captured, "started", True))
+
+    def test_wsl_program_holding_memory_does_not_shrink_the_settings(self, monkeypatch):
+        """1049 MiB held by another WSL process: the V1f settings stay.
+
+        The previous preflight subtracted the 1049 MiB and saved a q4_0 KV
+        cache and ubatch 128 to .env although llama.cpp saw the same budget.
+        """
+        self._wsl_laptop_beside(monkeypatch, 1049)
+
+        code, payload = self._activate(requested_context_length=65536)
+
+        assert code == 200, payload
+        env = _mod.load_env(self.env_path)
+        assert (env["LLAMA_ARG_UBATCH"], env["LLAMA_ARG_FIT_TARGET"]) == ("256", "512")
+        assert (env["LLAMA_ARG_CACHE_TYPE_K"], env["LLAMA_ARG_CACHE_TYPE_V"]) == ("q8_0", "q8_0")
+        assert self.restarts == [("new-model.gguf", "256", "512")]
+        placement = payload["placement"]
+        assert placement["status"] == "fully_resident"
+        assert (placement["projectedDeviceMiB"], placement["freeDeviceMiB"]) == (6246, 6860)
+        assert "acceptedPartial" not in placement
+        assert payload["residencyAdjustment"] is None
+        receipt = json.loads(
+            (self.install_dir / "data" / "model-activation-receipt.json").read_text(encoding="utf-8")
+        )
+        preflight = receipt["residencyPreflight"]
+        assert preflight["otherUsedMiB"] == 1049.0
+        assert preflight["steps"] == [] and preflight["overrides"] == {}
+        assert preflight["platform"] == "wsl"
+        # 1049 + 6246 + 512 against the 7802 MiB the driver leaves: 5 MiB
+        # over by the estimate, inside its error, so nothing is reported.
+        assert preflight["vramOversubscribedMiB"] == pytest.approx(5.03, abs=0.01)
+        assert "vramOversubscription" not in placement
+
+    def test_wsl_physical_oversubscription_is_reported_not_planned_around(self, monkeypatch):
+        """1500 MiB held: the settings stay, and the placement says the GPU's
+        memory is oversubscribed (WDDM pages the excess to system memory)."""
+        self._wsl_laptop_beside(monkeypatch, 1500)
+
+        code, payload = self._activate(requested_context_length=65536)
+
+        assert code == 200, payload
+        env = _mod.load_env(self.env_path)
+        assert (env["LLAMA_ARG_UBATCH"], env["LLAMA_ARG_CACHE_TYPE_K"]) == ("256", "q8_0")
+        report = payload["placement"]["vramOversubscription"]
+        assert report["otherUsedMiB"] == 1500.0
+        assert report["oversubscribedMiB"] == pytest.approx(456.03, abs=0.01)
+        assert "paging to system memory" in report["note"]
+        record = json.loads((self.install_dir / "data" / "model-placement.json").read_text(encoding="utf-8"))
+        assert record["placement"]["vramOversubscription"]["oversubscribedMiB"] == report["oversubscribedMiB"]
+
+    def test_native_linux_still_plans_around_the_same_holder(self, monkeypatch):
+        """The WSL rule is WSL-only: native Linux budgets the 1049 MiB."""
+        self._wsl_laptop_beside(monkeypatch, 1049)
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "linux")
+
+        code, payload = self._activate(requested_context_length=65536)
+
+        assert code == 200, payload
+        env = _mod.load_env(self.env_path)
+        assert env["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
+        receipt = json.loads(
+            (self.install_dir / "data" / "model-activation-receipt.json").read_text(encoding="utf-8")
+        )
+        assert "KV cache q4_0" in receipt["residencyPreflight"]["steps"]
+        assert receipt["residencyPreflight"]["bestEffort"] is True
+        assert receipt["residencyPreflight"]["vramOversubscribedMiB"] == 0.0
 
 
 def test_running_llama_footprint_is_not_counted_as_another_gpu_user(monkeypatch):
@@ -9800,6 +9917,12 @@ def test_appended_native_log_yields_only_the_newest_run():
 # ---------------------------------------------------------------------------
 
 
+# llama.cpp b9014 load logs captured on the RTX 5070 Laptop under WSL.
+_CAPTURED_LAPTOP_LOGS = Path(__file__).resolve().parent / "fixtures" / "llama-placement"
+# A native-Linux 8 GB card (8151 MiB): what CUDA offers a new llama-server
+# when idle, by model_memory.platform_reserve_mib (1199 MiB).
+_NATIVE_8GB_IDLE_FREE_MIB = 6952
+
 _QWEN35_9B_RESIDENCY = {
     "id": "qwen3.5-9b-q4",
     "size_mb": 5760,
@@ -10004,9 +10127,12 @@ class TestGpuResidencyRelaunch:
         assert _mod.load_env(self.env_path)["CTX_SIZE"] == "65536"
 
     def test_desktop_on_the_gpu_is_reported_not_refused_or_rolled_back(self, monkeypatch):
-        """A desktop drawn on the 8 GB GPU holds 900 MiB when the model loads."""
+        """A desktop drawn on the 8 GB GPU holds 900 MiB when the model loads.
+
+        Native Linux: the desktop's memory shrinks what CUDA offers llama.cpp.
+        """
         self._catalog(context_length=65536)
-        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "wsl")
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "linux")
         monkeypatch.setattr(
             _mod, "_nvidia_gpu_memory_snapshot",
             lambda: {"gpus": 1, "totalMiB": 8151.0, "usedMiB": 900.0},
@@ -10270,7 +10396,8 @@ class TestGpuResidencyWatcher:
         assert self._record()["placement"]["status"] == "partial"
 
     def test_desktop_on_the_gpu_gets_the_smallest_settings_and_a_report(self, monkeypatch):
-        """Boot of the 8 GB default beside a desktop holding 900 MiB."""
+        """Boot of the 8 GB default beside a desktop holding 900 MiB (native Linux)."""
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "linux")
         self.env_path.write_text(
             self.env_path.read_text(encoding="utf-8")
             + "LLAMA_ARG_UBATCH=256\nLLAMA_ARG_FIT_TARGET=512\n",
@@ -10307,15 +10434,18 @@ class TestGpuResidencyWatcher:
     def _boot_v1f_beside(self, monkeypatch, held_mib, *, measured_now=None):
         """Boot the 8 GB default (V1f) while another program holds memory.
 
-        The laptop under WSL: 8151 MiB total, 6860 MiB CUDA free when idle
-        (the platform estimate says 6802).
+        A native-Linux 8 GB card (8151 MiB total), where memory other
+        processes hold shrinks what CUDA offers llama.cpp: 6952 MiB free when
+        idle (the platform estimate), less what the program holds. Under WSL
+        CUDA offers the same budget whatever other processes hold (see
+        test_wsl_spill_beside_another_program_is_saved).
         """
         self.env_path.write_text(
             self.env_path.read_text(encoding="utf-8")
             + "LLAMA_ARG_UBATCH=256\nLLAMA_ARG_FIT_TARGET=512\n",
             encoding="utf-8",
         )
-        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "wsl")
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "linux")
         monkeypatch.setattr(
             _mod, "_nvidia_gpu_memory_snapshot",
             lambda: {"gpus": 1, "totalMiB": 8151.0, "usedMiB": 0.0},
@@ -10324,7 +10454,7 @@ class TestGpuResidencyWatcher:
             _mod, "_measured_other_gpu_usage",
             lambda _env: held_mib if measured_now is None else measured_now,
         )
-        self.runtime.cuda_free_mib = 6860 - held_mib
+        self.runtime.cuda_free_mib = _NATIVE_8GB_IDLE_FREE_MIB - held_mib
         self.start(_mod.load_env(self.env_path))
         self.runtime.running["startedAt"] = _iso_seconds_ago(200)
         self.runtime.launches.clear()
@@ -10369,7 +10499,7 @@ class TestGpuResidencyWatcher:
         temporary_container = self.container_id
 
         # The program exits; a reboot restarts the same container (q4_0).
-        self.runtime.cuda_free_mib = 6860
+        self.runtime.cuda_free_mib = _NATIVE_8GB_IDLE_FREE_MIB
         monkeypatch.setattr(_mod, "_measured_other_gpu_usage", lambda _env: 0.0)
         self._docker_restart()
         assert self.container_id == temporary_container
@@ -10412,7 +10542,7 @@ class TestGpuResidencyWatcher:
         _mod._residency_watch_once()
 
         # ods restart / activation / upgrade: compose recreates from .env.
-        self.runtime.cuda_free_mib = 6860
+        self.runtime.cuda_free_mib = _NATIVE_8GB_IDLE_FREE_MIB
         self.start(_mod.load_env(self.env_path))
         self.runtime.running["startedAt"] = _iso_seconds_ago(200)
 
@@ -10429,12 +10559,13 @@ class TestGpuResidencyWatcher:
         """The program held memory at load and exited before the watcher ran.
 
         nvidia-smi shows nothing now, but llama.cpp logged less free memory
-        than the idle estimate, so the fix stays temporary.
+        than the idle estimate, so nothing is saved: the relaunch uses the
+        saved settings, which fit now that the memory is free.
         """
         saved = self._boot_v1f_beside(monkeypatch, 400.0, measured_now=0.0)
 
         def relaunch_on_the_idle_gpu(env, process_env_overrides=None):
-            self.runtime.cuda_free_mib = 6860
+            self.runtime.cuda_free_mib = _NATIVE_8GB_IDLE_FREE_MIB
             self.start(env, process_env_overrides)
 
         monkeypatch.setattr(_mod, "_compose_restart_llama_server", relaunch_on_the_idle_gpu)
@@ -10444,9 +10575,9 @@ class TestGpuResidencyWatcher:
         assert self.env_path.read_text(encoding="utf-8") == saved
         record = self._record()
         assert record["refit"]["cause"] == "other_processes"
-        assert record["refit"]["otherAtLoadMiB"] == 342.0
+        assert record["refit"]["otherAtLoadMiB"] == 400.0
         assert record["refit"]["persistentChanges"] == {}
-        assert record["refit"]["temporaryChanges"] == {"LLAMA_ARG_UBATCH": "128"}
+        assert record["refit"]["temporaryChanges"] == {}
         assert record["placement"]["status"] == "fully_resident"
 
     def test_idle_gpu_spill_is_still_saved_to_env(self, monkeypatch):
@@ -10466,6 +10597,73 @@ class TestGpuResidencyWatcher:
         assert record["refit"]["temporaryChanges"] == {}
         assert record["placement"]["residencyAdjustment"]["temporary"] is False
         assert self.compose_overrides == {}
+
+    def test_wsl_spill_beside_another_program_is_saved(self, monkeypatch):
+        """Under WSL a partial load is the configuration's, whoever else holds memory.
+
+        Captured laptop logs (llama.cpp b9014, RTX 5070 Laptop under WSL):
+        the shipped ubatch 512 / 1024 MiB settings load 29/33 against 6860
+        MiB free, and the fleet check measured the same 6860 MiB beside 1049
+        MiB held by another WSL process. The fix (ubatch 256, fit target 512)
+        is therefore saved to .env, not applied to this container only.
+        """
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "wsl")
+        monkeypatch.setattr(
+            _mod, "_nvidia_gpu_memory_snapshot",
+            lambda: {"gpus": 1, "totalMiB": 8151.0, "usedMiB": 7493.0},
+        )
+        monkeypatch.setattr(_mod, "_measured_other_gpu_usage", lambda _env: 1049.0)
+        logs = {
+            512: (_CAPTURED_LAPTOP_LOGS / "laptop-rtx5070-wsl-b9014-v0-ub512-fitt1024.txt").read_text(encoding="utf-8"),
+            256: (_CAPTURED_LAPTOP_LOGS / "laptop-rtx5070-wsl-b9014-v1f-ub256-fitt512.txt").read_text(encoding="utf-8"),
+        }
+        monkeypatch.setattr(
+            _mod, "_read_llama_runtime_log",
+            lambda _env, **_k: (logs[self.runtime.running["ubatch"]], self.runtime.running["startedAt"], True),
+        )
+
+        placement = _mod._residency_watch_once()
+
+        assert placement["status"] == "partial"
+        assert (placement["layersOnGpu"], placement["layersTotal"]) == (29, 33)
+        env = _mod.load_env(self.env_path)
+        assert (env["LLAMA_ARG_UBATCH"], env["LLAMA_ARG_FIT_TARGET"]) == ("256", "512")
+        assert env["LLAMA_ARG_CACHE_TYPE_K"] == "q8_0"
+        assert self.compose_overrides == {}
+        record = self._record()
+        assert record["refit"]["cause"] == "configuration"
+        assert record["refit"]["otherUsedMiB"] == 1049.0
+        assert record["refit"]["persistentChanges"] == {"LLAMA_ARG_UBATCH": "256", "LLAMA_ARG_FIT_TARGET": "512"}
+        assert record["refit"]["temporaryChanges"] == {}
+        assert record["placement"]["status"] == "fully_resident"
+        assert record["placement"]["projectedDeviceMiB"] == 6246
+        assert "acceptedPartial" not in record["placement"]
+        assert len(self.runtime.launches) == 1
+
+    def test_wsl_resident_load_beside_another_program_is_left_alone(self, monkeypatch):
+        """The V1f load stays 33/33 beside a 1049 MiB holder: no relaunch."""
+        self.env_path.write_text(
+            self.env_path.read_text(encoding="utf-8")
+            + "LLAMA_ARG_UBATCH=256\nLLAMA_ARG_FIT_TARGET=512\n",
+            encoding="utf-8",
+        )
+        self.runtime.start(_mod.load_env(self.env_path))
+        self.runtime.running["startedAt"] = _iso_seconds_ago(200)
+        self.runtime.launches.clear()
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "wsl")
+        monkeypatch.setattr(_mod, "_measured_other_gpu_usage", lambda _env: 1049.0)
+        captured = (_CAPTURED_LAPTOP_LOGS / "laptop-rtx5070-wsl-b9014-v1f-ub256-fitt512.txt").read_text(encoding="utf-8")
+        monkeypatch.setattr(
+            _mod, "_read_llama_runtime_log",
+            lambda _env, **_k: (captured, self.runtime.running["startedAt"], True),
+        )
+        before = self.env_path.read_text(encoding="utf-8")
+
+        placement = _mod._residency_watch_once()
+
+        assert placement["status"] == "fully_resident"
+        assert self.runtime.launches == []
+        assert self.env_path.read_text(encoding="utf-8") == before
 
     def test_failed_relaunch_restores_the_previous_settings_once(self, monkeypatch):
         before = self.env_path.read_text(encoding="utf-8")

@@ -710,6 +710,11 @@ RESIDENCY_MANAGED_VALUES = {
 }
 # Allowance between this estimate and llama.cpp's own projection.
 RESIDENCY_PLAN_GUARD_MIB = 64
+# Under WSL, physical oversubscription (gpu_residency_fit's
+# vramOversubscribedMiB) is reported only above this: the estimate counts the
+# whole fit target as llama-server's own growth, while the RTX 5070 Laptop
+# measured 441-461 MiB past the projection at 60-64K tokens.
+VRAM_OVERSUBSCRIPTION_REPORT_MIB = RESIDENCY_PLAN_GUARD_MIB
 STANDARD_CONTEXT_LENGTHS = CONTEXT_STEPS
 # Agent/Hermes floor. A fallback never trades context below it, and never
 # shrinks a context that was already below it.
@@ -816,6 +821,31 @@ def platform_reserve_mib(total_mib_per_gpu: float, gpu_platform: str | None = No
     driver_reserve = 322.0 + 0.00325 * total
     process_and_platform = 850.0 if kind == "linux" else 1000.0
     return int(math.ceil(driver_reserve + process_and_platform))
+
+
+def driver_reserve_mib(total_mib_per_gpu: float) -> int:
+    """The driver's own share of one GPU (``nvidia-smi memory.reserved``).
+
+    The first term of :func:`platform_reserve_mib`: 349 MiB on the RTX 5070
+    Laptop (8151 MiB), the only memory no process can use at all.
+    """
+    total = max(_positive_number(total_mib_per_gpu), 0.0)
+    return int(math.ceil(322.0 + 0.00325 * total))
+
+
+def other_usage_limits_cuda(gpu_platform: str | None = None) -> bool:
+    """Whether memory other processes hold shrinks what CUDA offers llama.cpp.
+
+    Native Linux and native Windows: yes, a new llama-server sees their
+    memory as used. Under WSL, no: WDDM gives a new CUDA process the same
+    budget whatever other processes hold. On the RTX 5070 Laptop llama.cpp
+    b9014 logged 6860 MiB free beside 0, 405 and 1049 MiB held by another
+    WSL process, and loaded 33/33 at the same decode speed (fleet check
+    2026-09-25). There, other usage only matters when the GPU's physical
+    memory is oversubscribed (WDDM then pages to system memory), which is
+    reported and never planned around.
+    """
+    return (gpu_platform or detect_gpu_platform()).lower() != "wsl"
 
 
 def kv_cache_type_bytes(cache_type: object) -> float:
@@ -999,9 +1029,12 @@ def gpu_residency_fit(
 
     Fits when llama.cpp's projection is at most what the device leaves free
     after the platform reserve, memory already held by other processes, and
-    the fit target llama.cpp keeps free. ``requiredGb`` is the total device
-    memory this configuration needs on this platform, directly comparable
-    with the GPU's reported total.
+    the fit target llama.cpp keeps free. Under WSL memory held by other
+    processes does not count against the fit (see
+    :func:`other_usage_limits_cuda`); ``vramOversubscribedMiB`` then says by
+    how much the GPU's physical memory would be oversubscribed (0 when it is
+    not). ``requiredGb`` is the total device memory this configuration needs
+    on this platform, directly comparable with the GPU's reported total.
     """
     settings = runtime_memory_settings(runtime_profile, env, overrides)
     if context_length is None:
@@ -1046,9 +1079,21 @@ def gpu_residency_fit(
     reserve_mib = platform_reserve_mib(total / gpu_count, kind) * gpu_count
     fit_target_mib = settings["fitTargetMiB"] * gpu_count
     other_mib = max(_positive_number(other_used_mib), 0.0)
-    available_mib = total - reserve_mib - other_mib
+    # Under WSL other processes do not shrink llama.cpp's CUDA budget: fit
+    # against the budget alone, and only report physical oversubscription.
+    budgeted_other_mib = other_mib if other_usage_limits_cuda(kind) else 0.0
+    available_mib = total - reserve_mib - budgeted_other_mib
     budget_mib = available_mib - fit_target_mib
-    required_total_mib = projection["totalMiB"] + reserve_mib + fit_target_mib + other_mib
+    required_total_mib = projection["totalMiB"] + reserve_mib + fit_target_mib + budgeted_other_mib
+    oversubscribed_mib = 0.0
+    if other_mib and not budgeted_other_mib:
+        # Everything that would hold the GPU's memory: the other processes,
+        # llama.cpp's projection and the fit target it keeps free for the
+        # runtime's own growth, against what the driver leaves.
+        physical_mib = total - driver_reserve_mib(total / gpu_count) * gpu_count
+        oversubscribed_mib = max(
+            other_mib + projection["totalMiB"] + fit_target_mib - physical_mib, 0.0,
+        )
     # Catalog entries without exact metadata keep their declared VRAM class
     # ("needs an 8GB GPU") as an additional floor on the GPU's total memory.
     # A hardware-matched runtime profile is the contract for this GPU class
@@ -1067,6 +1112,8 @@ def gpu_residency_fit(
         "totalMiB": round(total, 2),
         "reserveMiB": reserve_mib,
         "otherUsedMiB": round(other_mib, 2),
+        "budgetedOtherUsedMiB": round(budgeted_other_mib, 2),
+        "vramOversubscribedMiB": round(oversubscribed_mib, 2),
         "fitTargetMiB": fit_target_mib,
         "availableMiB": round(available_mib, 2),
         "budgetMiB": round(budget_mib, 2),

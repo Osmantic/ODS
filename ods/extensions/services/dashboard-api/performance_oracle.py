@@ -1055,6 +1055,9 @@ def _residency_public(residency: dict[str, Any] | None) -> dict[str, Any] | None
         "cacheTypeK": projection.get("cacheTypeK"),
         "cacheTypeV": projection.get("cacheTypeV"),
         "adjustments": list(residency.get("steps") or []),
+        # Under WSL other processes do not shrink llama.cpp's budget; this
+        # says when they and the model oversubscribe the GPU's memory.
+        "vramOversubscribedMiB": record.get("vramOversubscribedMiB"),
     }
 
 

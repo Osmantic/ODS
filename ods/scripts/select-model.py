@@ -17,6 +17,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "extensions/services/dashboard-api"))
 from model_memory import (  # noqa: E402
+    VRAM_OVERSUBSCRIPTION_REPORT_MIB,
     context_fitting_model as context_fitting_model,
     detect_gpu_platform,
     estimated_context_kv_gb as estimated_context_kv_gb,
@@ -359,6 +360,25 @@ def residency_note(model: dict[str, Any]) -> str:
     residency = model.get("_gpu_residency")
     if not isinstance(residency, dict):
         return ""
+    return _residency_placement_note(model, residency) + _oversubscription_note(residency)
+
+
+def _oversubscription_note(residency: dict[str, Any]) -> str:
+    """Under WSL other processes do not shrink llama.cpp's budget; say when
+    they and the model together oversubscribe the GPU's physical memory."""
+    over = float(residency.get("vramOversubscribedMiB") or 0.0)
+    if over <= VRAM_OVERSUBSCRIPTION_REPORT_MIB:
+        return ""
+    return (
+        f" Other processes hold {float(residency.get('otherUsedMiB') or 0):.0f} MiB of GPU "
+        f"memory right now; with this model loaded the GPU's memory is oversubscribed by "
+        f"about {over:.0f} MiB, which Windows covers by paging to system memory (slower). "
+        f"Under WSL llama.cpp's own budget does not change with other processes, so the "
+        f"settings are not reduced for them; free that memory for full speed."
+    )
+
+
+def _residency_placement_note(model: dict[str, Any], residency: dict[str, Any]) -> str:
     projection = residency.get("projection") or {}
     runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else None
     context_k = int(effective_context_length(model, runtime_profile) / 1024)
@@ -693,6 +713,7 @@ def main() -> int:
         "gpu_residency_idle_fits": selected.get("_residency_idle_fits"),
         "gpu_residency_adjustments": selected.get("_residency_steps") or [],
         "gpu_residency_overrides": selected.get("_residency_overrides") or {},
+        "gpu_residency_vram_oversubscribed_mib": (selected.get("_gpu_residency") or {}).get("vramOversubscribedMiB"),
         "selected": selected_public,
         "reason": reason,
         "alternatives": [_alternative_payload(model) for model in alternatives],

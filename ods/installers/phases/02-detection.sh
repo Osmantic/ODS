@@ -562,7 +562,9 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
             fi
             # GPU memory other processes already hold (a desktop drawn on the
             # NVIDIA GPU, another GPU app). The selector keeps the model it
-            # would pick on an idle GPU and plans its settings around this.
+            # would pick on an idle GPU and plans its settings around this on
+            # native Linux; under WSL, where it does not shrink llama.cpp's
+            # CUDA budget, it only reports a physical oversubscription.
             # A running ODS llama-server (installer rerun) is not "other", and
             # its share cannot be told apart here, so nothing is measured then.
             # Phase 03's Hermes re-check (installers/lib/model-selector.sh)

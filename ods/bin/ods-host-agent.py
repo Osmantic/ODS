@@ -12852,9 +12852,11 @@ class AgentHandler(BaseHTTPRequestHandler):
                                 "gpuResidency": {
                                     "requiredMiB": residency_preflight["residency"]["projection"]["totalMiB"],
                                     "budgetMiB": residency_preflight["residency"]["budgetMiB"],
+                                    # Under WSL other processes are not budgeted,
+                                    # so the budget already is the idle one.
                                     "idleBudgetMiB": round(
                                         residency_preflight["residency"]["budgetMiB"]
-                                        + residency_preflight["otherUsedMiB"], 2,
+                                        + float(residency_preflight["residency"].get("budgetedOtherUsedMiB") or 0.0), 2,
                                     ),
                                     "otherUsedMiB": residency_preflight["otherUsedMiB"],
                                     "fitTargetMiB": residency_preflight["residency"]["fitTargetMiB"],
@@ -13197,7 +13199,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     current_env,
                     context_length=int(context_length),
                     allow_context_reduction=allow_context_reduction,
-                    other_used_mib=other_used,
+                    other_used_mib=_residency_budgeted_other_mib(other_used),
                     pinned=pinned_controls,
                 )
                 plan = decision["plan"]
@@ -13281,7 +13283,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                             retry_env,
                             context_length=int(context_length),
                             allow_context_reduction=allow_context_reduction,
-                            other_used_mib=other_used,
+                            other_used_mib=_residency_budgeted_other_mib(other_used),
                             pinned=pinned_controls,
                         )["cause"]
                     policy = accepted_policy(cause)
@@ -13458,6 +13460,14 @@ class AgentHandler(BaseHTTPRequestHandler):
 
             if healthy:
                 residency_placement = enforce_gpu_residency()
+                oversubscription = _vram_oversubscription(residency_preflight)
+                if oversubscription is not None and isinstance(residency_placement, dict):
+                    logger.warning(
+                        "Model %s: %s", model_id, oversubscription["note"],
+                    )
+                    residency_placement = {
+                        **residency_placement, "vramOversubscription": oversubscription,
+                    }
                 if lemonade_runtime:
                     _upsert_env_value(env_path, "LEMONADE_MODEL", lemonade_model_id)
                     env["LEMONADE_MODEL"] = lemonade_model_id
@@ -13749,10 +13759,19 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "residencyAdjustment": residency_adjustment,
                         "residencyPreflight": (
                             {
-                                "steps": list(residency_preflight.get("steps") or []),
-                                "overrides": dict(residency_preflight.get("overrides") or {}),
+                                # What the launch used: the resident plan, or
+                                # the best-effort one when other processes
+                                # held the memory it needed.
+                                "steps": list(
+                                    (residency_preflight.get("planned") or residency_preflight).get("steps") or []
+                                ),
+                                "overrides": dict(
+                                    (residency_preflight.get("planned") or residency_preflight).get("overrides") or {}
+                                ),
+                                "bestEffort": bool((residency_preflight.get("planned") or {}).get("bestEffort")),
                                 "otherUsedMiB": residency_preflight.get("otherUsedMiB"),
                                 "headroomMiB": residency_preflight["residency"].get("headroomMiB"),
+                                "vramOversubscribedMiB": residency_preflight["residency"].get("vramOversubscribedMiB"),
                                 "platform": residency_preflight.get("platform"),
                             }
                             if residency_preflight
@@ -18284,6 +18303,42 @@ def _measured_other_gpu_usage(env: dict) -> float | None:
     return _other_gpu_usage_mib(env, snapshot, _model_memory.detect_gpu_platform())
 
 
+def _residency_budgeted_other_mib(other_mib: float | None) -> float:
+    """Memory other processes hold that counts against llama.cpp's budget.
+
+    Zero under WSL (model_memory.other_usage_limits_cuda): CUDA offers a new
+    llama-server the same budget whatever other WSL processes hold, so a
+    partial load there is never theirs to cause and nothing is downgraded
+    for them. The measured value is still reported.
+    """
+    if other_mib is None or not _model_memory.other_usage_limits_cuda():
+        return 0.0
+    return max(float(other_mib), 0.0)
+
+
+def _vram_oversubscription(preflight: dict | None) -> dict | None:
+    """The preflight's physical oversubscription under WSL, when worth a report."""
+    if not isinstance(preflight, dict):
+        return None
+    residency = preflight.get("residency") if isinstance(preflight.get("residency"), dict) else {}
+    over = float(residency.get("vramOversubscribedMiB") or 0.0)
+    if over <= _model_memory.VRAM_OVERSUBSCRIPTION_REPORT_MIB:
+        return None
+    other = float(preflight.get("otherUsedMiB") or 0.0)
+    return {
+        "otherUsedMiB": round(other, 2),
+        "oversubscribedMiB": round(over, 2),
+        "platform": preflight.get("platform"),
+        "note": (
+            f"Other processes hold about {other:.0f} MiB of GPU memory; with this model "
+            f"loaded the GPU's memory is oversubscribed by about {over:.0f} MiB, which "
+            f"Windows covers by paging to system memory (slower). Under WSL llama.cpp's "
+            f"own budget does not change with other processes, so ODS keeps the model's "
+            f"settings; free that memory for full speed."
+        ),
+    }
+
+
 def _residency_correction(
     placement: dict,
     env: dict,
@@ -18466,7 +18521,9 @@ def _watcher_residency_plan(
 
     The watcher writes a settings change to .env only when the GPU was idle
     at load: nothing else measured on it now, and llama.cpp logged at least
-    the idle estimate free (``idle_free_mib``, which errs low). Otherwise the
+    the idle estimate free (``idle_free_mib``, which errs low). Under WSL the
+    caller passes neither (other processes do not change llama.cpp's budget
+    there), so a spill is always the configuration's and is saved. Otherwise the
     shortfall may be memory other processes held at boot (a test container,
     an app), so every change is temporary: it applies to the relaunched
     container only, is reported, and is undone by any later start that has
@@ -18629,12 +18686,17 @@ def _refit_gpu_residency(placement: dict, marker: str) -> dict | None:
     run_env = {**env, **carried.get("changes", {})}
     other = _measured_other_gpu_usage(env)
     idle_free = _idle_cuda_free_estimate_mib(int(placement.get("deviceCount") or 1))
+    if not _model_memory.other_usage_limits_cuda():
+        # Under WSL a load's CUDA-free is the same beside other processes, so
+        # a spill is the configuration's: plan from llama.cpp's logged numbers
+        # alone and save the fix, as on an idle GPU.
+        idle_free = None
     pinned = _operator_residency_controls(env)
     decision = _watcher_residency_plan(
         placement,
         run_env,
         context_length=context,
-        other_now_mib=other or 0.0,
+        other_now_mib=_residency_budgeted_other_mib(other),
         idle_free_mib=idle_free,
         pinned=pinned,
     )
@@ -19049,8 +19111,11 @@ def _gpu_residency_preflight(
 
     Uses measured free memory (nvidia-smi minus the llama-server being
     replaced) so ComfyUI, Whisper, a desktop, or another process holding VRAM
-    is budgeted. Returns None when it cannot measure; activation then relies
-    on post-load verification alone.
+    is budgeted on native Linux and Windows. Under WSL that memory does not
+    change what CUDA offers llama.cpp, so the plan is the idle one and only a
+    physical oversubscription is reported (``residency.vramOversubscribedMiB``).
+    Returns None when it cannot measure; activation then relies on post-load
+    verification alone.
 
     ``planned`` is the configuration to launch: the resident one, or, when
     other processes hold the memory it needs, the most memory-saving allowed
@@ -19110,7 +19175,7 @@ def _gpu_residency_refusal(model_name: str, preflight: dict) -> str:
         f"{model_name} cannot stay fully on this GPU at {projection['contextLength']} "
         f"context, even with nothing else using it: llama.cpp needs about "
         f"{projection['totalMiB'] / 1024:.1f} GB of GPU memory, but "
-        f"{max(residency['budgetMiB'] + residency['otherUsedMiB'], 0) / 1024:.1f} GB "
+        f"{max(residency['budgetMiB'] + float(residency.get('budgetedOtherUsedMiB') or 0.0), 0) / 1024:.1f} GB "
         f"is available after the {residency['reserveMiB']} MiB driver/runtime reserve "
         f"and llama.cpp's {residency['fitTargetMiB']} MiB safety margin. Running it "
         f"would move layers to the CPU and make it several times slower; choose "
