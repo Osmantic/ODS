@@ -151,6 +151,9 @@ test: ## Run unit and contract tests
 	@echo "=== ComfyUI user directory is persisted ==="
 	@bash tests/test-comfyui-user-dir-persisted.sh
 	@echo ""
+	@echo "=== Service port env documentation ==="
+	@python3 tests/contracts/test-port-env-documentation.py
+	@echo ""
 	@echo "=== macOS ods config show secret-mask ==="
 	@bash tests/test-macos-config-show-secret-mask.sh
 	@bash tests/test-macos-config-without-docker.sh
