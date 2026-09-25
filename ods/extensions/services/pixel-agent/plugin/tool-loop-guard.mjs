@@ -35,6 +35,7 @@ import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehavio
   boundInspectionPageErrors, pageErrorRepairInstruction, visibilityInspectionMatches, visibilityInspectionInstruction } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, completedPreviewInspection, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
+import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextDeliveryNote } from './requested-literals.mjs';
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -9266,6 +9267,8 @@ export function createToolLoopGuard({
           state.workspacePreviewRequired && (requestsVisibilityInteraction(ownerLaneText(ownerIntent)) ||
             (inheritedVisibility?.sessionId === sessionId && inheritedVisibility.sessionKey === state.currentSessionKey &&
               inheritedVisibility.ownerIntent === ownerIntent));
+        // Checked only against a successful publication; never gates publishing.
+        state.requestedLiterals = extractRequestedLiterals(ownerIntent);
         state.workspacePreviewMode = state.workspacePreviewRequired
           ? (trustedSessionPreview ? "continuation" : workspacePreviewMode(event?.messages, event?.prompt))
           : undefined;
@@ -10015,6 +10018,10 @@ export function createToolLoopGuard({
         state.workspacePreviewDirectory = preview.relativeDirectory;
         state.workspacePreviewModelAuthored = workspacePreviewAuthorshipMatches(state, preview);
         state.workspacePreview = preview;
+        // Bound to this snapshot's bytes; checked before tracked content clears.
+        state.workspaceRequestedTextCheck = requestedTextCheck(state.requestedLiterals, preview, {
+          receipt: previewEvent.result?.details, trackedContent: state.successfulWriteContentByPath,
+          workspaceRoot: state.configuredWorkspaceRoot});
         state.previewRevalidationCandidate = Object.freeze({preview:Object.freeze({...preview}),
           sessionId:state.currentSessionId,sessionKey:state.currentSessionKey,workspaceRoot:state.configuredWorkspaceRoot});
         state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;
@@ -10752,6 +10759,8 @@ export function createToolLoopGuard({
     const prerequisite = visualContinuationPrerequisite(state);
     if (prerequisite) return prerequisite;
     if (state.workspacePreview) {
+      const requestedText = requestedTextInstruction(state.workspacePreview, state.workspaceRequestedTextCheck);
+      if (requestedText) return {stage: 'workspace-preview-requested-text', instruction: requestedText};
       if (workspacePreviewReadbackComplete(state)) {
         if (state.workspaceVisibilityInteractionRequired &&
             !workspaceVisibilityInspectionPassed(state) &&
@@ -11030,6 +11039,9 @@ export function createToolLoopGuard({
       ) {
         return undefined;
       }
+      // A requested-text miss needs a republish, so it precedes inspection.
+      const requestedText = requestedTextInstruction(state.workspacePreview, state.workspaceRequestedTextCheck);
+      if (requestedText) return `[ODS Pixel next step] ${requestedText}`;
       if (workspacePreviewReadbackComplete(state)) {
         if (state.workspaceVisibilityInteractionRequired &&
             !workspaceVisibilityInspectionPassed(state)) {
@@ -11413,10 +11425,12 @@ export function createToolLoopGuard({
       const checkIncomplete = checkStatus === "failed" || checkStatus === "pending";
       const checkText = checkStatus === "failed" ? VERIFICATION_FAILED_DELIVERY_PREFIX
         : checkStatus === "pending" ? VERIFICATION_PENDING_DELIVERY_PREFIX : "";
+      const requestedTextMissing = requestedTextDeliveryNote(state.workspacePreview, state.workspaceRequestedTextCheck);
       return {
-        status: checkIncomplete ? checkStatus : interactionUnverified ? "failed" : "passed",
+        status: checkIncomplete ? checkStatus : interactionUnverified || requestedTextMissing ? "failed" : "passed",
         text:
           (checkText ? `${checkText}\n\n` : "") +
+          (requestedTextMissing ? `${requestedTextMissing}\n\n` : "") +
           (interactionUnverified ? "The requested show/hide interaction has not passed browser inspection. The published preview is available, but that behavior remains unverified.\n\n" : "") +
           (state.workspaceVisibilityInteractionRequired && !interactionUnverified
             ? "Browser inspection passed for the submitted show/hide checks only; this does not verify all requested behavior.\n\n" : "") +
