@@ -60,6 +60,8 @@ SHARED_REPAIRS = (
     ('openclaw-compaction-idle.json', 'sessions-KE_Xmzwf.js'),
     ('openclaw-compaction-resume.json', 'sessions-CZbwb3_c.js'),
     ('openclaw-read-range.json', 'openclaw-tools-iHHy99PD.js'),
+    ('openclaw-file-identity.json', 'sandbox-Y3MbG9Od.js'),
+    ('openclaw-file-operations.json', 'agent-tools-D1DOpg6D.js'),
     ('openclaw-sandbox-custody-stream.json', 'supervisor-DzTnKyyV.js'),
     ('openclaw-sandbox-custody-backend.json', 'browser-bridges-D-At-KLc.js'),
     ('openclaw-sandbox-custody-runtime.json', 'bash-tools.exec-runtime-BWSnOoQS.js'),

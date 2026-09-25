@@ -104,6 +104,8 @@ jobs:
           done
           OPENCLAW_PACKAGE="$RUNNER_TEMP/sandbox-custody/runtime" OPENCLAW_TEST_SANDBOX_IMAGE="$image" \
             node --test "$tests/runtime_interactive_exec.integration.mjs"
+          OPENCLAW_PACKAGE="$RUNNER_TEMP/sandbox-custody/runtime" OPENCLAW_TEST_SANDBOX_IMAGE="$image" \
+            node --test "$tests/runtime_file_receipts.integration.mjs"
   runtime:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
