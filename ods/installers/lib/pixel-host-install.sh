@@ -1568,7 +1568,12 @@ if "qwen" in model_label:
     # generated with. Qwen3.6 templates and ODS's llama.cpp Qwen3.5 template
     # honor it; without it every owner turn rewrites the previous run and a
     # local server re-reads all of it. Other templates ignore unknown kwargs.
-    template_kwargs["preserve_thinking"] = True
+    # Only the local route sends it: the gateway can reach a shared ODS host
+    # whose inference API accepts no template key but enable_thinking.
+    if provider == "ods-local":
+        template_kwargs["preserve_thinking"] = True
+    else:
+        template_kwargs.pop("preserve_thinking", None)
 else:
     template_kwargs = normalized_agent_params.get("chat_template_kwargs")
     if isinstance(template_kwargs, dict):

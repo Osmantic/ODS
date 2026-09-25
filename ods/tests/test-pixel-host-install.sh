@@ -1898,16 +1898,19 @@ assert value["agents"]["defaults"]["compaction"] == {
     "timeoutSeconds": 1800,
     "keepRecentTokens": max(512, min(20000, context_window // 16)),
 }
+# preserve_thinking goes only to this host's own server: a gateway route can
+# reach a shared ODS host that accepts no template key but enable_thinking.
+template_switches = {"preserve_thinking": True} if provider_id == "ods-local" else {}
 if "qwen" in model["id"].lower() and model["reasoning"] is True:
     assert agent["thinkingDefault"] == "low"
     assert model["compat"] == {"thinkingFormat": "qwen-chat-template"}
-    assert agent["params"]["chat_template_kwargs"] == {"enable_thinking": True, "preserve_thinking": True}
+    assert agent["params"]["chat_template_kwargs"] == {"enable_thinking": True, **template_switches}
 else:
     assert "thinkingDefault" not in agent
     assert model["reasoning"] is False
     assert "compat" not in model
     if "qwen" in model["id"].lower():
-        assert agent["params"]["chat_template_kwargs"] == {"enable_thinking": False, "preserve_thinking": True}
+        assert agent["params"]["chat_template_kwargs"] == {"enable_thinking": False, **template_switches}
 if lean_prompt:
     params = agent["params"]
     assert params["temperature"] == 0.7
@@ -2426,6 +2429,32 @@ gateway_budget_status="$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_ho
 check test "$gateway_budget_status" = changed
 check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
     "$gateway_candidate" "$gateway_answers"
+# The gateway may route to a shared ODS host whose inference API rejects every
+# template key except enable_thinking: never send preserve_thinking there.
+check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); a=v["agents"]["list"][0]; assert a["model"] == "ods-gateway/ods/current" and a["params"]["chat_template_kwargs"] == {"enable_thinking":False}' \
+    "$gateway_candidate"
+gateway_stale_candidate="$TEST_ROOT/gateway-stale-preserve-thinking.json"
+python3 - "$gateway_candidate" "$gateway_stale_candidate" <<'PY'
+import json, pathlib, sys
+
+source, target = map(pathlib.Path, sys.argv[1:])
+value = json.loads(source.read_text())
+agent = next(item for item in value["agents"]["list"] if item.get("id") == "pixel")
+agent["params"]["chat_template_kwargs"]["preserve_thinking"] = True
+target.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+PY
+chmod 0600 "$gateway_stale_candidate"
+if _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
+    "$gateway_stale_candidate" "$gateway_answers" >/dev/null 2>&1; then
+    fail "gateway candidate carrying preserve_thinking accepted as a managed update"
+else
+    pass "gateway candidate carrying preserve_thinking is not a managed update"
+fi
+check test "$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_home" \
+    "$gateway_stale_candidate" "$runtime_validator")" = changed
+check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["agents"]["list"][0]["params"]["chat_template_kwargs"] == {"enable_thinking":False}' \
+    "$gateway_stale_candidate"
+rm -f -- "$gateway_stale_candidate"
 cp "$reconcile_config" "$TEST_ROOT/pre-gateway-alias-config.json"
 cp "$gateway_candidate" "$reconcile_config"
 chmod 0600 "$reconcile_config"
