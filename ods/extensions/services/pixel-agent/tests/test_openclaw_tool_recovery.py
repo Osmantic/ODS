@@ -44,7 +44,7 @@ def run(installation, **kwargs):
     return repair_module.repair(runtime, state, manifest_path=manifest, **kwargs)
 
 
-@pytest.mark.parametrize("module_name", [repair_module.COMPLETION_MODULE, repair_module.IMAGE_MODULE,
+@pytest.mark.parametrize("module_name", [repair_module.COMPLETION_MODULE, repair_module.NOOP_FILE_CHANGE_MODULE, repair_module.IMAGE_MODULE,
                                          repair_module.COMPACTION_IDLE_MODULE, repair_module.COMPACTION_BUDGET_MODULE,
                                          repair_module.TOOL_RESULT_PROJECTION_MODULE])
 def test_additional_module_has_separate_exact_byte_custody(installation, module_name):
@@ -501,6 +501,7 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
 
 @pytest.mark.parametrize('environment,manifest_name,module_name', [
     ('OPENCLAW_TOOL_SEARCH_MODULE', 'openclaw-image-envelope.json', repair_module.IMAGE_MODULE),
+    ('OPENCLAW_LOOP_MODULE', 'openclaw-noop-file-change.json', repair_module.NOOP_FILE_CHANGE_MODULE),
     ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE),
     ('OPENCLAW_READ_MODULE', 'openclaw-read-range.json', repair_module.READ_RANGE_MODULE),
     ('OPENCLAW_TRUNCATION_MODULE', 'openclaw-tool-result-projection.json', repair_module.TOOL_RESULT_PROJECTION_MODULE),

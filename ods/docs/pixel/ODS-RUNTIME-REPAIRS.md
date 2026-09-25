@@ -59,6 +59,49 @@ The transformation includes a small portion of OpenClaw's MIT-licensed agent
 command runtime, Copyright (c) 2026 OpenClaw Foundation; see the same complete
 [upstream MIT notice](upstream/THIRD_PARTY_NOTICES.md).
 
+## OpenClaw 2026.6.33 unchanged-file results
+
+The pinned `write`, `edit` and `apply_patch` tools return `terminate: true`
+when a call leaves the file exactly as it was ("No changes made to ..."). The
+agent loop ends the turn when every result of a tool batch carries that flag,
+so a model whose last call rewrote identical bytes never got a turn to answer.
+The gateway logged a turn with no deliverable text
+(`non_deliverable_terminal_turn`), and OpenClaw skipped `before_agent_finalize`,
+where Pixel checks that a published preview is still current. Fleet round 092
+on tower2 (coding-v1) ended this way: the model saved test output to a file
+that already held it.
+
+`openclaw-noop-file-change.json` repairs the exact `proxy-Bsfwfsp-.js` bytes.
+It changes only the loop's batch test (`shouldTerminateToolBatch`): results of
+`write`, `edit` and `apply_patch` no longer end the turn.
+
+- In this release those three tools set the flag only for an unchanged file,
+  at four sites. The integration test checks this in the installed package.
+- Other terminating results, such as tools delegated to an API client, end the
+  batch as before.
+- The model receives the same "No changes made" result and answers or carries
+  on. OpenClaw's loop detectors and Pixel's block on a repeated no-op edit still
+  bound repeated identical calls.
+
+Linux/Windows-WSL applies the repair with `--noop-file-change`; native macOS
+composes the same recipe into its protected bundle. Restore uses the existing
+backup contract (`--noop-file-change --restore`).
+
+The test starts a real gateway with a deterministic provider. An unchanged
+`write`, `edit`, `apply_patch` and a batch of all three each get a second model
+call and the answer. The last test runs the round-092 sequence with Pixel's
+guard and the ODS ingress. `ODS_NOOP_FILE_CHANGE_RED=1` runs the pinned loop:
+the turn ends after the unchanged file, with no answer.
+
+```sh
+OPENCLAW_PACKAGE=/path/to/openclaw node --test \
+  ods/extensions/services/pixel-agent/tests/runtime_noop_file_change.integration.mjs
+```
+
+The replaced function comes from OpenClaw's MIT-licensed agent loop, Copyright
+(c) 2026 OpenClaw Foundation; the complete license is retained in the
+[upstream MIT notice](upstream/THIRD_PARTY_NOTICES.md).
+
 ## OpenClaw 2026.6.33 Tool Search image results
 
 Tool Search wrapped native screenshot content inside a JSON text block. Large

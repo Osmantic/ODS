@@ -47,6 +47,7 @@ jobs:
           node-version: '24'
       - run: node --test ods/extensions/services/pixel-agent/tests/compaction_lock.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/read_range.test.mjs
+      - run: node --test ods/extensions/services/pixel-agent/tests/noop_file_change.test.mjs ods/extensions/services/pixel-agent/tests/saved_result_revalidation.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/tool_result_projection.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/persisted_tool_model_projection.test.mjs ods/extensions/services/pixel-agent/tests/exec_completion_feedback.test.mjs
       - name: Verify bounded preview delivery across platforms
@@ -94,6 +95,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_line_stable.integration.mjs
+      - name: Verify the model answers after an unchanged file with the real runtime and Pixel guard
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_noop_file_change.integration.mjs
       - name: Verify tool results reach real provider requests past the aggregate budget
         if: runner.os != 'Windows'
         shell: bash
