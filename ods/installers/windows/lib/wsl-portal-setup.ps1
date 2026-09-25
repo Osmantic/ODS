@@ -101,12 +101,25 @@ function Resolve-ODSPortalDistro([string]$Requested, [string[]]$Names) {
     if ($Requested) { return $Requested }
     # Reuse a single recognizable Ubuntu installation; never guess between
     # existing user environments or select Docker's internal distribution.
-    $ubuntu = @($Names | Where-Object { $_ -match '^Ubuntu(?:-\d{2}\.\d{2})?$' } | Select-Object -Unique)
+    # Versioned names outside Pixel's qualified releases (e.g. Ubuntu-22.04)
+    # are never auto-selected; the unversioned name is release-checked later.
+    $ubuntu = @($Names | Where-Object { $_ -match '^Ubuntu(?:-(?:24|26)\.04)?$' } | Select-Object -Unique)
     if ($ubuntu.Count -eq 1) { return $ubuntu[0] }
     if ($ubuntu.Count -gt 1) {
         throw ('Multiple Ubuntu distributions exist: ' + ($ubuntu -join ', ') + '. Rerun with -Distro <name> to choose where ODS belongs. No distribution was changed.')
     }
     return 'Ubuntu-24.04'
+}
+
+function Assert-ODSPortalDistroRelease([string]$Distro) {
+    # Same qualification as ods_pixel_host_qualified in pixel-integration.sh.
+    $release = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--exec', 'cat', '/etc/os-release')
+    $id = if ($release.Output -match '(?m)^ID="?([A-Za-z0-9._-]+)"?\s*$') { $Matches[1] } else { 'unknown' }
+    $version = if ($release.Output -match '(?m)^VERSION_ID="?([A-Za-z0-9._-]+)"?\s*$') { $Matches[1] } else { 'unknown' }
+    $qualified = ($id -eq 'ubuntu' -and $version -in @('24.04', '26.04')) -or ($id -eq 'debian' -and $version -eq '12')
+    if ($release.Code -ne 0 -or -not $qualified) {
+        throw "$Distro runs $id $version, but Pixel requires Ubuntu 24.04/26.04 (or Debian 12). Rerun with -Distro Ubuntu-24.04 to install a separate Ubuntu 24.04; $Distro is not changed."
+    }
 }
 
 function Assert-ODSPortalWslVersion {
@@ -116,6 +129,40 @@ function Assert-ODSPortalWslVersion {
     $match = [regex]::Match($version.Output, '(?m)^.*?:\s*(\d+\.\d+\.\d+(?:\.\d+)?)\s*\r?$')
     if ($version.Code -ne 0 -or -not $match.Success -or [version]$match.Groups[1].Value -lt [version]'0.67.6') {
         throw 'Pixel requires WSL 0.67.6 or newer for systemd. Run wsl --update, restart WSL when your work is saved, and rerun setup. If --update is unavailable, install the current WSL release using https://learn.microsoft.com/windows/wsl/install .'
+    }
+}
+
+function Get-ODSPortalWindowsNvidiaDriver {
+    # Major version of the Windows NVIDIA driver, or $null when Windows has no
+    # working NVIDIA driver (non-NVIDIA GPU, or a leftover nvidia-smi).
+    $smi = Get-Command nvidia-smi.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $smi) { return $null }
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $raw = & $smi.Source --query-gpu=driver_version --format=csv,noheader 2>$null
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previousPreference }
+    $match = [regex]::Match((($raw | Out-String).Trim()), '^(\d+)\.')
+    if ($code -ne 0 -or -not $match.Success) { return $null }
+    return [int]$match.Groups[1].Value
+}
+
+function Assert-ODSPortalNvidiaReady([string]$Distro, $WindowsDriver) {
+    # Mirrors what the Linux installer needs on WSL, so an unready GPU stops
+    # here instead of after sudo/apt changes inside Ubuntu.
+    if ($null -eq $WindowsDriver) { return }
+    Write-Host "         NVIDIA driver $WindowsDriver detected on Windows; checking GPU access from $Distro."
+    if ($WindowsDriver -lt 570) {
+        throw "The Windows NVIDIA driver ($WindowsDriver) is older than 570, which the CUDA runtime requires. Update it with the NVIDIA App or from nvidia.com, run wsl --shutdown, then rerun this command. Do not install NVIDIA drivers inside Ubuntu."
+    }
+    $gpu = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--exec', '/usr/lib/wsl/lib/nvidia-smi', '-L')
+    if ($gpu.Code -ne 0 -or $gpu.Output -notmatch '(?m)^GPU \d+:') {
+        throw "Windows has NVIDIA driver $WindowsDriver, but $Distro cannot see the GPU. Run wsl --update, then wsl --shutdown, reopen Ubuntu and check that nvidia-smi lists your GPU. Do not install NVIDIA drivers inside Ubuntu."
+    }
+    $runtimes = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--exec', 'docker', 'info', '--format', '{{json .Runtimes}}')
+    if ($runtimes.Code -ne 0 -or $runtimes.Output -notmatch '"nvidia"\s*:') {
+        throw "Docker Desktop is not exposing its NVIDIA runtime to $Distro. Update Docker Desktop, keep 'Use the WSL 2 based engine' enabled, restart Docker Desktop, then rerun. ODS does not install a second NVIDIA container toolkit inside Ubuntu."
     }
 }
 
@@ -130,7 +177,7 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     Write-Host '  Your workspace runs in Ubuntu. Open Portal from Windows.'
     if ($Options['DryRun']) {
         Write-Host 'Dry run: no features, distributions, tasks, services or files will be changed.'
-        Write-Host 'Plan: verify WSL2, Ubuntu user, systemd, Docker integration; run the Linux installer; verify Pixel ingress and Portal HTTP readiness.'
+        Write-Host 'Plan: verify WSL2, Ubuntu user, systemd, Docker integration and, with an NVIDIA driver, GPU access from Ubuntu and Docker; run the Linux installer; verify Pixel ingress and Portal HTTP readiness.'
         Write-Host ('Linux flags: ' + ($linuxArgs -join ' '))
         return 0
     }
@@ -175,6 +222,7 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     if ($version.Code -ne 0 -or $version.Output -notmatch $versionPattern) {
         throw "The selected distribution must use WSL2. Run wsl --set-version $distro 2, wait for conversion, then rerun this command."
     }
+    Assert-ODSPortalDistroRelease $distro
     $identity = Invoke-ODSPortalWsl -Arguments @('--distribution', $distro, '--exec', 'id', '-u')
     if ($identity.Code -eq 0 -and $identity.Output -eq '0' -and -not $nonInteractive) {
         if (Confirm-ODSPortalPreparation "Ubuntu is present, but $distro still opens as root. Open its interactive setup to finish creating/selecting your normal Linux user? Exit Ubuntu after completing setup; ODS will recheck the default user." $false) {
@@ -196,6 +244,7 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
             throw "Docker is not ready inside $distro. Install/start Docker Desktop, enable the WSL2 engine and Settings > Resources > WSL Integration for $distro. In Ubuntu, docker info AND docker compose version must succeed as your normal user. See https://docs.docker.com/desktop/features/wsl/ ."
         }
     }
+    if (-not $Options['Cloud']) { Assert-ODSPortalNvidiaReady $distro (Get-ODSPortalWindowsNvidiaDriver) }
     Write-ODSPortalStage 4 'INSTALL PIXEL / PORTAL' "Prerequisites passed for $distro. Starting the Linux installer."
     Write-Host '         Enter your Ubuntu sudo password there if requested.'
     return Invoke-ODSPortalLinuxInstaller $InstallerRoot $distro $linuxArgs ([string]$Options['InstallDir'])
