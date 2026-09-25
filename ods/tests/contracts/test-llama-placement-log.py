@@ -22,6 +22,12 @@ verbosity 4:
     pin from b9151 fails here until they pass -lv 4 and this contract checks
     it.
 
+Every shipped ghcr.io/ggml-org/llama.cpp reference must name its build: a
+bNNNN tag, or a version tag listed in KNOWN_VERSION_BUILDS (v0.5.0 is
+b11146). A version tag not listed, a tag without a build (server-cuda,
+latest) or a digest alone fails here, so a pin cannot move without this
+contract seeing the build it moves to.
+
 Lemonade's llama.cpp (LLAMA_CPP_REF, AMD) is exempt: Lemonade manages GPU
 placement itself and ods doctor skips it.
 
@@ -52,9 +58,25 @@ CAPTURED_LOAD_LOGS = {
     ),
 }
 
-IMAGE_RE = re.compile(r"ghcr\.io/ggml-org/llama\.cpp:(?:server|full|light)(?:-[a-z0-9]+)*?-b(\d{4,5})\b")
+# llama.cpp release versions ODS may pin, and the build each one is. A new
+# version tag fails the contract until it is listed here (from the release's
+# own banner: "build: NNNNN (...)").
+KNOWN_VERSION_BUILDS = {
+    "0.5.0": 11146,
+}
+# Digest-only references (no tag) whose build was checked by hand. Empty: pin
+# with a bNNNN or listed version tag plus the digest instead.
+KNOWN_DIGEST_BUILDS: dict[str, int] = {}
+
+# Any reference to the llama.cpp images: an optional tag, an optional digest.
+IMAGE_RE = re.compile(
+    r"ghcr\.io/ggml-org/llama\.cpp(?::(?P<tag>[A-Za-z0-9_][A-Za-z0-9_.-]*))?(?:@(?P<digest>sha256:[0-9a-f]{64}))?"
+)
+TAG_BUILD_RE = re.compile(r"(?:^|-)b(\d{4,5})(?:-|$)")
+TAG_VERSION_RE = re.compile(r"(?:^|-)v(\d+\.\d+\.\d+)(?:-|$)")
 RELEASE_TAG_RE = re.compile(
-    r"\b(?:LLAMA_CPP_RELEASE_TAG(?:_OVERRIDE)?|LLAMA_TAG|LlamaCppReleaseTag)\b[^\n]*?\bb(\d{4,5})\b"
+    r"\b(?:LLAMA_CPP_RELEASE_TAG(?:_OVERRIDE)?|LLAMA_TAG|LlamaCppReleaseTag)\b[^\n]*?"
+    r"\b(?:b(?P<build>\d{4,5})|v(?P<version>\d+\.\d+\.\d+))\b"
 )
 SCANNED_SUFFIXES = {".yml", ".yaml", ".json", ".sh", ".ps1", ".psm1", ".py", ".example"}
 SKIPPED_DIRECTORIES = {"tests", "node_modules", "vendor", "data", "dist", "__pycache__", ".git"}
@@ -68,8 +90,35 @@ def load_module(name: str, path: Path):
     return module
 
 
-def pinned_builds() -> dict[int, dict[str, set[str]]]:
-    """build -> {"docker": files, "native": files} across the shipped tree."""
+def image_build(tag: str | None, digest: str | None) -> tuple[int | None, str]:
+    """The llama.cpp build an image reference pins, or (None, why not)."""
+    if tag:
+        match = TAG_BUILD_RE.search(tag)
+        if match:
+            return int(match.group(1)), ""
+        match = TAG_VERSION_RE.search(tag)
+        if match:
+            build = KNOWN_VERSION_BUILDS.get(match.group(1))
+            if build is None:
+                return None, (f"version tag v{match.group(1)} is not in KNOWN_VERSION_BUILDS; add the "
+                              f"build its release banner reports")
+            return build, ""
+        if digest and digest in KNOWN_DIGEST_BUILDS:
+            return KNOWN_DIGEST_BUILDS[digest], ""
+        return None, f"tag {tag!r} names no llama.cpp build (bNNNN or a listed vX.Y.Z)"
+    if digest:
+        if digest in KNOWN_DIGEST_BUILDS:
+            return KNOWN_DIGEST_BUILDS[digest], ""
+        return None, "a digest alone names no llama.cpp build; pin a bNNNN or listed vX.Y.Z tag with it"
+    return None, ""
+
+
+def pinned_builds(unresolved: list[str] | None = None) -> dict[int, dict[str, set[str]]]:
+    """build -> {"docker": files, "native": files} across the shipped tree.
+
+    References whose build cannot be worked out are appended to
+    ``unresolved`` as "file: reference: reason".
+    """
     pins: dict[int, dict[str, set[str]]] = {}
     for directory, subdirectories, names in os.walk(ROOT_DIR):
         subdirectories[:] = sorted(name for name in subdirectories if name not in SKIPPED_DIRECTORIES)
@@ -83,11 +132,33 @@ def pinned_builds() -> dict[int, dict[str, set[str]]]:
                 continue
             relative = path.relative_to(ROOT_DIR).as_posix()
             for match in IMAGE_RE.finditer(text):
-                pins.setdefault(int(match.group(1)), {"docker": set(), "native": set()})["docker"].add(relative)
+                tag, digest = match.group("tag"), match.group("digest")
+                following = text[match.end():match.end() + 1]
+                if not tag and not digest:
+                    continue  # the bare repository name, e.g. a digest-policy list
+                if following in {"$", "{"}:
+                    continue  # a templated tag; its build variable is scanned below
+                build, why = image_build(tag, digest)
+                if build is None:
+                    if unresolved is not None:
+                        unresolved.append(f"{relative}: {match.group(0)[:80]}: {why}")
+                    continue
+                pins.setdefault(build, {"docker": set(), "native": set()})["docker"].add(relative)
             for match in RELEASE_TAG_RE.finditer(text):
                 # docker-compose.arc.yml builds the Arc image from a llama.cpp tag.
                 kind = "docker" if name.startswith("docker-compose") else "native"
-                pins.setdefault(int(match.group(1)), {"docker": set(), "native": set()})[kind].add(relative)
+                if match.group("build"):
+                    build = int(match.group("build"))
+                else:
+                    build = KNOWN_VERSION_BUILDS.get(match.group("version"))
+                    if build is None:
+                        if unresolved is not None:
+                            unresolved.append(
+                                f"{relative}: v{match.group('version')}: version tag is not in "
+                                f"KNOWN_VERSION_BUILDS"
+                            )
+                        continue
+                pins.setdefault(build, {"docker": set(), "native": set()})[kind].add(relative)
     return pins
 
 
@@ -97,9 +168,13 @@ def main() -> int:
     model_memory = load_module("model_memory", MODEL_MEMORY) if MODEL_MEMORY.is_file() else None
     agent_parser = getattr(model_memory, "parse_llama_placement", None)
 
-    pins = pinned_builds()
+    unresolved: list[str] = []
+    pins = pinned_builds(unresolved)
     if not pins:
         errors.append("found no pinned llama.cpp build; the pin scan is broken")
+    for entry in unresolved:
+        errors.append(f"cannot tell which llama.cpp build this pins, so no captured load log can be "
+                      f"checked for it: {entry}")
     compose = COMPOSE_BASE.read_text(encoding="utf-8")
     verbosity_match = VERBOSITY_DEFAULT_RE.search(compose)
     docker_verbosity = int(verbosity_match.group(1)) if verbosity_match else None
