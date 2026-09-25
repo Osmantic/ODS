@@ -334,7 +334,10 @@ export function focusTerms(query, focus) {
   const {terms} = searchTerms(`${query ?? ''} ${focus ?? ''}`);
   const classes = new Set();
   for (const term of terms) for (const name of CLASS_WORDS.get(term) ?? []) classes.add(name);
-  return {terms: terms.filter(term => !FOCUS_ONLY.has(term) && term.length > 1).slice(0, 16), classes: [...classes]};
+  // Words that name a fact class ('events', 'price', 'memory') are matched by
+  // that class's pattern, not as subject terms: navigation says "Events" too.
+  return {terms: terms.filter(term => !FOCUS_ONLY.has(term) && !CLASS_WORDS.has(term) && term.length > 1).slice(0, 16),
+    classes: [...classes]};
 }
 
 const wordsOf = text => new Set(text.normalize('NFKC').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean));
@@ -399,7 +402,33 @@ export function scoreWindows(plain, {terms, classes}) {
       : window.terms.some(term => !common(term)) ? 'terms' : requested.length ? 'facts' : undefined;
     window.relevant = overview || (window.score >= 10 && Boolean(window.match));
   }
+  windows.overview = overview;
+  windows.distinct = new Set(terms.filter(term => !common(term)));
+  windows.classes = new Set(classes);
   return windows;
+}
+
+// Within a chosen window, the lines that carry a distinctive term, a
+// requested fact or a date, each with its neighbours (a specification label
+// and its value are often on adjacent lines). Other lines (navigation, filler)
+// are dropped. An overview keeps every line.
+function keptRanges(plain, window, windows) {
+  const lines = [];
+  for (let start = window.start; start < window.end;) {
+    const newline = plain.indexOf('\n', start);
+    const end = newline < 0 || newline > window.end ? window.end : newline;
+    if (plain.slice(start, end).trim()) lines.push({start, end});
+    start = end + 1;
+  }
+  if (windows.overview) return lines;
+  const useful = lines.map(line => {
+    const text = plain.slice(line.start, line.end);
+    const words = wordsOf(text);
+    return [...windows.distinct].some(term => words.has(term)) || FACT_PATTERNS.date.test(text) ||
+      [...windows.classes].some(name => FACT_PATTERNS[name]?.test(text));
+  });
+  const keep = lines.filter((_, i) => useful[i] || useful[i - 1] || useful[i + 1]);
+  return keep.length ? keep : lines;
 }
 
 const ANGLE_OPEN = /[<\u2039\u00ab\u2329\u3008\u300a\u27e8\u27ea\u27ec\u27ee\u276c\u276e\u02c2\ufe64\uff1c]{2,}/g;
@@ -424,25 +453,29 @@ function relevantExcerpt(parsed, focus, maxChars, pageUrl, linkBudget, nextLinkI
   parsed.windows ??= scoreWindows(plain, focus);
   const windows = parsed.windows.filter(window => window.relevant);
   if (!windows.length || maxChars <= 0) return {match: 'none', text: '', links: []};
+  // The kept lines of each window, cached: they do not depend on the budget.
+  for (const window of windows) window.kept ??= keptRanges(plain, window, parsed.windows);
+  const size = window => window.kept.reduce((sum, line) => sum + line.end - line.start + 3, 0);
   const ranked = [...windows].sort((a, b) => b.score - a.score || a.start - b.start);
   const chosen = [];
   let used = 0;
   for (const window of ranked) {
-    const size = window.end - window.start + 3;
-    if (used + size > maxChars && chosen.length) continue;
+    if (used + size(window) > maxChars && chosen.length) continue;
     chosen.push(window);
-    used += size;
+    used += size(window);
     if (used >= maxChars) break;
   }
   chosen.sort((a, b) => a.start - b.start);
-  // Same-site links inside the chosen windows, most relevant first.
+  const ranges = chosen.flatMap(window => window.kept);
+  // Same-site links on the kept lines. A link whose text names a distinctive
+  // request term, or that sits on a dated line, ranks first; navigation links
+  // are listed only when nothing ranks.
   const pageHost = hostOf(pageUrl);
-  const pageKey = citationKey(pageUrl);
+  const seen = new Set([citationKey(pageUrl)]);
   const candidates = [];
-  const seen = new Set([pageKey]);
-  for (const window of chosen) {
+  for (const range of ranges) {
     for (const link of links) {
-      if (link.start < window.start || link.start > window.end || !link.url || link.url.length > SEARCH_READ_LIMITS.maxLinkChars) continue;
+      if (link.start < range.start || link.start > range.end || !link.url || link.url.length > SEARCH_READ_LIMITS.maxLinkChars) continue;
       const key = citationKey(link.url);
       // Same site only, and never the site root, a search or tag index or a
       // binary: detail pages are the useful next reads.
@@ -450,28 +483,36 @@ function relevantExcerpt(parsed, focus, maxChars, pageUrl, linkBudget, nextLinkI
           indexLike(link.url)) continue;
       seen.add(key);
       const labelWords = wordsOf(link.label);
-      const lineEnd = plain.indexOf('\n', link.end);
-      const line = plain.slice(plain.lastIndexOf('\n', link.start) + 1, lineEnd < 0 ? plain.length : lineEnd);
-      candidates.push({link, rank: (focus.terms.some(term => labelWords.has(term)) ? 2 : 0) +
+      const line = plain.slice(range.start, range.end);
+      candidates.push({link, rank: ([...parsed.windows.distinct].some(term => labelWords.has(term)) ? 2 : 0) +
         (FACT_PATTERNS.date.test(line) ? 1 : 0)});
     }
   }
-  const kept = candidates.sort((a, b) => b.rank - a.rank || a.link.start - b.link.start)
+  const ranking = candidates.some(entry => entry.rank > 0) ? candidates.filter(entry => entry.rank > 0) : candidates;
+  const kept = ranking.sort((a, b) => b.rank - a.rank || a.link.start - b.link.start)
     .slice(0, linkBudget).map(entry => entry.link).sort((a, b) => a.start - b.start);
   const ids = new Map(kept.map((link, i) => [link, `L${nextLinkId + i}`]));
-  const parts = [];
-  for (const window of chosen) {
-    let cursor = window.start, piece = '';
+  const render = range => {
+    let cursor = range.start, piece = '';
     for (const link of kept) {
-      if (link.start < window.start || link.start > window.end) continue;
-      const end = Math.min(link.end, window.end);
+      if (link.start < range.start || link.start > range.end) continue;
+      const end = Math.min(link.end, range.end);
       piece += neutralized(plain.slice(cursor, end)) + ` [${ids.get(link)}]`;
       cursor = end;
     }
-    piece += neutralized(plain.slice(cursor, window.end));
-    parts.push(piece.split('\n').map(line => line.trim()).filter(Boolean).join('\n'));
+    return (piece + neutralized(plain.slice(cursor, range.end))).trim();
+  };
+  const parts = [];
+  let previous;
+  for (const range of ranges) {
+    const text = render(range);
+    if (!text) continue;
+    // A gap between kept lines is marked, as between windows.
+    if (previous !== undefined && plain.slice(previous, range.start).trim()) parts.push('…');
+    parts.push(text);
+    previous = range.end;
   }
-  const text = parts.filter(Boolean).join('\n…\n');
+  const text = parts.join('\n');
   const match = chosen.some(window => window.match === 'terms') ? 'terms'
     : chosen.some(window => window.match === 'facts') ? 'facts' : 'overview';
   return {match, text, links: kept.map(link => ({id: ids.get(link), url: link.url}))};
