@@ -2416,13 +2416,13 @@ _GEMMA3_4B_GGUF_HEADER = {
 }
 
 
-def _laptop_install(tmp_path):
+def _test_install(tmp_path, ram_gb=31):
     install_dir = tmp_path / "ods"
     (install_dir / "data" / "models").mkdir(parents=True)
     (install_dir / ".env").write_text(
         "LLM_MODEL=qwen3.5-9b\n"
         "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n"
-        "SYSTEM_RAM_GB=31\n",
+        f"SYSTEM_RAM_GB={ram_gb}\n",
         encoding="utf-8",
     )
     return install_dir
@@ -2448,7 +2448,7 @@ def test_gemma3_4b_is_listed_and_switched_at_128k_on_an_8gb_laptop(data_dir, tmp
     """
     import performance_oracle
 
-    install_dir = _laptop_install(tmp_path)
+    install_dir = _test_install(tmp_path)
     catalog = [raw for raw in _official_model_catalog() if raw["id"] == "gemma3-4b-it-q4"]
     monkeypatch.setattr(performance_oracle, "inspect_gguf", lambda _path: dict(_GEMMA3_4B_GGUF_HEADER))
     gpu = _gpu("NVIDIA GeForce RTX 5070 Laptop GPU", _WINDOWS_LAPTOP_VRAM_MB)
@@ -2483,7 +2483,7 @@ def test_a_reviewed_layout_is_not_overridden_by_a_gguf_per_layer_kv_array(data_d
     import performance_oracle
     from model_memory import estimate_model_memory
 
-    install_dir = _laptop_install(tmp_path)
+    install_dir = _test_install(tmp_path)
     raw = next(raw for raw in _official_model_catalog() if raw["id"] == "gemma4-e4b-q4")
     header = {
         "exists": True, "readable": True, "architecture": "gemma4", "quantization": "Q4_K_M",
@@ -2512,7 +2512,7 @@ def test_row_talk_verdict_judges_the_context_a_switch_sends(data_dir, tmp_path, 
     the owner switches, not after."""
     import performance_oracle
 
-    install_dir = _laptop_install(tmp_path)
+    install_dir = _test_install(tmp_path)
     # A library entry without a reviewed layout: the plan's legacy estimate
     # says it fits at 128K, the GGUF header (full attention on every layer)
     # says only 32K does.
@@ -2556,3 +2556,66 @@ def test_dialog_switch_context_mirrors_the_models_dialog():
     # Nothing that fits reaches the Pixel minimum: the dialog keeps the listed context.
     assert dialog_switch_context(65536, False, False, options[:1]) == 65536
     assert dialog_switch_context(None, False, False, []) is None
+
+
+# tower3 (RTX 5090, 32607 MiB) on main aa0623f4, 2026-09-25: a Models switch
+# to Gemma 4 26B-A4B was served at 32K and the running card showed "Context
+# 32K, VRAM estimate 29.8 / 31.8 GB" (fleet run 20260925T194808Z-tower3-r29,
+# model-ui/cycle-001/tower3). llama-server itself allocated 640 MiB of
+# full-attention KV and 300 MiB of window KV at 32K, which is the catalog
+# layout's arithmetic exactly: 5 layers x 2 KV heads x (512 + 512) x 2 bytes
+# x 32768 tokens, and 25 x 8 x (256 + 256) x 2 bytes x 1536 window cells.
+# The 29.8 came from the GGUF header's per-layer KV-head array overriding
+# that layout on the row.
+_GEMMA4_26B_GGUF_HEADER = {
+    "exists": True,
+    "readable": True,
+    "architecture": "gemma4",
+    "quantization": "Q4_K_M",
+    "context_length": 262144,
+    "block_count": 30,
+    # Global layers (il % 6 == 5) have 2 KV heads, sliding-window layers 8.
+    "attention_head_count_kv": [8, 8, 8, 8, 8, 2] * 5,
+    "attention_key_length": 512,
+    "attention_value_length": 512,
+    "full_attention_interval": None,
+}
+
+
+def test_gemma4_26b_is_switched_at_64k_on_an_rtx_5090(data_dir, tmp_path, monkeypatch):
+    import performance_oracle
+    from model_memory import estimate_model_memory
+
+    install_dir = _test_install(tmp_path, ram_gb=61)
+    raw = next(raw for raw in _official_model_catalog() if raw["id"] == "gemma4-26b-a4b-q4")
+    header = {**_GEMMA4_26B_GGUF_HEADER, "size_bytes": raw["size_bytes"]}
+    monkeypatch.setattr(performance_oracle, "inspect_gguf", lambda _path: dict(header))
+    gpu = _gpu("NVIDIA GeForce RTX 5090", 32607)
+    downloaded = _downloaded(install_dir, [raw])
+
+    # The plain merge is what the running card showed: 29.8 GiB at 32K, and
+    # 42.9 GiB at 64K, so only 32K "fit" and the dialog sent it.
+    assert estimate_model_memory({**raw, **header}, context_length=32768).device_gib == 29.79
+
+    payload = build_models_payload(
+        gpu, None, 0, install_dir, data_dir, catalog=[raw], evidence=[],
+        downloaded_files_override=downloaded,
+    )
+    row = payload["models"][0]
+    assert row["contextLength"] == 65536
+    assert row["fitsVram"] is True
+    assert row["estimatedRequired"] == 17.91
+    by_context = {option["contextLength"]: option for option in row["contextOptions"]}
+    assert all(by_context[context]["fitsVram"] is True for context in (65536, 131072, 262144))
+    assert dialog_switch_context(row["contextLength"], row["fitsVram"], row["recommended"], row["contextOptions"]) == 65536
+    assert row["appCompatibility"]["hermesTalk"].get("code") != "context_below_hermes_minimum"
+
+    # Loaded at 32K (the tower3 state), the running card now estimates what
+    # llama-server holds, and Talk is correctly unavailable at that context.
+    running = build_models_payload(
+        gpu, raw["gguf_file"], 0, install_dir, data_dir, context_length=32768,
+        catalog=[raw], evidence=[], downloaded_files_override=downloaded,
+    )["models"][0]
+    assert running["status"] == "loaded" and running["contextLength"] == 32768
+    assert running["estimatedRequired"] == 17.29
+    assert running["appCompatibility"]["hermesTalk"]["code"] == "context_below_hermes_minimum"
