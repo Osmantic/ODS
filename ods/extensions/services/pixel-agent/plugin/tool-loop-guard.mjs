@@ -31,8 +31,9 @@ import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLane
 import { assistantMessageText, composeProgressFinalization, composeReadPages, createProgressFinalization, partialFinalizationAnswer,
   PROGRESS_FINALIZATION_INSTRUCTION } from "./progress-finalization.mjs";
 import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisRequest } from "./stop-synthesis.mjs";
-import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
-import { OUTPUT_LIMIT_INSTRUCTION, OUTPUT_LIMIT_REASON, OUTPUT_LIMIT_UNRECOVERED_TEXT, outputLimitReply } from "./output-limit-recovery.mjs";
+import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerChatUser, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
+import { OUTPUT_LIMIT_CONTINUATION_PROMPT, OUTPUT_LIMIT_INSTRUCTION, OUTPUT_LIMIT_REASON, OUTPUT_LIMIT_UNRECOVERED_TEXT,
+  outputLimitReply } from "./output-limit-recovery.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
@@ -9326,6 +9327,12 @@ export function createToolLoopGuard({
       // same run carries a harness retry prompt instead.
       if (ownerIntent) state.ownerRequestText ??= ownerIntent;
       takeOwnerCancellation(state, runId, context, agentId);
+      state.ownerChatUser = ownerChatUser(context, agentId);
+      // The ingress output-limit continuation is itself the owner turn's one
+      // output-limit pass; neither route grants it another.
+      if (currentUserText(event?.messages, event?.prompt).includes(OUTPUT_LIMIT_CONTINUATION_PROMPT)) {
+        state.outputLimitRetried = true;
+      }
       if (currentUserText(event?.messages, event?.prompt)) {
         state.ownerIntentObserved = true;
         state.workspacePreviewForbidden = ownerForbidsWorkspacePreview(event?.messages, event?.prompt);
@@ -12293,6 +12300,25 @@ export function createToolLoopGuard({
         return {schemaVersion:1,kind:'ods-extension-unfinished-decision',eligible:false};
       return {schemaVersion:1,kind:'ods-extension-unfinished-decision',eligible:true,
         chatId:observed.chatId,requestId:observed.requestId};
+    },
+    // Grants the Portal ingress one continuation turn for an owner turn whose
+    // final reply was cut at the output limit (OpenClaw 2026.6.33 skips
+    // before_agent_finalize then). OpenClaw runs tools only after a complete
+    // tool-use reply and any later reply clears outputLimitStop, so no tool
+    // ran after the cut. Consumed on grant. Cancelled, stopped, waiting and
+    // host-operation, extension or exact-download turns keep the honest report:
+    // their receipts, not a new model turn, decide what happens next.
+    outputLimitContinuationForRun: (runId) => {
+      const state = typeof runId === 'string' ? runs.get(runId) : undefined;
+      if (!state?.outputLimitStop || state.outputLimitRetried || !state.ownerChatUser ||
+          !state.ownerIntentObserved || state.managedTeamWorker || state.clientCancelled ||
+          state.progressBudget.exhausted || state.recursiveDeleteDenied || state.webLoopAborted ||
+          state.ownerQuestions || state.operationsRequired || state.operationsSubmittedJobs.size > 0 ||
+          state.githubExtensionRequest || state.extensionCompletionGate?.active || state.extensionPendingHandoff ||
+          state.exactDownloadRequested || mixedTaskVerificationForRun(runId).status === 'pending')
+        return {schemaVersion:1, kind:'ods-output-limit-continuation', eligible:false};
+      state.outputLimitRetried = true;
+      return {schemaVersion:1, kind:'ods-output-limit-continuation', eligible:true, user:state.ownerChatUser};
     },
     continuationAllowed: (runId) => {
       const state=runs.get(runId);

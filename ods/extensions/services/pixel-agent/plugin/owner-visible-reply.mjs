@@ -42,3 +42,9 @@ export function ownerInteractiveTurn(context, agentId = 'pixel') {
   return context?.trigger === 'user' && typeof context.sessionKey === 'string' &&
     context.sessionKey.startsWith(prefix) && ODS_OWNER_USER.test(context.sessionKey.slice(prefix.length));
 }
+
+// The opaque ingress user ("ods-" + 64 hex) of such a turn, else undefined.
+export function ownerChatUser(context, agentId = 'pixel') {
+  return ownerInteractiveTurn(context, agentId)
+    ? context.sessionKey.slice(`agent:${agentId}:openai-user:`.length) : undefined;
+}

@@ -106,6 +106,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_cancel_recovery.integration.mjs
+      - name: Verify a reply cut at the output limit is continued once through the real runtime
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_output_limit_continuation.integration.mjs
       - name: Verify tool-limit finalization, stop synthesis and silent-reply recovery with real Pixel runtime
         if: runner.os != 'Windows'
         shell: bash

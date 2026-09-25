@@ -38,6 +38,16 @@ const MAX_VERIFICATION_TEXT = 32 * 1024;
 const MAX_VERIFICATION_RESPONSE = 1024 * 1024;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMPTY_ASSISTANT_RESPONSE = "⚠️ Agent couldn't generate a response. Please try again.";
+// One continuation turn after an owner turn whose final reply was cut at the
+// model output limit. Byte-identical to OUTPUT_LIMIT_CONTINUATION_PROMPT in the
+// plugin's output-limit-recovery.mjs, which recognizes the turn by it (tested).
+export const OUTPUT_LIMIT_CONTINUATION_PROMPT =
+  "ODS internal continuation: The previous reply reached the model output limit before it finished, " +
+  "so its unfinished tool call did not run and nothing from it was saved. Continue the owner's request now in smaller steps. " +
+  "Do not repeat the cut-off call as one large write: split large content across several files or several smaller writes " +
+  "(for a web page, separate index.html, styles.css and script.js, each kept short), then finish the remaining requested steps " +
+  "and give the owner a visible answer. Do not repeat tool actions that already completed; build on their saved results. " +
+  "For a long written answer, give a complete but more concise answer.";
 const OPERATIONS_UNAVAILABLE_ZERO_SUBMISSIONS_CODE =
   "operations-unavailable-zero-submissions";
 const CONNECT_TIMEOUT_MS = 5000;
@@ -1182,6 +1192,49 @@ async function maybeContinueUnfinishedExtensionDecision(completion, outgoing, to
   return recovered;
 }
 
+// Asks the plugin whether this completed run ended on a reply cut at the output
+// limit that may be continued once. An older plugin has no such route (404);
+// then, as for any refusal, the run's honest output-limit report stands.
+async function outputLimitContinuationGranted(runId, user, token, gatewayPort, signal, deps) {
+  if (!OPENAI_RUN_ID.test(runId ?? '') || typeof user !== 'string') return false;
+  const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/output-limit-continuation`, {
+    method:'POST', headers:upstreamHeaders(false, token),
+    body:JSON.stringify({runId}), redirect:'error', signal,
+  });
+  if (response.status !== 200 || !String(response.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) {
+    await drain(response.body); return false;
+  }
+  const proof = JSON.parse((await readBounded(response.body, 1024)).toString('utf8'));
+  return proof?.schemaVersion === 1 && proof.kind === 'ods-output-limit-continuation' && proof.eligible === true &&
+    Object.keys(proof).sort().join() === 'eligible,kind,schemaVersion,user' && proof.user === user;
+}
+
+async function maybeContinueOutputLimitTurn(completion, outgoing, token, gatewayPort, signal, deps) {
+  if (!await outputLimitContinuationGranted(completion?.id, outgoing.user, token, gatewayPort, signal, deps))
+    return completion;
+  if (signal.aborted) throw new HttpError(503, 'output-limit continuation interrupted');
+  // A new turn of the same chat with the same trusted system messages. It never
+  // replays the owner's message or a tool; the plugin grants it once per turn
+  // and refuses it for the continuation's own run, so it cannot repeat.
+  const continuation = {...outgoing, stream:false, messages:[
+    ...(outgoing.messages ?? []).filter(message => message.role === 'system'),
+    {role:'user', content:OUTPUT_LIMIT_CONTINUATION_PROMPT}]};
+  const upstream = await deps.fetch(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+    method:'POST', headers:upstreamHeaders(false, token), body:JSON.stringify(continuation),
+    redirect:'error', signal,
+  });
+  if (upstream.status !== 200 || !String(upstream.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) {
+    await drain(upstream.body);
+    throw new HttpError(502, 'output-limit continuation unavailable');
+  }
+  const recovered = JSON.parse((await readBounded(upstream.body, MAX_NONSTREAM_RESPONSE)).toString('utf8'));
+  if (!OPENAI_RUN_ID.test(recovered?.id ?? '') || recovered.id === completion.id ||
+      !Array.isArray(recovered.choices) || recovered.choices.length !== 1 ||
+      typeof recovered.choices[0]?.message?.content !== 'string')
+    throw new HttpError(502, 'output-limit continuation invalid');
+  return recovered;
+}
+
 async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps, hooks = {}, activeGatewayTransports = new Map()) {
   const controller = new AbortController();
   const unregisterGatewayTransport = registerActiveGatewayTransport(activeGatewayTransports, outgoing.user, controller);
@@ -1258,6 +1311,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       try {
         const body = await readBounded(upstream.body, MAX_STREAM_RESPONSE);
         let completion = JSON.parse(body.toString("utf8"));
+        const originalCompletion = completion;
         if (typeof completion?.id === "string" && OPENAI_RUN_ID.test(completion.id)) {
           completionRunId = completion.id;
         }
@@ -1267,6 +1321,12 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
         deliveryStage = "unfinished-extension-decision";
         completion = await maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
           gatewayPort, controller.signal, deps);
+        deliveryStage = "output-limit-continuation";
+        // At most one continuation of any kind per owner turn.
+        if (completion === originalCompletion) {
+          completion = await maybeContinueOutputLimitTurn(completion, gatewayOutgoing, token,
+            gatewayPort, controller.signal, deps);
+        }
         completionRunId = completion?.id;
         deliveryStage = "verification";
         const verification = deliveryVerification(completion, await verificationForRun(
@@ -1306,6 +1366,10 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       gatewayPort, controller.signal, deps);
     completion = await maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
       gatewayPort, controller.signal, deps);
+    if (completion === originalCompletion) {
+      completion = await maybeContinueOutputLimitTurn(completion, gatewayOutgoing, token,
+        gatewayPort, controller.signal, deps);
+    }
     const verification = deliveryVerification(completion, await verificationForRun(
       completion?.id,
       token,

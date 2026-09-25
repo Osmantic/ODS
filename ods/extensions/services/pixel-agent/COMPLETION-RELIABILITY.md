@@ -397,10 +397,24 @@ each well under half of it. The line depends only on the host's model, so it is
 byte-stable per host and sits before every per-request section. It limits one
 reply, not the size of the work.
 
-Delivery reports a final reply cut at the limit plainly, and a finalize
-revision asks for smaller steps when OpenClaw runs that hook.
-`tests/output_limit_prevention.test.mjs` and `tests/output_limit_recovery.test.mjs`
-cover these paths.
+Recovery: delivery reports a final reply cut at the limit plainly.
+OpenClaw skips `before_agent_finalize` when such a reply is the whole turn, so
+for Portal turns the ingress asks `/pixel-ods/output-limit-continuation` after
+the completion. For an owner chat turn whose final reply was cut, that is not
+cancelled, stopped, waiting on questions or operations, and not a host
+operation, extension or exact-download request, Pixel grants one continuation
+bound to the chat user. The ingress then submits one new turn containing only
+the fixed `OUTPUT_LIMIT_CONTINUATION_PROMPT` (plus the request's trusted system
+messages); it never replays the owner's message or a tool. The continuation's
+run is never granted another pass, and a continuation cut again keeps the
+honest report. An owner turn gets at most one pass of any kind: the finalize
+revision when OpenClaw runs the hook, this continuation otherwise, and no
+output-limit continuation after another ingress continuation. An older plugin
+without the route leaves the report unchanged.
+
+`tests/output_limit_prevention.test.mjs`, `tests/output_limit_recovery.test.mjs`,
+`tests/output_limit_continuation.test.mjs` and the real-harness fixture
+`tests/runtime_output_limit_continuation.integration.mjs` cover these paths.
 
 ## Owner cancellation
 

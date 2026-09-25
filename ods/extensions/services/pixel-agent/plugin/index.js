@@ -592,6 +592,22 @@ export default definePluginEntry({
         return true;
       },
     });
+    // One continuation turn for an owner turn whose final reply was cut at the
+    // output limit. The ingress submits a fixed message; nothing is replayed.
+    api.registerHttpRoute({
+      path: "/pixel-ods/output-limit-continuation",
+      auth: "gateway",
+      match: "exact",
+      handler: async (req, res) => {
+        const parsed = await readVerificationRun(req);
+        if (parsed.status !== 200) {
+          sendJson(res, parsed.status, {error:"invalid continuation request"});
+          return true;
+        }
+        sendJson(res, 200, toolLoopGuard.outputLimitContinuationForRun(parsed.runId));
+        return true;
+      },
+    });
     api.registerHttpRoute({
       path: "/pixel-ods/unfinished-extension-decision",
       auth: "gateway",
