@@ -1449,6 +1449,12 @@ if existing_binds not in ([], [exec_control_bind]):
     raise SystemExit("live Pixel sandbox binds are outside the ODS contract")
 normalized_sandbox_docker["binds"] = [exec_control_bind]
 normalized_sandbox_docker["dangerouslyAllowExternalBindSources"] = True
+# Only ODS's Python-capable Docker profile opts into per-execution child custody.
+# Other native/OpenClaw backends retain their ordinary execution implementation.
+normalized_sandbox_env = normalized_sandbox_docker.setdefault("env", {})
+if not isinstance(normalized_sandbox_env, dict):
+    raise SystemExit("live Pixel sandbox environment is invalid")
+normalized_sandbox_env["ODS_EXEC_CUSTODY"] = "1"
 # Docker's nproc ulimit is accounted against the host UID, not only this
 # container. On a busy inference host it can therefore prevent even the fixed
 # sandbox proof from forking while the independent per-container pidsLimit is
@@ -4501,6 +4507,10 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-compaction-idle.json" \
         && -f "$plugin_root/host/openclaw-compaction-resume.json" \
         && -f "$plugin_root/host/openclaw-read-range.json" \
+        && -f "$plugin_root/host/openclaw-sandbox-custody-stream.json" \
+        && -f "$plugin_root/host/openclaw-sandbox-custody-backend.json" \
+        && -f "$plugin_root/host/openclaw-sandbox-custody-runtime.json" \
+        && -f "$plugin_root/host/openclaw-sandbox-custody-tool.json" \
         && -f "$plugin_root/host/openclaw-image-envelope.json" \
         && -f "$plugin_root/host/pixel-ops-broker-ods.conf" \
         && -f "$plugin_root/host/cancellable-exec.sh" \
@@ -4865,6 +4875,19 @@ ods_pixel_install_default_agent() {
         ai_bad "Pixel's file read range repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
+    # Docker client termination must settle its exact sandbox descendants before
+    # the SDK reports a terminal process result. Native backends are unchanged.
+    local custody_layer
+    for custody_layer in stream backend runtime tool; do
+        if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+            "$plugin_root/host/openclaw_tool_recovery.py" \
+            --openclaw-bin "$openclaw_bin" --sandbox-custody "$custody_layer" \
+            --state-dir "$home/.openclaw/ods-runtime-patches/sandbox-custody-$custody_layer" \
+            >>"$pixel_log" 2>&1; then
+            ai_bad "Pixel's sandbox execution custody repair could not verify its package bytes. See $pixel_log."
+            return 1
+        fi
+    done
     # Honor the configured compaction budget on slow local providers.
     if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
         "$plugin_root/host/openclaw_tool_recovery.py" \

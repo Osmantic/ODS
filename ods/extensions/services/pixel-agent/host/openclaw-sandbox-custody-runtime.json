@@ -1,0 +1,38 @@
+{
+  "sourceSha256": "9b1ec8d771a62162a6c0218ac8c13f93fa76e4ea2a6266f73e752a9be5dd204f",
+  "patchedSha256": "32365167375de629ce57c1d61fbee0d3f5e2c287bc309916537acba5cccbb450",
+  "replacements": [
+    [
+      "\tlet sandboxFinalizeToken;",
+      "\tlet sandboxFinalizeToken;\n\tlet sandboxFinalized = false;\n\tlet custodyAdmission;"
+    ],
+    [
+      "import { d as markExited, n as appendOutput, p as tail, r as createSessionSlug, t as addSession } from \"./bash-process-registry-DRLW8NyW.js\";",
+      "import { d as markExited, n as appendOutput, p as tail, r as createSessionSlug, t as addSession, u as markBackgrounded } from \"./bash-process-registry-DRLW8NyW.js\";"
+    ],
+    [
+      "\t\t\tsandboxFinalizeToken = backendExecSpec?.finalizeToken;",
+      "\t\t\tsandboxFinalizeToken = backendExecSpec?.finalizeToken;\n\t\t\tcustodyAdmission = backendExecSpec?.custodyAdmission;"
+    ],
+    [
+      "\t\t\t\tenv: backendExecSpec?.env ?? process.env,",
+      "\t\t\t\ttransformStdout: backendExecSpec?.transformStdout,\n\t\t\t\tcustodyCancel: backendExecSpec?.custodyCancel,\n\t\t\t\tenv: backendExecSpec?.env ?? process.env,"
+    ],
+    [
+      "\t\t\tcaptureOutput: false,\n\t\t\tonStdout: onSupervisorStdout,",
+      "\t\t\ttransformStdout: spawnSpec.transformStdout,\n\t\t\tonCancelRequested: spawnSpec.custodyCancel,\n\t\t\tcaptureOutput: false,\n\t\t\tonStdout: onSupervisorStdout,"
+    ],
+    [
+      "\t} catch (err) {\n\t\tif (spawnSpec.mode === \"pty\") {",
+      "\t\tcustodyAdmission?.catch(() => managedRun?.cancel(\"manual-cancel\"));\n\t} catch (err) {\n\t\tif (spawnSpec.mode === \"pty\") {"
+    ],
+    [
+      "\t\tmarkExited(session, exit.exitCode, exit.exitSignal, outcome.status, exit.reason);\n\t\tmaybeNotifyOnExit(session, outcome.status);\n\t\tif (!session.child && session.stdin) session.stdin.destroyed = true;\n\t\tif (opts.sandbox?.finalizeExec) await opts.sandbox.finalizeExec({\n\t\t\tstatus: outcome.status,\n\t\t\texitCode: exit.exitCode ?? null,\n\t\t\ttimedOut: exit.timedOut,\n\t\t\ttoken: sandboxFinalizeToken\n\t\t});",
+      "\t\t// A closed Docker client is not proof that its sandbox descendants stopped.\n\t\tif (opts.sandbox?.finalizeExec) await opts.sandbox.finalizeExec({\n\t\t\tstatus: outcome.status,\n\t\t\texitCode: exit.exitCode ?? null,\n\t\t\ttimedOut: exit.timedOut,\n\t\t\tterminationRequested: exit.reason !== \"exit\" || exit.exitSignal != null,\n\t\t\ttoken: sandboxFinalizeToken\n\t\t});\n\t\tsandboxFinalized = true;\n\t\tmarkExited(session, exit.exitCode, exit.exitSignal, outcome.status, exit.reason);\n\t\tmaybeNotifyOnExit(session, outcome.status);\n\t\tif (!session.child && session.stdin) session.stdin.destroyed = true;"
+    ],
+    [
+      "\t}).catch((err) => {\n\t\tupdatesDisabled = true;",
+      "\t}).catch(async (err) => {\n\t\t// A transport wait failure can also leave the command alive inside Docker.\n\t\tif (!sandboxFinalized && sandboxFinalizeToken?.odsCustodyVersion === 1 && err?.code !== \"ODS_SANDBOX_EXEC_UNSETTLED\") {\n\t\t\ttry {\n\t\t\t\tawait opts.sandbox.finalizeExec({token: sandboxFinalizeToken, terminationRequested: true});\n\t\t\t} catch (cleanupError) { err = cleanupError; }\n\t\t}\n\t\t// Retain a pollable, nonterminal session if child cleanup cannot be proved.\n\t\tif (err?.code === \"ODS_SANDBOX_EXEC_UNSETTLED\") {\n\t\t\tsession.odsSandboxUnsettled = true;\n\t\t\t// The Docker client has exited; never retain its reusable host PID as a kill target.\n\t\t\tsession.pid = void 0;\n\t\t\tsession.child = void 0;\n\t\t\tsession.stdin = void 0;\n\t\t\tmarkBackgrounded(session);\n\t\t\terr.sessionId = session.id;\n\t\t\terr.message += ` Retained process session: ${session.id}.`;\n\t\t\tthrow err;\n\t\t}\n\t\tupdatesDisabled = true;"
+    ]
+  ]
+}

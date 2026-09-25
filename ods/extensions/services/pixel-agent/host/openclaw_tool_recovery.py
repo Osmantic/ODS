@@ -24,6 +24,12 @@ COMPACTION_IDLE_MODULE = "sessions-KE_Xmzwf.js"
 COMPACTION_RESUME_MODULE = "sessions-CZbwb3_c.js"
 COMPACTION_BUDGET_MODULE = "selection-BEwSQKM-.js"
 READ_RANGE_MODULE = "openclaw-tools-iHHy99PD.js"
+SANDBOX_CUSTODY_MODULES = {
+    "stream": "supervisor-DzTnKyyV.js",
+    "backend": "browser-bridges-D-At-KLc.js",
+    "runtime": "bash-tools.exec-runtime-BWSnOoQS.js",
+    "tool": "bash-tools-tcXDNfAR.js",
+}
 VERSION = "2026.6.33"
 
 
@@ -78,7 +84,7 @@ def verify_dependencies(runtime_root, manifest, module_name):
 
 def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
            module_name=MODULE):
-    if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE, COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE}:
+    if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE, COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE, *SANDBOX_CUSTODY_MODULES.values()}:
         raise ValueError("unsupported runtime repair module")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     package = json.loads((runtime_root / "package.json").read_text(encoding="utf-8"))
@@ -168,10 +174,14 @@ def main():
     selection.add_argument("--compaction-resume", action="store_true")
     selection.add_argument("--compaction-budget", action="store_true")
     selection.add_argument("--read-range", action="store_true")
+    selection.add_argument("--sandbox-custody", choices=tuple(SANDBOX_CUSTODY_MODULES))
     args = parser.parse_args()
     runtime_root = args.openclaw_bin.resolve(strict=True).parent
     options = {}
-    if args.completion_recovery:
+    if args.sandbox_custody:
+        options = {"module_name": SANDBOX_CUSTODY_MODULES[args.sandbox_custody],
+                   "manifest_path": MANIFEST.with_name(f"openclaw-sandbox-custody-{args.sandbox_custody}.json")}
+    elif args.completion_recovery:
         options = {"module_name": COMPLETION_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-completion-recovery.json")}
     elif args.image_envelope:
