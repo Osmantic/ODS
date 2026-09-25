@@ -206,6 +206,16 @@ class TeamManager:
     def list(self, owner, chat):
         return [self.view(row) for row in self.store.list(owner, chat)]
 
+    def _check_admission(self, owner, chat, team_id=None):
+        # Resuming an old team can also release its skipped builders. Apply the
+        # same conversation and queue limits before changing any saved state.
+        if (owner, team_id) in self.tasks:
+            raise TeamConflict("This team is already working")
+        if any(row["id"] != team_id and row["status"] in ACTIVE for row in self.list(owner, chat)):
+            raise TeamConflict("Finish or stop this conversation's existing team first")
+        if len(self.tasks) >= 4:
+            raise TeamConflict("Four teams are already queued or working")
+
     def start(self, owner, chat, request_id, goal, count, context, mode='team'):
         if mode not in {'team', 'goal'}:
             raise TeamConflict('Unknown execution mode')
@@ -223,10 +233,7 @@ class TeamManager:
                 "Extension commands must use the chat installation coordinator, not a team worker. "
                 "Reload Portal and send the /extensions command in the main chat."
             )
-        if any(row["status"] in ACTIVE for row in self.list(owner, chat)):
-            raise TeamConflict("Finish or stop this conversation's existing team first")
-        if len(self.tasks) >= 4:
-            raise TeamConflict("Four teams are already queued or working")
+        self._check_admission(owner, chat)
         now = time.time()
         row = {"id": team_id, "chat_id": chat, "request_id": request_id, "goal": goal, "context": context,
                "fingerprint": fingerprint, "instance": self.store.instance,
@@ -519,6 +526,7 @@ class TeamManager:
         questions = agent["questions"]
         if set(answers) != {q["id"] for q in questions} or any(not isinstance(x, str) or not x.strip() or len(x) > 1000 for x in answers.values()):
             raise TeamConflict("Answer each pending question")
+        self._check_admission(owner, row["chat_id"], team_id)
         content = "\n\n".join(q["question"] + "\n" + answers[q["id"]].strip() for q in questions)
         if row.get('mode') == 'goal':
             combined = (agent.get('goal_answers', '') + '\n\n' + content).strip()
@@ -544,8 +552,7 @@ class TeamManager:
         agent = next((a for a in row['agents'] if a['id']==agent_id), None)
         if row['status']!='failed' or not agent or agent['status']!='failed' or agent['role']=='builder' or agent.get('retries',0)>=2:
             raise TeamConflict('Only a failed read-only worker can be retried, up to twice. Completed work will not be replayed.')
-        if len(self.tasks)>=4 or (owner,team_id) in self.tasks:
-            raise TeamConflict('The team queue is busy')
+        self._check_admission(owner, row['chat_id'], team_id)
         agent['retries'] = agent.get('retries',0)+1
         agent['recovery_request_ids'] = [*agent.get('recovery_request_ids', []), agent['request_id']][-4:]
         agent['request_id'] = f"retry-{agent['retries']}"
