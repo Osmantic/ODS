@@ -1492,6 +1492,141 @@ def _plan_nvidia_model_gpu_assignment(
     }
 
 
+# A model that needs at most this share of the smallest llama GPU runs on one
+# GPU (--split-mode none --main-gpu N) instead of a layer split. One device
+# avoids the per-token cross-GPU hop and the multi-device scheduler splits:
+# llama.cpp before b10247 aborts Gemma 4 E2B/E4B on any multi-GPU split with
+# GGML_ASSERT(n_inputs < GGML_SCHED_MAX_SPLIT_INPUTS) (ggml-org/llama.cpp
+# #24657, fixed by #22789). Larger models keep the assignment's layer split:
+# Qwen3-Coder-Next needs 51-54% of a 96 GB RTX PRO 6000 (8K-128K context) and
+# stays split across two of them.
+_SINGLE_GPU_PLACEMENT_MAX_SHARE = 0.5
+
+
+def _plan_nvidia_llama_placement(
+    env: dict,
+    model: dict,
+    target: Path,
+    *,
+    context_length: int | None = None,
+    runtime_profile: dict | None = None,
+    gpu_assignment_plan: dict | None = None,
+) -> dict | None:
+    """Decide whether this model uses one GPU of a multi-GPU llama assignment.
+
+    The persisted assignment says which GPUs llama-server may use; this picks,
+    per activation, one of them for a model that fits comfortably or the
+    layer split across all of them. It returns the .env changes for the same
+    activation transaction, or None when the decision does not apply (not
+    NVIDIA on native Linux, one llama GPU, MIG, or an assignment/topology it
+    cannot read), which leaves the persisted placement untouched.
+
+    LLAMA_ARG_TENSOR_SPLIT is never changed: llama.cpp ignores it for a single
+    device, and the next large model needs the assignment's weights back.
+    """
+    if str(env.get("GPU_BACKEND") or "").lower() != "nvidia":
+        return None
+    try:
+        gpu_count = int(env.get("GPU_COUNT") or 1)
+    except (TypeError, ValueError):
+        return None
+    if gpu_count <= 1 or _is_wsl_linux():
+        return None
+    if gpu_assignment_plan:
+        # The model outgrew its GPUs; the expansion plan already chose the
+        # layer split for the larger set.
+        return {
+            "mode": "split",
+            "required_mb": gpu_assignment_plan["required_mb"],
+            "env_updates": {},
+            "env_removals": ["LLAMA_ARG_MAIN_GPU"],
+        }
+
+    topology_path = INSTALL_DIR / "config" / "gpu-topology.json"
+    try:
+        topology = json.loads(topology_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(topology, dict)
+        or str(topology.get("vendor") or "").lower() != "nvidia"
+        or topology.get("mig_enabled")
+    ):
+        return None
+    assignment = _decode_gpu_assignment(env.get("GPU_ASSIGNMENT_JSON_B64"))
+    if assignment is None:
+        try:
+            assignment = _legacy_nvidia_gpu_assignment(env, topology)
+        except RuntimeError:
+            return None
+        if assignment is None:
+            return None
+    services = assignment["gpu_assignment"].get("services") or {}
+    llama_gpus = services["llama_server"]["gpus"]
+    if len(llama_gpus) < 2:
+        return None
+    capacities = _gpu_capacity_by_uuid(topology)
+    index_by_uuid = {
+        str(gpu.get("uuid") or "").strip(): gpu.get("index")
+        for gpu in topology.get("gpus") or []
+        if isinstance(gpu, dict)
+        and isinstance(gpu.get("index"), int)
+        and not isinstance(gpu.get("index"), bool)
+    }
+    if any(uuid not in capacities or uuid not in index_by_uuid for uuid in llama_gpus):
+        return None
+
+    required_mb = _target_model_vram_budget_mb(
+        model,
+        target,
+        context_length=context_length,
+        runtime_profile=runtime_profile,
+    )
+    smallest_mb = min(capacities[uuid] for uuid in llama_gpus)
+    if required_mb <= smallest_mb * _SINGLE_GPU_PLACEMENT_MAX_SHARE:
+        auxiliary = {
+            uuid
+            for name, service in services.items()
+            if name != "llama_server" and isinstance(service, dict)
+            for uuid in service.get("gpus") or []
+        }
+        chosen = min(
+            llama_gpus,
+            key=lambda uuid: (uuid in auxiliary, -capacities[uuid], index_by_uuid[uuid]),
+        )
+        # The container sees only the llama GPUs, and --main-gpu counts them
+        # the way CUDA enumerates them: in PCI bus (nvidia-smi index) order
+        # for matching GPUs. Mixed GPUs may enumerate fastest-first; the fit
+        # above is against the smallest GPU, so any of them has the room.
+        main_gpu = sorted(index_by_uuid[uuid] for uuid in llama_gpus).index(
+            index_by_uuid[chosen]
+        )
+        return {
+            "mode": "single",
+            "gpu": chosen,
+            "main_gpu": main_gpu,
+            "required_mb": required_mb,
+            "gpu_mb": capacities[chosen],
+            "env_updates": {
+                "LLAMA_ARG_SPLIT_MODE": "none",
+                "LLAMA_ARG_MAIN_GPU": str(main_gpu),
+            },
+            "env_removals": [],
+        }
+
+    updates = {}
+    if str(env.get("LLAMA_ARG_SPLIT_MODE") or "").strip().lower() in {"", "none"}:
+        # Undo an earlier single-GPU placement. NVIDIA runs every multi-GPU
+        # assignment mode (pipeline, tensor, hybrid) as a layer split.
+        updates["LLAMA_ARG_SPLIT_MODE"] = "layer"
+    return {
+        "mode": "split",
+        "required_mb": required_mb,
+        "env_updates": updates,
+        "env_removals": ["LLAMA_ARG_MAIN_GPU"],
+    }
+
+
 def _legacy_amd_gpu_assignment(env: dict, topology: dict) -> dict | None:
     """Recover the pre-contract ROCm index restriction as canonical UUIDs."""
     raw_indices = str(
@@ -12358,6 +12493,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         switchboard_run: dict | None = None
         final_runtime_proof: dict[str, object] | None = None
         gpu_assignment_plan: dict | None = None
+        llama_placement: dict | None = None
         previous_pixel_context: int | None = None
         router_target_published = False
         previous_router_active = {}
@@ -12765,6 +12901,31 @@ class AgentHandler(BaseHTTPRequestHandler):
                     context_length=context_length,
                     runtime_profile=runtime_profile,
                 )
+                llama_placement = _plan_nvidia_llama_placement(
+                    env_pre,
+                    model,
+                    target,
+                    context_length=context_length,
+                    runtime_profile=runtime_profile,
+                    gpu_assignment_plan=gpu_assignment_plan,
+                )
+                if llama_placement and llama_placement["mode"] == "single":
+                    logger.info(
+                        "Model activation GPU placement for %s: one GPU (%s, "
+                        "--main-gpu %s; needs %s of %s MiB)",
+                        model_id,
+                        llama_placement["gpu"],
+                        llama_placement["main_gpu"],
+                        llama_placement["required_mb"],
+                        llama_placement["gpu_mb"],
+                    )
+                elif llama_placement:
+                    logger.info(
+                        "Model activation GPU placement for %s: layer split "
+                        "(needs %s MiB)",
+                        model_id,
+                        llama_placement["required_mb"],
+                    )
             elif (
                 platform.system() == "Linux"
                 and str(gpu_backend).lower() == "amd"
@@ -12891,6 +13052,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 }
                 if gpu_assignment_plan:
                     updates.update(gpu_assignment_plan["env_updates"])
+                if llama_placement:
+                    updates.update(llama_placement["env_updates"])
                 if requested_tier:
                     updates["TIER"] = requested_tier
                 if lemonade_runtime:
@@ -12934,6 +13097,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 }
                 if gpu_assignment_plan:
                     remove_keys.update(gpu_assignment_plan.get("env_removals") or [])
+                if llama_placement:
+                    remove_keys.update(llama_placement["env_removals"])
                 remove_keys.difference_update(updates)
                 if local_runtime_profile:
                     updates.update({"LLAMA_PARALLEL":"1", "LLAMA_ARG_FLASH_ATTN":"on",
@@ -13452,6 +13617,25 @@ class AgentHandler(BaseHTTPRequestHandler):
                             }
                             if gpu_assignment_plan
                             else {"changed": False}
+                        ),
+                        **(
+                            {
+                                "gpuPlacement": {
+                                    "mode": llama_placement["mode"],
+                                    "requiredMiB": llama_placement["required_mb"],
+                                    **(
+                                        {
+                                            "gpu": llama_placement["gpu"],
+                                            "mainGpu": llama_placement["main_gpu"],
+                                            "gpuMiB": llama_placement["gpu_mb"],
+                                        }
+                                        if llama_placement["mode"] == "single"
+                                        else {}
+                                    ),
+                                }
+                            }
+                            if llama_placement
+                            else {}
                         ),
                         "consumers": consumers,
                         "verifiedAt": str(final_runtime_proof.get("verifiedAt") or _iso_now()),
