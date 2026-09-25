@@ -23,6 +23,22 @@ import {
 } from 'lucide-react'
 
 const PROGRESS_KEY = 'ods-firstboot-progress'
+const FIRST_BOOT_MUTATION_TIMEOUT_MS = 30000
+
+async function fetchFirstBootMutation(url, options, operation) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), FIRST_BOOT_MUTATION_TIMEOUT_MS)
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`${operation} timed out. It may have completed; check the dashboard before retrying.`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timeout)
+  }
+}
 
 const STACK_OPTIONS = [
   {
@@ -140,9 +156,9 @@ export default function FirstBoot({ onComplete }) {
       }
 
       if (selectedStack.templateId) {
-        const applyResp = await fetch(`/api/templates/${selectedStack.templateId}/apply`, {
+        const applyResp = await fetchFirstBootMutation(`/api/templates/${selectedStack.templateId}/apply`, {
           method: 'POST',
-        })
+        }, `${selectedStack.title} setup`)
         if (!applyResp.ok) {
           const body = await applyResp.json().catch(() => ({}))
           throw new Error(body.detail || `Failed to configure ${selectedStack.title} (${applyResp.status}).`)
@@ -179,7 +195,7 @@ export default function FirstBoot({ onComplete }) {
       if (!ownerCardUnavailable) {
         // Generate the owner magic-link for the named user. Reuses the same
         // backend the Setup / Owner page consumes.
-        const genResp = await fetch('/api/auth/magic-link/generate', {
+        const genResp = await fetchFirstBootMutation('/api/auth/magic-link/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -189,7 +205,7 @@ export default function FirstBoot({ onComplete }) {
             url_mode: ownerCardStatus?.url_mode || 'lan',
             note: `First-boot owner card (${deviceName.trim() || 'ods'})`,
           }),
-        })
+        }, 'Owner-card generation')
         if (!genResp.ok) {
           const body = await genResp.json().catch(() => ({}))
           throw new Error(body.detail || `generate failed: ${genResp.status}`)
@@ -203,7 +219,7 @@ export default function FirstBoot({ onComplete }) {
       // first-run mode while the UI said "You're set." If complete
       // fails, throw and let the catch surface the error to the user
       // (with the owner card still safely visible on the previous screen).
-      const completeResp = await fetch('/api/setup/complete', { method: 'POST' })
+      const completeResp = await fetchFirstBootMutation('/api/setup/complete', { method: 'POST' }, 'Setup completion')
       if (!completeResp.ok) {
         const body = await completeResp.json().catch(() => ({}))
         const fallback = inviteData
