@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
+import {RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
+import {PROGRESS_FINALIZATION_INSTRUCTION} from '../plugin/progress-finalization.mjs';
 
 for (const wrapped of [false, true]) {
   for (const exhausted of ['search', 'fetch']) {
@@ -44,7 +46,12 @@ for (const wrapped of [false, true]) {
       round();
       assert.equal(limited(40)?.block,true);
       round();
-      assert.match(limited(41)?.blockReason,/stopped this response/);
+      // The research loop stops the response; this refusal carries the one
+      // tool-free answer instruction, and a tool call in that turn ends the run.
+      assert.equal(limited(41)?.blockReason,PROGRESS_FINALIZATION_INSTRUCTION);
+      assert.deepEqual(aborts,[]);
+      round();
+      assert.equal(limited(42)?.blockReason,RUN_PROGRESS_STOP_REASON);
       assert.deepEqual(aborts,['session-1']);
     });
   }

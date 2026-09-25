@@ -64,6 +64,51 @@ Each prompt also receives the current host UTC time. The model must preserve
 the owner's requested date/timezone, check source publication dates and avoid
 confusing its training cutoff with the actual date.
 
+## Tool-limit finalization
+
+When the run-progress budget (`run-progress-budget.mjs`) or the research
+web-loop terminal (a web tool requested again after two research-budget
+refusals) stops a response, the limits are unchanged and every tool stays
+blocked. `progress-finalization.mjs`
+grants one tool-free answer turn instead of discarding the gathered evidence.
+OpenClaw applies `tool_result_persist` to the saved transcript only, so the
+model learns of the stop through the refusal of its next tool call, whose text
+is one fixed instruction: answer from evidence already returned, keep the
+requested format, and mark missing or unverified items. The following model
+call is the answer turn. Parallel siblings in the refused call's model round
+receive the same instruction; with no observed model round, the next tool call
+ends the run. A model that answers without another tool call is treated the
+same way.
+
+The owner receives that answer followed by host facts the model cannot alter:
+the tool-limit note, a failed or pending test result, cited links that were
+never read (when the owner asked for sources to be opened), and the last
+verified preview or an explicit statement that none was verified. The outcome
+stays `failed`; a research-loop stop also notes that the web research
+allowance was used up. A tool call in the answer turn aborts the run at that
+tool boundary; an empty, silent, promise-only, tool-like or oversized answer, a
+further model call, owner cancellation, or an unverified localhost URL in a
+visual task all fall back to the original stop text (the research-loop stop
+text for that path). Operations, exact
+downloads, managed extension requests and team coordination keep the strict
+stop text. The instruction is constant text at the end of the conversation,
+never system-prompt content.
+
+## Silent owner replies
+
+An owner-authored dashboard or Portal message (a `user`-triggered run in the
+`agent:pixel:openai-user:ods-…` session) always needs a visible reply. If the
+final reply is only OpenClaw's silent sentinel (`NO_REPLY`, `HEARTBEAT_OK`, or
+their JSON forms), `owner-visible-reply.mjs` requests one revision pass with a
+fixed instruction. A second silent reply keeps the ingress fallback ("Pixel
+ended without a visible answer"). OpenClaw already retries an empty final reply
+once before this hook runs; heartbeat, cron and team turns keep `NO_REPLY`
+semantics, and the harness still refuses a revision after side effects.
+
+`tests/progress_finalization.test.mjs`, `tests/owner_visible_reply.test.mjs`
+and the real-harness fixtures `tests/runtime_progress_finalization.integration.mjs`
+and `tests/runtime_owner_visible_reply.integration.mjs` cover both paths.
+
 ## Search availability
 
 Existing SearXNG installations can report HTTP 200 with zero results while their
