@@ -335,6 +335,7 @@
       "icon": "Globe",
       "category": "automation",
       "dependencies": [
+        "searxng",
         "llama-server"
       ],
       "setupTime": "5 minutes",
