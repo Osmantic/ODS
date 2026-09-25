@@ -44,6 +44,19 @@ it('starts with readable service rows in a panel and keeps the full map accessib
   expect(screen.getByRole('button',{name:'View map'})).toBeVisible()
 })
 
+it('reconciles selected details when a refreshed snapshot removes the service', async () => {
+  const updatedPayload = { ...statusPayload, services: statusPayload.services.filter(service => service.id !== 'ape') }
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce({ ok: true, json: async () => statusPayload })
+    .mockResolvedValueOnce({ ok: true, json: async () => updatedPayload }))
+  render(<ServiceMap />)
+  await screen.findByRole('button', { name: 'APE (Agent Policy Engine): healthy' })
+  fireEvent.click(screen.getByRole('button', { name: 'APE (Agent Policy Engine): healthy' }))
+  expect(screen.getByRole('button', { name: 'Close service details' })).toBeVisible()
+  document.dispatchEvent(new Event('visibilitychange'))
+  await vi.waitFor(() => expect(screen.queryByRole('button', { name: 'Close service details' })).toBeNull())
+})
+
 const statusPayload = {
   services: [
     { id: 'ape', name: 'APE (Agent Policy Engine)', status: 'healthy', port: 7890, uptime: 120 },
