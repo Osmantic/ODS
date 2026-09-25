@@ -114,9 +114,12 @@ upstream default. Other agents and existing jobs are unaffected.
 - **Cache-stable prompt layout.** Only configuration-derived contract text
   enters system space, so it stays byte-identical for a session. Guidance
   selected from the current owner message (workspace, extension, operations,
-  verification, goal, repository evidence) is appended to that message for
-  the current run only. A new owner message therefore never rewrites the
-  prefix a local server has cached for the earlier conversation.
+  verification, goal, repository evidence) is appended to that message under
+  an `[ODS Pixel guidance for this owner message]` label, and the owner
+  message is stored with exactly that text (`before_message_write`), so later
+  requests replay what the model saw and extend the cached prefix instead of
+  rewriting it. Plugin classifiers strip the stored label before reading
+  earlier owner messages.
 - **Host-authoritative verification truth.** OpenClaw's OpenAI-compatible HTTP
   route does not dispatch channel delivery hooks. Before releasing a completion,
   the private ingress therefore asks the plugin for the exact run's bounded
