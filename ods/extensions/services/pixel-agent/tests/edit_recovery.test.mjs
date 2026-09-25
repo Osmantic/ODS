@@ -6,7 +6,7 @@ import {alreadyAppliedLines, classifyEditHunks, describeDifference, editMissErro
   mergeHeldHunks, mergedEditNote, nearMissRegions, withoutMismatchHead} from '../plugin/edit-recovery.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {applyEditsToNormalizedContent, executeOpenClawEdit} from './fixtures/openclaw-edit-2026.6.33.mjs';
-import {guardReplay, passthroughExecControl, removeWorkspaces, workspaceWith} from './fixtures/guard-replay.mjs';
+import {execResult, guardReplay, passthroughExecControl, removeWorkspaces, workspaceWith} from './fixtures/guard-replay.mjs';
 
 // Fleet evidence: Mac mini, Qwen3.5-9B, round 078, website_edit. The
 // ten-edit batch missed only edits[8] (four spaces before <footer>, where
@@ -90,15 +90,40 @@ test('held edits join a corrected edit and OpenClaw applies all of them at once'
   assert.equal(mergedEditNote(1, merged.held), MERGED_NOTE);
 });
 
-test('a re-sent or overlapping held edit yields to the new call', () => {
+test('a re-sent or overlapping held edit yields to the new call, and the note names the overlapped one', () => {
   const {hold} = editRecovery(MAC.content, MAC.batch);
   const intended = MAC.batch.map((edit, index) => index === 8 ? CORRECTED : edit);
-  assert.equal(mergeHeldHunks(MAC.content, intended, hold), undefined, 'every held edit was re-sent');
+  assert.deepEqual(mergeHeldHunks(MAC.content, intended, hold), {edits: undefined, held: [], duplicate: [], overlap: []},
+    'every held edit was re-sent');
   // A new edit of the same :root block replaces held edits[0].
   const rootEdit = {oldText: '      --bg-dark:#0f0f1a;', newText: '      --bg-dark:#000000;'};
   const merged = mergeHeldHunks(MAC.content, [CORRECTED, rootEdit], hold);
   assert.deepEqual(merged.held, [1, 2, 3, 4, 5, 6, 7, 9]);
+  assert.deepEqual(merged.overlap, [0]);
   assert.doesNotThrow(() => applyEditsToNormalizedContent(MAC.content, merged.edits, MAC.path));
+  assert.equal(mergedEditNote(2, merged.held, merged), '[ODS Pixel edit] Applied 10 replacements in one edit: yours plus 8 held ' +
+    'from the rejected call (its edits[1-7], edits[9]). Held edits[0] was not applied because your edit changes the same text; re-send it if still needed.');
+});
+
+// Review probe: a held edit adds a CSS rule after `.a`; the retry re-anchors
+// the same rule after `.c`, which does not overlap, so both would apply.
+const RULES_PAGE = '<style>\n  .a { color: blue; }\n  .c { color: green; }\n</style>\n<footer>\n  <p>x</p>\n</footer>\n';
+const RULE_B = '  .b {\n    color: red;\n  }';
+const RULES_BATCH = [{oldText: '  .a { color: blue; }', newText: `  .a { color: blue; }\n${RULE_B}`},
+  {oldText: '<footer>\n    <p>x</p>', newText: '<footer>\n    <p>y</p>'}];
+const RULES_RETRY = [{oldText: '  .c { color: green; }', newText: `  .c { color: green; }\n${RULE_B}`},
+  {oldText: '<footer>\n  <p>x</p>', newText: '<footer>\n  <p>y</p>'}];
+
+test('a held edit whose added text the new call already adds is left out, so it is not applied twice', () => {
+  const {hold} = editRecovery(RULES_PAGE, RULES_BATCH);
+  assert.deepEqual(hold.map(hunk => hunk.index), [0]);
+  const merged = mergeHeldHunks(RULES_PAGE, RULES_RETRY, hold);
+  assert.deepEqual(merged, {edits: undefined, held: [], duplicate: [0], overlap: []});
+  // A one-line version of the same rule counts too; a short shared line does not.
+  const oneLine = [{oldText: '  .c { color: green; }', newText: '  .c { color: green; }\n  .b { color: red; }'}, RULES_RETRY[1]];
+  assert.deepEqual(mergeHeldHunks(RULES_PAGE, oneLine, hold).duplicate, [0]);
+  const closer = {oldText: '<footer>\n  <p>x</p>\n</footer>', newText: '<footer>\n  <p>y</p>\n</footer>\n  }'};
+  assert.deepEqual(mergeHeldHunks(RULES_PAGE, [closer], hold).held, [0]);
 });
 
 // Each case: the classification must agree with OpenClaw's own outcome (the
@@ -242,29 +267,168 @@ for (const wrapped of [false, true]) {
   });
 }
 
-for (const variant of ['changed-bytes', 'write', 'patch', 'exec-names-file', 'new-run', 'second-attempt']) {
-  test(`held edits are not merged after: ${variant}`, () => {
+const INTENDED = MAC.batch.map((edit, index) => index === 8 ? CORRECTED : edit);
+const intendedPage = () => applyEditsToNormalizedContent(MAC.content, INTENDED, MAC.path).newContent;
+const pageNow = root => fs.readFileSync(path.join(root, MAC.path), 'utf8');
+const CHANGED_NOTE = '[ODS Pixel edit] The 9 held edits were not applied (file changed); re-send them if still needed.';
+
+// Review B1: after "differs only in indentation" a 9B model often looks at
+// the lines before sending the corrected edit. A command that only reads the
+// file must keep the hold; before this fix the corrected edit replaced one
+// block, the nine held edits were silently gone and the page was published.
+const READ_ONLY_COMMANDS = ['grep -n footer index.html', `cat ${MAC.path}`, `sed -n 270,280p ${MAC.path}`];
+for (const wrapped of [false, true]) {
+  for (const command of READ_ONLY_COMMANDS) {
+    test(`Mac replay: a read-only command naming the file keeps the hold (${command}, wrapped=${wrapped})`, () => {
+      const root = workspaceWith({[MAC.path]: MAC.content});
+      const {read, edit, exec} = editHarness({wrapped, root});
+      read(MAC.path);
+      assert.ok(edit(MAC.path, MAC.batch).text.includes(MAC_NOTE));
+      const looked = exec(command, () => execResult('275:  <footer>', 0));
+      assert.doesNotMatch(looked.text, /\[ODS Pixel edit\]/);
+      const retry = edit(MAC.path, [CORRECTED]);
+      assert.deepEqual(retry.executed.edits, [CORRECTED, ...MAC.batch.filter((_, index) => index !== 8)]);
+      assert.match(retry.text, /Successfully replaced 10 block\(s\)/);
+      assert.ok(retry.text.includes(MERGED_NOTE), retry.text);
+      assert.equal(pageNow(root), intendedPage());
+    });
+  }
+}
+
+// The Mac model's recorded retry repeated the four-space indentation. That
+// merged attempt misses on the model's own edit only, so the held edits stay
+// for one more attempt, and the corrected edit then applies all ten.
+test('Mac replay: a merged call that misses only on the model\'s edit keeps the hold for one more attempt', () => {
+  const root = workspaceWith({[MAC.path]: MAC.content});
+  const {read, edit} = editHarness({root});
+  read(MAC.path);
+  edit(MAC.path, MAC.batch);
+  const again = edit(MAC.path, MAC.retry);
+  assert.equal(again.executed.edits.length, 10);
+  assert.ok(again.text.includes([
+    '[ODS Pixel edit] Nothing was changed; your edit and the held edits apply together or not at all.',
+    'The oldText was not found. Closest current text, lines 275-277:',
+    '275|  <footer>', '276|    <p>© 2026 Night Garden Event Series. All rights reserved.</p>', '277|  </footer>',
+    'Your oldText differs only in indentation (line 275 has 2 leading spaces; yours has 4).',
+    'The 9 held edits from the earlier call were included and not applied; they are still held for one more attempt. ' +
+      'Send one edit for this file with a corrected oldText, copying oldText from the current file; ' +
+      'Pixel applies the held edits with it. Do not rewrite the whole file.',
+  ].join('\n')), again.text);
+  assert.equal(pageNow(root), MAC.content);
+  const retry = edit(MAC.path, [CORRECTED]);
+  assert.equal(retry.executed.edits.length, 10);
+  assert.ok(retry.text.includes(MERGED_NOTE), retry.text);
+  assert.equal(pageNow(root), intendedPage());
+});
+
+test('a second merged miss ends the hold and says so', () => {
+  const root = workspaceWith({[MAC.path]: MAC.content});
+  const {edit} = editHarness({root});
+  edit(MAC.path, MAC.batch);
+  assert.match(edit(MAC.path, MAC.retry).text, /they are still held for one more attempt/);
+  const missed = edit(MAC.path, [{oldText: 'not in the file', newText: 'x'}]);
+  assert.equal(missed.executed.edits.length, 10);
+  assert.match(missed.text, /The 9 held edits from the earlier call were included and not applied; they are no longer held/);
+  const retry = edit(MAC.path, [CORRECTED]);
+  assert.deepEqual(retry.executed.edits, [CORRECTED]);
+  assert.doesNotMatch(retry.text, /\[ODS Pixel edit\]/);
+});
+
+// A hold ends unapplied only when the file's bytes change, and that is said
+// on the result of the call where it ends: the corrected edit itself when
+// the change happened outside any call, otherwise the changing call.
+for (const variant of ['changed-bytes', 'write', 'patch', 'exec-changes-file']) {
+  test(`held edits are reported as not applied after the file changed: ${variant}`, () => {
     const root = workspaceWith({[MAC.path]: MAC.content});
-    const guard = createToolLoopGuard({execControl: passthroughExecControl});
-    const first = editHarness({root, guard});
-    first.edit(MAC.path, MAC.batch);
-    let current = first;
-    if (variant === 'changed-bytes') fs.appendFileSync(path.join(root, MAC.path), '<!-- changed -->\n');
-    if (variant === 'write') first.write(MAC.path, MAC.content);
+    const {edit, write, call, exec} = editHarness({root});
+    edit(MAC.path, MAC.batch);
+    const target = path.join(root, MAC.path), changed = `${MAC.content}<!-- changed -->\n`;
+    let ended;
+    if (variant === 'changed-bytes') fs.writeFileSync(target, changed);
+    if (variant === 'write') ended = write(MAC.path, changed);
     if (variant === 'patch') {
-      first.call('apply_patch', {input: `*** Begin Patch\n*** Update File: ${MAC.path}\n@@\n-</html>\n+</html>\n*** End Patch`},
-        () => ({content: [{type: 'text', text: 'Done'}], details: {}}));
+      ended = call('apply_patch', {input: `*** Begin Patch\n*** Update File: ${MAC.path}\n@@\n+<!-- changed -->\n*** End Patch`},
+        () => { fs.writeFileSync(target, changed); return {content: [{type: 'text', text: 'Done'}], details: {}}; });
     }
-    if (variant === 'exec-names-file') first.exec(`sed -n 270,280p ${MAC.path}`);
-    if (variant === 'new-run') current = editHarness({root, guard, runId: 'run-2'});
-    if (variant === 'second-attempt') {
-      // The merged call itself misses: nothing applies and nothing is held again.
-      const missed = first.edit(MAC.path, [{oldText: 'not in the file', newText: 'x'}]);
-      assert.match(missed.text, /The 9 held edits from the earlier call were included and not applied; they are no longer held/);
+    if (variant === 'exec-changes-file') {
+      ended = exec(`sed -i 's/<\\/html>/<\\/html><!-- changed -->/' ${MAC.path}`,
+        () => { fs.writeFileSync(target, changed); return execResult('', 0); });
     }
-    const retry = current.edit(MAC.path, [CORRECTED]);
+    if (ended) {
+      assert.ok(ended.text.includes(`[ODS Pixel edit] The 9 held edits for ${MAC.path} were not applied (file changed); ` +
+        're-send them if still needed.'), ended.text);
+    }
+    const retry = edit(MAC.path, [CORRECTED]);
     assert.deepEqual(retry.executed.edits, [CORRECTED]);
-    assert.doesNotMatch(retry.text, /held from the rejected call/);
+    assert.match(retry.text, /Successfully replaced 1 block\(s\)/);
+    if (ended) {
+      assert.doesNotMatch(retry.text, /\[ODS Pixel edit\]/, 'reported once, where the hold ended');
+    } else {
+      assert.ok(retry.text.includes(CHANGED_NOTE), retry.text);
+      assert.doesNotMatch(retry.text, /\[ODS Pixel next step\]/, 'no publication step while requested edits are missing');
+    }
+  });
+}
+
+test('held edits do not carry into a new run', () => {
+  const root = workspaceWith({[MAC.path]: MAC.content});
+  const guard = createToolLoopGuard({execControl: passthroughExecControl});
+  editHarness({root, guard}).edit(MAC.path, MAC.batch);
+  const retry = editHarness({root, guard, runId: 'run-2'}).edit(MAC.path, [CORRECTED]);
+  assert.deepEqual(retry.executed.edits, [CORRECTED]);
+  assert.doesNotMatch(retry.text, /\[ODS Pixel edit\]/);
+});
+
+test('a hold survives an identical write and a blocked edit, which keeps its create-file correction', () => {
+  const root = workspaceWith({[MAC.path]: MAC.content});
+  const {edit, write} = editHarness({root});
+  edit(MAC.path, MAC.batch);
+  assert.doesNotMatch(write(MAC.path, MAC.content).text, /\[ODS Pixel edit\]/);
+  const blocked = edit(MAC.path, [{oldText: '', newText: 'new file'}]);
+  assert.equal(blocked.decision?.block, true);
+  assert.match(blocked.decision.blockReason, /edit cannot create a new file/);
+  const retry = edit(MAC.path, [CORRECTED]);
+  assert.equal(retry.executed.edits.length, 10);
+  assert.ok(retry.text.includes(MERGED_NOTE), retry.text);
+});
+
+test('a merged edit vetoed before it runs leaves the hold, and one in-flight edit carries it at a time', () => {
+  const root = workspaceWith({[MAC.path]: MAC.content});
+  const {guard, context, edit} = editHarness({root});
+  edit(MAC.path, MAC.batch);
+  const own = {path: MAC.path, edits: [CORRECTED]};
+  const before = id => {
+    guard.observeModelCall({}, context);
+    return guard.beforeToolCall({toolName: 'edit', params: own, toolCallId: id}, {...context, toolName: 'edit', toolCallId: id});
+  };
+  assert.equal(before('vetoed').params.edits.length, 10);
+  assert.equal((before('concurrent')?.params?.edits ?? own.edits).length, 1, 'a second in-flight edit is left as sent');
+  // Another plugin's veto: OpenClaw reports the model's own arguments and a blocked result.
+  const vetoed = {content: [{type: 'text', text: 'Tool call blocked by plugin hook'}],
+    details: {status: 'blocked', deniedReason: 'plugin-before-tool-call', reason: 'Tool call blocked by plugin hook'}};
+  const ctx = {...context, toolName: 'edit', toolCallId: 'vetoed'};
+  guard.afterToolCall({toolName: 'edit', params: own, toolCallId: 'vetoed', result: vetoed, error: vetoed.details.reason}, ctx);
+  const persisted = guard.toolResultPersist({toolName: 'edit', toolCallId: 'vetoed',
+    message: {role: 'toolResult', toolName: 'edit', toolCallId: 'vetoed', isError: true, ...vetoed}}, ctx)?.message;
+  assert.doesNotMatch(JSON.stringify(persisted ?? {}), /\[ODS Pixel edit\]/);
+  const retry = edit(MAC.path, [CORRECTED]);
+  assert.equal(retry.executed.edits.length, 10);
+  assert.ok(retry.text.includes(MERGED_NOTE), retry.text);
+  assert.equal(pageNow(root), intendedPage());
+});
+
+for (const wrapped of [false, true]) {
+  test(`review probe: a held rule the retry re-anchors elsewhere is applied once (wrapped=${wrapped})`, () => {
+    const file = 'fleet-qualification-bf541c4bc8e3/index.html';
+    const root = workspaceWith({[file]: RULES_PAGE});
+    const {edit} = editHarness({wrapped, root});
+    assert.match(edit(file, RULES_BATCH).text, /The other 1 edit matches the current file and is held\./);
+    const retry = edit(file, RULES_RETRY);
+    assert.deepEqual(retry.executed.edits, RULES_RETRY);
+    assert.ok(retry.text.includes('[ODS Pixel edit] Held edits[0] was not applied because your edit already adds the same text.'), retry.text);
+    const page = fs.readFileSync(path.join(root, file), 'utf8');
+    assert.equal(page.split('.b {').length - 1, 1, page);
+    assert.match(page, /<p>y<\/p>/);
   });
 }
 
@@ -286,13 +450,4 @@ test('confinement: a linked, hard-linked or oversized file gets neither note nor
     const retry = edit(MAC.path, [CORRECTED]);
     assert.deepEqual(retry.executed.edits, [CORRECTED], variant);
   }
-});
-
-test('an edit with an empty oldText is not merged and keeps its create-file correction', () => {
-  const root = workspaceWith({[MAC.path]: MAC.content});
-  const {edit} = editHarness({root});
-  edit(MAC.path, MAC.batch);
-  const blocked = edit(MAC.path, [{oldText: '', newText: 'new file'}]);
-  assert.equal(blocked.decision?.block, true);
-  assert.match(blocked.decision.blockReason, /edit cannot create a new file/);
 });

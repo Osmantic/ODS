@@ -66,6 +66,20 @@ test('the runtime applies the merged call built from held edits, byte for byte a
   assert.ok(read(root).includes(CORRECTED.newText));
 });
 
+test('the recorded Mac retry merged with the held edits fails in the runtime on its own edit only, leaving the bytes', async () => {
+  // Pixel keeps the hold for one more attempt only when this holds.
+  const {hold} = editRecovery(MAC.content, MAC.batch);
+  const merged = mergeHeldHunks(MAC.content, MAC.retry, hold);
+  assert.equal(merged.edits.length, 10);
+  const root = workspace(MAC.content), doubleRoot = workspace(MAC.content);
+  const runtime = await runtimeEdit(root, {path: MAC.path, edits: merged.edits});
+  assert.equal(runtime.error, `Could not find edits[0] in ${MAC.path}. The oldText must match exactly including all whitespace and newlines.`);
+  assert.equal(executeOpenClawEdit(doubleRoot, {path: MAC.path, edits: merged.edits}).details.error, runtime.error);
+  assert.deepEqual(classifyEditHunks(MAC.content, merged.edits).hunks.map(hunk => hunk.status),
+    ['missing', ...Array(9).fill('match')]);
+  assert.equal(read(root), MAC.content);
+});
+
 const PARITY = [
   ['trailing whitespace', 'a = 1   \nb = 2\n', [{oldText: 'a = 1\nb = 2', newText: 'a = 3\nb = 2'}]],
   ['smart quotes', 'say(“hi”)\n', [{oldText: 'say("hi")', newText: 'say("bye")'}]],

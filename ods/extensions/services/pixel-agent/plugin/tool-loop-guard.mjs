@@ -42,8 +42,8 @@ import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
   requestedTextDeliveryNote } from './requested-literals.mjs';
 import { escapedLineBreakScan, escapedLineBreakText, ESCAPED_LINE_BREAK_WRITE_NEXT } from './python-syntax-guidance.mjs';
-import { editMissError, editPairs, editRecovery, mergeHeldHunks, mergedEditNote, sha256Hex,
-  withoutMismatchHead } from './edit-recovery.mjs';
+import { EDIT_NOTE_PREFIX, editMissError, editPairs, editRecovery, heldEditsChangedNote, heldEditsDroppedNote,
+  heldEditsSkipped, mergeHeldHunks, mergedEditNote, sha256Hex, withoutMismatchHead } from './edit-recovery.mjs';
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -7007,59 +7007,88 @@ export function createToolLoopGuard({
 
   // Edit-miss recovery (edit-recovery.mjs). A rejected edit whose other edits
   // matched leaves at most one hold per file for this run, bound to the file's
-  // sha256. The next identified edit of that file consumes it: the held edits
-  // join that call only when the bytes are unchanged. A write, a patch or a
-  // command naming the file drops it; so does the end of the run.
+  // sha256. The next edit of that file that actually runs consumes it: the
+  // held edits join that call only while the bytes are unchanged, and any
+  // held edit that is not applied is named in that call's result. Reading the
+  // file (read, cat, grep, sed -n) never ends a hold. Another completed call
+  // that changed the bytes ends it with a note on that call's result
+  // (expireChangedHolds); a blocked edit leaves it for the next one; the end
+  // of the run discards it.
   function mergeHeldEdits(state, params, callId) {
     if (!state?.heldEdits?.size || typeof callId !== "string" || !callId ||
         callId.startsWith("tool_search_code:")) return undefined;
     const file = derivedWorkspacePath(normalizeWorkspaceFilePath(params?.path));
     const hold = file ? state.heldEdits.get(file) : undefined;
-    if (!hold) return undefined;
-    state.heldEdits.delete(file);
+    // One in-flight edit carries a hold at a time.
+    if (!hold || (hold.claimedBy && hold.claimedBy !== callId && pendingToolRuns.has(hold.claimedBy))) return undefined;
     const own = editPairs(params);
     if (!own || own.some((pair) => !pair.oldText)) return undefined;
+    hold.claimedBy = callId;
     const bytes = readWorkspaceBytes(state.configuredWorkspaceRoot, file);
-    if (!bytes || sha256Hex(bytes) !== hold.sha256) return undefined;
     let content;
-    try { content = STRICT_UTF8.decode(bytes); } catch { return undefined; }
+    try { content = bytes && sha256Hex(bytes) === hold.sha256 ? STRICT_UTF8.decode(bytes) : undefined; } catch { content = undefined; }
+    if (content === undefined) return { consume: { file, hold, notice: heldEditsChangedNote(hold.hunks.length), lost: true } };
     const merged = mergeHeldHunks(content, own, hold.hunks);
-    if (!merged) return undefined;
+    const skipped = { duplicate: merged.duplicate, overlap: merged.overlap };
+    const lost = merged.overlap.length > 0;
+    if (!merged.edits) {
+      const sentence = heldEditsSkipped(skipped);
+      return { consume: { file, hold, notice: sentence && `${EDIT_NOTE_PREFIX} ${sentence}`, lost } };
+    }
     const { oldText: _oldText, newText: _newText, ...rest } = params;
-    return { params: { ...rest, edits: merged.edits }, merge: { own: own.length, indices: merged.held } };
+    return { params: { ...rest, edits: merged.edits },
+      consume: { file, hold, merge: { own: own.length, indices: merged.held, ...skipped }, lost } };
   }
 
-  function dropHeldEdits(state, mutation, command) {
-    if (!state?.heldEdits?.size) return;
-    if (mutation) {
-      for (const file of workspaceMutationFiles(mutation.name, mutation.event?.params)) {
-        const held = derivedWorkspacePath(normalizeWorkspaceFilePath(file));
-        if (held) state.heldEdits.delete(held);
-      }
-    }
-    if (typeof command === "string") {
-      for (const file of [...state.heldEdits.keys()]) {
-        if (command.includes(file.split("/").at(-1))) state.heldEdits.delete(file);
-      }
+  function addFileRecoveryNote(pending, text) {
+    if (typeof text !== "string" || !text) return;
+    pending.fileRecoveryNote = typeof pending.fileRecoveryNote === "string" ? `${pending.fileRecoveryNote}\n${text}` : text;
+  }
+
+  // A hold whose file bytes changed through any other completed call of this
+  // run (a write, a patch, `sed -i`, ...) can no longer apply: end it and say
+  // so on that call's result. Unchanged bytes keep it, whatever the call.
+  function expireChangedHolds(state, runId, toolCallId, pending) {
+    if (!state?.heldEdits?.size || typeof toolCallId !== "string" || !toolCallId ||
+        toolCallId.startsWith("tool_search_code:") || pending?.runId !== runId) return;
+    for (const [file, hold] of [...state.heldEdits]) {
+      const bytes = readWorkspaceBytes(state.configuredWorkspaceRoot, file);
+      if (bytes && sha256Hex(bytes) === hold.sha256) continue;
+      state.heldEdits.delete(file);
+      addFileRecoveryNote(pending, heldEditsChangedNote(hold.hunks.length, file));
+      pending.recoveryBeforeCoaching = true;
     }
   }
+
+  const blockedToolResult = (value) => value?.result?.details?.status === "blocked";
 
   // The recovery note for this exact edit receipt: the closest current text
-  // for a missed edit, and a new hold when its other edits matched; or, for a
-  // merged call that succeeded, what was applied. Nested Tool Search results
-  // are folded into their outer receipt, which carries the note.
+  // for a missed edit, and a new hold when its other edits matched; for a
+  // merged call, what was applied, or whether the held edits stay held for
+  // one more attempt; and every held edit this call consumed without
+  // applying. Nested Tool Search results are folded into their outer receipt,
+  // which carries the note.
   function observeEditOutcome(state, runId, toolName, toolCallId, event, pending) {
     if (typeof toolCallId !== "string" || !toolCallId || toolCallId.startsWith("tool_search_code:") ||
         pending?.runId !== runId || pending.selectedToolName !== "edit" || pending.transport !== toolName ||
         (event?.runId && event.runId !== runId) || (event?.toolCallId && event.toolCallId !== toolCallId)) return;
     const receipt = toolName === "tool_call" ? toolSearchEventEnvelope(event, "edit", "core") : event;
     const executed = toolName === "tool_call" ? receipt?.params ?? event?.params?.args : event?.params;
-    if (!isDeepStrictEqual(executed, pending.selectedParams)) return;
+    const held = pending.heldEdit;
+    // A call that did not run as recorded (blocked, or no bound receipt)
+    // leaves any hold for the next edit.
+    if (!isDeepStrictEqual(executed, pending.selectedParams) || !receipt?.result ||
+        blockedToolResult(event) || blockedToolResult(receipt)) {
+      if (held?.hold.claimedBy === toolCallId) held.hold.claimedBy = undefined;
+      return;
+    }
     const file = derivedWorkspacePath(normalizeWorkspaceFilePath(pending.selectedParams?.path));
-    const merge = pending.heldEditMerge;
     if (!file) return;
-    if (!toolCallFailed(event) && receipt?.result && !toolCallFailed(receipt)) {
-      if (merge) pending.fileRecoveryNote = mergedEditNote(merge.own, merge.indices);
+    if (held && state.heldEdits?.get(held.file) === held.hold) state.heldEdits.delete(held.file);
+    const merge = held?.merge;
+    if (held?.lost) pending.recoveryBeforeCoaching = true;
+    if (!toolCallFailed(event) && !toolCallFailed(receipt)) {
+      addFileRecoveryNote(pending, merge ? mergedEditNote(merge.own, merge.indices, merge) : held?.notice);
       return;
     }
     const texts = (result) => Array.isArray(result?.content)
@@ -7067,16 +7096,26 @@ export function createToolLoopGuard({
     const error = editMissError(receipt?.result?.details?.error, event?.result?.details?.error,
       typeof event?.error === "string" ? event.error : undefined, ...texts(receipt?.result), ...texts(event?.result));
     const edits = editPairs(pending.selectedParams);
-    if (!error || !edits) return;
     const bytes = readWorkspaceBytes(state.configuredWorkspaceRoot, file);
     let content;
     try { content = bytes ? STRICT_UTF8.decode(bytes) : undefined; } catch { content = undefined; }
-    const recovery = content === undefined ? undefined
-      : editRecovery(content, edits, merge ? { held: { own: merge.own, indices: merge.indices } } : undefined);
-    if (!recovery) return;
-    pending.fileRecoveryNote = recovery.note;
-    pending.stripMismatchHead = true;
-    if (recovery.hold && !merge) (state.heldEdits ??= new Map()).set(file, { sha256: sha256Hex(bytes), hunks: recovery.hold });
+    // A merged call that missed only because of the model's own edit keeps
+    // its held edits for one more attempt while the bytes are unchanged.
+    const retainable = Boolean(merge && bytes && sha256Hex(bytes) === held.hold.sha256 && !held.hold.retried);
+    const recovery = content === undefined || !edits || !(error || merge) ? undefined
+      : editRecovery(content, edits, merge ? { held: { own: merge.own, indices: merge.indices, retainable } } : undefined);
+    if (recovery) {
+      addFileRecoveryNote(pending, recovery.note);
+      pending.stripMismatchHead = true;
+      if (recovery.hold && !merge) (state.heldEdits ??= new Map()).set(file, { sha256: sha256Hex(bytes), hunks: recovery.hold });
+      if (recovery.retained) {
+        state.heldEdits.set(file, { sha256: held.hold.sha256, retried: true,
+          hunks: held.hold.hunks.filter((hunk) => merge.indices.includes(hunk.index)) });
+      }
+    } else if (merge) {
+      addFileRecoveryNote(pending, heldEditsDroppedNote(merge.indices.length));
+    }
+    addFileRecoveryNote(pending, merge ? heldEditsSkipped(merge) : held?.notice);
   }
 
   // Write-time escaped line breaks (python-syntax-guidance.mjs): scan the
@@ -7091,7 +7130,7 @@ export function createToolLoopGuard({
     const scan = current === undefined ? undefined : escapedLineBreakScan(writePath, current);
     if (!scan) return;
     const text = escapedLineBreakText(scan, ESCAPED_LINE_BREAK_WRITE_NEXT);
-    pending.fileRecoveryNote = text;
+    addFileRecoveryNote(pending, text);
     pending.pythonRepairNote = true;
     const content = pending.selectedParams?.content;
     if (typeof content === "string") {
@@ -8307,7 +8346,7 @@ export function createToolLoopGuard({
       // what executes. OpenClaw still applies the whole set, or none of it.
       const heldMerge = selectedToolName === "edit"
         ? mergeHeldEdits(state, selectedParams, context?.toolCallId ?? event?.toolCallId) : undefined;
-      if (heldMerge) {
+      if (heldMerge?.params) {
         selectedParams = heldMerge.params;
         if (toolName === "tool_call") pendingParams = {...pendingParams, args: selectedParams};
         else normalizedParams = pendingParams = selectedParams;
@@ -8325,7 +8364,7 @@ export function createToolLoopGuard({
       );
       if (heldMerge) {
         const pendingEdit = pendingToolRuns.get(context?.toolCallId ?? event?.toolCallId);
-        if (pendingEdit) pendingEdit.heldEditMerge = heldMerge.merge;
+        if (pendingEdit) pendingEdit.heldEdit = heldMerge.consume;
       }
       if (
         selectedToolName !== SYNCHRONOUS_HOST_OBSERVE_TOOL &&
@@ -10282,9 +10321,8 @@ export function createToolLoopGuard({
 
     // Recovery notes for this exact receipt (edit misses, held edits, and
     // escaped line breaks in a written Python file); see the helpers above.
-    dropHeldEdits(state, successfulMutation?.name === "edit" ? undefined : successfulMutation,
-      completedExecution ? completedCommand : undefined);
     observeEditOutcome(state, runId, toolName, toolCallId, event, pendingToolRun);
+    expireChangedHolds(state, runId, toolCallId, pendingToolRun);
     observePythonWrite(state, runId, toolName, toolCallId, successfulMutation, pendingToolRun, completedWritePath);
     const completedRead =
       toolName === "read" && event?.result && typeof event.result === "object"
@@ -11343,7 +11381,7 @@ export function createToolLoopGuard({
       (!event?.toolCallId || event.toolCallId === toolCallId) &&
       (!context?.runId || context.runId === pending.runId) &&
       (!event?.runId || event.runId === pending.runId) ? pending.fileRecoveryNote : undefined;
-    const repairBeforeCoaching = Boolean(fileRecoveryNote && pending.pythonRepairNote);
+    const repairBeforeCoaching = Boolean(fileRecoveryNote && (pending.pythonRepairNote || pending.recoveryBeforeCoaching));
     const workspaceStageInstruction = (() => {
       if (failedToolResult || repairBeforeCoaching) return undefined;
       if (!compactCoreResult || !state?.workspaceTaskDirectory || state.progressBudget.laneExhausted('workspace')) return undefined;
