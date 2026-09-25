@@ -4,6 +4,7 @@ import { ArrowLeft, ChevronLeft, ChevronRight, Grid2X2, Search, Sparkles, Settin
 import { getSidebarExternalLinks, getSidebarNavItems } from '../plugins/registry'
 import { usePortalIdentity } from '../contexts/PortalIdentityContext'
 import { fallbackServiceUrl } from '../lib/serviceUrls'
+import { APPLICATIONS_CHANGED, readUnpinned } from '../lib/applicationPins'
 import PixelHandoffApproval from './PixelHandoffApproval'
 import PixelMascot from './PixelMascot'
 import ODSLogo from './ODSLogo'
@@ -31,18 +32,26 @@ export default function Sidebar({ status, collapsed, onToggle }) {
   }, [collapsed])
   const [apiLinks, setApiLinks] = useState([])
   const [serviceTokens, setServiceTokens] = useState({})
+  const [unpinned, setUnpinned] = useState(readUnpinned)
   useEffect(() => {
     let active = true
-    fetch('/api/external-links').then(r => r.ok ? r.json() : []).then(value => {
+    const loadLinks = () => fetch('/api/external-links').then(r => r.ok ? r.json() : []).then(value => {
       if (active && Array.isArray(value)) setApiLinks(value)
     }).catch(() => {})
+    loadLinks()
     fetch('/api/service-tokens').then(r => r.ok ? r.json() : {}).then(value => {
       if (active && value && typeof value === 'object') setServiceTokens(value)
     }).catch(() => {})
-    return () => { active = false }
+    // An install, removal or pin change reloads Applications at once; the
+    // interval keeps installed extensions' health current.
+    const refresh = () => { setUnpinned(readUnpinned()); loadLinks() }
+    window.addEventListener(APPLICATIONS_CHANGED, refresh)
+    const timer = setInterval(() => { if (!document.hidden) loadLinks() }, 60000)
+    return () => { active = false; window.removeEventListener(APPLICATIONS_CHANGED, refresh); clearInterval(timer) }
   }, [])
   const applications = getSidebarExternalLinks({ status, getExternalUrl: fallbackServiceUrl, apiLinks })
     .filter(link => link.healthy || link.alwaysVisible)
+    .filter(link => !link.extension || !unpinned.includes(link.key))
   const links = pixelMode ? [
     { path: '/pixel', label: displayName, icon: Sparkles },
     { path: '/pixel/settings', label: 'Settings', icon: Settings },
