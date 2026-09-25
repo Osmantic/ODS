@@ -147,8 +147,29 @@ def test_valid_curated_model_is_preserved() -> None:
             "LLAMA_ARG_SPEC_DRAFT_N_MAX",
             "LLAMA_ARG_SPLIT_MODE",
             "LLAMA_ARG_TENSOR_SPLIT",
+            "LLAMA_ARG_MAIN_GPU",
         ):
             assert key not in values, f"inactive optional runtime key was exported: {key}"
+
+
+def test_one_gpu_placement_is_preserved() -> None:
+    # Model activation ran a small model on GPU 1 of a two-GPU llama
+    # assignment; a rerun that keeps the model keeps where it runs.
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        env.write_text(
+            env.read_text(encoding="utf-8")
+            + "LLAMA_ARG_SPLIT_MODE=none\nLLAMA_ARG_TENSOR_SPLIT=1,1\nLLAMA_ARG_MAIN_GPU=1\n",
+            encoding="utf-8",
+        )
+        values = run_helper(env, catalog, imports, models_dir)
+        assert values["LLAMA_ARG_SPLIT_MODE"] == "none"
+        assert values["LLAMA_ARG_TENSOR_SPLIT"] == "1,1"
+        assert values["LLAMA_ARG_MAIN_GPU"] == "1"
+        for invalid in ("-1", "01", "1.0", "gpu1", "100"):
+            replace_env(env, f"LLAMA_ARG_MAIN_GPU={values['LLAMA_ARG_MAIN_GPU']}", f"LLAMA_ARG_MAIN_GPU={invalid}")
+            assert "LLAMA_ARG_MAIN_GPU" not in run_helper(env, catalog, imports, models_dir), invalid
+            values["LLAMA_ARG_MAIN_GPU"] = invalid
 
 
 def test_cpu_profile_host_ram_caps_are_preserved() -> None:
@@ -471,6 +492,7 @@ def main() -> int:
     tests = [
         test_valid_curated_model_is_preserved,
         test_cpu_profile_host_ram_caps_are_preserved,
+        test_one_gpu_placement_is_preserved,
         test_preserved_context_is_clamped_to_the_declared_native_context,
         test_external_registered_model_store_is_preserved,
         test_commented_model_contract_survives_rerun,

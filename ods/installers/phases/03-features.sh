@@ -17,7 +17,8 @@
 #           ENABLE_QDRANT, ENABLE_HERMES, ENABLE_OPENCLAW, ENABLE_SEARXNG,
 #           ENABLE_WEB_SEARCH, OPENCLAW_CONFIG, GPU_ASSIGNMENT_JSON,
 #           LLAMA_SERVER_GPU_UUIDS, WHISPER_GPU_UUID, COMFYUI_GPU_UUID,
-#           EMBEDDINGS_GPU_UUID, LLAMA_ARG_SPLIT_MODE, LLAMA_ARG_TENSOR_SPLIT
+#           EMBEDDINGS_GPU_UUID, LLAMA_ARG_SPLIT_MODE, LLAMA_ARG_TENSOR_SPLIT,
+#           LLAMA_ARG_MAIN_GPU (only a preserved one-GPU placement)
 #
 # Modder notes:
 #   Add new optional features to the Custom menu here.
@@ -759,10 +760,21 @@ _load_existing_gpu_assignment_json() {
 # --- Multi-GPU Config TUI ---
 GPU_ASSIGNMENT_JSON=""
 
+# Model activation may run a model that fits comfortably on one GPU on just
+# one of the llama GPUs (bin/ods-host-agent.py _plan_nvidia_llama_placement:
+# LLAMA_ARG_SPLIT_MODE=none + LLAMA_ARG_MAIN_GPU). Phase 02 carries that
+# placement over with the preserved active model; it is kept below only when
+# this run also reuses the same GPU assignment.
+_preserved_split_mode="${LLAMA_ARG_SPLIT_MODE:-}"
+_preserved_main_gpu="${LLAMA_ARG_MAIN_GPU:-}"
+_gpu_assignment_reused=false
+unset LLAMA_ARG_MAIN_GPU
+
 # If it is not an interactive session, run automatic assignment with default values
 if ! $INTERACTIVE || $DRY_RUN; then
     if _existing_assignment=$(_load_existing_gpu_assignment_json); then
         GPU_ASSIGNMENT_JSON="$_existing_assignment"
+        _gpu_assignment_reused=true
         success "Reusing existing GPU assignment from .env"
         log "Use 'ods gpu reassign --auto' after install to recompute assignment against current free VRAM."
     else
@@ -829,6 +841,20 @@ LLAMA_ARG_TENSOR_SPLIT=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '
     else "1"
     end
   end')
+
+# Keep the preserved one-GPU placement (see above). The tensor split stays
+# the assignment's: llama.cpp ignores it for one device, and switching to a
+# larger model restores the layer split with these weights.
+_llama_gpu_count=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.llama_server.gpus | length')
+if [[ "$VENDOR" == "nvidia" && "$_gpu_assignment_reused" == "true" \
+      && "$_preserved_split_mode" == "none" && "$_preserved_main_gpu" =~ ^(0|[1-9][0-9]?)$ \
+      && "$_llama_gpu_count" =~ ^[0-9]+$ ]] \
+   && (( _llama_gpu_count > 1 && _preserved_main_gpu < _llama_gpu_count )); then
+    LLAMA_ARG_SPLIT_MODE="none"
+    LLAMA_ARG_MAIN_GPU="$_preserved_main_gpu"
+    log "Keeping the active model on one GPU (llama GPU ${LLAMA_ARG_MAIN_GPU} of ${_llama_gpu_count})"
+fi
+unset _preserved_split_mode _preserved_main_gpu _gpu_assignment_reused _llama_gpu_count
 
 # Persist topology for the dashboard API (mounted read-only at /ods/config).
 # A dry run may calculate the assignment, but must not create or replace
