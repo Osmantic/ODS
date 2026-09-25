@@ -9562,6 +9562,7 @@ export function createToolLoopGuard({
         state.workspacePreviewDirectory,
         state
       );
+      state.workspacePreviewLastAttemptSucceeded = Boolean(preview);
       if (preview) {
         state.workspacePreviewDirectory = preview.relativeDirectory;
         state.workspacePreviewModelAuthored = workspacePreviewAuthorshipMatches(state, preview);
@@ -10660,17 +10661,27 @@ export function createToolLoopGuard({
     if (context?.agentId !== agentId || typeof publishWorkspacePreview !== 'function') return false;
     const runId = context.runId ?? event?.runId;
     const state = runs.get(runId);
-    if (!state || state.previewDeliveryAttempted || state.workspacePreviewAttempted) return false;
+    if (!state || state.previewDeliveryAttempted) return false;
     // Use current-run file evidence only. A historical read or model-supplied
     // directory is not authority to publish some other existing project.
     const directories = new Set([...state.successfulWritePaths]
       .filter(path => path.endsWith('/index.html')).map(path => path.slice(0, -11)));
     if (directories.size !== 1) return false;
     const directory = [...directories][0];
+    // A model can publish, run its remaining checks, and then stop with a stale
+    // snapshot. The SDK refuses model revision after possible side effects.
+    // Refresh the same current-run verified target once through normal host
+    // publication; never replay those checks or retry a failed publication.
+    // This creates a new immutable snapshot, not proof that detached children
+    // cannot write later or that arbitrary commands were read-only.
+    const refreshAllowed = () => !state.workspacePreviewAttempted ||
+      (state.workspacePreviewLastAttemptSucceeded === true &&
+        state.workspacePreviewVerifiedDirectory === directory &&
+        state.workspaceLastVerifiedPreview?.relativeDirectory === directory);
     let generation = state.previewVerificationGeneration;
     const root = state.configuredWorkspaceRoot;
     const callId = `ods-preview-delivery-${runId}`;
-    const valid = () => Boolean(runs.get(runId) === state &&
+    const valid = () => Boolean(runs.get(runId) === state && refreshAllowed() &&
       state.previewVerificationGeneration === generation && state.configuredWorkspaceRoot === root &&
       context.sessionId && state.currentSessionId === context.sessionId &&
       context.sessionKey && state.currentSessionKey === context.sessionKey &&

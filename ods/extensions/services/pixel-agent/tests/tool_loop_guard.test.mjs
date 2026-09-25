@@ -16180,6 +16180,46 @@ test('saved project gets one verified publication at finalization without replay
   assert.match(guard.replyPayloadSending({runId:context.runId,kind:'final',payload:{text:'Done'}}).payload.text,/Open preview/);
 });
 
+test('finalization republishes the same previously verified directory after completed checks, once',async()=>{
+  let calls=0,fixture;
+  fixture=previewDeliveryFixture(async params=>{calls++;assert.deepEqual(params,{relativeDirectory:'signal-garden'});return fixture.receipt;});
+  const {guard,context,invoke,receipt}=fixture;
+  invoke('pixel_ods_workspace_preview',{relativeDirectory:'signal-garden'},receipt,'publish');
+  invoke('exec',{command:'node --check signal-garden/main.js'},
+    {content:[{type:'text',text:'checks complete'}],details:{status:'completed',exitCode:0}},'check');
+  assert.equal(guard.verificationForRun(context.runId).status,'failed');
+  assert.equal(await guard.recoverWorkspacePreview({},context),true);
+  assert.equal(calls,1);
+  assert.equal(guard.verificationForRun(context.runId).status,'passed');
+  assert.equal(await guard.recoverWorkspacePreview({},context),false);
+  assert.equal(calls,1);
+});
+
+for (const fault of ['failed-check','pending-check','failed-publish','malformed-publish','wrong-session','wrong-key','ambiguous']) {
+  test(`final refresh does not publish after ${fault}`,async()=>{
+    let calls=0,fixture;
+    fixture=previewDeliveryFixture(async()=>{calls++;return fixture.receipt;});
+    const {guard,context,invoke,receipt}=fixture;
+    invoke('pixel_ods_workspace_preview',{relativeDirectory:'signal-garden'},receipt,'publish');
+    const result=fault==='pending-check'
+      ? {content:[{type:'text',text:'running'}],details:{status:'running',sessionId:'owned-running'}}
+      : {content:[{type:'text',text:fault==='failed-check'?'SyntaxError':'checks complete'}],
+        ...(fault==='failed-check'?{isError:true}:{}),details:{status:'completed',exitCode:fault==='failed-check'?1:0}};
+    invoke('exec',{command:'node --check signal-garden/main.js'},result,'check');
+    if(fault==='failed-publish')invoke('pixel_ods_workspace_preview',{relativeDirectory:'signal-garden'},
+      {isError:true,content:[{type:'text',text:'unavailable'}]},'failed-publish');
+    if(fault==='malformed-publish')invoke('pixel_ods_workspace_preview',{relativeDirectory:'signal-garden'},
+      {content:[{type:'text',text:'published'}],details:{status:'succeeded'}},'bad-publish');
+    if(fault==='ambiguous')invoke('write',{path:'other/index.html',content:'other'},
+      {content:[{type:'text',text:'written'}]},'other');
+    const ctx={...context,...(fault==='wrong-session'?{sessionId:'other'}:{}),...(fault==='wrong-key'?{sessionKey:'other'}:{})};
+    const before=guard.verificationForRun(context.runId);
+    assert.equal(await guard.recoverWorkspacePreview({},ctx),false);
+    assert.equal(calls,0);
+    assert.deepEqual(guard.verificationForRun(context.runId),before);
+  });
+}
+
 for (const fault of ['wrong-run','wrong-session','wrong-key','wrong-agent','pending','ambiguous','failed-check','no-preview']) {
   test(`automatic preview delivery fails closed: ${fault}`,async()=>{
     let calls=0;

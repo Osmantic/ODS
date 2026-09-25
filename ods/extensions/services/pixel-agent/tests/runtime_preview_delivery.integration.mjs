@@ -10,7 +10,7 @@ import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {createIngressServer} from '../host/pixel_ingress.mjs';
 const pkg=process.env.OPENCLAW_PACKAGE;
-for (const publishFails of [false,true]) test(`real harness recovers saved HTML without replaying write: publishFails=${publishFails}`, {skip:!pkg,timeout:90000},async()=>{
+for (const refresh of [false,true]) for (const publishFails of [false,true]) test(`real harness recovers saved HTML without replaying work: refresh=${refresh}, publishFails=${publishFails}`, {skip:!pkg,timeout:90000},async()=>{
   const root=mkdtempSync(join(tmpdir(),'ods-preview-delivery-'));
   const workspace=join(root,'workspace');mkdirSync(workspace);
   const html='<!doctype html><title>Fixture game</title><p>Ready</p>';
@@ -21,10 +21,14 @@ for (const publishFails of [false,true]) test(`real harness recovers saved HTML 
     const round=rounds++;
     const delta=round===0 ? {role:'assistant',tool_calls:[{index:0,id:'write-game',type:'function',
       function:{name:'write',arguments:JSON.stringify({path:'signal-garden/index.html',content:html})}}]}
+      : refresh && round===1 ? {role:'assistant',tool_calls:[{index:0,id:'publish-game',type:'function',
+        function:{name:'pixel_ods_workspace_preview',arguments:JSON.stringify({relativeDirectory:'Playground/signal-garden'})}}]}
+      : refresh && round===2 ? {role:'assistant',tool_calls:[{index:0,id:'check-game',type:'function',
+        function:{name:'exec',arguments:JSON.stringify({command:"node -e \"require('fs').appendFileSync('check-count','1');console.log('checked once')\"",workdir:workspace})}}]}
       : {role:'assistant',content:'The file is ready. Would you like a preview?'};
     res.writeHead(200,{'Content-Type':'text/event-stream'});
     res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta,finish_reason:null}]})+'\n\n');
-    res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:round===0?'tool_calls':'stop'}]})+'\n\ndata: [DONE]\n\n');
+    res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:delta.tool_calls?'tool_calls':'stop'}]})+'\n\ndata: [DONE]\n\n');
   });
   await new Promise(resolve=>upstream.listen(0,'127.0.0.1',resolve));
   const probe=createServer();await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));
@@ -42,7 +46,7 @@ for (const publishFails of [false,true]) test(`real harness recovers saved HTML 
       const bytes=readFileSync(${JSON.stringify(join(workspace,'Playground/signal-garden/index.html'))});
       const hash=createHash('sha256').update(bytes).digest('hex'),siteId='site-'+hash.slice(0,24);
       appendFileSync(${JSON.stringify(join(root,'published'))},request.relativeDirectory+'\\n');
-      if (${publishFails}) return {status:'failed'};
+      if (${publishFails} && (!${refresh} || readFileSync(${JSON.stringify(join(root,'published'))},'utf8').trim().split('\\n').length>1)) return {status:'failed'};
       return {schemaVersion:1,kind:'ods-pixel-workspace-preview',status:'succeeded',relativeDirectory:request.relativeDirectory,
         port:9437,siteId,url:'http://'+siteId+'.localhost:9437/'+siteId+'/',sha256:hash,entrySha256:hash,
         entryFile:'index.html',files:1,bytes:bytes.length,httpStatus:200,readbackVerified:true,executable:false,overwritten:false,
@@ -50,6 +54,7 @@ for (const publishFails of [false,true]) test(`real harness recovers saved HTML 
     }});
     const guard=createToolLoopGuard({publishWorkspacePreview:(params,{signal})=>publisher.execute('delivery',params,signal)});
     export default {id:'preview-fixture',register(api){
+      api.registerTool(publisher);
       api.on('before_prompt_build',(event,ctx)=>guard.observeRun(ctx,'pixel',event,{workspaceRoot:${JSON.stringify(workspace)}}));
       api.on('before_tool_call',(event,ctx)=>guard.beforeToolCall(event,ctx));
       api.on('after_tool_call',(event,ctx)=>guard.afterToolCall(event,ctx));
@@ -73,7 +78,7 @@ for (const publishFails of [false,true]) test(`real harness recovers saved HTML 
     gateway:{mode:'local',bind:'loopback',port,auth:{mode:'token',token:'fixture-only-0123456789abcdef'},http:{endpoints:{chatCompletions:{enabled:true}}}},
     agents:{defaults:{workspace,skipBootstrap:true,model:{primary:'fixture/test'},contextTokens:32768,heartbeat:{every:'0m'}},list:[{id:'pixel',default:true,workspace}]},
     models:{mode:'replace',providers:{fixture:{baseUrl:`http://127.0.0.1:${upstream.address().port}/v1`,api:'openai-completions',apiKey:'fixture-only',models:[{id:'test',name:'Fixture',contextWindow:32768,maxTokens:4096,reasoning:false,input:['text']}]}}},
-    tools:{allow:['write']},plugins:{allow:['preview-fixture'],load:{paths:[plugin]},entries:{'preview-fixture':{enabled:true,hooks:{allowConversationAccess:true}}}}};
+    tools:{allow:['write',...(refresh?['exec','pixel_ods_workspace_preview']:[])]},plugins:{allow:['preview-fixture'],load:{paths:[plugin]},entries:{'preview-fixture':{enabled:true,hooks:{allowConversationAccess:true}}}}};
   writeFileSync(join(root,'openclaw.json'),JSON.stringify(config));
   try {
     child=spawn(process.execPath,[join(pkg,'openclaw.mjs'),'gateway','run'],{cwd:root,detached:true,
@@ -90,16 +95,17 @@ for (const publishFails of [false,true]) test(`real harness recovers saved HTML 
     const response=await fetch(`http://127.0.0.1:${ingress.address().port}/v1/chat/completions`,{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'preview-fixture',messages:[{role:'user',content:'Build and publish a website in existing signal-garden.'}]}),signal:AbortSignal.timeout(45000)});
     const body=await response.text();assert.equal(response.status,200,body+'\n'+log);
-    assert.equal(rounds,2,log);
+    assert.equal(rounds,refresh?4:2,log);
+    if(refresh)assert.equal(readFileSync(join(workspace,'check-count'),'utf8'),'1','verification command must execute exactly once');
     try { assert.equal(readFileSync(join(workspace,'Playground/signal-garden/index.html'),'utf8'),html); }
     catch(error) { throw new Error(error.message+'\n'+JSON.stringify(toolResults)+'\n'+body+'\n'+log); }
-    assert.equal(readFileSync(join(root,'published'),'utf8'),'Playground/signal-garden\n');
+    assert.equal(readFileSync(join(root,'published'),'utf8'),'Playground/signal-garden\n'.repeat(refresh?2:1));
     const verdicts=readFileSync(join(root,'verdicts.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
     assert.equal(verdicts.at(-1).verification.status,publishFails?'failed':'passed',JSON.stringify(verdicts));
     const frames=body.split(/\r?\n/).filter(line=>line.startsWith('data: {')).map(line=>JSON.parse(line.slice(6)));
     if(publishFails){
       assert.equal(frames.at(-1).pixel_outcome.status,'failed');
-      assert.equal(frames.at(-1).pixel,undefined);
+      if(!refresh)assert.equal(frames.at(-1).pixel,undefined);
       assert.doesNotMatch(body,/Open preview/);
       assert.match(log,/revision after potential side effects/);
       return;
