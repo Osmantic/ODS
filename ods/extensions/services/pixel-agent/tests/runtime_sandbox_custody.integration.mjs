@@ -45,6 +45,8 @@ const control=createExecCancellationControl({root:controlRoot,executionHost:'san
 const guard=createToolLoopGuard({execControl:control});guard.observeRun(scope,'pixel',{prompt:'Execute the existing script once.'},{workspaceRoot:workspace,executionHost:'sandbox'});
 hooks.i({plugins:[{id:'pixel-ods',status:'loaded'}],hooks:[],typedHooks:[{pluginId:'pixel-ods',hookName:'before_tool_call',handler:(event,ctx)=>guard.beforeToolCall(event,ctx,'pixel')}],trustedToolPolicies:[]});
 let sandbox,restoreSupervisor,timer;
+let commandOutput="",abortAfterStarted=false;
+const controller=new AbortController();
 const keepAlive=setInterval(()=>{},1000);
 async function bounded(promise){let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('isolated SDK fixture exceeded20s')),20000);})]);}finally{clearTimeout(timer);}}
 try{
@@ -74,13 +76,21 @@ try{
       if(mode==='startup-truncated')chunk=chunk.subarray(0,20);
      }
     }
-    return transform(chunk);
+    const visible=transform(chunk);
+    if(mode==='abort' && !abortAfterStarted){
+     commandOutput=(commandOutput+visible.toString()).slice(-128);
+     if(/(?:^|\n)started\r?\n/.test(commandOutput)){
+      abortAfterStarted=true;
+      timer=setTimeout(()=>controller.abort(),0);
+     }
+    }
+    return visible;
    };
   }
-  if(mode==='startup-delay')spec.argv[spec.argv.indexOf('-c')+1]=spec.argv[spec.argv.indexOf('-c')+1].replace("    os.write(1, ('ODS_EXEC_CUSTODY_V1", "    time.sleep(2)\n    os.write(1, ('ODS_EXEC_CUSTODY_V1");
+  if(mode==='startup-delay'||mode==='startup-abort')spec.argv[spec.argv.indexOf('-c')+1]=spec.argv[spec.argv.indexOf('-c')+1].replace("    os.write(1, ('ODS_EXEC_CUSTODY_V1", "    time.sleep(2)\n    os.write(1, ('ODS_EXEC_CUSTODY_V1");
   return spec;
  };
- const negative=['pid-mismatch','nonce-mismatch','directory-rebound','foreign-token','live-pid-mismatch','reused-token','supervisor-killed','startup-malformed','startup-truncated','startup-delay'].includes(mode);
+ const negative=['pid-mismatch','nonce-mismatch','directory-rebound','foreign-token','live-pid-mismatch','reused-token','supervisor-killed','startup-malformed','startup-truncated','startup-delay','startup-abort'].includes(mode);
  sandbox.backend.finalizeExec=async args=>{
   if(negative&&args.timedOut){
    if(mode==='foreign-token')args={...args,token:Object.freeze({...args.token})};
@@ -96,8 +106,7 @@ try{
  let unrelated;
  if(mode==='concurrent'||mode==='live-pid-mismatch') unrelated=await tool.execute('unrelated',{command:'python3 unrelated.py',workdir:'/workspace',timeout:10,yieldMs:10,background:true});
  if(mode==='reused-token')unrelated=await tool.execute('unrelated',{command:'python3 unrelated.py',workdir:'/workspace',timeout:10,yieldMs:10000,background:false});
- const controller=new AbortController();
- if(mode==='abort'||mode==='abort-timeout-race') timer=setTimeout(()=>controller.abort(),mode==='abort'?400:990);
+ if(mode==='startup-abort'||mode==='abort-timeout-race') timer=setTimeout(()=>controller.abort(),mode==='startup-abort'?400:990);
  if(mode==='guard-marker'||mode==='background-marker')timer=setTimeout(()=>control.signal(scope.runId),400);
  const start=performance.now();let result,executionError;
  try{result=await bounded(tool.execute('timeout',{command:'python3 late.py',workdir:'/workspace',timeout:['normal','normal-detached','disabled-normal','pty','wait-failure','guard-marker','background-marker'].includes(mode)?10:1,yieldMs:['background-timeout','background-marker'].includes(mode)?10:10000,background:['background-timeout','background-marker'].includes(mode),pty:mode==='pty'},controller.signal));}catch(error){executionError={code:error.code,message:error.message};}
@@ -114,13 +123,14 @@ try{
   await new Promise(resolve=>setTimeout(resolve,4500));
   const lateFile=fs.existsSync(path.join(workspace,'late-write'));
   if(mode.startsWith('startup-'))assert.equal(lateFile,false,'unadmitted command must never start');
-  const proof={mode,executionError,retained,noCompletedOutcome:true,lateFileAfter4500ms:lateFile,unrelatedSurvived:fs.existsSync(path.join(workspace,'unrelated-write')),settlements};
+  const proof={mode,executionError,retained,bindings,abortAfterStarted,noCompletedOutcome:true,lateFileAfter4500ms:lateFile,unrelatedSurvived:fs.existsSync(path.join(workspace,'unrelated-write')),settlements};
   fs.writeFileSync(out,JSON.stringify(proof,null,2));console.log(JSON.stringify(proof));
  }else{
- if(executionError)throw new Error(JSON.stringify(executionError));
+ if(executionError)throw new Error(JSON.stringify({mode,executionError,bindings,settlements,abortAfterStarted,elapsedMs:performance.now()-start}));
+ if(mode==='abort')assert.equal(abortAfterStarted,true,'abort must follow actual command startup output');
  const returnedMs=performance.now()-start;const atReturn=fs.existsSync(path.join(workspace,'late-write'));
  await new Promise(resolve=>setTimeout(resolve,4500));
- const proof={mode,runtimeVersion:JSON.parse(fs.readFileSync(path.join(installed,'package.json'))).version,noCaptureHook:true,nativeDetails:result.details,returnedMs,lateFileAtReturn:atReturn,lateFileAfter4500ms:fs.existsSync(path.join(workspace,'late-write')),unrelatedSurvived:fs.existsSync(path.join(workspace,'unrelated-write')),unrelated,settlements};
+ const proof={mode,abortAfterStarted,runtimeVersion:JSON.parse(fs.readFileSync(path.join(installed,'package.json'))).version,noCaptureHook:true,nativeDetails:result.details,returnedMs,lateFileAtReturn:atReturn,lateFileAfter4500ms:fs.existsSync(path.join(workspace,'late-write')),unrelatedSurvived:fs.existsSync(path.join(workspace,'unrelated-write')),unrelated,settlements};
  fs.writeFileSync(out,JSON.stringify(proof,null,2));console.log(JSON.stringify(proof));
  assert.equal(proof.lateFileAfter4500ms,mode==='normal-detached','terminal cleanup preserves only normal detached behavior');
  assert.ok(settlements.length>0,'real existing backend finalize hook must execute');

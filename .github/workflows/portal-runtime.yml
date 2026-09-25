@@ -111,7 +111,7 @@ jobs:
           python3 "$tests/prepare_sandbox_custody_runtime.py" "$OPENCLAW_PACKAGE_DIR" "$RUNNER_TEMP/sandbox-custody"
           image=python@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
           docker pull "$image"
-          for mode in probe-path-spoof forged-done forged-owner late-frame supervisor-killed startup-malformed startup-truncated startup-delay timeout background-timeout guard-marker background-marker normal disabled-normal pty wait-failure setsid doublefork parent-race normal-detached closed-streams late-fork abort abort-timeout-race concurrent pid-mismatch nonce-mismatch directory-rebound foreign-token live-pid-mismatch reused-token; do
+          for mode in probe-path-spoof forged-done forged-owner late-frame supervisor-killed startup-malformed startup-truncated startup-delay startup-abort timeout background-timeout guard-marker background-marker normal disabled-normal pty wait-failure setsid doublefork parent-race normal-detached closed-streams late-fork abort abort-timeout-race concurrent pid-mismatch nonce-mismatch directory-rebound foreign-token live-pid-mismatch reused-token; do
             node "$tests/runtime_sandbox_custody.integration.mjs" "$RUNNER_TEMP/sandbox-custody/runtime" "$PWD/ods/extensions/services/pixel-agent/plugin" "$image" "$RUNNER_TEMP/sandbox-custody/$mode.json" "$mode"
           done
           OPENCLAW_PACKAGE="$RUNNER_TEMP/sandbox-custody/runtime" OPENCLAW_TEST_SANDBOX_IMAGE="$image" \
