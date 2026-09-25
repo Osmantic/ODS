@@ -276,6 +276,9 @@ test("a guidance block repeated by an in-place retry reaches the model once", ()
   // A block cannot swallow a following one: two stored blocks, then a repeat of the second.
   const twice = `${withTurnGuidance(withTurnGuidance("A", guidance), other)}\n\n${other}`;
   assert.equal(collapseRepeatedTurnGuidance(twice), withTurnGuidance(withTurnGuidance("A", guidance), other));
+  // Only one block's immediate repeat is OpenClaw's composition; blocks are never merged into a unit.
+  const pair = `\n\n${guidance}\n\n${other}`;
+  assert.equal(collapseRepeatedTurnGuidance(`A${pair}${pair}`), `A${pair}${pair}`);
 });
 
 test("the repeated-guidance transform is registered unless prompt changes are disabled", () => {
