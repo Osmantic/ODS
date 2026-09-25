@@ -9,11 +9,14 @@
 // recoverable. It never allows a deletion. A refusal is recoverable only when
 // every recursive rm in the command provably names a path strictly inside one
 // project directory below the workspace root, for example `rm -rf public`
-// from /workspace/site. The workspace root, a whole project directory, a
-// top-level dot directory, any .git directory, anything outside the
-// workspace, `..`, `~`, variables, substitutions, quoting beyond plain words,
-// globs that are not inside a project subdirectory, symlinked components and
-// any other shell syntax this literal parser does not model stay terminal.
+// from /workspace/site, and no other command in it deletes. The workspace
+// root, a whole project directory, a top-level dot directory, any .git
+// directory, anything outside the workspace, `..`, `~`, variables,
+// substitutions, quoting beyond plain words, globs that are not inside a
+// project subdirectory, symlinked components, a link, move or copy before the
+// rm, any other deleting command (an sh -c, bash -c or eval string naming rm,
+// find -delete, git clean, ...) and any other shell syntax this literal
+// parser does not model stay terminal.
 import fs from "node:fs";
 import path from "node:path";
 
@@ -41,9 +44,14 @@ const RECURSIVE_DELETE_ALTERNATE = new RegExp([
   String.raw`\s-delete\b`,
   String.raw`-exec(?:dir)?\s+rm\b`,
   String.raw`\brmtree\b`,
+  String.raw`\bremove_tree\b`,
   String.raw`\brimraf\b`,
-  String.raw`\bgit\s+clean\b`,
-  String.raw`\b(?:rm|rmdir)(?:Sync)?\s*\([^\n]*recursive\s*:\s*true\b`,
+  // git clean -n / --dry-run only lists what it would remove. The lazy and
+  // tempered scans here and below keep repeated tokens linear.
+  String.raw`\bgit\s+clean\b(?![^\n;&|]*?\s(?:-[A-Za-z]*n[A-Za-z]*|--dry-run)(?=\s|$))`,
+  String.raw`\brsync\b(?:(?!rsync\b)[^\n;&|])*?\s--delete\b`,
+  // The options object of this call, across lines, and not a later call's.
+  String.raw`\b(?:rm|rmdir)(?:Sync)?\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\brecursive\s*:\s*true\b`,
   String.raw`\bRemove-Item\b[^\n]*\s-Recurse\b`,
 ].join("|"), "i");
 
@@ -132,6 +140,18 @@ function literalShellCommands(text) {
 const UNMODELED_COMMAND =
   /^(?:!|\{|\}|\[\[|\]\]|if|then|else|elif|fi|for|in|do|done|while|until|case|esac|select|function|time|coproc|pushd|popd|source|\.|eval|exec|builtin|command|alias|unalias|set|shopt|export|declare|typeset|local|readonly|unset|trap|enable|hash)$|^[A-Za-z_][A-Za-z0-9_]*=/;
 const RM_WORD = /(?:^|\/)rm$/;
+// A link, move or copy that runs before the rm can put anything, including
+// a symlink to /, at a path that is a plain project directory right now.
+const PATH_RESTRUCTURING = /(?:^|[\s/])(?:ln|mv|cp|rsync)(?:\s|$)/;
+
+// A modeled command other than rm that deletes or hands rm to another
+// program: sudo or xargs rm, an sh -c, bash -c or eval string naming rm,
+// find -delete, git clean, and the other substitutes above.
+function otherDeletion(words) {
+  return !RM_WORD.test(words[0].value) &&
+    (words.some(({ value }) => /\brm\b/.test(value)) ||
+      recursiveDeleteAlternate({ command: ` ${words.map(({ value }) => value).join(" ")}` }));
+}
 
 function hasParentSegment(value) {
   return value.split("/").includes("..");
@@ -233,11 +253,12 @@ export function recursiveDeleteStaysInProject(params, workspaceRoot, { lstat = f
   const initial = path.posix.normalize(workdir);
   const { commands, end } = literalShellCommands(command);
   // Everything the parser did not model must contain no other deletion, and
-  // no modeled command may pass rm to a wrapper such as sudo or xargs.
+  // no modeled command, before or after the rm, may delete some other way.
   const unparsed = command.slice(end);
   if (offsets.some((offset) => offset >= end) || /\brm\b/.test(unparsed) ||
       recursiveDeleteAlternate({ command: unparsed }) ||
-      commands.some(({ words }) => words.slice(1).some(({ value }) => RM_WORD.test(value)))) return false;
+      commands.some(({ words }) => words.slice(1).some(({ value }) => RM_WORD.test(value))) ||
+      commands.some(({ words }) => otherDeletion(words))) return false;
   const rmStarts = new Set();
   const lastRm = commands.findLastIndex(({ words }) => RM_WORD.test(words[0].value));
   for (let index = 0; index <= lastRm; index += 1) {
@@ -245,7 +266,10 @@ export function recursiveDeleteStaysInProject(params, workspaceRoot, { lstat = f
     const name = words[0].value;
     if (name === "cd") continue;
     if (UNMODELED_COMMAND.test(name)) return false;
-    if (!RM_WORD.test(name)) continue;
+    if (!RM_WORD.test(name)) {
+      if (words.some(({ value }) => PATH_RESTRUCTURING.test(value))) return false;
+      continue;
+    }
     rmStarts.add(words[0].start);
     const { operands, recursive } = rmInvocation(words);
     if (!recursive) continue;

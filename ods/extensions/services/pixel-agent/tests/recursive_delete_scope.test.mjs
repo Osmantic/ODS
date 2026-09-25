@@ -115,6 +115,7 @@ test("deletions inside one project directory get the recoverable refusal", async
     ["exec", { command: "rm -fr site/build/lib site/missing" }],
     ["exec", { command: "rm -rf __pycache__ .pytest_cache", workdir: "/workspace/site" }],
     ["exec", { command: "rm -rf 'build'", workdir: "/workspace/site" }],
+    ["exec", { command: "mkdir -p build && rm -rf build/lib && git clean -n && npm test", workdir: "/workspace/site" }],
     ["exec", { command: `cd ${root}/site && rm -rf build` }],
     ["exec", { command: "rm -rf /workspace/Playground/game/dist" }],
     ["tool_call", { id: "openclaw:core:exec", args: { command: "rm -rf dist", workdir: "/workspace/site" } }],
@@ -172,6 +173,19 @@ test("deletions of the workspace, a whole project, or anything outside still sto
     { command: "rm -rf build && rm -rf /workspace/site", workdir: "/workspace/site" },
     { command: "rm -rf build && rm -r /", workdir: "/workspace/site" },
     { command: "rm -rf build && python3 -c \"import os; os.system('rm -rf /')\"", workdir: "/workspace/site" },
+    // A harmless in-project rm does not excuse another deleting command in
+    // the same call, wherever it sits (PR #6722 review).
+    { command: 'rm -rf build && sh -c "rm -rf /"', workdir: "/workspace/site" },
+    { command: 'rm -rf build && bash -c "rm -rf /workspace"', workdir: "/workspace/site" },
+    { command: 'rm -rf build && eval "rm -rf /workspace"', workdir: "/workspace/site" },
+    { command: "rm -rf build && find / -delete", workdir: "/workspace/site" },
+    { command: "rm -rf build && find /workspace -mindepth 1 -delete", workdir: "/workspace/site" },
+    { command: "rm -rf build && git clean -fdx /workspace", workdir: "/workspace/site" },
+    { command: "find /workspace -delete; rm -rf build", workdir: "/workspace/site" },
+    // The same command can make a project path point anywhere before rm runs.
+    { command: "ln -s / build/x && rm -rf build/x/etc", workdir: "/workspace/site" },
+    { command: "mv /workspace/site build/moved && rm -rf build/moved", workdir: "/workspace/site" },
+    { command: "cp -a escape build/copy && rm -rf build/copy/data", workdir: "/workspace/site" },
   ]) {
     await t.test(JSON.stringify(params), () => {
       const { call, aborted, signalled, prepared } = deletionGuard(root);
@@ -194,6 +208,9 @@ test("a second recursive deletion or a substitute after the guidance stops the t
     ["exec", { command: "find build -delete", workdir: "/workspace/site" }],
     ["exec", { command: "python3 -c \"import shutil; shutil.rmtree('build')\"", workdir: "/workspace/site" }],
     ["exec", { command: "node -e \"require('fs').rmSync('build', {recursive: true})\"", workdir: "/workspace/site" }],
+    ["exec", { command: "node -e \"require('fs').rmSync('build', {\n recursive: true })\"", workdir: "/workspace/site" }],
+    ["exec", { command: "perl -MFile::Path=remove_tree -e 'remove_tree(\"build\")'", workdir: "/workspace/site" }],
+    ["exec", { command: "rsync -a --delete empty/ build/", workdir: "/workspace/site" }],
     ["tool_call", { id: "openclaw:core:exec", args: { command: "sh -c 'rm -r build'", workdir: "/workspace/site" } }],
   ]) {
     await t.test(JSON.stringify(params), () => {
@@ -235,5 +252,48 @@ test("ordinary commands after the guidance are not treated as substitutes", () =
     "node -e \"require('fs').mkdirSync('public', {recursive: true})\"",
     ROUND_076_RETRY.command,
     "python3 -m unittest -v",
+    // A non-recursive rmSync followed by a recursive mkdirSync on one line.
+    "node -e \"const fs=require('fs'); fs.rmSync('dist/app.js',{force:true}); fs.mkdirSync('dist',{recursive:true})\"",
+    "git clean -n",
+    "git clean -nd && git status --short",
+    "git clean --dry-run -d",
   ]) assert.equal(recursiveDeleteAlternate({ command }), false, command);
+  for (const command of [
+    "git clean -n && git clean -fd",
+    "node -e \"fs.rmSync(path.join(root, 'build'), { force: true, recursive: true })\"",
+  ]) assert.equal(recursiveDeleteAlternate({ command }), true, command);
+});
+
+test("parallel siblings of the guided call get the same guidance until the model sees it", (t) => {
+  const root = workspace(t);
+  const { guard, call, aborted, prepared } = deletionGuard(root);
+  const modelRound = () => guard.observeModelCall({ runId: "run-1" },
+    { agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel");
+  modelRound();
+  // One model message chose both deletions before either refusal arrived.
+  assert.deepEqual(call("exec", { command: "rm -rf build", workdir: "/workspace/site" }), GUIDED);
+  assert.deepEqual(call("exec", { command: "rm -rf dist", workdir: "/workspace/site" }), GUIDED);
+  assert.notEqual(call("read", { path: "site/index.html" })?.block, true);
+  assert.deepEqual(aborted, []);
+  // After the guidance, the next model round's deletion stops the turn.
+  modelRound();
+  assert.notEqual(call("exec", { command: "mkdir -p build && ls build", workdir: "/workspace/site" })?.block, true);
+  assert.deepEqual(call("exec", { command: "rm -rf dist", workdir: "/workspace/site" }), TERMINAL);
+  assert.deepEqual(call("read", { path: "site/index.html" }), TERMINAL);
+  assert.deepEqual(prepared, ["mkdir -p build && ls build"]);
+  assert.deepEqual(aborted, ["session-1"]);
+});
+
+test("a parallel sibling that leaves the project or deletes another way stops the turn", async (t) => {
+  const root = workspace(t);
+  for (const command of ["rm -rf /", "rm -rf /workspace/site", "find dist -delete", "rm -rf build && sh -c \"rm -rf /\""]) {
+    await t.test(command, () => {
+      const { guard, call, aborted } = deletionGuard(root);
+      guard.observeModelCall({ runId: "run-1" }, { agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel");
+      assert.deepEqual(call("exec", { command: "rm -rf build", workdir: "/workspace/site" }), GUIDED);
+      assert.deepEqual(call("exec", { command, workdir: "/workspace/site" }), TERMINAL);
+      assert.deepEqual(call("read", { path: "site/index.html" }), TERMINAL);
+      assert.deepEqual(aborted, ["session-1"]);
+    });
+  }
 });

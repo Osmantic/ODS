@@ -240,7 +240,7 @@ export const RECURSIVE_DELETE_REQUIRES_OWNER_REASON =
   "Pixel stopped tool use for this turn because a recursive deletion was not authorized. The deletion was blocked, but earlier actions may have completed. Do not retry through another command, tool, or agent. Explain what was attempted and wait for a new owner instruction.";
 
 export const RECURSIVE_DELETE_GUIDED_REASON =
-  "Nothing in this command ran: Pixel blocked a recursive forced deletion inside the project because the owner did not ask for it. Continue the owner's task without deleting. Do not delete directories recursively in this turn or retry the deletion through another command, interpreter, tool, or agent; another attempt stops tool use for this turn. To refresh generated output, overwrite its files in place (mkdir -p keeps an existing directory) or write to a new path, then rerun the remaining steps without the deletion.";
+  "Nothing in this command ran: Pixel blocked a recursive forced deletion inside the project because the owner did not ask for it. Continue the owner's task without deleting. Do not delete directories recursively in this turn or retry the deletion through another command, interpreter, tool, or agent. If Pixel detects another recursive deletion, it stops tool use for this turn. To refresh generated output, overwrite its files in place (mkdir -p keeps an existing directory) or write to a new path, then rerun the remaining steps without the deletion.";
 
 export const CANCELLABLE_EXEC_UNAVAILABLE_REASON =
   "Pixel could not establish the exact cancellation boundary for this command. Do not call another tool in this turn; explain that execution is temporarily unavailable.";
@@ -7171,6 +7171,7 @@ export function createToolLoopGuard({
         recursiveDeleteDenied: false,
         recursiveDeleteAbortAttempted: false,
         recursiveDeleteGuided: false,
+        recursiveDeleteGuidedRound: 0,
         pendingExecSessions: new Map(),
         pendingExecBlocks: new Map(),
         // Phantom-process bookkeeping: allowed exec calls whose receipt has
@@ -7463,9 +7464,11 @@ export function createToolLoopGuard({
     if (fileParent) {
       return {block:true, blockReason:`Cannot create this site's files: ${fileParent} already exists as a FILE, not a directory. Preserve that file. Choose a fresh sibling directory (for example ${fileParent}-site) and write index.html there, then publish that new relativeDirectory. Do not retry paths inside the existing file or delete it.`};
     }
-    // A refusal is terminal for this run, not an invitation to express the
-    // same destructive effect through another interpreter or tool. This must
-    // precede Tool Search, deferred dispatch and every parameter rewrite.
+    // A terminal refusal stops tool use for the rest of this run; it is not
+    // an invitation to express the same destructive effect through another
+    // interpreter or tool. Only the first refusal of a deletion that stays
+    // inside one project directory is guided instead and never sets this
+    // flag (see RECURSIVE_DELETE_GUIDED_REASON). This must precede Tool Search, deferred dispatch and every parameter rewrite.
     // It contains retries after this tripwire; it is not a shell sandbox or
     // a guarantee against an unrecognized first destructive command.
     if (state?.recursiveDeleteDenied) {
@@ -8857,11 +8860,18 @@ export function createToolLoopGuard({
       // the turn continue with guidance. Any other target, and any further
       // recursive deletion or common substitute in this run, keeps the
       // terminal refusal that stops tool use (see recursive-delete-scope.mjs).
-      if (state && !state.recursiveDeleteGuided && recursiveDeleteStaysInProject(
+      // Parallel siblings of the guided call were chosen before the guidance
+      // reached the model, so an in-project one gets the same guidance, as
+      // the Operations fuses do. Without model-round telemetry the next
+      // deletion stays terminal.
+      const guidedSibling = state?.recursiveDeleteGuided && state.operationsPromptRound > 0 &&
+        state.operationsPromptRound === state.recursiveDeleteGuidedRound;
+      if (state && (!state.recursiveDeleteGuided || guidedSibling) && recursiveDeleteStaysInProject(
         { ...selectedParams, workdir: normalizeExecWorkdir(selectedParams.workdir) },
         state.configuredWorkspaceRoot
       )) {
         state.recursiveDeleteGuided = true;
+        state.recursiveDeleteGuidedRound = state.operationsPromptRound;
         recordFreeCorrection(state, "recursive-delete-guided",
           context?.toolCallId ?? event?.toolCallId, toolName);
         return { block: true, blockReason: RECURSIVE_DELETE_GUIDED_REASON };
