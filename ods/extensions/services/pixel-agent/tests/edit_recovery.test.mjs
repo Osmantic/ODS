@@ -2,7 +2,7 @@ import test, {after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import {alreadyAppliedLines, classifyEditHunks, describeDifference, editMissError, editPairs, editRecovery, indexRanges,
+import {alreadyAppliedInCall, alreadyAppliedLines, classifyEditHunks, describeDifference, editMissError, editPairs, editRecovery, indexRanges,
   nearMissRegions, withoutMismatchHead} from '../plugin/edit-recovery.mjs';
 import {applyEditsToNormalizedContent, executeOpenClawEdit} from './fixtures/openclaw-edit-2026.6.33.mjs';
 import {execResult, guardReplay, removeWorkspaces, workspaceWith} from './fixtures/guard-replay.mjs';
@@ -218,19 +218,82 @@ for (const wrapped of [false, true]) {
   });
 }
 
+/// Final review: in a move or a swap within one call, the missed edit's
+// newText is in the file only because another edit of the call removes or
+// replaces it. Calling that "already applied" and asking to resend the call
+// without it lost the moved text (app.js references went to 0).
+const MOVE_FILE = 'fleet-qualification-bf541c4bc8e3/move.html';
+const MOVE_PAGE = '<html>\n<head>\n  <script src="app.js"></script>\n</head>\n<body>\n  <main></main>\n  <!-- scripts -->\n</body>\n</html>\n';
+const MOVE = [
+  {oldText: '  <script src="app.js"></script>\n</head>', newText: '</head>'},
+  {oldText: '  <!--scripts-->', newText: '  <script src="app.js"></script>'},
+];
+const MOVE_FIXED = [MOVE[0], {oldText: '  <!-- scripts -->', newText: MOVE[1].newText}];
+const NAV_FILE = 'fleet-qualification-bf541c4bc8e3/index.html';
+const NAV_PAGE = '<nav>\n  <ul>\n    <li><a href="#about">About</a></li>\n    <li><a href="#events">Events</a></li>\n  </ul>\n</nav>\n';
+const SWAP = [
+  {oldText: '    <li><a href="#about">About</a></li>', newText: '    <li><a href="#events">Events</a></li>'},
+  {oldText: '    <li><a href="#event">Events</a></li>', newText: '    <li><a href="#about">About</a></li>'},
+];
+const SWAP_FIXED = [SWAP[0], {oldText: '    <li><a href="#events">Events</a></li>', newText: SWAP[1].newText}];
+
+test('a moved or swapped text is not "already applied" when another edit of the call removes it', () => {
+  assert.deepEqual(alreadyAppliedLines(MOVE_PAGE, MOVE[1].oldText, MOVE[1].newText), {start: 3, end: 3}, 'alone it looks applied');
+  assert.equal(alreadyAppliedInCall(MOVE_PAGE, MOVE, 1), undefined);
+  assert.equal(alreadyAppliedInCall(NAV_PAGE, SWAP, 1), undefined);
+  // Without another edit touching that text, it still counts.
+  assert.deepEqual(alreadyAppliedInCall(LAPTOP_PAGE, [{oldText: '<h1>Night Garden</h1>', newText: '<h1>Night Garden</h1>!'}, LAPTOP_EDIT], 1),
+    {start: 12, end: 14});
+  for (const [page, edits] of [[MOVE_PAGE, MOVE], [NAV_PAGE, SWAP]]) {
+    const {note} = editRecovery(page, edits);
+    assert.doesNotMatch(note, /already in the file|without edits/);
+    assert.match(note, /Send one edit for this file again with it unchanged and a corrected edits\[1\], copying oldText from the current file\./);
+  }
+});
+
+for (const wrapped of [false, true]) {
+  for (const [name, file, page, edits, fixed, check] of [
+    ['move', MOVE_FILE, MOVE_PAGE, MOVE, MOVE_FIXED, text => {
+      assert.equal(text.split('app.js').length - 1, 1);
+      assert.ok(text.includes('  <script src="app.js"></script>\n</body>'), text);
+    }],
+    ['swap', NAV_FILE, NAV_PAGE, SWAP, SWAP_FIXED, text => {
+      assert.match(text, /#events">Events<\/a><\/li>\n {4}<li><a href="#about">About/);
+    }],
+  ]) {
+    test(`${name} with a missed edit: the note asks for the corrected call, which keeps the text (wrapped=${wrapped})`, () => {
+      const root = workspaceWith({[file]: page});
+      const {read, edit} = editHarness({wrapped, root});
+      read(file);
+      const rejected = edit(file, edits);
+      assert.match(rejected.text, /edits\[1\] was not found\./);
+      assert.doesNotMatch(rejected.text, /already in the file|without edits/);
+      assert.match(rejected.text, /with it unchanged and a corrected edits\[1\]/);
+      const retry = edit(file, fixed);
+      assert.match(retry.text, /Successfully replaced 2 block\(s\)/);
+      check(fs.readFileSync(path.join(root, ...file.split('/')), 'utf8'));
+    });
+  }
+}
+
 // OpenClaw runs the tool calls of one model message in parallel by default:
 // every before hook first, then executions (one file's mutations in message
 // order) and after hooks as calls complete, then the results in message order.
-// The note keeps no state and never changes what runs, so in every ordering
-// each call runs exactly as sent, only a failed edit gets a note, and that
-// note describes the file as it was when that edit's own after hook ran.
+// The note keeps no state and never changes what runs. In every ordering each
+// call runs exactly as sent and only a failed edit gets a note. The note reads
+// the file when that edit's own after hook runs, so it can include a sibling's
+// change; when another call of the message targets the same file, it asks for
+// a read and only the missing changes instead of "resend unchanged".
 const TITLE = {oldText: '      <h1>Night Garden FLEET-9201630fb1</h1>', newText: '      <h1>Night Garden FLEET-9201630fb1 Revised</h1>'};
 const OTHER = 'fleet-qualification-bf541c4bc8e3/other.css';
 const noteLines = text => text.split('\n').filter(line => /^\[ODS Pixel edit\]|not found|newText is already|The other /.test(line));
+const SIBLING = 'Another tool call in the same message also changes this file, so it may no longer be what you read. ' +
+  'Read the file first, then send only the changes that are still missing with a corrected edits[8] copied from it. Do not rewrite the whole file.';
+const RESEND = /with (?:it|all of them) unchanged/;
 for (const wrapped of [false, true]) {
   // Sibling edits of one file: the batch misses; B makes the batch's own
   // edits[9] change. Before B runs, the note sees nine matching edits; after,
-  // it sees that edits[9] is already applied.
+  // it sees that edits[9] is already applied. Either way: read first.
   for (const [schedule, sawB] of [[['run 0', 'after 0', 'run 1', 'after 1'], false], [['run 0', 'run 1', 'after 1', 'after 0'], true],
     [['run 0', 'run 1', 'after 0', 'after 1'], true]]) {
     test(`parallel: sibling edits of one file, ${schedule.join(', ')} (wrapped=${wrapped})`, () => {
@@ -243,13 +306,30 @@ for (const wrapped of [false, true]) {
       assert.match(b.text, /Successfully replaced 1 block\(s\)/);
       assert.doesNotMatch(b.text, EDIT_NOTE);
       assert.match(a.text, /edits\[8\] was not found\. Closest current text, lines 275-277:/);
-      if (sawB) {
-        assert.match(a.text, /edits\[9\] newText is already in the file at line \d+, so this change may already be applied/);
-        assert.match(a.text, /The other 8 edits match the current file but were not applied\. Send one edit for this file again with all of them unchanged and a corrected edits\[8\], copying oldText from the current file and without edits\[9\]\./);
-      } else {
-        assert.ok(a.text.includes(MAC_NOTE), a.text);
-      }
+      if (sawB) assert.match(a.text, /edits\[9\] newText is already in the file at line \d+, so this change may already be applied/);
+      else assert.doesNotMatch(a.text, /edits\[9\]/);
+      assert.ok(a.text.includes(SIBLING), a.text);
+      assert.doesNotMatch(a.text, RESEND);
       assert.equal(pageNow(root), applyEditsToNormalizedContent(MAC.content, [TITLE], MAC.path).newContent, 'only B changed the file');
+    });
+  }
+
+  // Final review probe: the batch inserts a line and misses its second edit;
+  // a sibling inserts the same line. "Resend unchanged" would insert it twice.
+  const PAGE = '<html>\n<body>\n  <main>\n    <h1>Title</h1>\n  </main>\n  <footer>\n    <p>Copyright</p>\n  </footer>\n</body>\n</html>\n';
+  const INSERT = {oldText: '    <h1>Title</h1>', newText: '    <h1>Title</h1>\n    <p class="lead">Welcome to the garden</p>'};
+  const MISS = {oldText: '    <footer>\n    <p>Copyright</p>', newText: '    <footer>\n    <p>Copyright 2026</p>'};
+  for (const schedule of [['run 0', 'after 0', 'run 1', 'after 1'], ['run 0', 'run 1', 'after 0', 'after 1'], ['run 0', 'run 1', 'after 1', 'after 0']]) {
+    test(`parallel: a sibling makes the same insertion, ${schedule.join(', ')} (wrapped=${wrapped})`, () => {
+      const file = 'fleet-qualification-bf541c4bc8e3/index.html';
+      const root = workspaceWith({[file]: PAGE});
+      const h = editHarness({wrapped, root});
+      const [a, b] = h.message([h.editArgs(file, [INSERT, MISS]), h.editArgs(file, [INSERT])], {schedule});
+      assert.deepEqual(a.executed.edits, [INSERT, MISS]);
+      assert.match(b.text, /Successfully replaced 1 block\(s\)/);
+      assert.doesNotMatch(b.text, EDIT_NOTE);
+      assert.match(a.text, /Another tool call in the same message also changes this file[^\n]*Read the file first, then send only the changes that are still missing with a corrected edits\[1\]/);
+      assert.doesNotMatch(a.text, RESEND);
     });
   }
 
@@ -265,6 +345,7 @@ for (const wrapped of [false, true]) {
     assert.doesNotMatch(w.text, EDIT_NOTE);
     assert.match(e.text, /The oldText was not found\. Most similar current text, lines 275-277:\n275\|  <footer class="site">/);
     assert.match(e.text, /Your oldText differs from line 275\./);
+    assert.match(e.text, /Another tool call in the same message also changes this file[^\n]*with corrected oldText copied from it\./);
     assert.equal(pageNow(root), written);
   });
 
@@ -282,20 +363,23 @@ for (const wrapped of [false, true]) {
     });
   }
 
-  // Two failing edits of one file in one message: each has its own note and
-  // neither affects the other or the next message.
+  // Two failing edits of one file in one message: each has its own note, each
+  // names the other call, and neither affects the next message.
   test(`parallel: two failing edits of one file, then the next message (wrapped=${wrapped})`, () => {
     const root = workspaceWith({[MAC.path]: MAC.content});
     const h = editHarness({wrapped, root});
     const [a, b] = h.message([h.editArgs(MAC.path, MAC.batch), h.editArgs(MAC.path, MAC.retry)],
       {schedule: ['run 0', 'run 1', 'after 1', 'after 0']});
-    assert.ok(a.text.includes(MAC_NOTE), a.text);
-    assert.match(b.text, /^\[ODS Pixel edit\] Nothing was changed\.$/m);
+    assert.ok(a.text.includes(SIBLING), a.text);
     assert.deepEqual(noteLines(b.text).slice(0, 2), ['[ODS Pixel edit] Nothing was changed.',
       'The oldText was not found. Closest current text, lines 275-277:']);
+    assert.match(b.text, /Another tool call in the same message also changes this file/);
     const [next] = h.message([h.editArgs(MAC.path, [CORRECTED])]);
     assert.deepEqual(next.executed.edits, [CORRECTED]);
     assert.doesNotMatch(next.text, EDIT_NOTE);
+    // A later single-call message has no sibling, so the note is the ordinary one.
+    const [alone] = h.message([h.editArgs(MAC.path, MAC.retry)]);
+    assert.doesNotMatch(alone.text, /Another tool call/);
   });
 }
 

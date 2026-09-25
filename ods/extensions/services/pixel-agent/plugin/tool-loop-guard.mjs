@@ -7009,12 +7009,27 @@ export function createToolLoopGuard({
     pending.fileRecoveryNote = typeof pending.fileRecoveryNote === "string" ? `${pending.fileRecoveryNote}\n${text}` : text;
   }
 
+  // Another tool call of the same model message (still pending: OpenClaw
+  // runs them in parallel and persists them together) that writes, edits or
+  // patches this file. Its change may already be in the bytes this note reads,
+  // or land after it; either way "resend unchanged" is unsafe.
+  function siblingChangesFile(runId, toolCallId, pending, file) {
+    return [...pendingToolRuns].some(([id, other]) => other !== pending && id !== toolCallId &&
+      !id.startsWith("tool_search_code:") &&
+      other.runId === runId && other.modelRound === pending.modelRound &&
+      WORKSPACE_MUTATION_TOOLS.has(other.selectedToolName) &&
+      workspaceMutationFiles(other.selectedToolName, other.selectedParams)
+        .some((path) => derivedWorkspacePath(normalizeWorkspaceFilePath(path)) === file));
+  }
+
   // Edit-miss recovery (edit-recovery.mjs): the closest current text for each
   // missed edit of this exact failed receipt. It keeps no state between
-  // calls and never changes what runs; the note is computed from the file as
-  // it is when this call completes, so parallel calls of one model message
-  // each describe the bytes they saw. Nested Tool Search results are folded
-  // into their outer receipt, which carries the note.
+  // calls and never changes what runs. The note is computed from the file as
+  // it is when this call's after hook runs, which can include changes that
+  // parallel calls of the same model message made before then; when such a
+  // call targets this file the note asks for a read before any resend.
+  // Nested Tool Search results are folded into their outer receipt, which
+  // carries the note.
   function observeEditOutcome(state, runId, toolName, toolCallId, event, pending) {
     if (typeof toolCallId !== "string" || !toolCallId || toolCallId.startsWith("tool_search_code:") ||
         pending?.runId !== runId || pending.selectedToolName !== "edit" || pending.transport !== toolName ||
@@ -7030,7 +7045,8 @@ export function createToolLoopGuard({
     const edits = editPairs(pending.selectedParams);
     if (!file || !error || !edits) return;
     const content = readWorkspaceText(state.configuredWorkspaceRoot, file);
-    const recovery = content === undefined ? undefined : editRecovery(content, edits);
+    const recovery = content === undefined ? undefined
+      : editRecovery(content, edits, { siblingChange: siblingChangesFile(runId, toolCallId, pending, file) });
     if (!recovery) return;
     addFileRecoveryNote(pending, recovery.note);
     pending.stripMismatchHead = true;
@@ -7144,6 +7160,8 @@ export function createToolLoopGuard({
       verificationFingerprint,
       transport,
       selectedToolTarget,
+      // The model call (one assistant message) this tool call belongs to.
+      modelRound: state?.operationsPromptRound,
     });
   }
 

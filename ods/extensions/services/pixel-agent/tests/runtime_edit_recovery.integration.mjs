@@ -95,6 +95,16 @@ const PARITY = [
   ['overlap', 'abcdef\n', [{oldText: 'abcd', newText: 'ABCD'}, {oldText: 'cdef', newText: 'CDEF'}]],
   ['second missing', 'a\nb\n', [{oldText: 'a', newText: 'A'}, {oldText: 'z', newText: 'Z'}]],
   ['CRLF', 'one\r\ntwo\r\n', [{oldText: 'one\ntwo', newText: 'one\n2'}]],
+  // A move and a swap within one call (edit_recovery.test.mjs): the missed
+  // form fails as a whole, and the corrected form applies both edits.
+  ...[['move', '<head>\n  <script src="app.js"></script>\n</head>\n<body>\n  <!-- scripts -->\n</body>\n',
+    [{oldText: '  <script src="app.js"></script>\n</head>', newText: '</head>'}], '  <!--scripts-->', '  <!-- scripts -->', '  <script src="app.js"></script>'],
+  ['swap', '<ul>\n  <li>About</li>\n  <li>Events</li>\n</ul>\n',
+    [{oldText: '  <li>About</li>', newText: '  <li>Events</li>'}], '  <li>Event</li>', '  <li>Events</li>', '  <li>About</li>'],
+  ].flatMap(([name, content, first, missed, fixed, newText]) => [
+    [`${name} with a missed edit`, content, [...first, {oldText: missed, newText}]],
+    [`${name}, corrected`, content, [...first, {oldText: fixed, newText}]],
+  ]),
 ];
 for (const [name, content, edits] of PARITY) {
   test(`runtime and double agree: ${name}`, async () => {

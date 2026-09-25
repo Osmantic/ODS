@@ -225,6 +225,42 @@ export function alreadyAppliedLines(content, oldText, newText) {
   return {start, end: start + occurrences(needle.replace(/\n+$/, ''), '\n')};
 }
 
+// Line ranges (1-based) of every place `text` occurs, exact first, else after
+// fuzzy normalization (which keeps line numbers).
+function occurrenceLines(content, text) {
+  const normalized = fileText(content), wanted = normalizeToLF(text);
+  if (!wanted.trim()) return [];
+  let space = normalized, needle = wanted;
+  if (!normalized.includes(wanted)) { space = normalizeForFuzzyMatch(normalized); needle = normalizeForFuzzyMatch(wanted); }
+  const found = [], span = occurrences(needle.replace(/\n+$/, ''), '\n');
+  for (let at = space.indexOf(needle); at >= 0 && found.length < 64; at = space.indexOf(needle, at + 1)) {
+    const start = occurrences(space.slice(0, at), '\n') + 1;
+    found.push({start, end: start + span});
+  }
+  return found;
+}
+
+// alreadyAppliedLines for edits[index] of one call. In a move or a swap the
+// newText is in the file only because another edit of the same call removes
+// or replaces it there; that is never reported as already applied, because
+// leaving the edit out would lose the text. So an edit does not count when
+// its newText is inside another edit's oldText, or when another edit's
+// oldText occurs on any line where the newText occurs.
+export function alreadyAppliedInCall(content, edits, index) {
+  const edit = edits[index];
+  const applied = alreadyAppliedLines(content, edit.oldText, edit.newText);
+  if (!applied) return undefined;
+  const added = normalizeForFuzzyMatch(normalizeToLF(edit.newText)).trim();
+  const at = occurrenceLines(content, edit.newText);
+  for (const [other, item] of edits.entries()) {
+    if (other === index || !item.oldText.trim()) continue;
+    if (normalizeForFuzzyMatch(normalizeToLF(item.oldText)).includes(added)) return undefined;
+    if (occurrenceLines(content, item.oldText).some(region =>
+      at.some(lines => region.start <= lines.end && lines.start <= region.end))) return undefined;
+  }
+  return applied;
+}
+
 // "edits[0-7], edits[9]" for a sorted index list.
 export function indexRanges(indices) {
   const runs = [];
@@ -240,13 +276,13 @@ const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 const lineRange = ({start, end}) => start === end ? `line ${start}` : `lines ${start}-${end}`;
 
 // `label` names the edit: "The oldText" for a single edit, else "edits[N]".
-function missSentences(lines, content, hunk, edit, label, single) {
+// `applied` is where its newText already is (alreadyAppliedInCall).
+function missSentences(lines, content, hunk, edit, label, single, applied) {
   if (hunk.status === 'ambiguous') {
     return [`${label} matches ${hunk.count} places; include one or two surrounding lines so it matches exactly one.`];
   }
   if (hunk.status === 'overlap') return [`${label} overlaps another edit in this call; merge the two into one edit.`];
   if (hunk.status === 'empty') return [`${label} has an empty oldText; copy it from the current file.`];
-  const applied = alreadyAppliedLines(content, edit.oldText, edit.newText);
   if (applied) {
     return [`${single ? "This edit's" : label} newText is already in the file at ${lineRange(applied)}, so this change may already be applied; check those lines before editing again.`];
   }
@@ -273,32 +309,45 @@ function missSentences(lines, content, hunk, edit, label, single) {
   return sentences;
 }
 
-/// Recovery for one failed edit call against the current file content: the
+// Recovery for one failed edit call against the current file content: the
 // closest current text for up to three missed edits, and what to send next.
 // Nothing is kept between calls. OpenClaw applies the edits of one call
 // together or not at all, so the retry is the same call with the misses
 // corrected; the note says so when other edits of the call matched.
-export function editRecovery(content, edits) {
+// `siblingChange`: another tool call of the same model message also changes
+// this file, so the file may not be what the model read and resending the
+// matched edits unchanged could apply a change twice; the note then asks for
+// a read first instead.
+export function editRecovery(content, edits, {siblingChange = false} = {}) {
   if (typeof content !== 'string' || !Array.isArray(edits) || !edits.length) return undefined;
   const lines = fileText(content).split('\n');
   const {hunks} = classifyEditHunks(content, edits);
   const single = edits.length === 1;
   const problems = hunks.filter(hunk => !['match', 'noop'].includes(hunk.status));
   if (!problems.length) return undefined;
+  const appliedAt = new Map(problems.flatMap(hunk => {
+    const at = hunk.status === 'missing' ? alreadyAppliedInCall(content, edits, hunk.index) : undefined;
+    return at ? [[hunk.index, at]] : [];
+  }));
   const sentences = [single ? `${EDIT_NOTE_PREFIX} Nothing was changed.`
     : `${EDIT_NOTE_PREFIX} Nothing was changed; edits in one call apply together or not at all.`];
   for (const hunk of problems.slice(0, MAX_NOTED_MISSES)) {
-    sentences.push(...missSentences(lines, content, hunk, edits[hunk.index], single ? 'The oldText' : `edits[${hunk.index}]`, single));
+    sentences.push(...missSentences(lines, content, hunk, edits[hunk.index], single ? 'The oldText' : `edits[${hunk.index}]`, single,
+      appliedAt.get(hunk.index)));
   }
   if (problems.length > MAX_NOTED_MISSES) {
     sentences.push(`${plural(problems.length - MAX_NOTED_MISSES, 'more edit')} also did not match: ${indexRanges(problems.slice(MAX_NOTED_MISSES).map(hunk => hunk.index))}.`);
   }
   // A missing edit whose newText is already in the file is left out, not corrected.
-  const applied = problems.filter(hunk => hunk.status === 'missing' &&
-    alreadyAppliedLines(content, edits[hunk.index].oldText, edits[hunk.index].newText));
+  const applied = problems.filter(hunk => appliedAt.has(hunk.index));
   const correctable = problems.filter(hunk => !applied.includes(hunk));
   const others = edits.length - problems.length;
-  if (single) {
+  if (siblingChange) {
+    const fix = correctable.length
+      ? ` with ${single ? 'corrected oldText' : `a corrected ${indexRanges(correctable.map(hunk => hunk.index))}`} copied from it` : '';
+    sentences.push('Another tool call in the same message also changes this file, so it may no longer be what you read. ' +
+      `Read the file first, then send only the changes that are still missing${fix}. Do not rewrite the whole file.`);
+  } else if (single) {
     sentences.push(correctable.length ? 'Copy oldText exactly from the current file and retry this one edit. Do not rewrite the whole file.'
       : 'Do not rewrite the whole file.');
   } else if (!others) {
