@@ -1518,6 +1518,36 @@ restart_windows_lemonade_with_previous_model() {
     restart_windows_lemonade_with_full_model "$previous_gguf" "previous model"
 }
 
+# Print the checkpoint interval llama-server.exe can take, or nothing. Called
+# in a command substitution, so warnings go to stderr (the upgrade log).
+# Mirrors installers/macos/lib/native-checkpoint-args.py and
+# installers/windows/lib/native-llama-args.ps1: llama.cpp removed
+# --checkpoint-every-n-tokens in b9310, and llama-server exits on a flag it
+# does not know. The setting is opt-in, so an unusable value is dropped with a
+# warning rather than failing the swap.
+windows_native_checkpoint_interval() {
+    local llama_exe="$1" value="$2" number="" help_text
+    [[ -n "$value" ]] || return 0
+    if [[ "$value" == "-1" ]]; then
+        number="-1"
+    elif [[ "$value" =~ ^[0-9]{1,12}$ ]] && (( 10#$value >= 1 && 10#$value <= 262144 )); then
+        number="$((10#$value))"
+    else
+        log "WARNING: LLAMA_ARG_CHECKPOINT_EVERY_NT=$value is not an integer from -1 to 262144 (0 is not allowed); starting llama-server without it." >&2
+        return 0
+    fi
+    if command -v timeout >/dev/null 2>&1; then
+        help_text="$(timeout 15 "$llama_exe" --help 2>&1)" || help_text=""
+    else
+        help_text="$("$llama_exe" --help 2>&1)" || help_text=""
+    fi
+    if ! grep -Eq -- '(^|[^[:alnum:]_-])--checkpoint-every-n-tokens([^[:alnum:]_-]|$)' <<< "$help_text"; then
+        log "WARNING: this llama-server has no --checkpoint-every-n-tokens (removed in llama.cpp b9310); starting it without LLAMA_ARG_CHECKPOINT_EVERY_NT." >&2
+        return 0
+    fi
+    printf '%s\n' "$number"
+}
+
 restart_windows_native_llama_server_with_full_model() {
     is_windows_bash || return 1
 
@@ -1581,7 +1611,7 @@ restart_windows_native_llama_server_with_full_model() {
     ODS_WIN_CACHE_TYPE_V="$(read_env_value LLAMA_ARG_CACHE_TYPE_V)" \
     ODS_WIN_N_CPU_MOE="$(read_env_value LLAMA_ARG_N_CPU_MOE)" \
     ODS_WIN_PARALLEL="$(read_env_value LLAMA_PARALLEL)" \
-    ODS_WIN_CHECKPOINT_EVERY_N_TOKENS="$(read_env_value LLAMA_ARG_CHECKPOINT_EVERY_NT)" \
+    ODS_WIN_CHECKPOINT_EVERY_N_TOKENS="$(windows_native_checkpoint_interval "$llama_exe" "$(read_env_value LLAMA_ARG_CHECKPOINT_EVERY_NT)")" \
     ODS_WIN_NO_CACHE_PROMPT="$(read_env_value LLAMA_ARG_NO_CACHE_PROMPT)" \
     ODS_WIN_SPEC_TYPE="$(read_env_value LLAMA_ARG_SPEC_TYPE)" \
     ODS_WIN_SPEC_DRAFT_N_MAX="$(read_env_value LLAMA_ARG_SPEC_DRAFT_N_MAX)" \

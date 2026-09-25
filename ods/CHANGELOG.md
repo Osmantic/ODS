@@ -23,8 +23,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Previously issued ODS session cookies are invalidated at upgrade, including
   unexpired chat-only guest cookies. Owners renew through the existing owner
   card or authenticated dashboard flow; default direct Hermes access is unchanged.
+- Every llama.cpp image is now pinned by tag and sha256 digest: NVIDIA
+  `server-cuda-b9014`, CPU `server-b9014`, Intel `server-intel-b8248` and Apple
+  Docker `server-b8248`, including the tier-map, installer, host-agent and
+  catalog copies. The versions are unchanged. The dependency pin check rejects
+  a llama.cpp image without a digest.
 
 ### Changed
+- Every curated catalog download URL now names a Hugging Face commit instead
+  of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
+  file. The 48 other re-pinned models download the same bytes: each sha256 was
+  checked at the pinned commit. A CI test rejects unpinned catalog URLs. An
+  installer rerun still keeps an active model whose `.env` has the old
+  `resolve/main` URL when the repo, file path and sha256 match the catalog, and
+  writes the pinned URL.
 - Perplexica now runs upstream release v1.12.2, published under its new name
   Vane (`itzcrazykns1337/vane:slim-v1.12.2`, digest-pinned). The UI shows the
   Vane name; ODS keeps the `perplexica` service, port and volumes, so settings
@@ -60,6 +72,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and put `<think>` blocks in replies.
 
 ### Fixed
+- Gemma 4 26B-A4B (`gemma4-26b-a4b-q4`) and Gemma 4 31B (`gemma4-31b-q4`)
+  download again. ggml-org deleted both Q4_K_M files from its repos on
+  2026-07-16, so the catalog and the Gemma-profile tier maps (`NV_ULTRA`,
+  `SH_LARGE`, `SH_COMPACT`, tiers 3 and 4) pointed at URLs that return 404.
+  Their checksums had been stale since ggml-org replaced the files on
+  2026-04-12. Both now use pinned unsloth revisions with exact sha256 and size:
+  `gemma-4-26B-A4B-it-UD-Q4_K_M.gguf` (unsloth's Q4_K_M-class quant for this
+  model, 16.9 GB) and `gemma-4-31B-it-Q4_K_M.gguf` (18.3 GB). Only
+  `MODEL_PROFILE=gemma4` or `auto` installs were affected; the default `qwen`
+  profile never selects these models. Upgrade impact on an installer rerun:
+  - The 26B file name changed, so an existing 26B install is not preserved.
+    The rerun takes the current recommendation, and the old file stays in
+    `data/models`.
+  - The 31B keeps its file name, but the old file fails the new size check, so
+    the rerun takes the current recommendation. If that is the 31B again, the
+    installer finds a SHA256 mismatch, deletes the file and downloads 18.3 GB.
+  - A 32 GB NVIDIA GPU with `MODEL_PROFILE=gemma4` or `auto` on the Pixel
+    default route now gets Gemma 4 31B at 128K context instead of 26B-A4B. The
+    corrected file size puts its estimate at 31.07 GB of 31.8 GB; that fit is
+    estimated, not measured.
+  - Before this release these Gemma reruns already failed for most installs
+    (stale checksum, then a 404 on re-download), so this mostly replaces
+    reruns that were failing.
 - Native macOS launches no longer pass `--spec-draft-n-max` to a llama-server
   that does not know it. Setting `LLAMA_ARG_SPEC_DRAFT_N_MAX` stopped the b8210
   Metal server from starting (its flag is `--draft-max`). Draft flags are now
@@ -77,6 +112,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   LiteLLM's model map has it. The `fast` route stays on Claude Haiku 4.5
   (`claude-haiku-4-5-20251001`). A new test fails CI if any `anthropic/claude-*`
   ID in ODS is not on a verified allowlist.
+- NVIDIA multi-GPU installs no longer use `--split-mode row` for tensor or
+  hybrid GPU assignments; they use `layer`, the mode the fleet runs. llama.cpp
+  b9890 removed CUDA row split, so row would stop the model loading once the
+  pin moves; the pinned b9014 still accepts it. An existing `.env` keeps its
+  value until the GPU assignment is recomputed, for example by
+  `ods gpu reassign`. AMD is unchanged.
+- Native Windows llama-server passes `LLAMA_ARG_CHECKPOINT_EVERY_NT` only when
+  the installed binary's `--help` lists `--checkpoint-every-n-tokens`, the
+  check native macOS already makes. llama.cpp b9310 removed the flag, and
+  llama-server exits on a flag it does not know.
+- Docker llama-server now receives `LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT`
+  (`--checkpoint-min-step`, llama.cpp b9310 and later; the pinned b9014 ignores
+  it) and the draft KV cache types `LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K`/`_V`,
+  the names llama.cpp reads. The native-only `LLAMA_ARG_SPEC_DRAFT_TYPE_K`/`_V`
+  keys never reached Docker.
+- Activating Qwen 3.8 27B now stops with a clear message instead of failing
+  to load: the default llama.cpp runtimes cannot load Qwen3.8 GGUFs.
+- llama-server no longer mounts `config/llama-server/models.ini`. llama.cpp
+  reads a preset file only with `--models-preset`, which ODS does not pass;
+  ODS still writes the file.
+- Corrections to earlier notes on llama.cpp env names: `LLAMA_ARG_NO_CACHE_PROMPT`
+  does work on b9014 (any value disables prompt caching), and
+  `LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS` never existed in llama.cpp; the flag's
+  env name is `LLAMA_ARG_CHECKPOINT_EVERY_NT`.
 
 ## [3.0.0] - 2026-09-24
 

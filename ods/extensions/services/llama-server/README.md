@@ -142,6 +142,30 @@ Use this only with a llama.cpp image or native binary built after MTP support la
 
 In router or multi-model setups, do not put MTP settings in a shared default section when any routed model lacks MTP layers. Apply `spec-type = draft-mtp` and `spec-draft-n-max = 3` only to the MTP-capable model section so non-MTP models keep loading normally.
 
+In Docker, set the draft model's KV cache types with `LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K` and `LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V`, the names llama.cpp reads. Native macOS and Windows launchers take `LLAMA_ARG_SPEC_DRAFT_TYPE_K`/`_V` and pass them as `--spec-draft-type-k`/`-v`. llama.cpp has no env variable by that name, so Docker ignores it.
+
+### Image pins
+
+Every llama.cpp image ODS ships is pinned by tag and sha256 digest, for example `ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf28582…55c4f`. llama.cpp publishes a ghcr tag for only some of its builds, and ODS once pinned a tag that was never published. The digest also means a re-pushed tag cannot change what an install runs. `scripts/check-dependency-pins.py` rejects a llama.cpp image without a digest, and `tests/contracts/test-llama-cpp-compat.py` checks that every copy of a pin (Compose, installer pulls, tier maps, host agent, model catalog) agrees.
+
+| Image | Digest |
+|---|---|
+| `server-cuda-b9014` (NVIDIA, multi-arch) | `sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f` |
+| `server-b9014` (CPU, multi-arch) | `sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53` |
+| `server-intel-b8248` (Intel) | `sha256:5543520d6928680db017e2d12283846a396d49876b04f09f08360d0fa020fcac` |
+| `server-b8248` (Apple Docker) | `sha256:41b6c5c9a1a8b61a51f65fbb114d45bce1a5d4a72e9e0ccdf35fdba3c2fd4998` |
+
+To use another build, set `LLAMA_SERVER_IMAGE` to a `tag@sha256:digest` reference. `docker buildx imagetools inspect <image>` prints the digest of a tag.
+
+### llama.cpp env names
+
+llama-server reads only the `LLAMA_ARG_*` names defined in its `common/arg.cpp`, and ignores any other name without a warning. `tests/contracts/test-llama-spec-default.py` keeps the names that the NVIDIA and CPU containers receive in step with the pinned build.
+
+- `LLAMA_ARG_NO_CACHE_PROMPT` works on b9014 and later. `--cache-prompt` is a negatable flag, so llama.cpp also reads the `LLAMA_ARG_NO_` form, and any value, even `0`, disables prompt caching.
+- `LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS` never existed in llama.cpp. The flag `--checkpoint-every-n-tokens` reads `LLAMA_ARG_CHECKPOINT_EVERY_NT`.
+- llama.cpp b9310 removed `--checkpoint-every-n-tokens` (`LLAMA_ARG_CHECKPOINT_EVERY_NT`) and added `--checkpoint-min-step` (`LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT`), a minimum spacing rather than a fixed interval. Docker passes both names through, and each build reads only its own. Native Windows passes the interval only when the installed `llama-server --help` lists the flag, because llama-server exits on a flag it does not know.
+- On NVIDIA, ODS uses `--split-mode layer` for every multi-GPU assignment. llama.cpp b9890 removed CUDA row split: `--split-mode row` still parses, but the model fails to load.
+
 ### AMD-specific variables
 
 | Variable | Default | Description |

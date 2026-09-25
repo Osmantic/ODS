@@ -11,7 +11,7 @@
 #   LLAMA_TAG       llama.cpp git tag (default: b8248)
 #   ONEAPI_VERSION  oneAPI Base Toolkit image tag (default: 2025.0.0-0-devel-ubuntu22.04)
 #   LLAMA_ARC_IMAGE Override to a pre-built image and skip the local build entirely
-#                   e.g. LLAMA_ARC_IMAGE=ghcr.io/ggml-org/llama.cpp:server-intel-b8248
+#                   e.g. LLAMA_ARC_IMAGE=ghcr.io/ggml-org/llama.cpp:server-intel-b8248@sha256:5543520d6928680db017e2d12283846a396d49876b04f09f08360d0fa020fcac
 #
 # First-run note:
 #   The SYCL build compiles llama.cpp with Intel icx/icpx. Allow 10–20 min

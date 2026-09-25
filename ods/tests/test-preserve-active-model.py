@@ -283,6 +283,31 @@ def test_invalid_or_unavailable_contracts_are_not_preserved() -> None:
         assert run_helper(env, catalog, imports, models_dir, vram_mb=4096) == {}
 
 
+def test_catalog_revision_pin_of_same_artifact_is_preserved() -> None:
+    old_url = "https://huggingface.co/osmantic/agent-test/resolve/main/Agent-Test-Q4_K_M.gguf"
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        data = json.loads(catalog.read_text(encoding="utf-8"))
+        pinned = data["models"][0]["gguf_url"]
+        replace_env(env, "GGUF_URL=" + pinned, "GGUF_URL=" + old_url)
+        values = run_helper(env, catalog, imports, models_dir)
+        assert values["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf", values
+        assert values["GGUF_URL"] == pinned
+    # Same repo file but a different digest, a different repo, or no recorded
+    # digest remains a different (or unproven) artifact.
+    for url, digest in (
+        (old_url, "b" * 64),
+        ("https://huggingface.co/other/agent-test/resolve/main/Agent-Test-Q4_K_M.gguf", "a" * 64),
+        (old_url, ""),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+            pinned = json.loads(catalog.read_text(encoding="utf-8"))["models"][0]["gguf_url"]
+            replace_env(env, "GGUF_URL=" + pinned, "GGUF_URL=" + url)
+            replace_env(env, "GGUF_SHA256=" + "a" * 64, "GGUF_SHA256=" + digest)
+            assert run_helper(env, catalog, imports, models_dir) == {}, (url, digest)
+
+
 def test_dashboard_activation_records_selection_owner() -> None:
     host_agent = (ROOT / "bin" / "ods-host-agent.py").read_text(encoding="utf-8")
     assert '"MODEL_SELECTION_SOURCE": "dashboard"' in host_agent
@@ -420,6 +445,7 @@ def main() -> int:
         test_valid_dashboard_import_is_preserved,
         test_verified_switchboard_state_recovers_an_interrupted_installer_env,
         test_invalid_or_unavailable_contracts_are_not_preserved,
+        test_catalog_revision_pin_of_same_artifact_is_preserved,
         test_dashboard_activation_records_selection_owner,
         test_installer_keeps_recommendation_and_active_model_separate,
     ]

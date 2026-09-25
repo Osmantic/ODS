@@ -1455,9 +1455,12 @@ def _plan_nvidia_model_gpu_assignment(
     )
 
     mode = str((planned_llama.get("parallelism") or {}).get("mode") or "none")
+    # CUDA row split is not fleet-qualified and fails at model load from
+    # llama.cpp b9890 ("does not support split buffers"), so NVIDIA uses
+    # layer split for every multi-GPU mode.
     split_mode = {
-        "tensor": "row",
-        "hybrid": "row",
+        "tensor": "layer",
+        "hybrid": "layer",
         "pipeline": "layer",
     }.get(mode, "none")
     tensor_split = (planned_llama.get("parallelism") or {}).get("tensor_split")
@@ -12094,6 +12097,10 @@ class AgentHandler(BaseHTTPRequestHandler):
         selected_store = _model_stores.store_for_model(INSTALL_DIR / "data", gguf_file, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
         try:
             local_runtime_profile = _model_stores.lemonade_profile(INSTALL_DIR / "data", gguf_file, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
+            if model_from_catalog and not local_runtime_profile:
+                runtime_block = _default_runtime_incompatibility(model, persisted_env)
+                if runtime_block:
+                    raise ValueError(runtime_block)
             if local_runtime_profile and _uses_lemonade_runtime(persisted_env) and not _is_windows_host_lemonade(persisted_env):
                 raise ValueError("This native runtime profile requires a host-managed runtime; configure the compatible binary inside the Lemonade container before activating it")
             if local_runtime_profile and not (_is_windows_host_lemonade(persisted_env) or _is_windows_host_llama_server(persisted_env) or persisted_env.get("GPU_BACKEND") == "apple"):
@@ -12927,7 +12934,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     llama_server_image
                     or env.get("LLAMA_SERVER_IMAGE")
                     or (
-                        "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014"
+                        "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
                         if gpu_backend == "nvidia"
                         else ""
                     )
@@ -17287,6 +17294,33 @@ def _nvidia_vram_gb() -> float:
         if attempt == 0:
             time.sleep(0.25)
     return 0.0
+
+
+def _default_runtime_incompatibility(model: dict, env: dict) -> str | None:
+    """Return why ODS's default llama.cpp runtime cannot serve a catalog model.
+
+    ``default_runtime_compatibility`` records a model the pinned llama.cpp
+    build cannot load. Such a model can only be activated with a runtime of
+    its own: a catalog image on a Docker llama.cpp backend, or a registered
+    native runtime (checked by the caller).
+    """
+    verdict = model.get("default_runtime_compatibility")
+    if not isinstance(verdict, dict) or _normalize_key(verdict.get("status")) != "incompatible":
+        return None
+    own_image = bool(model.get("llama_server_image")) or any(
+        isinstance(profile, dict) and profile.get("llama_server_image")
+        for profile in model.get("runtime_profiles") or []
+    )
+    image_is_used = not (
+        _normalize_key(env.get("GPU_BACKEND")) == "apple"
+        or _uses_lemonade_runtime(env)
+        or _is_windows_host_lemonade(env)
+        or _is_windows_host_llama_server(env)
+    )
+    if own_image and image_is_used:
+        return None
+    note = str(verdict.get("userNote") or "").strip()
+    return note or "This model needs a newer llama.cpp runtime than ODS ships by default."
 
 
 def _select_runtime_profile(model: dict, env: dict) -> dict | None:

@@ -87,6 +87,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "env-generator.ps1")
 . (Join-Path $LibDir "installed-footprint.ps1")
 . (Join-Path $LibDir "llm-endpoint.ps1")
+. (Join-Path $LibDir "native-llama-args.ps1")
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
@@ -778,7 +779,11 @@ if ($dryRun) {
                 if ($_llamaEnv["LLAMA_ARG_CACHE_TYPE_V"]) { $llamaArgs += @("--cache-type-v", $_llamaEnv["LLAMA_ARG_CACHE_TYPE_V"]) }
                 if ($_llamaEnv["LLAMA_ARG_N_CPU_MOE"]) { $llamaArgs += @("--n-cpu-moe", $_llamaEnv["LLAMA_ARG_N_CPU_MOE"]) }
                 if ($_llamaEnv["LLAMA_PARALLEL"]) { $llamaArgs += @("--parallel", $_llamaEnv["LLAMA_PARALLEL"]) }
-                if ($_llamaEnv["LLAMA_ARG_CHECKPOINT_EVERY_NT"]) { $llamaArgs += @("--checkpoint-every-n-tokens", $_llamaEnv["LLAMA_ARG_CHECKPOINT_EVERY_NT"]) }
+                # Only when this llama-server still has the flag (removed in
+                # llama.cpp b9310); an unknown flag stops llama-server.
+                $_checkpointArgs = Get-ODSNativeCheckpointIntervalArgs -Executable $script:LLAMA_SERVER_EXE -Value $_llamaEnv["LLAMA_ARG_CHECKPOINT_EVERY_NT"]
+                if ($_checkpointArgs.Warning) { Write-AIWarn $_checkpointArgs.Warning }
+                $llamaArgs += @($_checkpointArgs.Arguments)
                 if ($_llamaEnv["LLAMA_ARG_NO_CACHE_PROMPT"] -and $_llamaEnv["LLAMA_ARG_NO_CACHE_PROMPT"] -notin @("0", "false", "off", "no")) { $llamaArgs += @("--no-cache-prompt") }
                 if ($_llamaEnv["LLAMA_ARG_SPEC_TYPE"]) { $llamaArgs += @("--spec-type", $_llamaEnv["LLAMA_ARG_SPEC_TYPE"]) }
                 if ($_llamaEnv["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) { $llamaArgs += @("--spec-draft-n-max", $_llamaEnv["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) }

@@ -16,6 +16,12 @@ The env names ODS hands to the b9014 containers must be names llama.cpp reads.
 Docker ignored LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS for this reason; the
 llama.cpp name is LLAMA_ARG_CHECKPOINT_EVERY_NT.
 
+Every build-specific set below is keyed by the llama.cpp build pinned in
+docker-compose.nvidia.yml and docker-compose.cpu.yml. Moving the pin fails
+this contract until the new build's env names and --spec-type values are added
+from that tag's common/arg.cpp, and until catalog runtime verdicts recorded
+against the old build are revisited.
+
 Run from ods/:  python3 tests/contracts/test-llama-spec-default.py
 """
 
@@ -42,28 +48,52 @@ DEFAULT_ENTRY = "LLAMA_ARG_SPEC_TYPE=${LLAMA_ARG_SPEC_TYPE:-${LLAMA_SPEC_TYPE:-n
 # also has speculative checkpoints (#19493, b8842), which hybrid models need.
 MIN_BUILD = 8955
 
-# `--spec-type` choices in llama.cpp b9014 common/arg.cpp (no draft model).
-B9014_SPEC_TYPES = {"none", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod"}
+# `--spec-type` choices per pinned llama.cpp build, from that tag's
+# common/arg.cpp (no draft model).
+SPEC_TYPES_BY_BUILD = {
+    9014: {"none", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod"},
+}
 
-# Env names read by llama.cpp b9014 (common/arg.cpp set_env). A new name added to
-# a b9014 overlay must be checked against that source before it goes here.
-B9014_ENV_NAMES = {
-    "LLAMA_ARG_REASONING",
-    "LLAMA_ARG_FLASH_ATTN",
-    "LLAMA_ARG_CACHE_TYPE_K",
-    "LLAMA_ARG_CACHE_TYPE_V",
-    "LLAMA_ARG_N_CPU_MOE",
-    "LLAMA_ARG_CHECKPOINT_EVERY_NT",
-    "LLAMA_ARG_SPEC_TYPE",
-    "LLAMA_ARG_SPEC_DRAFT_N_MAX",
-    "LLAMA_ARG_SPLIT_MODE",
-    "LLAMA_ARG_TENSOR_SPLIT",
-    # --chat-template-file (common/arg.cpp:3128-3138 in b9014).
-    "LLAMA_ARG_CHAT_TEMPLATE_FILE",
-    # --cache-prompt/--no-cache-prompt is negatable, so common_arg::
-    # get_value_from_env also reads LLAMA_ARG_NO_CACHE_PROMPT. Any value,
-    # including 0 or empty, disables prompt caching.
-    "LLAMA_ARG_NO_CACHE_PROMPT",
+# Env names each pinned build reads (common/arg.cpp set_env), limited to the
+# names ODS hands to llama-server. A new name added to the NVIDIA/CPU stacks
+# must be checked against the pinned tag's source before it goes here.
+ENV_NAMES_BY_BUILD = {
+    9014: {
+        "LLAMA_ARG_REASONING",
+        "LLAMA_ARG_FLASH_ATTN",
+        "LLAMA_ARG_CACHE_TYPE_K",
+        "LLAMA_ARG_CACHE_TYPE_V",
+        "LLAMA_ARG_N_CPU_MOE",
+        "LLAMA_ARG_CHECKPOINT_EVERY_NT",
+        "LLAMA_ARG_SPEC_TYPE",
+        "LLAMA_ARG_SPEC_DRAFT_N_MAX",
+        "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K",
+        "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V",
+        "LLAMA_ARG_SPLIT_MODE",
+        "LLAMA_ARG_TENSOR_SPLIT",
+        # --chat-template-file (common/arg.cpp:3128-3138 in b9014).
+        "LLAMA_ARG_CHAT_TEMPLATE_FILE",
+        # --cache-prompt/--no-cache-prompt is negatable, so common_arg::
+        # get_value_from_env also reads LLAMA_ARG_NO_CACHE_PROMPT. Any value,
+        # including 0 or empty, disables prompt caching.
+        "LLAMA_ARG_NO_CACHE_PROMPT",
+    },
+}
+
+# Upstream names ODS already passes through for newer builds, mapped to the
+# first build that reads them. llama.cpp ignores env vars it does not define,
+# so a bare pass-through is harmless on an older pin. Once the pin reaches the
+# listed build, the name must appear in that build's ENV_NAMES_BY_BUILD set.
+FORWARD_ENV_NAMES = {
+    # --checkpoint-min-step replaced --checkpoint-every-n-tokens (#22929).
+    "LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT": 9310,
+}
+
+# ODS .env keys for native launchers that llama.cpp itself never reads. They
+# must never reach a container, where they would be silently ignored.
+NATIVE_ONLY_KEYS = {
+    "LLAMA_ARG_SPEC_DRAFT_TYPE_K": "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K",
+    "LLAMA_ARG_SPEC_DRAFT_TYPE_V": "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V",
 }
 
 LEGACY_CHECKPOINT = "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"
@@ -73,6 +103,7 @@ LEGACY_CHECKPOINT_ALLOWED = {
     ".env.schema.json",  # deprecated entry so existing .env files still validate
     "bin/ods-host-agent.py",  # model activation removes stale lines
     "extensions/services/dashboard-api/performance_oracle.py",  # evidence alias
+    "extensions/services/llama-server/README.md",  # records that it never existed
     "CHANGELOG.md",
 }
 CHECKPOINT_READERS = (
@@ -194,8 +225,28 @@ def pinned_build(service: dict) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def default_pinned_build(errors: list[str]) -> int | None:
+    """The single llama.cpp build the NVIDIA and CPU overlays pin."""
+    builds = {name: pinned_build(llama_service(name)) for name in DEFAULT_OVERLAYS}
+    if None in builds.values() or len(set(builds.values())) != 1:
+        errors.append(f"NVIDIA and CPU overlays must pin one llama.cpp build, got {builds}")
+        return None
+    build = next(iter(builds.values()))
+    if build not in ENV_NAMES_BY_BUILD or build not in SPEC_TYPES_BY_BUILD:
+        errors.append(
+            f"llama.cpp b{build} is pinned but this contract has no env-name/--spec-type "
+            f"sets for it; add them from common/arg.cpp at tag b{build}"
+        )
+        return None
+    return build
+
+
 def main() -> int:
     errors: list[str] = []
+    pinned = default_pinned_build(errors)
+    env_names = ENV_NAMES_BY_BUILD.get(pinned or 0, set())
+    spec_types = SPEC_TYPES_BY_BUILD.get(pinned or 0, set())
+    label = f"b{pinned}" if pinned else "the pinned build"
 
     # 1. Only overlays pinned to a build with the benchmarked implementation
     #    carry the default, and they carry exactly the documented expression.
@@ -245,14 +296,33 @@ def main() -> int:
             if actual != expected:
                 errors.append(f"{stack} with {dotenv}: LLAMA_ARG_SPEC_TYPE={actual!r}, expected {expected!r}")
 
-    # 3. Every LLAMA_ARG_* the b9014 stacks hand to llama.cpp is a name it reads.
-    for stack in sorted(defaulted):
-        for key in merged_env(stacks[stack]):
-            if key.startswith("LLAMA_ARG_") and key not in B9014_ENV_NAMES:
-                errors.append(f"{stack}: llama.cpp b9014 does not read {key}")
+    # 3. Every LLAMA_ARG_* the NVIDIA/CPU stacks hand to llama.cpp is a name the
+    #    pinned build reads, or an upstream name for a later build passed bare.
+    for stack in sorted(defaulted if pinned else ()):
+        for key, value in merged_env(stacks[stack]).items():
+            if not key.startswith("LLAMA_ARG_") or key in env_names:
+                continue
+            first_build = FORWARD_ENV_NAMES.get(key)
+            if first_build is None:
+                errors.append(f"{stack}: llama.cpp {label} does not read {key}")
+            elif pinned and pinned >= first_build:
+                errors.append(f"{stack}: {key} is read from b{first_build}; add it to ENV_NAMES_BY_BUILD[{pinned}]")
+            elif value is not None:
+                errors.append(f"{stack}: {key} is for llama.cpp b{first_build}+ and must stay a bare pass-through")
     for stack, files in stacks.items():
         if container_env(files, {CHECKPOINT: "-1"}).get(CHECKPOINT) != "-1":
             errors.append(f"{stack}: {CHECKPOINT} is not passed to llama-server")
+    for key in FORWARD_ENV_NAMES:
+        for stack in sorted(defaulted):
+            if container_env(stacks[stack], {key: "1024"}).get(key) != "1024":
+                errors.append(f"{stack}: {key} is not passed to llama-server")
+    for native_key, upstream_key in NATIVE_ONLY_KEYS.items():
+        for stack, files in stacks.items():
+            resolved = container_env(files, {native_key: "q4_0", upstream_key: "q8_0"})
+            if native_key in resolved:
+                errors.append(f"{stack}: {native_key} reaches the container, but llama.cpp reads {upstream_key}")
+            if stack in defaulted and resolved.get(upstream_key) != "q8_0":
+                errors.append(f"{stack}: {upstream_key} is not passed to llama-server")
 
     # 4. The opt-out is documented, validated and survives installer reruns.
     schema = json.loads((ROOT_DIR / ".env.schema.json").read_text(encoding="utf-8"))["properties"]
@@ -260,8 +330,8 @@ def main() -> int:
     if spec.get("default") != "ngram-mod":
         errors.append(".env.schema.json: LLAMA_SPEC_TYPE must document the ngram-mod default")
     allowed = set(spec.get("enum") or [])
-    if not {"ngram-mod", "none"} <= allowed or not allowed - {""} <= B9014_SPEC_TYPES:
-        errors.append(f".env.schema.json: LLAMA_SPEC_TYPE enum {sorted(allowed)} must offer ngram-mod/none and only b9014 --spec-type values")
+    if not {"ngram-mod", "none"} <= allowed or not allowed - {""} <= spec_types:
+        errors.append(f".env.schema.json: LLAMA_SPEC_TYPE enum {sorted(allowed)} must offer ngram-mod/none and only {label} --spec-type values")
     if CHECKPOINT not in schema:
         errors.append(f".env.schema.json: {CHECKPOINT} is undocumented")
     example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
@@ -300,12 +370,28 @@ def main() -> int:
         if LEGACY_CHECKPOINT in text:
             errors.append(f"{relative}: still uses {LEGACY_CHECKPOINT}; llama.cpp reads {CHECKPOINT}")
 
+    # 6. Catalog verdicts about the default runtime name the build they were
+    #    recorded against. A pin move must revisit them, not inherit them.
+    catalog = json.loads((ROOT_DIR / "config" / "model-library.json").read_text(encoding="utf-8"))
+    for model in catalog.get("models") or []:
+        verdict = model.get("default_runtime_compatibility")
+        if verdict is None:
+            continue
+        where = f"model-library.json {model.get('id')}.default_runtime_compatibility"
+        if not isinstance(verdict, dict) or verdict.get("status") != "incompatible":
+            errors.append(f"{where}: status must be 'incompatible'")
+            continue
+        if pinned and verdict.get("runtime") != f"llama.cpp {label}":
+            errors.append(f"{where}: recorded against {verdict.get('runtime')!r}, but the default is llama.cpp {label}; re-test the model and update or remove the verdict")
+        if not str(verdict.get("userNote") or "").strip():
+            errors.append(f"{where}: needs a userNote for the activation refusal")
+
     if errors:
         print("[FAIL] llama.cpp speculative default / env-name contract")
         for error in errors:
             print(f"  - {error}")
         return 1
-    print("[PASS] ngram-mod default only on b9014 overlays; LLAMA_SPEC_TYPE=none opts out; llama.cpp env names are real")
+    print(f"[PASS] ngram-mod default only on {label} overlays; LLAMA_SPEC_TYPE=none opts out; llama.cpp env names are real")
     return 0
 
 

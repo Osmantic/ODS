@@ -13,7 +13,7 @@
 
 services:
   llama-server:
-    image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-intel-b8248}
+    image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-intel-b8248@sha256:5543520d6928680db017e2d12283846a396d49876b04f09f08360d0fa020fcac}
     devices:
       - /dev/dri:/dev/dri
     group_add:

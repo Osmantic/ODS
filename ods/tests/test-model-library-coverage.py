@@ -744,7 +744,8 @@ def test_nemotron3_nano_4b_is_recommended_after_six_host_validation():
     assert model["gguf_file"] == "NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf"
     assert model["gguf_url"] == (
         "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF/"
-        "resolve/main/NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf"
+        "resolve/ba223d14e45525f7fae81db77ea8cabeb2fc6c25/"
+        "NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf"
     )
     assert model["gguf_sha256"] == "be5d9a656a51922f24f1f09a759cebb694e1f5d9728bf0ef9f8c972c5a0b5ef2"
     assert model["size_bytes"] == 2837072864

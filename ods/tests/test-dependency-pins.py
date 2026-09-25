@@ -168,6 +168,63 @@ def test_sha256_digest_pins_are_allowed() -> None:
     assert errors == [], "\n".join(errors)
 
 
+def _llama_ref_errors(module, image: str) -> list[str]:
+    lock = {
+        "entries": [{"path": "docker-compose.nvidia.yml", "value": image}],
+        "allow_latest": [],
+        "allow_local_images": [],
+        "allow_variable_refs": [],
+    }
+    ref = module.ImageRef(
+        path="docker-compose.nvidia.yml",
+        line=8,
+        raw=image,
+        value=image,
+        source="compose image",
+    )
+    return module.validate_refs([ref], lock)
+
+
+def test_llama_cpp_images_require_tag_and_digest() -> None:
+    module = load_module()
+    digest = "@sha256:" + ("a" * 64)
+    for image in (
+        "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014",
+        "ghcr.io/ggml-org/llama.cpp" + digest,
+        "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:abc",
+    ):
+        errors = _llama_ref_errors(module, image)
+        assert any("must be pinned by tag and @sha256 digest" in error for error in errors), image
+
+    pinned = "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014" + digest
+    assert _llama_ref_errors(module, pinned) == []
+
+    # Other repositories keep the tag-or-digest policy.
+    other = "ghcr.io/open-webui/open-webui:v0.7.2"
+    lock = {
+        "entries": [{"path": "docker-compose.base.yml", "value": other}],
+        "allow_latest": [],
+        "allow_local_images": [],
+        "allow_variable_refs": [],
+    }
+    ref = module.ImageRef(
+        path="docker-compose.base.yml", line=1, raw=other, value=other, source="compose image"
+    )
+    assert module.validate_refs([ref], lock) == []
+
+
+def test_repo_llama_cpp_pins_carry_digests() -> None:
+    module = load_module()
+    refs = [
+        ref
+        for ref in module.discover_image_refs()
+        if module._image_repository(ref.value) == "ghcr.io/ggml-org/llama.cpp"
+    ]
+    assert refs, "expected llama.cpp images in the shipped compose files"
+    for ref in refs:
+        assert module.DIGEST_RE.search(ref.value), f"{ref.path}:{ref.line}: {ref.value}"
+
+
 def test_extension_library_sha_tags_are_rejected() -> None:
     module = load_module()
     with TemporaryDirectory() as tmp:
@@ -206,6 +263,8 @@ def main() -> int:
         test_ephemeral_sha_tags_are_rejected,
         test_ephemeral_sha256_length_tags_are_rejected,
         test_sha256_digest_pins_are_allowed,
+        test_llama_cpp_images_require_tag_and_digest,
+        test_repo_llama_cpp_pins_carry_digests,
         test_extension_library_sha_tags_are_rejected,
     ]
     for test in tests:

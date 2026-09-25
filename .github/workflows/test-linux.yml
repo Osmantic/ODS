@@ -246,6 +246,9 @@ jobs:
       - name: Tier Map Unit Tests
         run: bash tests/test-tier-map.sh
 
+      - name: Model Catalog Artifact Pins
+        run: python3 tests/test-model-library-pinned-urls.py
+
       - name: Active Model Preservation Tests
         run: python3 tests/test-preserve-active-model.py
 
@@ -460,6 +463,7 @@ jobs:
           bash tests/test-pixel-uninstall.sh
           python3 tests/test_healthcheck_ipv6.py
           python3 tests/contracts/test-network-exposure-contracts.py
+          python3 tests/contracts/test-llama-cpp-compat.py
           python3 tests/contracts/test-remote-provider-egress-policy.py
           python3 tests/contracts/test-remote-provider-egress-service.py
           python3 tests/contracts/test-llama-spec-default.py

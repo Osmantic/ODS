@@ -6055,7 +6055,13 @@ _gpu_reassign() {
             read -r _para
             case "${_para:-tensor}" in
                 tensor|hybrid)
-                    split_mode_m="row"
+                    # NVIDIA: CUDA row split is not fleet-qualified and fails at
+                    # model load from llama.cpp b9890, so use layer split.
+                    if [[ "$backend" == "nvidia" ]]; then
+                        split_mode_m="layer"
+                    else
+                        split_mode_m="row"
+                    fi
                     parallelism_mode_m="tensor"
                     tensor_split_m=$(printf '1,%.0s' $(seq 1 "$llama_gpu_count"))
                     tensor_split_m="${tensor_split_m%,}"
@@ -6230,8 +6236,10 @@ _gpu_reassign() {
 
     local _para_mode
     _para_mode=$(echo "$assignment_json" | jq -r '.gpu_assignment.services.llama_server.parallelism.mode // "none"')
+    # NVIDIA uses layer split for every multi-GPU mode (CUDA row split fails
+    # at model load from llama.cpp b9890). AMD keeps row for tensor/hybrid.
     case "$_para_mode" in
-        tensor|hybrid) split_mode="row" ;;
+        tensor|hybrid) if [[ "$backend" == "nvidia" ]]; then split_mode="layer"; else split_mode="row"; fi ;;
         pipeline)      split_mode="layer" ;;
         *)             split_mode="none" ;;
     esac
