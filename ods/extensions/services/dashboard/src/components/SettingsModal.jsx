@@ -33,6 +33,7 @@ export default function SettingsModal() {
   function setSection(id) { setVisited(previous => new Set([...previous, id])); setParams({section:id}, {replace:true}) }
   useEffect(() => { setVisited(previous => previous.has(section) ? previous : new Set([...previous,section])) }, [section])
   const [query, setQuery] = useState('')
+  const matchingSections = sections.filter(([, label]) => label.toLowerCase().includes(query.toLowerCase()))
   useEffect(() => { if (content.current) content.current.scrollTop = 0 }, [section])
   useEffect(() => {
     navigation.current?.querySelector('[aria-current="page"]')?.scrollIntoView?.({block:'nearest',inline:'nearest'})
@@ -41,8 +42,9 @@ export default function SettingsModal() {
     <aside className="ods-settings-nav">
       <label className="ods-settings-search"><MetalMetricIcon icon={Search} size={15} /><input aria-label="Search settings" placeholder="Search settings…" value={query} onChange={event => setQuery(event.target.value)} /></label>
       <nav ref={navigation} aria-label="Settings sections">
-        {sections.filter(([,label]) => label.toLowerCase().includes(query.toLowerCase())).map(([id,label,Icon]) => <button key={id} aria-current={section === id ? 'page' : undefined} onClick={() => setSection(id)}><MetalMetricIcon icon={Icon}/><span>{label}</span></button>)}
-        {!sections.some(([,label]) => label.toLowerCase().includes(query.toLowerCase())) && <p>No settings found.</p>}
+        <p className="sr-only" aria-live="polite">{matchingSections.length === 0 ? 'No settings found.' : `${matchingSections.length} settings found.`}</p>
+        {matchingSections.map(([id,label,Icon]) => <button key={id} aria-current={section === id ? 'page' : undefined} onClick={() => setSection(id)}><MetalMetricIcon icon={Icon}/><span>{label}</span></button>)}
+        {matchingSections.length === 0 && <p>No settings found.</p>}
       </nav>
     </aside>
     <div ref={content} className="ods-settings-content" aria-label={sections.find(([id]) => id === section)[1]}><div hidden={['profile','portal-mascot','pixel-diagnostics','integrations','remote'].includes(section)}><Settings activeSection={section} /></div>
