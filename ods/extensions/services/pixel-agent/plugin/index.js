@@ -1,5 +1,6 @@
 import {createAgentSkillTool} from './agent-skills.mjs';
 import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
+import {registerStableRuntimeLine} from './runtime-line.mjs';
 import {createRuntimeIdentity} from './runtime-identity.mjs';
 import {fileURLToPath} from 'node:url';
 import {createActivityTool, ACTIVITY_CONTRACT} from './activity-display.mjs';
@@ -290,6 +291,8 @@ export default definePluginEntry({
         release:token => accessRuntime.release(token), owns:token => accessRuntime.owns(token)},
     });
     registerHistoryIntegration(api,{compactor:contextCompaction,getSessionEntry,patchSessionEntry,resolveStorePath,withSessionTranscriptWriteLock});
+    // One system prompt for every Pixel chat: no per-chat session key or id.
+    registerStableRuntimeLine(api);
     const statusFile = statusFileFromEnv();
     const configuredContextWindow = api.pluginConfig?.modelContextWindow;
     const configuredLeanPrompt = api.pluginConfig?.leanPrompt === true;
