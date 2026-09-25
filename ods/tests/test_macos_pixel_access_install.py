@@ -512,7 +512,7 @@ def managed_service_fixture(plan, monkeypatch):
         for path, (mode, gid) in contract.items()]
 
 
-@pytest.mark.parametrize('legacy', [False, True, 'partial', 'selection-mismatch'])
+@pytest.mark.parametrize('legacy', [False, True, 'partial', 'selection-mismatch', 'inspection-only', 'inspection-partial'])
 @pytest.mark.parametrize('fault', [None, 'pending', 'owner', 'phase', 'incomplete', 'foreign', 'drift', 'metadata'])
 def test_managed_service_snapshots_preserve_existing_state_before_any_write(monkeypatch, fault, legacy):
     import pixel_macos_custody as custody
@@ -524,8 +524,12 @@ def test_managed_service_snapshots_preserve_existing_state_before_any_write(monk
     journal = str(installer._launchd.ACCESS_STATE / 'service-installation.json')
     disk = {r['path']: r['before'] for r in records}
     if legacy:
-        for path in installer._upgrade.INSPECTION_ADDITIONS:
+        missing = (installer._upgrade.DOCUMENT_LEASE_ADDITIONS
+                   if legacy in ('inspection-only', 'inspection-partial') else installer._upgrade.INSPECTION_ADDITIONS)
+        for path in missing:
             disk[path] = None
+        if legacy == 'inspection-partial':
+            disk[sorted(installer._upgrade.LEGACY_INSPECTION_ADDITIONS)[0]] = None
         if legacy == 'partial':
             disk[next(iter(installer._upgrade.INSPECTION_ADDITIONS))] = b'foreign partial file'
     old = json.loads(disk[journal])
@@ -541,7 +545,10 @@ def test_managed_service_snapshots_preserve_existing_state_before_any_write(monk
         assert body == disk[str(path)]
         if fault == 'metadata': raise installer.InstallError('existing-ods-file-unsafe')
     monkeypatch.setattr(installer, '_check_existing', metadata)
-    monkeypatch.setattr(installer, '_managed_inspection_required', lambda selection: not legacy or legacy == 'selection-mismatch')
+    previous = (installer._upgrade.LEGACY_INSPECTION_ADDITIONS
+                if legacy in ('inspection-only', 'inspection-partial') else
+                installer._upgrade.INSPECTION_ADDITIONS if not legacy or legacy == 'selection-mismatch' else set())
+    monkeypatch.setattr(installer, '_managed_inspection_paths', lambda selection: previous)
     monkeypatch.setattr(installer, '_verify_new_services',
         lambda previous: previous['native_services'] == old['selection'] or pytest.fail('wrong previous selection'))
     files = [(Path(r['path']), r['after'], r['mode'], r['gid']) for r in records if r['path'] != journal]
@@ -554,7 +561,7 @@ def test_managed_service_snapshots_preserve_existing_state_before_any_write(monk
         return files
     monkeypatch.setattr(installer._native_services, 'publication_files', publication)
     monkeypatch.setattr(installer, '_write_exact', lambda *a, **kw: pytest.fail('snapshot wrote files'))
-    if fault or legacy in ('partial', 'selection-mismatch'):
+    if fault or legacy in ('partial', 'selection-mismatch', 'inspection-partial'):
         with pytest.raises(installer.InstallError): installer._managed_service_snapshots(plan)
     else:
         result = installer._managed_service_snapshots(plan)
@@ -2996,7 +3003,7 @@ def test_load_upgrade_recovery_uses_real_journal_decoder(monkeypatch, with_profi
             native_services={'expected_digest': 'b' * 64}, migration_qualification={'approved': True})
         records.extend(managed_service_fixture(context, monkeypatch))
         if managed in ('legacy', 'partial'):
-            omit = installer._upgrade.INSPECTION_ADDITIONS if managed == 'legacy' else {next(iter(installer._upgrade.INSPECTION_ADDITIONS))}
+            omit = installer._upgrade.INSPECTION_ADDITIONS if managed == 'legacy' else {sorted(installer._upgrade.LEGACY_INSPECTION_ADDITIONS)[0]}
             records = [item for item in records if item['path'] not in omit]
         if managed == 'upgrade':
             for item in records:
@@ -3107,3 +3114,40 @@ def test_candidate_config_is_private_and_does_not_overwrite_old(bundled_deployme
         with pytest.raises(installer.InstallError, match='candidate-config-changed'):
             installer._runtime_config(plan, write=True)
         assert target.read_bytes() == b'changed candidate'
+
+
+@pytest.mark.parametrize('generation', ['none', 'inspection', 'leases', 'lease-only', 'partial'])
+def test_managed_service_contract_accepts_only_complete_existing_generations(monkeypatch, generation):
+    monkeypatch.setattr(installer.pwd, 'getpwnam', lambda name: SimpleNamespace(pw_gid=10777))
+    full = installer._managed_service_contract()
+    selected = set(full) - installer._upgrade.INSPECTION_ADDITIONS
+    paths = {'none': set(), 'inspection': installer._upgrade.LEGACY_INSPECTION_ADDITIONS,
+             'leases': installer._upgrade.INSPECTION_ADDITIONS,
+             'lease-only': installer._upgrade.DOCUMENT_LEASE_ADDITIONS,
+             'partial': set(sorted(installer._upgrade.LEGACY_INSPECTION_ADDITIONS)[1:])}[generation]
+    selected.update(paths)
+    if generation in ('lease-only', 'partial'):
+        with pytest.raises(installer.InstallError, match='inspection-file-set-incomplete'):
+            installer._managed_service_contract(selected)
+    else:
+        assert set(installer._managed_service_contract(selected)) == selected
+
+
+@pytest.mark.parametrize('generation', ['none', 'inspection', 'leases', 'lease-only', 'partial'])
+def test_managed_inspection_generation_comes_from_verified_snapshot(monkeypatch, generation):
+    all_paths = installer._upgrade.INSPECTION_ADDITIONS
+    paths = {'none': set(), 'inspection': installer._upgrade.LEGACY_INSPECTION_ADDITIONS,
+             'leases': all_paths, 'lease-only': installer._upgrade.DOCUMENT_LEASE_ADDITIONS,
+             'partial': set(sorted(installer._upgrade.LEGACY_INSPECTION_ADDITIONS)[1:])}[generation]
+    root = Path('/usr/local/libexec/ods-pixel-services')
+    verified = Mock(return_value={str(Path(path).relative_to(root)): b'approved' for path in paths})
+    monkeypatch.setattr(installer._native_services, 'helper', lambda name: SimpleNamespace(verified_services=verified))
+    selection = {'bundle': '/approved', 'expected_digest': 'd' * 64,
+                 'expected_ref': 'a' * 40, 'expected_config_digest': 'c' * 64}
+    if generation in ('lease-only', 'partial'):
+        with pytest.raises(installer.InstallError, match='inspection-file-set-incomplete'):
+            installer._managed_inspection_paths(selection)
+    else:
+        assert installer._managed_inspection_paths(selection) == paths
+    verified.assert_called_once_with('/approved', expected_digest='d' * 64,
+                                    expected_ref='a' * 40, expected_config_digest='c' * 64)
