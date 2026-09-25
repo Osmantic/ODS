@@ -220,6 +220,8 @@ export const LEGACY_PAGE_REQUEST_HEADERS = Object.freeze({
   "Accept-Language": "en-US,en;q=0.9",
 });
 const PLAIN_REFUSALS = new Set([403, 406]);
+// The plain fallback is not worth starting with less time than this left.
+export const PLAIN_RETRY_MIN_SECONDS = 2;
 const CHROME_ANCHOR = Object.freeze({major: 151, at: Date.UTC(2026, 8, 1)});
 const CHROME_CADENCE_MS = 28 * 24 * 60 * 60 * 1000;
 const CHROME_MAX_ADVANCE = 26;
@@ -391,6 +393,12 @@ export const PUBLIC_PAGE_TEXT_TYPES = new Set([
 // (citation-verification.mjs) all use one instance of it, so none can read a
 // page another could not. Every guarded response is released.
 //
+// `timeoutSeconds` bounds the whole read, both requests included: the plain
+// fallback gets only the time the first request left, and is skipped when
+// less than PLAIN_RETRY_MIN_SECONDS remain. Callers with their own deadline
+// (pixel_ods_search_read: 12 s per read inside 15 s per call; the host check:
+// 4 s) therefore never wait for a second full timeout.
+//
 // `extractHtml` (html-extraction.mjs) runs the extraction off the gateway
 // thread under a deadline; without it the extraction runs in-process on a
 // bounded prefix of the HTML. `extractMode: "markdown"` keeps the page's links
@@ -403,6 +411,7 @@ export function createPublicPageReader({
   readResponseText,
   extractBasicHtmlContent,
   now = Date.now,
+  monotonic = () => performance.now(),
   extractHtml,
 } = {}) {
   if (
@@ -430,11 +439,13 @@ export function createPublicPageReader({
     const requests = [publicPageRequestHeaders(now()), LEGACY_PAGE_REQUEST_HEADERS];
     let guarded;
     try {
+      const started = monotonic();
+      let attemptSeconds = timeoutSeconds;
       for (let attempt = 1; ; attempt += 1) {
         guarded = await guardedFetch({
           url,
           maxRedirects: 3,
-          timeoutSeconds,
+          timeoutSeconds: attemptSeconds,
           signal,
           useEnvProxy: false,
           init: { headers: { ...requests[attempt - 1] } },
@@ -455,10 +466,14 @@ export function createPublicPageReader({
               challenge = botChallenge({ headers: response.headers, status: response.status, html: refusal.text });
             } catch { /* An unreadable refusal is still just a refusal. */ }
           }
-          if (!challenge && attempt < requests.length && PLAIN_REFUSALS.has(response.status) && !signal?.aborted) {
+          // The fallback runs only inside what is left of this read's time.
+          const leftSeconds = Math.floor(timeoutSeconds - (monotonic() - started) / 1000);
+          if (!challenge && attempt < requests.length && PLAIN_REFUSALS.has(response.status) && !signal?.aborted &&
+              leftSeconds >= PLAIN_RETRY_MIN_SECONDS) {
             const refused = guarded;
             guarded = undefined;
             try { await refused.release?.(); } catch { /* Released or already closed. */ }
+            attemptSeconds = leftSeconds;
             continue;
           }
           return { ok: false, reason: "http-status", status: response.status, finalUrl, requests: attempt,
