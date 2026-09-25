@@ -41,6 +41,8 @@ def nonempty_string(value: Any) -> bool:
 
 
 def load_json(path: Path) -> Any:
+    if not path.is_file():
+        raise FileNotFoundError(f"contract file not found: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
