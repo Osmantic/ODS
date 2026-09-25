@@ -1,4 +1,4 @@
-import { retainedFileReceipt, observedCompleteFileContent } from './file-receipt-feedback.mjs';
+import { retainedFileReceipt, observedCompleteFileContent, compactFileReceipt } from './file-receipt-feedback.mjs';
 // Pixel per-run tool-loop guard.
 //
 // OpenClaw's built-in identical-call detector blocks a repeated tool call, but
@@ -3136,10 +3136,7 @@ function compactFailedUnittestText(result) {
 
 function compactWorkspaceCoreResult(message, pending, state) {
   const toolName = pending?.selectedToolName;
-  if (
-    !state?.workspaceTaskRequested ||
-    !["read", "write", "edit", "apply_patch", "exec", "process"].includes(toolName)
-  ) {
+  if (!["read", "write", "edit", "apply_patch", "exec", "process"].includes(toolName)) {
     return undefined;
   }
   const envelope = persistedToolSearchEnvelope(
@@ -3150,6 +3147,10 @@ function compactWorkspaceCoreResult(message, pending, state) {
   );
   if (!envelope) return undefined;
   const result = envelope.result;
+  const fileReceipt = retainedFileReceipt(result, toolName);
+  // Receipt-backed file feedback is generic: serializing its hidden metadata
+  // into a second model-facing JSON body defeats the bounded native excerpt.
+  if (!state?.workspaceTaskRequested && !fileReceipt) return undefined;
   let content = Array.isArray(result.content)
     ? result.content.filter(
         (item) => item && typeof item === "object" && typeof item.type === "string"
@@ -3160,7 +3161,6 @@ function compactWorkspaceCoreResult(message, pending, state) {
     if (failedSummary) content = [{ type: "text", text: failedSummary }];
   }
   const details = result?.details;
-  const fileReceipt = retainedFileReceipt(result, toolName);
   const compactDetails = {
     ...(typeof details?.status === "string" ? { status: details.status } : {}),
     ...(Number.isInteger(details?.exitCode) ? { exitCode: details.exitCode } : {}),
@@ -3172,9 +3172,9 @@ function compactWorkspaceCoreResult(message, pending, state) {
       : {}),
     ...(typeof details?.cwd === "string" && details.cwd ? { cwd: details.cwd } : {}),
     // Native file receipts are generated at the confined operation boundary.
-    // Preserve their exact serialized custody; metadata alone never grants
+    // Preserve bounded provenance without duplicate text; metadata never grants
     // reuse (the SDK also checks the retained rendered body and fresh bytes).
-    ...(fileReceipt ? { fileReceipt } : {}),
+    ...(fileReceipt ? { fileReceipt: compactFileReceipt(fileReceipt) } : {}),
   };
   if (content.length === 0) {
     const status = compactDetails.status ?? (result.isError === true ? "error" : "completed");
@@ -3192,7 +3192,7 @@ function compactWorkspaceCoreResult(message, pending, state) {
       tool: envelope.tool,
       result: {
         ...(result.isError === true ? { isError: true } : {}),
-        content,
+        ...(fileReceipt ? {} : { content }),
         ...(Object.keys(compactDetails).length > 0 ? { details: compactDetails } : {}),
       },
     },

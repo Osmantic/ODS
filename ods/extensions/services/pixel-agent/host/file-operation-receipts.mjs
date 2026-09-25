@@ -10,21 +10,80 @@ const textOf = message => (message?.content ?? []).filter(x => x?.type === 'text
   .map(x => x.text).join('\n');
 const MAX_BODY = 12_000;
 
-function fileMessage(message, stored = false) {
+// Rehydrate text only from the single complete, hash-matching native body.
+// Receipt metadata remains the authority; model-authored headers grant nothing.
+export function materializeFileReceipt(result, operation) {
+  const receipt = result?.details?.fileReceipt;
+  if (!receipt || receipt.operation !== operation) return undefined;
+  if (receipt.bodyStorage !== 'content') return receipt;
+  if (receipt.rendered !== undefined || receipt.excerpt !== undefined ||
+      !Number.isSafeInteger(receipt.start) || !Number.isSafeInteger(receipt.end) ||
+      !Number.isSafeInteger(receipt.totalLines) || receipt.start < 1 ||
+      receipt.end < receipt.start || receipt.end > receipt.totalLines ||
+      receipt.end - receipt.start > 12000 || !/^[a-f0-9]{64}$/.test(receipt.renderedSha256)) return undefined;
+  const matches = (result.content ?? []).filter(block => block?.type === 'text' &&
+    typeof block.text === 'string' && block.text.length <= 13024 &&
+    createHash('sha256').update(block.text).digest('hex') === receipt.renderedSha256);
+  if (matches.length !== 1) return undefined;
+  const rendered = matches[0].text, lines = rendered.split('\n'), values = [];
+  for (let line = receipt.start; line <= receipt.end; line++) {
+    const actual = lines[line - receipt.start + 1], prefix = `${line}|`;
+    if (typeof actual !== 'string' || !actual.startsWith(prefix)) return undefined;
+    values.push(actual.slice(prefix.length));
+  }
+  const excerpt = values.join('\n');
+  const header = `[File ${receipt.operation}: ${receipt.path}; sha256=${receipt.version}; bytes=${receipt.bytes}; lines=${receipt.start}-${receipt.end}/${receipt.totalLines}]`;
+  const body = values.map((value, index) => `${receipt.start + index}|${value}\n`).join('');
+  const omitted = receipt.end < receipt.totalLines ? `\n[More content: read path=${JSON.stringify(receipt.path)} offset=${receipt.end + 1}.]` : '';
+  if (excerpt.length > 12000 || rendered !== `${header}\n${body}${omitted}`) return undefined;
+  return { ...receipt, rendered, excerpt };
+}
+
+export function compactFileReceipt(receipt) {
+  const { body, rendered, excerpt, ...metadata } = receipt;
+  return { ...metadata, bodyStorage: 'content' };
+}
+
+function outerReceiptBinding(message) {
+  const tool = message.details.tool;
+  return { toolCallId: message.toolCallId,
+    tool: { id: tool.id, source: tool.source, sourceName: tool.sourceName, name: tool.name } };
+}
+
+function fileMessage(message, stored = false, registered) {
   if (message?.role !== 'toolResult') return undefined;
   if (['read', 'write', 'edit'].includes(message.toolName)) return message;
   if (message.toolName !== 'tool_call') return undefined;
-  const { tool, result } = message.details ?? {};
-  const receipt = result?.details?.fileReceipt;
+  const replayBinding = !message.details && registered?.outerBinding?.toolCallId === message.toolCallId
+    ? registered.outerBinding : undefined;
+  const { tool, result } = message.details ?? replayBinding ?? {};
+  const receipt = result?.details?.fileReceipt ?? (replayBinding ? registered.receipt : undefined);
   if (tool?.source !== 'openclaw' || tool.sourceName !== 'core' ||
       !['read', 'write', 'edit'].includes(tool.name) || tool.id !== `openclaw:core:${tool.name}` ||
       typeof message.toolCallId !== 'string' || typeof receipt?.toolCallId !== 'string') return undefined;
   const prefix = `tool_search_code:${message.toolCallId}:${tool.name}:`;
   if (!receipt.toolCallId.startsWith(prefix) || !/^[1-9][0-9]*$/.test(receipt.toolCallId.slice(prefix.length))) return undefined;
-  return { ...message, toolName: tool.name, toolCallId: receipt.toolCallId, details: result.details,
+  let content = stored ? (result.content ?? (receipt.bodyStorage === 'content' ? message.content : undefined)) : message.content;
+  if (!stored) {
+    // Deferred native results are serialized into the outer tool body. Decode
+    // only complete, exactly bound envelope content the provider actually sees;
+    // hidden result/details metadata never supplies visible file bytes.
+    content = (message.content ?? []).flatMap(block => {
+      if (block?.type !== 'text' || typeof block.text !== 'string') return [block];
+      try {
+        const visibleEnvelope = JSON.parse(block.text);
+        const boundTool = visibleEnvelope?.tool;
+        if (boundTool?.id !== tool.id || boundTool.name !== tool.name ||
+            boundTool.source !== tool.source || boundTool.sourceName !== tool.sourceName ||
+            !Array.isArray(visibleEnvelope?.result?.content)) return [];
+        return visibleEnvelope.result.content.filter(item => item?.type === 'text' && typeof item.text === 'string');
+      } catch { return [block]; }
+    });
+  }
+  return { ...message, toolName: tool.name, toolCallId: receipt.toolCallId, details: result?.details ?? { fileReceipt: receipt },
     // Stored envelope content may be JSON-encoded. At the provider boundary
     // only the actual outer body counts, never hidden metadata content.
-    ...(stored ? { content: result.content } : {}) };
+    content };
 }
 
 export function createFileReceiptContext({ agentId, sessionKey, workspace, enabled }) {
@@ -33,8 +92,8 @@ export function createFileReceiptContext({ agentId, sessionKey, workspace, enabl
   const scope = digest(JSON.stringify([agentId, sessionKey, path.resolve(workspace)]));
   const registered = new Map();
   let visible = new Map();
-  function remember(receipt, rendered) {
-    registered.set(receipt.id, { receipt, rendered });
+  function remember(receipt, rendered, outerBinding) {
+    registered.set(receipt.id, { receipt, rendered, outerBinding });
     while (registered.size > 256) registered.delete(registered.keys().next().value);
   }
   return {
@@ -47,7 +106,7 @@ export function createFileReceiptContext({ agentId, sessionKey, workspace, enabl
     hydrateTrustedHistory(messages) {
       for (const original of messages ?? []) {
         const message = fileMessage(original, true);
-        const receipt = message?.details?.fileReceipt;
+        const receipt = materializeFileReceipt(message, message?.toolName);
         if (message?.role !== 'toolResult' || !receipt || receipt.scope !== scope ||
             receipt.schemaVersion !== 1 || !['read', 'write', 'edit'].includes(message.toolName) ||
             message.toolCallId !== receipt.toolCallId || message.toolName !== receipt.operation ||
@@ -58,7 +117,8 @@ export function createFileReceiptContext({ agentId, sessionKey, workspace, enabl
             typeof receipt.rendered !== 'string' || receipt.rendered.length > MAX_BODY + 1024 ||
             typeof receipt.excerpt !== 'string' || receipt.excerpt.length > MAX_BODY ||
             digest(receipt.rendered) !== receipt.renderedSha256 || !textOf(message).includes(receipt.rendered)) continue;
-        remember(receipt, receipt.rendered);
+        remember(receipt, receipt.rendered, original.toolName === 'tool_call'
+          ? outerReceiptBinding(original) : undefined);
       }
     },
     // Called on the actual final provider-bound messages, after truncation.
@@ -66,11 +126,14 @@ export function createFileReceiptContext({ agentId, sessionKey, workspace, enabl
     updateVisible(messages) {
       visible = new Map();
       for (const original of messages ?? []) {
-        const message = fileMessage(original);
-        if (!message) continue;
-        const text = textOf(message);
+        const nativeMessage = fileMessage(original);
         for (const entry of registered.values()) {
           const { receipt, rendered } = entry;
+          const message = nativeMessage ?? fileMessage(original, false, entry);
+          if (!message) continue;
+          const text = textOf(message);
+          if (original.toolName === 'tool_call' && original.details?.result?.details?.fileReceipt?.id === receipt.id)
+            entry.outerBinding = outerReceiptBinding(original);
           if (message.toolCallId !== receipt.toolCallId || message.toolName !== receipt.operation ||
               !receipt.observed) continue;
           let prior = visible.get(receipt.path);
@@ -269,7 +332,7 @@ export function createFileReceiptAdapter({ root, operation, operations, context 
       context.register(receipt, rendered);
       return { ...result, content: operation === 'read' ? [{ type: 'text', text: rendered }] :
         [...(result.content ?? []), { type: 'text', text: rendered }],
-        details: { ...result.details, fileReceipt: { ...receipt, body: undefined } } };
+        details: { ...result.details, fileReceipt: compactFileReceipt(receipt) } };
     });
   } }) };
 }

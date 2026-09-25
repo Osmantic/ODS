@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createToolLoopGuard } from '../plugin/tool-loop-guard.mjs';
 import { createFileReceiptContext, createFileReceiptAdapter } from '../host/file-operation-receipts.mjs';
-import { retainedFileReceipt } from '../plugin/file-receipt-feedback.mjs';
+import { retainedFileReceipt, compactFileReceipt, materializeFileReceipt } from '../plugin/file-receipt-feedback.mjs';
 
 function fixture(initial = '\ufeffone\r\ntwo\r\n') {
   const root = path.resolve('owned-workspace');
@@ -136,7 +136,7 @@ test('deferred envelope requires exact core child binding and visible outer body
 
 test('compaction preservation does not promote failures or hidden metadata', async () => {
   const f = fixture(); const result = await f.read.execute('read-1', { path: 'a.txt' });
-  assert.deepEqual(retainedFileReceipt(result, 'read'), result.details.fileReceipt);
+  assert.deepEqual(compactFileReceipt(retainedFileReceipt(result, 'read')), result.details.fileReceipt);
   assert.equal(retainedFileReceipt({ ...result, isError: true }, 'read'), undefined);
   assert.equal(retainedFileReceipt({ ...result, content: [] }, 'read'), undefined);
   assert.equal(retainedFileReceipt(result, 'exec'), undefined);
@@ -297,4 +297,88 @@ test('oversized lines preserve native output and give an actionable bounded exec
     assert.notEqual(f.context.visible('a.txt')?.fullFile,true);
     await assert.rejects(f.mutation('write').execute('w',{path:'a.txt',content:'replacement'}),{code:'ODS_FILE_VERSION_REFRESH_REQUIRED'});
   }
+});
+
+
+test('deferred provider JSON exposes only its bound result content, not hidden receipt metadata', async () => {
+  const f=fixture();const result=await f.read.execute('tool_search_code:outer:read:1',{path:'a.txt'});
+  const envelope={tool:{source:'openclaw',sourceName:'core',name:'read',id:'openclaw:core:read'},result};
+  const message={role:'toolResult',toolName:'tool_call',toolCallId:'outer',details:envelope,
+    content:[{type:'text',text:JSON.stringify(envelope,null,2)}]};
+  f.context.updateVisible([message]);assert.equal(f.context.visible('a.txt').fullFile,true);
+  for(const rendered of [JSON.stringify({...envelope,result:{...result,content:[]}}),
+    JSON.stringify({...envelope,tool:{...envelope.tool,id:'foreign'}}),JSON.stringify(envelope).slice(0,-5)]) {
+    f.context.updateVisible([{...message,content:[{type:'text',text:rendered}]}]);
+    assert.equal(f.context.visible('a.txt'),undefined);
+  }
+});
+
+
+test('sanitized deferred replay uses only the retained native envelope binding', async () => {
+  const f=fixture();const result=await f.read.execute('tool_search_code:outer:read:1',{path:'a.txt'});
+  const envelope={tool:{source:'openclaw',sourceName:'core',name:'read',id:'openclaw:core:read'},result};
+  const message={role:'toolResult',toolName:'tool_call',toolCallId:'outer',details:envelope,
+    content:[{type:'text',text:JSON.stringify(envelope)}]};
+  const replay={...message};delete replay.details;
+  f.context.updateVisible([replay]);assert.equal(f.context.visible('a.txt'),undefined,'no trusted outer mapping yet');
+  f.context.hydrateTrustedHistory([message]);f.context.updateVisible([replay]);assert.equal(f.context.visible('a.txt').fullFile,true);
+  f.context.updateVisible([{...replay,toolCallId:'foreign'}]);assert.equal(f.context.visible('a.txt'),undefined);
+  f.context.updateVisible([{...replay,content:[{type:'text',text:'[truncated]'}]}]);assert.equal(f.context.visible('a.txt'),undefined);
+});
+
+
+test('hidden newer deferred receipt invalidates old visible bytes or opened identity', async () => {
+ for(const change of ['bytes','identity']) {
+  const f=fixture('same');
+  const wrap=(result,id)=>({role:'toolResult',toolName:'tool_call',toolCallId:id,
+   details:{tool:{source:'openclaw',sourceName:'core',name:'read',id:'openclaw:core:read'},result},content:result.content});
+  const first=wrap(await f.read.execute('tool_search_code:first:read:1',{path:'a.txt'}),'first');
+  if(change==='bytes')f.set('new');else f.setIdentity('3'.repeat(64));
+  const newer=wrap(await f.read.execute('tool_search_code:newer:read:1',{path:'a.txt'}),'newer');
+  f.context.hydrateTrustedHistory([first,newer]);
+  const hidden={...newer,content:[{type:'text',text:'[truncated]'}]};delete hidden.details;
+  f.context.updateVisible([first,hidden]);assert.equal(f.context.visible('a.txt'),undefined,change);
+ }
+});
+
+
+test('generic bound deferred file receipt projects one actual body without metadata duplication', async () => {
+ const f=fixture();const result=await f.read.execute('tool_search_code:outer:read:1',{path:'a.txt'});
+ const envelope={tool:{source:'openclaw',sourceName:'core',name:'read',id:'openclaw:core:read'},result};
+ const message={role:'toolResult',toolName:'tool_call',toolCallId:'outer',details:envelope,
+  content:[{type:'text',text:JSON.stringify(envelope)}]};
+ const guard=createToolLoopGuard({fileVersionAdmissionAvailable:true});
+ const ctx={agentId:'pixel',runId:'run',sessionId:'session',sessionKey:'key',toolCallId:'outer',toolName:'tool_call'};
+ guard.observeRun(ctx,'pixel',{prompt:'Answer a short question.'});
+ const params={id:'openclaw:core:read',args:{path:'a.txt'}};
+ const prepared=guard.beforeToolCall({toolName:'tool_call',toolCallId:'outer',params},ctx);
+ assert.notEqual(prepared?.block,true);
+ guard.afterToolCall({toolName:'tool_call',toolCallId:'outer',params:prepared?.params??params,result:message},ctx);
+ const projected=guard.toolResultPersist({message,toolCallId:'outer',toolName:'tool_call'},ctx)?.message;
+ assert(projected);assert.deepEqual(projected.content,result.content);
+ assert.deepEqual(projected.details.result.details.fileReceipt,JSON.parse(JSON.stringify(result.details.fileReceipt)));
+ assert.equal(JSON.stringify(projected.content).includes('renderedSha256'),false);
+});
+
+
+test('compact metadata stays below persistence cap and reconstructs only one exact canonical body', async () => {
+ const f=fixture(Array.from({length:300},(_,i)=>`line${i}-abcdefghijklmnopqrst`).join('\n'));
+ const result=await f.read.execute('longread',{path:'a.txt'});
+ assert(Buffer.byteLength(JSON.stringify(result.details))<2048);
+ assert.equal(result.details.fileReceipt.rendered,undefined);
+ assert.equal(result.details.fileReceipt.excerpt,undefined);
+ const expanded=materializeFileReceipt(result,'read');
+ assert.equal(expanded.excerpt,f.bytes.toString());
+ const legacy={...expanded};delete legacy.bodyStorage;
+ assert.equal(retainedFileReceipt({...result,details:{fileReceipt:legacy}},'read').excerpt,f.bytes.toString());
+ for(const content of [[],result.content.concat(result.content),[{type:'text',text:result.content[0].text.slice(0,-1)}]])
+  assert.equal(materializeFileReceipt({...result,content},'read'),undefined);
+ const wrong=result.content[0].text.replace('1|line0','2|line0');
+ const invalid={...result,content:[{type:'text',text:wrong}],details:{fileReceipt:{...result.details.fileReceipt,renderedSha256:createHash('sha256').update(wrong).digest('hex')}}};
+ assert.equal(materializeFileReceipt(invalid,'read'),undefined,'matching hash cannot launder invalid range prefixes');
+ // Host and plugin copies must retain byte-identical parsing rules.
+ const host=readFileSync(new URL('../host/file-operation-receipts.mjs',import.meta.url),'utf8');
+ const plugin=readFileSync(new URL('../plugin/file-receipt-feedback.mjs',import.meta.url),'utf8');
+ const shared=text=>text.slice(text.indexOf('export function materializeFileReceipt'),text.indexOf('export function compactFileReceipt'));
+ assert.equal(shared(host),shared(plugin));
 });
