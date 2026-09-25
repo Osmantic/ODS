@@ -16,6 +16,13 @@ inspection. No provider implementation is copied into ODS.
 
 The search provider is independent of the model gateway and the browser. Selecting
 it does not grant host execution, change access mode, or enable browser navigation.
+
+`pixel_ods_search_read` sends only its search query (and an optional site
+preference) to the configured provider. It then opens up to five of the
+returned public pages directly from the ODS host, as `web_fetch` and
+`pixel_ods_web_extract` do: those sites see the owner's network address. It is
+not offered when page reads or `web_search` are disabled or denied, or when web
+fetches are routed through a trusted environment proxy.
 Perplexica remains available as an optional research application. The paid
 OpenClaw provider ID `parallel` is distinct from `parallel-free`.
 
