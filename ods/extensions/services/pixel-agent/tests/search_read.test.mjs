@@ -423,3 +423,21 @@ test('index.js: one shared guarded reader for every page read, and a static regi
   assert.deepEqual(registered.parameters, SEARCH_READ_PARAMETERS);
   assert.equal(registered.description, SEARCH_READ_DESCRIPTION);
 });
+
+test('each receipted page gives the stop synthesis its own delivered excerpt, never a neighbour\'s or a lead\'s', async () => {
+  const rows = [{url: 'https://a.example.org/specs'}, {url: 'https://b.example.org/specs'},
+    {url: 'https://c.example.org/nav'}, {url: 'https://lead.example.org/x.pdf', description: 'Lead snippet 999 W'}];
+  const pages = {'https://a.example.org/specs': page('RTX 5070 board power 250 W\nMemory 12 GB GDDR7'),
+    'https://b.example.org/specs': page('RX 9070 board power 220 W\nMemory 16 GB GDDR6'),
+    'https://c.example.org/nav': page('Home Contact')};
+  const result = await tool({rows, pages}).execute('call', {query: 'RTX 5070 RX 9070 board power memory'});
+  const assurance = createCompletionAssurance();
+  assurance.begin('Compare the RTX 5070 and RX 9070 board power and memory. Open the source pages.');
+  assurance.observe('pixel_ods_search_read', {params: {query: 'RTX 5070 RX 9070 board power memory'}, result});
+  const sources = assurance.synthesisSources();
+  assert.deepEqual(sources.map(source => source.url), ['https://a.example.org/specs', 'https://b.example.org/specs']);
+  assert.match(sources[0].excerpt, /250 W/);
+  assert.doesNotMatch(sources[0].excerpt, /220 W|999 W|EXTERNAL_UNTRUSTED/);
+  assert.match(sources[1].excerpt, /220 W/);
+  assert.doesNotMatch(sources[1].excerpt, /250 W|999 W/);
+});
