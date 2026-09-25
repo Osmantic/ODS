@@ -25,6 +25,7 @@ import { SEARCH_PACING_STREAK, SEARCH_PACING_REASON, searchTerms, nearDuplicateS
 import { createCompletionAssurance } from "./completion-assurance.mjs";
 import { researchRequestProblem } from "./perplexica-research.mjs";
 import { HOST_CITATION_LIMITS } from './citation-verification.mjs';
+import { itemSourceFindings, itemSourceRevision } from './item-sources.mjs';
 import { SEARCH_READ_TOOL, SEARCH_READ_BOUNDARY, SEARCH_READ_SCHEMA_HINT, validateSearchReadParams,
   searchReadCost } from './search-read.mjs';
 import { createExtensionCompletionGate } from "./extension-completion-gate.mjs";
@@ -11892,6 +11893,23 @@ export function createToolLoopGuard({
     return state?.withdrawnOwnerRequest ? OWNER_CANCELLED_REQUEST_CONTEXT : undefined;
   }
 
+  // An answer that passed the completion checks but supports some items only
+  // with a listing page, when the owner asked for a source per item
+  // (item-sources.mjs): one continuation per run, only while a page read is
+  // left to fix it beyond the host citation check's reserve. Otherwise the
+  // answer is delivered as it is.
+  function itemSourceDecision(state, answer) {
+    if (!state || state.itemSourceRevised || state.completionAssurance.terminal) return undefined;
+    const context = state.completionAssurance.itemSourceContext();
+    if (!context || Math.min(effective.fetch - state.fetch, effective.total - state.total) - searchReadReserve() < 1) {
+      return undefined;
+    }
+    const findings = itemSourceFindings(answer, context);
+    if (!findings.length) return undefined;
+    state.itemSourceRevised = true;
+    return itemSourceRevision(findings);
+  }
+
   function beforeAgentFinalize(event, context, agentId = "pixel") {
     if (context?.agentId !== agentId) return undefined;
     const runId = context?.runId ?? event?.runId;
@@ -11932,7 +11950,8 @@ export function createToolLoopGuard({
         : extensionStopped || workspaceStopped ? undefined : state?.completionAssurance.finalize(event?.lastAssistantMessage ?? '');
       if (state?.extensionCompletionGate?.active)
         state.extensionDecisionRecovery.gateRevisionRequested = decision?.action === 'revise';
-      return decision;
+      if (decision || state?.extensionCompletionGate?.active || extensionStopped || workspaceStopped) return decision;
+      return itemSourceDecision(state, event?.lastAssistantMessage ?? '');
     }
     if (continuation.finalize) return {action: 'finalize', reason: continuation.finalize};
     return {

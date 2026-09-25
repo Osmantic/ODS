@@ -1,6 +1,7 @@
 // A bounded completion check, not an executor. All recovered calls still go
 // through the normal tool policy, cancellation, permission and loop guards.
-import { pageExcerpt, requestTerms } from './page-excerpt.mjs';
+import { externalContentBody, pageExcerpt, requestTerms } from './page-excerpt.mjs';
+import { listingProfile, SOURCE_KIND_LIMITS } from './source-kind.mjs';
 const normalize = value => String(value ?? '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
 const WEB = new Set(['web_search', 'web_fetch', 'pixel_ods_web_extract', 'pixel_ods_search_read', 'pixel_ods_research', 'browser']);
 const DISCOVERY = new Set(['tool_search', 'tool_describe']);
@@ -19,6 +20,19 @@ function sourceReadsRequested(text) {
   if (/^(?:translate|traduza|explain how|explique como)\b/.test(value.trim()) ||
       /\b(?:do not|don't|never|without|nao|sem)\b[^.!?\n]{0,45}\b(?:open|read|fetch|abrir|abra|ler|leia)\b/.test(value)) return false;
   return /\b(?:open|read|fetch|abra|abrir|leia|ler)\b[^.!?\n]{0,100}\b(?:sources?|pages?|links?|urls?|fontes?|paginas?)\b/.test(value);
+}
+
+// The owner asks for a source per item: "for each ... a direct official
+// source URL", "the official page of each event", "one link per product".
+// Checked with item-sources.mjs at finalization; citing sources in general
+// ("cite your sources") does not ask for this.
+export function itemSourcesRequested(text) {
+  const value = normalize(text);
+  return /\b(?:for each|for every|each (?:one|item|event|product|of them)|per (?:item|event|product|entry))\b[^.!?\n]{0,160}\b(?:sources?|urls?|links?|citations?|pages?)\b/.test(value) ||
+    /\b(?:sources?|urls?|links?|citations?|pages?)\b[^.!?\n]{0,40}\b(?:for each|for every|per (?:item|event|product|entry))\b/.test(value) ||
+    /\b(?:direct|official|primary)\s+(?:(?:official|direct|primary|event|product|manufacturer|organi[sz]er|venue|retailer)\s+)?(?:sources?|urls?|links?|pages?|sites?|websites?)\b/.test(value) ||
+    /\b(?:para cada|cada um|cada evento|cada produto)\b[^.!?\n]{0,160}\b(?:fontes?|links?|urls?|paginas?)\b/.test(value) ||
+    /\b(?:fontes?|links?|urls?|paginas?|sites?)\s+(?:oficia(?:l|is)|diret[ao]s?|primari[ao]s?)\b/.test(value);
 }
 
 // The same document after normalising the scheme to https, a leading www.
@@ -73,6 +87,33 @@ function openedSourceUrls(tool, result) {
     candidates = searchReadPages(result).flatMap(page => page.urls);
   }
   return candidates.map(publicSourceUrl).filter(Boolean);
+}
+
+// Read pages that are listings (source-kind.mjs): many dated entries, so a
+// lead for each entry rather than any entry's own page. pixel_ods_search_read
+// marks them from the whole page text and keeps the entries' own-page links;
+// a web_fetch or targeted extraction is judged by the text it returned.
+function listingPages(tool, result) {
+  const details = result?.details;
+  const listing = (urls, items, ownLinks = []) => {
+    const keys = urls.map(citationKey).filter(Boolean);
+    return keys.length && Number.isInteger(items) && items >= SOURCE_KIND_LIMITS.listingItems
+      ? [{url: publicSourceUrl(urls[0]), keys, items,
+        ownLinks: (Array.isArray(ownLinks) ? ownLinks : []).slice(0, SOURCE_KIND_LIMITS.maxItemLinks)
+          .map(publicSourceUrl).filter(Boolean)}] : [];
+  };
+  if (tool === 'pixel_ods_search_read') {
+    if (details?.boundary !== 'public-web-search-read' || !Array.isArray(details.pages)) return [];
+    return details.pages.slice(0, 5).filter(page => page?.read === true && publicSourceUrl(page.finalUrl))
+      .flatMap(page => listing([page.finalUrl, ...(sameDocument(page.url, page.finalUrl) ? [page.url] : [])],
+        page.listing?.items, page.ownLinks));
+  }
+  const urls = openedSourceUrls(tool, result);
+  if (!urls.length) return [];
+  const text = tool === 'web_fetch' ? details?.text
+    : externalContentBody((result?.content ?? []).filter(block => block?.type === 'text' && typeof block.text === 'string')
+      .map(block => block.text).join('\n'));
+  return listing(urls, listingProfile(text).items);
 }
 
 // A page-provided title (OpenClaw wraps it in untrusted-content markers),
@@ -330,6 +371,10 @@ function continuedOwnerRequest(ownerText, event) {
 export function createCompletionAssurance() {
   let initialized = false, research = false, portuguese = false, conversational = false, attempts = 0;
   let readsRequired = false, attributionAttempts = 0;
+  // A source per item requested, the request text, and the read pages that
+  // are listings, by citation key (item-sources.mjs).
+  let itemSources = false, requestText = '';
+  const listings = new Map();
   let workObserved = false, webObserved = false, terminal, terminalStatus = 'failed';
   // Run binding. An owner cancel ends this run's assurance for good: no later
   // revision, host read or replacement text. A run that follows a cancel can
@@ -379,6 +424,8 @@ export function createCompletionAssurance() {
       const precedingRequest = continuedOwnerRequest(ownerText, event);
       readsRequired = sourceReadsRequested(ownerText) || sourceReadsRequested(precedingRequest);
       research = readsRequired || researchRequested(ownerText) || researchRequested(precedingRequest);
+      itemSources = itemSourcesRequested(ownerText) || itemSourcesRequested(precedingRequest);
+      requestText = [ownerText, precedingRequest].filter(value => typeof value === 'string').join('\n').slice(0, 12000);
       terms = requestTerms(ownerText, precedingRequest);
       conversational = /^(?:(?:please|por favor)[,\s]+)?(?:traduza|translate|reescreva|rewrite|repita|repeat|diga apenas|say exactly|responda apenas|return exactly|explique|explain|rascunho|draft|exemplo|example)\b/.test(normalize(ownerText).trim()) && !research;
       portuguese = /\b(qual|voce|vc|noticias|hoje|consulte|pesquise|busque|procure|crie|arquivo|internet|instale|instalar|baixar|configure|configurar)\b/.test(normalize(ownerText));
@@ -414,6 +461,17 @@ export function createCompletionAssurance() {
         opened.add(url);
         sources.add(url);
       }
+      for (const page of listingPages(tool, event.result)) {
+        for (const key of page.keys) {
+          const known = listings.get(key);
+          if (known) {
+            known.items = Math.max(known.items, page.items);
+            for (const link of page.ownLinks) {
+              if (!known.ownLinks.includes(link) && known.ownLinks.length < SOURCE_KIND_LIMITS.maxItemLinks) known.ownLinks.push(link);
+            }
+          } else if (listings.size < 32) listings.set(key, {url: page.url, items: page.items, ownLinks: [...page.ownLinks]});
+        }
+      }
       const query = [event.params?.query, event.params?.focus].filter(value => typeof value === 'string').join(' ');
       for (const entry of readPageEntries(tool, event.result)) recordReadPage(entry, query || undefined);
       workObserved = true;
@@ -438,6 +496,13 @@ export function createCompletionAssurance() {
       }
     },
     get hostVerifiedSources() { return [...hostVerified]; },
+    // What the per-item source check (item-sources.mjs) needs, only when the
+    // owner asked for a source per item and this run read a listing.
+    itemSourceContext() {
+      if (cancelled || conversational || !itemSources || !webObserved || !listings.size) return undefined;
+      return {listings: new Map([...listings].map(([key, page]) => [key, {...page, ownLinks: [...page.ownLinks]}])),
+        requestText};
+    },
     // Pages read successfully in this response: current-run model read
     // receipts (web_fetch, targeted extraction) and host verifications.
     get readPages() { return readPages.map(({url, title}) => (title ? {url, title} : {url})); },
