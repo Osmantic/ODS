@@ -268,6 +268,17 @@ match the selected GPU architecture.
 Single-GPU, Apple, Windows-native AMD/Lemonade, externally managed inference,
 and unpersisted all-GPU fallback configurations keep their existing behavior.
 
+On Linux NVIDIA, a model that needs at most half of the smallest assigned
+llama GPU (the same memory estimate at the selected context) runs on one of
+them: activation sets `LLAMA_ARG_SPLIT_MODE=none` and `LLAMA_ARG_MAIN_GPU`,
+preferring a GPU without Whisper, ComfyUI or embeddings. The assignment,
+`NVIDIA_VISIBLE_DEVICES` and `LLAMA_ARG_TENSOR_SPLIT` stay as they are, and
+the next larger model gets the layer split back. One GPU avoids the per-token
+cross-GPU hop, and llama.cpp before b10247 aborts Gemma 4 E2B/E4B on any
+multi-GPU split. An installer rerun that keeps the model and the assignment
+keeps this placement; `ods gpu reassign` resets it and `ods gpu validate`
+reports it.
+
 To inspect or intentionally override a multi-GPU plan, use the supported CLI
 instead of editing the encoded assignment in `.env`:
 
