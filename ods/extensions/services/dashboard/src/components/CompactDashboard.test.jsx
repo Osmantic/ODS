@@ -40,3 +40,11 @@ it('does not fabricate a percentage without telemetry', () => {
   expect(screen.queryByRole('progressbar')).toBeNull()
   expect(screen.getByText('No service telemetry available.')).toBeVisible()
 })
+it('closes an open disclosure when the service snapshot changes', () => {
+  const { rerender } = render(<CompactDashboard health={{text:'Online'}} services={[{name:'First',status:'healthy'}]} metrics={[]} />)
+  const first = screen.getByText('First').closest('details')
+  fireEvent.click(within(first).getByText('First'))
+  expect(first).toHaveAttribute('open')
+  rerender(<CompactDashboard health={{text:'Online'}} services={[{name:'Replacement',status:'down'}]} metrics={[]} />)
+  expect(screen.getByText('Replacement').closest('details')).not.toHaveAttribute('open')
+})

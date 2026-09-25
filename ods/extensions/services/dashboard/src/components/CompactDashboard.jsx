@@ -44,6 +44,9 @@ export default function CompactDashboard({ metrics, services, health }) {
   }, [tab, services.length])
   const pages = Math.max(1, Math.ceil(services.length / pageSize))
   const currentPage = Math.min(page, pages)
+  useEffect(() => {
+    if (list.current) list.current.querySelectorAll('details[open]').forEach(row => { row.open = false })
+  }, [services, currentPage])
   const deployed = services.filter(service => service.status !== 'not_deployed')
   const scoped = deployed.some(service => typeof service.required === 'boolean') ? deployed.filter(service => service.required) : deployed
   const online = scoped.filter(service => service.status === 'healthy').length
