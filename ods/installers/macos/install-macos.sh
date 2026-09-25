@@ -2103,7 +2103,7 @@ if $DRY_RUN; then
     fi
 else
     # Change to install directory for docker compose
-    cd "$INSTALL_DIR"
+    cd "$INSTALL_DIR" || exit 1
 
     # ── Bootstrap fast-start ──────────────────────────────────────────────
     _BOOTSTRAP_ACTIVE=false
