@@ -220,6 +220,42 @@ class TestTwoGpuBusyPeer:
         assert parallelism(out)["mode"] == "none"
 
 
+class TestRankZeroTieBreakFollowsInputOrder:
+    """When link-less GPUs tie on VRAM, selection follows topology input order
+    rather than GPU-index order. Listing the GPUs as (2, 0, 1) makes a regression
+    to sorted(..., key=g.index) fail visibly: it would pick [0, 2] not [2, 0].
+    """
+
+    def _topology(self):
+        return {
+            "vendor": "nvidia",
+            "gpu_count": 3,
+            "links": [],
+            "gpus": [
+                {"index": idx, "uuid": f"GPU-{idx}", "name": "24 GB GPU",
+                 "memory_gb": 24, "memory_free_gb": 24}
+                for idx in (2, 0, 1)
+            ],
+        }
+
+    def test_two_gpu_tie_keeps_input_order(self, tmp_path):
+        path = tmp_path / "unordered.json"
+        path.write_text(json.dumps(self._topology()), encoding="utf-8")
+        # 40 GB model needs 2 of the 24 GB GPUs; all tie on VRAM.
+        rc, out, stderr = run(str(path), 40000)
+        assert rc == 0, stderr
+        assert llama(out)["gpu_indices"] == [2, 0]
+        assert llama(out)["gpus"] == ["GPU-2", "GPU-0"]
+
+    def test_single_gpu_tie_keeps_first_in_input_order(self, tmp_path):
+        path = tmp_path / "unordered.json"
+        path.write_text(json.dumps(self._topology()), encoding="utf-8")
+        # 20 GB model fits one 24 GB GPU; first in input order (index 2) wins.
+        rc, out, stderr = run(str(path), 20000)
+        assert rc == 0, stderr
+        assert llama(out)["gpu_indices"] == [2]
+
+
 # ── 4 GPU — SOC / cross-NUMA PCIe ────────────────────────────────────────────
 
 class TestFourGpuSoc:
