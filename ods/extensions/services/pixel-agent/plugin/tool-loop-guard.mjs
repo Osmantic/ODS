@@ -48,6 +48,15 @@ const COACHING_REPEAT_INTERVAL = 8;
 const MAX_COMPARE_SWAP_REPAIR_CHARS = 32_768;
 const MAX_COMPARE_SWAP_REPAIRS_PER_PATH = 3;
 const MAX_TRACKED_WORKSPACE_FILE_BYTES = 4 * 1024 * 1024;
+// Derived-write detection bounds. Below the minimum, re-typing costs less
+// than a corrective round trip; larger sources are never read; only the most
+// recent files this run wrote, edited or read are compared.
+const MIN_DERIVED_CONTENT_BYTES = 256;
+const MAX_DERIVED_SOURCE_BYTES = 256 * 1024;
+const MAX_DERIVED_WRITE_BYTES = 1024 * 1024;
+const MAX_DERIVED_SOURCE_CANDIDATES = 64;
+const MAX_DERIVED_JSON_STRINGS = 256;
+const MAX_DERIVED_JSON_DEPTH = 4;
 // Read-only capabilities allowed before an ODS-owned continuation of an
 // unfinished extension decision. A prepare call requires its separate,
 // validated no-work rejection; no generic exec or workspace mutation qualifies.
@@ -169,6 +178,13 @@ export const PHANTOM_PROCESS_REASON =
 // Per run and per kind of corrective answer (see recordFreeCorrection): how
 // many answers are recorded without consuming the failure budget.
 export const FREE_CORRECTIONS_PER_KIND = 2;
+
+// Refusals for a write that re-types existing workspace files (see
+// derivedWriteMatch). Fixed text; only the appended matched paths vary.
+export const DERIVED_COPY_WRITE_REASON =
+  "Not written: this content re-types an existing workspace file. Copy existing files with one short exec command instead of re-typing them, for example cp SOURCE DESTINATION; it is byte-exact and much faster.";
+export const DERIVED_MAP_WRITE_REASON =
+  "Not written: string values in this JSON re-type existing workspace files. Generate a JSON map of file contents with one short exec command that reads the real files instead of re-typing them, for example python3 -c \"import json; json.dump({n: open(n, 'rb').read().decode('utf-8') for n in ['a.py', 'b.py']}, open('sources.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=2)\" with workdir set to their directory; it is byte-exact and much faster.";
 
 export const VERIFICATION_PENDING_DELIVERY_PREFIX =
   "Pixel stopped before the verification process reached a terminal result, so success is unverified. The workspace is preserved; ask Pixel to continue the run or inspect the process.";
@@ -630,6 +646,130 @@ function normalizeWorkspaceFilePath(value) {
     value = value.slice("workspace/".length);
   }
   return value.replace(/^(?:\.\/)+/, "");
+}
+
+// A normalized workspace-relative file path, or undefined for absolute,
+// traversing, empty-component or otherwise unusual spellings.
+function derivedWorkspacePath(value) {
+  if (typeof value !== "string" || !value || value.length > 1024 ||
+      value.startsWith("/") || /[\\\0]/.test(value)) return undefined;
+  return value.split("/").every((part) => part && part !== "." && part !== "..")
+    ? value : undefined;
+}
+
+// The exact bytes of one regular workspace file, or undefined. Links are
+// never followed below the configured root: every directory component and
+// the file itself must be lstat-real, the file is opened with O_NOFOLLOW and
+// must still be the same single-link inode of the expected size. Anything
+// missing, linked, special, hard-linked, oversized or changing is skipped.
+function readDerivedSource(base, relative, size) {
+  if (!Number.isSafeInteger(size) || size < 0 || size > MAX_DERIVED_SOURCE_BYTES) return undefined;
+  let fd;
+  try {
+    const parts = relative.split("/");
+    let cursor = base;
+    for (const part of parts.slice(0, -1)) {
+      cursor = path.join(cursor, part);
+      const entry = fs.lstatSync(cursor);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) return undefined;
+    }
+    const file = path.join(cursor, parts.at(-1));
+    const before = fs.lstatSync(file);
+    if (before.isSymbolicLink() || !before.isFile() || before.nlink !== 1 || before.size !== size) return undefined;
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== size) return undefined;
+    const bytes = Buffer.alloc(size + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = fs.readSync(fd, bytes, length, bytes.length - length, length);
+      if (count === 0) break;
+      length += count;
+    }
+    return length === size ? bytes.subarray(0, size) : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
+}
+
+// Does a write re-type existing workspace files? `copy`: the whole content
+// is one candidate file. `map`: the content is JSON (object or array) and at
+// least one string value is a whole candidate file, as in a sources.json that
+// maps filenames to their source text. Each comparison is byte-exact against
+// the file on disk now, never against remembered or read-result text, with
+// one tolerated difference: the file's single final newline, which re-typing
+// drops (tower1 round 058 dropped it from every sources.json value). No other
+// difference matches. Candidates are workspace-relative paths observed in
+// this run; the write target itself is never a candidate. A cheap lstat size
+// prefilter precedes any read, so the check can run on every write.
+export function derivedWriteMatch(root, writePath, content, candidates) {
+  if (typeof root !== "string" || !path.isAbsolute(root) || typeof content !== "string" ||
+      !Array.isArray(candidates) || candidates.length === 0) return undefined;
+  const size = Buffer.byteLength(content, "utf8");
+  if (size < MIN_DERIVED_CONTENT_BYTES || size > MAX_DERIVED_WRITE_BYTES) return undefined;
+  // Keyed by the size of the file each target can match.
+  const targets = new Map();
+  const addTarget = (kind, text) => {
+    const bytes = Buffer.from(text, "utf8");
+    if (bytes.length < MIN_DERIVED_CONTENT_BYTES || bytes.length > MAX_DERIVED_SOURCE_BYTES) return;
+    for (const [fileSize, withoutFinalNewline] of [[bytes.length, false], [bytes.length + 1, true]]) {
+      const sameSize = targets.get(fileSize) ?? [];
+      sameSize.push({kind, bytes, withoutFinalNewline});
+      targets.set(fileSize, sameSize);
+    }
+  };
+  addTarget("copy", content);
+  if (/^\s*[[{]/.test(content)) {
+    let parsed;
+    try { parsed = JSON.parse(content); } catch {}
+    let strings = 0;
+    const visit = (value, depth) => {
+      if (strings >= MAX_DERIVED_JSON_STRINGS || depth > MAX_DERIVED_JSON_DEPTH) return;
+      if (typeof value === "string") {
+        strings += 1;
+        addTarget("map", value);
+      } else if (value && typeof value === "object") {
+        for (const item of Array.isArray(value) ? value : Object.values(value)) visit(item, depth + 1);
+      }
+    };
+    if (parsed && typeof parsed === "object") visit(parsed, 0);
+  }
+  if (targets.size === 0) return undefined;
+  let base;
+  try {
+    // The configured root itself may be a platform alias (macOS /var); no
+    // link below it is followed.
+    base = fs.realpathSync(root);
+    if (!fs.statSync(base).isDirectory()) return undefined;
+  } catch {
+    return undefined;
+  }
+  const copies = [];
+  const maps = [];
+  const seen = new Set();
+  for (const candidate of candidates.slice(-MAX_DERIVED_SOURCE_CANDIDATES)) {
+    const relative = derivedWorkspacePath(candidate);
+    if (!relative || relative === writePath || seen.has(relative)) continue;
+    seen.add(relative);
+    let info;
+    try { info = fs.lstatSync(path.join(base, ...relative.split("/"))); } catch { continue; }
+    if (!info.isFile() || !targets.has(info.size)) continue;
+    const bytes = readDerivedSource(base, relative, info.size);
+    if (!bytes) continue;
+    for (const target of targets.get(info.size)) {
+      const matched = target.withoutFinalNewline
+        ? bytes[bytes.length - 1] === 0x0a && target.bytes.equals(bytes.subarray(0, -1))
+        : target.bytes.equals(bytes);
+      if (!matched) continue;
+      const matches = target.kind === "copy" ? copies : maps;
+      if (!matches.includes(relative)) matches.push(relative);
+    }
+  }
+  if (copies.length > 0) return {kind: "copy", files: copies};
+  if (maps.length > 0) return {kind: "map", files: maps};
+  return undefined;
 }
 
 function stripTrailingToolEnvelopeLeak(value) {
@@ -6688,13 +6828,52 @@ export function createToolLoopGuard({
   // result, so a model that keeps repeating the call still reaches the
   // unchanged consecutive/total failure fuses. A nested Tool Search execution
   // is charged through its outer tool_call receipt, whose ID differs, so it
-  // never receives the allowance.
+  // never receives the allowance. Returns whether this answer was free.
   function recordFreeCorrection(state, kind, callId, toolName) {
-    if (!state || typeof callId !== "string" || !callId || callId.startsWith("tool_search_code:")) return;
+    if (!state || typeof callId !== "string" || !callId || callId.startsWith("tool_search_code:")) return false;
     const used = state.freeCorrections.get(kind) ?? 0;
-    if (used >= FREE_CORRECTIONS_PER_KIND) return;
+    if (used >= FREE_CORRECTIONS_PER_KIND) return false;
     state.freeCorrections.set(kind, used + 1);
     state.progressBudget.observeResult({callId, tool: toolName, failed: false, discovery: true});
+    return true;
+  }
+
+  // Refusal text for a write that re-types files this run wrote, edited or
+  // read (see derivedWriteMatch), or undefined to let the write proceed.
+  // The refusal is a steer toward cp or a json.dump command, not a failed
+  // action, so it is never charged. Each run
+  // gets at most FREE_CORRECTIONS_PER_KIND of them, and at most one per
+  // destination path; after that the write proceeds, because refusing a
+  // model that re-types anyway would only cost another full re-typing. It
+  // is skipped where exec cannot follow it: owner exec exclusions, scoped
+  // single-file repairs, visual continuations, a new static site before its
+  // entry file exists, ODS-written Operations evidence and read-only team
+  // roles. Nested Tool Search executions and unidentified calls get no
+  // allowance and are never refused here.
+  function derivedWriteRefusal(state, selectedToolName, params, callId, toolName) {
+    if (selectedToolName !== "write" || typeof params?.content !== "string" ||
+        typeof callId !== "string" || !callId || callId.startsWith("tool_search_code:") ||
+        (state.freeCorrections.get("derived-write") ?? 0) >= FREE_CORRECTIONS_PER_KIND) return undefined;
+    const writePath = derivedWorkspacePath(normalizeWorkspaceFilePath(params.path));
+    const restriction = state.workspacePreviewRestrictions;
+    if (!writePath || state.derivedWriteRefusedPaths.has(writePath) ||
+        restriction?.exec || restriction?.mutation || restriction?.existingFile ||
+        state.workspaceVisualContinuationRequested || state.operationsWorkspaceContinuationRequested ||
+        state.managedTeamReadOnly ||
+        (state.workspacePreviewMode === "new-static" &&
+          ![...state.successfulWritePaths].some((value) => typeof value === "string" && value.endsWith("/index.html")))) {
+      return undefined;
+    }
+    const candidates = [...new Set([
+      ...state.successfulWritePaths, ...state.successfulEditPaths, ...state.successfulReadPaths,
+    ])];
+    const match = derivedWriteMatch(state.configuredWorkspaceRoot, writePath, params.content, candidates);
+    if (!match || !recordFreeCorrection(state, "derived-write", callId, toolName)) return undefined;
+    state.derivedWriteRefusedPaths.add(writePath);
+    const files = match.files.slice(0, 3).map((file) => JSON.stringify(file)).join(", ");
+    return match.kind === "copy"
+      ? `${DERIVED_COPY_WRITE_REASON} Existing file: ${files}.`
+      : `${DERIVED_MAP_WRITE_REASON} Repeated files: ${files}.`;
   }
 
   function pruneRuns() {
@@ -6918,6 +7097,8 @@ export function createToolLoopGuard({
         backgroundExecStarted: false,
         // Budget-free corrective answers used so far, by kind.
         freeCorrections: new Map(),
+        // Destinations whose re-typed write was already refused once.
+        derivedWriteRefusedPaths: new Set(),
         execOriginalByWrapped: new Map(),
         verificationOriginalByWrapped: new Map(),
         currentSessionId: undefined,
@@ -8794,6 +8975,19 @@ export function createToolLoopGuard({
         state.backgroundExecStarted = true;
       }
     }
+
+    // Derived writes. Fleet, coding journey: on the laptop (Qwen3.5-9B, round
+    // 057) the model re-typed three source files into public/sources.json
+    // through write (5,033 output tokens, 410 s at ~12 tok/s) and one
+    // hand-escaped value no longer matched its file; on tower1 (round 058)
+    // every re-typed value lost its final newline. Both failed exactness. When
+    // a write repeats files this run already wrote or read, whole or as JSON
+    // string values, refuse it once with the command that copies them exactly.
+    // Every refusal above keeps precedence; direct and Tool Search forms share
+    // this point, and the answer is a free correction (see derivedWriteRefusal).
+    const derivedReason = derivedWriteRefusal(state, selectedToolName, selectedParams,
+      context?.toolCallId ?? event?.toolCallId, toolName);
+    if (derivedReason) return { block: true, blockReason: derivedReason };
 
     if (!WEB_TOOLS.has(toolName)) {
       if (selectedToolName === "exec" && execControl) {

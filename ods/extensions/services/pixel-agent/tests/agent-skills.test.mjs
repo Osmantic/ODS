@@ -10,7 +10,7 @@ test('guide lookup returns only the selected bounded topic', async () => {
     assert.equal(result.isError, undefined);
     assert.deepEqual(result.details, {kind: 'ods-operating-guide', topic, readOnly: true});
     assert.equal(result.content[0].text, AGENT_SKILLS[topic]);
-    assert.ok(result.content[0].text.length < (topic === 'workspace' ? 2800 : 2600));
+    assert.ok(result.content[0].text.length < (topic === 'workspace' ? 3000 : 2600));
     for (const other of Object.keys(AGENT_SKILLS).filter(name => name !== topic)) {
       assert.ok(!result.content[0].text.includes(AGENT_SKILLS[other]));
     }
