@@ -16,6 +16,10 @@ fit column:
   class's margin (on the CPU backend, also the llama-server container limit);
 * ``fits @64K``: the same after the Linux/Windows Hermes raise to 65,536.
 
+Envelopes without a size ceiling also record the ``--profile gemma4`` pick
+(``gemma4`` in the golden file), so installers/windows/lib/tier-map.ps1's
+Gemma path, sliding-window estimate included, is checked against it too.
+
 Offline and read-only: it never downloads, installs or starts anything.
 
 Usage:
@@ -118,7 +122,7 @@ class Simulator:
             return int(envelope.get("ceiling") or 0)
         return tier_map_size_mb(self.tier_map, str(envelope["tier"]), str(envelope["host_arch"]))
 
-    def select(self, envelope: dict[str, Any], ceiling: int) -> dict[str, Any]:
+    def select(self, envelope: dict[str, Any], ceiling: int, profile: str = "qwen") -> dict[str, Any]:
         command = [
             sys.executable, str(self.selector),
             "--catalog", str(self.catalog_path),
@@ -126,7 +130,7 @@ class Simulator:
             "--memory-type", envelope["memory_type"],
             "--vram-mb", str(envelope["vram_mb"]),
             "--ram-gb", str(envelope["ram_gb"]),
-            "--profile", "qwen",
+            "--profile", profile,
             "--tier", str(envelope["tier"]),
             "--max-size-mb", str(ceiling),
             "--host-arch", envelope["host_arch"],
@@ -151,6 +155,23 @@ class Simulator:
             model = {**model, **reference}
         return model if architecture_metadata_complete(model) else None
 
+    def profile_pick(self, envelope: dict[str, Any], ceiling: int, profile: str) -> dict[str, Any]:
+        """Pick, context, runtime profile and policy for another model profile."""
+        payload = self.select(envelope, ceiling, profile=profile)
+        if "error" in payload:
+            return {"pick": "ERROR", "error": payload["error"]}
+        selected_id = payload["selected"]["id"]
+        chosen = next(
+            (alt for alt in payload.get("alternatives", []) if alt["id"] == selected_id),
+            payload["alternatives"][0],
+        )
+        return {
+            "pick": selected_id,
+            "runtime_profile": chosen.get("runtime_profile"),
+            "context_length": int(chosen["context_length"]),
+            "policy": payload["policy"],
+        }
+
     def run(self) -> list[dict[str, Any]]:
         rows = []
         for envelope in self.envelopes:
@@ -173,6 +194,8 @@ class Simulator:
             "ceiling_mb": ceiling,
             "fleet_hosts": envelope.get("fleet_hosts") or [],
         }
+        if envelope.get("ceiling") != "tier-map" and ceiling == 0:
+            row["gemma4"] = self.profile_pick(envelope, ceiling, "gemma4")
         payload = self.select(envelope, ceiling)
         if "error" in payload:
             row.update({"pick": "ERROR", "error": payload["error"]})
@@ -293,7 +316,13 @@ def markdown(rows: list[dict[str, Any]], title: str) -> str:
 
 
 def golden_view(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    return {row["envelope"]: {key: row.get(key) for key in GOLDEN_FIELDS} for row in rows}
+    view = {}
+    for row in rows:
+        entry = {key: row.get(key) for key in GOLDEN_FIELDS}
+        if row.get("gemma4") is not None:
+            entry["gemma4"] = row["gemma4"]
+        view[row["envelope"]] = entry
+    return view
 
 
 def main() -> int:

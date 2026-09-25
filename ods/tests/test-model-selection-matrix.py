@@ -318,5 +318,17 @@ def test_gemma3_4b_plans_the_hermes_floor_on_the_windows_laptop():
     assert _plan_on_nvidia("gemma3-4b-it-q4", 8151, 32768)["context_length"] == 65536
 
 
+def test_every_unbounded_envelope_pins_the_gemma4_pick():
+    """installers/windows/lib/tier-map.ps1 checks its Gemma path against these."""
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    unbounded = [envelope["id"] for envelope in _envelopes() if envelope["ceiling"] == 0]
+    assert unbounded and all("gemma4" in golden[envelope_id] for envelope_id in unbounded)
+    for envelope_id in unbounded:
+        pick = golden[envelope_id]["gemma4"]
+        model = _catalog()[pick["pick"]]
+        assert model["install_recommendation"] is True, (envelope_id, pick)
+        assert pick["context_length"] <= int(model.get("max_context_length") or model["context_length"])
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
