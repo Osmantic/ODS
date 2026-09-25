@@ -388,7 +388,10 @@ Each page's host line carries only its tag, URL and status and precedes its
 own untrusted-content boundary; the page title is printed inside it. Page
 lines are indented, and marker-like text, `[R#]`/`[L#]` tags and
 chat-template tokens in page text are neutralised, so a page cannot forge a
-receipt line.
+receipt line. Through Tool Search's `tool_call` the model also sees
+`details`, so it carries no page-supplied text outside a boundary: search
+results keep only their URLs, and a receipted page's title stays in its own
+untrusted-content envelope, which the host unwraps for its read-page list.
 
 A call costs one search (none with `urls`) and its page reads. The guard
 charges them before the call and lowers `maxPages` to the reads left after a
