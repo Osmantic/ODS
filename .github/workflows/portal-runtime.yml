@@ -100,6 +100,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_cancel_recovery.integration.mjs
+      - name: Verify consecutive owner messages reach the real provider append-only
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_prompt_prefix.integration.mjs
       - name: Verify tool-limit finalization, stop synthesis and silent-reply recovery with real Pixel runtime
         if: runner.os != 'Windows'
         shell: bash
