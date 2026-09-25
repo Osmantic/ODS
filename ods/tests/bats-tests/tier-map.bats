@@ -203,6 +203,21 @@ teardown() {
     assert_equal "$LLAMA_CPP_RELEASE_TAG_OVERRIDE" "b9014"
 }
 
+@test "resolve_tier_config: gemma4 runtime image follows the GPU backend" {
+    export MODEL_PROFILE=gemma4
+    TIER=2
+    GPU_BACKEND=cpu
+    resolve_tier_config
+    assert_equal "$LLAMA_SERVER_IMAGE" "ghcr.io/ggml-org/llama.cpp:server-b9014"
+    GPU_BACKEND=intel
+    resolve_tier_config
+    assert_equal "$LLAMA_SERVER_IMAGE" "ghcr.io/ggml-org/llama.cpp:server-intel-b9014"
+    GPU_BACKEND=amd
+    resolve_tier_config
+    assert_equal "$LLAMA_SERVER_IMAGE" ""
+    assert_equal "$LLAMA_CPP_RELEASE_TAG_OVERRIDE" "b9014"
+}
+
 @test "resolve_tier_config: qwen profile preserves current tier 2 mapping" {
     export MODEL_PROFILE=qwen
     TIER=2

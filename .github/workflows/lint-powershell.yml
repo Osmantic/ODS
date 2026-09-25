@@ -110,6 +110,10 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1
 
+      - name: Windows Gemma Runtime Image Contract
+        shell: pwsh
+        run: ./tests/test-windows-gemma-runtime-image.ps1
+
       - name: Windows Bootstrap Download Handoff Contract
         shell: pwsh
         run: ./tests/test-windows-bootstrap-download-handoff.ps1

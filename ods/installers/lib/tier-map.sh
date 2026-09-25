@@ -44,9 +44,16 @@ configure_llama_runtime_defaults() {
     case "$MODEL_PROFILE_EFFECTIVE" in
         gemma4)
             # Gemma 4 GGUFs require a newer llama.cpp than the legacy ODS pin.
-            # Keep this aligned with docker-compose.nvidia.yml so the installer
-            # pre-pulls the same image compose will start.
-            LLAMA_SERVER_IMAGE="ghcr.io/ggml-org/llama.cpp:server-cuda-b9014"
+            # Pin the b9014 build of the variant this backend's compose overlay
+            # runs, so the installer pre-pulls the same image compose starts.
+            # Empty GPU_BACKEND means nvidia, matching phase 02's default. AMD
+            # (Lemonade) and Apple overlays pin their own runtime image.
+            case "${GPU_BACKEND:-nvidia}" in
+                nvidia)     LLAMA_SERVER_IMAGE="ghcr.io/ggml-org/llama.cpp:server-cuda-b9014" ;;
+                cpu)        LLAMA_SERVER_IMAGE="ghcr.io/ggml-org/llama.cpp:server-b9014" ;;
+                intel|sycl) LLAMA_SERVER_IMAGE="ghcr.io/ggml-org/llama.cpp:server-intel-b9014" ;;
+                *)          LLAMA_SERVER_IMAGE="" ;;
+            esac
             LLAMA_CPP_RELEASE_TAG_OVERRIDE="b9014"
             ;;
     esac
