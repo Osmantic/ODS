@@ -2,27 +2,223 @@
   "name": "Chat API Endpoint",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## Chat API Endpoint\n\nTurns your local llama-server into a small REST API.\n\n**Call it:**\n```bash\ncurl -X POST http://localhost:5678/webhook/ods-chat \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"message\": \"Explain RAG in one sentence.\"}'\n```\n\n**Optional body fields:** `system`, `temperature`, `max_tokens`.\n\nThe HTTP node talks to `llama-server:8080` over the `ods-network` Docker\nnetwork, so nothing is exposed beyond the box.",
+        "height": 420,
+        "width": 460
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [
+        -40,
+        40
+      ]
     },
     {
       "parameters": {
-        "content": "## Chat API Endpoint\n\nThis is a template workflow for REST API chat completions.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "httpMethod": "POST",
+        "path": "ods-chat",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "webhook-chat",
+      "name": "Chat Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ],
+      "webhookId": "8f2b1c30-6a1e-4a1e-9c0e-7c1f0a2b3c40"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "message",
+              "value": "={{ $json.body.message || $json.body.prompt || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "system",
+              "value": "={{ $json.body.system || 'You are a concise, helpful assistant running fully offline on the user\\'s own hardware.' }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "temperature",
+              "value": "={{ $json.body.temperature ?? 0.7 }}",
+              "type": "number"
+            },
+            {
+              "id": "a4",
+              "name": "max_tokens",
+              "value": "={{ $json.body.max_tokens ?? 512 }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-inputs",
+      "name": "Read Request",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.message }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-message",
+      "name": "Message Present?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'local-model', messages: [ { role: 'system', content: $json.system }, { role: 'user', content: $json.message } ], temperature: $json.temperature, max_tokens: $json.max_tokens, stream: false }) }}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          }
+        }
+      },
+      "id": "http-llama",
+      "name": "llama-server Chat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1140,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ reply: $json.choices[0].message.content, model: $json.model, usage: $json.usage }) }}",
+        "options": {}
+      },
+      "id": "respond-ok",
+      "name": "Return Reply",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1380,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: \"Body must include a non-empty 'message' (or 'prompt') field.\" }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-bad-request",
+      "name": "Return 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1140,
+        420
+      ]
     }
   ],
-  "connections": {},
+  "connections": {
+    "Chat Request": {
+      "main": [
+        [
+          {
+            "node": "Read Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Request": {
+      "main": [
+        [
+          {
+            "node": "Message Present?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message Present?": {
+      "main": [
+        [
+          {
+            "node": "llama-server Chat",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "llama-server Chat": {
+      "main": [
+        [
+          {
+            "node": "Return Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
   "settings": {
     "executionOrder": "v1"
   },

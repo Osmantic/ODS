@@ -2,27 +2,222 @@
   "name": "Code Assistant",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## Code Assistant\n\nA coding-focused endpoint on top of your local llama-server: send code plus\na task, get an answer back. Temperature is pinned low (0.2) because code\nquestions want determinism, not variety.\n\n**Call it:**\n```bash\ncurl -X POST http://localhost:5678/webhook/ods-code \\\n  -H 'Content-Type: application/json' \\\n  -d '{\n        \"task\": \"explain what this does and name one bug\",\n        \"language\": \"python\",\n        \"code\": \"def f(x):\\n    return [i for i in range(x) if x % i == 0]\"\n      }'\n```\n\n**Body fields:** `task` (required), `code` (required), `language` (optional).\n\nNothing leaves the machine \u2014 the HTTP node reaches `llama-server:8080`\nover the internal `ods-network`.",
+        "height": 460,
+        "width": 480
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [
+        -60,
+        40
+      ]
     },
     {
       "parameters": {
-        "content": "## Code Assistant\n\nThis is a template workflow for AI-powered coding help via API.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "httpMethod": "POST",
+        "path": "ods-code",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "webhook-code",
+      "name": "Code Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ],
+      "webhookId": "1d4e9a72-5b83-4f26-9a11-2e6c8d0f4b71"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "task",
+              "value": "={{ $json.body.task || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "code",
+              "value": "={{ $json.body.code || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "language",
+              "value": "={{ $json.body.language || 'text' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-inputs",
+      "name": "Read Request",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.task }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.code }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-valid",
+      "name": "Task And Code Present?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'local-model', messages: [ { role: 'system', content: 'You are a precise code assistant. Answer the task about the supplied code. Be specific, cite line content when you refer to it, and say plainly when you are unsure. Do not invent APIs.' }, { role: 'user', content: 'Task: ' + $json.task + '\\n\\nLanguage: ' + $json.language + '\\n\\nCode:\\n```' + $json.language + '\\n' + $json.code + '\\n```' } ], temperature: 0.2, max_tokens: 1024, stream: false }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "http-llama",
+      "name": "llama-server Review",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1160,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ answer: $json.choices[0].message.content, model: $json.model, usage: $json.usage }) }}",
+        "options": {}
+      },
+      "id": "respond-ok",
+      "name": "Return Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1400,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: \"Body must include non-empty 'task' and 'code' fields.\" }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-bad-request",
+      "name": "Return 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1160,
+        440
+      ]
     }
   ],
-  "connections": {},
+  "connections": {
+    "Code Request": {
+      "main": [
+        [
+          {
+            "node": "Read Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Request": {
+      "main": [
+        [
+          {
+            "node": "Task And Code Present?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Task And Code Present?": {
+      "main": [
+        [
+          {
+            "node": "llama-server Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "llama-server Review": {
+      "main": [
+        [
+          {
+            "node": "Return Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
   "settings": {
     "executionOrder": "v1"
   },
