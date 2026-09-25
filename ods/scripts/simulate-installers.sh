@@ -25,7 +25,7 @@ exit 0
 EOF
 chmod +x "${FAKEBIN}/curl"
 
-cd "$ROOT_DIR"
+cd "$ROOT_DIR" || { echo "ERROR: cannot cd to $ROOT_DIR" >&2; exit 1; }
 
 # 1) Linux installer dry-run simulation
 # Capture the real status: inside `if ! cmd; then`, $? is the negated result
