@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 
 const PROGRESS_KEY = 'ods-firstboot-progress'
+const ADMIN_SESSION_TIMEOUT_MS = 10000
 
 const STACK_OPTIONS = [
   {
@@ -223,8 +224,10 @@ export default function FirstBoot({ onComplete }) {
       // someone with admin trust can mint. Non-fatal: if it fails the
       // wizard still finishes; the user can re-mint by reloading the
       // dashboard (App.jsx's useSessionBootstrap retries on every load).
+      const adminController = new AbortController()
+      const adminTimeout = setTimeout(() => adminController.abort(), ADMIN_SESSION_TIMEOUT_MS)
       try {
-        const adminResp = await fetch('/api/auth/admin-session', { method: 'POST' })
+        const adminResp = await fetch('/api/auth/admin-session', { method: 'POST', signal: adminController.signal })
         if (!adminResp.ok && adminResp.status !== 503) {
           // 503 = signing not configured server-side; surfaced elsewhere.
           // Other errors are operationally interesting but non-fatal here.
@@ -233,7 +236,9 @@ export default function FirstBoot({ onComplete }) {
         }
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.warn('[ods-session] admin-session network failure:', err)
+        console.warn('[ods-session] admin-session network failure:', err?.name === 'AbortError' ? 'request timed out' : err)
+      } finally {
+        clearTimeout(adminTimeout)
       }
 
       clearProgress()
