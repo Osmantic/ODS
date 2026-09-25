@@ -24,10 +24,13 @@ BUILD_FILES = (
     "preview-inspection.requirements.lock",
     "preview_inspection_protocol.py",
     "preview_inspection_capsule.py",
+    "preview_inspection_document.py",
+    "preview_inspection_lease.py",
 )
 RUNTIME_FILES = (
     "preview_inspection.py",
     "preview_inspection_protocol.py",
+    "preview_inspection_leases.py",
     "workspace_preview.py",
     "unix_peer.py",
 )

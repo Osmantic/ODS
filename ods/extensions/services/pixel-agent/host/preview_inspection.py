@@ -254,7 +254,7 @@ def capsule_argv(config, name):
     ]
 
 
-def inspect_request(request, config, cancelled=None):
+def export_bundle(request, config, cancelled=None):
     validate_request(request)
     if os.getuid() not in (0, config["ownerUid"]):
         raise Invalid("unauthorized")
@@ -280,6 +280,14 @@ def inspect_request(request, config, cancelled=None):
         bound, _files = validate_bundle(bundle)
         if bound != request:
             raise Invalid("snapshot mismatch")
+    return bundle
+
+
+def inspect_request(request, config, cancelled=None):
+    if isinstance(request, dict) and request.get("action") == "lease":
+        from preview_inspection_leases import handle as handle_lease
+        return handle_lease(request, config, cancelled)
+    bundle = export_bundle(request, config, cancelled)
     name = "ods-preview-inspection-" + uuid.uuid4().hex
     try:
         raw = bounded_process(
@@ -317,7 +325,14 @@ def read_request(stream):
     raw = stream.read(MAX_REQUEST + 1)
     if len(raw) > MAX_REQUEST:
         raise Invalid("request too large")
-    return validate_request(strict_json(raw))
+    return validate_broker_request(strict_json(raw))
+
+
+def validate_broker_request(value):
+    if isinstance(value, dict) and value.get("action") == "lease":
+        from preview_inspection_leases import validate
+        return validate(value)
+    return validate_request(value)
 
 
 def handle(connection, config):
@@ -339,7 +354,7 @@ def handle(connection, config):
                 break
         if len(raw) > MAX_REQUEST or raw.count(b"\n") != 1 or not raw.endswith(b"\n"):
             raise Invalid("invalid framing")
-        request = validate_request(strict_json(raw))
+        request = validate_broker_request(strict_json(raw))
 
         def watch_disconnect():
             connection.settimeout(0.25)

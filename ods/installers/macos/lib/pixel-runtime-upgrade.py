@@ -171,9 +171,12 @@ def retire_restored_attempt(*, current_digest, candidate_digest, snapshots,
             pass
 
 
-INSPECTION_ADDITIONS = frozenset('/usr/local/libexec/ods-pixel-services/helpers/' + name for name in (
+LEGACY_INSPECTION_ADDITIONS = frozenset('/usr/local/libexec/ods-pixel-services/helpers/' + name for name in (
     'preview_inspection.py', 'preview_inspection_protocol.py', 'workspace_preview.py',
     'unix_peer.py', 'preview-inspection.json'))
+DOCUMENT_LEASE_ADDITIONS = frozenset({'/usr/local/libexec/ods-pixel-services/helpers/preview_inspection_leases.py'})
+INSPECTION_ADDITIONS = LEGACY_INSPECTION_ADDITIONS | DOCUMENT_LEASE_ADDITIONS
+INSPECTION_ADDITION_GENERATIONS = (LEGACY_INSPECTION_ADDITIONS, DOCUMENT_LEASE_ADDITIONS, INSPECTION_ADDITIONS)
 
 
 def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths):
@@ -208,7 +211,7 @@ def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths)
             record[key + 'Sha256'] = hashlib.sha256(body).hexdigest()
         encoded.append(record)
     version = 2 if any(item['before'] is None for item in records) else 1
-    if version == 2 and {item['path'] for item in records if item['before'] is None} != INSPECTION_ADDITIONS:
+    if version == 2 and {item['path'] for item in records if item['before'] is None} not in INSPECTION_ADDITION_GENERATIONS:
         raise UpgradeError('runtime-upgrade-inspection-additions-incomplete')
     value = dict(schemaVersion=version, currentDigest=current_digest, candidateDigest=candidate_digest,
                  phase='prepared', files=encoded)

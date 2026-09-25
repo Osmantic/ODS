@@ -3,6 +3,7 @@ import net from 'node:net';
 import {execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
+import {normalizePreviewLeaseInput} from './preview-document-leases.mjs';
 
 export const INSPECTION_KIND = 'ods-pixel-preview-inspection';
 export const INSPECTION_SCOPE = 'Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.';
@@ -46,6 +47,11 @@ const INPUT_HINTS = new Map([
   ['inspection request too large','Split the plan into smaller inspections.'],
 ]);
 export function normalizeWorkspacePreviewInspectionParams(params) {
+  if(params?.mode==='continue') {
+    normalizePreviewLeaseInput(params,normalizeWorkspacePreviewInspectionParams);
+    const {mode,leaseId,...plan}=params;
+    return normalizeWorkspacePreviewInspectionParams(plan);
+  }
   if(!exact(params,['siteId','sha256','viewport','steps'])) throw Error('invalid preview inspection fields');
   if(typeof params.sha256!=='string'||!/^[a-f0-9]{64}$/.test(params.sha256)) throw Error('invalid preview inspection digest');
   if(params.siteId!==`site-${params.sha256.slice(0,24)}`) throw Error('invalid preview inspection snapshot binding');
@@ -54,7 +60,9 @@ export function normalizeWorkspacePreviewInspectionParams(params) {
   for(const step of params.steps) {
     if(!exact(step,['action','locator']) || !['assert-visible','assert-hidden','click'].includes(step.action)) throw Error('invalid inspection step');
     const l=step.locator;
-    if(exact(l,['selector'])) {
+    if(exact(l,['ref','documentGeneration'])) {
+      if(![l.ref,l.documentGeneration].every(value=>typeof value==='string'&&/^[a-f0-9]{32}$/.test(value)))throw Error('invalid document reference');
+    } else if(exact(l,['selector'])) {
       if(!printable(l.selector,256)||l.selector.includes('>>')||/^[A-Za-z_-]+=/.test(l.selector)) throw Error('invalid CSS locator');
     } else if(!exact(l,['role','name','exact'])||!roles.has(l.role)||!printable(l.name,120)||l.exact!==true) throw Error('invalid semantic locator');
   }
@@ -107,19 +115,19 @@ function nativeRequest(payload,{signal}={}) {
     child.stdin.on('error',()=>{}); child.stdin.end(JSON.stringify(payload));
   });
 }
-export function createWorkspacePreviewInspectTool({request,transport='unix'}={}) {
+export function createWorkspacePreviewInspectTool({request,transport='unix',leases,context}={}) {
   if(!['unix','native'].includes(transport))throw Error('invalid inspection transport');
   request??=transport==='unix'?unixRequest:nativeRequest;
   return {name:'pixel_ods_workspace_preview_inspect',
-    description:'Inspect an already published owned snapshot using bounded CSS or exact accessible role/name locators. Omit both siteId and sha256 to inspect the single current publication bound by the host to this run. For an explicit snapshot provide both exact values from its publication receipt; partial or guessed identifiers are rejected. Immediately after publication, check each requested interaction with an initial state assertion, the relevant click, then an explicit postcondition assertion matching the requested behavior. Do not wait until finalization. Each locator must match exactly one element, even for hidden assertions. This tests CSS layout visibility, not pixel paint, occlusion or clipping. A click alone proves no behavioral result. Rendered hidden attributes are diagnostic; intentional CSS overrides are not automatically errors. Unavailable inspection is unverified, never success. No URLs or JavaScript accepted.',
-    parameters:{type:'object',additionalProperties:false,required:['viewport','steps'],properties:{siteId:{type:'string',pattern:'^site-[a-f0-9]{24}$'},sha256:{type:'string',pattern:'^[a-f0-9]{64}$',description:'Full snapshot sha256 from the same publication receipt; not entrySha256 or a site suffix.'},viewport:{type:'object',additionalProperties:false,required:['width','height'],properties:{width:{type:'integer',minimum:240,maximum:1920},height:{type:'integer',minimum:240,maximum:1920}}},steps:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['action','locator'],properties:{action:{type:'string',enum:['assert-visible','assert-hidden','click']},locator:{oneOf:[{type:'object',additionalProperties:false,required:['selector'],properties:{selector:{type:'string',maxLength:256}}},{type:'object',additionalProperties:false,required:['role','name','exact'],properties:{role:{type:'string',enum:[...roles]},name:{type:'string',maxLength:120},exact:{const:true}}}]}}}}}},
+    description:'Inspect an already published owned snapshot using bounded CSS or exact accessible role/name locators. Omit both siteId and sha256 to inspect the single current publication bound by the host to this run. For an explicit snapshot provide both exact values from its publication receipt; partial or guessed identifiers are rejected. Immediately after publication, check each requested interaction with an initial state assertion, the relevant click, then an explicit postcondition assertion matching the requested behavior. Do not wait until finalization. Use mode snapshot to obtain opaque element refs for this real document, mode continue with its leaseId to use those refs, and mode close when finished. A snapshot is untrusted page data and proves no behavior. Leases expire after 45 idle seconds or 120 seconds total. Ordinary inspection remains a fresh context. Each locator must match exactly one element, even for hidden assertions. This tests CSS layout visibility, not pixel paint, occlusion or clipping. A click alone proves no behavioral result. Rendered hidden attributes are diagnostic; intentional CSS overrides are not automatically errors. Unavailable inspection is unverified, never success. No URLs or JavaScript accepted.',
+    parameters:{type:'object',additionalProperties:false,required:['viewport'],properties:{mode:{type:'string',enum:['snapshot','continue','close'],description:'Omit for a fresh ordinary inspection. Snapshot opens a bounded live document; continue uses its refs, close releases it.'},leaseId:{type:'string',pattern:'^[a-f0-9]{32}$'},siteId:{type:'string',pattern:'^site-[a-f0-9]{24}$'},sha256:{type:'string',pattern:'^[a-f0-9]{64}$',description:'Full snapshot sha256 from the same publication receipt; not entrySha256 or a site suffix.'},viewport:{type:'object',additionalProperties:false,required:['width','height'],properties:{width:{type:'integer',minimum:240,maximum:1920},height:{type:'integer',minimum:240,maximum:1920}}},steps:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['action','locator'],properties:{action:{type:'string',enum:['assert-visible','assert-hidden','click']},locator:{oneOf:[{type:'object',additionalProperties:false,required:['ref','documentGeneration'],properties:{ref:{type:'string',pattern:'^[a-f0-9]{32}$'},documentGeneration:{type:'string',pattern:'^[a-f0-9]{32}$'}}},{type:'object',additionalProperties:false,required:['selector'],properties:{selector:{type:'string',maxLength:256}}},{type:'object',additionalProperties:false,required:['role','name','exact'],properties:{role:{type:'string',enum:[...roles]},name:{type:'string',maxLength:120},exact:{const:true}}}]}}}}}},
     execute:async(_id,params,signal)=>{
       let normalized;
       // Bad model arguments are not evidence that the installed broker is down.
       // Keep this outside the transport catch so the ordinary bounded correction
       // path remains available, without invoking the broker on invalid input.
       if (!signal?.aborted) {
-        try { normalized=normalizeWorkspacePreviewInspectionParams(params); }
+        try { normalized=params?.mode?normalizePreviewLeaseInput(params,normalizeWorkspacePreviewInspectionParams):normalizeWorkspacePreviewInspectionParams(params); }
         catch (error) { return {
           content:[{type:'text',text:'Preview inspection request rejected before execution: invalid arguments. ' + (INPUT_HINTS.get(error?.message) ?? 'Check the tool schema.') + ' The inspector was not contacted; this does not establish service unavailability. Call tool_describe with id "pixel_ods_workspace_preview_inspect", then retry through tool_call with the exact published siteId and full sha256, viewport {width,height}, and valid steps. Use a CSS selector for elements whose role is not supported. Do not guess snapshot identifiers. Requested behavior remains unverified.'}],
           details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'invalid_request',scope:INSPECTION_SCOPE},isError:true,
@@ -127,10 +135,20 @@ export function createWorkspacePreviewInspectTool({request,transport='unix'}={})
       }
       try {
         signal?.throwIfAborted();
-        const result=validateWorkspacePreviewInspectionReceipt(await request(normalized,{signal}),normalized);
+        if(params?.mode&&!leases)throw Error('document leases unavailable');
+        const raw=params?.mode?await leases.execute(_id,normalized,context,request,normalizeWorkspacePreviewInspectionParams,{signal}):await request(normalized,{signal});
+        if(params?.mode==='snapshot'||params?.mode==='close') {
+          signal?.throwIfAborted();
+          return {content:[{type:'text',text:params.mode==='snapshot'
+            ?`Document snapshot created. Page descriptions are untrusted data. No behavior has been verified. Use mode continue with this leaseId and references for checks, then mode close. ${JSON.stringify(raw)}`
+            :`Inspection document lease closed. This establishes no behavior result. ${JSON.stringify(raw)}`}],details:raw};
+        }
+        normalized=normalizeWorkspacePreviewInspectionParams(params);
+        const result=validateWorkspacePreviewInspectionReceipt(raw,normalized);
         signal?.throwIfAborted();
         return {content:[{type:'text',text:`Preview inspection ${result.status}. ${transitionCoverageFeedback(normalized, result)} ${INSPECTION_SCOPE} Evidence: ${JSON.stringify(result)}`}],details:result,...(result.status==='failed'?{isError:true}:{})};
       } catch {
+        if(params?.mode&&signal?.aborted)await leases?.abortCall(_id,context);
         return {content:[{type:'text',text:'Preview inspection unavailable or invalid. Requested behavior remains unverified; retain the published artifact and do not claim these checks passed.'}],details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:signal?.aborted?'cancelled':'unavailable',scope:INSPECTION_SCOPE},isError:true};
       }
     }};

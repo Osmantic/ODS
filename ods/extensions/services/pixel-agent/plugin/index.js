@@ -67,6 +67,7 @@ import {
 import { createEvidenceArtifactWriter } from "./evidence-artifact.mjs";
 import { createWorkspacePreviewTool, createWorkspacePreviewVerifier } from "./workspace-preview.mjs";
 import { createWorkspacePreviewInspectTool } from "./workspace-preview-inspect.mjs";
+import {createPreviewDocumentLeases} from './preview-document-leases.mjs';
 import {createWorkspaceBundleAdmission, createWorkspaceBundleService, createWorkspaceBundleTool} from './workspace-bundle.mjs';
 import {createWorkspaceBundleExecution} from './workspace-bundle-execution.mjs';
 import { createTaskActivity } from "./task-activity.mjs";
@@ -93,6 +94,7 @@ let currentManagedRuntime;
 const managedRuntimeRegistry = createManagedRuntimeRegistry();
 const evidenceArtifactWriter = createEvidenceArtifactWriter();
 const bundleAdmission = createWorkspaceBundleAdmission();
+const previewDocumentLeases = createPreviewDocumentLeases();
 
 // Restrict tool registration to the Pixel agent. Tools are only offered to the
 // agent id declared by this plugin (see openclaw.plugin.json); this guards the
@@ -383,7 +385,8 @@ export default definePluginEntry({
     if (!managedRuntime) {
       api.on("before_agent_run", (event, context) => accessRuntime.admit(undefined, context));
     }
-    api.on("agent_end", (event, context) => {
+    api.on("agent_end", async (event, context) => {
+      await previewDocumentLeases.finish(event, context);
       toolLoopGuard.endPreviewRevalidation(event, context);
       if (!accessRuntime.isProbe(context)) { goalProgress.finish(event, context); taskActivity.finish(event, context); }
       if (!managedRuntime) return accessRuntime.finish({runId: event.runId}, context);
@@ -396,11 +399,13 @@ export default definePluginEntry({
       );
       const decision = guard?.block ? guard : goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
       bundleAdmission.before(event, context, decision);
+      previewDocumentLeases.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);
       return decision;
     });
     api.on("after_tool_call", (event, context) => {
       bundleAdmission.after(event, context);
+      previewDocumentLeases.after(event, context);
       accessRuntime.afterTool(event, context);
       if (!accessRuntime.isProbe(context)) {
         goalProgress.update(event, context);
@@ -724,9 +729,10 @@ export default definePluginEntry({
     });
 
     if (["unix", "native"].includes(api.pluginConfig?.workspacePreviewInspectionTransport)) {
-      registerTool(api, createWorkspacePreviewInspectTool({
+      api.registerTool(onlyPixel(context => createWorkspacePreviewInspectTool({
         transport: api.pluginConfig.workspacePreviewInspectionTransport,
-      }), { names: ["pixel_ods_workspace_preview_inspect"] });
+        context, leases: previewDocumentLeases,
+      })), { names: ["pixel_ods_workspace_preview_inspect"] });
     }
 
   },

@@ -7,7 +7,7 @@ RUN python3 -m pip --isolated install --no-cache-dir --only-binary=:all: --requi
     && python3 -m playwright install --with-deps --only-shell chromium \
     && rm -rf /var/lib/apt/lists/* \
     && chmod -R a+rX /ms-playwright
-COPY preview_inspection_protocol.py preview_inspection_capsule.py /source/
+COPY preview_inspection_protocol.py preview_inspection_capsule.py preview_inspection_document.py preview_inspection_lease.py /source/
 LABEL org.osmantic.ods.component="pixel-preview-inspection" \
       org.osmantic.ods.inspection.protocol="1" \
       org.osmantic.ods.inspection.playwright="1.62.0"

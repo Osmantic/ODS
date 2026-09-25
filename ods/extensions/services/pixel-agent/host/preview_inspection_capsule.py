@@ -2,6 +2,7 @@
 """Untrusted site execution lives only in the short-lived no-network capsule."""
 
 import http.server
+import contextlib
 import mimetypes
 import sys
 import threading
@@ -20,7 +21,9 @@ from preview_inspection_protocol import (
     plan_hash,
     strict_json,
     validate_bundle,
+    validate_request,
 )
+from preview_inspection_document import DocumentReferences
 
 # Runs in a Chromium isolated world, not the site's mutable JS global realm.
 OBSERVE_ELEMENT = r"""function() {
@@ -75,7 +78,7 @@ def observe_until_stable(once, wait):
         previous = current
 
 
-def run_browser(bundle, playwright_factory=None):
+def run_browser(bundle, playwright_factory=None, *, shared_browser=None, document_driver=None):
     request, files = validate_bundle(bundle)
     prefix = "/" + request["siteId"] + "/"
     blocked = []
@@ -139,10 +142,10 @@ def run_browser(bundle, playwright_factory=None):
 
         playwright_factory = sync_playwright
     try:
-        with playwright_factory() as p:
+        with (playwright_factory() if shared_browser is None else contextlib.nullcontext()) as p:
             # The outer Docker capsule is the mandatory sandbox; this code is
             # never offered as an in-process host browser fallback.
-            browser = p.chromium.launch(
+            browser = shared_browser or p.chromium.launch(
                 headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
             )
             context = browser.new_context(
@@ -248,10 +251,13 @@ def run_browser(bundle, playwright_factory=None):
             document_id = cdp.send(
                 "Runtime.evaluate", {"expression": "document", "contextId": world}
             )["result"]["objectId"]
+            references = DocumentReferences(cdp, world, document_id)
 
             def once(locator):
                 if blocked:
                     raise Invalid("preview navigation or request blocked")
+                if "ref" in locator:
+                    return references.observe(locator["ref"], locator["documentGeneration"], OBSERVE_ELEMENT)
                 if "selector" in locator:
                     selection = evaluate(
                         SELECTOR_COUNT,
@@ -317,82 +323,98 @@ def run_browser(bundle, playwright_factory=None):
                     lambda: once(locator), page.wait_for_timeout
                 )
 
-            page.wait_for_timeout(100)
-            diagnostics = evaluate(DIAGNOSTIC)
-            results = []
-            for index, step in enumerate(request["steps"]):
-                try:
-                    before, stable = observe(step["locator"])
-                except InvalidSelector:
-                    # No DOM observation exists for invalid syntax. Preserve
-                    # prior evidence and the exact failing step, then stop.
-                    results.append({"index": index, **step, "stable": False,
-                                    "status": "failed", "errorCode": "invalid_selector"})
-                    break
-                item = {
-                    "index": index,
-                    **step,
-                    "before": before,
-                    "stable": stable,
-                    "status": "failed",
-                }
-                if before.get("count") != 1:
-                    item["errorCode"] = "selector_not_unique"
-                elif not stable:
-                    item["errorCode"] = "unstable"
-                elif step["action"] == "click":
+            def execute_plan(request):
+                validate_request(request)
+                if any(request[key] != bundle["request"][key] for key in ("siteId", "sha256", "viewport")):
+                    raise Invalid("document publication binding changed")
+                references.current()
+                diagnostics = evaluate(DIAGNOSTIC)
+                results = []
+                for index, step in enumerate(request["steps"]):
                     try:
-                        (
-                            frame.locator("css=" + step["locator"]["selector"])
-                            if "selector" in step["locator"]
-                            else frame.get_by_role(
-                                step["locator"]["role"],
-                                name=step["locator"]["name"],
-                                exact=True,
+                        before, stable = observe(step["locator"])
+                    except InvalidSelector:
+                        # No DOM observation exists for invalid syntax. Preserve
+                        # prior evidence and the exact failing step, then stop.
+                        results.append({"index": index, **step, "stable": False,
+                                        "status": "failed", "errorCode": "invalid_selector"})
+                        break
+                    item = {
+                        "index": index,
+                        **step,
+                        "before": before,
+                        "stable": stable,
+                        "status": "failed",
+                    }
+                    if before.get("count") != 1:
+                        item["errorCode"] = "selector_not_unique"
+                    elif not stable:
+                        item["errorCode"] = "unstable"
+                    elif step["action"] == "click":
+                        try:
+                            if "ref" in step["locator"]:
+                                references.click(step["locator"]["ref"], step["locator"]["documentGeneration"], request["viewport"])
+                            else:
+                                (
+                                    frame.locator("css=" + step["locator"]["selector"])
+                                    if "selector" in step["locator"]
+                                    else frame.get_by_role(
+                                        step["locator"]["role"],
+                                        name=step["locator"]["name"],
+                                        exact=True,
+                                    )
+                                ).click(timeout=2000)
+                            if blocked:
+                                raise Invalid("preview navigation or request blocked")
+                            after, after_stable = observe(step["locator"])
+                            item.update(
+                                after=after,
+                                stable=after_stable,
+                                status="passed" if after_stable else "failed",
                             )
-                        ).click(timeout=2000)
-                        if blocked:
-                            raise Invalid("preview navigation or request blocked")
-                        after, after_stable = observe(step["locator"])
-                        item.update(
-                            after=after,
-                            stable=after_stable,
-                            status="passed" if after_stable else "failed",
+                        except Exception:
+                            item["errorCode"] = "click_failed"
+                    else:
+                        expected = step["action"] == "assert-visible"
+                        item["status"] = (
+                            "passed" if before.get("visible") is expected else "failed"
                         )
-                    except Exception:
-                        item["errorCode"] = "click_failed"
-                else:
-                    expected = step["action"] == "assert-visible"
-                    item["status"] = (
-                        "passed" if before.get("visible") is expected else "failed"
-                    )
+                        if item["status"] == "failed":
+                            item["errorCode"] = "visibility_mismatch"
+                    results.append(item)
                     if item["status"] == "failed":
-                        item["errorCode"] = "visibility_mismatch"
-                results.append(item)
-                if item["status"] == "failed":
-                    break
-            # Context is never reused. A click-only receipt proves dispatch,
-            # not the post-click condition; callers must assert that condition.
-            result = {
-                "schemaVersion": 1,
-                "kind": KIND,
-                "status": "passed"
-                if len(results) == len(request["steps"])
-                and all(v["status"] == "passed" for v in results)
-                and not blocked
-                else "failed",
-                "siteId": request["siteId"],
-                "sha256": request["sha256"],
-                "planSha256": plan_hash(request),
-                "viewport": request["viewport"],
-                "steps": results,
-                "diagnostics": diagnostics,
-                "blockedRequests": blocked,
-                "scope": SCOPE,
-            }
-            context.close()
-            browser.close()
-            return result
+                        break
+                # Context is never reused. A click-only receipt proves dispatch,
+                # not the post-click condition; callers must assert that condition.
+                result = {
+                    "schemaVersion": 1,
+                    "kind": KIND,
+                    "status": "passed"
+                    if len(results) == len(request["steps"])
+                    and all(v["status"] == "passed" for v in results)
+                    and not blocked
+                    else "failed",
+                    "siteId": request["siteId"],
+                    "sha256": request["sha256"],
+                    "planSha256": plan_hash(request),
+                    "viewport": request["viewport"],
+                    "steps": results,
+                    "diagnostics": diagnostics,
+                    "blockedRequests": blocked,
+                    "scope": SCOPE,
+                }
+                return result
+
+            try:
+                page.wait_for_timeout(100)
+                if document_driver is not None:
+                    return document_driver(references, execute_plan)
+                return execute_plan(request)
+            finally:
+                references.close()
+                context.close()
+                if shared_browser is None:
+                    browser.close()
     finally:
         server.shutdown()
         server.server_close()

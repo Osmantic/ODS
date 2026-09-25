@@ -2,7 +2,10 @@
 // fallback by URL, directory, or a partially copied digest.
 export function bindDefaultPreviewInspection(params, publication) {
   if (!params || typeof params !== 'object' || Array.isArray(params) ||
-      Object.keys(params).sort().join(',') !== 'steps,viewport' ||
+      !((Object.keys(params).sort().join(',') === 'steps,viewport') ||
+        (params.mode === 'snapshot' && Object.keys(params).sort().join(',') === 'mode,viewport') ||
+        (params.mode === 'continue' && Object.keys(params).sort().join(',') === 'leaseId,mode,steps,viewport') ||
+        (params.mode === 'close' && Object.keys(params).sort().join(',') === 'leaseId,mode,viewport')) ||
       !publication || typeof publication.sha256 !== 'string' ||
       !/^[a-f0-9]{64}$/.test(publication.sha256) ||
       publication.siteId !== `site-${publication.sha256.slice(0, 24)}`) return undefined;

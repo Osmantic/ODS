@@ -94,6 +94,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_preview_default.integration.mjs
+      - name: Verify exact-run document lease admission through native tools
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_preview_leases.integration.mjs
       - name: Verify sandbox custody source repair and actual Docker lifecycle
         if: runner.os == 'Linux'
         shell: bash

@@ -40,11 +40,13 @@ ODS_SERVICE_SOURCES = {
     'helpers/system_observe.py': 'extensions/services/pixel-agent/host/system_observe.py',
     'helpers/preview_inspection.py': 'extensions/services/pixel-agent/host/preview_inspection.py',
     'helpers/preview_inspection_protocol.py': 'extensions/services/pixel-agent/host/preview_inspection_protocol.py',
+    'helpers/preview_inspection_leases.py': 'extensions/services/pixel-agent/host/preview_inspection_leases.py',
     'helpers/workspace_preview.py': 'extensions/services/pixel-agent/host/workspace_preview.py',
     'helpers/unix_peer.py': 'extensions/services/pixel-agent/host/unix_peer.py',
 }
 GENERATED_SERVICE_ARTIFACTS = {'operations/policy.json', 'helpers/extension-catalog.json', 'helpers/preview-inspection.json'}
 INSPECTION_SERVICE_ARTIFACTS = {'helpers/preview_inspection.py', 'helpers/preview_inspection_protocol.py',
+    'helpers/preview_inspection_leases.py',
     'helpers/workspace_preview.py', 'helpers/unix_peer.py', 'helpers/preview-inspection.json'}
 MAX_ENTRIES = 200000
 MAX_MANIFEST = 32 * 1024 * 1024
@@ -148,9 +150,11 @@ def validate_service_manifest_provenance(manifest):
     # Existing approved bundles remain readable for migration, rollback and
     # uninstall. New staging always emits the complete inspection capability;
     # partial inspection bundles are never an accepted legacy contract.
-    if isinstance(manifest, dict) and isinstance(manifest.get('files'), dict) \
-            and set(manifest['files']) == names - INSPECTION_SERVICE_ARTIFACTS:
-        names -= INSPECTION_SERVICE_ARTIFACTS
+    if isinstance(manifest, dict) and isinstance(manifest.get('files'), dict):
+        for additions in (INSPECTION_SERVICE_ARTIFACTS, {'helpers/preview_inspection_leases.py'}):
+            if set(manifest['files']) == names - additions:
+                names -= additions
+                break
     generated = GENERATED_SERVICE_ARTIFACTS & names
     mapped = set(ODS_SERVICE_SOURCES) & names
     if (type(manifest) is not dict or set(manifest) not in (keys, keys | {'sourceProvenance'})

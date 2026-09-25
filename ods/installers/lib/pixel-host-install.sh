@@ -492,6 +492,7 @@ catalog_payload = read_private_regular(catalog_path, "extension catalog")
 helper_payloads = []
 inspection_sources = tuple(preview_path.with_name(name) for name in (
     'preview_inspection.py', 'preview_inspection_protocol.py', 'preview_inspection_capsule.py',
+    'preview_inspection_document.py', 'preview_inspection_lease.py', 'preview_inspection_leases.py',
     'Dockerfile.inspection', 'preview-inspection.requirements.lock', 'pixel-preview-inspection.service'))
 if not any(source.exists() or source.is_symlink() for source in inspection_sources):
     inspection_sources = ()  # Older complete deployments remain removable.

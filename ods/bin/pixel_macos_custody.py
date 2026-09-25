@@ -332,12 +332,12 @@ def replace_protected_bytes(filename, *, expected, replacement, mode, gid=0):
 
 
 INSPECTION_ADDITIONS = frozenset('/usr/local/libexec/ods-pixel-services/helpers/' + name for name in (
-    'preview_inspection.py', 'preview_inspection_protocol.py', 'workspace_preview.py',
+    'preview_inspection.py', 'preview_inspection_protocol.py', 'preview_inspection_leases.py', 'workspace_preview.py',
     'unix_peer.py', 'preview-inspection.json'))
 
 
 def protected_inspection_bytes(filename, *, limit=8 * 1024 * 1024):
-    """Allow true absence only at the five fixed, journaled migration paths."""
+    """Allow true absence only at the fixed, journaled inspection migration paths."""
     value = os.fspath(filename)
     try:
         return protected_bytes(filename, limit=limit)
