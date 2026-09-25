@@ -29,9 +29,16 @@ from helpers import (
     get_recorded_model_performance,
     is_plausible_single_request_tps,
 )
-from model_memory import memory_metadata, required_model_memory_gb
+from model_memory import (
+    detect_gpu_platform,
+    is_discrete_gpu,
+    memory_metadata,
+    required_model_memory_gb,
+    residency_is_decisive,
+)
 from model_selection import (
     POLICY as _SHARED_SELECTOR_POLICY,
+    discrete_residency,
     family_allowed as _shared_family_allowed,
     hardware_matching_profiles as _shared_hardware_matching_profiles,
     matching_runtime_profile as _shared_matching_runtime_profile,
@@ -971,6 +978,100 @@ def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo]
     )
 
 
+def _discrete_gpu(gpu_info: Optional[GPUInfo]) -> bool:
+    """True when models must be fully resident in dedicated GPU memory."""
+    if not gpu_info:
+        return False
+    if "strix-halo" in normalize_key(gpu_info.name):
+        return False
+    return is_discrete_gpu(gpu_info.gpu_backend, _gpu_memory_type(gpu_info), gpu_info.memory_total_mb)
+
+
+def _gpu_count(gpu_info: Optional[GPUInfo]) -> int:
+    try:
+        return max(int(getattr(gpu_info, "gpu_count", 1) or 1), 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _residency_decides(model: dict[str, Any], gpu_info: Optional[GPUInfo]) -> bool:
+    """True when full GPU residency decides a model's fit on this GPU.
+
+    Exact memory metadata on a discrete GPU inside the calibrated range
+    (model_memory.residency_is_decisive), the rule the installer's ranker
+    applies (model_selection.candidate_fits). Elsewhere the capacity fit
+    decides and the residency plan is shown only.
+    """
+    return bool(
+        gpu_info is not None
+        and _discrete_gpu(gpu_info)
+        and residency_is_decisive(model, gpu_info.memory_total_mb, _gpu_count(gpu_info))
+    )
+
+
+def _residency_plan(
+    model: dict[str, Any],
+    runtime_profile: dict[str, Any] | None,
+    gpu_info: Optional[GPUInfo],
+    context_length: int | None,
+    *,
+    other_used_mib: float = 0.0,
+) -> dict[str, Any] | None:
+    """model_selection.discrete_residency for this GPU (None off discrete GPUs)."""
+    if not _discrete_gpu(gpu_info):
+        return None
+    context = int(context_length or model.get("context_length") or 0)
+    if context <= 0:
+        return None
+    return discrete_residency(
+        model,
+        runtime_profile=runtime_profile,
+        context_length=context,
+        vram_mb=gpu_info.memory_total_mb,
+        gpu_platform=detect_gpu_platform(),
+        gpu_count=_gpu_count(gpu_info),
+        other_used_mib=other_used_mib,
+    )
+
+
+def _residency_public(residency: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Stable API view of a full-residency plan (``gpuResidency``)."""
+    if not isinstance(residency, dict):
+        return None
+    record = residency.get("residency") if isinstance(residency.get("residency"), dict) else {}
+    projection = record.get("projection") or {}
+    return {
+        "fits": bool(residency.get("idleFits")),
+        "decisive": bool(residency.get("decisive")),
+        "requiredGb": record.get("requiredGb"),
+        "projectedDeviceMiB": projection.get("totalMiB"),
+        "availableMiB": record.get("availableMiB"),
+        "fitTargetMiB": record.get("fitTargetMiB"),
+        "reserveMiB": record.get("reserveMiB"),
+        "headroomMiB": record.get("headroomMiB"),
+        "basis": projection.get("basis"),
+        "platform": record.get("platform"),
+        "contextLength": projection.get("contextLength"),
+        "cacheTypeK": projection.get("cacheTypeK"),
+        "cacheTypeV": projection.get("cacheTypeV"),
+        "adjustments": list(residency.get("steps") or []),
+    }
+
+
+def _candidate_residency(model: dict[str, Any]) -> dict[str, Any] | None:
+    """The residency plan a ranked model (Candidate.as_model) carries."""
+    record = model.get("_gpu_residency")
+    if not isinstance(record, dict):
+        return None
+    return {
+        "residency": record,
+        "decisive": bool(model.get("_residency_decisive")),
+        "fits": bool(model.get("_residency_fits")),
+        "idleFits": bool(model.get("_residency_idle_fits")),
+        "steps": list(model.get("_residency_steps") or []),
+    }
+
+
 def planned_model_context(
     model: dict[str, Any],
     gpu_info: Optional[GPUInfo],
@@ -998,6 +1099,8 @@ def planned_model_context(
             host_arch=platform.machine(),
             min_context=min_context,
             preferred_context=preferred_context,
+            gpu_platform=detect_gpu_platform() if _discrete_gpu(gpu_info) else None,
+            gpu_count=_gpu_count(gpu_info),
         )
     # Without hardware information no runtime profile applies and the
     # historical 4 GB ceiling bounds the plan (see rank_pre_download_models).
@@ -1109,27 +1212,25 @@ def _context_options(
     }
     values.update({recommended, maximum})
     capacity = _usable_model_memory_gb(gpu_info) if gpu_info else 0.0
-    return [
-        {
+    residency_decides = _residency_decides(model, gpu_info)
+    options = []
+    for value in sorted(values):
+        estimated = _context_memory_required_gb(model, runtime_profile, value)
+        fits = _fits_declared_vram(estimated, capacity) if gpu_info else None
+        if residency_decides:
+            # Held to full GPU residency at exactly this context (an explicit
+            # context is never reduced; activation may still use a smaller
+            # ubatch or a quantized KV cache to stay on the GPU).
+            plan = _residency_plan(model, runtime_profile, gpu_info, value)
+            fits = bool(plan and plan["idleFits"])
+        options.append({
             "contextLength": value,
-            "estimatedRequired": _context_memory_required_gb(
-                model,
-                runtime_profile,
-                value,
-            ),
+            "estimatedRequired": estimated,
             "recommended": value == recommended,
             "fullContext": context_limit_known and value == maximum,
-            "fitsVram": (
-                _fits_declared_vram(
-                    _context_memory_required_gb(model, runtime_profile, value),
-                    capacity,
-                )
-                if gpu_info
-                else None
-            ),
-        }
-        for value in sorted(values)
-    ]
+            "fitsVram": fits,
+        })
+    return options
 
 
 def _usable_model_memory_gb(gpu_info: Optional[GPUInfo], system_ram_gb: int | None = None) -> float:
@@ -1499,6 +1600,8 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
         host_arch=platform.machine(),
         min_context=HERMES_MIN_CONTEXT,
         installable=_installable,
+        gpu_platform=detect_gpu_platform() if _discrete_gpu(gpu_info) else None,
+        gpu_count=_gpu_count(gpu_info),
     )
     return [candidate.as_model() for candidate in ranked[:max(limit, 1)]]
 
@@ -1519,6 +1622,12 @@ def _recommendation_alternative(model: dict[str, Any], gpu_info: Optional[GPUInf
     context = _effective_context_length(model, runtime_profile)
     vram_required = float(model.get("vram_required_gb") or 0)
     selector_required = _effective_required_memory_gb(model, runtime_profile)
+    residency = _candidate_residency(model)
+    fits_vram = (
+        residency["idleFits"]
+        if residency is not None and residency["decisive"]
+        else _fits_declared_vram(selector_required, _usable_model_memory_gb(gpu_info) if gpu_info else 4.0)
+    )
     return {
         "id": model.get("id"),
         "name": model.get("name"),
@@ -1529,7 +1638,8 @@ def _recommendation_alternative(model: dict[str, Any], gpu_info: Optional[GPUInf
         "contextLength": context,
         "specialty": model.get("specialty"),
         "runtimeProfile": runtime_profile.get("id") if runtime_profile else None,
-        "fitsVram": _fits_declared_vram(selector_required, _usable_model_memory_gb(gpu_info) if gpu_info else 4.0),
+        "fitsVram": fits_vram,
+        "gpuResidency": _residency_public(residency),
         "reason": _catalog_fit_reason({**model, "_runtime_profile": runtime_profile} if runtime_profile else model, gpu_info, configured=False),
     }
 
@@ -1605,7 +1715,15 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
                          context_length: Optional[int] = None,
                          catalog: list[dict[str, Any]] | None = None,
                          evidence: list[dict[str, Any]] | None = None,
-                         downloaded_files_override: dict[str, Any] | None = None) -> dict[str, Any]:
+                         downloaded_files_override: dict[str, Any] | None = None,
+                         placement: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build the /api/models payload.
+
+    ``placement`` is the host agent's observed placement of the running model
+    (``runtime.placement``: layers on the GPU, whether it is fully resident).
+    On a discrete GPU it is authoritative for the loaded model's
+    ``fitsVram``; the estimate is used only when no observation exists.
+    """
     catalog = [
         model
         for model in (normalize_catalog_entry(raw) for raw in (catalog or load_model_catalog(install_dir)))
@@ -1736,10 +1854,44 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         selector_required = _effective_required_memory_gb(
             {**memory_model, "context_length": actual_context}, runtime_profile
         )
-        if gpu_info:
+        discrete_gpu = _discrete_gpu(gpu_info)
+        residency = _residency_plan(
+            {**memory_model, "context_length": actual_context}, runtime_profile, gpu_info, actual_context,
+        ) if discrete_gpu else None
+        loaded_placement = (
+            placement
+            if is_loaded and isinstance(placement, dict)
+            and isinstance(placement.get("fullyResident"), bool)
+            and str(placement.get("modelFile") or "").casefold()
+            == str(model.get("gguf") or "").casefold()
+            else None
+        )
+        if residency is not None and residency["decisive"]:
+            # Held to full GPU residency: every layer, the KV cache and the
+            # compute buffers after the platform reserve and llama.cpp's
+            # free-memory margin. A model that only runs by spilling layers to
+            # the CPU does not fit, loaded or not.
+            fits_total = bool(not profile_ram_ineligible and residency["idleFits"])
+            if loaded_placement is not None:
+                # What llama.cpp actually did outranks the estimate.
+                fits_total = bool(loaded_placement["fullyResident"])
+            if is_loaded:
+                fits_current = fits_total
+            else:
+                current = _residency_plan(
+                    {**memory_model, "context_length": actual_context}, runtime_profile, gpu_info,
+                    actual_context, other_used_mib=max(float(gpu_info.memory_used_mb or 0), 0.0),
+                )
+                fits_current = bool(not profile_ram_ineligible and current and current["fits"])
+        elif gpu_info:
             capacity_gb = _usable_model_memory_gb(gpu_info)
             fits_total = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, capacity_gb)) or is_loaded)
             fits_current = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, free_gb)) or is_loaded)
+            if discrete_gpu and loaded_placement is not None:
+                # Below the calibrated range, or without exact memory
+                # metadata, the capacity fit decides as in the installer, but
+                # the loaded model follows what llama.cpp actually did.
+                fits_total = fits_current = bool(loaded_placement["fullyResident"])
         else:
             fits_total = bool(_fits_declared_vram(selector_required, 4.0) or is_loaded)
             fits_current = False
@@ -1821,7 +1973,14 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             "fitsVram": fits_total,
             "activationSupport": activation_support,
             "fitsCurrentVram": fits_current,
-            "fitLabel": runtime_profile.get("fit_label") if runtime_profile else ("Fits GPU" if fits_total else "Too large"),
+            "gpuResidency": _residency_public(residency),
+            "fitLabel": (
+                "Too large to stay on the GPU"
+                if discrete_gpu and not fits_total
+                else runtime_profile.get("fit_label")
+                if runtime_profile
+                else ("Fits GPU" if fits_total else "Too large")
+            ),
             "runtimeProfile": {
                 "id": runtime_profile.get("id"),
                 "label": runtime_profile.get("label"),

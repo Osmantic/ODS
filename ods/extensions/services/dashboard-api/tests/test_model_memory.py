@@ -101,6 +101,10 @@ class TestArchitectureAwareKvCache:
         ("apple", 8, 16384), ("apple", 16, 32768),
         ("apple", 24, 65536), ("apple", 32, 65536),
         ("apple", 64, 128000), ("apple", 128, 128000),
+        # Discrete GPUs must also hold every layer: the capacity context is
+        # kept (8GB adds a q8_0 KV cache to stay resident). 4GB is below the
+        # range the residency estimate is calibrated for: the capacity pick
+        # stays, and its predicted spill is only reported.
         *[(backend, memory, context) for backend in ("amd", "nvidia", "sycl")
           for memory, context in ((4, 8192), (8, 32768), (16, 65536), (24, 128000))],
     ])
@@ -136,7 +140,15 @@ class TestArchitectureAwareKvCache:
         for candidate in (cli[0], dashboard[0]):
             profile = candidate.get("_runtime_profile")
             assert selector.effective_context_length(candidate, profile) == expected
-            assert selector.effective_required_memory_gb(candidate, profile) <= capacity + 0.25
+            if kind == "discrete":
+                assert candidate["_gpu_residency"]["fits"] is (memory >= 8)
+                assert candidate["_residency_decisive"] is (memory >= 8)
+            if kind != "discrete" or memory >= 8:
+                assert selector.effective_required_memory_gb(candidate, profile) <= capacity + 0.25
+        if kind == "discrete":
+            assert cli[0]["_residency_overrides"] == dashboard[0]["_residency_overrides"]
+            kv = cli[0]["_residency_overrides"].get("LLAMA_ARG_CACHE_TYPE_K")
+            assert kv == ("q8_0" if memory == 8 else None), cli[0]["_residency_overrides"]
         assert raw["context_length"] == 128000
 
     @pytest.mark.parametrize("backend", ["apple", "nvidia", "amd", "cpu", "sycl"])
@@ -280,7 +292,6 @@ class TestSelectorParity:
 # ---------------------------------------------------------------------------
 
 from model_memory import (  # noqa: E402
-    DISCRETE_FIT_MARGIN_MIN_GIB,
     LLAMA_DEFAULT_CTX_CHECKPOINTS,
     architecture_metadata_complete,
     context_fitting_model,
@@ -494,26 +505,34 @@ class TestArchitectureEstimator:
         assert required_model_memory_gb(model, runtime_profile={**profile, "estimated_required_gb": 7.2}) == 7.2
 
     def test_fit_margin_by_memory_class(self):
-        assert fit_margin_gib(8.0, "discrete") == DISCRETE_FIT_MARGIN_MIN_GIB
-        assert fit_margin_gib(32.0, "discrete") == 0.96
+        # Discrete GPUs keep the platform reserve a fresh llama.cpp process
+        # cannot use (model_memory.platform_reserve_mib; native Linux here,
+        # pinned by conftest): 1199 MiB on 8 GB, 1279 MiB on 32 GB. WDDM
+        # withholds 150 MiB more.
+        assert fit_margin_gib(8.0, "discrete") == 1.17
+        assert fit_margin_gib(32.0, "discrete") == 1.25
+        assert fit_margin_gib(8.0, "discrete", gpu_platform="wsl") == 1.32
+        assert fit_margin_gib(192.0, "discrete", gpu_count=2) == 2.91
         assert fit_margin_gib(64.0, "unified") == 0.0
         assert fit_margin_gib(6.0, "cpu") == 0.0
-        assert memory_fits(19.0, 20.0, "discrete", architecture_estimate=True)
-        assert not memory_fits(19.5, 20.0, "discrete", architecture_estimate=True)
+        assert memory_fits(18.7, 20.0, "discrete", architecture_estimate=True)
+        assert not memory_fits(18.9, 20.0, "discrete", architecture_estimate=True)
         # Legacy and authored estimates keep the historical +0.25 tolerance.
         assert memory_fits(20.2, 20.0, "discrete", architecture_estimate=False)
 
     def test_context_fitting_starts_at_the_catalog_default(self):
         model = {**ARCH["qwen3.5-9b"], "context_length": 65536, "max_context_length": 262144}
         assert context_fitting_model(model, 48.0, memory_class="discrete") is model
-        stepped = context_fitting_model(model, 7.5, memory_class="discrete")
+        # The discrete capacity rule leaves the platform reserve free
+        # (1.17 GiB on an 8.5 GiB card): 64K needs 7.77 GiB, 32K 6.77 GiB.
+        stepped = context_fitting_model(model, 8.5, memory_class="discrete")
         assert stepped["context_length"] == 32768
         assert stepped["max_context_length"] == 262144
         # A floor may raise the context above the default when the model's
         # native maximum allows it, and a floor below it is only a fallback.
         short = {**model, "context_length": 32768}
         assert context_fitting_model(short, 48.0, min_context=65536, memory_class="discrete")["context_length"] == 65536
-        assert context_fitting_model(short, 7.5, min_context=65536, memory_class="discrete")["context_length"] == 32768
+        assert context_fitting_model(short, 8.5, min_context=65536, memory_class="discrete")["context_length"] == 32768
         capped = {**short, "max_context_length": 32768}
         assert context_fitting_model(capped, 48.0, min_context=65536, memory_class="discrete") is capped
 

@@ -9,7 +9,10 @@
 #          envelope, so the two can never plan against different inputs.
 #
 # Expects: SCRIPT_DIR, GPU_BACKEND, GPU_MEMORY_TYPE, GPU_VRAM, RAM_GB, TIER,
-#          HOST_ARCH, MODEL_PROFILE_EFFECTIVE (or MODEL_PROFILE)
+#          HOST_ARCH, MODEL_PROFILE_EFFECTIVE (or MODEL_PROFILE); optional
+#          GPU_COUNT and ODS_SELECTOR_OTHER_USED_MIB (GPU memory other
+#          processes held when phase 02 measured it; it shapes the planned
+#          llama.cpp settings, never the model)
 # Provides: ODS_HERMES_MIN_CONTEXT, ods_model_selector_python,
 #           ods_run_catalog_selector, ods_catalog_fit_check
 #
@@ -53,6 +56,8 @@ ods_run_catalog_selector() {
         --tier "${TIER:-1}" \
         --max-size-mb "$max_size_mb" \
         --host-arch "${HOST_ARCH:-unknown}" \
+        --gpu-count "${GPU_COUNT:-1}" \
+        --other-used-mib "${ODS_SELECTOR_OTHER_USED_MIB:-0}" \
         --installable-only \
         "$@" \
         --env
@@ -75,6 +80,8 @@ ods_catalog_fit_check() {
         --profile "${MODEL_PROFILE_EFFECTIVE:-${MODEL_PROFILE:-qwen}}" \
         --tier "${TIER:-1}" \
         --host-arch "${HOST_ARCH:-unknown}" \
+        --gpu-count "${GPU_COUNT:-1}" \
+        --other-used-mib "${ODS_SELECTOR_OTHER_USED_MIB:-0}" \
         --check-fit --model-id "$model" --context "$context" \
         ${profile_args[@]+"${profile_args[@]}"}
 }
