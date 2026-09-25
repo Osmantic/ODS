@@ -591,8 +591,8 @@ main() {
     local revision=""
 
     # Guardrails: avoid nonsense values
-    cores=$(clamp_int "$cores" 1 1024)
-    ram=$(clamp_int "$ram" 1 4096)
+    cores=$(clamp_int "${cores:-1}" 1 1024)
+    ram=$(clamp_int "${ram:-1}" 1 4096)
 
     # Try Jetson first — Tegra iGPUs don't show up as PCIe NVIDIA cards in
     # sysfs and nvidia-smi is unreliable on JetPack, so detect via L4T release
