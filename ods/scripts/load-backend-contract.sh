@@ -9,7 +9,8 @@ ENV_MODE="false"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --backend)
-            BACKEND_ID="${2:-}"
+            [[ $# -ge 2 ]] || { echo "ERROR: --backend requires an argument" >&2; exit 1; }
+            BACKEND_ID="$2"
             shift 2
             ;;
         --env)
@@ -25,6 +26,11 @@ done
 
 if [[ -z "$BACKEND_ID" ]]; then
     echo "Missing required argument: --backend" >&2
+    exit 1
+fi
+
+if [[ ! "$BACKEND_ID" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    echo "ERROR: Invalid backend identifier: $BACKEND_ID" >&2
     exit 1
 fi
 
@@ -47,7 +53,10 @@ if [[ "$ENV_MODE" == "true" ]]; then
 import json
 import sys
 
-contract = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    contract = json.load(f)
+if not isinstance(contract, dict):
+    raise SystemExit("Backend contract root must be a JSON object")
 
 def out(key, value):
     safe = str(value).replace("\\", "\\\\").replace('"', '\\"')
