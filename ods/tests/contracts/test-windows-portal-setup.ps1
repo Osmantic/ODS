@@ -111,6 +111,9 @@ try {
             Set-Content -LiteralPath $destination -Value "param([switch]`$DryRun)`nWrite-Host 'stub delegate output'`nexit $exitCode" -Encoding UTF8
             & $shell -NoProfile -File (Join-Path $fixture 'install.ps1') -DryRun | Out-Host
             Check ($LASTEXITCODE -eq $exitCode) "actual root preserves delegated exit $exitCode"
+            # The nonzero exit is expected test data, not the contract's result.
+            # GitHub's PowerShell runner propagates LASTEXITCODE after the script.
+            $global:LASTEXITCODE = 0
         }
     } finally {
         $resolved = [IO.Path]::GetFullPath($fixture)
