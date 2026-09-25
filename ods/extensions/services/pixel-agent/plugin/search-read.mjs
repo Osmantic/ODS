@@ -308,7 +308,7 @@ const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|jul
 const FACT_PATTERNS = {
   date: new RegExp(`\\b${MONTH}\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?\\b|\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH}\\b|\\b\\d{4}-\\d{2}-\\d{2}\\b|\\b\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?\\b`, 'i'),
   time: /\b\d{1,2}(?::\d{2})?\s?[ap]\.?m\b/i,
-  price: /(?:[$€£]\s?\d[\d,]*(?:\.\d{2})?|\b\d[\d,]*(?:\.\d{2})?\s?(?:usd|eur|gbp|dollars)\b)/i,
+  price: /(?:[$\u20ac\u00a3]\s?\d[\d,]*(?:\.\d{2})?|\b\d[\d,]*(?:\.\d{2})?\s?(?:usd|eur|gbp|dollars)\b)/i,
   power: /\b\d{2,4}\s?(?:w|watts?)\b/i,
   memory: /\b\d{1,3}\s?(?:gb|gib)\b/i,
   performance: /\b\d{2,4}(?:\.\d)?\s?fps\b/i,
@@ -402,8 +402,8 @@ export function scoreWindows(plain, {terms, classes}) {
   return windows;
 }
 
-const ANGLE_OPEN = /[<‹«〈〈《⟨⟪⟬⟮❬❮˂﹤＜]{2,}/g;
-const ANGLE_CLOSE = /[>›»〉〉》⟩⟫⟭⟯❭❯˃﹥＞]{2,}/g;
+const ANGLE_OPEN = /[<\u2039\u00ab\u2329\u3008\u300a\u27e8\u27ea\u27ec\u27ee\u276c\u276e\u02c2\ufe64\uff1c]{2,}/g;
+const ANGLE_CLOSE = /[>\u203a\u00bb\u232a\u3009\u300b\u27e9\u27eb\u27ed\u27ef\u276d\u276f\u02c3\ufe65\uff1e]{2,}/g;
 const SPECIAL_TOKENS = /<\|[^|\n]{1,40}\|>|\[\/?INST\]|<\/?s>|<\/?SYS>|<(?:start|end)_of_turn>/gi;
 
 // Page-provided text for display: no controls or invisible format characters,
@@ -416,7 +416,7 @@ export function neutralized(text) {
     .replace(ANGLE_OPEN, '((').replace(ANGLE_CLOSE, '))')
     .replace(/\[(\s*)([RL])(\s*\d+\s*)\]/gi, '($1$2$3)')
     .replace(/\[(\s*(?:not read|opened|not opened)[^\]\n]{0,60})\]/gi, '($1)')
-    .replace(/[ \t ]+/g, ' ');
+    .replace(/[ \t\u00a0]+/g, ' ');
 }
 
 function relevantExcerpt(parsed, focus, maxChars, pageUrl, linkBudget, nextLinkId) {
