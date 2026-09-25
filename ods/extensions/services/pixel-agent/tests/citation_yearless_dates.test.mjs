@@ -16,7 +16,9 @@ import {LFF_COWBOYS_EVENT_JSON_LD, LFF_COWBOYS_TEXT, LFF_COWBOYS_URL, LFF_PANTHE
 const FLEET_PROMPT = 'Today is 2026-09-25. Search the live web for at least three public events in Philadelphia happening within the next 45 days. ' +
   'Actually search and open sources. For each give event title, exact date, venue and a direct official source URL. ' +
   'Exclude undated listings and past events. Explain any unavailable result honestly. Do not create files.';
-const REFERENCE = citationDateReference(FLEET_PROMPT);
+// The host's clock on the day of the run (local noon, 2026-09-25).
+const HOST_NOW = new Date(2026, 8, 25, 12).getTime();
+const REFERENCE = citationDateReference(FLEET_PROMPT, HOST_NOW);
 const OURPHILLY = 'https://www.ourphilly.org/date/2026-10-23';
 
 const panthers = (date, url = LFF_PANTHERS_URL) =>
@@ -44,13 +46,19 @@ test('the owner\'s stated date and requested window set the reference; the host 
     ['eventos no próximo mês', 62],
     ['shows over the next 12 months', YEARLESS_DATE_LIMITS.maxDays],
   ]) {
-    assert.equal(citationDateReference(owner, Date.UTC(2026, 8, 25, 12)).days, days, owner);
-    assert.equal(citationDateReference(owner, Date.UTC(2026, 8, 25, 12)).requested, true, owner);
+    assert.equal(citationDateReference(owner, HOST_NOW).days, days, owner);
+    assert.equal(citationDateReference(owner, HOST_NOW).requested, true, owner);
   }
-  const plain = citationDateReference('When do the Eagles play the Cowboys?', new Date(2026, 8, 25, 12).getTime());
+  assert.deepEqual(citationDateReference('Find upcoming concerts in Philadelphia', HOST_NOW),
+    {today: day(2026, 9, 25), days: YEARLESS_DATE_LIMITS.defaultDays, requested: true}, '"upcoming" asks forward');
+  assert.equal(citationDateReference('Today is 2026-09-24. Events in the next week.', HOST_NOW).today, day(2026, 9, 24),
+    "a stated date within a few days of the host's (time zones) is the owner's");
+  assert.equal(citationDateReference('Today is 2025-09-25. Events in the next week.', HOST_NOW).today, day(2026, 9, 25),
+    "pages are read now: a stated date a year off yields to the host's");
+  const plain = citationDateReference('When do the Eagles play the Cowboys?', HOST_NOW);
   assert.deepEqual(plain, {today: day(2026, 9, 25), days: YEARLESS_DATE_LIMITS.defaultDays}, 'host date, default window, none requested');
   assert.equal(citationDateReference(undefined, new Date(2027, 0, 2, 9).getTime()).today, day(2027, 1, 2));
-  assert.equal(citationDateReference('Today is 2026-02-31. Next 10 days.', new Date(2026, 8, 25, 12).getTime()).today,
+  assert.equal(citationDateReference('Today is 2026-02-31. Next 10 days.', HOST_NOW).today,
     day(2026, 9, 25), 'an impossible stated date falls back to the host date');
 });
 
@@ -100,11 +108,55 @@ test('a stale or contradicted year-less page date does not count', () => {
   ]) assert.equal(check(page, {context}).supported, false, why);
 });
 
+// Found by the self-adversarial pass: last season's page for an event on
+// Saturday, October 18, 2025, cited for October 18, 2026 (a Sunday). Each
+// stale signal is paired with the current-season form that still counts.
+test('stale-season signals: a weekday of another year, short years, farewell notes', () => {
+  const title = 'Carolina Panthers vs. Philadelphia Eagles';
+  const filler = ' Tickets Parking Stadium Tours Guest Services.'.repeat(8);
+  for (const [stale, current, why] of [
+    [`${title}\nSaturday, October 18 @ 1:00 pm`, `${title}\nSunday, October 18 @ 1:00 pm`, 'weekday before the date'],
+    [`${title}\nSat, Oct 18 · 1:00 PM`, `${title}\nSun, Oct 18 · 1:00 PM`, 'abbreviated weekday'],
+    [`${title}\nOctober 18 (Sat) · 1:00 PM`, `${title}\nOctober 18 (Sun) · 1:00 PM`, 'weekday after the date'],
+    [`${title} '25 — October 18 @ 1:00 pm`, `${title} '26 — October 18 @ 1:00 pm`, 'apostrophe short year'],
+    [`${title} ’25\nOctober 18 @ 1:00 pm`, `${title} ’26\nOctober 18 @ 1:00 pm`, 'typographic apostrophe short year'],
+    [`${title} — 10/18/25 — Stadium Tours, Parking, Guest Services\nDate: October 18`,
+      `${title} — 10/18/26 — Stadium Tours, Parking, Guest Services\nDate: October 18`, 'numeric date, two-digit year'],
+    [`${title}\nOctober 18 @ 1:00 pm${filler}${filler} See you next year!`, `${title}\nOctober 18 @ 1:00 pm${filler}${filler} See you there!`,
+      'farewell note anywhere on the page'],
+    [`Thanks to everyone who came out!${filler}${filler}\n${title}\nOctober 18 @ 1:00 pm`,
+      `Thanks to everyone who bought tickets!${filler}${filler}\n${title}\nOctober 18 @ 1:00 pm`, 'thanks for coming'],
+    [`${title} recap: October 18 @ 1:00 pm`, `${title} preview: October 18 @ 1:00 pm`, 'recap next to the event'],
+    [`${title}\nGates open two hours before kickoff; the clear bag policy applies.\nOctober 18 · 2025 regular season`,
+      `${title}\nGates open two hours before kickoff; the clear bag policy applies.\nOctober 18 · 2026 regular season`,
+      'a year beside the date, away from the title'],
+  ]) {
+    assert.equal(check(stale).supported, false, `stale: ${why}`);
+    assert.equal(check(current).supported, true, `current: ${why}`);
+  }
+  // Portuguese weekdays: 17 de outubro de 2026 is a Saturday.
+  const url = 'https://www.coliseulisboa.com/agenda/concerto-de-outono';
+  const answer = `**Concerto de Outono** — 17 de outubro de 2026, às 21h30. Fonte: [Coliseu](${url})`;
+  const context = {...citationDateReference('Eventos em Lisboa nos próximos 30 dias', HOST_NOW), urls: [url]};
+  const pt = page => pageSupportsClaims(page, citationClaims(answer, url, {portuguese: true}), context).supported;
+  assert.equal(pt('Concerto de Outono — sexta-feira, 17 de outubro · 21:30'), false);
+  assert.equal(pt('Concerto de Outono — sábado, 17 de outubro · 21:30'), true);
+  // A stated date a year before the host's does not make last season's page current.
+  const lastYear = citationDateReference('Today is 2025-09-25. Events in the next 45 days.', HOST_NOW);
+  assert.equal(check(`${title}\nOctober 18 @ 1:00 pm`, {answer: panthers('October 18, 2025 at 1:00 PM'), reference: lastYear}).supported,
+    false);
+  // "upcoming" reads a year-less claim as this season's.
+  const upcoming = citationDateReference('Find upcoming games at the Linc and cite sources.', HOST_NOW);
+  const yearless = panthers('Sunday, October 18 at 1:00 PM');
+  assert.equal(check(`${title}, October 18, 2025`, {answer: yearless, reference: upcoming}).supported, false);
+  assert.equal(check(`${title}, October 18, 2026`, {answer: yearless, reference: upcoming}).supported, true);
+});
+
 test('the window bounds how far a year-less page date may be read as the claimed year', () => {
   const page = 'Carolina Panthers vs. Philadelphia Eagles\nDecember 20 @ 1:00 pm';
   const december = panthers('December 20, 2026 at 1:00 PM');
   assert.equal(check(page, {answer: december}).supported, false, 'beyond the owner\'s 45 days');
-  const plain = citationDateReference('When do the Panthers play in Philadelphia?', new Date(2026, 8, 25, 12).getTime());
+  const plain = citationDateReference('When do the Panthers play in Philadelphia?', HOST_NOW);
   assert.equal(check(page, {answer: december, reference: plain}).supported, true, 'inside the default window without a stated one');
   assert.equal(check(page.replace('December 20', 'March 20'), {answer: panthers('March 20, 2027'), reference: plain}).supported, false,
     'six months ahead is as likely last season\'s page');
@@ -142,7 +194,7 @@ test('a year-less claim is read inside the requested window; otherwise it stays 
   assert.equal(check(`This event has passed. ${LFF_PANTHERS_TEXT}`, {answer: yearless}).supported, false);
   // Without a requested window (a question about a past edition, say) a
   // year-less claim matches any year, as before.
-  const history = citationDateReference('When was the Carolina game last season?', new Date(2026, 8, 25, 12).getTime());
+  const history = citationDateReference('When was the Carolina game last season?', HOST_NOW);
   assert.equal(check('Carolina Panthers vs. Philadelphia Eagles, October 18, 2025', {answer: yearless, reference: history}).supported, true);
   assert.equal(check('Carolina Panthers vs. Philadelphia Eagles, August 2, 2026', {answer: panthers('August 2'), reference: history}).supported,
     true);
@@ -152,7 +204,7 @@ test('Portuguese: "nos próximos 30 dias", a day-first date without a year, and 
   const owner = 'Pesquise eventos em Lisboa nos próximos 30 dias e abra as fontes.';
   const url = 'https://www.coliseulisboa.com/agenda/concerto-de-outono';
   const answer = `2. **Concerto de Outono** — 17 de outubro de 2026, às 21h30. Fonte: [Coliseu](${url})`;
-  const context = {...citationDateReference(owner, new Date(2026, 8, 25, 12).getTime()), urls: [url]};
+  const context = {...citationDateReference(owner, HOST_NOW), urls: [url]};
   assert.equal(context.days, 30);
   const ok = page => pageSupportsClaims(page, citationClaims(answer, url, {portuguese: true}), context).supported;
   assert.equal(ok('Concerto de Outono\nsábado, 17 de outubro · 21:30 · Coliseu dos Recreios'), true);

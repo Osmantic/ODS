@@ -348,15 +348,19 @@ const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // supports a claim dated in a given year only as an upcoming date that the
 // page does not contradict:
 //  - the claimed day lies between the reference day (the owner's stated
-//    "today", else the host's date) and the end of the owner's requested
-//    window ("next 45 days"; defaultDays when none is stated, never more than
-//    maxDays), unless the page's schema.org Event data gives that exact date;
-//  - no schema.org Event on the page gives the same month and day in another
-//    year;
+//    "today" when it is within a few days of the host's, else the host's
+//    date) and the end of the owner's requested window ("next 45 days";
+//    defaultDays when none is stated, never more than maxDays), unless the
+//    page's schema.org Event data gives that exact date;
+//  - nothing on the page gives the same month and day in another year: a
+//    visible date ("October 18, 2025", "10/18/25"), schema.org Event data, or
+//    a weekday next to the date that falls on it only in another year
+//    ("Saturday, October 18" when October 18 is a Sunday);
 //  - neither the cited nor the final URL names another year (/2025/, -2025);
-//  - no other year stands near the title and date (a "Fest 2025" heading, a
-//    "2025 season" label, an earlier year in a neighbouring row's date);
-//  - the page does not mark the event as past or archived.
+//  - no other year stands beside the title or the date (a "Fest 2025" or
+//    "Fest '25" heading, a "2025 season" label, an earlier-year row);
+//  - the page does not mark the event as past or archived ("This event has
+//    passed", "See you next year!", "Archive", "recap").
 // A stale annual page (last year's "October 18" left online) fails one of
 // these; in doubt, it fails. An explicit year on the page must still match,
 // and a year-less claim is read as the date inside a requested window.
@@ -365,6 +369,7 @@ export const YEARLESS_DATE_LIMITS = Object.freeze({
   maxDays: 183,        // beyond this a year-less date may as well be last year's
   margin: 80,          // characters around the title and date checked for other years and markers
   titleMargin: 40,     // characters around any other occurrence of the title checked for other years
+  statedDateDays: 3,   // the owner's stated date counts within this many days of the host's
 });
 
 const DAY_MS = 86_400_000;
@@ -379,7 +384,7 @@ const COUNT_WORDS = {a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, si
   sete: 7, oito: 8, nove: 9, dez: 10, doze: 12, quinze: 15, trinta: 30};
 const UNIT_DAYS = {day: 1, days: 1, week: 7, weeks: 7, month: 31, months: 31, dia: 1, dias: 1, semana: 7, semanas: 7, mes: 31, meses: 31};
 const COUNTED_WINDOW = /\b(?:next|coming|upcoming|following|within|proxim[oa]s?|dentro de)\s+(?:the\s+(?:next\s+)?)?(\d{1,3}|[a-z]+)\s+(days?|weeks?|months?|dias?|semanas?|mes(?:es)?)\b/g;
-const NAMED_WINDOW = /\b(?:(?:this|next|coming)\s+(week(?:end)?|month)|tonight|tomorrow|(?:esta|proxima)\s+semana|(?:este|proximo)\s+(mes|fim de semana)|amanha)\b/;
+const NAMED_WINDOW = /\b(?:(?:this|next|coming)\s+(week(?:end)?|month)|tonight|tomorrow|(?:esta|proxima)\s+semana|(?:este|proximo)\s+(mes|fim de semana)|amanha|(upcoming|coming up|proximos eventos|em breve))\b/;
 
 // The forward window the owner asked about, in days; undefined when none.
 function requestedWindowDays(owner) {
@@ -389,18 +394,20 @@ function requestedWindowDays(owner) {
     if (count > 0) return count * UNIT_DAYS[match[2]];
   }
   const named = NAMED_WINDOW.exec(text);
-  if (named) return named[1] === 'month' || named[2] === 'mes' ? 62 : 14;
+  if (named) return named[3] ? YEARLESS_DATE_LIMITS.defaultDays : named[1] === 'month' || named[2] === 'mes' ? 62 : 14;
   return undefined;
 }
 
 // The day a year-less page date is read from, and how far ahead it may lie.
+// Pages are read now, so the owner's stated date counts only within a few
+// days of the host's (time zones); a stated date far from it (an old prompt)
+// yields to the host's.
 export function citationDateReference(owner, now = Date.now()) {
   const stated = ownerResearchDate(owner);
+  const clock = new Date(now);
+  const host = dayNumber(clock.getFullYear(), clock.getMonth() + 1, clock.getDate());
   let today = stated ? dayNumber(stated.year, stated.month, stated.day) : undefined;
-  if (today === undefined) {
-    const clock = new Date(now);
-    today = dayNumber(clock.getFullYear(), clock.getMonth() + 1, clock.getDate());
-  }
+  if (today === undefined || (host !== undefined && Math.abs(today - host) > YEARLESS_DATE_LIMITS.statedDateDays)) today = host;
   const requested = requestedWindowDays(owner);
   const days = Math.min(requested ?? YEARLESS_DATE_LIMITS.defaultDays, YEARLESS_DATE_LIMITS.maxDays);
   return {today, days, ...(requested === undefined ? {} : {requested: true})};
@@ -464,8 +471,33 @@ function otherYearNear(page, pageDates, from, to, year) {
 }
 
 // Past or archived event: page-wide statements, and labels near the event.
-const PAST_EVENT_PAGE = /\b(?:this event (?:has )?(?:already )?(?:ended|passed|expired|concluded|finished|happened|occurred|taken place|took place)|(?:this|the) event is (?:over|in the past)|event (?:has )?(?:ended|passed)|past event|archived (?:events?|pages?|content|listings?)|(?:this|the) page (?:is|has been) archived|you are viewing an? (?:archived|past)|este evento (?:ja )?(?:aconteceu|terminou|foi encerrado|foi realizado)|evento (?:encerrado|finalizado|realizado|passado)|eventos? ja realizados?)\b/;
-const PAST_EVENT_NEAR = /\b(?:past events?|previous events?|archived?|archives|ended|concluded|took place|was held|last year|previous edition|eventos? passados?|encerrad[oa]s?|arquivo|arquivad[oa]s?|realizad[oa]s? em|edicao anterior|ano passado)\b/;
+const PAST_EVENT_PAGE = /\b(?:see you next year|(?:thanks|thank you) (?:to )?(?:everyone |all )?(?:who (?:came|attended|joined)|for (?:coming|attending))|ate o proximo ano|obrigad[oa] a todos (?:que vieram|pela presenca)|this event (?:has )?(?:already )?(?:ended|passed|expired|concluded|finished|happened|occurred|taken place|took place)|(?:this|the) event is (?:over|in the past)|event (?:has )?(?:ended|passed)|past event|archived (?:events?|pages?|content|listings?)|(?:this|the) page (?:is|has been) archived|you are viewing an? (?:archived|past)|este evento (?:ja )?(?:aconteceu|terminou|foi encerrado|foi realizado)|evento (?:encerrado|finalizado|realizado|passado)|eventos? ja realizados?)\b/;
+const PAST_EVENT_NEAR = /\b(?:recap|past events?|previous events?|archived?|archives|ended|concluded|took place|was held|last year|previous edition|eventos? passados?|encerrad[oa]s?|arquivo|arquivad[oa]s?|realizad[oa]s? em|edicao anterior|ano passado)\b/;
+
+// A weekday written right next to a date: before it ("Saturday, October 18",
+// "sábado, 18 de outubro") or after it ("October 18 (Sat)"). Sunday is 0.
+const WEEKDAYS = {sunday: 0, sun: 0, domingo: 0, dom: 0, monday: 1, mon: 1, segunda: 1, seg: 1, tuesday: 2, tue: 2, tues: 2,
+  terca: 2, ter: 2, wednesday: 3, wed: 3, quarta: 3, qua: 3, thursday: 4, thu: 4, thur: 4, thurs: 4, quinta: 4, qui: 4,
+  friday: 5, fri: 5, sexta: 5, sex: 5, saturday: 6, sat: 6, sabado: 6, sab: 6};
+const WEEKDAY_NAMES = Object.keys(WEEKDAYS).sort((a, b) => b.length - a.length).join('|');
+const WEEKDAY_BEFORE = new RegExp(`\\b(${WEEKDAY_NAMES})(?:-feira)?\\.?\\s*[,|·–—-]?\\s*$`);
+const WEEKDAY_AFTER = new RegExp(`^\\s*[,(|·–—-]?\\s*(${WEEKDAY_NAMES})(?:-feira)?\\b`);
+function weekdayContradicts(page, date, year) {
+  const named = WEEKDAY_BEFORE.exec(page.slice(Math.max(0, date.index - 24), date.index))?.[1] ??
+    WEEKDAY_AFTER.exec(page.slice(date.end, date.end + 24))?.[1];
+  return named !== undefined && new Date(Date.UTC(year, date.m - 1, date.d)).getUTCDay() !== WEEKDAYS[named];
+}
+
+// An all-numeric date with a two-digit year ("10/18/25", "18.10.25") of the
+// same day in another year.
+const SHORT_YEAR_DATE = /(?<![\d/.])(\d{1,2})([/.])(\d{1,2})\2(\d{2})(?![\d/.])/g;
+function shortYearDateContradicts(page, date, year) {
+  for (const match of page.matchAll(SHORT_YEAR_DATE)) {
+    const [a, b, y] = [+match[1], +match[3], 2000 + +match[4]];
+    if (((a === date.m && b === date.d) || (a === date.d && b === date.m)) && y !== year) return true;
+  }
+  return false;
+}
 
 // Whether the year-less page `date`, paired with the title at `offset`,
 // supports the claimed date in `year` (see above). `titles` are the spans of
@@ -479,6 +511,7 @@ function undatedDateHolds(page, pageDates, date, offset, year, titles, context) 
   // Event data) is what the year-less mentions of it mean.
   const sameDay = entry => entry.m === date.m && entry.d === date.d;
   if (pageDates.some(other => other.y !== undefined && other.y !== year && sameDay(other))) return undefined;
+  if (shortYearDateContradicts(page, date, year) || weekdayContradicts(page, date, year)) return undefined;
   const structured = eventDates.filter(sameDay);
   if (structured.some(entry => entry.y !== year)) return undefined;
   const day = dayNumber(year, date.m, date.d);
@@ -497,6 +530,8 @@ function undatedDateHolds(page, pageDates, date, offset, year, titles, context) 
 // requested path or host cannot supply the anchors.
 export function preparePageText(text) {
   return fold(String(text ?? '').slice(0, HOST_CITATION_LIMITS.maxPageChars)
+    // A season or edition year written '25 or ’25 is 2025.
+    .replace(/(^|[\s(\[,–—-])['‘’ʼ](\d{2})(?![\w'‘’ʼ])/g, (_, lead, yy) => `${lead}${+yy <= 69 ? 20 : 19}${yy}`)
     .replace(/\bhttps?:\/\/\S+/gi, ' ').replace(/\bwww\.\S+/gi, ' ')
     .replace(/\b(?:[a-z0-9-]+\.)+(?:com|net|org|edu|gov|io|co|us|uk|br|pt|info|biz|events?|tickets?)\b\S*/gi, ' ')
     .replace(/(?:^|\s)\/[\w.~%-]+(?:\/[\w.~%-]*)*/g, ' '))
