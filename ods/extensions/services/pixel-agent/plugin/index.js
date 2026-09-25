@@ -36,7 +36,7 @@ import {
 } from "./projection.mjs";
 import { composePromptBuildResult, promptContractForAgent } from "./prompt-contract.mjs";
 import { createTurnGuidancePersistence, withoutPersistedTurnGuidance } from "./turn-guidance.mjs";
-import { executionContext } from "./completion-assurance.mjs";
+import { executionContext, turnHostDate } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import {
   appsToolText,
@@ -365,11 +365,13 @@ export default definePluginEntry({
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
       // Per-attempt, model-only context: not part of the cached system prompt.
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
-      // Only configuration-derived text may enter system space; the goal,
-      // message-selected contracts and repository evidence ride on this turn.
+      // Only configuration-derived text may enter system space. The host date,
+      // goal, message-selected contracts and repository evidence ride on this
+      // owner message and are stored with it.
       const result = composePromptBuildResult(contract, {
         activity: ACTIVITY_CONTRACT,
         execution: executionContext(),
+        hostDate: turnHostDate(rawEvent?.messages),
         goal: goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : "",
         repositoryEvidence,
       });

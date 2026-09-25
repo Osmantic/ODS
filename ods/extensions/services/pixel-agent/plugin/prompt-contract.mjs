@@ -422,7 +422,7 @@ export function promptContractForAgent(
 // requests replay exactly what the model saw.
 export function composePromptBuildResult(
   contract,
-  { activity = "", execution = "", goal = "", repositoryEvidence = "" } = {}
+  { activity = "", execution = "", hostDate = "", goal = "", repositoryEvidence = "" } = {}
 ) {
   if (!contract) return undefined;
   const join = (parts, separator) => parts
@@ -435,7 +435,7 @@ export function composePromptBuildResult(
     ? contract.turnContext : "";
   // Labelled so that ODS recognises its own text once it is stored with the
   // owner message (turn-guidance.mjs) and never mistakes it for owner prose.
-  const appendContext = formatTurnGuidance(join([goal, turnContext, repositoryEvidence], "\n\n"));
+  const appendContext = formatTurnGuidance(join([hostDate, goal, turnContext, repositoryEvidence], "\n\n"));
   return {
     appendSystemContext: join([activity, systemContext, execution], " "),
     ...(appendContext ? { appendContext } : {}),
