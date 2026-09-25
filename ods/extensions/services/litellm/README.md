@@ -191,3 +191,16 @@ curl http://localhost:4000/health/readiness
 ## License
 
 Part of ODS — Local AI Infrastructure
+## Reinstalling with a different model route
+
+The installer recreates the enabled LiteLLM service after rendering runtime
+configuration and before Pixel setup. LiteLLM reads its configuration at startup;
+an unchanged Compose definition does not reload an atomically replaced bind-mounted
+file. This refresh can briefly interrupt gateway requests during reinstall.
+
+If an older installer reports success but chat still reaches the previous external
+provider, compare the installed configuration with the running gateway's mounted
+configuration. Rerun the corrected installer to reload the route. Rolling back
+configuration files alone does not change a running gateway: reapply the previous
+provider settings with the installer as well. The refresh preserves service data
+and does not enable a disabled LiteLLM extension.

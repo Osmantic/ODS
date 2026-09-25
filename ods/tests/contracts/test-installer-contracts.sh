@@ -681,6 +681,7 @@ grep -q '\$_buildServices = \$_selectedBuildServices' installers/windows/install
 
 echo "[contract] failed requested local builds cannot reuse stale images"
 bash tests/test-phase11-local-build-failure.sh
+bash tests/test-phase11-litellm-reload.sh
 
 echo "[contract] OpenClaw deprecation preserves actual installs only"
 for installer in install-core.sh installers/macos/install-macos.sh; do
