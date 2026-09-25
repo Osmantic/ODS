@@ -27,11 +27,14 @@ service:
     required: true
     secret: true
     description: Persistent password for the dedicated notes database.
+    generate: password
   - key: HEDGEDOC_SESSION_SECRET
     required: true
     secret: true
     description: Persistent random session signing secret; use at least 32 random
       characters.
+    min_length: 32
+    generate: token
   - key: HEDGEDOC_DOMAIN
     required: false
     default: localhost:11043

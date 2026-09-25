@@ -27,11 +27,16 @@ service:
     required: true
     secret: true
     description: 'Initial ods administrator password: random 64 hexadecimal characters.'
+    format: hex64
+    generate: hex64
   - key: INFLUXDB_ADMIN_TOKEN
     required: true
     secret: true
     description: Distinct random 64-hex initial operator token. Keep private; create
       scoped project tokens separately.
+    format: hex64
+    distinct_from: [INFLUXDB_ADMIN_PASSWORD]
+    generate: hex64
   ui_path: /
 tags:
 - database

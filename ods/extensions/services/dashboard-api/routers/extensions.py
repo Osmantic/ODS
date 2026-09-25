@@ -555,16 +555,53 @@ def _split_port_host(port_str: str) -> tuple[Optional[str], str]:
     return host, rest
 
 
+# Accelerator access a curated library recipe may request, only from its own
+# backend overlay (compose.nvidia.yaml / compose.amd.yaml) and only in the
+# shapes ODS core uses for GPU workloads: docker-compose.amd.yml passes /dev/kfd
+# and /dev/dri through unchanged, and docker-compose.nvidia.yml plus the
+# comfyui/whisper overlays reserve driver nvidia with capabilities [gpu] by
+# count or device_ids. scripts/resolve-compose-stack.sh mirrors this policy.
+_TRUSTED_LIBRARY_AMD_DEVICES = frozenset({"/dev/kfd:/dev/kfd", "/dev/dri:/dev/dri"})
+_NVIDIA_DEVICE_ID_RE = re.compile(r"[A-Za-z0-9_.:${}-]+")
+# The overlays the resolver loads as compose.<backend>.yaml for a GPU backend.
+_LIBRARY_ACCELERATOR_OVERLAYS = {"compose.nvidia.yaml": "nvidia", "compose.amd.yaml": "amd"}
+
+
+def _is_ods_nvidia_gpu_reservation(entry) -> bool:
+    """True for one reservations.devices entry in the shape ODS core writes."""
+    if not isinstance(entry, dict) or set(entry) - {"driver", "capabilities", "count", "device_ids"}:
+        return False
+    if entry.get("driver") != "nvidia" or entry.get("capabilities") != ["gpu"]:
+        return False
+    if "count" in entry and "device_ids" in entry:
+        return False
+    count = entry.get("count", "all")
+    if count != "all" and not (type(count) is int and count >= 1):
+        return False
+    device_ids = entry.get("device_ids", ["all"])
+    return isinstance(device_ids, list) and bool(device_ids) and all(
+        isinstance(item, str) and _NVIDIA_DEVICE_ID_RE.fullmatch(item) for item in device_ids)
+
+
 def _scan_compose_content(
     compose_path: Path,
     *,
     trusted: bool = False,
+    accelerator: str | None = None,
     skip_name_collision: bool = False,
     skip_gpu_passthrough_check: bool = False,
     skip_root_user_check: bool = False,
 ) -> None:
-    """Reject compose files containing dangerous directives."""
+    """Reject compose files containing dangerous directives.
+
+    ``accelerator`` names the backend of the overlay being scanned. Only with
+    ``trusted`` does it permit that backend's GPU ("nvidia" or "amd"), in
+    exactly the ODS core shape; any other device request is rejected, and
+    ``gpus``/``runtime`` are rejected unless ``skip_gpu_passthrough_check``.
+    """
     allowed_trusted_extra_hosts = {"host.docker.internal:host-gateway"}
+    if not trusted:
+        accelerator = None
 
     try:
         data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
@@ -730,27 +767,63 @@ def _scan_compose_content(
                         status_code=400,
                         detail=f"Extension rejected: dangerous security_opt '{opt}' in {svc_name}",
                     )
-        if svc_def.get("devices"):
+        devices = svc_def.get("devices")
+        if devices and accelerator != "amd":
+            detail = f"Extension rejected: devices in {svc_name}"
+            if trusted:
+                detail += (f" ({compose_path.name}); a curated recipe may pass through "
+                           f"/dev/kfd and /dev/dri only from compose.amd.yaml")
+            raise HTTPException(status_code=400, detail=detail)
+        if devices and (not isinstance(devices, list) or any(
+                not isinstance(entry, str) or entry not in _TRUSTED_LIBRARY_AMD_DEVICES
+                for entry in devices)):
             raise HTTPException(
                 status_code=400,
-                detail=f"Extension rejected: devices in {svc_name}",
+                detail=f"Extension rejected: unsupported devices in {svc_name}",
             )
         # Block Docker Compose v2 GPU passthrough for user extensions.
         # Built-ins (e.g. docker-compose.nvidia.yml) legitimately request
         # NVIDIA devices via deploy.resources.reservations.devices, so the
-        # caller passes skip_gpu_passthrough_check=True for those.
+        # caller passes skip_gpu_passthrough_check=True for those. A curated
+        # library recipe's compose.nvidia.yaml (accelerator="nvidia") may
+        # request only the ODS core shape.
         #
         # Each level checked with isinstance: a malformed compose like
         # `deploy: { resources: null }` or `resources: { reservations: null }`
         # would otherwise AttributeError on .get() and surface as a 500
         # instead of a clean scanner pass-through (no GPU request â†’ no block).
         if not skip_gpu_passthrough_check:
+            # gpus: and runtime: are other routes to a GPU (Compose
+            # `gpus: all`, the legacy NVIDIA runtime), and a runtime also
+            # swaps the container's isolation. No user extension may set
+            # either, curated or imported. Built-ins keep the same exemption
+            # as their reservations.
+            if "gpus" in svc_def:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(f"Extension rejected: gpus in {svc_name}; extensions may not "
+                            f"request GPUs with the gpus key"),
+                )
+            if "runtime" in svc_def:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(f"Extension rejected: runtime in {svc_name}; extensions may not "
+                            f"choose a container runtime"),
+                )
             deploy = svc_def.get("deploy")
             if isinstance(deploy, dict):
                 resources = deploy.get("resources")
                 if isinstance(resources, dict):
                     reservations = resources.get("reservations")
-                    if isinstance(reservations, dict) and reservations.get("devices"):
+                    requests = reservations.get("devices") if isinstance(reservations, dict) else None
+                    if requests and accelerator != "nvidia" and trusted:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(f"Extension rejected: GPU passthrough in {svc_name} "
+                                    f"({compose_path.name}); a curated recipe may reserve "
+                                    f"NVIDIA GPUs only from compose.nvidia.yaml"),
+                        )
+                    if requests and accelerator != "nvidia":
                         raise HTTPException(
                             status_code=400,
                             detail=(
@@ -758,6 +831,12 @@ def _scan_compose_content(
                                 f"deploy.resources.reservations.devices is not "
                                 f"permitted in user extensions ({svc_name})"
                             ),
+                        )
+                    if requests and (not isinstance(requests, list) or not all(
+                            _is_ods_nvidia_gpu_reservation(entry) for entry in requests)):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Extension rejected: unsupported GPU reservation in {svc_name}",
                         )
         ports = svc_def.get("ports", [])
         for port in ports:
@@ -1365,6 +1444,20 @@ async def extensions_catalog(
     }
 
 
+# The host agent appends a container's own output (log tail, health check)
+# to an install error under this line. It is untrusted text written by the
+# service: the owner's dashboard shows it, but it never becomes part of what
+# the Pixel model reads.
+UNTRUSTED_CONTAINER_OUTPUT_MARKER = "\nUntrusted container output, credentials redacted:"
+
+
+def _model_safe_runtime_error(error) -> str:
+    """An install error without the container output section."""
+    if not isinstance(error, str):
+        return ""
+    return error.split(UNTRUSTED_CONTAINER_OUTPUT_MARKER, 1)[0]
+
+
 def _installation_plan_service(service_id: str) -> dict:
     """Use the installed definition first; never repair it from library metadata."""
     for root in (USER_EXTENSIONS_DIR, EXTENSIONS_DIR, EXTENSIONS_LIBRARY_DIR):
@@ -1412,28 +1505,37 @@ def _missing_owner_configuration(service_id: str, *, installed: bool, setup_hook
     default, so only the settings its Compose file cannot resolve without are
     requested there. A setup hook that runs first writes its own settings.
 
+    Presence never depends on the declared formats: an unusable format only
+    leaves the dialog without a hint (and the configure endpoint refuses to
+    save a value it cannot check).
+
     Unreadable declarations are left to the operation itself: they must not
     turn into a new refusal here, and the host agent disables a definition
     that Compose cannot resolve instead of leaving it in the merged project.
     """
     from config import _read_env_value
-    from extension_install_plan import configuration_fields, declares_setup_hook
+    from extension_install_plan import InstallPlanError, configuration_fields, declares_setup_hook
 
     try:
         service = _installation_plan_service(service_id)
         if not isinstance(service, dict) or (setup_hook_runs and declares_setup_hook(service)):
             return service_id, []
-        fields = configuration_fields(service_id, service, lambda key: bool(_read_env_value(key)))
+        fields = configuration_fields(service_id, service, lambda key: bool(_read_env_value(key)), formats=False)
         missing = [field for field in fields if field["required"] and not field["configured"]]
         if installed and missing:
             enforced = _compose_required_variables(USER_EXTENSIONS_DIR / service_id)
             missing = [field for field in missing if field["key"] in enforced]
     except (ValueError, OSError, UnicodeError, yaml.YAMLError):
         return service_id, []
+    try:
+        formats = {field["key"]: field["format"]
+                   for field in configuration_fields(service_id, service, lambda key: False)}
+    except InstallPlanError:
+        formats = {}
     name = service.get("name")
     name = name.strip()[:80] if isinstance(name, str) and name.strip() else service_id
-    return name, [{"key": field["key"], "secret": field["secret"], "description": field["description"]}
-                  for field in missing]
+    return name, [{"key": field["key"], "secret": field["secret"], "description": field["description"],
+                   "format": formats.get(field["key"])} for field in missing]
 
 
 def _refuse_missing_owner_configuration(service_id: str, *, installed: bool, setup_hook_runs: bool,
@@ -1459,6 +1561,12 @@ async def extension_install_plan(service_id: str, api_key: str = Depends(verify_
     """Inspect dependency order and missing settings without starting installation."""
     from config import _read_env_value
     from extension_install_plan import build_install_plan
+    from extension_setting_formats import setting_problems
+
+    def saved_nonconforming(fields):
+        # Setting names only: saved values are compared here and never returned.
+        saved = {field["key"] for field in fields if field["configured"]}
+        return list(dict.fromkeys(problem["key"] for problem in setting_problems(fields, _read_env_value, saved)))
 
     _validate_service_id(service_id)
     snapshot = await extensions_catalog(api_key=api_key)
@@ -1471,6 +1579,7 @@ async def extension_install_plan(service_id: str, api_key: str = Depends(verify_
         return await asyncio.to_thread(
             build_install_plan, service_id, entries,
             _installation_plan_service, lambda key: bool(_read_env_value(key)), ALWAYS_ON_SERVICES,
+            saved_nonconforming,
         )
     except (ValueError, OSError, yaml.YAMLError) as exc:
         # Never include upstream file contents or environment values in errors.
@@ -1864,8 +1973,8 @@ async def _observe_extension_request(payload, api_key):
                 # The request record remains pending while it is available for
                 # follow-up. Installation readiness is a separate observation.
                 result['installationVerified'] = status in {'enabled', 'cli_installed'}
-                error = detail.get('error_message')
-                if status == 'error' and isinstance(error, str) and error.strip():
+                error = _model_safe_runtime_error(detail.get('error_message'))
+                if status == 'error' and error.strip():
                     # Preserve observed failure evidence, not a new action or
                     # inferred diagnosis. Same owner/extension as this read.
                     result['runtimeError'] = error[:8192]
@@ -2505,6 +2614,41 @@ async def extension_associate_project(service_id: str, request: Request, api_key
     return {"extensionId": service_id, "projects": projects, "scope": "project-association"}
 
 
+def _refuse_nonconforming_settings(service_id: str, values: dict[str, str]) -> None:
+    """Check submitted values against their declared format before any write.
+
+    Uses the install plan's definition lookup and declaration rules. A value
+    the extension's own start-up check rejects would otherwise be saved and
+    the install would end in a restart loop without a reason. The 422 names
+    each setting and the expected format; submitted values are never echoed.
+    Keys the definition does not declare are left to the host agent, which
+    refuses them.
+    """
+    from config import _read_env_value
+    from extension_install_plan import configuration_fields
+    from extension_setting_formats import setting_problems
+
+    try:
+        service = _installation_plan_service(service_id)
+        if not isinstance(service, dict):
+            raise ValueError("Extension definition is not a mapping")
+        fields = configuration_fields(service_id, service, lambda key: False)
+    except (ValueError, OSError, UnicodeError, yaml.YAMLError):
+        raise HTTPException(status_code=400, detail="Extension settings declarations could not be read") from None
+    # A setting that must differ from another is compared with the other's
+    # submitted or saved value; only whether they are equal is used.
+    invalid = setting_problems(fields, lambda key: values[key] if key in values else _read_env_value(key),
+                               set(values))
+    if not invalid:
+        return
+    raise HTTPException(status_code=422, detail={
+        "code": "invalid_configuration",
+        "service_id": service_id,
+        "message": " ".join(problem["message"] for problem in invalid) + " Nothing was saved.",
+        "invalid_configuration": [{"key": problem["key"], "expected": problem["expected"]} for problem in invalid],
+    })
+
+
 @router.post("/api/extensions/{service_id}/configure")
 async def extension_configure(service_id: str, request: Request, api_key: str = Depends(verify_api_key)):
     """Write-only owner input; values never enter a model tool receipt."""
@@ -2522,8 +2666,11 @@ async def extension_configure(service_id: str, request: Request, api_key: str = 
         values = payload["values"]
         if not values or len(values) > 128 or any(not isinstance(v, str) for v in values.values()):
             raise ValueError()
+        for value in values.values():
+            value.encode("utf-8")  # A lone surrogate is refused here, not as a server error.
     except (ValueError, UnicodeError):
         raise HTTPException(status_code=400, detail="Invalid extension configuration") from None
+    await asyncio.to_thread(_refuse_nonconforming_settings, service_id, values)
     try:
         result = await asyncio.to_thread(request_agent_json, "POST", "/v1/extensions/configure",
                                          payload={"service_id": service_id, "values": values}, timeout=30)
@@ -2762,6 +2909,14 @@ def _staged_library_extension(service_id: str, dest: Path):
             upstream = json.loads(upstream_path.read_text(encoding='utf-8')) if upstream_path.is_file() else {}
             trusted_library = not (isinstance(upstream, dict) and upstream.get('origin') == 'github-proposal')
             _scan_compose_content(staged_compose, trusted=trusted_library)
+            # The compose resolver also loads compose.<backend>.yaml,
+            # compose.local.yaml and compose.multigpu.yaml, with this policy.
+            # Scan them here too, so an overlay it would drop fails the
+            # install. Only compose.nvidia.yaml / compose.amd.yaml may request
+            # that backend's GPU.
+            for overlay in sorted(staged.glob('compose.*.yaml')):
+                _scan_compose_content(overlay, trusted=trusted_library,
+                                      accelerator=_LIBRARY_ACCELERATOR_OVERLAYS.get(overlay.name))
             if not trusted_library:
                 from extension_recipe_package import verify_package
                 from extension_recipe_validation import validate_recipe

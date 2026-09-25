@@ -844,6 +844,10 @@ function New-ODSEnv {
         $llamaMemoryDefault = Get-ODSDefaultNvidiaLlamaMemoryLimit `
             -AvailableRamGB $availableRamGB
         $llamaServerMemoryLimit = Get-EnvOrNew "LLAMA_SERVER_MEMORY_LIMIT" $llamaMemoryDefault
+    } elseif ($GpuBackend -in @("none", "cpu") -and $effectiveODSMode -ne "cloud" -and $TierConfig.LLAMA_SERVER_MEMORY_LIMIT) {
+        # CPU runtime profiles size the container for their model; without
+        # one the CPU compose default (6G) applies as before.
+        $llamaServerMemoryLimit = Get-EnvOrNew "LLAMA_SERVER_MEMORY_LIMIT" $TierConfig.LLAMA_SERVER_MEMORY_LIMIT
     }
     $existingLemonadeModel = Get-EnvOrNew "LEMONADE_MODEL" ""
     $existingGgufFile = Get-EnvOrNew "GGUF_FILE" ""
@@ -1078,6 +1082,8 @@ LLAMA_ARG_CACHE_TYPE_V=$(Get-EnvOrNew "LLAMA_ARG_CACHE_TYPE_V" "$(if ($TierConfi
 $(if ($TierConfig.LLAMA_ARG_N_CPU_MOE) { "LLAMA_ARG_N_CPU_MOE=$($TierConfig.LLAMA_ARG_N_CPU_MOE)" })
 $(if ($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT) { "LLAMA_ARG_NO_CACHE_PROMPT=$($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT)" })
 $(if ($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_NT) { "LLAMA_ARG_CHECKPOINT_EVERY_NT=$($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_NT)" })
+$(if ($TierConfig.LLAMA_ARG_CTX_CHECKPOINTS) { "LLAMA_ARG_CTX_CHECKPOINTS=$($TierConfig.LLAMA_ARG_CTX_CHECKPOINTS)" })
+$(if ($TierConfig.LLAMA_ARG_CACHE_RAM) { "LLAMA_ARG_CACHE_RAM=$($TierConfig.LLAMA_ARG_CACHE_RAM)" })
 # NVIDIA/CPU llama.cpp images default to lossless n-gram speculation (ngram-mod).
 # LLAMA_SPEC_TYPE=none turns it off; unset keeps the default.
 $(if ($llamaSpecType) { "LLAMA_SPEC_TYPE=$llamaSpecType" })

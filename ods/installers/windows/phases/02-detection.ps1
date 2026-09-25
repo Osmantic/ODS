@@ -112,12 +112,15 @@ if (-not $env:MODEL_PROFILE) {
 }
 
 $tierConfig = Resolve-TierConfig -Tier $selectedTier
+# Hermes is on by default and needs 64K context: prefer models that fit at
+# 64K themselves (a soft floor). Phase 03 re-checks once features are final.
 $tierConfig = Resolve-CatalogModelRecommendation `
     -TierConfig $tierConfig `
     -Tier $selectedTier `
     -GpuInfo $gpuInfo `
     -SystemRamGB $systemRamGB `
-    -SourceRoot $sourceRoot
+    -SourceRoot $sourceRoot `
+    -MinContext $script:HERMES_MIN_CONTEXT
 $llamaServerImage = if ($tierConfig.LlamaServerImage) { $tierConfig.LlamaServerImage } else { "" }
 $whisperCudaSupported = Test-ODSWindowsWhisperCudaSupported -GpuInfo $gpuInfo
 if ($tierConfig.LlamaCppReleaseTag) {

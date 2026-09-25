@@ -208,7 +208,7 @@ source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 
 The installer **automatically detects your GPU**, assigns a hardware tier, then uses the versioned catalog selector to choose the best installable GGUF for the detected memory envelope. Linux and macOS call `scripts/select-model.py`; Windows uses the PowerShell selector in `installers/windows/lib/tier-map.ps1`. Both read `config/model-library.json`, and the final choice is written to `.env` as `LLM_MODEL`, `GGUF_FILE`, `MAX_CONTEXT`, and `MODEL_RECOMMENDATION_*`.
 
-`MODEL_PROFILE=qwen` is the default non-Gemma catalog profile, so the effective model can be Qwen, Phi, or DeepSeek depending on fit. `MODEL_PROFILE=gemma4` and `MODEL_PROFILE=auto` are also supported where the tier map has Gemma 4 GGUFs available. When Hermes is enabled, installers enforce a 64K minimum context for the active local model, then preserve the model selector's full-model context.
+`MODEL_PROFILE=qwen` is the default non-Gemma catalog profile. The selector ranks installable models by a curated priority for the memory class (discrete GPU, unified memory or CPU), prefers a model that fits at the 64K context Hermes needs, and checks fit with a memory estimate built from each model's attention layout; file size only breaks ties. `MODEL_PROFILE=gemma4` and `MODEL_PROFILE=auto` are also supported where the tier map has Gemma 4 GGUFs available. When Hermes is enabled and the pick is below 64K, the installers re-check the fit at 64K before raising it, pick a model that fits at 64K when the installer chose the model, and otherwise keep the context that fits and report that ODS Talk is unavailable. A Dashboard model switch uses the same rule.
 
 Large-context tiers still use 128K where the selected tier/model supports it.
 
@@ -219,7 +219,7 @@ The examples below are current catalog-selector outputs for common hardware enve
 | Tier / envelope | Current default catalog pick | Context | Example hardware |
 |------|--------------|---------|-----------------|
 | SH_COMPACT / 64GB unified RAM | qwen3.6-35b-a3b | 128K | Ryzen AI MAX+ 395 (64GB) |
-| SH_LARGE / 96GB unified RAM | deepseek-r1-distill-llama-70b | 32K | Ryzen AI MAX+ 395 (96GB) |
+| SH_LARGE / 96GB unified RAM | qwen3.6-35b-a3b | 128K | Ryzen AI MAX+ 395 (96GB) |
 | SH_LARGE / 124GB unified RAM | qwen3.6-35b-a3b | 128K | Ryzen AI MAX+ 395 (128GB class) |
 
 Unified-memory hosts are routed away from qwen3-coder-next when that model would otherwise be selected, because current repo policy documents correctness issues on those backends. Bootstrap mode uses `qwen3.5-2b` for instant startup; the full model downloads in the background via GGUF from HuggingFace.
@@ -230,11 +230,11 @@ Unified-memory hosts are routed away from qwen3-coder-next when that model would
 
 | Tier / envelope | Current default catalog pick | Context | Example GPUs |
 |------|--------------|---------|--------------|
-| 0 / 8GB CPU fallback | qwen3.5-2b | 8K | Low-RAM CPU-only |
-| 1 / 8GB discrete VRAM | qwen3.5-9b | 32K | RTX 4060, RTX 3060 12GB |
-| 2 / 12GB discrete VRAM | phi-4 | 16K | RTX 4070-class cards |
-| 3 / 24GB discrete VRAM | qwen3.5-27b | 32K | RTX 4090, A6000 |
-| 4 / 48GB discrete VRAM | deepseek-r1-distill-llama-70b | 32K | A6000 Ada, L40S |
+| 0 / 8GB CPU fallback | qwen3.5-2b (Q8 KV CPU profile) | 64K | Low-RAM CPU-only |
+| 1 / 8GB discrete VRAM | qwen3.5-9b (Q8 KV profile) | 64K | RTX 4060, RTX 5070 Laptop |
+| 2 / 12-16GB discrete VRAM | qwen3.5-9b | 64K | RTX 4070-class, RTX 4080 |
+| 3 / 24-32GB discrete VRAM | qwen3.5-27b | 64K | RTX 4090, RTX 5090 |
+| 4 / 40-62GB discrete VRAM | qwen3.6-35b-a3b | 128K | A100 40GB, A6000 Ada, L40S |
 | NV_ULTRA / 90GB+ amd64 discrete VRAM | qwen3-coder-next | 128K | Multi-GPU A100/H100 |
 | NV_ULTRA / 90GB+ arm64 unified memory | qwen3.6-35b-a3b | 128K | DGX Spark / GB10-class hosts |
 
@@ -242,19 +242,19 @@ Unified-memory hosts are routed away from qwen3-coder-next when that model would
 
 | Tier / envelope | Current default catalog pick | Context | Example hardware |
 |------|--------------|---------|-----------------|
-| 0 / 8GB unified RAM | phi-4-mini | 128K | M1/M2 base (8GB) |
-| 1 / 16GB unified RAM | qwen3.5-9b | 32K | M4 Mac Mini (16GB) |
-| 2 / 32GB unified RAM | phi-4 | 16K | M4 Pro Mac Mini, M3 Max MacBook Pro |
-| 3 / 48GB unified RAM | qwen3.5-27b | 32K | M4 Pro (48GB), M2 Max (48GB) |
+| 0 / 8GB unified RAM | nvidia-nemotron3-nano-4b | 64K | M1/M2 base (8GB) |
+| 1 / 16GB unified RAM | qwen3.5-9b | 64K | M4 Mac Mini (16GB) |
+| 2 / 24-36GB unified RAM | qwen3.5-9b | 64K | M4 Pro Mac Mini, M3 Max MacBook Pro |
+| 3 / 48GB unified RAM | qwen3.6-35b-a3b | 128K | M4 Pro (48GB), M2 Max (48GB) |
 | 4 / 64GB+ unified RAM | qwen3.6-35b-a3b | 128K | M2 Ultra Mac Studio, M4 Max (64GB+) |
 
 ### Intel Arc (Linux, SYCL)
 
 | Tier / envelope | Current default catalog pick | Context | Example hardware |
 |------|--------------|---------|------------------|
-| ARC_LITE / 6GB discrete VRAM | phi-4-mini | 128K | Arc A380 |
-| ARC_LITE / 8GB discrete VRAM | qwen3.5-9b | 32K | Arc A750 |
-| ARC / 16GB discrete VRAM | phi-4 | 16K | Arc A770 16GB, newer Arc GPUs |
+| ARC_LITE / 6GB discrete VRAM | qwen3.5-4b | 64K | Arc A380 |
+| ARC_LITE / 8GB discrete VRAM | qwen3.5-4b | 64K | Arc A750 |
+| ARC / 16GB discrete VRAM | qwen3.5-9b | 64K | Arc A770 16GB, newer Arc GPUs |
 
 Gemma 4 profile tiers remain in the installer tier maps: E2B on entry hardware, E4B on midrange hardware, 26B-A4B on pro hardware, and 31B on large/ultra hardware. Override with: `./install.sh --tier 3`.
 

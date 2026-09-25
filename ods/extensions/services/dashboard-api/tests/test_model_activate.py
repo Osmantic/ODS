@@ -1493,6 +1493,164 @@ class TestLemonadeCompletionReady:
         assert proof == {}
         assert completion_calls == []
 
+    @staticmethod
+    def _capped_runtime(n_ctx_train, n_ctx, probes):
+        """llama.cpp b9014 caps a slot at the GGUF training context."""
+
+        def fake_run(cmd, **_kwargs):
+            url = next((str(part) for part in cmd if str(part).startswith("http")), "")
+            if url.endswith("/v1/models"):
+                probes.append(url)
+                body = json.dumps({
+                    "object": "list",
+                    "data": [{
+                        "id": "Qwen3-30B-A3B-Q4_K_M.gguf",
+                        "object": "model",
+                        "meta": {"n_ctx_train": n_ctx_train},
+                    }],
+                })
+            elif url.endswith("/props"):
+                body = json.dumps({"default_generation_settings": {"n_ctx": n_ctx}})
+            else:
+                body = ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=body, stderr="")
+
+        return fake_run
+
+    @pytest.mark.parametrize("fast_poll_seconds", [0.0, 30.0])
+    def test_readiness_fails_fast_when_request_exceeds_training_context(
+        self, monkeypatch, fast_poll_seconds
+    ):
+        # Live tower2 2026-09-25: catalog asked for 131072 on a 40960-token
+        # GGUF; the model loaded in 4 s but the host agent reported
+        # identity=False for ~5.5 minutes, then rolled back.
+        probes = []
+        monkeypatch.setattr(_mod.subprocess, "run", self._capped_runtime(40960, 40960, probes))
+        monkeypatch.setattr(_mod.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_a, **_k: True)
+        diagnosis = {}
+        proof = _mod._wait_for_model_readiness(
+            {"GPU_BACKEND": "nvidia", "OLLAMA_PORT": "11434", "CTX_SIZE": "131072"},
+            model_id="qwen3-30b-a3b-q4",
+            gguf_file="Qwen3-30B-A3B-Q4_K_M.gguf",
+            llm_model_name="qwen3-30b-a3b",
+            attempts=55,
+            initial_delay=0,
+            interval=0,
+            return_proof=True,
+            fast_poll_seconds=fast_poll_seconds,
+            fast_poll_interval=0.05,
+            diagnosis=diagnosis,
+        )
+        assert proof == {}
+        assert len(probes) == 1
+        assert diagnosis["final"] is True
+        assert diagnosis["reason"] == (
+            "Qwen3-30B-A3B-Q4_K_M.gguf is loaded but serves a 40960-token context; "
+            "131072 was requested, above the model's 40960-token training context "
+            "(llama.cpp caps the slot there)"
+        )
+
+    def test_readiness_keeps_polling_a_short_context_below_training_context(
+        self, monkeypatch
+    ):
+        # A runtime short of the request for another reason (for example a
+        # memory fit) is not proven final by the training context.
+        probes = []
+        monkeypatch.setattr(_mod.subprocess, "run", self._capped_runtime(262144, 32768, probes))
+        monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_a, **_k: True)
+        diagnosis = {}
+        proof = _mod._wait_for_model_readiness(
+            {"GPU_BACKEND": "nvidia", "OLLAMA_PORT": "11434", "CTX_SIZE": "65536"},
+            model_id="qwen3-30b-a3b-q4",
+            gguf_file="Qwen3-30B-A3B-Q4_K_M.gguf",
+            llm_model_name="qwen3-30b-a3b",
+            attempts=3,
+            initial_delay=0,
+            interval=0,
+            return_identity=True,
+            diagnosis=diagnosis,
+        )
+        assert proof == ""
+        assert len(probes) == 3
+        assert "final" not in diagnosis
+        assert diagnosis["reason"] == (
+            "Qwen3-30B-A3B-Q4_K_M.gguf is loaded but serves a 32768-token context; "
+            "65536 was requested"
+        )
+
+    def test_readiness_succeeds_at_the_native_training_context(self, monkeypatch):
+        probes = []
+        monkeypatch.setattr(_mod.subprocess, "run", self._capped_runtime(40960, 40960, probes))
+        monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_a, **_k: True)
+        diagnosis = {}
+        proof = _mod._wait_for_model_readiness(
+            {"GPU_BACKEND": "nvidia", "OLLAMA_PORT": "11434", "CTX_SIZE": "40960"},
+            model_id="qwen3-30b-a3b-q4",
+            gguf_file="Qwen3-30B-A3B-Q4_K_M.gguf",
+            llm_model_name="qwen3-30b-a3b",
+            attempts=3,
+            initial_delay=0,
+            interval=0,
+            return_proof=True,
+            require_exact_context=True,
+            diagnosis=diagnosis,
+        )
+        assert proof["identity"] == "Qwen3-30B-A3B-Q4_K_M.gguf"
+        assert proof["contextLength"] == 40960
+        assert diagnosis == {}
+
+
+class TestRuntimeLogExcerpt:
+    def test_excerpt_keeps_bounded_redacted_signal_lines(self):
+        noise = [f"print_info: tensor {index} loaded" for index in range(400)]
+        log = "\n".join(
+            noise
+            + [
+                "\x1b[33mllama_context: n_ctx_seq (131072) > n_ctx_train (40960) -- possible training context overflow\x1b[0m",
+                "srv    load_model: the slot context (131072) exceeds the training context of the model (40960) - capping",
+                "main: invalid argument --api-key sk-live-secret-value",
+                "error: Authorization: Bearer abc.def.ghi",
+                "x" * 600 + " error",
+                "main: server is listening on http://0.0.0.0:8080",
+            ]
+        )
+        excerpt = _mod._runtime_log_excerpt(log)
+        lines = excerpt.splitlines()
+        assert len(lines) <= _mod._RUNTIME_LOG_EXCERPT_MAX_LINES
+        assert len(excerpt) <= _mod._RUNTIME_LOG_EXCERPT_MAX_CHARS
+        assert all(len(line) <= 240 for line in lines)
+        assert "exceeds the training context of the model (40960) - capping" in excerpt
+        assert "\x1b[" not in excerpt
+        assert "sk-live-secret-value" not in excerpt
+        assert "abc.def.ghi" not in excerpt
+        assert excerpt.count("[redacted]") == 2
+        assert "tensor 12 loaded" not in excerpt
+
+    def test_excerpt_falls_back_to_the_log_tail_without_signal_lines(self):
+        log = "\n".join(f"line {index}" for index in range(30))
+        assert _mod._runtime_log_excerpt(log).splitlines() == [
+            f"line {index}" for index in range(18, 30)
+        ]
+        assert _mod._runtime_log_excerpt(None) == ""
+
+    def test_failed_container_log_read_never_raises(self, monkeypatch):
+        def broken_run(*_args, **_kwargs):
+            raise RuntimeError("docker unavailable")
+
+        monkeypatch.setattr(_mod.subprocess, "run", broken_run)
+        assert _mod._failed_llama_server_log_excerpt() == ""
+
+        seen = []
+
+        def logs_run(cmd, **kwargs):
+            seen.append((cmd, kwargs.get("stderr")))
+            return subprocess.CompletedProcess(cmd, 0, stdout="main: error loading model\n")
+
+        monkeypatch.setattr(_mod.subprocess, "run", logs_run)
+        assert _mod._failed_llama_server_log_excerpt() == "main: error loading model"
+        assert seen == [(["docker", "logs", "--tail", "400", "ods-llama-server"], subprocess.STDOUT)]
+
 
 # --- _write_lemonade_config ---
 
@@ -2977,6 +3135,65 @@ class TestLaunchNativeLlamaServer:
         assert "--reasoning-format" in cmd
         assert "deepseek" in cmd
         assert _kwargs["cwd"] == str(tmp_path)
+
+    @pytest.mark.parametrize(
+        ("help_text", "help_rc", "reasoning", "expected"),
+        [
+            # b9014 has --reasoning (default auto): pass the mode itself.
+            ("-rea, --reasoning [on|off|auto]\n--reasoning-format FORMAT\n", 0, "off", ["--reasoning", "off"]),
+            ("-rea, --reasoning [on|off|auto]\n--reasoning-format FORMAT\n", 0, "", ["--reasoning", "off"]),
+            ("-rea, --reasoning [on|off|auto]\n--reasoning-format FORMAT\n", 0, "on", ["--reasoning", "on"]),
+            # b8248 has no --reasoning: keep the format, and for off add
+            # --reasoning-budget 0, which disables thinking there.
+            ("--reasoning-format FORMAT\n--reasoning-budget N\n", 0, "off",
+             ["--reasoning-format", "none", "--reasoning-budget", "0"]),
+            ("--reasoning-format FORMAT\n--reasoning-budget N\n", 0, "on", ["--reasoning-format", "deepseek"]),
+            ("--reasoning-format FORMAT\n", 0, "off", ["--reasoning-format", "none"]),
+            # A mode that is not off/on/auto keeps the format mapping.
+            ("-rea, --reasoning [on|off|auto]\n", 0, "deepseek", ["--reasoning-format", "deepseek"]),
+            # An unreadable --help keeps the previous behaviour.
+            ("-rea, --reasoning [on|off|auto]\n", 1, "off", ["--reasoning-format", "none"]),
+        ],
+    )
+    def test_windows_passes_reasoning_where_the_runtime_has_it(
+        self, monkeypatch, tmp_path, help_text, help_rc, reasoning, expected,
+    ):
+        env_path = tmp_path / ".env"
+        env_path.write_text(
+            f"GGUF_FILE=test-model.gguf\nLLAMA_REASONING={reasoning}\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "data" / "models").mkdir(parents=True)
+        llama_bin = tmp_path / "llama-server" / "llama-server.exe"
+        llama_bin.parent.mkdir(parents=True)
+        llama_bin.write_text("", encoding="utf-8")
+        calls = []
+
+        class _FakeProc:
+            pid = 4321
+
+        def fake_run(cmd, **_kwargs):
+            assert cmd == [str(llama_bin), "--help"]
+            return subprocess.CompletedProcess(cmd, help_rc, help_text, "")
+
+        def fake_popen(cmd, **kwargs):
+            calls.append(cmd)
+            return _FakeProc()
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(_mod.subprocess, "Popen", fake_popen)
+
+        _launch_native_llama_server(
+            env_path, llama_bin, tmp_path / "data" / "llama-server.log", tmp_path / "data" / "llama-server.pid",
+        )
+
+        cmd = calls[0]
+        start = cmd.index(expected[0])
+        assert cmd[start:start + len(expected)] == expected
+        for flag in ("--reasoning", "--reasoning-format", "--reasoning-budget"):
+            assert (flag in cmd) == (flag in expected), flag
 
     def test_llm_bridge_is_disabled_before_native_bind(self, monkeypatch, tmp_path):
         env = {
@@ -5318,6 +5535,59 @@ class TestModelActivateRollback:
                 },
             )
 
+    @pytest.mark.parametrize("gpu_backend", ["none", "unknown", "", "cpu"])
+    def test_cpu_backend_aliases_select_the_catalog_cpu_profile(
+        self,
+        monkeypatch,
+        gpu_backend,
+    ):
+        # Windows no-GPU installs write GPU_BACKEND=none; the installer's
+        # selector reads it as cpu, so a switch must keep the CPU profile's
+        # q8 KV cache and container limit instead of running unprofiled.
+        monkeypatch.setattr(_mod, "_system_ram_gb", lambda: 32)
+        monkeypatch.setattr(_mod.platform, "machine", lambda: "x86_64")
+        catalog_path = Path(__file__).resolve().parents[4] / "config" / "model-library.json"
+        model = next(
+            entry
+            for entry in json.loads(catalog_path.read_text(encoding="utf-8"))["models"]
+            if entry["id"] == "qwen3.5-9b-q4"
+        )
+
+        profile = _mod._select_runtime_profile(
+            model,
+            {"GPU_BACKEND": gpu_backend, "SYSTEM_RAM_GB": "32"},
+        )
+
+        assert profile is not None
+        assert profile["id"] == "cpu-64k-q8-kv"
+        assert profile["env"]["LLAMA_ARG_CACHE_TYPE_K"] == "q8_0"
+
+    def test_profile_above_its_ram_ceiling_does_not_apply(self, monkeypatch):
+        # model_selection.hardware_matching_profiles: a RAM ceiling scopes a
+        # profile to a class of machines. Above it the profile neither
+        # applies nor blocks activation as an unmet requirement.
+        monkeypatch.setattr(_mod, "_system_ram_gb", lambda: 64)
+        monkeypatch.setattr(_mod.platform, "machine", lambda: "x86_64")
+        model = {
+            "runtime_profiles": [
+                {
+                    "id": "cpu-small-host",
+                    "backend": "cpu",
+                    "system_ram_min_gb": 12,
+                    "system_ram_max_gb": 22,
+                    "context_length": 65536,
+                }
+            ]
+        }
+
+        assert _mod._select_runtime_profile(
+            model, {"GPU_BACKEND": "cpu", "SYSTEM_RAM_GB": "64"}
+        ) is None
+        monkeypatch.setattr(_mod, "_system_ram_gb", lambda: 16)
+        assert _mod._select_runtime_profile(
+            model, {"GPU_BACKEND": "cpu", "SYSTEM_RAM_GB": "16"}
+        )["id"] == "cpu-small-host"
+
     def test_nvidia_vram_probe_uses_wsl_bridge_outside_service_path(
         self,
         monkeypatch,
@@ -7559,6 +7829,8 @@ class TestModelActivateRollback:
                         "LLAMA_ARG_N_CPU_MOE": "30",
                         "LLAMA_ARG_NO_CACHE_PROMPT": "1",
                         "LLAMA_ARG_CHECKPOINT_EVERY_NT": "-1",
+                        "LLAMA_ARG_CTX_CHECKPOINTS": "4",
+                        "LLAMA_ARG_CACHE_RAM": "1024",
                         "LLAMA_ARG_SPEC_TYPE": "draft-mtp",
                         "LLAMA_ARG_SPEC_DRAFT_N_MAX": "3",
                     },
@@ -7593,6 +7865,8 @@ class TestModelActivateRollback:
         assert "LLAMA_ARG_N_CPU_MOE=30" in env_text
         assert "LLAMA_ARG_CHECKPOINT_EVERY_NT=-1" in env_text
         assert "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS" not in env_text
+        assert "LLAMA_ARG_CTX_CHECKPOINTS=4" in env_text
+        assert "LLAMA_ARG_CACHE_RAM=1024" in env_text
         assert "LLAMA_ARG_SPEC_TYPE=draft-mtp" in env_text
         assert "LLAMA_ARG_SPEC_DRAFT_N_MAX=3" in env_text
 

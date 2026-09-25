@@ -28,6 +28,8 @@ service:
     secret: true
     description: 64-hex password for the managed ods account. Changing it and restarting
       rotates login credentials.
+    format: hex64
+    generate: hex64
   ui_path: /
 tags:
 - packages

@@ -337,11 +337,13 @@ def test_windows_8gb_revalidation_models_have_64k_compressed_kv_profiles():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
 
+    # The Qwen3.5 4B gate is 8 GB: it is the 8 GB-card pick below the 9B
+    # profile's 15 GB gate, and its checkpoint/cache caps bound host RAM.
     expected = {
-        "qwen3-4b-instruct-2507-q4": ("nvidia-8gb-64k-q4-kv", "q4_0", 7.2),
-        "qwen3.5-4b-q4": ("nvidia-8gb-64k-q4-kv", "q4_0", 7.2),
+        "qwen3-4b-instruct-2507-q4": ("nvidia-8gb-64k-q4-kv", "q4_0", 7.2, 31),
+        "qwen3.5-4b-q4": ("nvidia-8gb-64k-q4-kv", "q4_0", 7.2, 8),
     }
-    for model_id, (profile_id, cache_type, required_gb) in expected.items():
+    for model_id, (profile_id, cache_type, required_gb, ram_min_gb) in expected.items():
         model = by_id[model_id]
         profiles = {profile["id"]: profile for profile in model["runtime_profiles"]}
         profile = profiles[profile_id]
@@ -351,7 +353,7 @@ def test_windows_8gb_revalidation_models_have_64k_compressed_kv_profiles():
         assert profile["memory_type"] == "discrete"
         assert profile["vram_min_gb"] == 7.5
         assert profile["vram_max_gb"] == 8.5
-        assert profile["system_ram_min_gb"] == 31
+        assert profile["system_ram_min_gb"] == ram_min_gb
         assert profile["context_length"] == HERMES_CONTEXT_FLOOR
         assert profile["estimated_required_gb"] == required_gb
         assert profile["env"]["LLAMA_PARALLEL"] == "1"
@@ -750,7 +752,9 @@ def test_nemotron3_nano_4b_is_recommended_after_six_host_validation():
     assert model["gguf_sha256"] == "be5d9a656a51922f24f1f09a759cebb694e1f5d9728bf0ef9f8c972c5a0b5ef2"
     assert model["size_bytes"] == 2837072864
     assert model["vram_required_gb"] <= 5
-    assert model["context_length"] == 262144
+    # 64K operating default (the Apple 8 GB pick); the model supports 256K.
+    assert model["context_length"] == HERMES_CONTEXT_FLOOR
+    assert model["max_context_length"] == 262144
     assert model.get("install_recommendation") is True
     compatibility = model["app_compatibility"]
     assert compatibility["openai_chat"]["status"] == "verified"
@@ -778,8 +782,11 @@ def test_ministral3_8b_is_recommended_after_six_host_validation():
     )
     assert model["gguf_sha256"] == "33e7a72cf5e6e2cfc2f2847075acc013d68bba023e35310cef86b5cf8fdca761"
     assert model["size_bytes"] == 5198911904
-    assert model["vram_required_gb"] == 7
-    assert model["context_length"] == 262144
+    # Dense attention on all 34 layers: 136 KiB of f16 KV per token, so the
+    # 64K operating default needs about 13.8 GiB (256K would need 38.5).
+    assert model["vram_required_gb"] == 14
+    assert model["context_length"] == HERMES_CONTEXT_FLOOR
+    assert model["max_context_length"] == 262144
     profiles = {item["id"]: item for item in model["runtime_profiles"]}
     cpu_profile = profiles["cpu-16k-agent-memory"]
     assert cpu_profile["backend"] == "cpu"
@@ -887,7 +894,9 @@ def test_qwen3_4b_long_context_replacements_are_release_candidates():
     expected = {
         "qwen3.5-4b-q4": {
             "sha": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
-            "context": 262144,
+            # 64K operating default; 256K native (max_context_length).
+            "context": 65536,
+            "max_context": 262144,
             "size_bytes": 2740937888,
             "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/",
         },
@@ -911,6 +920,8 @@ def test_qwen3_4b_long_context_replacements_are_release_candidates():
         assert model["gguf_url"].startswith(expected_model["url"])
         if "size_bytes" in expected_model:
             assert model["size_bytes"] == expected_model["size_bytes"]
+        if "max_context" in expected_model:
+            assert model["max_context_length"] == expected_model["max_context"]
         if model_id != "qwen3.5-4b-q4":
             assert model.get("install_recommendation") is False
         if model_id == "qwen3-4b-128k-q4":

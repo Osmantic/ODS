@@ -27,6 +27,8 @@ service:
     secret: true
     description: Stable random 64-hex database password; changing environment alone
       does not rotate an initialized database.
+    format: hex64
+    generate: hex64
   ui_path: /
 tags:
 - forum

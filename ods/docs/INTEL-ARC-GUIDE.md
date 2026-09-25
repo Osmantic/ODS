@@ -143,7 +143,7 @@ docker compose -f docker-compose.base.yml -f docker-compose.arc.yml up -d --buil
 docker compose -f docker-compose.base.yml -f docker-compose.arc.yml up -d
 
 # Skip local build — use a pre-built image
-LLAMA_ARC_IMAGE=ghcr.io/ggml-org/llama.cpp:server-intel-b8248 \
+LLAMA_ARC_IMAGE=ghcr.io/ggml-org/llama.cpp:server-intel-b9014@sha256:9c7bbaad3663523a3deb8927d3cfbf58d33f00a7634c69843e9eeeda01568c1b \
   docker compose -f docker-compose.base.yml -f docker-compose.arc.yml up -d
 ```
 
@@ -154,8 +154,7 @@ GPU_BACKEND=sycl
 N_GPU_LAYERS=99
 VIDEO_GID=44          # auto-set by installer
 RENDER_GID=992        # auto-set by installer
-ONEAPI_DEVICE_SELECTOR=level_zero:gpu
-SYCL_CACHE_PERSISTENT=1
+ONEAPI_DEVICE_SELECTOR=level_zero:gpu   # level_zero:0 on hosts with more than one Intel GPU
 ZES_ENABLE_SYSMAN=1
 CTX_SIZE=32768        # ARC tier default
 ```
@@ -168,7 +167,7 @@ CTX_SIZE=32768        # ARC tier default
 |---------|--------------|-----------|-----------------|
 | Installer maturity | Tier B | Tier A | **Tier C (experimental)** |
 | llama.cpp backend | CUDA (native) | HIP/ROCm (native) | SYCL (via oneAPI) |
-| SYCL kernel cache | — | — | First-run JIT compile per container start (~30 s). Eliminated after first run with `SYCL_CACHE_PERSISTENT=1`. |
+| SYCL kernel cache | — | — | JIT compile on every container start (~30 s). ODS does not set `SYCL_CACHE_PERSISTENT`: with the oneAPI 2025.3 runtime in the b9014 image it crashes llama-server. |
 | Multi-GPU | ✅ (native) | ✅ (ROCm multi) | ❌ Not supported. SYCL backend targets a single Arc GPU. |
 | ComfyUI (image gen) | ✅ CUDA overlay | ✅ ROCm overlay | ⚠️ No dedicated overlay. ComfyUI will use CPU fallback. |
 | Whisper STT | ✅ CUDA overlay | ✅ ROCm overlay | ⚠️ Runs on CPU (no Arc-accelerated Whisper image). |
@@ -228,9 +227,21 @@ docker compose restart llama-server
 ### Slow first inference after container start
 
 **Cause:** SYCL kernel JIT compilation on first call (~20–60 s).
-**Fix:** Ensure `SYCL_CACHE_PERSISTENT=1` is set in `.env` (the installer sets
-this automatically). Subsequent runs use the compiled kernel cache and start
-in < 5 s.
+**Expected:** every container start pays this. Do not set
+`SYCL_CACHE_PERSISTENT=1` to avoid it: with the oneAPI 2025.3 runtime in the
+llama.cpp b9014 image, the persistent kernel cache crashes llama-server
+(ggml-org/llama.cpp#21474, #22095; intel/llvm#22853). ODS no longer passes
+it to the container, and earlier installs that have it in `.env` are unaffected.
+
+---
+
+### llama-server crashes at start on a host with two or more Intel GPUs
+
+**Cause:** the oneAPI runtime in the b9014 image can crash when
+`ONEAPI_DEVICE_SELECTOR=level_zero:gpu` exposes more than one Level Zero GPU
+(ggml-org/llama.cpp#21747; fixed upstream after b9014 by #22968).
+**Fix:** set `ONEAPI_DEVICE_SELECTOR=level_zero:0` in `.env` (the index of the
+GPU to use) and recreate llama-server. The installer keeps this value on reruns.
 
 ---
 

@@ -27,11 +27,16 @@ service:
     required: true
     secret: true
     description: Editor and HTTP-flow password for user ods; 16 to 72 UTF-8 bytes.
+    min_length: 16
+    max_length: 72
+    generate: password
   - key: NODE_RED_CREDENTIAL_SECRET
     required: true
     secret: true
     description: Stable 64-hex encryption key; retain with backups to decrypt flow
       credentials.
+    format: hex64
+    generate: hex64
   ui_path: /
 tags:
 - automation

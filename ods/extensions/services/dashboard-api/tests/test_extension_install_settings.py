@@ -82,7 +82,7 @@ def test_install_refuses_missing_required_setting_before_copying_anything(test_c
                     "Nothing was changed."),
         "missing_configuration": ["GOTIFY_ADMIN_PASSWORD"],
         "configuration": [{"key": "GOTIFY_ADMIN_PASSWORD", "secret": True,
-                           "description": "Initial administrator password"}],
+                           "description": "Initial administrator password", "format": None}],
     }
     assert "never-project-this" not in response.text
     assert not (host.users / "gotify").exists()

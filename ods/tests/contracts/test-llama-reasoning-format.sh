@@ -20,6 +20,14 @@
 # native-checkpoint-args.py, which passes --reasoning instead on runtimes that
 # have it (b9014, where --reasoning-format none leaked an empty think block into
 # every reply). tests/test_macos_runtime_llama_args.py checks the final argv.
+#
+# Native Windows does the same through installers/windows/lib/
+# native-llama-args.ps1 (Get-ODSNativeReasoningArgs), a Bash probe in
+# scripts/bootstrap-upgrade.sh and the host agent: --reasoning on runtimes that
+# list it (b9014), --reasoning-format on older ones (b8248), plus
+# --reasoning-budget 0 for off where the binary has it, which is what disables
+# thinking on b8248.
+# tests/test-windows-native-checkpoint-args.ps1 checks the helper.
 
 set -euo pipefail
 
@@ -50,7 +58,7 @@ for target in "${native_launchers[@]}"; do
         fail "$target is missing; update this contract if the launcher moved"
         continue
     fi
-    if ! grep -q -- '--reasoning-format' "$path"; then
+    if ! grep -q -- '--reasoning-format' "$path" && ! grep -q 'Get-ODSNativeReasoningArgs' "$path"; then
         fail "$target starts llama-server without --reasoning-format; LLAMA_REASONING is ignored and thinking mode falls back to the llama.cpp default"
         continue
     fi
@@ -60,6 +68,28 @@ for target in "${native_launchers[@]}"; do
     fi
     pass "$target pins --reasoning-format from LLAMA_REASONING"
 done
+
+# On b9014, --reasoning-format alone leaves --reasoning at auto, so every
+# Windows launch path must pass --reasoning where the runtime has it.
+for target in installers/windows/install-windows.ps1 installers/windows/ods.ps1; do
+    if grep -q 'Get-ODSNativeReasoningArgs' "$ROOT_DIR/$target"; then
+        pass "$target passes --reasoning on runtimes that have it"
+    else
+        fail "$target must choose --reasoning or --reasoning-format with Get-ODSNativeReasoningArgs"
+    fi
+done
+if grep -q 'windows_native_reasoning_flag' "$ROOT_DIR/scripts/bootstrap-upgrade.sh" \
+    && grep -q '"--reasoning", $env:ODS_WIN_REASONING_MODE' "$ROOT_DIR/scripts/bootstrap-upgrade.sh" \
+    && grep -q '"--reasoning-budget", "0"' "$ROOT_DIR/scripts/bootstrap-upgrade.sh"; then
+    pass "scripts/bootstrap-upgrade.sh passes --reasoning to Windows runtimes that have it"
+else
+    fail "scripts/bootstrap-upgrade.sh must pass --reasoning to Windows runtimes that have it"
+fi
+if grep -q '_windows_llama_reasoning_arguments(llama_bin' "$ROOT_DIR/bin/ods-host-agent.py"; then
+    pass "bin/ods-host-agent.py passes --reasoning to Windows runtimes that have it"
+else
+    fail "bin/ods-host-agent.py must pass --reasoning to Windows runtimes that have it"
+fi
 
 # Docker's route is the container environment rather than an argv flag.
 if grep -q 'LLAMA_ARG_REASONING=${LLAMA_REASONING' "$ROOT_DIR/docker-compose.base.yml"; then

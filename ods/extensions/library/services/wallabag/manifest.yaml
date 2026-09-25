@@ -26,14 +26,19 @@ service:
     required: true
     secret: true
     description: Persistent 64-character hexadecimal signing secret.
+    format: hex64
+    generate: hex64
   - key: WALLABAG_INITIAL_PASSWORD
     required: true
     secret: true
     description: Initial ods administrator password, at least 12 characters; existing
       accounts are not reset.
+    min_length: 12
+    generate: password
   - key: WALLABAG_INITIAL_EMAIL
     required: true
     description: Email address for the initial ods administrator.
+    format: email
   ui_path: /
 tags:
 - reading

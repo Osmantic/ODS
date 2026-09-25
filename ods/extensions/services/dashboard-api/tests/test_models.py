@@ -1618,6 +1618,9 @@ def _patch_model_router_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(models_router, "_MODELS_DIR", data_dir / "models")
     monkeypatch.setattr(models_router, "_ENV_PATH", install_dir / ".env")
     monkeypatch.setattr(models_router, "ODS_MODE_EFFECTIVE", "local")
+    # Hermetic by default: the development host's own GPU must not change
+    # which context a load plans. Tests that need hardware patch it back.
+    monkeypatch.setattr(models_router, "get_gpu_info", lambda: None)
     return models_router, install_dir, data_dir
 
 
@@ -3075,3 +3078,199 @@ def test_load_model_rejects_local_gguf_path_separators(test_client, monkeypatch,
     )
 
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Switch-time context follows the install policy (one shared function:
+# model_selection.plan_model_context, reached through performance_oracle).
+# ---------------------------------------------------------------------------
+
+def _repo_catalog_entries(*model_ids):
+    from pathlib import Path as _Path
+
+    catalog = json.loads(
+        (_Path(__file__).resolve().parents[4] / "config" / "model-library.json").read_text(encoding="utf-8")
+    )
+    by_id = {entry["id"]: entry for entry in catalog["models"]}
+    return [by_id[model_id] for model_id in model_ids]
+
+
+def _rtx_5090():
+    return GPUInfo(
+        name="NVIDIA GeForce RTX 5090",
+        memory_used_mb=1024,
+        memory_total_mb=32607,
+        memory_percent=3.0,
+        utilization_percent=0,
+        temperature_c=40,
+        gpu_backend="nvidia",
+    )
+
+
+def _tower_env(install_dir, *, llm_model, gguf, ctx):
+    (install_dir / ".env").write_text(
+        "ODS_MODE=local\n"
+        f"LLM_MODEL={llm_model}\n"
+        f"GGUF_FILE={gguf}\n"
+        f"CTX_SIZE={ctx}\n"
+        f"MAX_CONTEXT={ctx}\n"
+        "SYSTEM_RAM_GB=61\n"
+        # Installs before the floor was part of selection recorded the
+        # pre-raise context here (tower1/tower3, build 67cb2ac0).
+        "MODEL_RECOMMENDED_MODEL=qwen3.5-27b\n"
+        "MODEL_RECOMMENDED_GGUF=Qwen3.5-27B-Q4_K_M.gguf\n"
+        "MODEL_RECOMMENDED_CONTEXT=32768\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(("target", "loaded_llm", "loaded_gguf"), [
+    # tower3: restoring the installer's pick replayed MODEL_RECOMMENDED_CONTEXT.
+    ("qwen3.5-27b-q4", "qwen3.6-27b", "Qwen3.6-27B-UD-Q4_K_XL.gguf"),
+    # tower1: a switch to the candidate served 32768 and Hermes returned 502.
+    ("qwen3.6-27b-ud-q4-k-xl", "qwen3.5-27b", "Qwen3.5-27B-Q4_K_M.gguf"),
+])
+def test_switch_on_rtx_5090_serves_the_hermes_floor(
+    test_client, monkeypatch, tmp_path, target, loaded_llm, loaded_gguf,
+):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    entries = _repo_catalog_entries("qwen3.5-27b-q4", "qwen3.6-27b-ud-q4-k-xl")
+    _write_model_library(install_dir, entries)
+    for entry in entries:
+        (data_dir / "models" / entry["gguf_file"]).write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model=loaded_llm, gguf=loaded_gguf, ctx=32768)
+    monkeypatch.setattr(models_router, "get_gpu_info", _rtx_5090)
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: loaded_gguf)
+    calls = []
+    monkeypatch.setattr(
+        models_router, "_call_agent_model",
+        lambda path, body, timeout=30, **_kwargs: calls.append(body) or {"status": "activated"},
+    )
+
+    resp = test_client.post(f"/api/models/{target}/load", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert calls == [{"model_id": target, "context_length": 65536}]
+
+
+def test_switch_context_matches_the_listed_context(test_client, monkeypatch, tmp_path):
+    """The context the model list shows is the context a switch serves."""
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    entries = _repo_catalog_entries("qwen3.5-27b-q4", "qwen3.6-27b-ud-q4-k-xl", "qwen3.6-35b-a3b-ud-q4")
+    _write_model_library(install_dir, entries)
+    for entry in entries:
+        (data_dir / "models" / entry["gguf_file"]).write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model="qwen3.5-27b", gguf="Qwen3.5-27B-Q4_K_M.gguf", ctx=32768)
+    monkeypatch.setattr(models_router, "get_gpu_info", _rtx_5090)
+    monkeypatch.setattr(models_router, "get_loaded_model", AsyncMock(return_value=None))
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 0}))
+    monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=None))
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: None)
+    listed = {
+        entry["id"]: entry["contextLength"]
+        for entry in test_client.get("/api/models", headers=test_client.auth_headers).json()["models"]
+    }
+    calls = []
+    monkeypatch.setattr(
+        models_router, "_call_agent_model",
+        lambda path, body, timeout=30, **_kwargs: calls.append(body) or {"status": "activated"},
+    )
+    for entry in entries:
+        test_client.post(f"/api/models/{entry['id']}/load", headers=test_client.auth_headers)
+
+    served = {body["model_id"]: body["context_length"] for body in calls}
+    assert served == {entry["id"]: listed[entry["id"]] for entry in entries}
+    assert served["qwen3.5-27b-q4"] == 65536
+    assert served["qwen3.6-35b-a3b-ud-q4"] == 131072
+
+
+def test_reload_below_the_floor_repairs_the_running_model(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, _repo_catalog_entries("qwen3.5-27b-q4"))
+    (data_dir / "models" / "Qwen3.5-27B-Q4_K_M.gguf").write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model="qwen3.5-27b", gguf="Qwen3.5-27B-Q4_K_M.gguf", ctx=32768)
+    monkeypatch.setattr(models_router, "get_gpu_info", _rtx_5090)
+    monkeypatch.setattr(models_router, "_already_active_model", lambda *_args: (True, "Qwen3.5-27B-Q4_K_M.gguf"))
+    monkeypatch.setattr(models_router, "_verified_activation_context", lambda _loaded: 32768)
+    calls = []
+    monkeypatch.setattr(
+        models_router, "_call_agent_model",
+        lambda path, body, timeout=30, **_kwargs: calls.append(body) or {"status": "activated"},
+    )
+
+    resp = test_client.post("/api/models/qwen3.5-27b-q4/load", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert calls == [{"model_id": "qwen3.5-27b-q4", "context_length": 65536}]
+
+
+def test_reload_at_the_floor_stays_idempotent(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, _repo_catalog_entries("qwen3.5-27b-q4"))
+    (data_dir / "models" / "Qwen3.5-27B-Q4_K_M.gguf").write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model="qwen3.5-27b", gguf="Qwen3.5-27B-Q4_K_M.gguf", ctx=65536)
+    monkeypatch.setattr(models_router, "get_gpu_info", _rtx_5090)
+    monkeypatch.setattr(models_router, "_already_active_model", lambda *_args: (True, "Qwen3.5-27B-Q4_K_M.gguf"))
+    monkeypatch.setattr(models_router, "_verified_activation_context", lambda _loaded: 65536)
+
+    def fail_agent_call(*_args, **_kwargs):
+        raise AssertionError("an already-active model at the floor must not restart")
+
+    monkeypatch.setattr(models_router, "_call_agent_model", fail_agent_call)
+
+    resp = test_client.post("/api/models/qwen3.5-27b-q4/load", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "already_active"
+
+
+def test_explicit_context_is_never_replanned(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, _repo_catalog_entries("qwen3.5-27b-q4"))
+    (data_dir / "models" / "Qwen3.5-27B-Q4_K_M.gguf").write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model="qwen3.5-9b", gguf="Qwen3.5-9B-Q4_K_M.gguf", ctx=65536)
+    monkeypatch.setattr(models_router, "get_gpu_info", _rtx_5090)
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: "Qwen3.5-9B-Q4_K_M.gguf")
+    calls = []
+    monkeypatch.setattr(
+        models_router, "_call_agent_model",
+        lambda path, body, timeout=30, **_kwargs: calls.append(body) or {"status": "activated"},
+    )
+
+    test_client.post(
+        "/api/models/qwen3.5-27b-q4/load",
+        headers=test_client.auth_headers,
+        json={"context_length": 32768},
+    )
+
+    assert calls == [{"model_id": "qwen3.5-27b-q4", "context_length": 32768}]
+
+
+def test_listed_talk_verdict_reflects_the_served_context(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    entries = _repo_catalog_entries("qwen3.5-27b-q4", "qwen3.6-27b-ud-q4-k-xl")
+    _write_model_library(install_dir, entries)
+    for entry in entries:
+        (data_dir / "models" / entry["gguf_file"]).write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model="qwen3.5-27b", gguf="Qwen3.5-27B-Q4_K_M.gguf", ctx=32768)
+    monkeypatch.setattr(models_router, "get_gpu_info", _rtx_5090)
+    monkeypatch.setattr(models_router, "get_loaded_model", AsyncMock(return_value="Qwen3.5-27B-Q4_K_M.gguf"))
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 0}))
+    monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=32768))
+
+    models = {
+        entry["id"]: entry
+        for entry in test_client.get("/api/models", headers=test_client.auth_headers).json()["models"]
+    }
+
+    running = models["qwen3.5-27b-q4"]
+    assert running["status"] == "loaded"
+    assert running["contextLength"] == 32768
+    talk = running["appCompatibility"]["hermesTalk"]
+    assert talk["status"] == "unsupported"
+    assert talk["code"] == "context_below_hermes_minimum"
+    assert "64K" in talk["userMessage"] and "32K" in talk["userMessage"]
+    # A model planned at the floor on this card is not blocked by context.
+    candidate = models["qwen3.6-27b-ud-q4-k-xl"]
+    assert candidate["contextLength"] == 65536
+    assert candidate["appCompatibility"]["hermesTalk"].get("code") != "context_below_hermes_minimum"

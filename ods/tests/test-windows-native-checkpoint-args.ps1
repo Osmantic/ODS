@@ -61,14 +61,47 @@ try {
         Assert-Args (Get-ODSNativeCheckpointIntervalArgs -Executable $b9014 -Value $bad) @() $true "invalid '$bad'"
     }
 
-    # Every Windows launcher that passes the flag goes through the probe.
+    # LLAMA_REASONING: --reasoning where the binary has it (b9014 defaults it
+    # to auto), else the caller's --reasoning-format mapping (b8248).
+    # (No "|" in the fake help: cmd.exe would treat it as a pipe.)
+    $withReasoning = New-FakeLlamaServer -Name "reasoning" -HelpLines @(
+        "-rea, --reasoning [on,off,auto]   use reasoning/thinking in the chat",
+        "--reasoning-format FORMAT",
+        "--reasoning-budget N")
+    $b8248Reasoning = New-FakeLlamaServer -Name "b8248-reasoning" -HelpLines @(
+        "--reasoning-format FORMAT",
+        "--reasoning-budget N   -1 for unrestricted thinking budget, or 0 to disable thinking")
+    $formatOnly = New-FakeLlamaServer -Name "format-only" -HelpLines @(
+        "--reasoning-format FORMAT")
+    $removed = New-FakeLlamaServer -Name "removed" -HelpLines @(
+        "--reasoning   this flag has been removed")
+    function Assert-Reasoning {
+        param([string[]]$Actual, [string[]]$Expected, [string]$Case)
+        if ((@($Actual) -join " ") -ne ($Expected -join " ")) {
+            throw "${Case}: expected [$($Expected -join ' ')], got [$(@($Actual) -join ' ')]"
+        }
+    }
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "off" -FallbackFormat "none") @("--reasoning", "off") "b9014 off"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "" -FallbackFormat "none") @("--reasoning", "off") "b9014 default"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "auto" -FallbackFormat "auto") @("--reasoning", "auto") "b9014 auto"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "deepseek" -FallbackFormat "deepseek") @("--reasoning-format", "deepseek") "format name"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "OFF" -FallbackFormat "OFF") @("--reasoning-format", "OFF") "case-sensitive mode"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $b8248Reasoning -Mode "off" -FallbackFormat "none") @("--reasoning-format", "none", "--reasoning-budget", "0") "b8248 off"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $b8248Reasoning -Mode "" -FallbackFormat "none") @("--reasoning-format", "none", "--reasoning-budget", "0") "b8248 default"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $b8248Reasoning -Mode "on" -FallbackFormat "deepseek") @("--reasoning-format", "deepseek") "b8248 on"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $formatOnly -Mode "off" -FallbackFormat "none") @("--reasoning-format", "none") "no budget flag"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $removed -Mode "off" -FallbackFormat "none") @("--reasoning-format", "none") "removed flag"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $failing -Mode "off" -FallbackFormat "none") @("--reasoning-format", "none") "help exits non-zero"
+
+    # Every Windows launcher goes through the probes.
     foreach ($relative in @("installers\windows\install-windows.ps1", "installers\windows\ods.ps1")) {
         $text = Get-Content -LiteralPath (Join-Path $root $relative) -Raw
         if ($text -notmatch 'native-llama-args\.ps1') { throw "$relative does not load native-llama-args.ps1" }
         if ($text -notmatch 'Get-ODSNativeCheckpointIntervalArgs') { throw "$relative does not qualify the checkpoint interval" }
         if ($text -match '"--checkpoint-every-n-tokens",\s*\$') { throw "$relative passes --checkpoint-every-n-tokens without the probe" }
+        if ($text -notmatch 'Get-ODSNativeReasoningArgs') { throw "$relative does not qualify the reasoning flags" }
     }
-    Write-Output "Windows native checkpoint interval contract OK"
+    Write-Output "Windows native checkpoint interval and reasoning contract OK"
 } finally {
     Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

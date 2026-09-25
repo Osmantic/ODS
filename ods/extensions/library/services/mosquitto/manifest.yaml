@@ -28,6 +28,8 @@ service:
     secret: true
     description: Exactly 64 hexadecimal characters for the local ods MQTT account;
       retain this credential for configured clients.
+    format: hex64
+    generate: hex64
   external_link: false
 tags:
 - messaging

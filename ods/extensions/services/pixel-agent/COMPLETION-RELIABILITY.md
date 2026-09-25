@@ -76,6 +76,92 @@ tool limit stops the revision pass, the answer from its tool-free answer turn
 (below) is newer and supersedes this armed delivery.
 `tests/partial_citation_delivery.test.mjs` replays the tower1 fleet case.
 
+## Perplexica research
+
+`pixel_ods_research` sends a research brief to the owner's installed
+Perplexica (Vane) service. In speed and balanced mode Perplexica answers from
+search-result snippets without reading any page. On the fleet journeys only 1
+of the 25 links in its answers came from its own returned sources, and 18 of
+the 25 were dead (`findings/perplexica-fast-search.md`). The tool is therefore
+orientation only:
+
+- Its factory offers it only while Perplexica answers `GET /api/config` with a
+  chat model and an embedding model selected. The check is cached for 60
+  seconds, refreshed in the background when the factory runs, and never delays
+  a run. A refused connection during a call marks Perplexica absent. The
+  configuration body also holds provider API keys, so only the four model
+  identities are kept from it. The tool is deferred behind Tool Search:
+  offering or hiding it changes the Tool Search catalog, not the system prompt
+  or the directly visible tools.
+- OpenClaw 2026.6.33 caches a plugin's tool descriptors per agent configuration
+  once its factories have returned every tool in the manifest, and then builds
+  later tool lists from that cache without calling the factories. So a host
+  without Perplexica never lists the tool, but once Perplexica has been
+  available, the tool stays listed until the gateway restarts or its
+  configuration changes. A call to a Perplexica that has since stopped returns
+  an unavailable result; after that, calls fail as a missing tool runtime until
+  a later check finds Perplexica configured again.
+- The model sees Perplexica's answer, and each returned source with its title
+  and a capped search snippet (300 characters for cited sources, 160 for the
+  first eight uncited ones, 3,500 in total, at most 20 sources, cited sources
+  kept first).
+- The result is sized for Tool Search, the tool's only path. There the model
+  reads one text block, `JSON.stringify({tool, result}, null, 2)`: the catalog
+  entry with the full description, then the result with `details`, all escaped
+  a second time. OpenClaw keeps a block within the agent's
+  `contextLimits.toolResultMaxChars` unchanged and cuts the middle of a longer
+  one, which drops sources and the closing evidence marker. So that whole
+  block fits the cap minus 200 characters, at most 12,000 (the 4,000-character
+  installer floor when the cap is unknown). For the test's large answer (40
+  lines citing 25 sources with snippets), a 4,000 cap keeps about 1,400
+  characters of answer and no sources, 8,192 the minimum answer and 13
+  sources, and 12,000 the minimum answer, 20 sources and 5 snippets; the
+  header says what was left out. `details` carries only the URLs of up to five
+  cited sources, each at most 300 characters, and counts.
+- Every `http(s)` link in the answer that is not among the returned sources,
+  including private addresses, is replaced with
+  `[link not in Perplexica sources]` before the model sees it. Source matching
+  ignores http/https, a leading `www.` and one trailing slash. Links written
+  without a scheme are not checked, and the result says so.
+- Vane's `scrape_url` action opens any URL its model names, without address
+  validation, from the Perplexica container on the ODS network, and Vane
+  offers it in every mode. ODS disables it when the container starts
+  (`extensions/services/perplexica/docker-entrypoint.sh`); that, not the
+  brief, is what keeps a brief or a search result from making Perplexica open
+  an internal address.
+- The brief is at most 1,000 characters, and common address forms are removed
+  before it is sent: URLs with any scheme, `www.` names, IP literals
+  (including short, integer and hexadecimal IPv4 with a port or path),
+  `host:port`, `localhost`, local-only names such as `.internal`, dotted names
+  with a path, and lowercase single-label names with two or more path
+  segments. Full-width and ideographic forms are folded first. This is a
+  heuristic with known gaps (a single-label name with one path segment, a bare
+  short or integer IPv4), not a guarantee. A brief that was only addresses is
+  refused.
+- One call uses one search and one page-reading unit, and needs two units of the
+  total web allowance. A response may call it once; a repeat, like an unusable
+  brief, is refused before it runs and uses no allowance. The call does not
+  end an unread-search streak. The default wait is 120 seconds
+  (`PIXEL_ODS_RESEARCH_TIMEOUT_MS`).
+- Nothing it returns is a page read: its answer and sources never produce a
+  read receipt, so citing them after a source-read request still needs
+  `web_fetch` or `pixel_ods_web_extract`, or the host citation check. The
+  sources in `details` (up to five its answer cites) count only toward the
+  weaker "research returned sources" check, in the direct and Tool Search
+  forms alike.
+
+`tests/perplexica_research.test.mjs` replays the measured answers
+(`tests/fixtures/perplexica-answers.mjs`: 24 of 25 speed and balanced links and
+37 of 37 quality links are replaced), checks the Tool Search size from 4,000
+to 131,072 characters of cap and the brief filter.
+`runtime_tool_surface.integration.mjs` checks the size through the real
+`tool_call` at 4,000, 8,000 and 12,000. `tests/perplexica_availability.test.mjs`
+covers the probe and the not-installed case, and
+`tests/perplexica_research_budget.test.mjs` the allowance and the read rule.
+`ods/tests/test-perplexica-entrypoint.py` runs the `scrape_url` patch on the
+action objects from the current and the previous pinned image and executes
+them.
+
 ## Owner-requested text
 
 `requested-literals.mjs` checks each published snapshot for exact text the
@@ -109,6 +195,34 @@ whole words and names no other listed item, and another listed item is exactly
 a heading of that same level. The workspace guide also tells the model to use
 owner-named items verbatim as headings or labels.
 `tests/requested_heading_revision.test.mjs` replays the tower2 case.
+
+A listed card name can also be on the page but in no heading at all (tower2
+round 082: "Dawn jazz" was only a badge, and its card's `h2.event-title` read
+"Sunrise Sessions"). This is reported the same way, with its own fixed text,
+only when the owner listed cards or headings ("three event cards"; words after
+the noun, as in "tabs with titles", do not count), no hN heading equals or
+contains the name, and a group of at least two headings with the same tag and
+class list includes another name from the same list exactly. Evidence from
+another list (section headings beside dish cards) never counts, and the
+round 073 rule above also takes its same-level evidence from the same list
+only. Comments, scripts and styles are never heading text; a script that may
+render the name still keeps the check silent.
+`tests/requested_item_heading_presence.test.mjs` replays that page.
+
+The same path covers files the owner lists for a named directory that is then
+published (tower2 round 082 coding-v1: "create a public directory with
+index.html, test-results.txt ..." was published without `test-results.txt`,
+which the model had written to the project root). Each list part must be one
+file name after plain lead words (such as "raw byte-for-byte source copies"),
+optionally followed by a description naming no other file. The whole list is
+skipped when any part is a nested list, a path, "a copy of x.py", a file type
+the host preview cannot publish (its `ALLOWED_SUFFIXES`, mirrored as
+`PREVIEW_FILE_SUFFIXES` and kept equal by a contract test), optional or
+conditional ("optional", "if you have time", "you can"), removed, or content
+or a runtime result ("the sales.csv data as a chart", "export.csv the page
+generates"). The names bind to the published directory's name and are checked
+against the receipt's complete published path list.
+`tests/requested_published_files.test.mjs` replays that case.
 
 ## Saved project delivery
 

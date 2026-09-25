@@ -26,6 +26,7 @@ service:
     required: true
     secret: true
     description: A long random API key for the Typesense server.
+    generate: token
   external_link: false
 tags:
 - data

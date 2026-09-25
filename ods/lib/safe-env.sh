@@ -176,6 +176,8 @@ load_model_selector_env_from_output() {
         LLAMA_ARG_N_CPU_MOE \
         LLAMA_ARG_NO_CACHE_PROMPT \
         LLAMA_ARG_CHECKPOINT_EVERY_NT \
+        LLAMA_ARG_CTX_CHECKPOINTS \
+        LLAMA_ARG_CACHE_RAM \
         LLAMA_ARG_SPEC_TYPE \
         LLAMA_ARG_SPEC_DRAFT_N_MAX \
         LLAMA_ARG_SPEC_DRAFT_TYPE_K \

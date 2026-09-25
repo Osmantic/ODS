@@ -14,6 +14,22 @@
       "vram_required_gb": 3,
       "context_length": 65536,
       "max_context_length": 262144,
+      "block_count": 24,
+      "attention_layer_count": 6,
+      "attention_head_count_kv": 2,
+      "attention_key_length": 256,
+      "attention_value_length": 256,
+      "recurrent_state_bytes": 20201472,
+      "architecture_source": {
+        "repo": "Qwen/Qwen3.5-2B",
+        "revision": "15852e8c16360a2fea060d615a32b45270f8a8fc",
+        "file": "config.json"
+      },
+      "selection": {
+        "discrete": 20,
+        "unified": 20,
+        "cpu": 20
+      },
       "quantization": "Q4_K_M",
       "specialty": "Low-VRAM Chat",
       "description": "Qwen's compact hybrid model with a native 256K context limit, tool-use support, broad multilingual coverage, and a 64K operating target. Pixel supports it in adaptive mode; historical cross-app probes show lower reliability on four of six fleet hosts, so complex work may need more guidance or a stronger model.",
@@ -58,7 +74,25 @@
           "productSha": "b5da3792c281e0ba8f679e33876ee3de902a7dd6",
           "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129"
         }
-      }
+      },
+      "runtime_profiles": [
+        {
+          "id": "cpu-64k-q8-kv",
+          "label": "CPU 64K context with Q8 KV cache and capped checkpoints",
+          "backend": "cpu",
+          "context_length": 65536,
+          "fit_label": "64K CPU Q8 KV profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+            "LLAMA_ARG_CTX_CHECKPOINTS": "4",
+            "LLAMA_ARG_CACHE_RAM": "512",
+            "LLAMA_SERVER_MEMORY_LIMIT": "4G"
+          }
+        }
+      ]
     },
     {
       "id": "jamba-reasoning-3b-q4",
@@ -137,6 +171,8 @@
       "embedding_length": 3072,
       "attention_head_count": 24,
       "attention_head_count_kv": 8,
+      "install_recommendation": false,
+      "install_recommendation_reason": "Needs 128 KiB of KV cache per token, so only 8-16K context fits on 4-8 GB, below the 16K Pixel and 64K Hermes floors. Kept for manual activation (the Apple 8 GB profile still applies).",
       "quantization": "Q4_K_M",
       "specialty": "Balanced",
       "description": "Microsoft's compact model with 128K context. Punches above its weight on reasoning and code.",
@@ -206,6 +242,7 @@
           "system_ram_max_gb": 10,
           "context_length": 16384,
           "estimated_required_gb": 4.35,
+          "estimate_source": "fleet-validated",
           "fit_label": "16K 8GB Q4 KV profile",
           "env": {
             "LLAMA_PARALLEL": "1",
@@ -299,10 +336,10 @@
       "gguf_sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
       "size_mb": 1120,
       "vram_required_gb": 3,
-      "context_length": 128000,
+      "context_length": 32768,
       "quantization": "Q4_K_M",
       "specialty": "Fast",
-      "description": "Qwen's compact 1.5B instruct model. Good as a very low-VRAM long-context smoke and chat model.",
+      "description": "Qwen's compact 1.5B instruct model with a 32K native context. Good as a very low-VRAM smoke and chat model.",
       "tokens_per_sec_estimate": 160,
       "llm_model_name": "qwen2.5-1.5b-instruct",
       "llama_server_image": null,
@@ -329,10 +366,10 @@
       "gguf_sha256": "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
       "size_mb": 491,
       "vram_required_gb": 2,
-      "context_length": 128000,
+      "context_length": 32768,
       "quantization": "Q4_K_M",
       "specialty": "Fast",
-      "description": "Qwen's smallest instruct GGUF. Useful as a fast, low-risk long-context smoke model on very constrained GPUs.",
+      "description": "Qwen's smallest instruct GGUF with a 32K native context. Useful as a fast, low-risk smoke model on very constrained GPUs.",
       "tokens_per_sec_estimate": 190,
       "llm_model_name": "qwen2.5-0.5b-instruct",
       "llama_server_image": null,
@@ -672,7 +709,24 @@
       "size_bytes": 2837072864,
       "size_mb": 2838,
       "vram_required_gb": 5,
-      "context_length": 262144,
+      "context_length": 65536,
+      "max_context_length": 262144,
+      "block_count": 42,
+      "attention_layer_count": 4,
+      "attention_head_count_kv": 8,
+      "attention_key_length": 128,
+      "attention_value_length": 128,
+      "recurrent_state_bytes": 85026816,
+      "architecture_source": {
+        "repo": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+        "revision": "dfaf35de3e30f1867dd8dbc38a7fc9fb52d3914f",
+        "file": "config.json"
+      },
+      "selection": {
+        "discrete": 45,
+        "unified": 50,
+        "cpu": 45
+      },
       "quantization": "Q4_K_M",
       "specialty": "Agentic Reasoning",
       "description": "NVIDIA's compact Nemotron 3 hybrid reasoning model with long-context and tool-use support. A diverse 5GB-class candidate for local agents, chat, and code.",
@@ -1003,8 +1057,25 @@
       "gguf_sha256": "33e7a72cf5e6e2cfc2f2847075acc013d68bba023e35310cef86b5cf8fdca761",
       "size_bytes": 5198911904,
       "size_mb": 5199,
-      "vram_required_gb": 7,
-      "context_length": 262144,
+      "vram_required_gb": 14,
+      "context_length": 65536,
+      "max_context_length": 262144,
+      "block_count": 34,
+      "attention_layer_count": 34,
+      "attention_head_count_kv": 8,
+      "attention_key_length": 128,
+      "attention_value_length": 128,
+      "recurrent_state_bytes": 0,
+      "architecture_source": {
+        "repo": "mistralai/Ministral-3-8B-Instruct-2512",
+        "revision": "5b26027e7b19eeb4b7352e1fed3926375dd2cb4d",
+        "file": "config.json"
+      },
+      "selection": {
+        "discrete": 30,
+        "unified": 30,
+        "cpu": 30
+      },
       "quantization": "Q4_K_M",
       "specialty": "Agentic Multilingual",
       "description": "Mistral AI's edge-optimized 8B instruction model with 256K context, native function calling, JSON output, multilingual support, and optional vision through a separate projection artifact.",
@@ -1019,6 +1090,7 @@
           "system_ram_min_gb": 16,
           "context_length": 16384,
           "estimated_required_gb": 7.8,
+          "estimate_source": "fleet-validated",
           "fit_label": "16K CPU agent profile",
           "env": {
             "LLAMA_PARALLEL": "1",
@@ -1039,6 +1111,7 @@
           "system_ram_min_gb": 31,
           "context_length": 65536,
           "estimated_required_gb": 7.4,
+          "estimate_source": "fleet-validated",
           "fit_label": "64K 8GB Q4 KV profile",
           "env": {
             "LLAMA_PARALLEL": "1",
@@ -1058,6 +1131,7 @@
           "system_ram_min_gb": 15,
           "context_length": 32768,
           "estimated_required_gb": 6.8,
+          "estimate_source": "fleet-validated",
           "fit_label": "32K 8GB Q8 KV constrained-runtime profile",
           "env": {
             "LLAMA_PARALLEL": "1",
@@ -1370,6 +1444,7 @@
           "system_ram_min_gb": 31,
           "context_length": 65536,
           "estimated_required_gb": 7.2,
+          "estimate_source": "fleet-validated",
           "fit_label": "64K 8GB Q4 KV profile",
           "env": {
             "LLAMA_PARALLEL": "1",
@@ -1734,7 +1809,24 @@
       "size_bytes": 2740937888,
       "size_mb": 2741,
       "vram_required_gb": 5,
-      "context_length": 262144,
+      "context_length": 65536,
+      "max_context_length": 262144,
+      "block_count": 32,
+      "attention_layer_count": 8,
+      "attention_head_count_kv": 4,
+      "attention_key_length": 256,
+      "attention_value_length": 256,
+      "recurrent_state_bytes": 52690944,
+      "architecture_source": {
+        "repo": "Qwen/Qwen3.5-4B",
+        "revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+        "file": "config.json"
+      },
+      "selection": {
+        "discrete": 50,
+        "unified": 40,
+        "cpu": 50
+      },
       "quantization": "Q4_K_M",
       "specialty": "Balanced",
       "description": "Unsloth's GGUF quant of Qwen3.5 4B with native 262K context metadata. A low-VRAM long-context release candidate for app and Talk validation.",
@@ -1808,15 +1900,54 @@
           "memory_type": "discrete",
           "vram_min_gb": 7.5,
           "vram_max_gb": 8.5,
-          "system_ram_min_gb": 31,
+          "system_ram_min_gb": 8,
           "context_length": 65536,
           "estimated_required_gb": 7.2,
+          "estimate_source": "fleet-validated",
           "fit_label": "64K 8GB Q4 KV profile",
           "env": {
             "LLAMA_PARALLEL": "1",
             "LLAMA_ARG_FLASH_ATTN": "on",
             "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
-            "LLAMA_ARG_CACHE_TYPE_V": "q4_0"
+            "LLAMA_ARG_CACHE_TYPE_V": "q4_0",
+            "LLAMA_ARG_CTX_CHECKPOINTS": "8",
+            "LLAMA_ARG_CACHE_RAM": "2048"
+          }
+        },
+        {
+          "id": "cpu-64k-q8-kv",
+          "label": "CPU 64K context with Q8 KV cache and capped checkpoints",
+          "backend": "cpu",
+          "system_ram_min_gb": 12,
+          "system_ram_max_gb": 22,
+          "context_length": 65536,
+          "fit_label": "64K CPU Q8 KV profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+            "LLAMA_ARG_CTX_CHECKPOINTS": "4",
+            "LLAMA_ARG_CACHE_RAM": "1024",
+            "LLAMA_SERVER_MEMORY_LIMIT": "6G"
+          }
+        },
+        {
+          "id": "nvidia-6gb-64k-q8-kv",
+          "label": "NVIDIA 4.5-7.5 GB 64K context with Q8 KV cache",
+          "backend": "nvidia",
+          "host_arch": ["amd64"],
+          "memory_type": "discrete",
+          "vram_min_gb": 4.5,
+          "vram_max_gb": 7.49,
+          "system_ram_min_gb": 8,
+          "context_length": 65536,
+          "fit_label": "64K 6GB Q8 KV profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0"
           }
         }
       ]
@@ -1831,7 +1962,30 @@
       "size_bytes": 3106738272,
       "size_mb": 2963,
       "vram_required_gb": 5,
-      "context_length": 16384,
+      "context_length": 65536,
+      "max_context_length": 131072,
+      "block_count": 35,
+      "attention_layer_count": 3,
+      "attention_head_count_kv": 1,
+      "attention_key_length": 512,
+      "attention_value_length": 512,
+      "sliding_window": 512,
+      "sliding_window_layer_count": 12,
+      "sliding_window_head_count_kv": 1,
+      "sliding_window_key_length": 256,
+      "sliding_window_value_length": 256,
+      "recurrent_state_bytes": 0,
+      "architecture_source": {
+        "repo": "google/gemma-4-E2B-it",
+        "revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
+        "file": "config.json",
+        "note": "20 of 35 layers reuse earlier layers' KV (num_kv_shared_layers), so 15 layers hold a cache. Sliding-window layers hold only the window (llama.cpp b9014 caches n_swa + n_ubatch cells for them), so KV grows only on the full-attention layers."
+      },
+      "selection": {
+        "discrete": 40,
+        "unified": 40,
+        "cpu": 40
+      },
       "quantization": "Q4_K_M",
       "specialty": "Fast",
       "description": "Google's efficient small model. Good for quick tasks on budget hardware.",
@@ -1846,9 +2000,23 @@
       "gguf_file": "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
       "gguf_url": "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/097680e4eed7a83b3df6b0bb5e5134099cadf1b0/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
       "gguf_sha256": "78272d8d32084548bd450394a560eb2d70de8232ab96a725769b1f9171235c1c",
+      "size_bytes": 4683073248,
       "size_mb": 4680,
-      "vram_required_gb": 7,
-      "context_length": 32768,
+      "vram_required_gb": 9,
+      "context_length": 65536,
+      "max_context_length": 131072,
+      "block_count": 28,
+      "attention_head_count_kv": 4,
+      "attention_key_length": 128,
+      "attention_value_length": 128,
+      "recurrent_state_bytes": 0,
+      "architecture_source": {
+        "repo": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+        "revision": "916b56a44061fd5cd7d6a8fb632557ed4f724f60",
+        "file": "config.json"
+      },
+      "install_recommendation": false,
+      "install_recommendation_reason": "No tool training; it only won as the RAM-gate fallback on 8 GB cards. Kept for manual activation.",
       "quantization": "Q4_K_M",
       "specialty": "Reasoning",
       "description": "DeepSeek R1 distilled into Qwen 7B. Chain-of-thought reasoning on a budget GPU.",
@@ -1866,7 +2034,30 @@
       "size_bytes": 4977171584,
       "size_mb": 4747,
       "vram_required_gb": 8,
-      "context_length": 32768,
+      "context_length": 65536,
+      "max_context_length": 131072,
+      "block_count": 42,
+      "attention_layer_count": 4,
+      "attention_head_count_kv": 2,
+      "attention_key_length": 512,
+      "attention_value_length": 512,
+      "sliding_window": 512,
+      "sliding_window_layer_count": 20,
+      "sliding_window_head_count_kv": 2,
+      "sliding_window_key_length": 256,
+      "sliding_window_value_length": 256,
+      "recurrent_state_bytes": 0,
+      "architecture_source": {
+        "repo": "google/gemma-4-E4B-it",
+        "revision": "ee0ef6023621cff504d758262d4e04895a5af4a2",
+        "file": "config.json",
+        "note": "18 of 42 layers reuse earlier layers' KV (num_kv_shared_layers), so 24 layers hold a cache. Sliding-window layers hold only the window (llama.cpp b9014 caches n_swa + n_ubatch cells for them), so KV grows only on the full-attention layers."
+      },
+      "selection": {
+        "discrete": 50,
+        "unified": 50,
+        "cpu": 50
+      },
       "quantization": "Q4_K_M",
       "specialty": "General",
       "description": "Google's mid-range model with strong multilingual and reasoning capabilities.",
@@ -1882,9 +2073,27 @@
       "llama_chat_template": "qwen3.5-small-preserve-thinking.jinja",
       "gguf_url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf",
       "gguf_sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
+      "size_bytes": 5680522464,
       "size_mb": 5760,
       "vram_required_gb": 8,
       "context_length": 65536,
+      "max_context_length": 262144,
+      "block_count": 32,
+      "attention_layer_count": 8,
+      "attention_head_count_kv": 4,
+      "attention_key_length": 256,
+      "attention_value_length": 256,
+      "recurrent_state_bytes": 52690944,
+      "architecture_source": {
+        "repo": "Qwen/Qwen3.5-9B",
+        "revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+        "file": "config.json"
+      },
+      "selection": {
+        "discrete": 60,
+        "unified": 60,
+        "cpu": 60
+      },
       "quantization": "Q4_K_M",
       "specialty": "General",
       "description": "Excellent general-purpose model. Default for most systems. Great at coding, reasoning, and multilingual tasks.",
@@ -1928,6 +2137,7 @@
           "system_ram_min_gb": 15,
           "context_length": 65536,
           "estimated_required_gb": 7.2,
+          "estimate_source": "fleet-validated",
           "fit_label": "64K 8GB Q8 KV interactive-agent profile",
           "env": {
             "LLAMA_PARALLEL": "1",
@@ -1948,6 +2158,7 @@
           "system_ram_min_gb": 15,
           "context_length": 32768,
           "estimated_required_gb": 6.8,
+          "estimate_source": "fleet-validated",
           "fit_label": "32K 8GB Q8 KV interactive-agent profile",
           "env": {
             "LLAMA_PARALLEL": "1",
@@ -1955,6 +2166,40 @@
             "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
             "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
             "LLAMA_SERVER_MEMORY_LIMIT": "12G"
+          }
+        },
+        {
+          "id": "cpu-64k-q8-kv",
+          "label": "CPU 64K context with Q8 KV cache and capped checkpoints",
+          "backend": "cpu",
+          "system_ram_min_gb": 23,
+          "context_length": 65536,
+          "fit_label": "64K CPU Q8 KV profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+            "LLAMA_ARG_CTX_CHECKPOINTS": "4",
+            "LLAMA_ARG_CACHE_RAM": "1024",
+            "LLAMA_SERVER_MEMORY_LIMIT": "9G"
+          }
+        },
+        {
+          "id": "amd-8gb-64k-q8-kv",
+          "label": "AMD 8GB 64K context with Q8 KV cache",
+          "backend": "amd",
+          "memory_type": "discrete",
+          "vram_min_gb": 7.5,
+          "vram_max_gb": 8.5,
+          "context_length": 65536,
+          "fit_label": "64K 8GB Q8 KV profile",
+          "notes": "Lemonade passes these llama.cpp cache settings to every model it serves, not only this one.",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0"
           }
         }
       ]
@@ -1966,9 +2211,32 @@
       "gguf_file": "phi-4-Q4_K_M.gguf",
       "gguf_url": "https://huggingface.co/bartowski/phi-4-GGUF/resolve/19cd65f97c2f1712a81c506611d3f9c94b16a1e1/phi-4-Q4_K_M.gguf",
       "gguf_sha256": "009aba717c09d4a35890c7d35eb59d54e1dba884c7c526e7197d9c13ab5911d9",
+      "size_bytes": 9053114816,
       "size_mb": 9050,
-      "vram_required_gb": 11,
+      "vram_required_gb": 13,
       "context_length": 16384,
+      "max_context_length": 16384,
+      "block_count": 40,
+      "attention_head_count_kv": 10,
+      "attention_key_length": 128,
+      "attention_value_length": 128,
+      "recurrent_state_bytes": 0,
+      "architecture_source": {
+        "repo": "microsoft/phi-4",
+        "revision": "2db69c1c3e91a05d2c64a3185acfbaf36f744e25",
+        "file": "config.json"
+      },
+      "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported",
+          "label": "Context too small for ODS Talk",
+          "reason": "config.json max_position_embeddings is 16,384, below Hermes's 65,536 minimum context.",
+          "userNote": "ODS Talk needs at least 64K of context; this model supports only 16K.",
+          "evidence": "https://huggingface.co/microsoft/phi-4/blob/2db69c1c3e91a05d2c64a3185acfbaf36f744e25/config.json"
+        }
+      },
+      "install_recommendation": false,
+      "install_recommendation_reason": "Native context is 16,384 and its chat template has no tool calling; at the 64K Hermes floor it needs about 21.4 GiB. Kept for manual activation.",
       "quantization": "Q4_K_M",
       "specialty": "General",
       "description": "Microsoft's MIT-licensed 14B model. Strong at STEM, coding, and structured reasoning.",
@@ -1983,9 +2251,23 @@
       "gguf_file": "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf",
       "gguf_url": "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/7b05b58b41f623e66fc74cd27b35475267b2f3e3/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf",
       "gguf_sha256": "67a7933cf2ad596a393c8e13b30bc4da2d50b283e250b78554aed18817eca31c",
+      "size_bytes": 8988109984,
       "size_mb": 8990,
-      "vram_required_gb": 12,
-      "context_length": 32768,
+      "vram_required_gb": 21,
+      "context_length": 65536,
+      "max_context_length": 131072,
+      "block_count": 48,
+      "attention_head_count_kv": 8,
+      "attention_key_length": 128,
+      "attention_value_length": 128,
+      "recurrent_state_bytes": 0,
+      "architecture_source": {
+        "repo": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+        "revision": "1df8507178afcc1bef68cd8c393f61a886323761",
+        "file": "config.json"
+      },
+      "install_recommendation": false,
+      "install_recommendation_reason": "January 2025 reasoning distill with no tool training; next in line on 12-16 GB once phi-4 is gone. Kept for manual activation.",
       "quantization": "Q4_K_M",
       "specialty": "Reasoning",
       "description": "DeepSeek R1 distilled into Qwen 14B. Strong chain-of-thought reasoning for mid-range GPUs.",
@@ -2003,8 +2285,19 @@
       "size_bytes": 14252845984,
       "size_mb": 14253,
       "vram_required_gb": 18,
-      "context_length": 32768,
+      "context_length": 65536,
       "max_context_length": 262144,
+      "block_count": 64,
+      "attention_layer_count": 16,
+      "attention_head_count_kv": 4,
+      "attention_key_length": 256,
+      "attention_value_length": 256,
+      "recurrent_state_bytes": 156893184,
+      "architecture_source": {
+        "repo": "Qwen/Qwen3.8-27B",
+        "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+        "file": "config.json"
+      },
       "quantization": "UD-IQ4_XS",
       "specialty": "Reasoning and coding",
       "description": "Dense 27B reasoning model with embedded MTP. Smaller GPUs can use partial offload and a reduced context profile. MTP needs a compatible llama.cpp runtime and measured memory/throughput validation; it is not enabled automatically.",
@@ -2037,15 +2330,52 @@
       "llama_chat_template": "qwen3.5-preserve-thinking.jinja",
       "gguf_url": "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/3221f178a6b842d04f1fb42f1c413534adcc0a6a/Qwen3.5-27B-Q4_K_M.gguf",
       "gguf_sha256": "84b5f7f112156d63836a01a69dc3f11a6ba63b10a23b8ca7a7efaf52d5a2d806",
+      "size_bytes": 16740812704,
       "size_mb": 16700,
-      "vram_required_gb": 20,
-      "context_length": 32768,
+      "vram_required_gb": 21,
+      "context_length": 65536,
+      "max_context_length": 262144,
+      "block_count": 64,
+      "attention_layer_count": 16,
+      "attention_head_count_kv": 4,
+      "attention_key_length": 256,
+      "attention_value_length": 256,
+      "recurrent_state_bytes": 156893184,
+      "architecture_source": {
+        "repo": "Qwen/Qwen3.5-27B",
+        "revision": "fc05daec18b0a78c049392ed2e771dde82bdf654",
+        "file": "config.json"
+      },
+      "selection": {
+        "discrete": 80,
+        "unified": 0,
+        "cpu": 0
+      },
       "quantization": "Q4_K_M",
       "specialty": "Quality",
       "description": "Dense 27B powerhouse. Top-tier quality for 24GB GPUs. Excels at complex reasoning and coding.",
       "tokens_per_sec_estimate": 25,
       "llm_model_name": "qwen3.5-27b",
-      "llama_server_image": null
+      "llama_server_image": null,
+      "runtime_profiles": [
+        {
+          "id": "nvidia-20gb-64k-q8-kv",
+          "label": "NVIDIA 20GB 64K context with Q8 KV cache",
+          "backend": "nvidia",
+          "memory_type": "discrete",
+          "vram_min_gb": 19.5,
+          "vram_max_gb": 23.49,
+          "context_length": 65536,
+          "fit_label": "64K 20GB Q8 KV profile",
+          "notes": "Measured on an RTX 5090 at llama.cpp b9014: 18,742 MiB with Q8 KV at 64K, 2% slower decode than F16 KV.",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0"
+          }
+        }
+      ]
     },
     {
       "id": "qwen3.6-27b-ud-q4-k-xl",
@@ -2099,8 +2429,31 @@
       "gguf_sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f",
       "size_bytes": 16947541728,
       "size_mb": 16162,
-      "vram_required_gb": 22,
-      "context_length": 16384,
+      "vram_required_gb": 19,
+      "context_length": 65536,
+      "max_context_length": 262144,
+      "block_count": 30,
+      "attention_layer_count": 5,
+      "attention_head_count_kv": 2,
+      "attention_key_length": 512,
+      "attention_value_length": 512,
+      "sliding_window": 1024,
+      "sliding_window_layer_count": 25,
+      "sliding_window_head_count_kv": 8,
+      "sliding_window_key_length": 256,
+      "sliding_window_value_length": 256,
+      "recurrent_state_bytes": 0,
+      "architecture_source": {
+        "repo": "google/gemma-4-26B-A4B-it",
+        "revision": "4d7ae4984b7db7de8f8457170b3f1a419ee76d52",
+        "file": "config.json",
+        "note": "Sliding-window layers hold only the window (llama.cpp b9014 caches n_swa + n_ubatch cells for them), so KV grows only on the full-attention layers."
+      },
+      "selection": {
+        "discrete": 70,
+        "unified": 70,
+        "cpu": 70
+      },
       "quantization": "UD-Q4_K_M",
       "specialty": "Reasoning",
       "description": "Google's large MoE model. Strong at reasoning and analysis tasks.",
@@ -2117,10 +2470,22 @@
       "gguf_sha256": "9f1a24700a339b09c06009b729b5c809e0b64c213b8af5b711b3dbdfd0c5ba48",
       "size_mb": 18600,
       "vram_required_gb": 22,
-      "context_length": 131072,
+      "context_length": 40960,
+      "max_context_length": 40960,
+      "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported",
+          "label": "Context too small for ODS Talk",
+          "reason": "config.json max_position_embeddings is 40,960 with no rope_scaling, below Hermes's 65,536 minimum context.",
+          "userNote": "ODS Talk needs at least 64K of context; this model supports only 40K.",
+          "evidence": "https://huggingface.co/Qwen/Qwen3-30B-A3B/blob/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/config.json"
+        }
+      },
+      "install_recommendation": false,
+      "install_recommendation_reason": "Native context is 40,960 (Qwen/Qwen3-30B-A3B config.json) and it was served at 131,072 without YaRN; the tier-map fallback now uses Qwen3.6-35B-A3B. Kept for manual activation.",
       "quantization": "Q4_K_M",
       "specialty": "Quality",
-      "description": "High-quality MoE model with 131K context. Excellent for complex reasoning and long documents.",
+      "description": "High-quality MoE model with a 40K native context. Excellent for complex reasoning.",
       "tokens_per_sec_estimate": 55,
       "llm_model_name": "qwen3-30b-a3b",
       "llama_server_image": null
@@ -2136,6 +2501,11 @@
       "size_mb": 17475,
       "vram_required_gb": 24,
       "context_length": 131072,
+      "selection": {
+        "discrete": 80,
+        "unified": 80,
+        "cpu": 80
+      },
       "quantization": "Q4_K_M",
       "specialty": "Quality",
       "description": "Google's flagship dense model with 131K context. Top-tier quality for enterprise GPUs.",
@@ -2150,9 +2520,23 @@
       "gguf_file": "DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf",
       "gguf_url": "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-32B-GGUF/resolve/1938d05cc893a60f37be1dc16e7465038f4fca63/DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf",
       "gguf_sha256": "ca171ca03554ee20cf67ad6b540610ae7eabb95af00c0abd36bb73542e140fb5",
+      "size_bytes": 19851335584,
       "size_mb": 19900,
-      "vram_required_gb": 24,
-      "context_length": 32768,
+      "vram_required_gb": 36,
+      "context_length": 65536,
+      "max_context_length": 131072,
+      "block_count": 64,
+      "attention_head_count_kv": 8,
+      "attention_key_length": 128,
+      "attention_value_length": 128,
+      "recurrent_state_bytes": 0,
+      "architecture_source": {
+        "repo": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+        "revision": "711ad2ea6aa40cfca18895e8aca02ab92df1a746",
+        "file": "config.json"
+      },
+      "install_recommendation": false,
+      "install_recommendation_reason": "January 2025 reasoning distill with no tool training; next in line on 24 GB. Kept for manual activation.",
       "quantization": "Q4_K_M",
       "specialty": "Reasoning",
       "description": "DeepSeek R1 distilled into Qwen 32B. The best open-source reasoning model at this size.",
@@ -2171,6 +2555,8 @@
       "size_mb": 22000,
       "vram_required_gb": 24,
       "context_length": 131072,
+      "install_recommendation": false,
+      "install_recommendation_reason": "Retired for Qwen3.6-35B-A3B, which has the same layout and better same-table scores. Kept for manual activation.",
       "quantization": "Q4_K_M",
       "specialty": "Quality",
       "description": "Successor to Qwen3 30B-A3B. MoE with 131K context \u2014 top scores on coding, math, and reasoning benchmarks.",
@@ -2185,9 +2571,30 @@
       "gguf_file": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
       "gguf_url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
       "gguf_sha256": "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61",
+      "size_bytes": 22134528992,
       "size_mb": 21110,
       "vram_required_gb": 24,
       "context_length": 131072,
+      "max_context_length": 262144,
+      "block_count": 40,
+      "attention_layer_count": 10,
+      "attention_head_count_kv": 2,
+      "attention_key_length": 256,
+      "attention_value_length": 256,
+      "recurrent_state_bytes": 65863680,
+      "architecture_source": {
+        "repo": "Qwen/Qwen3.6-35B-A3B",
+        "revision": "995ad96eacd98c81ed38be0c5b274b04031597b0",
+        "file": "config.json"
+      },
+      "selection": {
+        "discrete": 90,
+        "unified": 90,
+        "cpu": 0,
+        "min_capacity_gib": {
+          "discrete": 36
+        }
+      },
       "quantization": "UD-Q4_K_M",
       "specialty": "Quality",
       "description": "Current A3B MoE successor for Spark-class unified-memory hosts. Verified on DGX Spark with llama.cpp b9014.",
@@ -2277,9 +2684,23 @@
       "gguf_file": "DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf",
       "gguf_url": "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Llama-70B-GGUF/resolve/732dd974083ea5877d7b6d788b36fe7c2e5eab36/DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf",
       "gguf_sha256": "952ff479c48ac3ece81fb6d9a5a03bfeac215e6caac780fbe91ff8cb0e05bcf3",
+      "size_bytes": 42520396448,
       "size_mb": 42500,
-      "vram_required_gb": 48,
-      "context_length": 32768,
+      "vram_required_gb": 61,
+      "context_length": 65536,
+      "max_context_length": 131072,
+      "block_count": 80,
+      "attention_head_count_kv": 8,
+      "attention_key_length": 128,
+      "attention_value_length": 128,
+      "recurrent_state_bytes": 0,
+      "architecture_source": {
+        "repo": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+        "revision": "b1c0b44b4369b597ad119a196caf79a9c40e141e",
+        "file": "config.json"
+      },
+      "install_recommendation": false,
+      "install_recommendation_reason": "Needs about 50.5 GiB at 32K (10 GiB of KV) and 60.5 GiB at 64K, more than the 48-62 GB hosts it was picked for; no tool training. Kept for manual activation.",
       "quantization": "Q4_K_M",
       "specialty": "Reasoning",
       "description": "The largest DeepSeek R1 distill. State-of-the-art reasoning for dual-GPU or 48GB+ setups.",
@@ -2294,9 +2715,27 @@
       "gguf_file": "qwen3-coder-next-Q4_K_M.gguf",
       "gguf_url": "https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/resolve/ce09c67b53bc8739eef83fe67b2f5d293c270632/Qwen3-Coder-Next-Q4_K_M.gguf",
       "gguf_sha256": "9e6032d2f3b50a60f17ce8bf5a1d85c71af9b53b89c7978020ae7c660f29b090",
+      "size_bytes": 48528320544,
       "size_mb": 48500,
       "vram_required_gb": 52,
       "context_length": 131072,
+      "max_context_length": 262144,
+      "block_count": 48,
+      "attention_layer_count": 12,
+      "attention_head_count_kv": 2,
+      "attention_key_length": 256,
+      "attention_value_length": 256,
+      "recurrent_state_bytes": 79036416,
+      "architecture_source": {
+        "repo": "Qwen/Qwen3-Coder-Next",
+        "revision": "a7fbcb5c0e12d62a448eaa0e260346bf5dcc0feb",
+        "file": "config.json"
+      },
+      "selection": {
+        "discrete": 100,
+        "unified": 100,
+        "cpu": 0
+      },
       "quantization": "Q4_K_M",
       "specialty": "Code",
       "description": "Flagship coding model for enterprise GPUs and Strix Halo. 131K context for large codebases.",

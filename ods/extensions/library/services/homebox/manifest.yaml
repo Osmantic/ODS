@@ -28,6 +28,8 @@ service:
     secret: true
     description: Stable random secret of at least 32 bytes for API-key hashing; retain
       with backups.
+    min_length: 32
+    generate: token
   - key: HOMEBOX_ALLOW_REGISTRATION
     required: false
     default: 'true'

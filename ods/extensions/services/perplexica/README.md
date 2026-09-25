@@ -23,7 +23,17 @@ digests and provenance in `config/perplexica-release.json`).
   release image ships the Playwright package but not the browser (upstream
   added it to `Dockerfile.slim` only after the release). Speed and Balanced
   modes use SearXNG results and do not scrape, so they are unaffected. Quality
-  mode and the `scrape_url` tool cannot read pages with this image.
+  mode cannot read pages with this image.
+- **`scrape_url` is disabled.** Vane's researcher offers its model a
+  `scrape_url` action in every mode, which opens any URL the model names, with
+  no address validation, from this container on the ODS network. Anyone who
+  can call the unauthenticated `/api/search`, or text in a search result,
+  could steer it to an internal service. The ODS entrypoint patches the bundle
+  at each start so the action is never offered and opens nothing if a model
+  names it anyway; the container does not start if the patch no longer
+  matches the bundle. Asking Perplexica to summarize a specific URL therefore
+  answers from search results instead. Quality mode still reads the pages of
+  its own search results when the image has a browser.
 - The app root moved from `/home/perplexica` to `/home/vane`. ODS mounts the
   existing `perplexica-data` and `perplexica-uploads` volumes at the new paths.
 - Speed and Balanced rank SearXNG results with the configured embedding model.
@@ -64,7 +74,7 @@ Environment variables (set in `.env`):
 |----------|---------|-------------|
 | `PERPLEXICA_PORT` | 3004 | External port for the Perplexica web UI |
 | `LLM_API_URL` | `http://llama-server:8080` | Base URL of the LLM backend (OpenAI-compatible) |
-| `PERPLEXICA_SCRAPE_URL_MAX_CHARS` | 30000 | Per-URL cap applied to Perplexica's internal `scrape_url` tool output before synthesis |
+| `PERPLEXICA_SCRAPE_URL_MAX_CHARS` | 30000 | Per-URL cap the startup patch still applies to Perplexica's internal `scrape_url` output; ODS disables that action, so the cap has no effect unless the disable is removed |
 | `PERPLEXICA_SEARXNG_API_URL` | empty | Explicit SearXNG-compatible endpoint; empty preserves the current setting (`http://searxng:8080` on fresh installs) |
 
 > **LLM API key:** Perplexica uses `LITELLM_KEY` automatically when LiteLLM auth is enabled, then falls back to `OPENAI_API_KEY`, then `no-key` for direct llama-server installs that do not require authentication. No changes needed for local use.
@@ -155,4 +165,7 @@ docker compose logs ods-perplexica
 **Slow or incomplete answers:**
 - Perplexica performance is limited by LLM inference speed. Ensure llama-server has GPU access.
 - Reduce the number of search results by adjusting SearXNG settings
-- ODS caps Perplexica's internal `scrape_url` output at startup so oversized web pages do not overflow local model context windows. If a specific page needs more context, raise `PERPLEXICA_SCRAPE_URL_MAX_CHARS` in `.env` and restart Perplexica.
+- ODS disables Perplexica's internal `scrape_url` action at startup (see Image pin), so a request that names a URL is answered from search results.
+
+**Perplexica exits at startup with "could not disable it":**
+- The image's bundle no longer matches the `scrape_url` patch, for example after an image override. Return to the pinned image in `compose.yaml`, or update `docker-entrypoint.sh` and `tests/test-perplexica-entrypoint.py` for the new bundle.

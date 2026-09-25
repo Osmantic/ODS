@@ -138,16 +138,126 @@ else
 fi
 export PIXEL_AGENT_MODE ENABLE_PIXEL_RUNTIME ENABLE_PIXEL
 
+# Hermes needs a 64K context. Raising the context grows the KV cache, so the
+# raise is re-checked against the same hardware envelope phase 02 selected
+# with (installers/lib/model-selector.sh):
+#   fits at 64K           -> raise;
+#   this run's own pick   -> re-select a model that fits at 64K;
+#   otherwise (a model the owner activated in the Dashboard, an older pick a
+#   rerun preserved, or nothing fits at 64K)
+#                         -> keep the largest context that fits and say that
+#                            ODS Talk stays unavailable until a smaller model
+#                            is chosen (the Dashboard shows the same reason).
+# A context above the model's native maximum never "fits" (llama.cpp caps the
+# slot there). Without the selector (no Python) the raise is applied
+# unverified, as before.
+#
+# "This run's own pick": phase 02 records its fresh recommendation in
+# INSTALLER_RECOMMENDED_*; a rerun may then keep an older active model
+# (scripts/preserve-active-model.py), which carries its old
+# MODEL_SELECTION_SOURCE=installer. Only the fresh pick may be replaced or
+# have its context recorded as the recommendation's.
+_ods_model_is_current_pick() {
+    [[ "${MODEL_SELECTION_SOURCE:-installer}" == "installer" ]] || return 1
+    [[ -z "${INSTALLER_RECOMMENDED_GGUF:-}" || "${GGUF_FILE:-}" == "$INSTALLER_RECOMMENDED_GGUF" ]] || return 1
+    [[ -z "${INSTALLER_RECOMMENDED_MODEL:-}" || "${LLM_MODEL:-}" == "$INSTALLER_RECOMMENDED_MODEL" ]] || return 1
+    return 0
+}
+HERMES_CONTEXT_BELOW_FLOOR=false
 if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
     HERMES_CONTEXT_SIZE="${HERMES_CONTEXT_SIZE:-65536}"
     if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
-        ai_warn "Hermes enabled: increasing llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (64K floor)."
-        if [[ -n "${MODEL_RECOMMENDATION_REASON:-}" ]]; then
-            MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON} Hermes requires at least 64K context, so runtime context was raised to ${HERMES_CONTEXT_SIZE}."
+        if ! declare -F ods_catalog_fit_check >/dev/null 2>&1 \
+            && [[ -f "$SCRIPT_DIR/installers/lib/model-selector.sh" ]]; then
+            # shellcheck source=/dev/null
+            . "$SCRIPT_DIR/installers/lib/model-selector.sh"
         fi
-        MAX_CONTEXT="$HERMES_CONTEXT_SIZE"
+        _hermes_floor_action="raise-unverified"
+        _hermes_python=""
+        if declare -F ods_catalog_fit_check >/dev/null 2>&1 \
+            && [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" ]] \
+            && [[ -f "$SCRIPT_DIR/scripts/select-model.py" && -f "$SCRIPT_DIR/config/model-library.json" ]]; then
+            _hermes_python="$(ods_model_selector_python)"
+        fi
+        if [[ -n "$_hermes_python" ]]; then
+            _hermes_fit_status=0
+            ods_catalog_fit_check "$_hermes_python" "${GGUF_FILE:-${LLM_MODEL:-}}" \
+                "$HERMES_CONTEXT_SIZE" "${MODEL_RUNTIME_PROFILE:-}" \
+                >>"${LOG_FILE:-/dev/null}" 2>&1 || _hermes_fit_status=$?
+            case "$_hermes_fit_status" in
+                0) _hermes_floor_action="raise" ;;
+                3)
+                    if _ods_model_is_current_pick; then
+                        _hermes_floor_action="reselect"
+                    else
+                        _hermes_floor_action="cap"
+                    fi
+                    ;;
+                # Not a catalog model (an import) or the selector failed.
+                *) _hermes_floor_action="raise-unverified" ;;
+            esac
+        fi
+        if [[ "$_hermes_floor_action" == "reselect" ]]; then
+            _hermes_env=""
+            _hermes_env="$(ods_run_catalog_selector "$_hermes_python" "${ODS_SELECTOR_MAX_SIZE_MB:-0}" \
+                --min-context "$HERMES_CONTEXT_SIZE" --require-min-context \
+                2>>"${LOG_FILE:-/dev/null}")" || _hermes_env=""
+            if [[ -n "$_hermes_env" ]] && declare -F load_model_selector_env_from_output >/dev/null 2>&1; then
+                _hermes_previous_model="${LLM_MODEL:-}"
+                _hermes_previous_context="${MAX_CONTEXT}"
+                # Drop the previous pick's runtime settings before loading the
+                # new contract (the loader omits unset optional values).
+                unset MODEL_RUNTIME_PROFILE MODEL_RUNTIME_PROFILE_LABEL MODEL_RUNTIME_PROFILE_SOURCE
+                unset LLAMA_SERVER_IMAGE LLAMA_SERVER_MEMORY_LIMIT
+                unset LLAMA_CPP_RELEASE_TAG_OVERRIDE LLAMA_CPP_SERVER_BINARY
+                unset LLAMA_ARG_SPEC_TYPE LLAMA_ARG_SPEC_DRAFT_N_MAX
+                unset LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
+                unset LLAMA_ARG_N_CPU_MOE LLAMA_ARG_NO_CACHE_PROMPT LLAMA_ARG_CHECKPOINT_EVERY_NT
+                unset LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_RAM
+                load_model_selector_env_from_output <<< "$_hermes_env"
+                ai_warn "Hermes needs 64K context: ${_hermes_previous_model} (at ${_hermes_previous_context}) cannot serve 64K here, so ${LLM_MODEL} was selected at ${MAX_CONTEXT}."
+                log "Hermes floor: re-selected ${LLM_MODEL} at ${MAX_CONTEXT} (was ${_hermes_previous_model} at ${_hermes_previous_context})"
+                MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON:-} Hermes requires at least 64K context; ${_hermes_previous_model} did not fit at 64K on this hardware."
+                INSTALLER_RECOMMENDED_MODEL="${LLM_MODEL:-}"
+                INSTALLER_RECOMMENDED_GGUF="${GGUF_FILE:-}"
+                unset _hermes_previous_model _hermes_previous_context
+            else
+                _hermes_floor_action="cap"
+            fi
+            unset _hermes_env
+        fi
+        case "$_hermes_floor_action" in
+            raise|raise-unverified)
+                ai_warn "Hermes enabled: increasing llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (64K floor)."
+                if [[ "$_hermes_floor_action" == "raise-unverified" ]]; then
+                    log "Hermes floor: raised ${LLM_MODEL:-model} to ${HERMES_CONTEXT_SIZE} (fit not verified: catalog selector unavailable)"
+                fi
+                if [[ -n "${MODEL_RECOMMENDATION_REASON:-}" ]]; then
+                    MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON} Hermes requires at least 64K context, so runtime context was raised to ${HERMES_CONTEXT_SIZE}."
+                fi
+                MAX_CONTEXT="$HERMES_CONTEXT_SIZE"
+                ;;
+            cap)
+                HERMES_CONTEXT_BELOW_FLOOR=true
+                ai_warn "Hermes needs at least 64K context, but ${LLM_MODEL:-this model} runs at ${MAX_CONTEXT} here (64K does not fit or exceeds its native context)."
+                ai_warn "ODS Talk stays unavailable (the Dashboard says why) until you choose a model that fits 64K in Models."
+                log "Hermes floor: kept ${LLM_MODEL:-model} at ${MAX_CONTEXT}; it cannot serve 64K here and it is not replaced (not this run's pick, or no installable model fits at 64K)"
+                MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON:-} Hermes requires 64K context, which does not fit here; ODS Talk is unavailable with this model."
+                ;;
+        esac
+        unset _hermes_floor_action _hermes_python _hermes_fit_status
     fi
 fi
+# The host agent replays MODEL_RECOMMENDED_CONTEXT whenever the installer's
+# pick is loaded again (a restore, a Dashboard switch back). Record the
+# context actually served, not the pre-raise selector value, but only when
+# the configured model is that recommendation: a preserved older model's
+# context says nothing about the recommended one.
+if _ods_model_is_current_pick && [[ "${MAX_CONTEXT:-}" =~ ^[0-9]+$ ]]; then
+    INSTALLER_RECOMMENDED_CONTEXT="$MAX_CONTEXT"
+fi
+unset -f _ods_model_is_current_pick
+export HERMES_CONTEXT_BELOW_FLOOR
 
 # Sync optional-extension compose state with the ENABLE_* flags — the
 # resolver uses the .disabled convention to exclude services from the compose

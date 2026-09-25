@@ -27,11 +27,16 @@ service:
     required: true
     secret: true
     description: 64-hex PostgreSQL password; preserve for existing database.
+    format: hex64
+    generate: hex64
   - key: LISTMONK_ADMIN_PASSWORD
     required: true
     secret: true
     description: Distinct 64-hex initial password for ods administrator; does not
       reset an existing account.
+    format: hex64
+    distinct_from: [LISTMONK_DB_PASSWORD]
+    generate: hex64
   ui_path: /
 tags:
 - email

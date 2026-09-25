@@ -27,6 +27,8 @@ service:
     required: true
     secret: true
     description: Stable 64-hex node RPC secret; preserve with the metadata backup.
+    format: hex64
+    generate: hex64
   external_link: false
 tags:
 - storage

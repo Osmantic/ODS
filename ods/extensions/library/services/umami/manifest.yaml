@@ -28,19 +28,27 @@ service:
     secret: true
     description: 'Initial admin password: 12 to 72 UTF-8 bytes. Replaces only the
       unchanged upstream default.'
+    min_length: 12
+    max_length: 72
+    generate: password
   - key: UMAMI_DATABASE_PASSWORD
     required: true
     secret: true
     description: Persistent password for the dedicated PostgreSQL database.
+    generate: password
   - key: UMAMI_APP_SECRET
     required: true
     secret: true
     description: Persistent random authentication secret of at least 32 characters.
+    min_length: 32
+    generate: token
   - key: UMAMI_TWO_FACTOR_KEY
     required: true
     secret: true
     description: Persistent 64-character hexadecimal encryption key for two-factor
       authentication.
+    format: hex64
+    generate: hex64
   ui_path: /
 tags:
 - analytics

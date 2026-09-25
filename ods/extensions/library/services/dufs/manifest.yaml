@@ -28,6 +28,10 @@ service:
     secret: true
     description: Password for ods, at least 12 bytes; exclude colon, at-sign, pipe,
       line breaks and crypt-hash prefix.
+    pattern: '^(?!\$6\$)[^:@|\r\n\x00]+$'
+    format_description: 'no colon, @, | or line break, and not starting with $6$'
+    min_length: 12
+    generate: password
   ui_path: /
 tags:
 - files

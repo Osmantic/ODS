@@ -28,6 +28,7 @@ service:
     secret: true
     description: Required web login password, converted in memory to upstream salted
       PBKDF2 format on startup.
+    generate: password
   - key: CHANGEDETECTION_BASE_URL
     required: false
     default: http://localhost:11039

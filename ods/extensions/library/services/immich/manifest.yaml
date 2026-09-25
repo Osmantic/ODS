@@ -22,6 +22,9 @@ service:
       required: true
       secret: true
       description: PostgreSQL password
+      pattern: '^[A-Za-z0-9]+$'
+      format_description: letters and digits only
+      generate: password
 
 features:
   - id: photo-backup

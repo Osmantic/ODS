@@ -234,12 +234,24 @@ def test_windows_launch_keeps_its_direct_flags(tmp_path, monkeypatch):
     monkeypatch.setattr(host._model_stores, 'lemonade_profile', lambda *_: None)
     monkeypatch.setattr(host, '_active_model_directory', lambda _: tmp_path / 'models')
     monkeypatch.setattr(host, '_disable_conflicting_macos_bridge', lambda *_: None)
-    monkeypatch.setattr(host.subprocess, 'run', lambda *_a, **_k: pytest.fail('macOS qualifier ran on Windows'))
+    probes = []
+
+    def run(args, **_k):
+        # Only the --help probe for --reasoning may run; never the macOS qualifier.
+        if list(args[1:]) != ['--help']:
+            pytest.fail('macOS qualifier ran on Windows')
+        probes.append(list(args))
+        return subprocess.CompletedProcess(args, 0, '--reasoning-format FORMAT\n', '')
+
+    monkeypatch.setattr(host.subprocess, 'run', run)
     launched = []
     class Process:
         pid = 99
     monkeypatch.setattr(host.subprocess, 'Popen', lambda args, **_k: launched.append(args) or Process())
     host._launch_native_llama_server(tmp_path / '.env', tmp_path / 'llama-server.exe', tmp_path / 'log', tmp_path / 'pid')
+    assert probes == [[str(tmp_path / 'llama-server.exe'), '--help']]
     assert launched[0][launched[0].index('--spec-draft-n-max') + 1] == '3'
     assert '--ctx-checkpoints' not in launched[0]
+    # A runtime without --reasoning (b8248) keeps the format mapping.
     assert launched[0][launched[0].index('--reasoning-format') + 1] == 'none'
+    assert '--reasoning' not in launched[0]

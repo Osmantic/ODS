@@ -28,6 +28,8 @@ service:
     secret: true
     description: 64-hex installation code required by the native first-administrator
       setup wizard.
+    format: hex64
+    generate: hex64
   - key: SFTPGO_SFTP_PORT
     required: false
     default: '11114'

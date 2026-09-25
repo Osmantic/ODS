@@ -534,20 +534,9 @@ resolve_tier_config
 if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" != "CLOUD" ]]; then
     _selector_script="$SCRIPT_DIR/scripts/select-model.py"
     _selector_catalog="$SCRIPT_DIR/config/model-library.json"
-    if [[ -f "$_selector_script" && -f "$_selector_catalog" ]]; then
-        _selector_python=""
-        if [[ -f "$SCRIPT_DIR/lib/python-cmd.sh" ]]; then
-            # shellcheck source=/dev/null
-            . "$SCRIPT_DIR/lib/python-cmd.sh"
-            _selector_python="$(ods_detect_python_cmd || true)"
-        fi
-        if [[ -z "$_selector_python" ]]; then
-            if command -v python3 >/dev/null 2>&1; then
-                _selector_python="python3"
-            elif command -v python >/dev/null 2>&1; then
-                _selector_python="python"
-            fi
-        fi
+    if [[ -f "$_selector_script" && -f "$_selector_catalog" ]] \
+        && declare -F ods_run_catalog_selector >/dev/null 2>&1; then
+        _selector_python="$(ods_model_selector_python)"
         if [[ -n "$_selector_python" ]]; then
             PIXEL_AGENT_MODEL_READY=unknown
             _pixel_default_selector=false
@@ -571,21 +560,16 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
                 # itself cannot produce trusted metadata.
                 PIXEL_AGENT_MODEL_READY=false
             fi
+            # Hermes is on by default and needs 64K context: prefer models
+            # that fit at 64K themselves (a soft floor; a smaller context is
+            # chosen only when nothing fits at 64K). Phase 03 re-checks the
+            # pick once the feature set is final.
             _run_catalog_selector() {
-                "$_selector_python" "$_selector_script" \
-                    --catalog "$_selector_catalog" \
-                    --backend "${GPU_BACKEND:-unknown}" \
-                    --memory-type "${GPU_MEMORY_TYPE:-discrete}" \
-                    --vram-mb "${GPU_VRAM:-0}" \
-                    --ram-gb "${RAM_GB:-0}" \
-                    --profile "${MODEL_PROFILE_EFFECTIVE:-${MODEL_PROFILE:-qwen}}" \
-                    --tier "${TIER:-1}" \
-                    --max-size-mb "$_selector_max_size_mb" \
-                    --host-arch "${HOST_ARCH:-unknown}" \
-                    --installable-only \
-                    "$@" \
-                    --env
+                ods_run_catalog_selector "$_selector_python" "$_selector_max_size_mb" \
+                    --min-context "$ODS_HERMES_MIN_CONTEXT" \
+                    "$@"
             }
+            ODS_SELECTOR_MAX_SIZE_MB="$_selector_max_size_mb"
             _selector_status=0
             _selector_env="$(_run_catalog_selector 2>>"$LOG_FILE")" || _selector_status=$?
             if [[ "$_selector_status" -eq 2 ]]; then
@@ -660,6 +644,7 @@ if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${T
                 unset LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
                 unset LLAMA_ARG_N_CPU_MOE LLAMA_ARG_NO_CACHE_PROMPT
                 unset LLAMA_ARG_CHECKPOINT_EVERY_NT LLAMA_ARG_SPEC_TYPE
+                unset LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_RAM
                 unset LLAMA_ARG_SPEC_DRAFT_N_MAX LLAMA_ARG_SPLIT_MODE LLAMA_ARG_TENSOR_SPLIT
                 unset LLAMA_ARG_CHAT_TEMPLATE_FILE
                 load_model_selector_env_from_output <<< "$_preserved_model_env"

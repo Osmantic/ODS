@@ -392,15 +392,76 @@ def _extension_build_context(compose_path, build):
     return str(resolved)
 
 
-def _scan_user_compose_content(compose_path):
+# The only extra_hosts entry a curated library recipe may declare. Mirrors
+# dashboard-api _scan_compose_content(allowed_trusted_extra_hosts): GAIA needs
+# it to reach a host-run Lemonade Server on Linux Docker.
+_TRUSTED_LIBRARY_EXTRA_HOSTS = {"host.docker.internal:host-gateway"}
+
+# Accelerator access a curated library recipe may request, only from its own
+# backend overlay and only in the shapes ODS core uses for GPU workloads:
+# docker-compose.amd.yml passes /dev/kfd and /dev/dri through unchanged, and
+# docker-compose.nvidia.yml plus the comfyui/whisper overlays reserve driver
+# nvidia with capabilities [gpu] by count or device_ids. Mirrors dashboard-api
+# _TRUSTED_LIBRARY_AMD_DEVICES / _is_ods_nvidia_gpu_reservation.
+_TRUSTED_LIBRARY_AMD_DEVICES = {"/dev/kfd:/dev/kfd", "/dev/dri:/dev/dri"}
+_NVIDIA_DEVICE_ID_RE = re.compile(r"[A-Za-z0-9_.:${}-]+")
+
+
+def _is_ods_nvidia_gpu_reservation(entry):
+    """True for one reservations.devices entry in the shape ODS core writes."""
+    if not isinstance(entry, dict) or set(entry) - {"driver", "capabilities", "count", "device_ids"}:
+        return False
+    if entry.get("driver") != "nvidia" or entry.get("capabilities") != ["gpu"]:
+        return False
+    if "count" in entry and "device_ids" in entry:
+        return False
+    count = entry.get("count", "all")
+    if count != "all" and not (type(count) is int and count >= 1):
+        return False
+    device_ids = entry.get("device_ids", ["all"])
+    return isinstance(device_ids, list) and bool(device_ids) and all(
+        isinstance(item, str) and _NVIDIA_DEVICE_ID_RE.fullmatch(item) for item in device_ids)
+
+
+def _library_recipe_trusted(extension_dir):
+    """Mirror dashboard-api's install-time trust decision for one extension.
+
+    ``_staged_library_extension`` treats a library recipe as curated unless
+    its upstream.json records ``origin: github-proposal`` (an imported GitHub
+    recipe). An upstream.json that is a link, oversized or unreadable was not
+    written by that install path, so it fails closed.
+    """
+    upstream_path = extension_dir / "upstream.json"
+    if upstream_path.is_symlink():
+        return False
+    if not upstream_path.exists():
+        return True
+    try:
+        if not upstream_path.is_file() or upstream_path.stat().st_size > 524288:
+            return False
+        upstream = json.loads(upstream_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return not (isinstance(upstream, dict) and upstream.get("origin") == "github-proposal")
+
+
+def _scan_user_compose_content(compose_path, trusted_library=False, accelerator=None):
     """Reject compose fragments containing dangerous directives.
 
     Mirrors dashboard-api/routers/extensions.py:_scan_compose_content (without
     the FastAPI HTTPException dependency). Returns ``(ok, warnings)``: ``ok``
     is False on any rejection, ``warnings`` is a list of human-readable
-    messages. User-extension contexts are always untrusted at the resolver
-    layer — no ``trusted=True`` exemption.
+    messages. User-extension contexts are untrusted at the resolver layer; the
+    exemptions are the dashboard's own and need ``trusted_library`` (see
+    ``_library_recipe_trusted``): an ``extra_hosts`` list may contain exactly
+    ``host.docker.internal:host-gateway``, and when ``accelerator`` names the
+    backend of the overlay being scanned ("nvidia" or "amd"), that backend's
+    GPU in exactly the ODS core shape (see ``_TRUSTED_LIBRARY_AMD_DEVICES``
+    and ``_is_ods_nvidia_gpu_reservation``). Nothing else grants a device;
+    ``gpus`` and ``runtime`` are rejected for every user extension.
     """
+    if not trusted_library:
+        accelerator = None
     try:
         data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError) as e:
@@ -448,6 +509,13 @@ def _scan_user_compose_content(compose_path):
             reject(f"service '{svc_name}' uses host IPC namespace")
         if svc_def.get("userns_mode") == "host":
             reject(f"service '{svc_name}' uses host user namespace")
+        # gpus: and runtime: are other routes to a GPU (Compose `gpus: all`,
+        # the legacy NVIDIA runtime), and a runtime also swaps the container's
+        # isolation. No user extension may set either, curated or imported.
+        if "gpus" in svc_def:
+            reject(f"service '{svc_name}' requests GPUs via gpus")
+        if "runtime" in svc_def:
+            reject(f"service '{svc_name}' sets a container runtime")
         cap_add = svc_def.get("cap_add", [])
         if isinstance(cap_add, list):
             for cap in cap_add:
@@ -459,15 +527,26 @@ def _scan_user_compose_content(compose_path):
                 opt_str = str(opt).lower().replace("=", ":")
                 if opt_str in _DANGEROUS_SECURITY_OPTS:
                     reject(f"service '{svc_name}' uses dangerous security_opt '{opt}'")
-        if svc_def.get("devices"):
-            reject(f"service '{svc_name}' declares devices")
+        devices = svc_def.get("devices")
+        if devices:
+            if accelerator != "amd":
+                reject(f"service '{svc_name}' declares devices")
+            elif not isinstance(devices, list) or any(
+                    not isinstance(entry, str) or entry not in _TRUSTED_LIBRARY_AMD_DEVICES
+                    for entry in devices):
+                reject(f"service '{svc_name}' declares unsupported devices")
         deploy = svc_def.get("deploy")
         if isinstance(deploy, dict):
             resources = deploy.get("resources")
             if isinstance(resources, dict):
                 reservations = resources.get("reservations")
                 if isinstance(reservations, dict) and reservations.get("devices"):
-                    reject(f"service '{svc_name}' requests GPU passthrough via deploy.resources.reservations.devices")
+                    requests = reservations["devices"]
+                    if accelerator != "nvidia":
+                        reject(f"service '{svc_name}' requests GPU passthrough via deploy.resources.reservations.devices")
+                    elif not isinstance(requests, list) or not all(
+                            _is_ods_nvidia_gpu_reservation(entry) for entry in requests):
+                        reject(f"service '{svc_name}' requests an unsupported GPU reservation")
         volumes = svc_def.get("volumes", [])
         if isinstance(volumes, list):
             for vol in volumes:
@@ -485,8 +564,14 @@ def _scan_user_compose_content(compose_path):
                 vol_parts = vol_str.split(":")
                 if len(vol_parts) >= 2 and vol_parts[0].startswith("/"):
                     reject(f"service '{svc_name}' bind-mounts absolute host path '{vol_parts[0]}'")
-        if svc_def.get("extra_hosts"):
-            reject(f"service '{svc_name}' declares extra_hosts")
+        extra_hosts = svc_def.get("extra_hosts")
+        if extra_hosts:
+            if not trusted_library:
+                reject(f"service '{svc_name}' declares extra_hosts")
+            elif not isinstance(extra_hosts, list) or any(
+                    not isinstance(entry, str) or entry.strip() not in _TRUSTED_LIBRARY_EXTRA_HOSTS
+                    for entry in extra_hosts):
+                reject(f"service '{svc_name}' declares unsupported extra_hosts")
         if svc_def.get("sysctls"):
             reject(f"service '{svc_name}' declares sysctls")
         labels = svc_def.get("labels", [])
@@ -827,7 +912,11 @@ if user_ext_dir.exists():
                 # resolver runs every `ods` invocation, so a tampered-with
                 # compose dropped under data/user-extensions without going
                 # through the install API would otherwise bypass scanning.
-                ok, warnings = _scan_user_compose_content(compose_path)
+                # Curated library recipes keep the dashboard's narrow
+                # exemptions: host.docker.internal:host-gateway in every file,
+                # and the backend's ODS-shaped GPU only in compose.<backend>.yaml.
+                trusted_library = _library_recipe_trusted(service_dir)
+                ok, warnings = _scan_user_compose_content(compose_path, trusted_library)
                 for w in warnings:
                     print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
                 if not ok:
@@ -838,7 +927,7 @@ if user_ext_dir.exists():
                 if service_dir.name.lower() not in skip_gpu_overlays and gpu_overlay.exists():
                     # Fixed filename so traversal isn't possible, but the same
                     # security checks apply to the overlay's content.
-                    ok, warnings = _scan_user_compose_content(gpu_overlay)
+                    ok, warnings = _scan_user_compose_content(gpu_overlay, trusted_library, gpu_backend)
                     for w in warnings:
                         print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
                     if ok:
@@ -878,7 +967,7 @@ if user_ext_dir.exists():
                         # without it, a malicious user extension can put
                         # privileged: true / docker.sock mounts in compose.local.yaml
                         # and reach the host since ODS_MODE defaults to "local".
-                        ok, warnings = _scan_user_compose_content(local_mode_overlay)
+                        ok, warnings = _scan_user_compose_content(local_mode_overlay, trusted_library)
                         for w in warnings:
                             print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
                         if ok:
@@ -890,7 +979,7 @@ if user_ext_dir.exists():
                     if multi_gpu_overlay.exists():
                         # Fixed filename, but same content scan applies — see
                         # the gpu/local-mode overlay scans above.
-                        ok, warnings = _scan_user_compose_content(multi_gpu_overlay)
+                        ok, warnings = _scan_user_compose_content(multi_gpu_overlay, trusted_library)
                         for w in warnings:
                             print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
                         if ok:

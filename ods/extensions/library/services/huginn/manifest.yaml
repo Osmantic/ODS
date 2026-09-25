@@ -27,18 +27,27 @@ service:
     required: true
     secret: true
     description: Persistent password for the private Huginn PostgreSQL database.
+    pattern: '^(?!(0[0-7]+|0x[0-9a-fA-F]+|0b[01]+)$)(?!([Yy][Ee][Ss]|[Nn][Oo]|[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Oo][Nn]|[Oo][Ff][Ff]|[Nn][Uu][Ll][Ll])$)[A-Za-z0-9]+$'
+    format_description: 'letters and digits only, not a YAML number or boolean such as 0755, 0x1F, yes, no, on, off, true, false or null'
+    generate: password
   - key: HUGINN_SECRET_TOKEN
     required: true
     secret: true
     description: Persistent random Rails secret, at least 64 random characters.
+    min_length: 64
+    generate: hex128
   - key: HUGINN_ADMIN_PASSWORD
     required: true
     secret: true
     description: Strong initial owner password; does not reset an existing account.
+    min_length: 8
+    max_length: 128
+    generate: password
   - key: HUGINN_INVITATION_CODE
     required: true
     secret: true
     description: Private invitation code needed for additional registrations.
+    generate: password
   - key: HUGINN_ADMIN_USER
     required: false
     default: admin

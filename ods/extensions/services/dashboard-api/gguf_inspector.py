@@ -259,6 +259,15 @@ def inspect_gguf(path: Path | str, max_metadata_bytes: int = 32 * 1024 * 1024) -
                 metadata, (".attention.value_length",)
             ),
             "rope_dimension_count": _first_int(metadata, (".rope.dimension_count",)),
+            # Hybrid attention/recurrent layouts (llama.cpp llama-arch.cpp
+            # LLM_KV_FULL_ATTENTION_INTERVAL and LLM_KV_SSM_*): only every
+            # Nth layer of a Qwen3.5/3.6-style model holds a KV cache.
+            "full_attention_interval": _first_int(metadata, (".full_attention_interval",)),
+            "ssm_conv_kernel": _first_int(metadata, (".ssm.conv_kernel",)),
+            "ssm_inner_size": _first_int(metadata, (".ssm.inner_size",)),
+            "ssm_state_size": _first_int(metadata, (".ssm.state_size",)),
+            "ssm_group_count": _first_int(metadata, (".ssm.group_count",)),
+            "ssm_time_step_rank": _first_int(metadata, (".ssm.time_step_rank",)),
             "expert_count": _first_int(metadata, (".expert_count", ".expert.count")),
             "expert_used_count": _first_int(metadata, (".expert_used_count", ".expert.used_count")),
             "model_name": _first_value(metadata, ("general.name",)),

@@ -27,6 +27,8 @@ service:
     required: true
     secret: true
     description: Random 64-hex password for the local ods NATS user.
+    format: hex64
+    generate: hex64
   external_link: false
 tags:
 - messaging

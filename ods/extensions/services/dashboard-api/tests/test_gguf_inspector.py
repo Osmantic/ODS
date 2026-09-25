@@ -119,6 +119,37 @@ def test_per_layer_kv_head_counts_are_preserved(tmp_path):
     assert result["attention_head_count_kv"] == [0, 2, 0, 2]
 
 
+def test_hybrid_layout_keys_are_normalized(tmp_path):
+    path = _write(tmp_path, "qwen35.gguf", build_gguf([
+        ("general.architecture", STR, "qwen35"),
+        ("qwen35.block_count", U32, 32),
+        ("qwen35.attention.head_count_kv", U32, 4),
+        ("qwen35.attention.key_length", U32, 256),
+        ("qwen35.attention.value_length", U32, 256),
+        ("qwen35.full_attention_interval", U32, 4),
+        ("qwen35.ssm.conv_kernel", U32, 4),
+        ("qwen35.ssm.inner_size", U32, 4096),
+        ("qwen35.ssm.state_size", U32, 128),
+        ("qwen35.ssm.group_count", U32, 16),
+        ("qwen35.ssm.time_step_rank", U32, 32),
+    ]))
+
+    result = inspect_gguf(path)
+
+    assert result["full_attention_interval"] == 4
+    assert result["ssm_conv_kernel"] == 4
+    assert result["ssm_inner_size"] == 4096
+    assert result["ssm_state_size"] == 128
+    assert result["ssm_group_count"] == 16
+    assert result["ssm_time_step_rank"] == 32
+
+    # An imported hybrid GGUF is charged KV on its attention layers only.
+    from model_memory import estimated_context_kv_gb, kv_layer_count
+
+    assert kv_layer_count(result) == 8
+    assert estimated_context_kv_gb(result, 65536) == 2.0
+
+
 def test_large_tokenizer_header_preserves_architecture_and_mtp_metadata(tmp_path):
     # Current vocabularies can exceed the old 8 MiB header limit. Keep the
     # inspection bounded while reading the structural metadata after the vocab.

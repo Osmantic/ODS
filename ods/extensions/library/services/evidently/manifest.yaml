@@ -27,6 +27,9 @@ service:
     required: true
     secret: true
     description: Secret required by SDK clients to write evaluation reports.
+    pattern: '^[!-~]+$'
+    format_description: printable ASCII without spaces
+    generate: token
   ui_path: /
 tags:
 - development

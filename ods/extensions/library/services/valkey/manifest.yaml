@@ -27,6 +27,8 @@ service:
     required: true
     secret: true
     description: 64 random hexadecimal characters for the ods client account.
+    format: hex64
+    generate: hex64
   external_link: false
 tags:
 - development

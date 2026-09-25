@@ -10,7 +10,7 @@ import jsonschema
 import yaml
 
 from extension_github import repository_identity
-from extension_install_plan import ID
+from extension_install_plan import ID, InstallPlanError, configuration_fields
 from extension_source_build import source_builds
 
 
@@ -43,6 +43,14 @@ def validate_recipe(candidate, schema, reserved_ids, scan_compose):
         error('extension-already-exists', 'manifest/service/id')
     if isinstance(service, dict) and (service.get('type') != 'docker' or service.get('compose_file') != 'compose.yaml'):
         error('unsupported-installation-kind', 'manifest/service')
+    if valid_id and isinstance(service, dict):
+        # The same declaration rules the install plan, dialog and configure
+        # endpoint apply, so a proposed recipe cannot ship a setting format
+        # (pattern, distinct_from, lengths) that ODS could not enforce.
+        try:
+            configuration_fields(target, service, lambda key: False)
+        except InstallPlanError:
+            error('configuration-declaration-invalid', 'manifest/service/env_vars')
     if valid_id:
         prefix = re.sub(r'[^A-Z0-9]', '_', target.upper()) + '_'
         allowed_variables = {'BIND_ADDRESS', 'TZ'}

@@ -249,27 +249,79 @@ export function publicPageRequestHeaders(now = Date.now()) {
 // came back as 4.8 KB of analytics JavaScript and no dates instead of 38-66 KB
 // of article text. Remove these elements (and comments) first, as an HTML
 // parser would: each ends at its own first closing tag, or at the end of the
-// document when unterminated. One linear pass; no backtracking regex.
-const RAW_TEXT_START = /<!--|<(script|style|noscript|template)(?=[\s/>])/gi;
+// document when unterminated.
+//
+// A start tag written self-closing (`<style …/>`) is empty, as in inline SVG
+// and MathML and in XHTML. An SVG icon on the philaculturalfund.org community
+// calendar carries three `<style … />`; read as open elements they removed
+// 238 KB up to the next `</style>`, and the calendar extracted as 428 chars
+// instead of 17,753. (In plain HTML a browser ignores that slash, but then the
+// page hides its own content from its readers too.) Stray end tags of these
+// elements are removed as well, so the pinned extractor's own
+// `<style[\s\S]*?</style>` passes, which have no name boundary, cannot run
+// from a custom element such as `<styled-card>` to one. One linear pass; no
+// backtracking regex.
+const RAW_TEXT_NAMES = ["script", "style", "noscript", "template"];
+const RAW_TEXT_TAG = new RegExp(`<!--|<(/?)(${RAW_TEXT_NAMES.join("|")})(?=[\\t\\n\\f\\r />]|$)`, "gi");
+const RAW_TEXT_CLOSERS = new Map(RAW_TEXT_NAMES.map(name => [name, new RegExp(`</${name}(?=[\\t\\n\\f\\r />]|$)`, "gi")]));
+const TAG_SPACE = /[\t\n\f\r ]/;
+
+// Where a tag ends, as the HTML tokenizer finds it: at the first `>` outside a
+// quoted attribute value. It is self-closing when `/` directly precedes that
+// `>` outside an unquoted value (`<a b=c/>` has the value `c/`). null when the
+// document ends inside the tag.
+function tagEnd(html, from) {
+  let state = "attributes";
+  for (let index = from; index < html.length; index += 1) {
+    const char = html[index];
+    if (state === "attributes") {
+      if (char === ">") return {end: index + 1, selfClosing: false};
+      if (char === "/" && html[index + 1] === ">") return {end: index + 2, selfClosing: true};
+      if (char === "=") state = "value";
+    } else if (state === "value") {
+      if (char === '"' || char === "'") {
+        index = html.indexOf(char, index + 1);
+        if (index < 0) return null;
+        state = "attributes";
+      } else if (char === ">") {
+        return {end: index + 1, selfClosing: false};
+      } else if (!TAG_SPACE.test(char)) {
+        state = "unquoted";
+      }
+    } else if (char === ">") {
+      return {end: index + 1, selfClosing: false};
+    } else if (TAG_SPACE.test(char)) {
+      state = "attributes";
+    }
+  }
+  return null;
+}
+
 export function readableHtml(html) {
   if (typeof html !== "string" || !html) return "";
   let output = "";
   let cursor = 0;
-  RAW_TEXT_START.lastIndex = 0;
-  for (let match; (match = RAW_TEXT_START.exec(html));) {
+  RAW_TEXT_TAG.lastIndex = 0;
+  for (let match; (match = RAW_TEXT_TAG.exec(html));) {
     output += html.slice(cursor, match.index) + " ";
     let end = html.length;
     if (match[0] === "<!--") {
       const close = html.indexOf("-->", match.index + 4);
       if (close >= 0) end = close + 3;
     } else {
-      const closer = new RegExp(`</${match[1]}\\s*>`, "gi");
-      closer.lastIndex = match.index + match[0].length;
-      const close = closer.exec(html);
-      if (close) end = close.index + close[0].length;
+      const tag = tagEnd(html, match.index + match[0].length);
+      if (tag && (match[1] || tag.selfClosing)) {
+        end = tag.end;
+      } else if (tag) {
+        const closer = RAW_TEXT_CLOSERS.get(match[2].toLowerCase());
+        closer.lastIndex = tag.end;
+        const close = closer.exec(html);
+        const closeTag = close && tagEnd(html, close.index + close[0].length);
+        if (closeTag) end = closeTag.end;
+      }
     }
     cursor = end;
-    RAW_TEXT_START.lastIndex = end;
+    RAW_TEXT_TAG.lastIndex = end;
   }
   return output + html.slice(cursor);
 }

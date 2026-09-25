@@ -28,6 +28,7 @@ service:
     secret: true
     description: Strong password for the local ods database user. Keep with configuration
       backups.
+    generate: password
   external_link: false
 tags:
 - analytics

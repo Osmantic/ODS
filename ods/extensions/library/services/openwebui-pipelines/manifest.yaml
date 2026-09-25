@@ -27,6 +27,8 @@ service:
     required: true
     secret: true
     description: 64-hex management/client API key replacing the upstream shared default.
+    format: hex64
+    generate: hex64
   external_link: false
 tags:
 - ai

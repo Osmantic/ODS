@@ -1,11 +1,18 @@
 """Real curated recipes must survive the actual library installation boundary."""
 
 import json
+import os
+import pathlib
 import re
+import shlex
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
+from fastapi import HTTPException
 
 from routers import extensions
 
@@ -52,6 +59,343 @@ def test_curated_recipe_can_be_staged(recipe, tmp_path, monkeypatch):
             assert all(feature["launch"]["type"] == "none" for feature in manifest["features"])
     assert not staged.exists()
     assert not destination.exists()  # staging must never install/start anything
+
+
+def _recipe_files(root):
+    return {path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*") if path.is_file() and not path.is_symlink()}
+
+
+@pytest.mark.parametrize("recipe", sorted(path.parent for path in LIBRARY.glob("*/compose.yaml")),
+                         ids=lambda path: path.name)
+def test_library_staging_keeps_every_recipe_file(recipe, tmp_path, monkeypatch):
+    """The staged copy is the image build context, so no shipped file may be left out.
+
+    Dockerfiles COPY recipe files such as README.md (mapshaper, blockbench)
+    and read .dockerignore; only compose.yaml's build context is rewritten.
+    """
+    monkeypatch.setattr(extensions, "EXTENSIONS_LIBRARY_DIR", LIBRARY)
+    monkeypatch.setattr(extensions, "USER_EXTENSIONS_DIR", tmp_path / "user")
+    shipped = _recipe_files(recipe)
+    with extensions._staged_library_extension(recipe.name, tmp_path / "user" / recipe.name) as (staged, _):
+        installed = _recipe_files(staged)
+    assert sorted(installed) == sorted(shipped)
+    changed = sorted(path for path in shipped if installed[path] != shipped[path])
+    assert changed in ([], ["compose.yaml"])
+
+
+def test_library_staging_copies_nested_and_dot_files_but_not_links(tmp_path, monkeypatch):
+    """Unit test of the staging copy: every regular file survives; links do not."""
+    library = tmp_path / "library"
+    recipe = library / "mapshaper"
+    shutil.copytree(LIBRARY / "mapshaper", recipe)
+    extra = {
+        "docs/notes.md": b"nested docs\n",
+        "tests/fixture.json": b"{}\n",
+        "examples/sample.geojson": b"{}\n",
+        ".gitignore": b"*.tmp\n",
+        "assets/deep/README.md": b"deep\n",
+    }
+    for relative, content in extra.items():
+        (recipe / relative).parent.mkdir(parents=True, exist_ok=True)
+        (recipe / relative).write_bytes(content)
+    try:
+        (recipe / "linked.md").symlink_to(recipe / "README.md")
+    except OSError:
+        pass  # Unprivileged Windows cannot create links; the copy is still checked.
+    monkeypatch.setattr(extensions, "EXTENSIONS_LIBRARY_DIR", library)
+    monkeypatch.setattr(extensions, "USER_EXTENSIONS_DIR", tmp_path / "user")
+    with extensions._staged_library_extension("mapshaper", tmp_path / "user" / "mapshaper") as (staged, _):
+        installed = _recipe_files(staged)
+        assert not (staged / "linked.md").exists()
+        compose = yaml.safe_load((staged / "compose.yaml").read_text(encoding="utf-8"))
+        context = Path(compose["services"]["mapshaper"]["build"]["context"])
+        assert context == (tmp_path / "user" / "mapshaper").resolve()
+    assert sorted(installed) == sorted(_recipe_files(recipe))
+    for relative in (*extra, "README.md", ".dockerignore", "Dockerfile"):
+        assert installed[relative] == (recipe / relative).read_bytes()
+
+
+RESOLVER = ODS / "scripts/resolve-compose-stack.sh"
+INSTALLABLE = sorted(path.parent for path in LIBRARY.glob("*/compose.yaml"))
+
+
+def _install_root(tmp_path, monkeypatch):
+    """An install root whose user-extensions are written by the real library install."""
+    root = tmp_path / "ods"
+    (root / "config").mkdir(parents=True)
+    shutil.copy2(ODS / "config/core-service-ids.json", root / "config/core-service-ids.json")
+    (root / "docker-compose.base.yml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(extensions, "EXTENSIONS_LIBRARY_DIR", LIBRARY)
+    monkeypatch.setattr(extensions, "USER_EXTENSIONS_DIR", root / "data/user-extensions")
+    return root
+
+
+def _resolver_scan(root):
+    """The compose resolver's own user-extension scan (Python inside the Bash script)."""
+    source = RESOLVER.read_text(encoding="utf-8")
+    start = source.index("_LOOPBACK_VAR_DEFAULT_RE = re.compile(")
+    end = source.index("def _extension_base_path(", start)
+    namespace = {"script_dir": root, "pathlib": pathlib, "re": re, "os": os, "json": json, "yaml": yaml}
+    exec(compile(source[start:end], str(RESOLVER), "exec"), namespace)
+    return namespace["_scan_user_compose_content"], namespace["_library_recipe_trusted"]
+
+
+def _accelerator(compose_name):
+    """What both callers pass: compose.nvidia.yaml / compose.amd.yaml name their
+    backend (the resolver loads them as compose.<backend>.yaml); others none."""
+    return extensions._LIBRARY_ACCELERATOR_OVERLAYS.get(compose_name)
+
+
+# Curated recipes whose backend overlay reserves the accelerator. The resolver
+# used to drop exactly these overlays, so the services started without a GPU.
+NVIDIA_GPU_RECIPES = ["audiocraft", "bark", "forge", "frigate", "invokeai", "ollama",
+                      "rvc", "text-generation-webui", "xtts"]
+AMD_GPU_RECIPES = ["invokeai", "ollama", "rvc", "text-generation-webui", "xtts"]
+
+
+def _requests_accelerator(service):
+    reservations = ((service.get("deploy") or {}).get("resources") or {}).get("reservations") or {}
+    return bool(service.get("devices") or reservations.get("devices"))
+
+
+@pytest.mark.parametrize("backend, recipes", [("nvidia", NVIDIA_GPU_RECIPES), ("amd", AMD_GPU_RECIPES)])
+def test_gpu_recipe_inventory_is_complete(backend, recipes):
+    """Every accelerator overlay in the library is named, so the checks below cover it."""
+    found = []
+    for recipe in INSTALLABLE:
+        overlay = recipe / f"compose.{backend}.yaml"
+        if overlay.is_file():
+            services = yaml.safe_load(overlay.read_text(encoding="utf-8"))["services"]
+            if any(_requests_accelerator(service) for service in services.values()):
+                found.append(recipe.name)
+    assert found == recipes
+
+
+@pytest.mark.parametrize("recipe", INSTALLABLE, ids=lambda path: path.name)
+def test_installed_library_recipe_passes_the_compose_resolver(recipe, tmp_path, monkeypatch):
+    """dashboard-api accepting a recipe is not enough: every `ods` command and the
+    host agent's install build resolve the stack through resolve-compose-stack.sh,
+    which drops a user extension whose compose its own scan rejects (gaia's
+    extra_hosts made the install fail with "Invalid installation Compose
+    dependency graph"; GPU overlays were dropped, so services ran without the GPU).
+    No file of any curated recipe may be rejected."""
+    root = _install_root(tmp_path, monkeypatch)
+    extensions._install_from_library(recipe.name)
+    installed = root / "data/user-extensions" / recipe.name
+    scan, trusted = _resolver_scan(root)
+    library_trust = trusted(installed)
+    for compose in [installed / "compose.yaml", *sorted(installed.glob("compose.*.yaml"))]:
+        ok, warnings = scan(compose, library_trust, _accelerator(compose.name))
+        assert ok and not warnings, f"{compose.name}: {warnings}"
+
+
+def _resolve(root, backend):
+    env = {"PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],
+           "HOME": str(root), "ODS_MODE": "local"}
+    result = subprocess.run(["bash", str(RESOLVER), "--script-dir", str(root),
+                             "--gpu-backend", backend, "--tier", "1"],
+                            env=env, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    return shlex.split(result.stdout)[1::2], result.stderr
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="the resolver is a Bash script")
+@pytest.mark.parametrize("backend", ["nvidia", "amd", "cpu"])
+def test_resolver_keeps_every_installed_library_recipe(backend, tmp_path, monkeypatch):
+    """End to end: install every recipe, run the real resolver, and find each
+    one together with its backend overlay, without any rejection."""
+    root = _install_root(tmp_path, monkeypatch)
+    expected = []
+    for recipe in INSTALLABLE:
+        extensions._install_from_library(recipe.name)
+        manifest = yaml.safe_load((recipe / "manifest.yaml").read_text(encoding="utf-8"))
+        backends = manifest["service"].get("gpu_backends", ["all"])
+        if backend in backends or "all" in backends or "none" in backends:
+            expected.append(f"data/user-extensions/{recipe.name}/compose.yaml")
+            if (recipe / f"compose.{backend}.yaml").is_file():
+                expected.append(f"data/user-extensions/{recipe.name}/compose.{backend}.yaml")
+    assert "data/user-extensions/gaia/compose.yaml" in expected
+    gpu_recipes = {"nvidia": NVIDIA_GPU_RECIPES, "amd": AMD_GPU_RECIPES}.get(backend, [])
+    for name in gpu_recipes:
+        assert f"data/user-extensions/{name}/compose.{backend}.yaml" in expected
+    files, stderr = _resolve(root, backend)
+    assert [path for path in expected if path not in files] == [], stderr
+    assert not [line for line in stderr.splitlines() if line.startswith("WARNING")], stderr
+
+
+# The Docker CLI's own environment; nothing that interpolates recipe settings.
+_DOCKER_CLI_ENV = {"PATH", "HOME", "DOCKER_CONFIG", "DOCKER_HOST", "DOCKER_CONTEXT",
+                   "SYSTEMROOT", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP"}
+
+
+def _rendered_accelerator(service, backend):
+    if backend == "nvidia":
+        requests = service["deploy"]["resources"]["reservations"]["devices"]
+        return [(item["driver"], item["capabilities"]) for item in requests]
+    # Compose prints short or long device syntax depending on its version.
+    return sorted((item["source"], item["target"]) if isinstance(item, dict)
+                  else tuple(item.split(":")[:2]) for item in service["devices"])
+
+
+@pytest.mark.skipif(shutil.which("bash") is None or shutil.which("docker") is None,
+                    reason="needs the Bash resolver and the Docker CLI")
+@pytest.mark.parametrize("backend, recipes", [("nvidia", NVIDIA_GPU_RECIPES), ("amd", AMD_GPU_RECIPES)])
+def test_resolved_gpu_recipes_render_their_accelerator(backend, recipes, tmp_path, monkeypatch):
+    """`docker compose config` (never `up`) of the resolved stack gives each GPU
+    recipe's service its backend accelerator."""
+    if subprocess.run(["docker", "compose", "version"], capture_output=True).returncode != 0:
+        pytest.skip("Docker Compose v2 is unavailable")
+    root = _install_root(tmp_path, monkeypatch)
+    (root / f"docker-compose.{backend}.yml").write_text("services: {}\n", encoding="utf-8")
+    for name in recipes:
+        extensions._install_from_library(name)
+    files, stderr = _resolve(root, backend)
+    assert files[:2] == ["docker-compose.base.yml", f"docker-compose.{backend}.yml"], files
+    assert not [line for line in stderr.splitlines() if line.startswith("WARNING")], stderr
+    # Placeholders for `${NAME:?...}` settings the owner supplies at install.
+    required = {name for path in files
+                for name in re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?\?", (root / path).read_text(encoding="utf-8"))}
+    env = {key: value for key, value in os.environ.items() if key in _DOCKER_CLI_ENV}
+    env.update({name: "compose-config-fixture" for name in required})
+    flags = [argument for path in files for argument in ("-f", path)]
+    result = subprocess.run(["docker", "compose", "-p", "ods-library-gpu-overlays", "--project-directory",
+                             str(root), *flags, "config", "--format", "json"],
+                            cwd=root, env=env, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    services = json.loads(result.stdout)["services"]
+    expected = ([("nvidia", ["gpu"])] if backend == "nvidia"
+                else [("/dev/dri", "/dev/dri"), ("/dev/kfd", "/dev/kfd")])
+    for name in recipes:
+        assert _rendered_accelerator(services[name], backend) == expected, name
+
+
+def _reserve(*requests):
+    return {"deploy": {"resources": {"reservations": {"devices": list(requests)}}}}
+
+
+_NVIDIA_GPU = {"driver": "nvidia", "capabilities": ["gpu"]}
+_AMD_GPU = {"devices": ["/dev/dri:/dev/dri", "/dev/kfd:/dev/kfd"],
+            "group_add": ["${VIDEO_GID:-44}", "${RENDER_GID:-992}"]}
+
+# (case, compose file, curated recipe?, service fragment, allowed). A curated
+# recipe's own backend overlay may reserve that backend's GPU exactly as ODS
+# core does; nothing else grants a device, and no other privilege changes.
+ACCELERATOR_POLICY = [
+    ("nvidia-count-1", "compose.nvidia.yaml", True, _reserve({**_NVIDIA_GPU, "count": 1}), True),
+    ("nvidia-count-all", "compose.nvidia.yaml", True, _reserve({**_NVIDIA_GPU, "count": "all"}), True),
+    ("nvidia-count-omitted", "compose.nvidia.yaml", True, _reserve(_NVIDIA_GPU), True),
+    ("nvidia-device-ids", "compose.nvidia.yaml", True,
+     _reserve({**_NVIDIA_GPU, "device_ids": ["${OLLAMA_GPU_UUID}"]}), True),
+    ("amd-kfd-dri", "compose.amd.yaml", True, _AMD_GPU, True),
+    ("amd-dri-only", "compose.amd.yaml", True, {"devices": ["/dev/dri:/dev/dri"]}, True),
+    # Capabilities: ODS workloads reserve [gpu] only ([utility] is dashboard-api telemetry).
+    ("nvidia-gpu-utility", "compose.nvidia.yaml", True,
+     _reserve({**_NVIDIA_GPU, "capabilities": ["gpu", "utility"]}), False),
+    ("nvidia-gpu-compute", "compose.nvidia.yaml", True,
+     _reserve({**_NVIDIA_GPU, "capabilities": ["gpu", "compute"]}), False),
+    ("nvidia-gpu-utility-compute", "compose.nvidia.yaml", True,
+     _reserve({**_NVIDIA_GPU, "capabilities": ["gpu", "utility", "compute"]}), False),
+    ("nvidia-utility", "compose.nvidia.yaml", True, _reserve({**_NVIDIA_GPU, "capabilities": ["utility"]}), False),
+    ("nvidia-other-driver", "compose.nvidia.yaml", True, _reserve({**_NVIDIA_GPU, "driver": "cdi"}), False),
+    ("nvidia-driver-options", "compose.nvidia.yaml", True,
+     _reserve({**_NVIDIA_GPU, "options": {"virtualization": "true"}}), False),
+    ("nvidia-count-0", "compose.nvidia.yaml", True, _reserve({**_NVIDIA_GPU, "count": 0}), False),
+    ("nvidia-count-true", "compose.nvidia.yaml", True, _reserve({**_NVIDIA_GPU, "count": True}), False),
+    ("nvidia-count-and-ids", "compose.nvidia.yaml", True,
+     _reserve({**_NVIDIA_GPU, "count": 1, "device_ids": ["0"]}), False),
+    ("nvidia-empty-ids", "compose.nvidia.yaml", True, _reserve({**_NVIDIA_GPU, "device_ids": []}), False),
+    ("nvidia-second-request", "compose.nvidia.yaml", True,
+     _reserve({**_NVIDIA_GPU, "count": 1}, {"driver": "amd", "capabilities": ["gpu"]}), False),
+    ("nvidia-requests-not-list", "compose.nvidia.yaml", True,
+     {"deploy": {"resources": {"reservations": {"devices": {"driver": "nvidia"}}}}}, False),
+    # Devices: /dev/kfd and /dev/dri, passed through unchanged, and nothing else.
+    ("amd-dev-mem", "compose.amd.yaml", True, {"devices": ["/dev/mem:/dev/mem"]}, False),
+    ("amd-dev-sda", "compose.amd.yaml", True, {"devices": ["/dev/sda:/dev/sda"]}, False),
+    ("amd-with-dev-sda", "compose.amd.yaml", True,
+     {"devices": ["/dev/dri:/dev/dri", "/dev/kfd:/dev/kfd", "/dev/sda:/dev/sda"]}, False),
+    ("amd-host-mem-as-dri", "compose.amd.yaml", True, {"devices": ["/dev/mem:/dev/dri"]}, False),
+    ("amd-dri-renamed", "compose.amd.yaml", True, {"devices": ["/dev/dri:/dev/gpu"]}, False),
+    ("amd-dri-permissions", "compose.amd.yaml", True, {"devices": ["/dev/dri:/dev/dri:rwm"]}, False),
+    ("amd-render-node", "compose.amd.yaml", True,
+     {"devices": ["/dev/dri/renderD128:/dev/dri/renderD128"]}, False),
+    ("amd-host-path-only", "compose.amd.yaml", True, {"devices": ["/dev/kfd"]}, False),
+    ("amd-cdi-name", "compose.amd.yaml", True, {"devices": ["amd.com/gpu=all"]}, False),
+    ("amd-long-syntax", "compose.amd.yaml", True,
+     {"devices": [{"source": "/dev/dri", "target": "/dev/dri", "permissions": "rwm"}]}, False),
+    ("amd-devices-not-list", "compose.amd.yaml", True, {"devices": "/dev/dri:/dev/dri"}, False),
+    # Every other privilege stays rejected beside an allowed accelerator.
+    ("amd-privileged", "compose.amd.yaml", True, {**_AMD_GPU, "privileged": True}, False),
+    ("nvidia-privileged", "compose.nvidia.yaml", True,
+     {**_reserve({**_NVIDIA_GPU, "count": 1}), "privileged": True}, False),
+    ("amd-cap-add", "compose.amd.yaml", True, {**_AMD_GPU, "cap_add": ["SYS_ADMIN"]}, False),
+    ("nvidia-cap-add", "compose.nvidia.yaml", True,
+     {**_reserve({**_NVIDIA_GPU, "count": 1}), "cap_add": ["SYS_RAWIO"]}, False),
+    ("amd-host-network", "compose.amd.yaml", True, {**_AMD_GPU, "network_mode": "host"}, False),
+    ("nvidia-host-pid", "compose.nvidia.yaml", True, {**_reserve(_NVIDIA_GPU), "pid": "host"}, False),
+    ("amd-host-ipc", "compose.amd.yaml", True, {**_AMD_GPU, "ipc": "host"}, False),
+    # Only the curated recipe's overlay for that same backend.
+    ("nvidia-in-amd-overlay", "compose.amd.yaml", True, _reserve({**_NVIDIA_GPU, "count": 1}), False),
+    ("amd-in-nvidia-overlay", "compose.nvidia.yaml", True, _AMD_GPU, False),
+    ("nvidia-in-compose-yaml", "compose.yaml", True, _reserve({**_NVIDIA_GPU, "count": 1}), False),
+    ("amd-in-compose-yaml", "compose.yaml", True, _AMD_GPU, False),
+    ("amd-in-local-overlay", "compose.local.yaml", True, _AMD_GPU, False),
+    ("nvidia-in-multigpu-overlay", "compose.multigpu.yaml", True, _reserve(_NVIDIA_GPU), False),
+    ("amd-in-cpu-overlay", "compose.cpu.yaml", True, _AMD_GPU, False),
+    ("nvidia-imported-recipe", "compose.nvidia.yaml", False, _reserve({**_NVIDIA_GPU, "count": 1}), False),
+    ("amd-imported-recipe", "compose.amd.yaml", False, _AMD_GPU, False),
+    # gpus: and runtime: are other routes to a GPU; no recipe may set them anywhere.
+    ("gpus-all-compose-yaml", "compose.yaml", True, {"gpus": "all"}, False),
+    ("gpus-all-nvidia-overlay", "compose.nvidia.yaml", True, {"gpus": "all"}, False),
+    ("gpus-request-nvidia-overlay", "compose.nvidia.yaml", True,
+     {"gpus": [{"driver": "nvidia", "count": 1, "capabilities": ["gpu"]}]}, False),
+    ("gpus-all-amd-overlay", "compose.amd.yaml", True, {**_AMD_GPU, "gpus": "all"}, False),
+    ("gpus-all-imported-recipe", "compose.yaml", False, {"gpus": "all"}, False),
+    ("runtime-nvidia-compose-yaml", "compose.yaml", True, {"runtime": "nvidia"}, False),
+    ("runtime-nvidia-nvidia-overlay", "compose.nvidia.yaml", True,
+     {**_reserve({**_NVIDIA_GPU, "count": 1}), "runtime": "nvidia"}, False),
+    ("runtime-runc-amd-overlay", "compose.amd.yaml", True, {**_AMD_GPU, "runtime": "runc"}, False),
+    ("runtime-nvidia-imported-recipe", "compose.yaml", False, {"runtime": "nvidia"}, False),
+]
+
+
+@pytest.mark.parametrize("compose_name, trusted, fragment, allowed",
+                         [case[1:] for case in ACCELERATOR_POLICY],
+                         ids=[case[0] for case in ACCELERATOR_POLICY])
+def test_accelerator_policy_is_the_same_in_dashboard_and_resolver(tmp_path, compose_name, trusted,
+                                                                   fragment, allowed):
+    """The install scan and the compose resolver enforce one policy."""
+    compose = tmp_path / compose_name
+    compose.write_text(yaml.safe_dump({"services": {"recipe": {"image": "example:fixture", **fragment}}}),
+                       encoding="utf-8")
+    accelerator = _accelerator(compose_name)
+    scan, _ = _resolver_scan(tmp_path)
+    ok, warnings = scan(compose, trusted, accelerator)
+    assert ok is allowed and bool(warnings) is not allowed, warnings
+    if allowed:
+        extensions._scan_compose_content(compose, trusted=trusted, accelerator=accelerator)
+    else:
+        with pytest.raises(HTTPException) as rejected:
+            extensions._scan_compose_content(compose, trusted=trusted, accelerator=accelerator)
+        assert rejected.value.status_code == 400
+
+
+def test_library_install_rejects_an_overlay_the_resolver_would_drop(tmp_path, monkeypatch):
+    """A curated overlay outside the policy fails the install instead of running
+    the service without its accelerator."""
+    library = tmp_path / "library"
+    recipe = library / "ollama"
+    shutil.copytree(LIBRARY / "ollama", recipe)
+    (recipe / "compose.amd.yaml").write_text(yaml.safe_dump(
+        {"services": {"ollama": {"devices": ["/dev/dri:/dev/dri", "/dev/mem:/dev/mem"]}}}), encoding="utf-8")
+    monkeypatch.setattr(extensions, "EXTENSIONS_LIBRARY_DIR", library)
+    monkeypatch.setattr(extensions, "USER_EXTENSIONS_DIR", tmp_path / "user")
+    with pytest.raises(HTTPException) as rejected:
+        with extensions._staged_library_extension("ollama", tmp_path / "user" / "ollama"):
+            pass
+    assert rejected.value.status_code == 400
+    assert "unsupported devices" in rejected.value.detail
+    assert not (tmp_path / "user" / "ollama").exists()
 
 
 def test_curated_recipes_have_distinct_projects_and_available_ports():
@@ -252,3 +596,20 @@ def test_capability_free_root_services_do_not_write_owner_prepared_binds():
     assert checked > 150, "Library compose discovery unexpectedly found little"
     assert not offenders, ("Run as the install owner, e.g. user: \"${ODS_UID:-1000}:${ODS_GID:-1000}\":\n"
                            + "\n".join(offenders))
+
+
+def test_library_install_names_the_overlay_that_may_hold_the_gpu(tmp_path, monkeypatch):
+    """The resolver never loads compose.multigpu-nvidia.yaml for an extension;
+    the install error says where a curated recipe may reserve its GPU."""
+    library = tmp_path / "library"
+    recipe = library / "ollama"
+    shutil.copytree(LIBRARY / "ollama", recipe)
+    shutil.copy2(recipe / "compose.nvidia.yaml", recipe / "compose.multigpu-nvidia.yaml")
+    monkeypatch.setattr(extensions, "EXTENSIONS_LIBRARY_DIR", library)
+    monkeypatch.setattr(extensions, "USER_EXTENSIONS_DIR", tmp_path / "user")
+    with pytest.raises(HTTPException) as rejected:
+        with extensions._staged_library_extension("ollama", tmp_path / "user" / "ollama"):
+            pass
+    assert rejected.value.status_code == 400
+    assert "(compose.multigpu-nvidia.yaml)" in rejected.value.detail
+    assert "only from compose.nvidia.yaml" in rejected.value.detail

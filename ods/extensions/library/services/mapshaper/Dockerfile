@@ -4,7 +4,13 @@ WORKDIR /app
 ADD --checksum=sha256:0810daa530a2b7020e98c2f02ed58cfa32c8151eb048ee7b79ad59774b79f0b7 https://codeload.github.com/mbloch/mapshaper/tar.gz/629049657b54242552d3488b39e75b3a78cd68d2 /tmp/source.tar.gz
 RUN tar -xzf /tmp/source.tar.gz --strip-components=1 -C /app
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-RUN npm ci --no-audit --no-fund && npm run build && npm run docs
+# The docs build requires the example assets that upstream regenerates with
+# `make -C docs/examples/data all` (its .gitignore keeps them out of the
+# source archive), so build them with the just-built CLI first.
+RUN apk add --no-cache make zip
+RUN npm ci --no-audit --no-fund && npm run build \
+    && PATH="/app/bin:$PATH" make -C docs/examples/data all \
+    && npm run docs
 COPY basemap.js /app/www/basemap.js
 FROM nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
 RUN rm -rf /usr/share/nginx/html/*

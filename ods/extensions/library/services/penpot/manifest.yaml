@@ -27,11 +27,14 @@ service:
     required: true
     secret: true
     description: Random persistent password for the private PostgreSQL database.
+    generate: password
   - key: PENPOT_SECRET_KEY
     required: true
     secret: true
     description: 'Persistent session/signing secret: generate 64 random bytes, URL-safe
       base64 encoded.'
+    min_length: 64
+    generate: hex128
   - key: PENPOT_PUBLIC_URI
     required: false
     default: http://localhost:11026

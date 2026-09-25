@@ -29,6 +29,9 @@ service:
     required: true
     secret: true
     description: Private access key for the LightRAG UI/API.
+    pattern: '^[!-~]+$'
+    format_description: printable ASCII without spaces
+    generate: token
   - key: LIGHTRAG_EMBEDDING_DIM
     required: true
     secret: false

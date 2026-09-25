@@ -27,6 +27,8 @@ service:
     required: true
     secret: true
     description: Persistent random signing secret; generate at least 32 random bytes.
+    min_length: 32
+    generate: token
   - key: VIKUNJA_SERVICE_PUBLICURL
     required: false
     default: http://localhost:11031/

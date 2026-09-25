@@ -27,10 +27,15 @@ service:
     secret: true
     description: Random 64-hex password for local registry user ods; reapplied on
       startup.
+    format: hex64
+    generate: hex64
   - key: DISTRIBUTION_HTTP_SECRET
     required: true
     secret: true
     description: Distinct stable random 64-hex secret for registry upload state.
+    format: hex64
+    distinct_from: [DISTRIBUTION_PASSWORD]
+    generate: hex64
   external_link: false
 tags:
 - containers

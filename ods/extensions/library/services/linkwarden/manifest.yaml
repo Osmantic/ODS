@@ -29,14 +29,23 @@ service:
     secret: true
     description: Random URL-safe database password (letters and digits, at least 32
       characters).
+    pattern: '^[A-Za-z0-9]+$'
+    format_description: letters and digits only
+    min_length: 32
+    generate: token
   - key: LINKWARDEN_AUTH_SECRET
     required: true
     secret: true
     description: Persistent random authentication secret.
+    generate: token
   - key: LINKWARDEN_SEARCH_KEY
     required: true
     secret: true
     description: Private search index key, at least 16 random characters.
+    pattern: '^[!-~]+$'
+    format_description: printable ASCII without spaces
+    min_length: 16
+    generate: token
   - key: LINKWARDEN_AUTH_URL
     required: false
     default: http://localhost:11023/api/v1/auth

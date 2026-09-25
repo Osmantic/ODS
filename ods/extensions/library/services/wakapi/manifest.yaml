@@ -28,6 +28,8 @@ service:
     secret: true
     description: Persistent random password pepper, at least 32 random characters.
       Back up and do not rotate casually.
+    min_length: 32
+    generate: hex32
   - key: WAKAPI_ALLOW_SIGNUP
     required: false
     default: 'true'

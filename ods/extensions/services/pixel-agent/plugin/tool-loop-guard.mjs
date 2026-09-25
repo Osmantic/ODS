@@ -23,6 +23,7 @@ import { captureNativeWebSearchResult, projectNativeWebSearchResult, projectWebR
 import { SEARCH_PACING_STREAK, SEARCH_PACING_REASON, searchTerms, nearDuplicateSearch, searchLeadUrls,
   duplicateSearchReason, ownerResearchDate, staleSearchDate, staleSearchDateGuidance } from "./research-pacing.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
+import { researchRequestProblem } from "./perplexica-research.mjs";
 import { HOST_CITATION_LIMITS } from './citation-verification.mjs';
 import { createExtensionCompletionGate } from "./extension-completion-gate.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
@@ -92,10 +93,17 @@ export const WEB_BUDGET_EXHAUSTED_REASON =
   "Pixel's web-research budget is exhausted for this response. Do not call web tools again. Finish using the evidence already collected and any otherwise-authorized tools, including saving the requested report. Preserve existing evidence and clearly state any missing external information.";
 
 export const WEB_SEARCH_BUDGET_EXHAUSTED_REASON =
-  "Pixel's search-call allowance is exhausted for this response. Do not repeat web_search. Use web_fetch or targeted extraction for already identified public sources within the remaining page-reading and total allowances, or finish using collected evidence and otherwise-authorized tools, including saving the requested report.";
+  "Pixel's search-call allowance is exhausted for this response. Do not repeat web_search or pixel_ods_research. Use web_fetch or targeted extraction for already identified public sources within the remaining page-reading and total allowances, or finish using collected evidence and otherwise-authorized tools, including saving the requested report.";
 
 export const WEB_FETCH_BUDGET_EXHAUSTED_REASON =
   "Pixel's page-reading allowance is exhausted for this response. Do not repeat web_fetch, pixel_ods_web_extract or pixel_ods_research. Search may continue within its remaining search and total allowances. Finish using collected evidence and otherwise-authorized tools, including saving the requested report; do not claim unread pages were verified.";
+
+// Perplexica runs its own searches and model calls on the owner's host, and
+// its answer is orientation only (perplexica-research.mjs). One call per
+// response; a repeat runs nothing and is a free correction.
+export const PERPLEXICA_CALLS_PER_RESPONSE = 1;
+export const PERPLEXICA_REPEAT_REASON =
+  "Nothing ran: Perplexica research was already used in this response, and its answer is orientation only. Do not call pixel_ods_research again in this response. Read the pages you need with web_fetch or pixel_ods_web_extract, search with web_search, or finish with the evidence already collected.";
 
 export const WEB_LOOP_ABORT_REASON =
   "Pixel stopped this response because it requested another web tool after the bounded research budget was exhausted. Start a fresh message to continue with a narrower research question.";
@@ -7001,11 +7009,22 @@ export function createToolLoopGuard({
     });
   }
 
+  // Allowance units one executed web call uses. Perplexica runs its own
+  // searches and returns search results, so it uses a search and a page-read
+  // unit, although it never reads a page for Pixel (no read receipt).
+  function webCost(toolName) {
+    if (toolName === "web_search") return { search: 1, fetch: 0 };
+    if (toolName === "pixel_ods_research") return { search: 1, fetch: 1 };
+    return { search: 0, fetch: 1 };
+  }
+
   function exhaustedWebBudget(state, toolName) {
     if (!WEB_TOOLS.has(toolName)) return null;
-    if (state.total >= effective.total) return "total";
-    const kind = toolName === "web_search" ? "search" : "fetch";
-    return state[kind] >= effective[kind] ? kind : null;
+    const cost = webCost(toolName);
+    if (state.total + cost.search + cost.fetch > effective.total) return "total";
+    if (cost.search && state.search + cost.search > effective.search) return "search";
+    if (cost.fetch && state.fetch + cost.fetch > effective.fetch) return "fetch";
+    return null;
   }
 
   function webBudgetReason(budget) {
@@ -7032,6 +7051,7 @@ export function createToolLoopGuard({
         search: 0,
         fetch: 0,
         total: 0,
+        researchCalls: 0,
         webLoopAborted: false,
         researchStopped: false,
         webTerminals: new Map(),
@@ -9024,6 +9044,23 @@ export function createToolLoopGuard({
       return { block: true, blockReason: WEB_LOOP_ABORT_REASON };
     }
 
+    // Perplexica: an unusable brief is refused before it is charged, and so
+    // is a second call in one response. Both run nothing and are free
+    // corrections; direct and Tool Search forms share this point, and the
+    // nested Tool Search execution is checked again before it is charged.
+    if (selectedToolName === "pixel_ods_research") {
+      const researchCallId = context?.toolCallId ?? event?.toolCallId;
+      const problem = researchRequestProblem(selectedParams);
+      if (problem) {
+        recordFreeCorrection(state, "research-request", researchCallId, toolName);
+        return { block: true, blockReason: problem };
+      }
+      if (state.researchCalls >= PERPLEXICA_CALLS_PER_RESPONSE) {
+        recordFreeCorrection(state, "research-repeat", researchCallId, toolName);
+        return { block: true, blockReason: PERPLEXICA_REPEAT_REASON };
+      }
+    }
+
     // Never silently downgrade a requested HTTP action into a successful GET.
     // Both direct and Tool Search calls pass here before dispatch. Rejections
     // consume the same bounded web budget; another permitted tool may recover.
@@ -9208,10 +9245,14 @@ export function createToolLoopGuard({
         : undefined;
     }
 
-    const kind = toolName === "web_search" ? "search" : "fetch";
-    state[kind] += 1;
-    state.total += 1;
-    if (kind === "fetch") {
+    const cost = webCost(toolName);
+    state.search += cost.search;
+    state.fetch += cost.fetch;
+    state.total += cost.search + cost.fetch;
+    if (toolName === "pixel_ods_research") {
+      // Perplexica reads no page for Pixel: the unread-search streak stays.
+      state.researchCalls += 1;
+    } else if (cost.fetch) {
       // Any page-reading attempt ends the unread-search streak.
       state.unreadSearchStreak = 0;
       state.searchPacingPaused = false;
@@ -9803,7 +9844,9 @@ export function createToolLoopGuard({
         pendingToolRun.capturedToolSearchFailed = Boolean(event.error || event.result?.isError);
       }
     }
-    if (toolName === 'tool_call' && ['pixel_ods_web_extract', 'browser'].includes(pendingToolRun?.selectedToolName) &&
+    // pixel_ods_research is bound for parity with its direct form: it marks
+    // web work and returned sources, never a page read.
+    if (toolName === 'tool_call' && ['pixel_ods_web_extract', 'pixel_ods_research', 'browser'].includes(pendingToolRun?.selectedToolName) &&
         pendingToolRun.runId === runId) {
       const selected = pendingToolRun.selectedToolName;
       const envelope = toolSearchEventEnvelope(event, selected, selected === 'browser' ? 'core' : 'pixel-ods');

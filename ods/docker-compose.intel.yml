@@ -13,17 +13,20 @@
 
 services:
   llama-server:
-    image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-intel-b8248@sha256:5543520d6928680db017e2d12283846a396d49876b04f09f08360d0fa020fcac}
+    image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-intel-b9014@sha256:9c7bbaad3663523a3deb8927d3cfbf58d33f00a7634c69843e9eeeda01568c1b}
     devices:
       - /dev/dri:/dev/dri
     group_add:
       - "${VIDEO_GID:-44}"
       - "${RENDER_GID:-992}"
     environment:
-      # Level Zero selects the Intel Arc GPU; persistent cache avoids
-      # recompiling SYCL kernels on every container start.
-      - ONEAPI_DEVICE_SELECTOR=level_zero:gpu
-      - SYCL_CACHE_PERSISTENT=1
+      # Level Zero selects the Intel Arc GPU.
+      # SYCL_CACHE_PERSISTENT is deliberately not set: with the oneAPI 2025.3
+      # runtime in the b9014 image it crashes llama-server (ggml-org/llama.cpp
+      # #21474, #22095; intel/llvm#22853). ONEAPI_DEVICE_SELECTOR can be set in
+      # .env; use level_zero:0 on hosts with more than one Intel GPU
+      # (ggml-org/llama.cpp#21747).
+      - ONEAPI_DEVICE_SELECTOR=${ONEAPI_DEVICE_SELECTOR:-level_zero:gpu}
       # Enable Intel GPU System Management Interface for telemetry
       - ZES_ENABLE_SYSMAN=1
     command:

@@ -24,6 +24,8 @@ service:
       required: true
       secret: true
       description: Brave Search API subscription token (obtain at api.search.brave.com)
+      pattern: '^[!-~]+$'
+      format_description: printable ASCII without spaces
     - key: BRAVE_SEARCH_PORT
       required: false
       default: "8585"

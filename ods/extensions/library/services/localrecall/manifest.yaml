@@ -29,6 +29,11 @@ service:
     secret: true
     description: At least 24 random ASCII characters without spaces or commas. Browser
       username is ods; this key is the password and API Bearer token.
+    pattern: '^[-!-+.-~]+$'
+    format_description: printable ASCII without spaces or commas
+    min_length: 24
+    max_length: 4096
+    generate: token
   ui_path: /
 tags:
 - productivity

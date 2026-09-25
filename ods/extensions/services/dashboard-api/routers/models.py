@@ -49,7 +49,9 @@ from host_agent_client import (
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
 from pixel_runtime_state import pixel_stream_active
+from context_policy import HERMES_MIN_CONTEXT
 from performance_oracle import (
+    activation_context_plan,
     build_models_payload,
     build_sample_signature,
     current_model_matches,
@@ -589,6 +591,57 @@ def _requested_activation_context(
             detail=f"context_length must be a safe integer of at least {_MIN_MODEL_CONTEXT}",
         )
     return value
+
+
+def _policy_activation_context(model_id: str, preferred_context: int | None = None) -> int | None:
+    """Context a switch to ``model_id`` serves: the installer's policy.
+
+    performance_oracle.activation_context_plan runs the installer's selector
+    code for this one model on this hardware (the Hermes floor when it fits,
+    otherwise the largest context that does), so a dashboard switch, the
+    model list and a fresh install agree. None keeps the host agent's own
+    default (unknown hardware, an import outside the catalog, or a model that
+    fits at no context).
+    """
+    entry = _find_normalized_model(model_id)
+    if entry is None:
+        return None
+    try:
+        gpu = get_gpu_info()
+    except _GPU_VRAM_EXCEPTIONS as exc:
+        logger.debug("GPU detection failed while planning activation context: %s", exc)
+        gpu = None
+    plan = activation_context_plan(entry, INSTALL_DIR, gpu, preferred_context=preferred_context)
+    if not plan or not plan.get("fits"):
+        return None
+    try:
+        context = int(plan.get("context_length") or 0)
+    except (TypeError, ValueError):
+        return None
+    return context if _MIN_MODEL_CONTEXT <= context <= _MAX_MODEL_CONTEXT else None
+
+
+def _recommended_model_context(model: dict) -> int | None:
+    """Installer-recorded context when ``model`` is the installer's pick."""
+    identity = {
+        str(value).casefold()
+        for value in (
+            read_env_file_value("MODEL_RECOMMENDED_GGUF", INSTALL_DIR),
+            read_env_file_value("MODEL_RECOMMENDED_MODEL", INSTALL_DIR),
+        )
+        if value
+    }
+    if not identity & {
+        str(value).casefold()
+        for value in (model.get("gguf_file"), model.get("llm_model_name"), model.get("id"))
+        if value
+    }:
+        return None
+    try:
+        context = int(str(read_env_file_value("MODEL_RECOMMENDED_CONTEXT", INSTALL_DIR) or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return context if context > 0 else None
 
 
 def _configured_context_length() -> int | None:
@@ -2210,9 +2263,29 @@ def load_model(
 
     requested_context = _requested_activation_context(body)
     already_active, loaded_model = _already_active_model(model_id, model)
-    if already_active and (
+    served_context = _verified_activation_context(loaded_model) if already_active else None
+    # Without an explicit context, a switch serves what the installer would
+    # serve on this hardware (see _policy_activation_context), starting from
+    # the context this model already runs at, or the installer's pick.
+    policy_context = None
+    if requested_context is None:
+        if _configured_model_identity_matches(model):
+            preferred = _configured_context_length()
+        else:
+            preferred = _recommended_model_context(model)
+        policy_context = _policy_activation_context(model_id, preferred)
+    # An idempotent reload keeps a running model as it is, unless it runs
+    # below the Hermes floor and the floor fits: that model cannot serve
+    # ODS Talk, so the reload repairs it.
+    raise_below_floor = (
         requested_context is None
-        or requested_context == _verified_activation_context(loaded_model)
+        and policy_context is not None
+        and served_context is not None
+        and served_context < HERMES_MIN_CONTEXT <= policy_context
+    )
+    if already_active and not raise_below_floor and (
+        requested_context is None
+        or requested_context == served_context
     ):
         response: dict[str, Any] = {
             "status": "already_active",
@@ -2244,6 +2317,8 @@ def load_model(
     # Activation includes downstream synchronization and a bounded rollback.
     activation_body: dict[str, Any] = {"model_id": model_id}
     activation_context = requested_context
+    if activation_context is None and policy_context is not None:
+        activation_context = policy_context
     if (
         activation_context is None
         and (

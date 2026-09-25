@@ -27,11 +27,14 @@ service:
     required: true
     secret: true
     description: Persistent password for the private application PostgreSQL database.
+    generate: password
   - key: METABASE_ENCRYPTION_KEY
     required: true
     secret: true
     description: Persistent encryption key, at least 16 characters; generate 32 random
       bytes and retain with backups.
+    min_length: 16
+    generate: token
   - key: METABASE_SITE_URL
     required: false
     default: http://localhost:11033

@@ -161,3 +161,177 @@ def test_resolver_rejects_tampered_recipe_provenance(resolver_recipe, backend):
     files, diagnostics = resolve_recipe(resolver_recipe, backend, tampered=True)
     assert not any('user-extensions/distribution/' in path for path in files)
     assert 'installed source recipe changed' in diagnostics
+
+
+HOST_GATEWAY = 'host.docker.internal:host-gateway'
+
+
+def scanner(tmp_path):
+    """The resolver's user-extension compose scan and library trust decision."""
+    source = SCRIPT.read_text(encoding='utf-8')
+    start = source.index('_LOOPBACK_VAR_DEFAULT_RE = re.compile(')
+    end = source.index('def _extension_base_path(', start)
+    namespace = {'script_dir': tmp_path, 'pathlib': pathlib, 're': re, 'os': os, 'json': json, 'yaml': yaml}
+    exec(compile(ast.parse(source[start:end]), str(SCRIPT), 'exec'), namespace)
+    extension = tmp_path / 'data/user-extensions/gaia'
+    extension.mkdir(parents=True)
+    compose = extension / 'compose.yaml'
+    return namespace['_scan_user_compose_content'], namespace['_library_recipe_trusted'], extension, compose
+
+
+def write_extra_hosts(compose, extra_hosts):
+    compose.write_text(yaml.safe_dump({'services': {'gaia': {'image': 'example:fixture',
+                                                             'extra_hosts': extra_hosts}}}))
+
+
+@pytest.mark.parametrize('upstream, trusted', [
+    (None, True),  # curated recipe without provenance file (gaia)
+    ({'repository': 'https://github.com/amd/gaia', 'license': 'MIT'}, True),
+    ({'origin': 'github-proposal', 'repository': 'https://github.com/owner/project'}, False),
+    ('{not json', False),
+])
+def test_resolver_library_trust_mirrors_dashboard_install(tmp_path, upstream, trusted):
+    scan, library_trusted, extension, compose = scanner(tmp_path)
+    if upstream is not None:
+        (extension / 'upstream.json').write_text(upstream if isinstance(upstream, str) else json.dumps(upstream))
+    assert library_trusted(extension) is trusted
+    write_extra_hosts(compose, [HOST_GATEWAY])
+    ok, warnings = scan(compose, library_trusted(extension))
+    assert ok is trusted and bool(warnings) is not trusted, warnings
+
+
+def test_resolver_linked_provenance_is_untrusted(tmp_path):
+    _, library_trusted, extension, _ = scanner(tmp_path)
+    (tmp_path / 'elsewhere.json').write_text('{}')
+    try:
+        (extension / 'upstream.json').symlink_to(tmp_path / 'elsewhere.json')
+    except OSError:
+        pytest.skip('symlink privilege unavailable')
+    assert library_trusted(extension) is False
+
+
+@pytest.mark.parametrize('extra_hosts', [
+    ['metadata.internal:169.254.169.254'],
+    [HOST_GATEWAY, 'registry.example:10.0.0.1'],
+    ['host.docker.internal=host-gateway'],
+    {'host.docker.internal': 'host-gateway'},
+])
+def test_resolver_trusted_library_allows_only_the_host_gateway_entry(tmp_path, extra_hosts):
+    scan, _, _, compose = scanner(tmp_path)
+    write_extra_hosts(compose, extra_hosts)
+    ok, warnings = scan(compose, True)
+    assert not ok and any('unsupported extra_hosts' in item for item in warnings), warnings
+
+
+def test_resolver_untrusted_compose_keeps_rejecting_extra_hosts(tmp_path):
+    """The override file and imported recipes never get the exemption."""
+    scan, _, _, compose = scanner(tmp_path)
+    write_extra_hosts(compose, [HOST_GATEWAY])
+    ok, warnings = scan(compose)
+    assert not ok and any('declares extra_hosts' in item for item in warnings), warnings
+
+
+NVIDIA_GPU = {'deploy': {'resources': {'reservations': {'devices': [
+    {'driver': 'nvidia', 'count': 1, 'capabilities': ['gpu']}]}}}}
+AMD_GPU = {'devices': ['/dev/dri:/dev/dri', '/dev/kfd:/dev/kfd'],
+           'group_add': ['${VIDEO_GID:-44}', '${RENDER_GID:-992}']}
+
+
+def gpu_recipe_root(tmp_path, *, upstream=None, nvidia=NVIDIA_GPU, amd=AMD_GPU, override=None, base=None):
+    """An install root holding one GPU library recipe as the dashboard installs it."""
+    (tmp_path / 'docker-compose.base.yml').write_text('services: {}\n')
+    extension = tmp_path / 'data/user-extensions/gpu-recipe'
+    extension.mkdir(parents=True)
+    (extension / 'manifest.yaml').write_text(yaml.safe_dump({'schema_version': 'ods.services.v1', 'service': {
+        'id': 'gpu-recipe', 'name': 'GPU Recipe', 'compose_file': 'compose.yaml',
+        'gpu_backends': ['nvidia', 'amd']}}))
+    (extension / 'compose.yaml').write_text(yaml.safe_dump(
+        {'services': {'gpu-recipe': {'image': 'example:fixture', **(base or {})}}}))
+    (extension / 'compose.nvidia.yaml').write_text(yaml.safe_dump({'services': {'gpu-recipe': nvidia}}))
+    (extension / 'compose.amd.yaml').write_text(yaml.safe_dump({'services': {'gpu-recipe': amd}}))
+    if upstream is not None:
+        (extension / 'upstream.json').write_text(json.dumps(upstream))
+    if override is not None:
+        (tmp_path / 'docker-compose.override.yml').write_text(yaml.safe_dump({'services': {'base': override}}))
+    return tmp_path
+
+
+def resolve_root(root, backend):
+    env = {'PATH': str(pathlib.Path(sys.executable).parent) + os.pathsep + os.environ['PATH'],
+           'HOME': str(root), 'ODS_MODE': 'local'}
+    result = subprocess.run(['bash', str(SCRIPT), '--script-dir', str(root),
+                             '--gpu-backend', backend, '--tier', '1'],
+                            env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    return shlex.split(result.stdout)[1::2], result.stderr
+
+
+@pytest.mark.parametrize('backend', ['nvidia', 'amd'])
+def test_resolver_keeps_curated_gpu_overlay_on_its_backend(tmp_path, backend):
+    files, diagnostics = resolve_root(gpu_recipe_root(tmp_path), backend)
+    recipe = 'data/user-extensions/gpu-recipe/'
+    assert recipe + 'compose.yaml' in files
+    assert recipe + f'compose.{backend}.yaml' in files, diagnostics
+    assert recipe + ('compose.amd.yaml' if backend == 'nvidia' else 'compose.nvidia.yaml') not in files
+    assert 'WARNING' not in diagnostics
+
+
+@pytest.mark.parametrize('backend, overlay, reason', [
+    ('amd', {'devices': ['/dev/dri:/dev/dri', '/dev/mem:/dev/mem']}, 'declares unsupported devices'),
+    ('amd', {'devices': ['/dev/sda:/dev/sda']}, 'declares unsupported devices'),
+    ('amd', {**AMD_GPU, 'privileged': True}, 'uses privileged mode'),
+    ('amd', {**AMD_GPU, 'cap_add': ['SYS_ADMIN']}, 'adds dangerous capability'),
+    ('amd', NVIDIA_GPU, 'requests GPU passthrough'),
+    ('nvidia', {'deploy': {'resources': {'reservations': {'devices': [
+        {'driver': 'nvidia', 'count': 1, 'capabilities': ['gpu', 'utility', 'compute']}]}}}},
+     'unsupported GPU reservation'),
+    ('nvidia', {**NVIDIA_GPU, 'network_mode': 'host'}, 'uses host network mode'),
+    ('nvidia', AMD_GPU, 'declares devices'),
+    ('nvidia', {'gpus': 'all'}, 'requests GPUs via gpus'),
+    ('nvidia', {**NVIDIA_GPU, 'runtime': 'nvidia'}, 'sets a container runtime'),
+    ('amd', {**AMD_GPU, 'gpus': 'all'}, 'requests GPUs via gpus'),
+])
+def test_resolver_drops_curated_overlay_outside_the_accelerator_policy(tmp_path, backend, overlay, reason):
+    root = gpu_recipe_root(tmp_path, **{backend: overlay})
+    files, diagnostics = resolve_root(root, backend)
+    assert 'data/user-extensions/gpu-recipe/compose.yaml' in files
+    assert f'data/user-extensions/gpu-recipe/compose.{backend}.yaml' not in files
+    assert reason in diagnostics
+
+
+@pytest.mark.parametrize('backend', ['nvidia', 'amd'])
+def test_resolver_never_grants_an_imported_recipe_an_accelerator(tmp_path, backend):
+    """A github-proposal recipe is untrusted even in the exact ODS shape."""
+    root = gpu_recipe_root(tmp_path, upstream={'origin': 'github-proposal',
+                                               'repository': 'https://github.com/owner/project'})
+    files, diagnostics = resolve_root(root, backend)
+    assert 'data/user-extensions/gpu-recipe/compose.yaml' in files
+    assert f'data/user-extensions/gpu-recipe/compose.{backend}.yaml' not in files
+    assert ('declares devices' if backend == 'amd' else 'requests GPU passthrough') in diagnostics
+
+
+@pytest.mark.parametrize('backend, override, reason', [
+    ('amd', AMD_GPU, 'declares devices'),
+    ('nvidia', NVIDIA_GPU, 'requests GPU passthrough'),
+    ('nvidia', {'gpus': 'all'}, 'requests GPUs via gpus'),
+    ('nvidia', {'runtime': 'nvidia'}, 'sets a container runtime'),
+])
+def test_resolver_never_grants_the_override_file_an_accelerator(tmp_path, backend, override, reason):
+    files, diagnostics = resolve_root(gpu_recipe_root(tmp_path, override=override), backend)
+    assert 'docker-compose.override.yml' not in files
+    assert f'docker-compose.override.yml: service \'base\' {reason}' in diagnostics
+
+
+@pytest.mark.parametrize('upstream', [None, {'origin': 'github-proposal',
+                                             'repository': 'https://github.com/owner/project'}],
+                         ids=['curated', 'imported'])
+@pytest.mark.parametrize('base, reason', [
+    ({'gpus': 'all'}, 'requests GPUs via gpus'),
+    ({'runtime': 'nvidia'}, 'sets a container runtime'),
+], ids=['gpus', 'runtime'])
+def test_resolver_rejects_gpus_and_runtime_for_every_recipe(tmp_path, upstream, base, reason):
+    """Another route to a GPU drops the whole recipe, curated or imported."""
+    root = gpu_recipe_root(tmp_path, upstream=upstream, base=base)
+    files, diagnostics = resolve_root(root, 'nvidia')
+    assert not any('user-extensions/gpu-recipe/' in path for path in files)
+    assert reason in diagnostics

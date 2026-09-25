@@ -166,8 +166,51 @@
               "required": { "type": "boolean" },
               "secret": { "type": "boolean" },
               "description": { "type": "string" },
-              "default": { "type": "string" }
+              "default": { "type": "string" },
+              "format": {
+                "type": "string",
+                "enum": ["hex32", "hex64", "hex128", "email", "url", "integer"],
+                "description": "Named value format checked by the dashboard and dashboard-api before the value is saved: hexN = exactly N hexadecimal characters in either case (add a pattern where the service accepts only lowercase); email; url = http(s) URL without credentials; integer = positive whole number without leading zeros."
+              },
+              "pattern": {
+                "type": "string",
+                "pattern": "^\\^(?!.*\\\\[dDwWbBAZzGQEpP])(?!.*\\(\\?(?![=!:])).*\\$$",
+                "maxLength": 512,
+                "description": "Anchored regular expression the whole value must match, in addition to format. Must behave identically in Python re and JavaScript RegExp: use explicit classes such as [0-9] (no \\d, \\w, \\b), no \\p escapes, and no group opener other than (?: (?= (?!. Requires format_description."
+              },
+              "format_description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "description": "Short owner-facing explanation of pattern, read after \"must be\" (for example \"letters and digits only\")."
+              },
+              "min_length": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4096,
+                "description": "Minimum value length in characters."
+              },
+              "max_length": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4096,
+                "description": "Maximum value length in UTF-8 bytes (for example 72 for bcrypt-hashed passwords)."
+              },
+              "generate": {
+                "type": "string",
+                "enum": ["hex32", "hex64", "hex128", "password", "token"],
+                "description": "The dashboard may offer a crypto-random value: hexN = N lowercase hexadecimal characters, password = 24 letters and digits, token = 48 letters and digits. The generated value must satisfy format, pattern and lengths."
+              },
+              "distinct_from": {
+                "type": "array",
+                "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" },
+                "minItems": 1,
+                "maxItems": 8,
+                "uniqueItems": true,
+                "description": "Other settings declared by this manifest that this value must differ from (for example when the service refuses to start with two equal secrets)."
+              }
             },
+            "dependentRequired": { "pattern": ["format_description"], "format_description": ["pattern"] },
             "additionalProperties": false
           },
           "description": "Environment variables used by this service"

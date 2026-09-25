@@ -27,6 +27,8 @@ _selector_python=fake_selector
 _selector_script=unused
 _selector_catalog=unused
 SELECTED_TIER=1
+HERMES_CONTEXT_SIZE=65536
+ODS_HERMES_MIN_CONTEXT=65536
 LOG_FILE=/dev/null
 ODS_LOG_FILE=/dev/null
 {block}

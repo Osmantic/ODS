@@ -31,6 +31,8 @@ RUNTIME_KEYS = (
     "LLAMA_ARG_N_CPU_MOE",
     "LLAMA_ARG_NO_CACHE_PROMPT",
     "LLAMA_ARG_CHECKPOINT_EVERY_NT",
+    "LLAMA_ARG_CTX_CHECKPOINTS",
+    "LLAMA_ARG_CACHE_RAM",
     "LLAMA_ARG_SPEC_TYPE",
     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
     "LLAMA_ARG_SPEC_DRAFT_TYPE_K",
@@ -50,6 +52,8 @@ PORTABLE_STATE_RECOVERY_KEYS = {
     "LLAMA_ARG_FLASH_ATTN",
     "LLAMA_ARG_CACHE_TYPE_K",
     "LLAMA_ARG_CACHE_TYPE_V",
+    "LLAMA_ARG_CTX_CHECKPOINTS",
+    "LLAMA_ARG_CACHE_RAM",
 }
 
 
@@ -353,6 +357,10 @@ def valid_runtime_value(key: str, value: str) -> bool:
         return value.lower() in {"", "on", "off", "true", "false", "0", "1"}
     if key == "LLAMA_ARG_CHECKPOINT_EVERY_NT":
         return bool(re.fullmatch(r"-?[0-9]{1,10}", value))
+    if key == "LLAMA_ARG_CTX_CHECKPOINTS":
+        return value.isdigit() and int(value) <= 64
+    if key == "LLAMA_ARG_CACHE_RAM":
+        return value == "-1" or (value.isdigit() and int(value) <= 1048576)
     if key == "LLAMA_ARG_SPEC_TYPE":
         return bool(re.fullmatch(r"[A-Za-z0-9_,.-]{1,64}", value))
     if key == "LLAMA_ARG_SPEC_DRAFT_N_MAX":
@@ -463,6 +471,14 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     # of turning a catalog advisory into an upgrade-time hard limit.
     if context < 1024 or context > 9_007_199_254_740_991:
         return None
+    # The owner's choice is honored up to the model's declared native
+    # maximum only. Above it llama.cpp caps the slot at the training context,
+    # so the recorded value is never served and the activation's context
+    # proof cannot pass (tower2 2026-09-25: qwen3-30b-a3b-q4 recorded at
+    # 131072 on a 40960-token GGUF). Carry the context that is served.
+    native_max = positive_int(model.get("max_context_length"))
+    if native_max and context > native_max:
+        context = native_max
 
     reuse_env_runtime = (
         not state_authoritative

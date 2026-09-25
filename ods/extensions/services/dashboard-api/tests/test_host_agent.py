@@ -6956,6 +6956,12 @@ class TestInstallStatePollBehavior:
         def fake_run(argv, **kwargs):
             calls.append({"argv": list(argv), "kwargs": dict(kwargs)})
 
+            # The failure diagnostic's state and log reads: nothing to add.
+            if list(argv[:3]) == ["docker", "inspect", "--format"] and argv[3] == "{{json .State}}":
+                return _CP(0, "{}", "")
+            if list(argv[:2]) == ["docker", "logs"]:
+                return _CP(0, "", "")
+
             # docker inspect ... -> consume next scripted response
             if (len(argv) >= 2 and argv[0] == "docker" and argv[1] == "inspect"):
                 if not responses:

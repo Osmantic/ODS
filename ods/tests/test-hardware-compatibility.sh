@@ -150,7 +150,7 @@ if [[ -f "$TIER_MAP" ]]; then
 
     # Verify tier progression (higher tiers = larger models)
     if grep -A5 "^[[:space:]]*1)" "$TIER_MAP" | grep -q "qwen3.5-9b" && \
-       grep -A5 "^[[:space:]]*3)" "$TIER_MAP" | grep -q "qwen3-30b-a3b"; then
+       grep -A5 "^[[:space:]]*3)" "$TIER_MAP" | grep -q "qwen3.5-27b"; then
         pass "Tier progression validated (tier 1 < tier 3 model size)"
     else
         fail "Tier progression should increase model size"

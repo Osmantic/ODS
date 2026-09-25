@@ -151,6 +151,39 @@ def test_valid_curated_model_is_preserved() -> None:
             assert key not in values, f"inactive optional runtime key was exported: {key}"
 
 
+def test_cpu_profile_host_ram_caps_are_preserved() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        env.write_text(
+            env.read_text(encoding="utf-8")
+            + "LLAMA_ARG_CTX_CHECKPOINTS=4\nLLAMA_ARG_CACHE_RAM=1024\n",
+            encoding="utf-8",
+        )
+        values = run_helper(env, catalog, imports, models_dir)
+        assert values["LLAMA_ARG_CTX_CHECKPOINTS"] == "4"
+        assert values["LLAMA_ARG_CACHE_RAM"] == "1024"
+        env.write_text(
+            env.read_text(encoding="utf-8").replace("LLAMA_ARG_CTX_CHECKPOINTS=4", "LLAMA_ARG_CTX_CHECKPOINTS=many"),
+            encoding="utf-8",
+        )
+        assert "LLAMA_ARG_CTX_CHECKPOINTS" not in run_helper(env, catalog, imports, models_dir)
+
+
+def test_preserved_context_is_clamped_to_the_declared_native_context() -> None:
+    # The fixture declares max_context_length 131072. A recorded context above
+    # it (the old 131072 auto-picks of a 40960-token Qwen3-30B-A3B) is never
+    # served, so the rerun carries the native maximum; an owner's context
+    # within it is kept exactly.
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "MAX_CONTEXT=65536", "MAX_CONTEXT=262144")
+        replace_env(env, "CTX_SIZE=65536", "CTX_SIZE=262144")
+        assert run_helper(env, catalog, imports, models_dir)["MAX_CONTEXT"] == "131072"
+        replace_env(env, "MAX_CONTEXT=262144", "MAX_CONTEXT=98304")
+        replace_env(env, "CTX_SIZE=262144", "CTX_SIZE=98304")
+        assert run_helper(env, catalog, imports, models_dir)["MAX_CONTEXT"] == "98304"
+
+
 def test_valid_dashboard_import_is_preserved() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True)
@@ -437,6 +470,8 @@ def test_external_registered_model_store_is_preserved() -> None:
 def main() -> int:
     tests = [
         test_valid_curated_model_is_preserved,
+        test_cpu_profile_host_ram_caps_are_preserved,
+        test_preserved_context_is_clamped_to_the_declared_native_context,
         test_external_registered_model_store_is_preserved,
         test_commented_model_contract_survives_rerun,
         test_commented_contract_reaches_installer_safe_loader,

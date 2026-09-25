@@ -27,10 +27,15 @@ service:
     required: true
     secret: true
     description: Random 64-hex shared connection password.
+    format: hex64
+    generate: hex64
   - key: MUMBLE_SUPERUSER_PASSWORD
     required: true
     secret: true
     description: Distinct random 64-hex SuperUser password, reapplied at startup.
+    format: hex64
+    distinct_from: [MUMBLE_SERVER_PASSWORD]
+    generate: hex64
   external_link: false
 tags:
 - voice

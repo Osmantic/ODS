@@ -27,10 +27,15 @@ service:
     required: true
     secret: true
     description: Random 64-hex administrator password enforced on each startup.
+    format: hex64
+    generate: hex64
   - key: OWNCAST_STREAM_KEY
     required: true
     secret: true
     description: Distinct random 64-hex RTMP stream key enforced for this deployment.
+    format: hex64
+    distinct_from: [OWNCAST_ADMIN_PASSWORD]
+    generate: hex64
   ui_path: /
 tags:
 - video

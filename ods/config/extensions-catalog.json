@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-24T12:44:02Z",
+  "generated_at": "2026-09-25T17:56:01Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -812,17 +812,26 @@
         {
           "key": "BOOKSTACK_APP_KEY",
           "required": true,
-          "description": "Stable Laravel encryption key, base64 followed by a colon and base64 encoding of 32 random bytes. Preserve it with backups."
+          "description": "Stable Laravel encryption key, base64 followed by a colon and base64 encoding of 32 random bytes. Preserve it with backups.",
+          "pattern": "^base64:[A-Za-z0-9+/]{43}=$",
+          "format_description": "base64: followed by the base64 encoding of 32 random bytes (44 characters ending in =)"
         },
         {
           "key": "BOOKSTACK_DB_PASSWORD",
           "required": true,
-          "description": "Dedicated database password. Use at least 24 random alphanumeric characters; preserve it after initialization."
+          "description": "Dedicated database password. Use at least 24 random alphanumeric characters; preserve it after initialization.",
+          "pattern": "^[A-Za-z0-9]+$",
+          "format_description": "letters and digits only",
+          "min_length": 24,
+          "generate": "password"
         },
         {
           "key": "BOOKSTACK_URL",
           "required": true,
-          "description": "Browser origin including port, normally http://localhost:11148. Changing this later requires BookStack URL migration."
+          "description": "Browser origin including port, normally http://localhost:11148. Changing this later requires BookStack URL migration.",
+          "format": "url",
+          "pattern": "^https?://([A-Za-z0-9._~-]+|\\[[0-9A-Fa-f:.]+\\])(:[0-9]{1,5})?$",
+          "format_description": "an origin only: scheme, host and optional port, no path"
         }
       ],
       "tags": [
@@ -877,7 +886,9 @@
         {
           "key": "BRAVE_SEARCH_API_KEY",
           "required": true,
-          "description": "Brave Search API subscription token (obtain at api.search.brave.com)"
+          "description": "Brave Search API subscription token (obtain at api.search.brave.com)",
+          "pattern": "^[!-~]+$",
+          "format_description": "printable ASCII without spaces"
         },
         {
           "key": "BRAVE_SEARCH_PORT",
@@ -939,7 +950,8 @@
         {
           "key": "CHANGEDETECTION_PASSWORD",
           "required": true,
-          "description": "Required web login password, converted in memory to upstream salted PBKDF2 format on startup."
+          "description": "Required web login password, converted in memory to upstream salted PBKDF2 format on startup.",
+          "generate": "password"
         },
         {
           "key": "CHANGEDETECTION_BASE_URL",
@@ -1092,7 +1104,8 @@
         {
           "key": "CLICKHOUSE_PASSWORD",
           "required": true,
-          "description": "Strong password for the local ods database user. Keep with configuration backups."
+          "description": "Strong password for the local ods database user. Keep with configuration backups.",
+          "generate": "password"
         }
       ],
       "tags": [
@@ -1193,7 +1206,8 @@
         {
           "key": "CODE_SERVER_PASSWORD",
           "required": true,
-          "description": "Strong password required to access the editor and its container terminal."
+          "description": "Strong password required to access the editor and its container terminal.",
+          "generate": "password"
         }
       ],
       "tags": [
@@ -1342,7 +1356,9 @@
         {
           "key": "CONVERTX_JWT_SECRET",
           "required": true,
-          "description": "Persistent random login-token signing secret; use at least 32 random characters."
+          "description": "Persistent random login-token signing secret; use at least 32 random characters.",
+          "min_length": 32,
+          "generate": "token"
         }
       ],
       "tags": [
@@ -1396,7 +1412,8 @@
         {
           "key": "COUCHDB_PASSWORD",
           "required": true,
-          "description": "Initial password for the ods administrator. Use a single-line password; later changes are managed in CouchDB and persisted."
+          "description": "Initial password for the ods administrator. Use a single-line password; later changes are managed in CouchDB and persisted.",
+          "generate": "password"
         }
       ],
       "tags": [
@@ -1753,12 +1770,19 @@
         {
           "key": "DISTRIBUTION_PASSWORD",
           "required": true,
-          "description": "Random 64-hex password for local registry user ods; reapplied on startup."
+          "description": "Random 64-hex password for local registry user ods; reapplied on startup.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "DISTRIBUTION_HTTP_SECRET",
           "required": true,
-          "description": "Distinct stable random 64-hex secret for registry upload state."
+          "description": "Distinct stable random 64-hex secret for registry upload state.",
+          "format": "hex64",
+          "distinct_from": [
+            "DISTRIBUTION_PASSWORD"
+          ],
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -1859,7 +1883,9 @@
         {
           "key": "DOCUSEAL_SECRET_KEY_BASE",
           "required": true,
-          "description": "Stable random application secret: generate 64 random bytes as 128 hex characters and preserve it with backups."
+          "description": "Stable random application secret: generate 64 random bytes as 128 hex characters and preserve it with backups.",
+          "format": "hex128",
+          "generate": "hex128"
         }
       ],
       "tags": [
@@ -2009,7 +2035,11 @@
         {
           "key": "DUFS_PASSWORD",
           "required": true,
-          "description": "Password for ods, at least 12 bytes; exclude colon, at-sign, pipe, line breaks and crypt-hash prefix."
+          "description": "Password for ods, at least 12 bytes; exclude colon, at-sign, pipe, line breaks and crypt-hash prefix.",
+          "pattern": "^(?!\\$6\\$)[^:@|\\r\\n\\x00]+$",
+          "format_description": "no colon, @, | or line break, and not starting with $6$",
+          "min_length": 12,
+          "generate": "password"
         }
       ],
       "tags": [
@@ -2082,27 +2112,42 @@
         {
           "key": "ETHERPAD_ADMIN_PASSWORD",
           "required": true,
-          "description": "Password for the admin account."
+          "description": "Password for the admin account.",
+          "pattern": "^(?!(true|false|null|undefined)$)(?=[^g-hj-mp-su-wzG-HJ-NP-WYZ]*[g-hj-mp-su-wzG-HJ-NP-WYZ])[^\\n]+$",
+          "format_description": "text Etherpad keeps as text: include a letter such as g, h, k, m, p, r, s, u, w or z, and not true, false, null or undefined",
+          "generate": "password"
         },
         {
           "key": "ETHERPAD_USER_PASSWORD",
           "required": true,
-          "description": "Password for the non-administrator user account."
+          "description": "Password for the non-administrator user account.",
+          "pattern": "^(?!(true|false|null|undefined)$)(?=[^g-hj-mp-su-wzG-HJ-NP-WYZ]*[g-hj-mp-su-wzG-HJ-NP-WYZ])[^\\n]+$",
+          "format_description": "text Etherpad keeps as text: include a letter such as g, h, k, m, p, r, s, u, w or z, and not true, false, null or undefined",
+          "generate": "password"
         },
         {
           "key": "ETHERPAD_DATABASE_PASSWORD",
           "required": true,
-          "description": "Persistent dedicated PostgreSQL password."
+          "description": "Persistent dedicated PostgreSQL password.",
+          "pattern": "^(?!(true|false|null|undefined)$)(?=[^g-hj-mp-su-wzG-HJ-NP-WYZ]*[g-hj-mp-su-wzG-HJ-NP-WYZ])[^\\n]+$",
+          "format_description": "text Etherpad keeps as text: include a letter such as g, h, k, m, p, r, s, u, w or z, and not true, false, null or undefined",
+          "generate": "password"
         },
         {
           "key": "ETHERPAD_ADMIN_SECRET",
           "required": true,
-          "description": "Random secret for the built-in admin OAuth client."
+          "description": "Random secret for the built-in admin OAuth client.",
+          "pattern": "^(?!(true|false|null|undefined)$)(?=[^g-hj-mp-su-wzG-HJ-NP-WYZ]*[g-hj-mp-su-wzG-HJ-NP-WYZ])[^\\n]+$",
+          "format_description": "text Etherpad keeps as text: include a letter such as g, h, k, m, p, r, s, u, w or z, and not true, false, null or undefined",
+          "generate": "token"
         },
         {
           "key": "ETHERPAD_USER_SECRET",
           "required": true,
-          "description": "Independent random secret for the built-in user OAuth client."
+          "description": "Independent random secret for the built-in user OAuth client.",
+          "pattern": "^(?!(true|false|null|undefined)$)(?=[^g-hj-mp-su-wzG-HJ-NP-WYZ]*[g-hj-mp-su-wzG-HJ-NP-WYZ])[^\\n]+$",
+          "format_description": "text Etherpad keeps as text: include a letter such as g, h, k, m, p, r, s, u, w or z, and not true, false, null or undefined",
+          "generate": "token"
         }
       ],
       "tags": [
@@ -2156,7 +2201,10 @@
         {
           "key": "EVIDENTLY_SECRET",
           "required": true,
-          "description": "Secret required by SDK clients to write evaluation reports."
+          "description": "Secret required by SDK clients to write evaluation reports.",
+          "pattern": "^[!-~]+$",
+          "format_description": "printable ASCII without spaces",
+          "generate": "token"
         }
       ],
       "tags": [
@@ -2258,12 +2306,17 @@
         {
           "key": "FILEBROWSER_QUANTUM_ADMIN_PASSWORD",
           "required": true,
-          "description": "Initial password for the admin account; use the application account controls for later changes."
+          "description": "Initial password for the admin account; use the application account controls for later changes.",
+          "min_length": 12,
+          "max_length": 72,
+          "generate": "password"
         },
         {
           "key": "FILEBROWSER_QUANTUM_JWT_SECRET",
           "required": true,
-          "description": "Persistent random signing secret for login tokens; at least 32 random characters recommended."
+          "description": "Persistent random signing secret for login tokens; at least 32 random characters recommended.",
+          "min_length": 32,
+          "generate": "token"
         }
       ],
       "tags": [
@@ -2317,7 +2370,9 @@
         {
           "key": "FLARUM_DB_PASSWORD",
           "required": true,
-          "description": "Stable random 64-hex database password; changing environment alone does not rotate an initialized database."
+          "description": "Stable random 64-hex database password; changing environment alone does not rotate an initialized database.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -2877,7 +2932,9 @@
         {
           "key": "GARAGE_RPC_SECRET",
           "required": true,
-          "description": "Stable 64-hex node RPC secret; preserve with the metadata backup."
+          "description": "Stable 64-hex node RPC secret; preserve with the metadata backup.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -2930,7 +2987,10 @@
         {
           "key": "GATUS_ENDPOINT",
           "required": true,
-          "description": "HTTP(S) endpoint reachable from the container that should return 200. No embedded credentials."
+          "description": "HTTP(S) endpoint reachable from the container that should return 200. No embedded credentials.",
+          "format": "url",
+          "pattern": "^https?://([A-Za-z0-9._~-]+|\\[[0-9A-Fa-f:.]+\\])(:[0-9]*)?([/?]([!-\"$&-~]|%[0-9A-Fa-f]{2})*)?$",
+          "format_description": "with a lowercase scheme, no #fragment and only valid % escapes"
         }
       ],
       "tags": [
@@ -3116,7 +3176,9 @@
         {
           "key": "GOTIFY_ADMIN_PASSWORD",
           "required": true,
-          "description": "Initial administrator password; existing accounts are not reset by changing this value."
+          "description": "Initial administrator password; existing accounts are not reset by changing this value.",
+          "max_length": 72,
+          "generate": "password"
         }
       ],
       "tags": [
@@ -3170,12 +3232,19 @@
         {
           "key": "GRAFANA_ADMIN_PASSWORD",
           "required": true,
-          "description": "64-hex initial administrator password for ods; existing users are not reset."
+          "description": "64-hex initial administrator password for ods; existing users are not reset.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "GRAFANA_SECRET_KEY",
           "required": true,
-          "description": "Distinct stable 64-hex key protecting stored data-source credentials; preserve with backups."
+          "description": "Distinct stable 64-hex key protecting stored data-source credentials; preserve with backups.",
+          "format": "hex64",
+          "distinct_from": [
+            "GRAFANA_ADMIN_PASSWORD"
+          ],
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -3230,12 +3299,15 @@
         {
           "key": "GRIST_OWNER_EMAIL",
           "required": true,
-          "description": "Local single-user document identity, not a password or verified login."
+          "description": "Local single-user document identity, not a password or verified login.",
+          "format": "email"
         },
         {
           "key": "GRIST_SESSION_SECRET",
           "required": true,
-          "description": "Persistent random session signing secret; use at least 32 random characters."
+          "description": "Persistent random session signing secret; use at least 32 random characters.",
+          "min_length": 32,
+          "generate": "token"
         }
       ],
       "tags": [
@@ -3393,12 +3465,19 @@
         {
           "key": "HEALTHCHECKS_SECRET_KEY",
           "required": true,
-          "description": "Stable random 64-hex session signing secret."
+          "description": "Stable random 64-hex session signing secret.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "HEALTHCHECKS_DB_PASSWORD",
           "required": true,
-          "description": "Distinct 64-hex PostgreSQL password; retain for existing data."
+          "description": "Distinct 64-hex PostgreSQL password; retain for existing data.",
+          "format": "hex64",
+          "distinct_from": [
+            "HEALTHCHECKS_SECRET_KEY"
+          ],
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -3453,12 +3532,15 @@
         {
           "key": "HEDGEDOC_DATABASE_PASSWORD",
           "required": true,
-          "description": "Persistent password for the dedicated notes database."
+          "description": "Persistent password for the dedicated notes database.",
+          "generate": "password"
         },
         {
           "key": "HEDGEDOC_SESSION_SECRET",
           "required": true,
-          "description": "Persistent random session signing secret; use at least 32 random characters."
+          "description": "Persistent random session signing secret; use at least 32 random characters.",
+          "min_length": 32,
+          "generate": "token"
         },
         {
           "key": "HEDGEDOC_DOMAIN",
@@ -3597,7 +3679,7 @@
     {
       "id": "hermes-proxy",
       "name": "Hermes Auth Proxy",
-      "description": "Caddy-based reverse proxy that fronts the Hermes Agent extension. Opens Hermes directly by default. Set HERMES_REQUIRE_OWNER_CARD=true to verify the signed `ods-session` cookie via dashboard-api before forwarding. Hermes's own session-token model handles per-request auth in both modes. Native streaming + WebSocket support via Caddy's `reverse_proxy`.\n",
+      "description": "Caddy-based reverse proxy that fronts the Hermes Agent extension. The dashboard opens an authenticated ODS launch at /auth/ods. Native Hermes login remains available. Set HERMES_REQUIRE_OWNER_CARD=true to verify the signed `ods-session` cookie via dashboard-api before forwarding. Hermes's own provider session handles per-request auth in both modes. Native streaming + WebSocket support via Caddy's `reverse_proxy`.\n",
       "category": "recommended",
       "gpu_backends": [
         "all"
@@ -3689,7 +3771,9 @@
         {
           "key": "HOMEBOX_API_KEY_PEPPER",
           "required": true,
-          "description": "Stable random secret of at least 32 bytes for API-key hashing; retain with backups."
+          "description": "Stable random secret of at least 32 bytes for API-key hashing; retain with backups.",
+          "min_length": 32,
+          "generate": "token"
         },
         {
           "key": "HOMEBOX_ALLOW_REGISTRATION",
@@ -3750,12 +3834,15 @@
         {
           "key": "HOMEPAGE_AUTH_PASSWORD",
           "required": true,
-          "description": "Password for the Homepage dashboard; not the ODS account password."
+          "description": "Password for the Homepage dashboard; not the ODS account password.",
+          "generate": "password"
         },
         {
           "key": "HOMEPAGE_AUTH_SECRET",
           "required": true,
-          "description": "Persistent random session signing secret, at least 32 characters. Rotation invalidates sessions."
+          "description": "Persistent random session signing secret, at least 32 characters. Rotation invalidates sessions.",
+          "min_length": 32,
+          "generate": "token"
         },
         {
           "key": "HOMEPAGE_EXTERNAL_URL",
@@ -3827,12 +3914,16 @@
         {
           "key": "HOPPSCOTCH_DB_PASSWORD",
           "required": true,
-          "description": "64 random hexadecimal characters for the dedicated PostgreSQL account."
+          "description": "64 random hexadecimal characters for the dedicated PostgreSQL account.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "HOPPSCOTCH_ENCRYPTION_KEY",
           "required": true,
-          "description": "Stable 32-hex data-encryption key; retain with database backups."
+          "description": "Stable 32-hex data-encryption key; retain with database backups.",
+          "format": "hex32",
+          "generate": "hex32"
         }
       ],
       "tags": [
@@ -3886,22 +3977,31 @@
         {
           "key": "HUGINN_DATABASE_PASSWORD",
           "required": true,
-          "description": "Persistent password for the private Huginn PostgreSQL database."
+          "description": "Persistent password for the private Huginn PostgreSQL database.",
+          "pattern": "^(?!(0[0-7]+|0x[0-9a-fA-F]+|0b[01]+)$)(?!([Yy][Ee][Ss]|[Nn][Oo]|[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Oo][Nn]|[Oo][Ff][Ff]|[Nn][Uu][Ll][Ll])$)[A-Za-z0-9]+$",
+          "format_description": "letters and digits only, not a YAML number or boolean such as 0755, 0x1F, yes, no, on, off, true, false or null",
+          "generate": "password"
         },
         {
           "key": "HUGINN_SECRET_TOKEN",
           "required": true,
-          "description": "Persistent random Rails secret, at least 64 random characters."
+          "description": "Persistent random Rails secret, at least 64 random characters.",
+          "min_length": 64,
+          "generate": "hex128"
         },
         {
           "key": "HUGINN_ADMIN_PASSWORD",
           "required": true,
-          "description": "Strong initial owner password; does not reset an existing account."
+          "description": "Strong initial owner password; does not reset an existing account.",
+          "min_length": 8,
+          "max_length": 128,
+          "generate": "password"
         },
         {
           "key": "HUGINN_INVITATION_CODE",
           "required": true,
-          "description": "Private invitation code needed for additional registrations."
+          "description": "Private invitation code needed for additional registrations.",
+          "generate": "password"
         },
         {
           "key": "HUGINN_ADMIN_USER",
@@ -3974,7 +4074,10 @@
         {
           "key": "IMMICH_DB_PASSWORD",
           "required": true,
-          "description": "PostgreSQL password"
+          "description": "PostgreSQL password",
+          "pattern": "^[A-Za-z0-9]+$",
+          "format_description": "letters and digits only",
+          "generate": "password"
         }
       ],
       "tags": [],
@@ -4021,12 +4124,19 @@
         {
           "key": "INFLUXDB_ADMIN_PASSWORD",
           "required": true,
-          "description": "Initial ods administrator password: random 64 hexadecimal characters."
+          "description": "Initial ods administrator password: random 64 hexadecimal characters.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "INFLUXDB_ADMIN_TOKEN",
           "required": true,
-          "description": "Distinct random 64-hex initial operator token. Keep private; create scoped project tokens separately."
+          "description": "Distinct random 64-hex initial operator token. Keep private; create scoped project tokens separately.",
+          "format": "hex64",
+          "distinct_from": [
+            "INFLUXDB_ADMIN_PASSWORD"
+          ],
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -4081,7 +4191,9 @@
         {
           "key": "INVOICESHELF_KEY",
           "required": true,
-          "description": "Stable random 64-hex encryption key; preserve with backups and never replace casually."
+          "description": "Stable random 64-hex encryption key; preserve with backups and never replace casually.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -4486,7 +4598,10 @@
         {
           "key": "KANBOARD_INITIAL_PASSWORD",
           "required": true,
-          "description": "Initial admin password, 12–72 UTF-8 bytes. Existing passwords are not reset."
+          "description": "Initial admin password, 12–72 UTF-8 bytes. Existing passwords are not reset.",
+          "min_length": 12,
+          "max_length": 72,
+          "generate": "password"
         }
       ],
       "tags": [
@@ -4542,12 +4657,18 @@
         {
           "key": "KARAKEEP_AUTH_SECRET",
           "required": true,
-          "description": "Persistent random session-signing secret; use at least 36 random bytes."
+          "description": "Persistent random session-signing secret; use at least 36 random bytes.",
+          "min_length": 36,
+          "generate": "token"
         },
         {
           "key": "KARAKEEP_SEARCH_KEY",
           "required": true,
-          "description": "Private search index key, at least 16 random characters; keep across restarts."
+          "description": "Private search index key, at least 16 random characters; keep across restarts.",
+          "pattern": "^[!-~]+$",
+          "format_description": "printable ASCII without spaces",
+          "min_length": 16,
+          "generate": "token"
         },
         {
           "key": "KARAKEEP_URL",
@@ -4623,22 +4744,30 @@
         {
           "key": "KESTRA_DATABASE_PASSWORD",
           "required": true,
-          "description": "Persistent private PostgreSQL password."
+          "description": "Persistent private PostgreSQL password.",
+          "generate": "password"
         },
         {
           "key": "KESTRA_ADMIN_EMAIL",
           "required": true,
-          "description": "Administrator email address for initial Basic Auth setup."
+          "description": "Administrator email address for initial Basic Auth setup.",
+          "format": "email"
         },
         {
           "key": "KESTRA_ADMIN_PASSWORD",
           "required": true,
-          "description": "Administrator password, at least eight characters with uppercase and a number."
+          "description": "Administrator password, at least eight characters with a lowercase letter, an uppercase letter and a number.",
+          "pattern": "^(?=[!-#%-~]*[a-z])(?=[!-#%-~]*[A-Z])(?=[!-#%-~]*[0-9])[!-#%-~]+$",
+          "format_description": "printable ASCII without spaces or $, with a lowercase letter, an uppercase letter and a digit",
+          "min_length": 8,
+          "max_length": 256,
+          "generate": "password"
         },
         {
           "key": "KESTRA_MANAGEMENT_PASSWORD",
           "required": true,
-          "description": "Separate random password for the internal management endpoints."
+          "description": "Separate random password for the internal management endpoints.",
+          "generate": "password"
         },
         {
           "key": "KESTRA_URL",
@@ -4698,12 +4827,19 @@
         {
           "key": "KEYCLOAK_DB_PASSWORD",
           "required": true,
-          "description": "Stable random 64-hex PostgreSQL password."
+          "description": "Stable random 64-hex PostgreSQL password.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "KEYCLOAK_BOOTSTRAP_PASSWORD",
           "required": true,
-          "description": "Distinct random 64-hex initial temporary administrator password, not an existing-account reset."
+          "description": "Distinct random 64-hex initial temporary administrator password, not an existing-account reset.",
+          "format": "hex64",
+          "distinct_from": [
+            "KEYCLOAK_DB_PASSWORD"
+          ],
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -5300,7 +5436,10 @@
         {
           "key": "LIGHTRAG_API_KEY",
           "required": true,
-          "description": "Private access key for the LightRAG UI/API."
+          "description": "Private access key for the LightRAG UI/API.",
+          "pattern": "^[!-~]+$",
+          "format_description": "printable ASCII without spaces",
+          "generate": "token"
         },
         {
           "key": "LIGHTRAG_EMBEDDING_DIM",
@@ -5384,17 +5523,25 @@
         {
           "key": "LIMESURVEY_DB_PASSWORD",
           "required": true,
-          "description": "64-hex database password; preserve for existing PostgreSQL data."
+          "description": "64-hex database password; preserve for existing PostgreSQL data.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "LIMESURVEY_ADMIN_PASSWORD",
           "required": true,
-          "description": "Distinct 64-hex initial administrator password; existing accounts are not reset."
+          "description": "Distinct 64-hex initial administrator password; existing accounts are not reset.",
+          "format": "hex64",
+          "distinct_from": [
+            "LIMESURVEY_DB_PASSWORD"
+          ],
+          "generate": "hex64"
         },
         {
           "key": "LIMESURVEY_ADMIN_EMAIL",
           "required": true,
-          "description": "Actual owner email address for initial administrator account."
+          "description": "Actual owner email address for initial administrator account.",
+          "format": "email"
         }
       ],
       "tags": [
@@ -5451,17 +5598,26 @@
         {
           "key": "LINKWARDEN_DATABASE_PASSWORD",
           "required": true,
-          "description": "Random URL-safe database password (letters and digits, at least 32 characters)."
+          "description": "Random URL-safe database password (letters and digits, at least 32 characters).",
+          "pattern": "^[A-Za-z0-9]+$",
+          "format_description": "letters and digits only",
+          "min_length": 32,
+          "generate": "token"
         },
         {
           "key": "LINKWARDEN_AUTH_SECRET",
           "required": true,
-          "description": "Persistent random authentication secret."
+          "description": "Persistent random authentication secret.",
+          "generate": "token"
         },
         {
           "key": "LINKWARDEN_SEARCH_KEY",
           "required": true,
-          "description": "Private search index key, at least 16 random characters."
+          "description": "Private search index key, at least 16 random characters.",
+          "pattern": "^[!-~]+$",
+          "format_description": "printable ASCII without spaces",
+          "min_length": 16,
+          "generate": "token"
         },
         {
           "key": "LINKWARDEN_AUTH_URL",
@@ -5537,12 +5693,19 @@
         {
           "key": "LISTMONK_DB_PASSWORD",
           "required": true,
-          "description": "64-hex PostgreSQL password; preserve for existing database."
+          "description": "64-hex PostgreSQL password; preserve for existing database.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "LISTMONK_ADMIN_PASSWORD",
           "required": true,
-          "description": "Distinct 64-hex initial password for ods administrator; does not reset an existing account."
+          "description": "Distinct 64-hex initial password for ods administrator; does not reset an existing account.",
+          "format": "hex64",
+          "distinct_from": [
+            "LISTMONK_DB_PASSWORD"
+          ],
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -5599,7 +5762,10 @@
         {
           "key": "LITELLM_KEY",
           "required": true,
-          "description": "LiteLLM master API key"
+          "description": "LiteLLM master API key",
+          "pattern": "^[!-~]+$",
+          "format_description": "printable ASCII without spaces",
+          "min_length": 10
         }
       ],
       "tags": [],
@@ -5715,22 +5881,30 @@
         {
           "key": "LLDAP_ADMIN_PASSWORD",
           "required": true,
-          "description": "Initial admin password, at least 12 characters. Existing passwords are preserved."
+          "description": "Initial admin password, at least 12 characters. Existing passwords are preserved.",
+          "min_length": 12,
+          "generate": "password"
         },
         {
           "key": "LLDAP_JWT_SECRET",
           "required": true,
-          "description": "Persistent random session signing secret, at least 32 characters."
+          "description": "Persistent random session signing secret, at least 32 characters.",
+          "min_length": 32,
+          "generate": "token"
         },
         {
           "key": "LLDAP_KEY_SEED",
           "required": true,
-          "description": "Persistent random password-protection key seed, at least 32 characters. Back up with database."
+          "description": "Persistent random password-protection key seed, at least 32 characters. Back up with database.",
+          "min_length": 32,
+          "generate": "token"
         },
         {
           "key": "LLDAP_BASE_DN",
           "required": true,
-          "description": "Directory namespace, for example dc=yourorganization,dc=internal."
+          "description": "Directory namespace, for example dc=yourorganization,dc=internal.",
+          "pattern": "^[^=,]+=[^=,]+(,[^=,]+=[^=,]+)*$",
+          "format_description": "comma-separated attribute=value pairs such as dc=example,dc=internal"
         }
       ],
       "tags": [
@@ -5893,7 +6067,12 @@
         {
           "key": "LOCALRECALL_API_KEY",
           "required": true,
-          "description": "At least 24 random ASCII characters without spaces or commas. Browser username is ods; this key is the password and API Bearer token."
+          "description": "At least 24 random ASCII characters without spaces or commas. Browser username is ods; this key is the password and API Bearer token.",
+          "pattern": "^[-!-+.-~]+$",
+          "format_description": "printable ASCII without spaces or commas",
+          "min_length": 24,
+          "max_length": 4096,
+          "generate": "token"
         }
       ],
       "tags": [
@@ -5996,12 +6175,16 @@
         {
           "key": "MAILPIT_UI_AUTH",
           "required": true,
-          "description": "UI credentials in username:password format; separate multiple pairs with spaces. No whitespace inside a username/password."
+          "description": "UI credentials in username:password format; separate multiple pairs with spaces. No whitespace inside a username/password.",
+          "pattern": "^[^\\s:]+:[^\\s]+( +[^\\s:]+:[^\\s]+)*$",
+          "format_description": "username:password pairs separated by spaces"
         },
         {
           "key": "MAILPIT_SMTP_AUTH",
           "required": true,
-          "description": "SMTP credentials in username:password format; use separate development-only credentials."
+          "description": "SMTP credentials in username:password format; use separate development-only credentials.",
+          "pattern": "^[^\\s:]+:[^\\s]+( +[^\\s:]+:[^\\s]+)*$",
+          "format_description": "username:password pairs separated by spaces"
         },
         {
           "key": "MAILPIT_SMTP_PORT",
@@ -6110,7 +6293,9 @@
         {
           "key": "MARIMO_TOKEN",
           "required": true,
-          "description": "64-hex editor authentication token; holders can execute notebook code."
+          "description": "64-hex editor authentication token; holders can execute notebook code.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -6165,7 +6350,11 @@
         {
           "key": "MEILISEARCH_MASTER_KEY",
           "required": true,
-          "description": "Search API master key, at least 16 characters."
+          "description": "Search API master key, at least 16 characters.",
+          "pattern": "^[!-~]+$",
+          "format_description": "printable ASCII without spaces",
+          "min_length": 16,
+          "generate": "token"
         }
       ],
       "tags": [
@@ -6313,12 +6502,15 @@
         {
           "key": "METABASE_DATABASE_PASSWORD",
           "required": true,
-          "description": "Persistent password for the private application PostgreSQL database."
+          "description": "Persistent password for the private application PostgreSQL database.",
+          "generate": "password"
         },
         {
           "key": "METABASE_ENCRYPTION_KEY",
           "required": true,
-          "description": "Persistent encryption key, at least 16 characters; generate 32 random bytes and retain with backups."
+          "description": "Persistent encryption key, at least 16 characters; generate 32 random bytes and retain with backups.",
+          "min_length": 16,
+          "generate": "token"
         },
         {
           "key": "METABASE_SITE_URL",
@@ -6378,12 +6570,14 @@
         {
           "key": "MICROBIN_ACCESS_PASSWORD",
           "required": true,
-          "description": "Password for site-wide HTTP Basic login, username ods."
+          "description": "Password for site-wide HTTP Basic login, username ods.",
+          "generate": "password"
         },
         {
           "key": "MICROBIN_ADMIN_PASSWORD",
           "required": true,
-          "description": "Separate administrator password; replaces the upstream default."
+          "description": "Separate administrator password; replaces the upstream default.",
+          "generate": "password"
         }
       ],
       "tags": [
@@ -6465,12 +6659,15 @@
         {
           "key": "MINIFLUX_DB_PASSWORD",
           "description": "Password for the private PostgreSQL database; retain after initialization",
-          "required": true
+          "required": true,
+          "generate": "password"
         },
         {
           "key": "MINIFLUX_ADMIN_PASSWORD",
           "description": "Initial password for the admin account; later changes use the Miniflux UI",
-          "required": true
+          "required": true,
+          "min_length": 6,
+          "generate": "password"
         }
       ],
       "tags": [
@@ -6638,7 +6835,9 @@
         {
           "key": "MOSQUITTO_PASSWORD",
           "required": true,
-          "description": "Exactly 64 hexadecimal characters for the local ods MQTT account; retain this credential for configured clients."
+          "description": "Exactly 64 hexadecimal characters for the local ods MQTT account; retain this credential for configured clients.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -6690,12 +6889,19 @@
         {
           "key": "MUMBLE_SERVER_PASSWORD",
           "required": true,
-          "description": "Random 64-hex shared connection password."
+          "description": "Random 64-hex shared connection password.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "MUMBLE_SUPERUSER_PASSWORD",
           "required": true,
-          "description": "Distinct random 64-hex SuperUser password, reapplied at startup."
+          "description": "Distinct random 64-hex SuperUser password, reapplied at startup.",
+          "format": "hex64",
+          "distinct_from": [
+            "MUMBLE_SERVER_PASSWORD"
+          ],
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -6747,12 +6953,14 @@
         {
           "key": "N8N_USER",
           "required": true,
-          "description": "n8n initial admin email address"
+          "description": "n8n initial admin email address",
+          "format": "email"
         },
         {
           "key": "N8N_PASS",
           "required": true,
-          "description": "n8n admin password"
+          "description": "n8n admin password",
+          "min_length": 10
         },
         {
           "key": "N8N_SECURE_COOKIE",
@@ -6813,7 +7021,9 @@
         {
           "key": "NATS_PASSWORD",
           "required": true,
-          "description": "Random 64-hex password for the local ods NATS user."
+          "description": "Random 64-hex password for the local ods NATS user.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -6913,7 +7123,9 @@
         {
           "key": "NEO4J_PASSWORD",
           "required": true,
-          "description": "Initial neo4j password: random 64 hexadecimal characters; not a reset for existing databases."
+          "description": "Initial neo4j password: random 64 hexadecimal characters; not a reset for existing databases.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "NEO4J_BOLT_PORT",
@@ -6974,12 +7186,23 @@
         {
           "key": "NIFI_ADMIN_PASSWORD",
           "required": true,
-          "description": "Random 64-hex password for the ods single-user administrator."
+          "description": "Random 64-hex password for the ods single-user administrator.",
+          "format": "hex64",
+          "pattern": "^[0-9a-f]+$",
+          "format_description": "lowercase only",
+          "generate": "hex64"
         },
         {
           "key": "NIFI_SENSITIVE_PROPS_KEY",
           "required": true,
-          "description": "Independent random 64-hex flow encryption key; retain unchanged with backups."
+          "description": "Independent random 64-hex flow encryption key; retain unchanged with backups.",
+          "format": "hex64",
+          "pattern": "^[0-9a-f]+$",
+          "format_description": "lowercase only",
+          "distinct_from": [
+            "NIFI_ADMIN_PASSWORD"
+          ],
+          "generate": "hex64"
         },
         {
           "key": "NIFI_PUBLIC_URL",
@@ -7039,12 +7262,17 @@
         {
           "key": "NODE_RED_ADMIN_PASSWORD",
           "required": true,
-          "description": "Editor and HTTP-flow password for user ods; 16 to 72 UTF-8 bytes."
+          "description": "Editor and HTTP-flow password for user ods; 16 to 72 UTF-8 bytes.",
+          "min_length": 16,
+          "max_length": 72,
+          "generate": "password"
         },
         {
           "key": "NODE_RED_CREDENTIAL_SECRET",
           "required": true,
-          "description": "Stable 64-hex encryption key; retain with backups to decrypt flow credentials."
+          "description": "Stable 64-hex encryption key; retain with backups to decrypt flow credentials.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -7372,7 +7600,10 @@
         {
           "key": "OPENCLAW_TOKEN",
           "required": true,
-          "description": "OpenClaw gateway token"
+          "description": "OpenClaw gateway token",
+          "pattern": "^[!-~]+$",
+          "format_description": "printable ASCII without spaces",
+          "min_length": 10
         }
       ],
       "tags": [],
@@ -7559,7 +7790,9 @@
         {
           "key": "OPENWEBUI_PIPELINES_API_KEY",
           "required": true,
-          "description": "64-hex management/client API key replacing the upstream shared default."
+          "description": "64-hex management/client API key replacing the upstream shared default.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -7660,7 +7893,11 @@
         {
           "key": "ORTHANC_PASSWORD",
           "required": true,
-          "description": "Random 64-hex password for the orthanc web/API account."
+          "description": "Random 64-hex password for the orthanc web/API account.",
+          "format": "hex64",
+          "pattern": "^[0-9a-f]+$",
+          "format_description": "lowercase only",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -7715,12 +7952,19 @@
         {
           "key": "OWNCAST_ADMIN_PASSWORD",
           "required": true,
-          "description": "Random 64-hex administrator password enforced on each startup."
+          "description": "Random 64-hex administrator password enforced on each startup.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "OWNCAST_STREAM_KEY",
           "required": true,
-          "description": "Distinct random 64-hex RTMP stream key enforced for this deployment."
+          "description": "Distinct random 64-hex RTMP stream key enforced for this deployment.",
+          "format": "hex64",
+          "distinct_from": [
+            "OWNCAST_ADMIN_PASSWORD"
+          ],
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -7827,7 +8071,9 @@
         {
           "key": "PAPERLESS_GPT_API_TOKEN",
           "required": true,
-          "description": "API token from your Paperless-ngx account."
+          "description": "API token from your Paperless-ngx account.",
+          "pattern": "^[!-~]+$",
+          "format_description": "printable ASCII without spaces"
         }
       ],
       "tags": [
@@ -7995,7 +8241,9 @@
         {
           "key": "PDFDING_SECRET_KEY",
           "required": true,
-          "description": "Persistent random Django signing secret, at least 32 characters."
+          "description": "Persistent random Django signing secret, at least 32 characters.",
+          "min_length": 32,
+          "generate": "token"
         }
       ],
       "tags": [
@@ -8049,12 +8297,15 @@
         {
           "key": "PENPOT_DATABASE_PASSWORD",
           "required": true,
-          "description": "Random persistent password for the private PostgreSQL database."
+          "description": "Random persistent password for the private PostgreSQL database.",
+          "generate": "password"
         },
         {
           "key": "PENPOT_SECRET_KEY",
           "required": true,
-          "description": "Persistent session/signing secret: generate 64 random bytes, URL-safe base64 encoded."
+          "description": "Persistent session/signing secret: generate 64 random bytes, URL-safe base64 encoded.",
+          "min_length": 64,
+          "generate": "hex128"
         },
         {
           "key": "PENPOT_PUBLIC_URI",
@@ -8160,12 +8411,19 @@
         {
           "key": "PGVECTOR_ADMIN_PASSWORD",
           "required": true,
-          "description": "64-hex bootstrap administrator password; existing databases require SQL password rotation."
+          "description": "64-hex bootstrap administrator password; existing databases require SQL password rotation.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "PGVECTOR_APP_PASSWORD",
           "required": true,
-          "description": "Distinct 64-hex password for ods_app, used by projects and authenticated health checks."
+          "description": "Distinct 64-hex password for ods_app, used by projects and authenticated health checks.",
+          "format": "hex64",
+          "distinct_from": [
+            "PGVECTOR_ADMIN_PASSWORD"
+          ],
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -8350,12 +8608,17 @@
         {
           "key": "PIXEL_OPENWEBUI_KEY",
           "required": true,
-          "description": "Scoped bearer token for Open WebUI authentication"
+          "description": "Scoped bearer token for Open WebUI authentication",
+          "format": "hex64",
+          "pattern": "^[0-9a-f]+$",
+          "format_description": "lowercase only"
         },
         {
           "key": "PIXEL_INGRESS_GID",
           "required": true,
-          "description": "Numeric GID allowed to connect to the host Pixel ingress socket"
+          "description": "Numeric GID allowed to connect to the host Pixel ingress socket",
+          "format": "integer",
+          "max_length": 10
         }
       ],
       "tags": [],
@@ -8429,7 +8692,10 @@
         {
           "key": "PIXEL_MODEL_RELAY_KEY",
           "required": true,
-          "description": "Pixel-only bearer key for host-local inference"
+          "description": "Pixel-only bearer key for host-local inference",
+          "format": "hex64",
+          "pattern": "^[0-9a-f]+$",
+          "format_description": "lowercase only"
         }
       ],
       "tags": [],
@@ -8738,12 +9004,19 @@
         {
           "key": "RABBITMQ_ADMIN_PASSWORD",
           "required": true,
-          "description": "64-hex initial ods_admin password; existing accounts are preserved."
+          "description": "64-hex initial ods_admin password; existing accounts are preserved.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "RABBITMQ_NODE_SECRET",
           "required": true,
-          "description": "Distinct stable 64-hex Erlang node/CLI cookie, preserved with backups."
+          "description": "Distinct stable 64-hex Erlang node/CLI cookie, preserved with backups.",
+          "format": "hex64",
+          "distinct_from": [
+            "RABBITMQ_ADMIN_PASSWORD"
+          ],
+          "generate": "hex64"
         },
         {
           "key": "RABBITMQ_AMQP_PORT",
@@ -8804,7 +9077,9 @@
         {
           "key": "RADICALE_PASSWORD",
           "required": true,
-          "description": "64-hex password for DAV account ods; rotation requires updating configured clients."
+          "description": "64-hex password for DAV account ods; rotation requires updating configured clients.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -8860,12 +9135,16 @@
         {
           "key": "REACTIVE_RESUME_DB_PASSWORD",
           "required": true,
-          "description": "64 random hexadecimal characters for the dedicated PostgreSQL account."
+          "description": "64 random hexadecimal characters for the dedicated PostgreSQL account.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "REACTIVE_RESUME_AUTH_SECRET",
           "required": true,
-          "description": "Stable 64-hex authentication secret; retain with backups."
+          "description": "Stable 64-hex authentication secret; retain with backups.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "REACTIVE_RESUME_DISABLE_SIGNUPS",
@@ -9124,7 +9403,11 @@
         {
           "key": "REST_SERVER_PASSWORD",
           "required": true,
-          "description": "Random 64-hex password for the ods backup transport account; not the Restic encryption password."
+          "description": "Random 64-hex password for the ods backup transport account; not the Restic encryption password.",
+          "format": "hex64",
+          "pattern": "^[0-9a-f]+$",
+          "format_description": "lowercase only",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -9293,7 +9576,9 @@
         {
           "key": "SFTPGO_SETUP_CODE",
           "required": true,
-          "description": "64-hex installation code required by the native first-administrator setup wizard."
+          "description": "64-hex installation code required by the native first-administrator setup wizard.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "SFTPGO_SFTP_PORT",
@@ -9354,12 +9639,17 @@
         {
           "key": "SHIORI_INITIAL_PASSWORD",
           "required": true,
-          "description": "First-account password for username shiori: 12 to 72 UTF-8 bytes. Does not reset existing accounts."
+          "description": "First-account password for username shiori: 12 to 72 UTF-8 bytes. Does not reset existing accounts.",
+          "min_length": 12,
+          "max_length": 72,
+          "generate": "password"
         },
         {
           "key": "SHIORI_HTTP_SECRET_KEY",
           "required": true,
-          "description": "Persistent random session signing secret, at least 32 random characters."
+          "description": "Persistent random session signing secret, at least 32 random characters.",
+          "min_length": 32,
+          "generate": "token"
         }
       ],
       "tags": [
@@ -9413,12 +9703,19 @@
         {
           "key": "SHLINK_DB_PASSWORD",
           "required": true,
-          "description": "64-hex PostgreSQL password."
+          "description": "64-hex PostgreSQL password.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "SHLINK_API_KEY",
           "required": true,
-          "description": "Distinct 64-hex initial management API key; use native API-key management for revocation."
+          "description": "Distinct 64-hex initial management API key; use native API-key management for revocation.",
+          "format": "hex64",
+          "distinct_from": [
+            "SHLINK_DB_PASSWORD"
+          ],
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -9558,7 +9855,11 @@
         {
           "key": "SOLR_ADMIN_PASSWORD",
           "required": true,
-          "description": "Random 64-hex initial ods administrator password; retain or rotate using the native security API."
+          "description": "Random 64-hex initial ods administrator password; retain or rotate using the native security API.",
+          "format": "hex64",
+          "pattern": "^[0-9a-f]+$",
+          "format_description": "lowercase only",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -9903,7 +10204,9 @@
         {
           "key": "SYNCTHING_GUI_PASSWORD",
           "required": true,
-          "description": "64-hex initial password for GUI user ods; existing configured credentials are preserved."
+          "description": "64-hex initial password for GUI user ods; existing configured credentials are preserved.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "SYNCTHING_SYNC_PORT",
@@ -10300,7 +10603,9 @@
         {
           "key": "TRACCAR_DB_PASSWORD",
           "required": true,
-          "description": "64-hex database password; existing PostgreSQL credentials require native rotation."
+          "description": "64-hex database password; existing PostgreSQL credentials require native rotation.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "TRACCAR_DEVICE_PORT",
@@ -10428,7 +10733,8 @@
         {
           "key": "TYPESENSE_API_KEY",
           "required": true,
-          "description": "A long random API key for the Typesense server."
+          "description": "A long random API key for the Typesense server.",
+          "generate": "token"
         }
       ],
       "tags": [
@@ -10480,22 +10786,30 @@
         {
           "key": "UMAMI_INITIAL_PASSWORD",
           "required": true,
-          "description": "Initial admin password: 12 to 72 UTF-8 bytes. Replaces only the unchanged upstream default."
+          "description": "Initial admin password: 12 to 72 UTF-8 bytes. Replaces only the unchanged upstream default.",
+          "min_length": 12,
+          "max_length": 72,
+          "generate": "password"
         },
         {
           "key": "UMAMI_DATABASE_PASSWORD",
           "required": true,
-          "description": "Persistent password for the dedicated PostgreSQL database."
+          "description": "Persistent password for the dedicated PostgreSQL database.",
+          "generate": "password"
         },
         {
           "key": "UMAMI_APP_SECRET",
           "required": true,
-          "description": "Persistent random authentication secret of at least 32 characters."
+          "description": "Persistent random authentication secret of at least 32 characters.",
+          "min_length": 32,
+          "generate": "token"
         },
         {
           "key": "UMAMI_TWO_FACTOR_KEY",
           "required": true,
-          "description": "Persistent 64-character hexadecimal encryption key for two-factor authentication."
+          "description": "Persistent 64-character hexadecimal encryption key for two-factor authentication.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -10597,7 +10911,9 @@
         {
           "key": "VALKEY_PASSWORD",
           "required": true,
-          "description": "64 random hexadecimal characters for the ods client account."
+          "description": "64 random hexadecimal characters for the ods client account.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -10650,7 +10966,9 @@
         {
           "key": "VAULTWARDEN_ADMIN_TOKEN",
           "required": true,
-          "description": "Random 64-hex administrator access token, separate from the vault master password."
+          "description": "Random 64-hex administrator access token, separate from the vault master password.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -10705,7 +11023,9 @@
         {
           "key": "VERDACCIO_PASSWORD",
           "required": true,
-          "description": "64-hex password for the managed ods account. Changing it and restarting rotates login credentials."
+          "description": "64-hex password for the managed ods account. Changing it and restarting rotates login credentials.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [
@@ -10760,7 +11080,9 @@
         {
           "key": "VIKUNJA_SERVICE_SECRET",
           "required": true,
-          "description": "Persistent random signing secret; generate at least 32 random bytes."
+          "description": "Persistent random signing secret; generate at least 32 random bytes.",
+          "min_length": 32,
+          "generate": "token"
         },
         {
           "key": "VIKUNJA_SERVICE_PUBLICURL",
@@ -10826,7 +11148,9 @@
         {
           "key": "WAKAPI_PASSWORD_SALT",
           "required": true,
-          "description": "Persistent random password pepper, at least 32 random characters. Back up and do not rotate casually."
+          "description": "Persistent random password pepper, at least 32 random characters. Back up and do not rotate casually.",
+          "min_length": 32,
+          "generate": "hex32"
         },
         {
           "key": "WAKAPI_ALLOW_SIGNUP",
@@ -10886,17 +11210,22 @@
         {
           "key": "WALLABAG_SECRET",
           "required": true,
-          "description": "Persistent 64-character hexadecimal signing secret."
+          "description": "Persistent 64-character hexadecimal signing secret.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "WALLABAG_INITIAL_PASSWORD",
           "required": true,
-          "description": "Initial ods administrator password, at least 12 characters; existing accounts are not reset."
+          "description": "Initial ods administrator password, at least 12 characters; existing accounts are not reset.",
+          "min_length": 12,
+          "generate": "password"
         },
         {
           "key": "WALLABAG_INITIAL_EMAIL",
           "required": true,
-          "description": "Email address for the initial ods administrator."
+          "description": "Email address for the initial ods administrator.",
+          "format": "email"
         }
       ],
       "tags": [
@@ -11092,17 +11421,25 @@
         {
           "key": "WEBLATE_DB_PASSWORD",
           "required": true,
-          "description": "Random 64-hex PostgreSQL password; keep stable across recreation."
+          "description": "Random 64-hex PostgreSQL password; keep stable across recreation.",
+          "format": "hex64",
+          "generate": "hex64"
         },
         {
           "key": "WEBLATE_ADMIN_PASSWORD",
           "required": true,
-          "description": "Distinct random 64-hex admin password, reapplied by native startup."
+          "description": "Distinct random 64-hex admin password, reapplied by native startup.",
+          "format": "hex64",
+          "distinct_from": [
+            "WEBLATE_DB_PASSWORD"
+          ],
+          "generate": "hex64"
         },
         {
           "key": "WEBLATE_ADMIN_EMAIL",
           "required": true,
-          "description": "Actual owner email for the administrator account; SMTP is configured separately."
+          "description": "Actual owner email for the administrator account; SMTP is configured separately.",
+          "format": "email"
         }
       ],
       "tags": [
@@ -11204,7 +11541,9 @@
         {
           "key": "WIKIJS_DB_PASSWORD",
           "required": true,
-          "description": "64-hex private database password; browser administrator is created in native setup."
+          "description": "64-hex private database password; browser administrator is created in native setup.",
+          "format": "hex64",
+          "generate": "hex64"
         }
       ],
       "tags": [

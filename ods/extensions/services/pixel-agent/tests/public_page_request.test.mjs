@@ -244,9 +244,87 @@ test('raw-text elements and comments are removed before extraction', async () =>
   assert.match(page.text, /October 3: Philly Music Fest/);
 });
 
+// The first passes of the pinned OpenClaw extractor (2026.6.33, htmlToMarkdown),
+// verbatim. They have no tag-name boundary and no self-closing form.
+const pinnedExtractorRawTextPasses = html => html.replace(/<script[\s\S]*?<\/script>/gi, '')
+  .replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+
+// Shaped like philaculturalfund.org/community-calendar (2026-09-25): an inline
+// SVG icon that a dark-mode extension serialised with three self-closing
+// <style/> tags, the event list, then the page's next real stylesheet 238 KB on.
+const CALENDAR_PAGE = '<!doctype html><html><head><title>Community Calendar | Philadelphia Cultural Fund</title>' +
+  '<style>.w-embed{display:block}</style></head><body><div class="arrow-embed w-embed">' +
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 63 63" fill="CurrentColor">' +
+  '<link xmlns="" type="text/css" rel="stylesheet" id="dark-mode-custom-link"/>' +
+  '<style xmlns="" lang="en" type="text/css" id="dark-mode-custom-style"/>' +
+  '<style xmlns="" lang="en" type="text/css" id="dark-mode-native-style"/>' +
+  '<style xmlns="" lang="en" type="text/css" id="dark-mode-native-sheet"/>' +
+  '<path d="M58.8 10.2L4.1 10.2"/></svg></div>' +
+  '<div class="event">Tabla Waves - Sat, Sep 27, 2026</div>' +
+  '<div class="event">Mt. Airy Arts Festival - Sun, Oct 4, 2026</div>' +
+  '<style>.footer{color:#123456}</style><footer>Philadelphia Cultural Fund</footer></body></html>';
+
+test('a self-closing raw-text tag is empty and does not swallow the page after it', async () => {
+  const cleaned = readableHtml(CALENDAR_PAGE);
+  for (const kept of [/Tabla Waves - Sat, Sep 27, 2026/, /Mt\. Airy Arts Festival - Sun, Oct 4, 2026/,
+    /<footer>Philadelphia Cultural Fund<\/footer>/, /<path d="M58\.8 10\.2L4\.1 10\.2"\/>/]) {
+    assert.match(cleaned, kept);
+  }
+  assert.doesNotMatch(cleaned, /<style|<\/style|display:block|#123456/i);
+  // The pinned extractor's own passes find nothing left to swallow.
+  assert.equal(pinnedExtractorRawTextPasses(cleaned), cleaned);
+  const h = harness({body: CALENDAR_PAGE});
+  const page = await h.readPage('https://www.philaculturalfund.org/community-calendar');
+  assert.equal(page.ok, true);
+  assert.match(page.text, /Tabla Waves[\s\S]*Mt\. Airy Arts Festival[\s\S]*Philadelphia Cultural Fund/);
+
+  // Every raw-text element, any case, with or without attributes or spacing.
+  for (const empty of ['<style/>', '<STYLE/>', '<style />', '<style\n  media="print"\n/>', '<script/>',
+    '<script src="/a.js"/>', "<SCRIPT type='module' src=/b.js />", '<script async src="/c.js" defer/>',
+    '<noscript/>', '<NoScript />', '<template/>', '<template id="row" shadowrootmode="open" />',
+    '<style data-note="a > b" />', "<script data-x='</script>'/>", '<style/type="text/css"/>']) {
+    const html = `<p>before</p>${empty}<p>after</p><script>var hidden = 1;</script><p>end</p>`;
+    assert.equal(readableHtml(html).replace(/\s+/g, ' ').trim(), '<p>before</p> <p>after</p> <p>end</p>', empty);
+  }
+
+  // `/>` inside a value is not a self-closing tag: `<a b=c/>` has the value `c/`.
+  for (const [open, name] of [['<style data-x="a/>">', 'style'], ["<style title='/>'>", 'style'],
+    ['<script src=/a.js/>', 'script'], ['<style media=print/ >', 'style']]) {
+    const html = `<p>before</p>${open}p{color:red} a < b</${name}><p>after</p>`;
+    assert.equal(readableHtml(html).replace(/\s+/g, ' ').trim(), '<p>before</p> <p>after</p>', open);
+  }
+
+  // Closing tags as the tokenizer accepts them.
+  for (const close of ['</style >', '</STYLE\n>', '</style foo="x>y">', '</style/>']) {
+    assert.equal(readableHtml(`<style>p{color:red}${close}<p>after</p>`).trim(), '<p>after</p>', close);
+  }
+
+  // Unterminated still runs to the end of the document, as in a browser,
+  // including a tag cut off by the response bound.
+  for (const tail of ['<style>p{color:red} <p>lost</p>', '<noscript>Enable JavaScript <p>lost</p>',
+    '<template><p>lost</p>', '<style', '<script src="/a.js', '<script data-x="a>b" <p>lost</p>',
+    '</style']) {
+    assert.equal(readableHtml(`<p>kept</p>${tail}`).trim(), '<p>kept</p>', tail);
+  }
+
+  // Stray end tags are removed, so the extractor's unbounded `<style[\s\S]*?</style>`
+  // cannot run from a custom element to one.
+  const stray = '<styled-card>Oct 3</styled-card><p>October 3: Philly Music Fest</p></style>' +
+    '<scripts-panel>Oct 9</scripts-panel></script ></NOSCRIPT></template><p>tail</p>';
+  const strayCleaned = readableHtml(stray);
+  assert.doesNotMatch(strayCleaned, /<\/(?:script|style|noscript|template)[\s/>]/i);
+  assert.equal(pinnedExtractorRawTextPasses(strayCleaned), strayCleaned);
+  assert.match(strayCleaned, /<styled-card>Oct 3<\/styled-card><p>October 3: Philly Music Fest<\/p>/);
+  assert.match(strayCleaned, /<scripts-panel>Oct 9<\/scripts-panel>[\s\S]*<p>tail<\/p>/);
+  // Without the removal, that pass deletes the event.
+  assert.doesNotMatch(pinnedExtractorRawTextPasses(stray), /Philly Music Fest/);
+});
+
 test('raw-text removal stays linear on hostile markup', () => {
   for (const hostile of ['<script>'.repeat(120_000), '<!--'.repeat(200_000), '</script'.repeat(100_000),
-    '<script '.repeat(100_000), `<style>${'</styl'.repeat(100_000)}`]) {
+    '<script '.repeat(100_000), `<style>${'</styl'.repeat(100_000)}`, '<style/>'.repeat(120_000),
+    '</style>'.repeat(120_000), '</style '.repeat(100_000), '<script a="'.repeat(100_000),
+    `<style a=">${'"'.repeat(200_000)}`, '<script a=b/'.repeat(100_000), '<style '.repeat(50_000) + '/>'.repeat(50_000)]) {
     const started = performance.now();
     readableHtml(hostile);
     assert.ok(performance.now() - started < 1_000, `took ${performance.now() - started} ms`);

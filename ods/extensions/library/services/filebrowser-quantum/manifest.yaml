@@ -28,11 +28,16 @@ service:
     secret: true
     description: Initial password for the admin account; use the application account
       controls for later changes.
+    min_length: 12
+    max_length: 72
+    generate: password
   - key: FILEBROWSER_QUANTUM_JWT_SECRET
     required: true
     secret: true
     description: Persistent random signing secret for login tokens; at least 32 random
       characters recommended.
+    min_length: 32
+    generate: token
   ui_path: /
 tags:
 - files

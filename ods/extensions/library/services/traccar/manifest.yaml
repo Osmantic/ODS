@@ -28,6 +28,8 @@ service:
     secret: true
     description: 64-hex database password; existing PostgreSQL credentials require
       native rotation.
+    format: hex64
+    generate: hex64
   - key: TRACCAR_DEVICE_PORT
     required: false
     default: '11119'

@@ -27,22 +27,37 @@ service:
     required: true
     secret: true
     description: Password for the admin account.
+    pattern: '^(?!(true|false|null|undefined)$)(?=[^g-hj-mp-su-wzG-HJ-NP-WYZ]*[g-hj-mp-su-wzG-HJ-NP-WYZ])[^\n]+$'
+    format_description: 'text Etherpad keeps as text: include a letter such as g, h, k, m, p, r, s, u, w or z, and not true, false, null or undefined'
+    generate: password
   - key: ETHERPAD_USER_PASSWORD
     required: true
     secret: true
     description: Password for the non-administrator user account.
+    pattern: '^(?!(true|false|null|undefined)$)(?=[^g-hj-mp-su-wzG-HJ-NP-WYZ]*[g-hj-mp-su-wzG-HJ-NP-WYZ])[^\n]+$'
+    format_description: 'text Etherpad keeps as text: include a letter such as g, h, k, m, p, r, s, u, w or z, and not true, false, null or undefined'
+    generate: password
   - key: ETHERPAD_DATABASE_PASSWORD
     required: true
     secret: true
     description: Persistent dedicated PostgreSQL password.
+    pattern: '^(?!(true|false|null|undefined)$)(?=[^g-hj-mp-su-wzG-HJ-NP-WYZ]*[g-hj-mp-su-wzG-HJ-NP-WYZ])[^\n]+$'
+    format_description: 'text Etherpad keeps as text: include a letter such as g, h, k, m, p, r, s, u, w or z, and not true, false, null or undefined'
+    generate: password
   - key: ETHERPAD_ADMIN_SECRET
     required: true
     secret: true
     description: Random secret for the built-in admin OAuth client.
+    pattern: '^(?!(true|false|null|undefined)$)(?=[^g-hj-mp-su-wzG-HJ-NP-WYZ]*[g-hj-mp-su-wzG-HJ-NP-WYZ])[^\n]+$'
+    format_description: 'text Etherpad keeps as text: include a letter such as g, h, k, m, p, r, s, u, w or z, and not true, false, null or undefined'
+    generate: token
   - key: ETHERPAD_USER_SECRET
     required: true
     secret: true
     description: Independent random secret for the built-in user OAuth client.
+    pattern: '^(?!(true|false|null|undefined)$)(?=[^g-hj-mp-su-wzG-HJ-NP-WYZ]*[g-hj-mp-su-wzG-HJ-NP-WYZ])[^\n]+$'
+    format_description: 'text Etherpad keeps as text: include a letter such as g, h, k, m, p, r, s, u, w or z, and not true, false, null or undefined'
+    generate: token
   ui_path: /
 tags:
 - collaboration

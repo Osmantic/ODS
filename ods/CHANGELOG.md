@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Security
+- Perplexica's internal `scrape_url` action is disabled at container start. It
+  opened any URL its model named, without address validation, from the
+  Perplexica container on the ODS network, and Perplexica offered it in every
+  mode, so a request or a search result could steer it to an internal service.
+  Asking Perplexica about a specific URL now answers from search results.
 - The dashboard asks for sign-in when it is reached from another device: LAN
   mode, ODS proxy (`dashboard.<device>.local`), a reverse proxy or Tailscale
   Serve. Previously its proxy added the admin API key to every request, so
@@ -23,11 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Previously issued ODS session cookies are invalidated at upgrade, including
   unexpired chat-only guest cookies. Owners renew through the existing owner
   card or authenticated dashboard flow; default direct Hermes access is unchanged.
-- Every llama.cpp image is now pinned by tag and sha256 digest: NVIDIA
-  `server-cuda-b9014`, CPU `server-b9014`, Intel `server-intel-b8248` and Apple
-  Docker `server-b8248`, including the tier-map, installer, host-agent and
-  catalog copies. The versions are unchanged. The dependency pin check rejects
-  a llama.cpp image without a digest.
+- Every llama.cpp image is now pinned by tag and sha256 digest, including the
+  tier-map, installer, host-agent and catalog copies. The dependency pin check
+  rejects a llama.cpp image without a digest.
 
 ### Changed
 - Every curated catalog download URL now names a Hugging Face commit instead
@@ -37,6 +40,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   installer rerun still keeps an active model whose `.env` has the old
   `resolve/main` URL when the repo, file path and sha256 match the catalog, and
   writes the pinned URL.
+- The Intel Docker image (`server-intel-b9014`), the Apple Docker image
+  (`server-b9014`) and fresh native Windows Vulkan installs
+  (`llama-b9014-bin-win-vulkan-x64.zip`, SHA-256 now checked before
+  extraction) move from llama.cpp b8248 to b9014, the build NVIDIA and CPU
+  already use. b8248 ignores `LLAMA_ARG_REASONING` and `LLAMA_ARG_SPEC_TYPE`,
+  and rejects `--spec-draft-n-max`, which the Windows launchers pass when
+  `LLAMA_ARG_SPEC_DRAFT_N_MAX` is set. Not measured on Intel or native Windows
+  hardware.
+  - Intel and Apple Docker now honor the reasoning-off default, so Qwen3.5
+    stops thinking by default on these backends (it thought on b8248). This
+    is intended; set `LLAMA_REASONING=on` to keep thinking.
+  - Intel: ODS no longer sets `SYCL_CACHE_PERSISTENT=1` for llama-server; the
+    persistent SYCL kernel cache crashes llama-server with the oneAPI 2025.3
+    runtime in the b9014 image. Every start now JIT-compiles kernels again
+    (~30 s). On hosts with more than one Intel GPU that runtime can crash with
+    the default `ONEAPI_DEVICE_SELECTOR=level_zero:gpu`; set
+    `ONEAPI_DEVICE_SELECTOR=level_zero:0` in `.env`, which the Intel overlays
+    now read and the installer keeps.
+  - The installer selects `docker-compose.arc.yml` for Intel, not
+    `docker-compose.intel.yml`, so the Intel image change reaches only stacks
+    started with the Intel overlay by hand. The Arc local-build path
+    (`docker-compose.arc.yml`, `images/llama-sycl`) was already broken and is
+    not moved to b9014 by this change: its image copies only the
+    `llama-server` binary although llama.cpp builds shared libraries by
+    default, the installer never builds it (it starts Compose with
+    `--no-build --pull never`) and never rebuilds an existing
+    `ods-llama-sycl:local`, and b9014 has not been compiled on its oneAPI
+    2025.0.0 base. Only its source defaults changed (tag `b9014`, pinned
+    commit).
+  - Native Windows: re-running the installer keeps an existing
+    `llama-server.exe`, so installs from before this change stay on b8248.
+    To move to b9014, delete `<install>\llama-server` and re-run the
+    installer. Every Windows launch path now reads the installed binary's
+    `--help`: on b9014 it passes `LLAMA_REASONING` as `--reasoning` (b9014
+    defaults it to `auto`, and `--reasoning-format none` alone returns the
+    reasoning inside the reply); on b8248 it keeps `--reasoning-format` and,
+    for `off`, adds `--reasoning-budget 0`, which is what turns thinking off
+    there. Before this change, b8248 installs returned Qwen3.5's reasoning
+    inside every reply.
+- Model selection ranks installable models by a curated priority per memory
+  class and checks fit with a memory estimate built from each model's
+  attention layout, instead of picking the largest file that fits. Fleet
+  hosts keep their models. Off-fleet hardware that received phi-4,
+  DeepSeek-R1 or Qwen3-30B-A3B (served past its 40,960-token limit) now gets
+  Qwen3.5 9B, Qwen3.5 27B or Qwen3.6 35B-A3B at 64K-128K; Apple 8 GB gets
+  Nemotron 3 Nano 4B at 64K, and CPU-only hosts get Q8-KV runtime profiles
+  sized for the llama-server container. Each pick serves the 64K context
+  Hermes needs where a model fits at 64K; the installers re-check the fit
+  before raising a smaller context, and record the served context so a
+  Dashboard restore of the installer's pick no longer drops to 32K. A
+  Dashboard model switch uses the same context rule as the installer and
+  never asks for more than a model's native context, and ODS Talk says up
+  front when the context llama-server actually serves is below 64K instead
+  of failing in Hermes. An installer rerun keeps a previously active model
+  (clamped to its native context) rather than replacing it; when that model
+  cannot serve 64K, Talk is shown as unavailable with the reason.
+- Gemma 4 26B-A4B, E2B and E4B now run at 64K: their sliding-window layers
+  keep the KV cache small, so the context no longer rules them out of Hermes.
 - Perplexica now runs upstream release v1.12.2, published under its new name
   Vane (`itzcrazykns1337/vane:slim-v1.12.2`, digest-pinned). The UI shows the
   Vane name; ODS keeps the `perplexica` service, port and volumes, so settings

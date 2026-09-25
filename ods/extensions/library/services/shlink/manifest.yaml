@@ -27,11 +27,16 @@ service:
     required: true
     secret: true
     description: 64-hex PostgreSQL password.
+    format: hex64
+    generate: hex64
   - key: SHLINK_API_KEY
     required: true
     secret: true
     description: Distinct 64-hex initial management API key; use native API-key management
       for revocation.
+    format: hex64
+    distinct_from: [SHLINK_DB_PASSWORD]
+    generate: hex64
   external_link: false
 tags:
 - links

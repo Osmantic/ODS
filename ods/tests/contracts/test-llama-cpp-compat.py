@@ -9,7 +9,15 @@
    defaults (installer pulls, tier maps, host agent fallback, catalog entries)
    must match the Compose default exactly.
 
-2. NVIDIA never gets `--split-mode row`. llama.cpp removed CUDA row split in
+2. The Intel and Apple Docker images and native Windows pin the same
+   llama.cpp build as NVIDIA/CPU, and the Intel Arc local build's source
+   defaults name it (that image is not built by the installer). The Arc build
+   checks the tag's commit, and the Windows installer checks the release
+   archive's SHA-256 for every tag it can download, before downloading.
+   Neither Intel overlay sets SYCL_CACHE_PERSISTENT, which crashes the oneAPI
+   2025.3 runtime in the b9014 image.
+
+3. NVIDIA never gets `--split-mode row`. llama.cpp removed CUDA row split in
    b9890 (ggml-org/llama.cpp#24216): the flag still parses, but model load
    fails with "does not support split buffers". ODS maps tensor and hybrid
    assignments to layer split on NVIDIA. AMD (Lemonade) is unchanged.
@@ -91,6 +99,65 @@ def check_pins(errors: list[str]) -> None:
                 errors.append(f"{relative}: does not repeat the {label} Compose default {ref}")
 
 
+def build_of(ref: str) -> str:
+    match = re.search(r"-(b\d+)(?:@|$)", ref)
+    return match.group(1) if match else ""
+
+
+def check_other_backends(errors: list[str]) -> None:
+    """Intel/Apple images, Arc source defaults and native Windows pin the default build."""
+    default_build = build_of(compose_default("docker-compose.nvidia.yml"))
+    intel = compose_default("docker-compose.intel.yml")
+    apple_match = re.search(r"^\s*image:\s*(\S+)", (ROOT_DIR / "docker-compose.apple.yml").read_text(encoding="utf-8"), re.M)
+    apple = apple_match.group(1) if apple_match else ""
+    for name, ref in (("docker-compose.intel.yml", intel), ("docker-compose.apple.yml", apple)):
+        if build_of(ref) != default_build:
+            errors.append(f"{name}: llama.cpp {build_of(ref) or ref!r} differs from the NVIDIA/CPU default {default_build}")
+
+    arc = (ROOT_DIR / "docker-compose.arc.yml").read_text(encoding="utf-8")
+    dockerfile = (ROOT_DIR / "images/llama-sycl/Dockerfile").read_text(encoding="utf-8")
+    arc_tag = re.search(r"LLAMA_TAG: \$\{LLAMA_TAG:-([^}]+)\}", arc)
+    arc_commit = re.search(r"LLAMA_COMMIT: \$\{LLAMA_COMMIT-([^}]*)\}", arc)
+    file_tag = re.search(r"^ARG LLAMA_TAG=(\S+)$", dockerfile, re.M)
+    file_commit = re.search(r"^ARG LLAMA_COMMIT=(\S+)$", dockerfile, re.M)
+    if not (arc_tag and file_tag and arc_tag.group(1) == file_tag.group(1) == default_build):
+        errors.append(f"Arc build: compose/Dockerfile LLAMA_TAG must both be {default_build}")
+    if not (arc_commit and file_commit and arc_commit.group(1) == file_commit.group(1)
+            and re.fullmatch(r"[0-9a-f]{40}", file_commit.group(1))):
+        errors.append("Arc build: compose/Dockerfile LLAMA_COMMIT must be the same full commit SHA")
+    if "rev-parse HEAD" not in dockerfile or "LLAMA_COMMIT" not in dockerfile.split("rev-parse HEAD", 1)[1][:200]:
+        errors.append("images/llama-sycl/Dockerfile: the clone must be checked against LLAMA_COMMIT")
+
+    constants = (ROOT_DIR / "installers/windows/lib/constants.ps1").read_text(encoding="utf-8")
+    tier_map = (ROOT_DIR / "installers/windows/lib/tier-map.ps1").read_text(encoding="utf-8")
+    installer = (ROOT_DIR / "installers/windows/install-windows.ps1").read_text(encoding="utf-8")
+    release = re.search(r'^\$script:LLAMA_CPP_RELEASE_TAG = "(b\d+)"', constants, re.M)
+    table = re.search(r"\$script:LLAMA_CPP_VULKAN_SHA256 = @\{(.*?)\}", constants, re.S)
+    sums = dict(re.findall(r'"(b\d+)"\s*=\s*"([0-9a-f]{64})"', table.group(1))) if table else {}
+    windows_tags = {release.group(1)} if release else set()
+    windows_tags.update(re.findall(r'\$runtimeTag = "(b\d+)"', tier_map))
+    if not release or release.group(1) != default_build:
+        errors.append(f"constants.ps1: native Windows llama.cpp must be {default_build}")
+    for tag in sorted(windows_tags):
+        if tag not in sums:
+            errors.append(f"constants.ps1: no SHA-256 for the Windows Vulkan archive of {tag}")
+    verify = installer.find("LLAMA_CPP_VULKAN_SHA256[$script:LLAMA_CPP_RELEASE_TAG]")
+    download = installer.find("Invoke-DownloadWithRetry -Url $script:LLAMA_CPP_VULKAN_URL")
+    hashing = installer.find("Get-FileHash -LiteralPath $llamaZip -Algorithm SHA256", max(download, 0))
+    extract = installer.find("Invoke-ExtractionWithRetry -ZipPath $llamaZip")
+    if not (0 <= verify < download < hashing < extract):
+        errors.append("install-windows.ps1: the pinned SHA-256 must be looked up before the download and checked before extraction")
+
+    for name in ("docker-compose.intel.yml", "docker-compose.arc.yml"):
+        text = (ROOT_DIR / name).read_text(encoding="utf-8")
+        if re.search(r"^\s*-\s*SYCL_CACHE_PERSISTENT=", text, re.M):
+            errors.append(f"{name}: must not pass SYCL_CACHE_PERSISTENT to llama-server")
+        if "ONEAPI_DEVICE_SELECTOR=${ONEAPI_DEVICE_SELECTOR:-level_zero:gpu}" not in text:
+            errors.append(f"{name}: ONEAPI_DEVICE_SELECTOR must come from .env (level_zero:0 on multi-GPU hosts)")
+    if re.search(r"^SYCL_CACHE_PERSISTENT=", (ROOT_DIR / "installers/phases/06-directories.sh").read_text(encoding="utf-8"), re.M):
+        errors.append("06-directories.sh: must not write SYCL_CACHE_PERSISTENT")
+
+
 def bash_case(text: str, anchor: str, variables: dict[str, str], result: str) -> str:
     """Run the `case` statement that starts at `anchor` with the given inputs."""
     start = text.index(anchor)
@@ -122,13 +189,14 @@ def check_split_mode(errors: list[str]) -> None:
 def main() -> int:
     errors: list[str] = []
     check_pins(errors)
+    check_other_backends(errors)
     check_split_mode(errors)
     if errors:
         print("[FAIL] llama.cpp image pin / split-mode contract")
         for error in errors:
             print(f"  - {error}")
         return 1
-    print("[PASS] llama.cpp images are tag@digest pinned and agree; NVIDIA never uses row split")
+    print("[PASS] llama.cpp images are tag@digest pinned and agree; Intel/Apple/Windows pin the default build; NVIDIA never uses row split")
     return 0
 
 

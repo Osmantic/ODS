@@ -40,3 +40,6 @@ service:
       required: true
       secret: true
       description: OpenClaw gateway token
+      pattern: '^[!-~]+$'
+      format_description: printable ASCII without spaces
+      min_length: 10

@@ -1548,6 +1548,29 @@ windows_native_checkpoint_interval() {
     printf '%s\n' "$number"
 }
 
+# Print which reasoning switch llama-server.exe takes for LLAMA_REASONING:
+# "reasoning" when it has --reasoning (b9014), "budget" when it lacks it but
+# has --reasoning-budget and the mode is off (b8248: budget 0 disables
+# thinking, and its default -1 leaves it on), or nothing to keep only the
+# --reasoning-format mapping. b9014 defaults --reasoning to auto, which turns
+# Qwen3.5 thinking on, and with --reasoning-format none the reasoning comes
+# back inside the reply. Mirrors installers/windows/lib/native-llama-args.ps1.
+windows_native_reasoning_flag() {
+    local llama_exe="$1" mode="$2" help_text
+    case "$mode" in off|on|auto) ;; *) return 0 ;; esac
+    if command -v timeout >/dev/null 2>&1; then
+        help_text="$(timeout 15 "$llama_exe" --help 2>&1)" || return 0
+    else
+        help_text="$("$llama_exe" --help 2>&1)" || return 0
+    fi
+    if grep -E -- '(^|[^[:alnum:]_-])--reasoning([^[:alnum:]_-]|$)' <<< "$help_text" | grep -qvi 'has been removed'; then
+        printf '%s\n' reasoning
+    elif [[ "$mode" == off ]] \
+        && grep -E -- '(^|[^[:alnum:]_-])--reasoning-budget([^[:alnum:]_-]|$)' <<< "$help_text" | grep -qvi 'has been removed'; then
+        printf '%s\n' budget
+    fi
+}
+
 restart_windows_native_llama_server_with_full_model() {
     is_windows_bash || return 1
 
@@ -1606,6 +1629,8 @@ restart_windows_native_llama_server_with_full_model() {
     ODS_WIN_CTX_SIZE="$ctx_size" \
     ODS_WIN_GPU_LAYERS="$(read_env_value N_GPU_LAYERS)" \
     ODS_WIN_REASONING_FORMAT="$reasoning_fmt" \
+    ODS_WIN_REASONING_MODE="$reasoning" \
+    ODS_WIN_REASONING_FLAG="$(windows_native_reasoning_flag "$llama_exe" "$reasoning")" \
     ODS_WIN_FLASH_ATTN="$(read_env_value LLAMA_ARG_FLASH_ATTN)" \
     ODS_WIN_CACHE_TYPE_K="$(read_env_value LLAMA_ARG_CACHE_TYPE_K)" \
     ODS_WIN_CACHE_TYPE_V="$(read_env_value LLAMA_ARG_CACHE_TYPE_V)" \
@@ -1671,9 +1696,13 @@ restart_windows_native_llama_server_with_full_model() {
                 "--port", $env:ODS_WIN_LLAMA_PORT,
                 "--n-gpu-layers", $gpuLayers,
                 "--ctx-size", $env:ODS_WIN_CTX_SIZE,
-                "--reasoning-format", $env:ODS_WIN_REASONING_FORMAT,
                 "--metrics"
             )
+            if ($env:ODS_WIN_REASONING_FLAG -eq "reasoning") { $args += @("--reasoning", $env:ODS_WIN_REASONING_MODE) }
+            else {
+                $args += @("--reasoning-format", $env:ODS_WIN_REASONING_FORMAT)
+                if ($env:ODS_WIN_REASONING_FLAG -eq "budget") { $args += @("--reasoning-budget", "0") }
+            }
             if ($env:ODS_WIN_FLASH_ATTN) { $args += @("--flash-attn", $env:ODS_WIN_FLASH_ATTN) }
             if ($env:ODS_WIN_CACHE_TYPE_K) { $args += @("--cache-type-k", $env:ODS_WIN_CACHE_TYPE_K) }
             if ($env:ODS_WIN_CACHE_TYPE_V) { $args += @("--cache-type-v", $env:ODS_WIN_CACHE_TYPE_V) }

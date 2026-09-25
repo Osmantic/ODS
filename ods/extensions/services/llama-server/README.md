@@ -105,9 +105,10 @@ The default applies only where the pinned llama.cpp build has the benchmarked im
 | CPU Docker (`docker-compose.cpu.yml`) | b9014 | `ngram-mod` |
 | Native macOS Metal | b9014 (installs from before this pin keep b8210) | `ngram-mod` when the installed binary supports it; none on b8210 |
 | AMD (Lemonade, `docker-compose.amd.yml`) | Lemonade-managed | none; not a llama.cpp launch that ODS controls |
-| Intel Arc / SYCL (`docker-compose.intel.yml`, `docker-compose.arc.yml`) | b8248 | none |
-| Apple Docker (`docker-compose.apple.yml`) | b8248 | none |
-| Native Windows llama-server (Vulkan fallback) | b8248 | none |
+| Intel Docker (`docker-compose.intel.yml`, started by hand; the installer uses `docker-compose.arc.yml`) | b9014 | none (not measured on Intel) |
+| Intel Arc local build (`docker-compose.arc.yml`) | source default b9014; the installer does not build this image, and b9014 has not been built on its oneAPI 2025.0.0 base | none |
+| Apple Docker (`docker-compose.apple.yml`) | b9014 | none |
+| Native Windows llama-server (Vulkan fallback) | b9014 for fresh installs; existing installs keep b8248 until `<install>\llama-server` is deleted and the installer re-run | none (not measured on Windows) |
 | Registered native model-store profiles | qualified executable | none; the profile keeps its own argument list |
 
 Builds b8210 and b8248 accept `--spec-type ngram-mod`, but they predate both changes. They draft with the generic 12-token lookup, which upstream logs as too small, and they turn speculation off for hybrid models. Remote and cloud providers never start llama-server.
@@ -148,12 +149,14 @@ In Docker, set the draft model's KV cache types with `LLAMA_ARG_SPEC_DRAFT_CACHE
 
 Every llama.cpp image ODS ships is pinned by tag and sha256 digest, for example `ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf28582…55c4f`. llama.cpp publishes a ghcr tag for only some of its builds, and ODS once pinned a tag that was never published. The digest also means a re-pushed tag cannot change what an install runs. `scripts/check-dependency-pins.py` rejects a llama.cpp image without a digest, and `tests/contracts/test-llama-cpp-compat.py` checks that every copy of a pin (Compose, installer pulls, tier maps, host agent, model catalog) agrees.
 
-| Image | Digest |
+| Artifact | Pin |
 |---|---|
 | `server-cuda-b9014` (NVIDIA, multi-arch) | `sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f` |
 | `server-b9014` (CPU, multi-arch) | `sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53` |
-| `server-intel-b8248` (Intel) | `sha256:5543520d6928680db017e2d12283846a396d49876b04f09f08360d0fa020fcac` |
-| `server-b8248` (Apple Docker) | `sha256:41b6c5c9a1a8b61a51f65fbb114d45bce1a5d4a72e9e0ccdf35fdba3c2fd4998` |
+| `server-intel-b9014` (Intel) | `sha256:9c7bbaad3663523a3deb8927d3cfbf58d33f00a7634c69843e9eeeda01568c1b` |
+| `server-b9014` (Apple Docker; same image as CPU) | `sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53` |
+| `llama-b9014-bin-win-vulkan-x64.zip` (native Windows) | SHA-256 `6cd4bc7a44256e674458b0c5ea2ae3461dca29ee87876c8d410ecc78652a3b0f` |
+| Intel Arc local build (`images/llama-sycl`, source default; not built or tested) | tag `b9014`, commit `d4b0c22f9e67f0295e91dc1ab4f17c0fb2557fa4` |
 
 To use another build, set `LLAMA_SERVER_IMAGE` to a `tag@sha256:digest` reference. `docker buildx imagetools inspect <image>` prints the digest of a tag.
 
@@ -164,6 +167,8 @@ llama-server reads only the `LLAMA_ARG_*` names defined in its `common/arg.cpp`,
 - `LLAMA_ARG_NO_CACHE_PROMPT` works on b9014 and later. `--cache-prompt` is a negatable flag, so llama.cpp also reads the `LLAMA_ARG_NO_` form, and any value, even `0`, disables prompt caching.
 - `LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS` never existed in llama.cpp. The flag `--checkpoint-every-n-tokens` reads `LLAMA_ARG_CHECKPOINT_EVERY_NT`.
 - llama.cpp b9310 removed `--checkpoint-every-n-tokens` (`LLAMA_ARG_CHECKPOINT_EVERY_NT`) and added `--checkpoint-min-step` (`LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT`), a minimum spacing rather than a fixed interval. Docker passes both names through, and each build reads only its own. Native Windows passes the interval only when the installed `llama-server --help` lists the flag, because llama-server exits on a flag it does not know.
+- Native Windows passes `LLAMA_REASONING` as `--reasoning` when the installed `llama-server --help` lists it (b9014), and as `--reasoning-format` otherwise (b8248), adding `--reasoning-budget 0` for `off`. b9014 defaults `--reasoning` to `auto`, and `--reasoning-format none` alone returns the reasoning inside the reply. On b8248 only `--reasoning-budget 0` turns thinking off: with Qwen3.5-2B on the b8248 image, `--reasoning-format none` alone answered with 105 tokens of reasoning in the reply, and adding `--reasoning-budget 0` answered `42` (the server logs `thinking = 0`).
+- Intel images: ODS does not set `SYCL_CACHE_PERSISTENT`, which crashes llama-server with the oneAPI 2025.3 runtime in the b9014 image (ggml-org/llama.cpp#21474, #22095). On hosts with more than one Intel GPU, set `ONEAPI_DEVICE_SELECTOR=level_zero:0` (ggml-org/llama.cpp#21747).
 - On NVIDIA, ODS uses `--split-mode layer` for every multi-GPU assignment. llama.cpp b9890 removed CUDA row split: `--split-mode row` still parses, but the model fails to load.
 
 ### AMD-specific variables

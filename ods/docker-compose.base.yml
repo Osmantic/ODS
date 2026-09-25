@@ -70,6 +70,11 @@ services:
       # fixed interval). The pinned b9014 image reads only
       # LLAMA_ARG_CHECKPOINT_EVERY_NT; b9310 and later read only this one.
       - LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT
+      # Host-RAM bounds for hybrid/sliding-window models: context checkpoints
+      # kept per slot (b9014 default 32) and the prompt cache in MiB (default
+      # 8192). CPU runtime profiles cap both; unset keeps llama.cpp defaults.
+      - LLAMA_ARG_CTX_CHECKPOINTS
+      - LLAMA_ARG_CACHE_RAM
       # Per-model speculative decoding (e.g. draft-mtp from a runtime
       # profile). Passed through only when set; the NVIDIA and CPU overlays
       # default it to ${LLAMA_SPEC_TYPE:-ngram-mod}. The AMD (Lemonade), Intel,
