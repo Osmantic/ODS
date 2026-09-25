@@ -194,6 +194,37 @@ class TestForwarding:
         assert resp.headers["X-ODS-Route-Seq"] == "7"
         assert resp.headers["X-Lemonade-Route"] == "route-a"
 
+    @pytest.mark.parametrize("kind", ["llama-server", "lemonade"])
+    def test_chat_template_switches_reach_the_backend_unchanged(self, router, kind):
+        # Pixel's enable_thinking and preserve_thinking decide how a Qwen chat
+        # template renders earlier turns, so the backend must receive them as
+        # sent, including on the completed-decision path for tool streams.
+        mod, client, write_state, _calls = router
+        write_state(mutate=lambda state: state["active"]["backend"].update(kind=kind))
+        sent = []
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={
+                "id": "c1", "object": "chat.completion", "model": "Concrete.gguf",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"},
+                             "finish_reason": "stop"}]})
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        switches = {"enable_thinking": False, "preserve_thinking": True}
+        for stream in (False, True):
+            response = client.post("/v1/chat/completions", json={
+                "model": "ods/current", "stream": stream,
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "function": {
+                    "name": "lookup", "parameters": {"type": "object"}}}],
+                "chat_template_kwargs": switches,
+            })
+            assert response.status_code == 200
+        assert [body["chat_template_kwargs"] for body in sent] == [switches, switches]
+        assert [body["stream"] for body in sent] == [False, False]
+
     def test_chat_template_artifacts_stripped_from_json_content(self, router):
         mod, client, write_state, calls = router
         write_state()
