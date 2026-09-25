@@ -1,8 +1,10 @@
 """Read-only completion gate tests; fake commands never contact the live stack."""
 import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import unittest
 
 
@@ -11,12 +13,31 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'installers/verify-wsl-portal.sh'
 
 @unittest.skipUnless(os.name == 'posix', 'requires Bash')
 class PortalReadiness(unittest.TestCase):
-    def probe(self, *, service=0, health='{"status":"ok"}', http=0, port='3001'):
+    def probe(self, *, service=0, health='{"status":"ok"}', http=0, port='3001', available=True,
+              api_code=200, api_body=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bindir = root / 'bin'
             bindir.mkdir()
-            (root / '.env').write_text(f'DASHBOARD_PORT={port}\nPRIVATE_VALUE=do-not-print\n')
+            class Handler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    valid = self.path == '/api/pixel/status' and self.headers.get('Authorization') == 'Bearer do-not-print'
+                    self.send_response(api_code if valid else 403)
+                    if api_code == 302:
+                        self.send_header('Location', 'http://127.0.0.1:1/do-not-follow')
+                    self.end_headers()
+                    self.wfile.write(api_body if api_body is not None else
+                                     (b'{"available":true}' if available else b'{"available":false}'))
+
+                def log_message(self, *args):
+                    pass
+
+            server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            (root / '.env').write_text(f'DASHBOARD_PORT={port}\nDASHBOARD_API_PORT={server.server_port}\nDASHBOARD_API_KEY=do-not-print\n')
             commands = {
                 'systemctl': '#!/bin/sh\nexit "$SERVICE_CODE"\n',
                 'curl': '''#!/bin/sh
@@ -62,6 +83,24 @@ esac
     def test_http_failure_remains_failure(self):
         result, _ = self.probe(http=22)
         self.assertNotEqual(result.returncode, 0)
+
+    def test_dashboard_without_available_agent_fails(self):
+        result, _ = self.probe(available=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Portal API verification failed', result.stderr)
+
+    def test_invalid_or_oversized_status_fails(self):
+        for body in (b'not json', b'{"available":"true"}', b'x' * 65537):
+            with self.subTest(size=len(body)):
+                result, _ = self.probe(api_body=body)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_authentication_errors_and_redirects_fail(self):
+        for code in (401, 403, 302):
+            with self.subTest(code=code):
+                result, _ = self.probe(api_code=code)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn('do-not-follow', result.stdout + result.stderr)
 
     def test_invalid_or_executable_port_is_not_evaluated(self):
         for port in ('0', '65536', 'abc', '$(echo injected)'):

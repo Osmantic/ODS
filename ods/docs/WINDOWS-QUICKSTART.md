@@ -25,7 +25,7 @@ Pixel uses source bundled in public Osmantic/ODS, not a private repository.
 3. Setup checks a systemd-capable WSL release (0.67.6 or newer), WSL2 and systemd. Older inbox WSL stops with update instructions. Missing prerequisites stop installation with instructions; existing distributions are not converted and `/etc/wsl.conf` is not overwritten automatically.
 4. Start Docker Desktop, enable its WSL2 engine and **Settings > Resources > WSL Integration** for Ubuntu. Both `docker info` and `docker compose version` must work inside Ubuntu. Setup checks them and stops with instructions if needed; it does not install another Docker engine.
 5. The Linux installer runs with `--pixel --no-hermes --no-openclaw`. Enter the Ubuntu sudo password when requested and complete model/service selections.
-6. After installation, the wrapper verifies Pixel gateway/ingress services, private ingress health and the dashboard HTTP endpoint. Send a message in Portal to verify model inference too.
+6. After installation, the wrapper verifies Pixel gateway/ingress services, private ingress health, the dashboard HTTP endpoint and the authenticated Portal availability API. A dashboard that opens while its agent is unavailable is a failed verification. Send a message in Portal to verify model generation too.
 
 Fix reported prerequisites and rerun the same command. Windows/UAC/restart and Ubuntu first-run setup may require interaction. Never send passwords through chat.
 

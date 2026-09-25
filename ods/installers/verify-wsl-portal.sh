@@ -30,4 +30,5 @@ if ! curl --fail --silent --show-error --max-time 15 "http://127.0.0.1:$dashboar
     printf 'Portal dashboard is not responding on port %s. Inspect dashboard container logs.\n' "$dashboard_port" >&2
     exit 1
 fi
-printf 'Pixel ingress and Portal dashboard are reachable. Open http://localhost:%s and send a message to verify your selected model.\n' "$dashboard_port"
+python3 "$(dirname -- "${BASH_SOURCE[0]}")/verify-portal-api.py" "$install_root"
+printf 'Pixel ingress, Portal API and dashboard are reachable. Open http://localhost:%s and send a message to verify your selected model.\n' "$dashboard_port"
