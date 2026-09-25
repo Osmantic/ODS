@@ -29,7 +29,9 @@ test('sandbox tools compose before host evidence without workspace verb recognit
       ['exec', { command: 'python3 --version' }], ['process', { action: 'list' }]]) {
       const { guard } = make();
       const result = wrapped ? call(guard, 'tool_call', { id: `openclaw:core:${name}`, args: params }) : call(guard, name, params);
-      assert.notEqual(result?.block, true, `${wrapped}:${name}: ${result?.blockReason}`);
+      // With no background exec, process list is answered directly, not refused by host routing.
+      if (name === 'process') assert.equal(result?.blockReason, api.PHANTOM_PROCESS_REASON, `${wrapped}:${name}`);
+      else assert.notEqual(result?.block, true, `${wrapped}:${name}: ${result?.blockReason}`);
       assert.equal(guard.verificationForRun(ctx.runId).status, 'failed', 'sandbox evidence does not satisfy host work');
     }
   }

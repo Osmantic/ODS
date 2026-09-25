@@ -68,6 +68,7 @@ import {
   PENDING_EXEC_LOOP_ABORT_REASON,
   PENDING_EXEC_REQUIRES_POLL_REASON,
   PENDING_EXEC_RETRY_EXHAUSTED_REASON,
+  PHANTOM_PROCESS_REASON,
   CANCELLABLE_EXEC_UNAVAILABLE_REASON,
   EXEC_ARGUMENTS_REQUIRE_COMMAND_REASON,
   WORKSPACE_PREVIEW_REQUIRES_FILES_REASON,
@@ -1482,7 +1483,8 @@ test("workspace inspection preserves effects instead of scripting the next actio
     const read = invoke("read", {path: "project"});
     assert.notEqual(read?.block, true);
     assert.notEqual(read?.params?.id, "openclaw:core:exec");
-    assert.notEqual(invoke("process", {action: "list"})?.block, true);
+    // No exec has run yet, so no background session can exist to list.
+    assert.equal(invoke("process", {action: "list"})?.blockReason, PHANTOM_PROCESS_REASON);
     assert.deepEqual(prepared, [], "read/list/projection cannot create a directory or run shell");
     assert.notEqual(invoke("tool_search", {query: "Python csv documentation", limit: 2})?.block, true);
     assert.notEqual(invoke("exec", {command: "ls -la /workspace/project"})?.block, true);
