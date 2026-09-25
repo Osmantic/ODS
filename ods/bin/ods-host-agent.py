@@ -166,6 +166,19 @@ MODEL_ACTIVATION_HEALTH_ATTEMPTS = 60
 # two additional health intervals during model activation while preserving the
 # same bounded, fail-closed health contract.
 HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS = 90
+MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS = 2
+# A read-only docker CLI probe that times out says nothing about the container:
+# on a heavily loaded host the daemon/CLI can simply be slow to answer (fleet:
+# one 15-second ``docker inspect`` timeout at load ~198 on 48 threads aborted
+# and rolled back a model swap although the container was healthy and the same
+# call took 0.01 s moments later). Activation-path probes therefore treat a CLI
+# timeout as "state unknown" and retry with a longer timeout after a short
+# backoff, failing only when their bounded budget is exhausted.
+DOCKER_PROBE_TIMEOUTS_SECONDS = (15, 30, 30)
+DOCKER_PROBE_RETRY_BACKOFF_SECONDS = (2, 5)
+DOCKER_PROBE_RETRY_BUDGET_SECONDS = (
+    sum(DOCKER_PROBE_TIMEOUTS_SECONDS) + sum(DOCKER_PROBE_RETRY_BACKOFF_SECONDS)
+)
 # A replaced llama-server container usually serves a small or mid-size model
 # within a few seconds. Probe densely for this window instead of sleeping a
 # fixed initial delay, then fall back to the regular 5-second schedule.
@@ -16080,15 +16093,87 @@ def _patch_hermes_model_config(
         return False
 
 
+class DockerUnresponsiveError(RuntimeError):
+    """Docker CLI probes kept timing out, so the container state is unknown.
+
+    This is deliberately distinct from a definitive Docker answer (missing,
+    stopped, exited, unhealthy): nothing is known to be wrong with the
+    container or the model; Docker simply did not answer in time.
+    """
+
+
+def _docker_unresponsive_error(
+    subject: str,
+    timed_out: int,
+    started: float,
+) -> DockerUnresponsiveError:
+    waited = max(0.0, time.monotonic() - started)
+    calls = "call" if timed_out == 1 else "calls"
+    return DockerUnresponsiveError(
+        f"Docker was not responding while {subject} ({timed_out} docker CLI "
+        f"{calls} timed out over {waited:.0f}s). The host appears overloaded; "
+        "this is not a problem with the model. Try again once the machine is "
+        "less busy."
+    )
+
+
+def _docker_probe_backoff(consecutive_timeouts: int) -> float:
+    index = min(max(consecutive_timeouts, 1), len(DOCKER_PROBE_RETRY_BACKOFF_SECONDS)) - 1
+    return DOCKER_PROBE_RETRY_BACKOFF_SECONDS[index]
+
+
+def _run_docker_probe(
+    argv: list[str],
+    subject: str,
+    *,
+    timeouts: tuple[float, ...] = DOCKER_PROBE_TIMEOUTS_SECONDS,
+) -> subprocess.CompletedProcess:
+    """Run a read-only docker CLI probe, retrying only CLI timeouts.
+
+    A completed process (whatever its exit code) and ``OSError`` reach the
+    caller unchanged, so definitive Docker answers keep their meaning. A
+    timeout means "state unknown": it is logged and retried with the next,
+    longer timeout after a short backoff. When every attempt times out the
+    probe raises :class:`DockerUnresponsiveError`. The budget is bounded by
+    ``sum(timeouts)`` plus the backoffs (``DOCKER_PROBE_RETRY_BUDGET_SECONDS``
+    for the defaults).
+    """
+    if not timeouts:
+        raise ValueError("docker probe needs at least one timeout")
+    started = time.monotonic()
+    for index, timeout in enumerate(timeouts):
+        try:
+            return subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            if index + 1 >= len(timeouts):
+                raise _docker_unresponsive_error(subject, index + 1, started) from exc
+            backoff = _docker_probe_backoff(index + 1)
+            logger.warning(
+                "Docker did not answer within %ss while %s (attempt %d/%d); "
+                "state unknown, retrying in %ss with a %ss timeout",
+                timeout,
+                subject,
+                index + 1,
+                len(timeouts),
+                backoff,
+                timeouts[index + 1],
+            )
+            time.sleep(backoff)
+    raise AssertionError("unreachable")
+
+
 def _container_exists(container: str) -> bool:
     try:
-        result = subprocess.run(
+        result = _run_docker_probe(
             ["docker", "inspect", "--type", "container", "--format", "{{.Id}}", container],
-            capture_output=True,
-            text=True,
-            timeout=15,
+            f"inspecting {container}",
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except OSError as exc:
         raise RuntimeError(f"Could not inspect optional container {container}: {exc}") from exc
     if result.returncode == 0:
         return bool(result.stdout.strip())
@@ -16099,17 +16184,17 @@ def _container_exists(container: str) -> bool:
 
 
 def _container_running(container: str) -> bool:
+    # A persistently unresponsive Docker raises DockerUnresponsiveError instead
+    # of reporting a running container as stopped.
     try:
-        result = subprocess.run(
+        result = _run_docker_probe(
             [
                 "docker", "inspect", "--type", "container", "--format",
                 "{{.State.Running}}", container,
             ],
-            capture_output=True,
-            text=True,
-            timeout=15,
+            f"checking whether {container} is running",
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return False
     return result.returncode == 0 and result.stdout.strip().casefold() == "true"
 
@@ -16119,16 +16204,14 @@ def _capture_container_state(container: str) -> dict[str, bool]:
     if not _container_exists(container):
         return {"exists": False, "running": False}
     try:
-        result = subprocess.run(
+        result = _run_docker_probe(
             [
                 "docker", "inspect", "--type", "container", "--format",
                 "{{.State.Running}}", container,
             ],
-            capture_output=True,
-            text=True,
-            timeout=15,
+            f"capturing the runtime state of {container}",
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except OSError as exc:
         raise RuntimeError(f"Could not capture runtime state for {container}: {exc}") from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
@@ -16144,27 +16227,73 @@ class ContainerUnhealthyError(RuntimeError):
 
 
 def _wait_for_container_health(container: str, attempts: int | None = None) -> None:
-    """Wait until a restarted dependent is healthy, failing on terminal states."""
+    """Wait until a restarted dependent is healthy, failing on terminal states.
+
+    Definitive Docker answers keep their meaning: ``unhealthy`` raises
+    :class:`ContainerUnhealthyError`; an exited container, an inspect error or
+    an invalid state raises ``RuntimeError``; ``starting`` is polled for
+    ``attempts`` observations. A docker CLI *timeout* only means "state
+    unknown": it is logged and retried with a longer timeout
+    (``DOCKER_PROBE_TIMEOUTS_SECONDS``) within this wait's wall-clock
+    deadline. Retries never extend the wait past that deadline; when it (or
+    the attempt budget) runs out on a timeout the wait raises
+    :class:`DockerUnresponsiveError`.
+    """
     if attempts is None:
         attempts = (
             HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS
             if container == "ods-hermes"
             else MODEL_ACTIVATION_HEALTH_ATTEMPTS
         )
+    argv = [
+        "docker", "inspect", "--type", "container", "--format",
+        "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+        container,
+    ]
+    subject = f"checking {container} health"
+    started = time.monotonic()
+    # The nominal poll window plus one full probe retry budget, so a slow
+    # Docker answer even at the end of the window still gets its retries.
+    deadline = (
+        started
+        + attempts * MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS
+        + DOCKER_PROBE_RETRY_BUDGET_SECONDS
+    )
+    consecutive_timeouts = 0
+    timed_out = 0
     for attempt in range(attempts):
+        timeout = DOCKER_PROBE_TIMEOUTS_SECONDS[
+            min(consecutive_timeouts, len(DOCKER_PROBE_TIMEOUTS_SECONDS) - 1)
+        ]
+        if consecutive_timeouts:
+            timeout = max(1.0, min(timeout, deadline - time.monotonic()))
         try:
             result = subprocess.run(
-                [
-                    "docker", "inspect", "--type", "container", "--format",
-                    "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
-                    container,
-                ],
+                argv,
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=timeout,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired as exc:
+            consecutive_timeouts += 1
+            timed_out += 1
+            remaining = deadline - time.monotonic()
+            if attempt + 1 >= attempts or remaining < 1:
+                raise _docker_unresponsive_error(subject, timed_out, started) from exc
+            backoff = min(_docker_probe_backoff(consecutive_timeouts), remaining - 1)
+            logger.warning(
+                "Docker did not answer within %ss while %s (timeout %d, %.0fs "
+                "left before the readiness deadline); state unknown, retrying",
+                timeout,
+                subject,
+                timed_out,
+                remaining,
+            )
+            time.sleep(backoff)
+            continue
+        except OSError as exc:
             raise RuntimeError(f"Could not inspect health for {container}: {exc}") from exc
+        consecutive_timeouts = 0
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip()
             raise RuntimeError(f"Could not inspect health for {container}: {detail[:300]}")
@@ -16180,7 +16309,7 @@ def _wait_for_container_health(container: str, attempts: int | None = None) -> N
         if status != "starting":
             raise RuntimeError(f"Docker returned invalid health state for {container}: {status!r}")
         if attempt + 1 < attempts:
-            time.sleep(2)
+            time.sleep(MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS)
     raise RuntimeError(f"{container} did not become healthy after model activation")
 
 
@@ -17170,14 +17299,12 @@ def _verify_litellm_route(env: dict, *, model: str = "default") -> None:
 
 def _verify_openclaw_model_env(expected_model: str) -> None:
     """Verify recreated OpenClaw received the active persisted model identity."""
-    result = subprocess.run(
+    result = _run_docker_probe(
         [
             "docker", "inspect", "--type", "container", "--format",
             "{{range .Config.Env}}{{println .}}{{end}}", "ods-openclaw",
         ],
-        capture_output=True,
-        text=True,
-        timeout=15,
+        "verifying the ods-openclaw model environment",
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
@@ -17206,11 +17333,11 @@ def _verify_openclaw_model_env(expected_model: str) -> None:
 def _read_hermes_container_config() -> str:
     if not _container_running("ods-hermes"):
         raise RuntimeError("Hermes live config is host-inaccessible and ods-hermes is not running")
-    result = subprocess.run(
+    # Read-only, so a CLI timeout is retried like any other activation probe.
+    result = _run_docker_probe(
         ["docker", "exec", "ods-hermes", "cat", "/opt/data/config.yaml"],
-        capture_output=True,
-        text=True,
-        timeout=30,
+        "reading the ods-hermes live config",
+        timeouts=(30, 60, 60),
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
@@ -18494,11 +18621,10 @@ def _llama_recreate_argv(
 def _recreate_llama_server(env: dict, override_image: str = ""):
     """Transactionally recreate llama-server from its inspected runtime state."""
     container = "ods-llama-server"
-    inspect_result = subprocess.run(
+    inspect_result = _run_docker_probe(
         ["docker", "inspect", container],
-        capture_output=True,
-        text=True,
-        timeout=30,
+        f"inspecting {container}",
+        timeouts=(30, 60, 60),
     )
     if inspect_result.returncode != 0:
         raise RuntimeError(

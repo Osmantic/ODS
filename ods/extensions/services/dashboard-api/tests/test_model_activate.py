@@ -38,6 +38,7 @@ _is_windows_host_llama_server = _mod._is_windows_host_llama_server
 _restart_windows_native_llama_server = _mod._restart_windows_native_llama_server
 _write_windows_native_litellm_config = _mod._write_windows_native_litellm_config
 _wait_for_container_health = _mod._wait_for_container_health
+_real_capture_container_state = _mod._capture_container_state
 
 
 @pytest.fixture(autouse=True)
@@ -151,6 +152,263 @@ def test_container_health_wait_preserves_other_defaults_and_explicit_overrides(
         _wait_for_container_health(container, attempts=attempts)
 
     assert len(inspections) == expected_attempts
+
+
+class _FakeDockerClock:
+    """Monotonic clock that only advances on sleeps and simulated CLI timeouts."""
+
+    def __init__(self):
+        self.now = 1000.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def _install_fake_docker_clock(monkeypatch):
+    clock = _FakeDockerClock()
+    monkeypatch.setattr(_mod.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(_mod.time, "sleep", clock.sleep)
+    return clock
+
+
+def _scripted_docker_cli(clock, outcomes, calls, *, matches=lambda _cmd: True):
+    """Fake ``subprocess.run`` whose matching docker calls follow ``outcomes``.
+
+    ``"timeout"`` burns the requested timeout on the fake clock and raises
+    ``TimeoutExpired`` exactly like a CLI that never answered; a
+    ``CompletedProcess`` is returned as-is; any other string is stdout of a
+    successful call. Non-matching commands succeed with empty output.
+    """
+    scripted = iter(outcomes)
+
+    def run(cmd, **kwargs):
+        if not matches(cmd):
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        calls.append((list(cmd), kwargs.get("timeout")))
+        outcome = next(scripted)
+        if outcome == "timeout":
+            clock.now += kwargs["timeout"]
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        if isinstance(outcome, subprocess.CompletedProcess):
+            return outcome
+        return subprocess.CompletedProcess(cmd, 0, outcome + "\n", "")
+
+    return run
+
+
+def _forever(value):
+    while True:
+        yield value
+
+
+def _health_deadline(attempts):
+    return (
+        attempts * _mod.MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS
+        + _mod.DOCKER_PROBE_RETRY_BUDGET_SECONDS
+    )
+
+
+def test_health_wait_retries_a_docker_cli_timeout_until_it_answers(monkeypatch, caplog):
+    clock = _install_fake_docker_clock(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        _mod.subprocess, "run", _scripted_docker_cli(clock, ["timeout", "healthy"], calls)
+    )
+    monkeypatch.setattr(
+        _mod,
+        "_capture_container_state",
+        lambda _container: {"exists": True, "running": True},
+    )
+
+    with caplog.at_level("WARNING", logger="ods-host-agent"):
+        _wait_for_container_health("ods-hermes")
+
+    assert [timeout for _cmd, timeout in calls] == [15, 30]
+    assert all(cmd[:2] == ["docker", "inspect"] for cmd, _timeout in calls)
+    assert clock.sleeps == [2]
+    assert "Docker did not answer within 15s while checking ods-hermes health" in caplog.text
+
+
+def test_health_wait_fails_as_docker_unresponsive_only_after_the_deadline(monkeypatch):
+    clock = _install_fake_docker_clock(monkeypatch)
+    started = clock.now
+    calls = []
+    monkeypatch.setattr(
+        _mod.subprocess, "run", _scripted_docker_cli(clock, _forever("timeout"), calls)
+    )
+    monkeypatch.setattr(
+        _mod,
+        "_capture_container_state",
+        lambda _container: pytest.fail("an unknown health state must not be treated as healthy"),
+    )
+
+    with pytest.raises(_mod.DockerUnresponsiveError) as caught:
+        _wait_for_container_health("ods-hermes")
+
+    message = str(caught.value)
+    assert "Docker was not responding while checking ods-hermes health" in message
+    assert "not a problem with the model" in message
+    assert not isinstance(caught.value, _mod.ContainerUnhealthyError)
+    assert isinstance(caught.value, RuntimeError)
+    deadline = _health_deadline(_mod.HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS)
+    # Kept retrying across the whole readiness window, never past it.
+    assert deadline - 5 <= clock.now - started <= deadline
+    timeouts = [timeout for _cmd, timeout in calls]
+    assert timeouts[:3] == [15, 30, 30]
+    assert all(1 <= timeout <= 30 for timeout in timeouts)
+    assert len(calls) > 3
+
+
+def test_health_wait_timeouts_stay_bounded_by_the_attempt_budget(monkeypatch):
+    clock = _install_fake_docker_clock(monkeypatch)
+    calls = []
+
+    def instant_timeout(cmd, **kwargs):
+        calls.append(kwargs.get("timeout"))
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr(_mod.subprocess, "run", instant_timeout)
+
+    with pytest.raises(_mod.DockerUnresponsiveError, match="3 docker CLI calls timed out"):
+        _wait_for_container_health("ods-openclaw", attempts=3)
+
+    assert calls == [15, 30, 30]
+    assert clock.sleeps == [2, 5]
+
+
+@pytest.mark.parametrize(
+    "outcomes",
+    [["unhealthy"], ["timeout", "unhealthy"]],
+    ids=["unhealthy", "timeout-then-unhealthy"],
+)
+def test_health_wait_keeps_unhealthy_definitive_and_unretried(monkeypatch, outcomes):
+    clock = _install_fake_docker_clock(monkeypatch)
+    calls = []
+    monkeypatch.setattr(_mod.subprocess, "run", _scripted_docker_cli(clock, outcomes, calls))
+
+    with pytest.raises(
+        _mod.ContainerUnhealthyError,
+        match="ods-hermes became unhealthy after model activation",
+    ):
+        _wait_for_container_health("ods-hermes")
+
+    assert len(calls) == len(outcomes)
+
+
+def test_health_wait_keeps_exited_after_timeout_definitive(monkeypatch):
+    clock = _install_fake_docker_clock(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        _mod.subprocess, "run", _scripted_docker_cli(clock, ["timeout", "healthy"], calls)
+    )
+    monkeypatch.setattr(
+        _mod,
+        "_capture_container_state",
+        lambda _container: {"exists": True, "running": False},
+    )
+
+    with pytest.raises(RuntimeError, match="ods-litellm exited while waiting for health") as caught:
+        _wait_for_container_health("ods-litellm")
+
+    assert not isinstance(caught.value, _mod.DockerUnresponsiveError)
+
+
+def test_docker_probe_retries_timeouts_with_backoff_then_returns_the_answer(monkeypatch):
+    clock = _install_fake_docker_clock(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        _mod.subprocess,
+        "run",
+        _scripted_docker_cli(clock, ["timeout", "timeout", "0123abcd"], calls),
+    )
+
+    assert _mod._container_exists("ods-hermes") is True
+    assert [timeout for _cmd, timeout in calls] == [15, 30, 30]
+    assert clock.sleeps == [2, 5]
+
+
+def test_docker_probe_keeps_definitive_missing_answer_after_a_timeout(monkeypatch):
+    clock = _install_fake_docker_clock(monkeypatch)
+    calls = []
+    missing = subprocess.CompletedProcess([], 1, "", "Error: No such container: ods-hermes")
+    monkeypatch.setattr(
+        _mod.subprocess, "run", _scripted_docker_cli(clock, ["timeout", missing], calls)
+    )
+
+    assert _mod._container_exists("ods-hermes") is False
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("probe", "subject"),
+    [
+        (lambda: _mod._container_exists("ods-hermes"), "inspecting ods-hermes"),
+        (
+            lambda: _mod._container_running("ods-hermes"),
+            "checking whether ods-hermes is running",
+        ),
+        (
+            lambda: _real_capture_container_state("ods-litellm"),
+            "inspecting ods-litellm",
+        ),
+        (
+            lambda: _mod._verify_openclaw_model_env("Modern-Model"),
+            "verifying the ods-openclaw model environment",
+        ),
+    ],
+    ids=["exists", "running", "capture-state", "openclaw-env"],
+)
+def test_docker_probes_raise_docker_unresponsive_after_bounded_retries(
+    monkeypatch, probe, subject,
+):
+    clock = _install_fake_docker_clock(monkeypatch)
+    started = clock.now
+    calls = []
+    monkeypatch.setattr(
+        _mod.subprocess, "run", _scripted_docker_cli(clock, _forever("timeout"), calls)
+    )
+
+    with pytest.raises(_mod.DockerUnresponsiveError) as caught:
+        probe()
+
+    assert f"Docker was not responding while {subject}" in str(caught.value)
+    assert "not a problem with the model" in str(caught.value)
+    assert [timeout for _cmd, timeout in calls] == list(_mod.DOCKER_PROBE_TIMEOUTS_SECONDS)
+    assert clock.sleeps == list(_mod.DOCKER_PROBE_RETRY_BACKOFF_SECONDS)
+    assert clock.now - started == _mod.DOCKER_PROBE_RETRY_BUDGET_SECONDS
+
+
+def test_capture_container_state_retries_each_timed_out_probe(monkeypatch):
+    clock = _install_fake_docker_clock(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        _mod.subprocess,
+        "run",
+        _scripted_docker_cli(clock, ["timeout", "0123abcd", "timeout", "true"], calls),
+    )
+
+    assert _real_capture_container_state("ods-hermes") == {"exists": True, "running": True}
+    assert [timeout for _cmd, timeout in calls] == [15, 30, 15, 30]
+
+
+def test_hermes_container_config_read_retries_a_timed_out_exec(monkeypatch):
+    clock = _install_fake_docker_clock(monkeypatch)
+    calls = []
+    monkeypatch.setattr(_mod, "_container_running", lambda _container: True)
+    monkeypatch.setattr(
+        _mod.subprocess,
+        "run",
+        _scripted_docker_cli(clock, ["timeout", "model:\n  default: m"], calls),
+    )
+
+    assert _mod._read_hermes_container_config() == "model:\n  default: m\n"
+    assert [cmd[:2] for cmd, _timeout in calls] == [["docker", "exec"]] * 2
+    assert [timeout for _cmd, timeout in calls] == [30, 60]
 
 
 def test_external_lemonade_runtime_overrides_wsl_cpu_discovery():
@@ -8761,6 +9019,201 @@ class TestModelActivateRollback:
         assert env_path.read_text(encoding="utf-8") == env_text
         assert hermes_live.read_text(encoding="utf-8") == old_config
         assert json.loads(completion_receipt.read_text(encoding="utf-8")) == old_receipt
+
+    @staticmethod
+    def _write_hermes_rollback_fixture(tmp_path):
+        install_dir, env_path, env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        hermes_live = install_dir / "data" / "hermes" / "config.yaml"
+        hermes_template = (
+            install_dir / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
+        )
+        hermes_live.parent.mkdir(parents=True)
+        hermes_template.parent.mkdir(parents=True)
+        old_config = (
+            "model:\n"
+            '  default: "old-model.gguf"\n'
+            "  context_length: 2048\n"
+        )
+        hermes_live.write_text(old_config, encoding="utf-8")
+        hermes_template.write_text(old_config, encoding="utf-8")
+        states = {
+            "ods-litellm": {"exists": False, "running": False},
+            "ods-hermes": {"exists": True, "running": True},
+            "ods-openclaw": {"exists": False, "running": False},
+            "ods-perplexica": {"exists": False, "running": False},
+        }
+        return install_dir, env_path, env_text, hermes_live, old_config, states
+
+    @staticmethod
+    def _is_health_inspect(cmd):
+        return (
+            list(cmd[:2]) == ["docker", "inspect"]
+            and ".State.Health.Status" in " ".join(cmd)
+        )
+
+    def _patch_hermes_activation(self, monkeypatch, install_dir, states, runtime_models,
+                                 restarts, restore):
+        # Run the real bounded health wait against the scripted Docker CLI.
+        monkeypatch.setattr(_mod, "_wait_for_container_health", _wait_for_container_health)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_capture_container_state", lambda name: states[name])
+        monkeypatch.setattr(
+            _mod,
+            "_compose_restart_llama_server",
+            lambda env: runtime_models.append(env["GGUF_FILE"]),
+        )
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        monkeypatch.setattr(
+            _mod,
+            "_restart_existing_container",
+            lambda name, _state=None, **_kwargs: (
+                restarts.append(name) or name == "ods-hermes"
+            ),
+        )
+        monkeypatch.setattr(_mod, "_restore_container_state", restore)
+        monkeypatch.setattr(_mod, "_verify_running_hermes_route", lambda *_args: None)
+
+    def test_transient_docker_timeout_on_hermes_health_commits_without_rollback(
+        self, tmp_path, monkeypatch,
+    ):
+        # Fleet incident: one 15 s ``docker inspect`` timeout on a loaded host
+        # aborted and rolled back a swap although ods-hermes was healthy.
+        install_dir, env_path, _env_text, _hermes_live, _old_config, states = (
+            self._write_hermes_rollback_fixture(tmp_path)
+        )
+        clock = _install_fake_docker_clock(monkeypatch)
+        health_calls = []
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            _scripted_docker_cli(
+                clock,
+                ["timeout", "healthy"],
+                health_calls,
+                matches=self._is_health_inspect,
+            ),
+        )
+        runtime_models = []
+        restarts = []
+        restores = []
+        self._patch_hermes_activation(
+            monkeypatch,
+            install_dir,
+            states,
+            runtime_models,
+            restarts,
+            lambda name, _state, **_kwargs: restores.append(name) or False,
+        )
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        payload = handler.parse_response()
+        assert handler.response_code == 200, payload
+        assert runtime_models == ["new-model.gguf"]
+        assert restores == []
+        assert "rolled_back" not in payload
+        assert [timeout for _cmd, timeout in health_calls] == [15, 30]
+        assert all(cmd[-1] == "ods-hermes" for cmd, _timeout in health_calls)
+        assert restarts.count("ods-hermes") == 1
+        assert payload["consumers"]["hermes"] == "restarted"
+        assert _mod.load_env(env_path)["GGUF_FILE"] == "new-model.gguf"
+
+    def test_rollback_retries_docker_timeouts_until_previous_route_is_proved(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir, env_path, env_text, hermes_live, old_config, states = (
+            self._write_hermes_rollback_fixture(tmp_path)
+        )
+        clock = _install_fake_docker_clock(monkeypatch)
+        health_calls = []
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            _scripted_docker_cli(
+                clock,
+                # Forward: definitive unhealthy twice (one recreate, then
+                # rollback). Rollback: Docker is slow once, then answers.
+                ["unhealthy", "unhealthy", "timeout", "healthy"],
+                health_calls,
+                matches=self._is_health_inspect,
+            ),
+        )
+        runtime_models = []
+        restarts = []
+        self._patch_hermes_activation(
+            monkeypatch,
+            install_dir,
+            states,
+            runtime_models,
+            restarts,
+            lambda name, _state, **_kwargs: name == "ods-hermes",
+        )
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        payload = handler.parse_response()
+        assert handler.response_code == 500
+        assert payload["rolled_back"] is True, payload
+        assert "became unhealthy after model activation" in payload["error"]
+        assert "rollback could not be proved" not in payload["error"]
+        assert runtime_models == ["new-model.gguf", "old-model.gguf"]
+        assert [timeout for _cmd, timeout in health_calls] == [15, 15, 15, 30]
+        assert restarts.count("ods-hermes") == 2
+        assert env_path.read_text(encoding="utf-8") == env_text
+        assert hermes_live.read_text(encoding="utf-8") == old_config
+
+    def test_unresponsive_docker_fails_activation_as_docker_not_model_problem(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir, env_path, env_text, _hermes_live, _old_config, states = (
+            self._write_hermes_rollback_fixture(tmp_path)
+        )
+        clock = _install_fake_docker_clock(monkeypatch)
+        started = clock.now
+        docker_slow = {"value": True}
+        health_timeouts = []
+
+        def run(cmd, **kwargs):
+            if not self._is_health_inspect(cmd):
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            health_timeouts.append(kwargs["timeout"])
+            if docker_slow["value"]:
+                clock.now += kwargs["timeout"]
+                raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+            return subprocess.CompletedProcess(cmd, 0, "healthy\n", "")
+
+        def restore(name, _state, **_kwargs):
+            docker_slow["value"] = False  # load eased before rollback
+            return name == "ods-hermes"
+
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        runtime_models = []
+        restarts = []
+        self._patch_hermes_activation(
+            monkeypatch, install_dir, states, runtime_models, restarts, restore,
+        )
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        payload = handler.parse_response()
+        assert handler.response_code == 500
+        assert "Docker was not responding while checking ods-hermes health" in payload["error"]
+        assert "not a problem with the model" in payload["error"]
+        assert "Could not inspect health" not in payload["error"]
+        assert payload["rolled_back"] is True, payload
+        # Unknown is not unhealthy: no extra recreate, and the forward wait
+        # used its full readiness window before giving up.
+        assert restarts.count("ods-hermes") == 1
+        forward_window = _health_deadline(_mod.HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS)
+        assert clock.now - started >= forward_window - 5
+        assert len(health_timeouts) > 3
+        assert runtime_models == ["new-model.gguf", "old-model.gguf"]
+        assert env_path.read_text(encoding="utf-8") == env_text
 
     def test_runtime_profile_cannot_exceed_requested_tier_context(
         self, tmp_path, monkeypatch,
