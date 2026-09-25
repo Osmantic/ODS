@@ -6,6 +6,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 
 import pytest
 
@@ -178,6 +181,230 @@ def test_other_runtime_versions_are_untouched(installation):
     assert run(installation) == {"status": "not-applicable", "version": "future"}
     assert installation[3].read_bytes() == installation[4]
     assert not installation[1].exists()
+
+
+def apply_other_build(installation, tmp_path):
+    """Apply a newer recipe this build does not know through the same custody."""
+    runtime, state, manifest_path, module, original, _ = installation
+    other = original.replace(b"before();", b"newer();")
+    manifest = json.loads(manifest_path.read_text())
+    manifest.update(patchedSha256=hashlib.sha256(other).hexdigest(),
+                    replacements=[["before();", "newer();"]])
+    other_manifest = tmp_path / "other-build.json"
+    other_manifest.write_text(json.dumps(manifest))
+    repair_module.repair(runtime, state, manifest_path=other_manifest)
+    assert module.read_bytes() == other
+    return other
+
+
+@pytest.mark.parametrize("restore", [False, True])
+def test_bytes_recorded_by_another_build_rebuild_from_verified_backup(installation, tmp_path, restore):
+    _, state, _, module, original, patched = installation
+    other = apply_other_build(installation, tmp_path)
+    outcome = run(installation, restore=restore)
+    assert outcome["status"] == "changed"
+    assert module.read_bytes() == (original if restore else patched)
+    receipt = json.loads((state / "receipt.json").read_text())
+    assert receipt["recoveredFrom"] == outcome["recoveredFrom"] == "verified-backup"
+    assert receipt["recoveredSha256"] == hashlib.sha256(other).hexdigest()
+    assert next(state.glob("*.js")).read_bytes() == original
+    assert run(installation, restore=restore)["status"] == "unchanged"
+
+
+def test_interrupted_recovery_resumes_from_its_own_receipt(installation, tmp_path, monkeypatch):
+    module, patched = installation[3], installation[5]
+    other = apply_other_build(installation, tmp_path)
+    replace = repair_module.os.replace
+
+    def fail_module(source, destination):
+        if Path(destination) == module:
+            raise OSError("simulated write failure")
+        return replace(source, destination)
+
+    monkeypatch.setattr(repair_module.os, "replace", fail_module)
+    with pytest.raises(OSError, match="simulated"):
+        run(installation)
+    assert module.read_bytes() == other
+    monkeypatch.setattr(repair_module.os, "replace", replace)
+    assert run(installation)["status"] == "changed"
+    assert module.read_bytes() == patched
+
+
+@pytest.mark.parametrize("damage,error", [
+    ("missing-backup", "differs from reviewed"),
+    ("tampered-backup", "backup hash mismatch"),
+    ("missing-receipt", "differs from reviewed"),
+    ("unrecorded-bytes", "differs from reviewed"),
+    ("other-module", "differs from reviewed"),
+])
+def test_unknown_bytes_without_verified_custody_fail_closed(installation, tmp_path, damage, error):
+    _, state, _, module, _, _ = installation
+    other = apply_other_build(installation, tmp_path)
+    backup = next(state.glob("*.js"))
+    receipt_path = state / "receipt.json"
+    if damage == "missing-backup":
+        backup.unlink()
+    elif damage == "tampered-backup":
+        backup.write_bytes(b"tampered")
+    elif damage == "missing-receipt":
+        receipt_path.unlink()
+    elif damage == "unrecorded-bytes":
+        other = other + b"independent();\n"
+        module.write_bytes(other)
+    else:
+        receipt = json.loads(receipt_path.read_text())
+        receipt["module"] = repair_module.COMPLETION_MODULE
+        receipt_path.write_text(json.dumps(receipt))
+    receipt_before = receipt_path.read_bytes() if receipt_path.exists() else None
+    with pytest.raises(ValueError, match=error):
+        run(installation)
+    assert module.read_bytes() == other
+    assert (receipt_path.read_bytes() if receipt_path.exists() else None) == receipt_before
+
+
+FOREIGN_MODULE = "agent-tools-D1DOpg6D.js"
+
+
+def write_foreign_set(runtime, root, name, *, module_name=FOREIGN_MODULE, live="patched"):
+    """Mirror the custody an ODS build with an unknown patch set leaves."""
+    original = f"// {name} original\n".encode()
+    patched = f"// {name} patched\n".encode()
+    module = runtime / "dist" / module_name
+    module.write_bytes(original if live == "source" else patched)
+    module.chmod(0o644)
+    state = root / name
+    state.mkdir(mode=0o700, parents=True)
+    source = hashlib.sha256(original).hexdigest()
+    backup = state / f"{source}.js"
+    backup.write_bytes(original)
+    backup.chmod(0o600)
+    receipt = {"schemaVersion": 1, "version": repair_module.VERSION, "module": module_name,
+               "sourceSha256": source, "patchedSha256": hashlib.sha256(patched).hexdigest(),
+               "backup": backup.name, "desiredSha256": hashlib.sha256(patched).hexdigest()}
+    (state / "receipt.json").write_text(json.dumps(receipt, sort_keys=True))
+    (state / "receipt.json").chmod(0o600)
+    return module, original, patched, state
+
+
+@pytest.fixture
+def patch_root(installation, tmp_path):
+    runtime, _, manifest, *_ = installation
+    root = tmp_path / "ods-runtime-patches"
+    repair_module.repair(runtime, root / "tool-recovery", manifest_path=manifest)
+    return root
+
+
+def snapshot(directory):
+    return {path: path.read_bytes() for path in directory.rglob("*") if path.is_file()}
+
+
+@pytest.mark.parametrize("live", ["patched", "source"])
+def test_foreign_patch_set_is_restored_and_archived(installation, patch_root, live):
+    runtime, _, _, known_module, _, known_patched = installation
+    module, original, _, state = write_foreign_set(runtime, patch_root, "file-operations", live=live)
+    known_state = snapshot(patch_root / "tool-recovery")
+    outcome = repair_module.restore_foreign(runtime, patch_root, {"tool-recovery"})
+    assert module.read_bytes() == original
+    assert module.stat().st_mode & 0o777 == 0o644
+    assert known_module.read_bytes() == known_patched
+    assert snapshot(patch_root / "tool-recovery") == known_state
+    assert not state.exists()
+    [entry] = outcome["foreign"]
+    assert outcome["status"] == "changed"
+    assert entry["status"] == ("changed" if live == "patched" else "unchanged")
+    archived = Path(entry["archive"])
+    assert archived.parent.parent == patch_root.with_name("ods-runtime-patches.retired")
+    assert archived.parent.stat().st_mode & 0o777 == 0o700
+    assert (archived / "receipt.json").exists()
+    assert (archived / f"{hashlib.sha256(original).hexdigest()}.js").read_bytes() == original
+    assert repair_module.restore_foreign(runtime, patch_root, {"tool-recovery"}) == {
+        "status": "unchanged", "foreign": []}
+
+
+def test_group_writable_state_root_from_owner_umask_is_tightened(installation, patch_root):
+    # A user-private-group umask (002) left roots created by earlier builds
+    # group-writable; that is the owner's own state, not a foreign directory.
+    runtime = installation[0]
+    patch_root.chmod(0o775)
+    module, original, _, _ = write_foreign_set(runtime, patch_root, "file-operations")
+    assert repair_module.restore_foreign(runtime, patch_root, {"tool-recovery"})["status"] == "changed"
+    assert module.read_bytes() == original
+    assert patch_root.stat().st_mode & 0o777 == 0o755
+
+
+def test_repair_creates_owner_only_state_root_under_group_umask(installation, tmp_path):
+    runtime, _, manifest, *_ = installation
+    root = tmp_path / "fresh-patches"
+    previous = os.umask(0o002)
+    try:
+        repair_module.repair(runtime, root / "tool-recovery", manifest_path=manifest)
+    finally:
+        os.umask(previous)
+    assert root.stat().st_mode & 0o777 == 0o700
+    assert (root / "tool-recovery").stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("damage", [
+    "tampered-backup", "missing-backup", "unexpected-live", "other-version", "shared-module",
+    "public-state"])
+def test_foreign_patch_verification_failure_writes_nothing(installation, patch_root, damage):
+    runtime = installation[0]
+    valid_module, _, valid_patched, _ = write_foreign_set(
+        runtime, patch_root, "a-valid", module_name="sandbox-Y3MbG9Od.js")
+    module, original, patched, state = write_foreign_set(runtime, patch_root, "file-operations")
+    source = hashlib.sha256(original).hexdigest()
+    if damage == "tampered-backup":
+        (state / f"{source}.js").write_bytes(b"tampered")
+    elif damage == "missing-backup":
+        (state / f"{source}.js").unlink()
+    elif damage == "unexpected-live":
+        patched = b"// independently changed\n"
+        module.write_bytes(patched)
+    elif damage == "other-version":
+        receipt = json.loads((state / "receipt.json").read_text())
+        receipt["version"] = "2026.7.1"
+        (state / "receipt.json").write_text(json.dumps(receipt))
+    elif damage == "shared-module":
+        shutil.copytree(patch_root / "a-valid", patch_root / "z-duplicate")
+    else:
+        state.chmod(0o755)
+    before = snapshot(patch_root.parent)
+    with pytest.raises(ValueError, match="cannot be restored"):
+        repair_module.restore_foreign(runtime, patch_root, {"tool-recovery"})
+    assert snapshot(patch_root.parent) == before
+    assert module.read_bytes() == patched
+    assert valid_module.read_bytes() == valid_patched
+    assert not patch_root.with_name("ods-runtime-patches.retired").exists()
+
+
+def test_foreign_set_without_receipt_and_other_versions_are_left_alone(installation, patch_root):
+    runtime = installation[0]
+    (patch_root / "interrupted").mkdir(mode=0o700)
+    before = snapshot(patch_root.parent)
+    assert repair_module.restore_foreign(runtime, patch_root, {"tool-recovery"}) == {
+        "status": "unchanged", "foreign": []}
+    assert snapshot(patch_root.parent) == before
+    module, _, patched, _ = write_foreign_set(runtime, patch_root, "file-operations")
+    (runtime / "package.json").write_text(json.dumps({"name": "openclaw", "version": "future"}))
+    before = snapshot(patch_root.parent)
+    assert repair_module.restore_foreign(runtime, patch_root, {"tool-recovery"})["status"] == "not-applicable"
+    assert snapshot(patch_root.parent) == before
+    assert module.read_bytes() == patched
+
+
+def test_foreign_restore_cli_used_by_the_installer(installation, patch_root):
+    runtime = installation[0]
+    module, original, _, _ = write_foreign_set(runtime, patch_root, "file-operations")
+    (runtime / "openclaw.mjs").write_text("")
+    command = [sys.executable, str(ROOT / "host/openclaw_tool_recovery.py"),
+               "--openclaw-bin", str(runtime / "openclaw.mjs"),
+               "--restore-foreign", str(patch_root), "--known", "tool-recovery"]
+    rejected = subprocess.run(command[:-2], capture_output=True, text=True)
+    assert rejected.returncode == 2 and "--known" in rejected.stderr
+    assert module.read_bytes() != original
+    completed = subprocess.run(command, capture_output=True, text=True, check=True)
+    assert json.loads(completed.stdout)["foreign"][0]["set"] == "file-operations"
+    assert module.read_bytes() == original
 
 
 @pytest.fixture

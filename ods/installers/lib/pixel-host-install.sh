@@ -4792,6 +4792,29 @@ ods_pixel_install_default_agent() {
             return 1
             ;;
     esac
+    # The runtime overlay above replaces the live configuration atomically.
+    # Bind that exact canonical file before any fallible runtime repair,
+    # registry or service operation. If a later step is interrupted, the next
+    # installer or uninstaller run can prove the managed contract without
+    # misclassifying ODS's own runtime policy as unmanaged drift.
+    if ! _ods_pixel_mark_verified_installing "$owner" "$home" "$contract_sha256" "$pixel_root"; then
+        ai_bad "Could not bind the verified Pixel ODS managed-runtime configuration."
+        return 1
+    fi
+    # Another ODS build can leave OpenClaw runtime patch sets that this
+    # version does not manage. Restore only sets whose private receipt records
+    # the live bytes and a verified original, then archive their state, so
+    # this ODS version never runs on another build's runtime patches.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" \
+        --restore-foreign "$home/.openclaw/ods-runtime-patches" \
+        --known tool-recovery completion-recovery image-envelope compaction-export \
+            compaction-idle compaction-resume read-range compaction-budget \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel could not restore OpenClaw runtime patches left by another ODS build. See $pixel_log."
+        return 1
+    fi
     # OpenClaw 2026.6.33 mistakes "Unknown tool id: name" for a missing tool
     # named "id", then vetoes every later tool_call. Repair only the reviewed
     # package bytes; preserve its other detectors and retain rollback custody.
@@ -4872,15 +4895,6 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/compaction-budget" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's compaction budget repair could not verify its package bytes. See $pixel_log."
-        return 1
-    fi
-    # The runtime overlay above replaces the live configuration atomically.
-    # Bind that exact canonical file before any fallible registry or service
-    # operation. If either later step is interrupted, the next installer run
-    # can prove the managed contract and resume without misclassifying ODS's
-    # own runtime policy as unmanaged drift.
-    if ! _ods_pixel_mark_verified_installing "$owner" "$home" "$contract_sha256" "$pixel_root"; then
-        ai_bad "Could not bind the verified Pixel ODS managed-runtime configuration."
         return 1
     fi
     # OpenClaw persists plugin descriptors separately from its live config.

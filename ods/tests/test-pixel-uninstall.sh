@@ -958,6 +958,46 @@ else
     fail "fully bound Pixel cleanup rejected its exact image after preservation-tag pruning"
 fi
 
+# The installer binds its managed-runtime overlay before fallible runtime
+# repairs. An installing marker bound to that exact overlay is removable; an
+# overlay the marker does not bind remains unmanaged drift.
+write_active_fixture
+python3 - "$HOME_DIR/.config/ods/pixel-managed.json" "$HOME_DIR/.openclaw/openclaw.json" <<'PY'
+import json, pathlib, sys
+marker, config = map(pathlib.Path, sys.argv[1:])
+value = json.loads(marker.read_text(encoding="utf-8"))
+value["state"] = "installing"
+marker.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+overlay = json.loads(config.read_text(encoding="utf-8"))
+overlay["agents"] = {"defaults": {"timeoutSeconds": 1800}}
+config.write_text(json.dumps(overlay) + "\n", encoding="utf-8")
+PY
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    fail "unbound managed-runtime overlay was accepted as ODS-owned configuration"
+else
+    [[ -e "$HOME_DIR/.config/ods/pixel-managed.json" && -L "$HOME_DIR/.local/share/pixel/current" \
+        && -e "$HOME_DIR/.openclaw/openclaw.json" && ! -s "$SYSTEMCTL_LOG" && ! -s "$DOCKER_LOG" ]] \
+        && pass "unbound managed-runtime overlay fails closed before mutation" \
+        || fail "unbound managed-runtime overlay caused partial mutation"
+fi
+python3 - "$HOME_DIR/.config/ods/pixel-managed.json" "$HOME_DIR/.openclaw/openclaw.json" <<'PY'
+import hashlib, json, pathlib, sys
+marker, config = map(pathlib.Path, sys.argv[1:])
+value = json.loads(marker.read_text(encoding="utf-8"))
+canonical = json.dumps(json.loads(config.read_text(encoding="utf-8")),
+                       sort_keys=True, separators=(",", ":")).encode()
+value["configuration_sha256"] = hashlib.sha256(b"ods-pixel-openclaw-v1\0" + canonical).hexdigest()
+marker.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+PY
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    [[ ! -e "$HOME_DIR/.config/ods/pixel-managed.json" && ! -L "$HOME_DIR/.local/share/pixel/current" \
+        && ! -e "$HOME_DIR/.local/share/pixel/runtime-attestation.json" ]] \
+        && pass "installing marker bound to the overlaid config is safely deactivated" \
+        || fail "bound managed-runtime overlay cleanup was incomplete"
+else
+    fail "installing marker bound to the overlaid config was refused"
+fi
+
 write_ops_fixture
 if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
     if [[ ! -e "$SYSTEMD_DIR/pixel-ops-broker.service" \

@@ -342,6 +342,125 @@ check _ods_pixel_managed_contract_matches "$owner" "$home" "$contract_sha256"
 _ods_pixel_mark_ready "$owner" "$home" "$contract_sha256" "$pixel_root"
 check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["state"] == "ready" and "requested_source_ref" not in v and "requested_contract_sha256" not in v' "$marker"
 
+# A runtime repair failure after the managed-runtime overlay must leave the
+# overlaid config bound to the marker (the uninstaller's exact drift check),
+# and another ODS build's recorded patch set must already be restored.
+repair_home="$TEST_ROOT/repair-home"
+repair_install="$TEST_ROOT/repair-ods"
+repair_runtime="$repair_home/.npm-global/lib/node_modules/openclaw"
+repair_release="$repair_home/.local/share/pixel/releases/4.3.14"
+repair_pixel="$TEST_ROOT/repair-pixel-root"
+repair_messages="$TEST_ROOT/repair-messages.log"
+repair_foreign="$repair_home/.openclaw/ods-runtime-patches/file-operations"
+repair_contract="$(printf 'f%.0s' {1..64})"
+mkdir -p "$repair_home/.openclaw" "$repair_home/.npm-global/bin" "$repair_runtime/dist" \
+    "$repair_release" "$repair_pixel" "$repair_install/extensions/services/pixel-agent" "$repair_foreign"
+INSTALL_DIR="$repair_install" ODS_PIXEL_GATEWAY_UNIT_PATH="$TEST_ROOT/repair-gateway.service" \
+    _ods_pixel_assert_managed_state "$owner" "$repair_home"
+cp -R "$ROOT/extensions/services/pixel-agent/host" "$ROOT/extensions/services/pixel-agent/plugin" \
+    "$repair_install/extensions/services/pixel-agent/"
+printf '%s\n' '{"gateway":{"http":{"endpoints":{"chatCompletions":{"enabled":true}}}}}' \
+    > "$repair_home/.openclaw/openclaw.json"
+printf '%s\n' '{"sandboxImage":"openclaw-sandbox:test"}' > "$repair_pixel/RELEASE-MANIFEST.json"
+cat > "$repair_pixel/pixel" <<'SH'
+#!/usr/bin/env bash
+if [[ "$1" == extension-hash ]]; then printf '%064d\n' 0; fi
+SH
+chmod 0700 "$repair_pixel/pixel"
+cp "$release/release-identity.json" "$release/install-manifest.sha256" "$repair_release/"
+cp "$home/.local/share/pixel/runtime-attestation.json" "$repair_home/.local/share/pixel/"
+ln -s "$repair_release" "$repair_home/.local/share/pixel/current"
+printf '%s\n' '{"name":"openclaw","version":"2026.6.33"}' > "$repair_runtime/package.json"
+: > "$repair_runtime/openclaw.mjs"
+chmod 0700 "$repair_runtime/openclaw.mjs"
+ln -s ../lib/node_modules/openclaw/openclaw.mjs "$repair_home/.npm-global/bin/openclaw"
+# Unreviewed bytes make the first ODS repair fail exactly as on the fleet.
+printf '%s\n' 'unreviewed();' > "$repair_runtime/dist/tool-loop-detection-C0oQKkXZ.js"
+printf '%s\n' 'foreign original();' > "$repair_runtime/dist/agent-tools-D1DOpg6D.js"
+printf '%s\n' 'foreign original();' > "$repair_foreign/$(sha256sum "$repair_runtime/dist/agent-tools-D1DOpg6D.js" | awk '{print $1}').js"
+printf '%s\n' 'foreign patched();' > "$repair_runtime/dist/agent-tools-D1DOpg6D.js"
+python3 - "$repair_foreign" "$repair_runtime/dist/agent-tools-D1DOpg6D.js" <<'PY'
+import hashlib, json, pathlib, sys
+state, module = map(pathlib.Path, sys.argv[1:])
+backup = next(state.glob("*.js"))
+patched = hashlib.sha256(module.read_bytes()).hexdigest()
+(state / "receipt.json").write_text(json.dumps({
+    "schemaVersion": 1, "version": "2026.6.33", "module": module.name,
+    "sourceSha256": backup.stem, "patchedSha256": patched, "backup": backup.name,
+    "desiredSha256": patched}, sort_keys=True))
+PY
+# An earlier verified install bound the pre-overlay configuration.
+INSTALL_DIR="$repair_install" \
+    _ods_pixel_mark_verified_installing "$owner" "$repair_home" "$repair_contract" "$repair_pixel"
+if (
+    INSTALL_DIR="$repair_install"
+    ENABLE_PIXEL_RUNTIME=true
+    PIXEL_SERVICE_USER="$owner"
+    DOCKER_COMPOSE_CMD=true
+    COMPOSE_FLAGS_ARR=()
+    LOG_FILE="$TEST_ROOT/repair-compose.log"
+    ai_bad() { printf '%s\n' "$*" >> "$repair_messages"; }
+    ods_pixel_owner_home() { printf '%s\n' "$repair_home"; }
+    _ods_pixel_source_checkout() { printf '%s\n' "$repair_pixel"; }
+    _ods_pixel_contract_sha256() { printf '%s\n' "$repair_contract"; }
+    _ods_pixel_gateway_model_alias() { printf '%s\n' ods/current; }
+    _ods_pixel_apply_runtime_budget() {
+        python3 - "$3" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text(encoding="utf-8"))
+value["agents"] = {"defaults": {"timeoutSeconds": 1800}}
+path.write_text(json.dumps(value) + "\n", encoding="utf-8")
+PY
+        printf '%s\n' changed
+    }
+    _ods_pixel_refresh_plugin_registry() { printf '%s\n' registry-refresh >> "$repair_messages"; }
+    for stub in _ods_pixel_existing_gateway_port_matches _ods_pixel_secure_plugin_tree \
+        _ods_pixel_install_exec_control _ods_pixel_wait_model_gateway _ods_pixel_wait_http \
+        ods_linux_node_tools_available _ods_pixel_write_extension_catalog \
+        _ods_pixel_write_operations_policy _ods_pixel_write_extension_manager_unit \
+        _ods_pixel_write_artifact_promoter_unit _ods_pixel_write_workspace_preview_unit \
+        _ods_pixel_write_onboarding _ods_pixel_harden_operations_state_profiles \
+        _ods_pixel_verify_operations_policy_custody; do
+        eval "$stub() { :; }"
+    done
+    eval "_repair_run_as_owner() $(declare -f ods_pixel_run_as_owner | tail -n +2)"
+    ods_pixel_run_as_owner() {
+        if [[ "${4:-}" == */host/native_search.py ]]; then
+            printf '%s\n' searxng
+            return 0
+        fi
+        _repair_run_as_owner "$@"
+    }
+    ods_pixel_install_default_agent
+); then
+    fail "runtime repair failure was not reported"
+else
+    pass "runtime repair failure fails the Pixel install"
+fi
+check grep -Fqx "Pixel's runtime recovery repair could not verify its package bytes. See $repair_install/logs/pixel-install.log." "$repair_messages"
+check grep -Fq 'OpenClaw recovery module differs from reviewed bytes' "$repair_install/logs/pixel-install.log"
+check test "$(grep -c registry-refresh "$repair_messages" || true)" = 0
+check python3 -c '
+import hashlib, json, sys
+marker = json.load(open(sys.argv[1]))
+config = json.load(open(sys.argv[2]))
+canonical = json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+assert config["agents"]["defaults"]["timeoutSeconds"] == 1800
+assert marker["state"] == "installing" and marker["contract_sha256"] == sys.argv[3]
+assert marker["configuration_sha256"] == hashlib.sha256(b"ods-pixel-openclaw-v1\0" + canonical).hexdigest()
+' "$repair_home/.config/ods/pixel-managed.json" "$repair_home/.openclaw/openclaw.json" "$repair_contract"
+if INSTALL_DIR="$repair_install" \
+    _ods_pixel_managed_contract_matches "$owner" "$repair_home" "$repair_contract"; then
+    pass "failed runtime repair leaves the overlaid config bound to its marker"
+else
+    fail "failed runtime repair left unbound managed-runtime config drift"
+fi
+check test "$(cat "$repair_runtime/dist/agent-tools-D1DOpg6D.js")" = 'foreign original();'
+check test ! -e "$repair_foreign"
+check test -f "$(find "$repair_home/.openclaw/ods-runtime-patches.retired" \
+    -path '*/file-operations/receipt.json' -print -quit 2>/dev/null)"
+
 ambient_home="$TEST_ROOT/ambient-home"
 mkdir -p "$ambient_home/.openclaw"
 printf '%s\n' '{}' > "$ambient_home/.openclaw/openclaw.json"
@@ -2793,6 +2912,18 @@ runtime_checkpoint = installer.index(
 )
 registry_refresh = installer.index("_ods_pixel_refresh_plugin_registry", runtime_overlay)
 assert runtime_overlay < runtime_checkpoint < registry_refresh
+# Bind the overlaid config before any fallible runtime repair, then restore
+# patch sets from other ODS builds before this version applies its own.
+foreign_restore = installer.index("--restore-foreign \"$home/.openclaw/ods-runtime-patches\"", runtime_overlay)
+first_repair = installer.index("openclaw_tool_recovery.py", runtime_overlay)
+own_repair = installer.index("--state-dir \"$home/.openclaw/ods-runtime-patches/", runtime_overlay)
+assert runtime_checkpoint < first_repair < foreign_restore < own_repair
+assert installer.count("Could not bind the verified Pixel ODS managed-runtime configuration.") == 1
+import re
+managed = re.findall(r"--state-dir \"\$home/\.openclaw/ods-runtime-patches/([a-z-]+)\"", installer)
+known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
+assert sorted(known.replace("\\", " ").split()) == sorted(managed)
+assert len(set(managed)) == len(managed) == 8
 assert installer.index("_ods_pixel_refresh_plugin_registry") < installer.index("_ods_pixel_mark_ready")
 assert "ods_linux_node_tools_available" in text
 assert "runtime_token_file=\"/run/ods-pixel/openclaw.json\"" in text
