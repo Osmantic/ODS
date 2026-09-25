@@ -127,7 +127,11 @@ def run_browser(bundle, playwright_factory=None):
             self.wfile.write(body)
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    # shutdown() waits for serve_forever's poll. The stdlib 500ms default adds
+    # avoidable tail latency to every short-lived inspection capsule.
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
     thread.start()
     origin = f"http://127.0.0.1:{server.server_port}"
     if playwright_factory is None:
