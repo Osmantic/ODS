@@ -16,7 +16,7 @@
 //   sized to fit the live per-result cap;
 // - the delivered excerpt must carry evidence (receiptEvidence): page text
 //   beyond the title and any script or style residue, at least
-//   MIN_EVIDENCE_CHARS of it, and in search mode a query term plus a
+//   minEvidenceChars of it, and in search mode a query term plus a
 //   requested fact (a date for events, a price, board power...). A title
 //   with a line of JavaScript, a bot check, navigation that names the city,
 //   or "open 24/7" is not a read page. Such a page is listed as opened

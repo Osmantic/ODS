@@ -342,7 +342,11 @@ because its search returns page text. `pixel_ods_search_read`
   in-process, so the tool hooks are not re-entered), then the top results read
   in parallel through the one shared guarded reader that `pixel_ods_web_extract`
   and the host citation check use: at most two reads per host, a 12-second read
-  timeout and one 15-second deadline for all reads. With `urls` instead of
+  timeout and one 15-second deadline for all reads. The reader's one plain
+  retry after a 403/406 runs inside that read's timeout, with the time the
+  first request left, and is skipped when under 2 seconds remain; the same rule
+  keeps `pixel_ods_web_extract` at 20 seconds and the host check at 4 seconds
+  per read, retry included. With `urls` instead of
   `query` it reads up to five given pages (such as detail links from a
   listing) in one call, without a search.
 - Candidates keep the provider's order, drop non-public URLs and duplicates,
@@ -363,22 +367,37 @@ because its search returns page text. `pixel_ods_search_read`
   links, then excerpt length; an excerpt that still does not fit is omitted.
 
 Receipts come only from the tool's `details`. A page counts as read for the
-cited-page check when it was read with a 2xx text document, a relevant window
-was emitted, and its excerpt was delivered. A page with nothing relevant (such
-as a bot-check or navigation-only page) is listed as opened but not citable.
-The requested URL counts only when it is the same document as the final URL
-(scheme, `www.` and one trailing slash normalised); after any other redirect
-only the final URL counts. Search results and `[L#]` links are leads; citing
-one still requires a read, or the host citation check. Each page's host line
-precedes its own untrusted-content boundary, page lines are indented, and
-marker-like text, `[R#]`/`[L#]` tags and chat-template tokens in page text are
-neutralised, so a page cannot forge a receipt line.
+cited-page check when it was read with a 2xx text document from a citable
+public final URL, a relevant window was emitted, its excerpt was delivered,
+and that excerpt carries evidence. Evidence is page text other than the title
+and script or style residue, at least 40 characters of it (80 for a `urls`
+overview). In search mode it must also name a query term and, when the
+request names facts (dates for events; prices, board power or memory for
+components), show one of them. So a title with a line of JavaScript, a site's
+own bot check, city navigation without a dated event, or a lone "$35" or
+"24/7" is listed as opened but not citable, and the host citation check still
+reads the page when it is cited. On the 2026-09-25 tower2 measurement, 24 of 73
+receipts at the first PR head and 8 of 72 over the #6699 reader were such
+pages. A final URL that cannot be cited (a trailing-dot host, an IDN top-level
+domain) makes the page not read: its text is not shown and the requested URL
+is never receipted for it. The requested URL counts only when it is the same
+document as the final URL (scheme, `www.` and one trailing slash normalised);
+after any other redirect only the final URL counts. Search results and `[L#]`
+links are leads; citing one still requires a read, or the host citation check.
+Each page's host line carries only its tag, URL and status and precedes its
+own untrusted-content boundary; the page title is printed inside it. Page
+lines are indented, and marker-like text, `[R#]`/`[L#]` tags and
+chat-template tokens in page text are neutralised, so a page cannot forge a
+receipt line.
 
 A call costs one search (none with `urls`) and its page reads. The guard
 charges them before the call and lowers `maxPages` to the reads left after a
 reserve for the host citation check (four reads, or a quarter of a smaller
 page-reading allowance); reads the tool never attempted are refunded from its
-bound result, exactly once, direct or through Tool Search. A search_read that
+bound result, exactly once, direct or through Tool Search. A call refused only
+because of that reserve ran nothing: it is a free correction, like a paused
+search, and never counts toward the web-loop stop, since single-page reads and
+searches remain available. A search_read that
 repeats an earlier search_read with the same site preference is recalled once
 with the pages that search already read; it is never paused for unread leads.
 The tool is offered only where the runtime search API exists and the
