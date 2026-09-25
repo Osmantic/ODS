@@ -3,6 +3,12 @@ import assert from 'node:assert/strict';
 import {createToolLoopGuard, FREE_CORRECTIONS_PER_KIND, PHANTOM_PROCESS_REASON,
   VERIFICATION_COMMAND_NOT_AUDITABLE_REASON} from '../plugin/tool-loop-guard.mjs';
 import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
+import {PROGRESS_FINALIZATION_INSTRUCTION} from '../plugin/progress-finalization.mjs';
+
+// Exhaustion refuses every further tool. The first refusal carries the
+// one-time finalization instruction (progress-finalization.mjs); refusals
+// after that answer turn carry the canned stop message.
+const STOPPED = [PROGRESS_FINALIZATION_INSTRUCTION, RUN_PROGRESS_STOP_REASON];
 
 // Fleet evidence (strixy, round 055): the owner asked for the actual unittest
 // output as public/test-results.txt and the model redirected the runner.
@@ -49,8 +55,8 @@ function harness({wrapped = false} = {}) {
     const persisted = guard.toolResultPersist({toolName, toolCallId:id, message}, ctx)?.message ?? message;
     return {decision, text:persisted.content.filter(block => block.type === 'text').map(block => block.text).join('\n')};
   }
-  const exhausted = () => guard.beforeToolCall({toolName:'read', params:{path:'README.md'}, toolCallId:'probe'},
-    {...context, toolName:'read', toolCallId:'probe'})?.blockReason === RUN_PROGRESS_STOP_REASON;
+  const exhausted = () => STOPPED.includes(guard.beforeToolCall({toolName:'read', params:{path:'README.md'}, toolCallId:'probe'},
+    {...context, toolName:'read', toolCallId:'probe'})?.blockReason);
   return {guard, prepared, step, exhausted};
 }
 

@@ -82,6 +82,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs
+      - name: Verify tool-limit finalization with real Pixel runtime
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_progress_finalization.integration.mjs
   runtime:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

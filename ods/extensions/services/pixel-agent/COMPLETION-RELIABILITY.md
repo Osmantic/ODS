@@ -64,6 +64,33 @@ Each prompt also receives the current host UTC time. The model must preserve
 the owner's requested date/timezone, check source publication dates and avoid
 confusing its training cutoff with the actual date.
 
+## Tool-limit finalization
+
+When the run-progress budget (`run-progress-budget.mjs`) stops a response, the
+limits are unchanged and every tool stays blocked. `progress-finalization.mjs`
+grants one tool-free answer turn instead of discarding the gathered evidence.
+OpenClaw applies `tool_result_persist` to the saved transcript only, so the
+model learns of the stop through the refusal of its next tool call, whose text
+is one fixed instruction: answer from evidence already returned, keep the
+requested format, and mark missing or unverified items. The following model
+call is the answer turn. A model that answers without another tool call is
+treated the same way.
+
+The owner receives that answer followed by host facts the model cannot alter:
+the tool-limit note, a failed or pending test result, cited links that were
+never read (when the owner asked for sources to be opened), and the last
+verified preview or an explicit statement that none was verified. The outcome
+stays `failed`. A tool call in the answer turn aborts the run at that tool
+boundary; an empty, silent, promise-only, tool-like or oversized answer, a
+further model call, owner cancellation, or an unverified localhost URL in a
+visual task all fall back to the original stop text. Operations, exact
+downloads, managed extension requests and team coordination keep the strict
+stop text. The instruction is constant text at the end of the conversation,
+never system-prompt content.
+
+`tests/progress_finalization.test.mjs` and the real-harness fixture
+`tests/runtime_progress_finalization.integration.mjs` cover this path.
+
 ## Search availability
 
 Existing SearXNG installations can report HTTP 200 with zero results while their

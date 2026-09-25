@@ -1,4 +1,5 @@
 import { RUN_PROGRESS_STOP_REASON } from "../plugin/run-progress-budget.mjs";
+import { PROGRESS_FINALIZATION_INSTRUCTION } from "../plugin/progress-finalization.mjs";
 import test from "node:test";
 import vm from 'node:vm';
 
@@ -315,6 +316,11 @@ test('native blocks that bypass tool hooks cannot keep model continuations runni
   guard.observeRun(context,'pixel',{prompt:'Make a site'});
   for(let i=0;i<9;i++) guard.observeModelCall({},context);
   assert.deepEqual(aborted,[]);
+  guard.observeModelEnd({},context);
+  // The call that tripped the budget may still answer without tools
+  // (graceful finalization). A further hookless continuation is not waited for.
+  assert.deepEqual(aborted,[]);
+  guard.observeModelCall({},context);
   guard.observeModelEnd({},context);
   assert.deepEqual(aborted,['session-loop']);
   assert.equal(guard.deliveryVerificationForRun('run-loop').status,'failed');
@@ -15605,7 +15611,7 @@ test('an unacknowledged progress abort is retried at model end until confirmed',
   const guard=createToolLoopGuard({abortRun:(id,key)=>{attempts.push([id,key]);return attempts.length===2;}});
   const context={agentId:'pixel',runId:'retry-abort',sessionId:'session-retry',sessionKey:'agent:pixel:retry'};
   guard.observeRun(context,'pixel',{prompt:'Make a site'});
-  for(let i=0;i<9;i++) guard.observeModelCall({},context);
+  for(let i=0;i<10;i++) guard.observeModelCall({},context); // 10th: no answer turn after the trip
   guard.observeModelEnd({},context);
   assert.equal(attempts.length,1);
   guard.observeModelEnd({},context);
@@ -15660,7 +15666,7 @@ test('progress abort diagnostics are owned, sanitized, capped and do not change 
     abort:id=>{calls.push(['abort',id]);return false;}})});
   const context={agentId:'pixel',runId:'private-run',sessionId:'private-session',sessionKey:'private-key'};
   guard.observeRun(context,'pixel',{prompt:'PRIVATE PROMPT'},{executionHost:'sandbox'});
-  for(let i=0;i<9;i++) guard.observeModelCall({},context);
+  for(let i=0;i<10;i++) guard.observeModelCall({},context); // 10th: no answer turn after the trip
   assert.equal(calls.length,0,'no abort before the safe model-end boundary');
   for(let i=0;i<5;i++) guard.observeModelEnd({},context);
   assert.equal(calls.filter(x=>x[0]==='resolve').length,5);
@@ -15685,7 +15691,7 @@ test('progress abort diagnostics cannot change acknowledgement or callback excep
       resolveSessionId:()=>undefined,abort:()=>{attempts++;if(outcome==='throw')throw new Error('private SDK failure');return outcome==='ack';}})});
     const context={agentId:'pixel',runId:'owned-run',sessionId:'owned-session',sessionKey:'owned-key'};
     guard.observeRun(context,'pixel',{prompt:'Make a site'});
-    for(let i=0;i<9;i++) guard.observeModelCall({},context);
+    for(let i=0;i<10;i++) guard.observeModelCall({},context); // 10th: no answer turn after the trip
     for(let i=0;i<5;i++) assert.doesNotThrow(()=>guard.observeModelEnd({},context));
     assert.equal(attempts,outcome==='ack'?1:5);
     assert.equal(observations,outcome==='ack'?1:3);
@@ -15706,7 +15712,7 @@ test('progress abort observations allowlist custom callback data and reset per o
   for(const runId of ['one','two']) {
     const context={agentId:'pixel',runId,sessionId:'tracked-'+runId};
     guard.observeRun(context,'pixel',{prompt:'Make a site'},{executionHost:'private-mode'});
-    for(let i=0;i<9;i++) guard.observeModelCall({},context);
+    for(let i=0;i<10;i++) guard.observeModelCall({},context); // 10th: no answer turn after the trip
     for(let i=0;i<4;i++) guard.observeModelEnd({},context);
   }
   const records=messages.map(x=>JSON.parse(x.substring(x.indexOf('{'))));
@@ -15763,7 +15769,9 @@ test("repeated writes allow a different repair but remain bounded by actual fail
     if (repair) {
       assert.notEqual(different?.block, true, "two failed no-ops must not prohibit a changed repair");
     } else {
-      assert.equal(different.blockReason, RUN_PROGRESS_STOP_REASON,
+      // Still refused; the first refusal after the stop carries the one-time
+      // tool-free answer instruction instead of the owner-facing stop text.
+      assert.equal(different.blockReason, PROGRESS_FINALIZATION_INSTRUCTION,
         "four consecutive failed results exhaust the shared budget");
     }
   }
