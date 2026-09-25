@@ -45,6 +45,8 @@ Runtime Environment:
   ✓ Docker Compose
   ✗ Dashboard HTTP
   ✗ WebUI HTTP
+  ✗ GPU residency: model partly on CPU: 29/33 layers on GPU, 1079 MiB of weights in system RAM; expect much slower responses
+    Fix: llama.cpp needed 6492 MiB of GPU memory with 6860 MiB free, kept its 1024 MiB safety margin, and moved 4 layers to the CPU. ...
   ✓ Inference contract: mode=local, owner=ods, gateway=llama-server
   ⚠ DGX Spark llama-server CUDA arch: DGX Spark detected, but llama-server reports CUDA archs '500,610,700,750,800,860,890,1200' without sm_121.
 
@@ -105,6 +107,26 @@ ods doctor --json > report.json
 - **runtime.dgx_spark_cuda_arch_check**: Warns when a DGX Spark / GB10
   machine is running a llama.cpp CUDA binary that does not report `sm_121`
   support in `llama-server` logs.
+- **runtime.gpu_residency**: Where the running llama-server placed the model,
+  read from its load log (`scripts/llama_gpu_residency.py`). With
+  `--n-gpu-layers auto`, llama.cpp keeps 1024 MiB of VRAM free by default and
+  moves layers to the CPU when the model does not fit. The server still answers
+  health checks and chat, only several times slower. `status` is one of:
+  - `pass`: every layer is on the GPU.
+  - `fail`: layers, KV cache, or MoE expert weights that llama.cpp's fit moved
+    ("N overflowing") are in system RAM. Doctor adds the blocker diagnosis
+    `ODS-LLM-PARTIAL-GPU-OFFLOAD` with a fix, and `ods doctor` exits 1.
+  - `intentional`: every layer is on the GPU and an MoE/tensor offload to the
+    CPU is configured (`--n-cpu-moe`, `--cpu-moe`, `-ot ...=CPU`, or their
+    `LLAMA_ARG_*` variables). Such a declaration never excuses layers or KV
+    cache on the CPU.
+  - `unknown`: the log does not state placement, because the load section
+    rotated out or the llama.cpp build (Lemonade included) does not print it.
+  - `skipped`: no ODS-managed GPU llama-server is running (CPU-only install,
+    external LLM, or stopped container).
+
+  Only offload-related `LLAMA_ARG_*` values are read from the container
+  environment.
 - **summary**: Aggregate status (blockers, warnings, runtime_ready)
 - **autofix_hints**: Prioritized remediation actions
 

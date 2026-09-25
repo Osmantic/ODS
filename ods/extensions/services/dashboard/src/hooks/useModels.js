@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { normalizeRuntimePlacement } from '../lib/modelPlacement'
 
 // Mock data for development/demo - gated behind VITE_USE_MOCK_DATA env var
 const USE_MOCK_DATA = import.meta.env.VITE_USE_MOCK_DATA === 'true'
@@ -215,6 +216,7 @@ export function useModels() {
   const [activationReadyModel, setActivationReadyModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
   const [configuredModel, setConfiguredModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
   const [modelLifecycle, setModelLifecycle] = useState(null)
+  const [runtimePlacement, setRuntimePlacement] = useState(null)
   const [odsMode, setOdsMode] = useState(USE_MOCK_DATA ? MOCK_MODES.odsMode : 'unknown')
   const [configuredMode, setConfiguredMode] = useState(USE_MOCK_DATA ? MOCK_MODES.configuredMode : 'unknown')
   const [llmBackend, setLlmBackend] = useState(USE_MOCK_DATA ? 'llama-server' : 'unknown')
@@ -308,6 +310,7 @@ export function useModels() {
       setActivationReadyModel(data.activationReadyModel ?? null)
       setConfiguredModel(data.configuredModel ?? null)
       setModelLifecycle(normalizeModelLifecycle(data.modelLifecycle))
+      setRuntimePlacement(normalizeRuntimePlacement(data.runtime?.placement))
       const effectiveMode = normalizeOdsMode(data.odsMode)
       setOdsMode(effectiveMode)
       setConfiguredMode(normalizeOdsMode(data.configuredMode ?? data.odsMode))
@@ -583,6 +586,7 @@ export function useModels() {
     activationReadyModel,
     configuredModel,
     modelLifecycle,
+    runtimePlacement,
     odsMode,
     configuredMode,
     llmBackend,

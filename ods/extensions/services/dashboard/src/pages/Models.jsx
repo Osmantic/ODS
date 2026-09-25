@@ -23,6 +23,7 @@ import HuggingFaceModelBrowser from '../components/model-library/HuggingFaceMode
 import ExternalLemonadeAdoption from '../components/ExternalLemonadeAdoption'
 import MetalMetricIcon from '../components/MetalMetricIcon'
 import FittedLibraryPage from '../components/FittedLibraryPage'
+import { describePlacement, isCpuSpill } from '../lib/modelPlacement'
 import './models-refined.css'
 
 const PAGE_SIZE = 10
@@ -66,6 +67,7 @@ export default function Models({ compact = false }) {
     currentModel,
     loadedModel,
     configuredModel,
+    runtimePlacement,
     odsMode,
     configuredMode,
     llmBackend,
@@ -250,6 +252,7 @@ export default function Models({ compact = false }) {
   })
   const retryModelId = catalogModelIdForProgress(models, visibleDownloadProgress?.model)
   const renderModel = model => <ModelTableRow key={model.id} compact={compact} model={model} gpu={gpu}
+    placement={model.status === 'loaded' || model.id === currentModel ? runtimePlacement : null}
     canActivateModels={canActivateModels} activationModeError={activationModeError}
     hermesMinimumContext={hermesMinimumContext} pixelMinimumContext={pixelMinimumContext}
     isCurrentModel={model.id === currentModel} isLoading={pendingModelActions.includes(model.id)}
@@ -350,6 +353,7 @@ export default function Models({ compact = false }) {
         model={activeModel}
         currentModel={currentModel || loadedModel}
         gpu={gpu}
+        placement={runtimePlacement}
       />
 
       <ExternalLemonadeAdoption
@@ -486,19 +490,44 @@ export default function Models({ compact = false }) {
   )
 }
 
-function CurrentModelPanel({ model, currentModel, gpu, compact = false }) {
+function PlacementWarning({ view, compact = false }) {
+  if (!isCpuSpill(view)) return null
+  if (compact) return (
+    <div role="status" className="models-external-notice">
+      <strong>{view.warning}</strong>
+      <span>{view.detail}</span>
+    </div>
+  )
+  return (
+    <div role="status" className="mt-4 flex items-start gap-2 rounded-lg border border-theme-border bg-theme-text-secondary/10 px-3 py-2.5 text-xs text-theme-text-secondary">
+      <AlertCircle size={15} className="mt-0.5 shrink-0 text-theme-text-secondary" />
+      <div>
+        <p className="font-semibold">{view.warning}</p>
+        <p className="mt-1 text-theme-text-secondary/75">{view.detail}</p>
+        {view.hostDetail && <p className="mt-1 text-[11px] text-theme-text-muted">{view.hostDetail}</p>}
+      </div>
+    </div>
+  )
+}
+
+function CurrentModelPanel({ model, currentModel, gpu, placement, compact = false }) {
   const modelLabel = currentModel || model?.id
   const speed = getSpeedDisplay(model)
   const context = model ? formatContext(model.contextLength) : '--'
   const memory = model ? getMemoryMeta(model, gpu) : null
   const statusLabel = currentModel ? 'Currently running' : 'Model runtime'
+  // Placement is measured on the running server; the fit badge is only an
+  // estimate and must not contradict a model that spilled onto the CPU.
+  const placementView = currentModel ? describePlacement(placement) : null
+  const partlyOnCpu = isCpuSpill(placementView)
 
   if (compact) return (
     <section className="models-active" aria-label="Model runtime">
       <header><span className={currentModel ? 'models-live' : ''}>{statusLabel}</span><Link to="/dashboard">Dashboard <ChevronRight size={12}/></Link></header>
       <div className="models-active-name"><MetalMetricIcon icon={Box} size={22}/><strong title={modelLabel}>{model?.name || modelLabel || 'No model running'}</strong></div>
       {currentModel && <>
-        <dl><div><dt>Context</dt><dd>{context}</dd></div>{memory && <div><dt>VRAM estimate</dt><dd>{memory.label}</dd></div>}</dl>
+        <dl><div><dt>Context</dt><dd>{context}</dd></div>{memory && <div><dt>VRAM estimate</dt><dd>{memory.label}</dd></div>}{placement && <div><dt>GPU layers</dt><dd>{placement.layersOnGpu}/{placement.layersTotal}</dd></div>}</dl>
+        <PlacementWarning view={placementView} compact />
       </>}
     </section>
   )
@@ -514,7 +543,8 @@ function CurrentModelPanel({ model, currentModel, gpu, compact = false }) {
                 {statusLabel}: {modelLabel || 'none'}
               </h2>
               {model?.quantization && <Badge>{model.quantization}</Badge>}
-              {model?.fitsVram && <Badge tone="green">{model.fitLabel || 'Fits GPU'}</Badge>}
+              {model?.fitsVram && !partlyOnCpu && <Badge tone="green">{model.fitLabel || 'Fits GPU'}</Badge>}
+              {placementView && !partlyOnCpu && <Badge tone={placementView.tone}>{placementView.label}</Badge>}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-theme-text-muted">
               <span>{currentModel ? 'Active runtime' : 'Ready after first launch'}</span>
@@ -533,6 +563,7 @@ function CurrentModelPanel({ model, currentModel, gpu, compact = false }) {
           Dashboard
         </Link>
       </div>
+      <PlacementWarning view={placementView} />
     </section>
   )
 }
@@ -808,6 +839,7 @@ function ModelTableRow({
   compact = false,
   model,
   gpu,
+  placement = null,
   canActivateModels,
   activationModeError,
   hermesMinimumContext,
@@ -833,6 +865,8 @@ function ModelTableRow({
   const tags = getModelTags(model, hermesMinimumContext)
   const iconTone = getIconTone(model, compatibility)
   const performanceBadge = getPerformanceBadge(model)
+  const rowPlacement = isLoaded ? describePlacement(placement) : null
+  const cpuSpill = isCpuSpill(rowPlacement) ? rowPlacement : null
   const runDisabledReason = isRuntimeManaged ? null : getRunDisabledReason({
     model,
     gpu,
@@ -871,6 +905,7 @@ function ModelTableRow({
               {performanceBadge && <Badge tone={performanceBadge.tone}>{performanceBadge.label}</Badge>}
               {model.recommended && !isLoaded && <Badge tone="amber">Selected install</Badge>}
               {isLoaded && <Badge tone="green">Active</Badge>}
+              {cpuSpill && <Badge tone="amber">{cpuSpill.label}</Badge>}
             </div>
           </div>
         </div>
