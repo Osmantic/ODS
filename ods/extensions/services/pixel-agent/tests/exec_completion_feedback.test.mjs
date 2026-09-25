@@ -60,3 +60,22 @@ for(const deferred of [false,true]) for(const wrapped of [false,true]) {
     assert.doesNotMatch(exercise({deferred,wrapped,eventError:true,...options}).text,/\[ODS Pixel execution\]/);
   });
 }
+
+test('identical execution advice is not repeated on every completed exec',()=>{
+  const guard=createToolLoopGuard();
+  const context={agentId:'pixel',runId:'run',sessionId:'owner-session',sessionKey:'owner-key'};
+  guard.observeRun(context,'pixel',{prompt:'Run the existing Python unit tests and report the result.'});
+  const run=(toolCallId,exitCode)=>{
+    const ctx={...context,toolName:'exec',toolCallId},params={command:'python3 -m unittest',workdir:'/workspace/project'};
+    const before=guard.beforeToolCall({toolName:'exec',params,toolCallId},ctx);
+    const result={content:[{type:'text',text:'Ran 22 tests.'}],details:{status:'completed',exitCode}};
+    guard.afterToolCall({toolName:'exec',params:{...params,...before?.params},toolCallId,result},ctx);
+    const message={role:'toolResult',toolName:'exec',toolCallId,...structuredClone(result)};
+    const projected=guard.toolResultPersist({toolName:'exec',toolCallId,message},ctx)?.message??message;
+    return projected.content.filter(x=>x.type==='text').map(x=>x.text).join('\n');
+  };
+  assert.match(run('exec-1',0),/Exec returned completed with exit code 0\./);
+  assert.doesNotMatch(run('exec-2',0),/\[ODS Pixel execution\]/);
+  // Different facts are new advice and are always delivered.
+  assert.match(run('exec-3',1),/Exec returned completed with exit code 1\./);
+});

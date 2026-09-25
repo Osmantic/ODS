@@ -422,12 +422,13 @@ test("conversational calculator delivery emits the verified snapshot consumed by
     {path:'calculator/styles.css',content:'body{background:#111;color:#eee}'},
     {path:'calculator/app.js',content:'document.querySelector("button").onclick=()=>{}'},
   ];
-  for (const write of writes) {
+  const coached = writes.map(write => {
     call(guard, 'write', {event:{params:write}});
     afterCall(guard, 'write', {event:{params:write,result:{details:{status:'completed'}}}});
-    const persisted = persistToolResult(guard, 'write', `write-${write.path}`);
-    assert.match(JSON.stringify(persisted), /publish BEFORE your final answer/);
-  }
+    return /publish BEFORE your final answer/.test(JSON.stringify(persistToolResult(guard, 'write', `write-${write.path}`)));
+  });
+  // The unchanged delivery instruction is given once, not on every write.
+  assert.deepEqual(coached, [true, false, false]);
   const params = {relativeDirectory:'calculator'};
   const snapshot = workspacePreviewSnapshot('calculator',writes);
   const details = {schemaVersion:1,kind:'ods-pixel-workspace-preview',status:'succeeded',relativeDirectory:'calculator',...snapshot,port:9437,

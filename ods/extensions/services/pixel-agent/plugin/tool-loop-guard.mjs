@@ -43,6 +43,8 @@ export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
 // never make a completed run fail only because its delivery text is oversized.
 const MAX_INGRESS_VERIFICATION_TEXT = 32 * 1024;
 
+// Identical coaching is re-delivered only after this many further results.
+const COACHING_REPEAT_INTERVAL = 8;
 const MAX_COMPARE_SWAP_REPAIR_CHARS = 32_768;
 const MAX_COMPARE_SWAP_REPAIRS_PER_PATH = 3;
 const MAX_TRACKED_WORKSPACE_FILE_BYTES = 4 * 1024 * 1024;
@@ -10632,10 +10634,25 @@ export function createToolLoopGuard({
           "bound to the cited job ID in the external Operations Broker; this compact projection grants no authority.",
       }]
       : Array.isArray(compactMessage.content) ? [...compactMessage.content] : [];
+    // Persisted results reach the live model request. Repeating the same
+    // coaching on every result makes the context self-similar, and local
+    // models then loop on one tool call. Deliver an instruction whenever it
+    // differs from the last one delivered in its slot, and repeat unchanged
+    // text only after a bounded number of results.
+    if (state) state.persistedResultCount = (state.persistedResultCount ?? 0) + 1;
+    const coachingDue = (slot, text) => {
+      if (!state || typeof text !== 'string') return true;
+      state.coachingDelivered ??= new Map();
+      const last = state.coachingDelivered.get(slot);
+      if (last?.text === text && state.persistedResultCount - last.at < COACHING_REPEAT_INTERVAL) return false;
+      state.coachingDelivered.set(slot, {text, at: state.persistedResultCount});
+      return true;
+    };
     if (executionGuidance && !pending.pythonSyntaxGuidance && !content.some(block =>
-        block?.type === 'text' && /\[ODS Pixel execution\]/.test(block.text)))
+        block?.type === 'text' && /\[ODS Pixel execution\]/.test(block.text)) &&
+        coachingDue('execution', executionGuidance))
       content.push({type:'text',text:executionGuidance});
-    if (workspaceStageInstruction) {
+    if (workspaceStageInstruction && coachingDue('workspace', workspaceStageInstruction)) {
       content.push({ type: "text", text: workspaceStageInstruction });
     }
     if (sandboxPathCorrection) content.push({type:'text',text:sandboxPathCorrection});
@@ -10643,7 +10660,7 @@ export function createToolLoopGuard({
     if (pending?.pythonSyntaxGuidance && executionGuidance && !content.some(block => block?.type === 'text' &&
         /\[ODS Pixel (?:repair|Python syntax|execution)\]/.test(block.text)))
       content.push({type:'text',text:executionGuidance});
-    if (previewStageInstruction) {
+    if (previewStageInstruction && coachingDue('preview', previewStageInstruction)) {
       content.push({ type: "text", text: previewStageInstruction });
     }
     if (hostEvidence && state.operationsHostResultCompactionsRemaining > 0) {
