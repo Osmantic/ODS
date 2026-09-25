@@ -9781,7 +9781,7 @@ class _FakeLlamaRuntime:
         monkeypatch.setattr(_mod, "_read_llama_runtime_log", self.log)
         monkeypatch.setattr(_mod.subprocess, "run", self.run)
 
-    def start(self, env):
+    def start(self, env, process_env_overrides=None):
         settings = _mod._model_memory.runtime_memory_settings(None, env)
         launch = {
             "gguf": env["GGUF_FILE"],
@@ -10101,6 +10101,7 @@ class TestGpuResidencyWatcher:
         monkeypatch.setattr(_mod, "_load_model_library_records", lambda: [])
         monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
         monkeypatch.setattr(_mod, "_measured_other_gpu_usage", lambda _env: 0.0)
+        self.real_compose_restart = _mod._compose_restart_llama_server
         self.runtime = _FakeLlamaRuntime(self, monkeypatch)
         # The installer (or a reboot) started llama-server 200 s ago with the
         # previous shipped settings: ubatch 512 and llama.cpp's 1024 MiB margin.
@@ -10111,11 +10112,24 @@ class TestGpuResidencyWatcher:
             _mod, "_llama_container_state",
             lambda: (self.runtime.running is not None, 4242, (self.runtime.running or {}).get("startedAt", "")),
         )
+        # nvidia-smi of the test host must not leak in; B2 tests set a GPU.
+        monkeypatch.setattr(_mod, "_nvidia_gpu_memory_snapshot", lambda: None)
+        # A compose recreate makes a new container; docker restart keeps it.
+        self.container_id = "container-1"
+        self.container_env = _mod.load_env(self.env_path)
+        self.compose_overrides = {}
+        monkeypatch.setattr(
+            _mod, "_llama_container_id",
+            lambda: self.container_id if self.runtime.running is not None else "",
+        )
         original_start = self.runtime.start
 
-        def start(env):
+        def start(env, process_env_overrides=None):
             original_start(env)
             self.runtime.running["startedAt"] = _iso_seconds_ago(0)
+            self.container_id = f"container-{len(self.runtime.launches) + 1}"
+            self.container_env = dict(env)
+            self.compose_overrides = dict(process_env_overrides or {})
 
         self.start = start
         monkeypatch.setattr(_mod, "_compose_restart_llama_server", start)
@@ -10211,17 +10225,190 @@ class TestGpuResidencyWatcher:
         self.runtime.launches.clear()
         monkeypatch.setattr(_mod, "_measured_other_gpu_usage", lambda _env: 900.0)
 
+        before = self.env_path.read_text(encoding="utf-8")
+
         _mod._residency_watch_once()
 
-        env = _mod.load_env(self.env_path)
-        assert (env["LLAMA_ARG_UBATCH"], env["LLAMA_ARG_CACHE_TYPE_K"], env["CTX_SIZE"]) == ("128", "q4_0", "65536")
+        # The smallest allowed settings run in this container only; .env
+        # keeps the settings that fit the idle GPU.
+        assert self.env_path.read_text(encoding="utf-8") == before
+        launch = self.runtime.launches[-1]
+        assert (launch["ubatch"], launch["cacheType"], launch["context"]) == (128, "q4_0", 65536)
+        assert self.compose_overrides["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
         assert len(self.runtime.launches) == 1
         record = self._record()
         assert record["placement"]["status"] == "partial"
         assert record["placement"]["acceptedPartial"]["policy"] == "other_processes"
+        assert record["placement"]["residencyAdjustment"]["temporary"] is True
         assert record["refit"]["cause"] == "other_processes"
+        assert record["refit"]["persistentChanges"] == {}
         _mod._residency_watch_once()
         assert len(self.runtime.launches) == 1
+
+    # -- A downgrade made for another process never sticks -------------------
+
+    def _boot_v1f_beside(self, monkeypatch, held_mib, *, measured_now=None):
+        """Boot the 8 GB default (V1f) while another program holds memory.
+
+        The laptop under WSL: 8151 MiB total, 6860 MiB CUDA free when idle
+        (the platform estimate says 6802).
+        """
+        self.env_path.write_text(
+            self.env_path.read_text(encoding="utf-8")
+            + "LLAMA_ARG_UBATCH=256\nLLAMA_ARG_FIT_TARGET=512\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "wsl")
+        monkeypatch.setattr(
+            _mod, "_nvidia_gpu_memory_snapshot",
+            lambda: {"gpus": 1, "totalMiB": 8151.0, "usedMiB": 0.0},
+        )
+        monkeypatch.setattr(
+            _mod, "_measured_other_gpu_usage",
+            lambda _env: held_mib if measured_now is None else measured_now,
+        )
+        self.runtime.cuda_free_mib = 6860 - held_mib
+        self.start(_mod.load_env(self.env_path))
+        self.runtime.running["startedAt"] = _iso_seconds_ago(200)
+        self.runtime.launches.clear()
+        return self.env_path.read_text(encoding="utf-8")
+
+    def _docker_restart(self, *, age=200):
+        """docker restart / restart policy at boot: same container and env."""
+        self.runtime.start(dict(self.container_env))
+        self.runtime.running["startedAt"] = _iso_seconds_ago(age)
+
+    def test_program_holding_memory_at_boot_gets_temporary_settings_only(self, monkeypatch):
+        """400 MiB held at boot must not write a q4_0 KV cache into .env."""
+        saved = self._boot_v1f_beside(monkeypatch, 400.0)
+
+        _mod._residency_watch_once()
+
+        assert self.env_path.read_text(encoding="utf-8") == saved
+        assert len(self.runtime.launches) == 1
+        launch = self.runtime.launches[-1]
+        assert (launch["cacheType"], launch["ubatch"], launch["fitTarget"]) == ("q4_0", 256, 512)
+        assert self.compose_overrides == {
+            "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q4_0",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+        }
+        record = self._record()
+        assert record["refit"]["cause"] == "other_processes"
+        assert record["refit"]["persistentChanges"] == {}
+        assert record["refit"]["temporaryChanges"]["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
+        assert record["refit"]["containerId"] == self.container_id
+        adjustment = record["placement"]["residencyAdjustment"]
+        assert record["placement"]["status"] == "fully_resident"
+        assert adjustment["temporary"] is True and adjustment["cause"] == "other_processes"
+        assert "not saved" in adjustment["note"]
+        # The relaunched run keeps serving; later passes leave it alone.
+        _mod._residency_watch_once()
+        assert len(self.runtime.launches) == 1
+
+    def test_docker_restart_after_the_program_exits_restores_the_saved_settings(self, monkeypatch):
+        saved = self._boot_v1f_beside(monkeypatch, 400.0)
+        _mod._residency_watch_once()
+        temporary_container = self.container_id
+
+        # The program exits; a reboot restarts the same container (q4_0).
+        self.runtime.cuda_free_mib = 6860
+        monkeypatch.setattr(_mod, "_measured_other_gpu_usage", lambda _env: 0.0)
+        self._docker_restart()
+        assert self.container_id == temporary_container
+
+        placement = _mod._residency_watch_once()
+
+        assert placement["temporarySettings"]["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
+        assert placement["cacheTypeK"] == "q4_0"
+        # Recreated once from .env: q8_0, ubatch 256, margin 512, all on GPU.
+        assert len(self.runtime.launches) == 3
+        launch = self.runtime.launches[-1]
+        assert (launch["cacheType"], launch["ubatch"], launch["fitTarget"]) == ("q8_0", 256, 512)
+        assert self.compose_overrides == {}
+        assert self.container_id != temporary_container
+        record = self._record()
+        assert record["placement"]["status"] == "fully_resident"
+        assert record["placement"]["cacheTypeK"] == "q8_0"
+        assert record["refit"]["temporaryResolved"]["how"] == "restored"
+        assert self.env_path.read_text(encoding="utf-8") == saved
+        for _ in range(2):
+            _mod._residency_watch_once()
+        assert len(self.runtime.launches) == 3
+
+    def test_docker_restart_while_memory_is_still_held_keeps_the_temporary_settings(self, monkeypatch):
+        self._boot_v1f_beside(monkeypatch, 400.0)
+        _mod._residency_watch_once()
+
+        self._docker_restart()
+        for _ in range(3):
+            _mod._residency_watch_once()
+
+        assert len(self.runtime.launches) == 2  # the relaunch and the restart only
+        record = self._record()
+        assert "temporaryResolved" not in record["refit"]
+        assert record["refit"]["temporaryCheckedMarker"] == self.runtime.running["startedAt"]
+        assert record["placement"]["status"] == "fully_resident"
+
+    def test_compose_recreate_drops_the_temporary_settings(self, monkeypatch):
+        saved = self._boot_v1f_beside(monkeypatch, 400.0)
+        _mod._residency_watch_once()
+
+        # ods restart / activation / upgrade: compose recreates from .env.
+        self.runtime.cuda_free_mib = 6860
+        self.start(_mod.load_env(self.env_path))
+        self.runtime.running["startedAt"] = _iso_seconds_ago(200)
+
+        _mod._residency_watch_once()
+
+        assert len(self.runtime.launches) == 2
+        assert self.runtime.launches[-1]["cacheType"] == "q8_0"
+        record = self._record()
+        assert record["refit"]["temporaryResolved"]["how"] == "recreated"
+        assert record["placement"]["status"] == "fully_resident"
+        assert self.env_path.read_text(encoding="utf-8") == saved
+
+    def test_memory_released_before_the_pass_is_still_not_saved(self, monkeypatch):
+        """The program held memory at load and exited before the watcher ran.
+
+        nvidia-smi shows nothing now, but llama.cpp logged less free memory
+        than the idle estimate, so the fix stays temporary.
+        """
+        saved = self._boot_v1f_beside(monkeypatch, 400.0, measured_now=0.0)
+
+        def relaunch_on_the_idle_gpu(env, process_env_overrides=None):
+            self.runtime.cuda_free_mib = 6860
+            self.start(env, process_env_overrides)
+
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", relaunch_on_the_idle_gpu)
+
+        _mod._residency_watch_once()
+
+        assert self.env_path.read_text(encoding="utf-8") == saved
+        record = self._record()
+        assert record["refit"]["cause"] == "other_processes"
+        assert record["refit"]["otherAtLoadMiB"] == 342.0
+        assert record["refit"]["persistentChanges"] == {}
+        assert record["refit"]["temporaryChanges"] == {"LLAMA_ARG_UBATCH": "128"}
+        assert record["placement"]["status"] == "fully_resident"
+
+    def test_idle_gpu_spill_is_still_saved_to_env(self, monkeypatch):
+        """Nothing else on the GPU: the fix is configuration and persists."""
+        monkeypatch.setattr(_mod._model_memory, "detect_gpu_platform", lambda: "wsl")
+        monkeypatch.setattr(
+            _mod, "_nvidia_gpu_memory_snapshot",
+            lambda: {"gpus": 1, "totalMiB": 8151.0, "usedMiB": 0.0},
+        )
+
+        _mod._residency_watch_once()
+
+        env = _mod.load_env(self.env_path)
+        assert (env["LLAMA_ARG_UBATCH"], env["LLAMA_ARG_FIT_TARGET"]) == ("256", "512")
+        record = self._record()
+        assert record["refit"]["cause"] == "configuration"
+        assert record["refit"]["temporaryChanges"] == {}
+        assert record["placement"]["residencyAdjustment"]["temporary"] is False
+        assert self.compose_overrides == {}
 
     def test_failed_relaunch_restores_the_previous_settings_once(self, monkeypatch):
         before = self.env_path.read_text(encoding="utf-8")
@@ -10242,6 +10429,27 @@ class TestGpuResidencyWatcher:
         assert record["refit"]["toMarker"] == self.runtime.running["startedAt"]
         _mod._residency_watch_once()
         assert len(self.runtime.launches) == 2
+
+    def test_compose_relaunch_passes_temporary_settings_in_its_environment(self, monkeypatch):
+        monkeypatch.setattr(_mod, "resolve_compose_flags", lambda: ["-f", "docker-compose.base.yml"])
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs.get("env")))
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", self.real_compose_restart)
+        env = _mod.load_env(self.env_path)
+
+        _mod._restart_llama_server_for_residency(env, {"LLAMA_ARG_CACHE_TYPE_K": "q4_0"})
+        _mod._restart_llama_server_for_residency(env)
+
+        (argv, process_env), (_argv2, plain_env) = calls
+        assert argv[:2] == ["docker", "compose"] and "--force-recreate" in argv
+        assert process_env["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
+        assert plain_env is None
+        assert _mod.load_env(self.env_path)["LLAMA_ARG_CACHE_TYPE_K"] == "q8_0"
 
     def test_status_endpoint_never_reads_the_log(self, monkeypatch):
         _mod._write_model_placement_record({"status": "fully_resident", "modelFile": "Qwen3.5-9B-Q4_K_M.gguf"})

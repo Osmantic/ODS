@@ -17999,7 +17999,11 @@ def _refresh_model_placement() -> dict | None:
         if kind == "container":
             running, _pid, started = _llama_container_state()
             if running and started and (stale or started != placement.get("runtimeStartedAt")):
-                placement = _observe_llama_placement(env)
+                # A docker restart keeps the watcher's temporary settings.
+                carried = _running_temporary_residency(record).get("changes", {})
+                placement = _observe_llama_placement({**env, **carried})
+                if carried:
+                    placement["temporarySettings"] = dict(carried)
                 _write_model_placement_record(placement)
         elif kind == "native":
             marker = _native_llama_run_marker()
@@ -18255,13 +18259,179 @@ def _gpu_residency_calibrated_here() -> bool:
     return _model_memory.residency_calibrated(snapshot["totalMiB"], snapshot["gpus"])
 
 
-def _restart_llama_server_for_residency(env: dict) -> None:
-    """Recreate the llama-server container with the current .env."""
+def _restart_llama_server_for_residency(env: dict, overrides: dict | None = None) -> None:
+    """Recreate the llama-server container with the current .env.
+
+    ``overrides`` (LLAMA_ARG_* values) apply to this container only and are
+    never written to .env: the watcher's temporary settings for memory other
+    processes hold. Compose reads them from its process environment, which
+    takes precedence over .env; the inspected-recreate path takes them from
+    the launch env directly.
+    """
+    extra = {str(key): str(value) for key, value in (overrides or {}).items()}
+    launch_env = {**env, **extra}
     if os.environ.get("ODS_HOST_INSTALL_DIR"):
         # Keep the image the running container uses.
-        _recreate_llama_server(env)
+        _recreate_llama_server(launch_env)
+    elif extra:
+        _compose_restart_llama_server(launch_env, extra)
     else:
-        _compose_restart_llama_server(env)
+        _compose_restart_llama_server(launch_env)
+
+
+def _llama_container_id() -> str:
+    """Docker ID of the llama-server container, or "" when there is none.
+
+    A ``docker restart`` (or Docker's restart policy at boot) keeps the ID
+    and the container's environment; a compose recreate replaces both.
+    """
+    try:
+        inspected = subprocess.run(
+            ["docker", "inspect", "-f", "{{.Id}}", _LLAMA_SERVER_CONTAINER],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if inspected.returncode != 0:
+        return ""
+    return str(inspected.stdout or "").strip()
+
+
+def _idle_cuda_free_estimate_mib(device_count: int) -> float | None:
+    """CUDA free memory a fresh llama-server would see on idle GPUs (MiB).
+
+    ``nvidia-smi`` total minus the calibrated platform reserve, summed over
+    the GPUs. The reserve stays at or above every calibrated host, so this
+    errs low: a load that logged at least this much free had the GPU to
+    itself. None when nvidia-smi cannot tell, or reports a different GPU
+    count than the load used.
+    """
+    snapshot = _nvidia_gpu_memory_snapshot()
+    if not snapshot or snapshot["totalMiB"] <= 0:
+        return None
+    gpus = max(int(snapshot.get("gpus") or 1), 1)
+    if device_count and gpus != int(device_count):
+        return None
+    per_gpu = float(snapshot["totalMiB"]) / gpus
+    reserve = _model_memory.platform_reserve_mib(per_gpu, _model_memory.detect_gpu_platform())
+    return max(per_gpu - reserve, 0.0) * gpus
+
+
+# nvidia-smi attribution noise below which the watcher treats the GPU as
+# holding nothing else (WSL and Windows estimate the server's own share).
+_RESIDENCY_OTHER_USAGE_NOISE_MIB = 64.0
+
+
+def _watcher_residency_plan(
+    placement: dict,
+    env: dict,
+    *,
+    context_length: int,
+    other_now_mib: float,
+    idle_free_mib: float | None,
+    pinned: dict | None = None,
+) -> dict:
+    """Plan the watcher's relaunch of a partial load, split by permanence.
+
+    The watcher writes a settings change to .env only when the GPU was idle
+    at load: nothing else measured on it now, and llama.cpp logged at least
+    the idle estimate free (``idle_free_mib``, which errs low). Otherwise the
+    shortfall may be memory other processes held at boot (a test container,
+    an app), so every change is temporary: it applies to the relaunched
+    container only, is reported, and is undone by any later start that has
+    room (``_maybe_restore_temporary_residency``). A downgrade made for
+    another process never reaches .env, activation or upgrades.
+
+    Returns ``{"cause", "persistent", "temporary", "plan", "relaunch",
+    "otherAtLoadMiB", "idleAvailableMiB", "availableNowMiB"}``. Causes are
+    those of ``_residency_correction``. ``relaunch`` is False when there is
+    nothing to relaunch with (only reported).
+    """
+    result: dict = {
+        "cause": "unexplained",
+        "persistent": {},
+        "temporary": {},
+        "plan": None,
+        "relaunch": False,
+        "otherAtLoadMiB": None,
+        "idleAvailableMiB": None,
+        "availableNowMiB": None,
+    }
+    required = placement.get("projectedDeviceMiB")
+    available = placement.get("freeDeviceMiB")
+    if required is None or available is None:
+        return result
+    free = float(available)
+    settings = _model_memory.runtime_memory_settings(None, env)
+    if placement.get("fitTargetMiB"):
+        settings = {**settings, "fitTargetMiB": int(placement["fitTargetMiB"])}
+    common = {
+        "required_mib": float(required),
+        "settings": settings,
+        "kv_mib": float(placement.get("kvMiB") or 0.0),
+        "compute_mib": float(placement.get("gpuComputeMiB") or 0.0),
+        "context_length": int(context_length),
+        "allow_context_reduction": False,
+        "context_floor": min(_model_memory.RESIDENCY_CONTEXT_FLOOR, int(context_length)),
+        "gpu_count": max(int(placement.get("deviceCount") or 1), 1),
+        "locked_keys": tuple(pinned or ()),
+    }
+    other_now = max(float(other_now_mib or 0.0), 0.0)
+    other_at_load = max(float(idle_free_mib) - free, 0.0) if idle_free_mib else 0.0
+    idle_available = free + max(other_now, other_at_load)
+    # What a relaunch now would see: the load's free memory, plus whatever
+    # other processes held at load and have released since.
+    available_now = free + max(other_at_load - other_now, 0.0)
+    result.update(
+        otherAtLoadMiB=round(other_at_load, 2),
+        idleAvailableMiB=round(idle_available, 2),
+        availableNowMiB=round(available_now, 2),
+    )
+    idle_gpu = other_now <= _RESIDENCY_OTHER_USAGE_NOISE_MIB and other_at_load <= 0.0
+    if idle_gpu:
+        plan = _model_memory.plan_residency_fallback(available_mib=free, **common)
+        if plan is None:
+            result["cause"] = "too_large"
+        elif plan.get("changes"):
+            result.update(
+                cause="configuration", persistent=dict(plan["changes"]), plan=plan, relaunch=True,
+            )
+        return result
+    if _model_memory.plan_residency_fallback(available_mib=idle_available, **common) is None:
+        result["cause"] = "too_large"
+        return result
+    result["cause"] = "other_processes"
+    plan = _model_memory.plan_residency_fallback(available_mib=available_now, **common)
+    if plan is None:
+        plan = _model_memory.plan_residency_fallback(
+            available_mib=available_now, best_effort=True, **common,
+        )
+    if plan is not None and plan.get("changes"):
+        result.update(temporary=dict(plan["changes"]), plan=plan, relaunch=True)
+    elif plan is not None and available_now > free + _model_memory.RESIDENCY_PLAN_GUARD_MIB:
+        # The memory held at load has been released: the same settings fit.
+        result.update(plan=plan, relaunch=True)
+    return result
+
+
+def _running_temporary_residency(record: dict | None = None) -> dict:
+    """The watcher's temporary settings the llama-server container still has.
+
+    ``{"changes": {...}, "containerId": ...}`` while the container the
+    watcher relaunched with them is still the one running (a ``docker
+    restart`` keeps them), else ``{}``.
+    """
+    record = record if record is not None else _read_model_placement_record()
+    refit = record.get("refit") if isinstance(record.get("refit"), dict) else {}
+    changes = refit.get("temporaryChanges")
+    container = str(refit.get("containerId") or "")
+    if not isinstance(changes, dict) or not changes or not container or refit.get("temporaryResolved"):
+        return {}
+    if _llama_container_id() != container:
+        return {}
+    return {"changes": {str(k): str(v) for k, v in changes.items()}, "containerId": container}
 
 
 def _maybe_refit_gpu_residency(placement: dict | None) -> dict | None:
@@ -18271,10 +18441,11 @@ def _maybe_refit_gpu_residency(placement: dict | None) -> dict | None:
     reboot, ``ods restart`` and restart-policy restarts. Limited to NVIDIA
     container runtimes; one relaunch per llama-server run; never while a model
     lifecycle operation or bootstrap-upgrade.sh is active; only after the run
-    has served for ``_RESIDENCY_REFIT_SETTLE_SECONDS``. When nothing fits
-    because other processes hold the memory, the smallest allowed settings are
-    used and the rest is reported; a model too large even for the idle GPU,
-    or an operator's numeric N_GPU_LAYERS, is only reported.
+    has served for ``_RESIDENCY_REFIT_SETTLE_SECONDS``. Settings are written
+    to .env only when the GPU was idle at load; when other processes held
+    memory, the relaunched container alone gets them (see
+    ``_watcher_residency_plan``). A model too large even for the idle GPU, or
+    an operator's numeric N_GPU_LAYERS, is only reported.
     """
     if not isinstance(placement, dict) or placement.get("status") not in {"partial", "cpu_only"}:
         return None
@@ -18323,25 +18494,44 @@ def _refit_gpu_residency(placement: dict, marker: str) -> dict | None:
     gguf_file = str(env.get("GGUF_FILE") or "")
     llm_model_name = str(env.get("LLM_MODEL") or _local_model_name_from_gguf(gguf_file))
     context = _positive_int(env.get("CTX_SIZE") or env.get("MAX_CONTEXT")) or 0
+    # A restarted container may still carry earlier temporary settings; plan
+    # from what this run actually used.
+    carried = _running_temporary_residency()
+    run_env = {**env, **carried.get("changes", {})}
     other = _measured_other_gpu_usage(env)
-    decision = _residency_correction(
+    idle_free = _idle_cuda_free_estimate_mib(int(placement.get("deviceCount") or 1))
+    pinned = _operator_residency_controls(env)
+    decision = _watcher_residency_plan(
         placement,
-        env,
+        run_env,
         context_length=context,
-        allow_context_reduction=False,
-        other_used_mib=other or 0.0,
-        pinned=_operator_residency_controls(env),
+        other_now_mib=other or 0.0,
+        idle_free_mib=idle_free,
+        pinned=pinned,
     )
+    first_settings = _model_memory.runtime_memory_settings(None, run_env)
     entry: dict = {
         "fromMarker": marker,
         "modelFile": placement.get("modelFile"),
         "cause": decision["cause"],
         "otherUsedMiB": round(other, 2) if other is not None else None,
+        "otherAtLoadMiB": decision["otherAtLoadMiB"],
         "at": _iso_now(),
+        # What restore checks the .env settings against on a later start.
+        "firstProjection": {
+            key: placement.get(key)
+            for key in ("projectedDeviceMiB", "freeDeviceMiB", "kvMiB", "gpuComputeMiB", "deviceCount")
+        },
+        "firstSettings": {
+            key: first_settings[key]
+            for key in ("cacheTypeK", "cacheTypeV", "ubatch", "fitTargetMiB", "parallel")
+        },
     }
-    plan = decision["plan"]
-    if plan is None:
+    if not decision["relaunch"]:
         entry["result"] = "reported"
+        if carried:
+            # Nothing relaunched: the running container keeps them.
+            entry.update(temporaryChanges=carried["changes"], containerId=carried["containerId"])
         logger.warning(
             "llama-server runs %s partly on the CPU (%s); no allowed setting "
             "keeps it on the GPU (%s), reporting only",
@@ -18361,13 +18551,26 @@ def _refit_gpu_residency(placement: dict, marker: str) -> dict | None:
         )
         _write_model_placement_record(reported, refit=entry)
         return reported
-    changes = {
-        key: str(value) for key, value in plan["changes"].items() if key.startswith("LLAMA_ARG_")
+    plan = decision["plan"] or {"steps": [], "changes": {}}
+    persistent = {
+        key: str(value) for key, value in decision["persistent"].items() if key.startswith("LLAMA_ARG_")
     }
-    entry.update(steps=list(plan["steps"]), changes=changes)
+    temporary = {
+        key: str(value) for key, value in decision["temporary"].items() if key.startswith("LLAMA_ARG_")
+    }
+    changes = {**persistent, **temporary}
+    entry.update(
+        steps=list(plan["steps"]),
+        changes=changes,
+        persistentChanges=persistent,
+        temporaryChanges=temporary,
+    )
     logger.warning(
-        "llama-server loaded %s partly on the CPU (%s); relaunching once with %s",
-        gguf_file, placement.get("reason"), ", ".join(plan["steps"]),
+        "llama-server loaded %s partly on the CPU (%s); relaunching once with %s (%s)",
+        gguf_file,
+        placement.get("reason"),
+        ", ".join(plan["steps"]) or "the same settings",
+        "saved to .env" if persistent else "for this container only: other processes held GPU memory",
     )
     snapshot = _snapshot_text_file(env_path)
     readiness = {
@@ -18379,15 +18582,16 @@ def _refit_gpu_residency(placement: dict, marker: str) -> dict | None:
         "fast_poll_seconds": _MODEL_READINESS_FAST_POLL_SECONDS,
     }
     try:
-        for key, value in changes.items():
+        for key, value in persistent.items():
             _upsert_env_value(env_path, key, value)
         retry_env = load_env(env_path)
-        _restart_llama_server_for_residency(retry_env)
-        if not _wait_for_model_readiness(retry_env, **readiness):
+        _restart_llama_server_for_residency(retry_env, temporary)
+        launch_env = {**retry_env, **temporary}
+        if not _wait_for_model_readiness(launch_env, **readiness):
             raise RuntimeError(f"{gguf_file} did not become ready after the relaunch")
     except Exception as exc:
         logger.exception("GPU residency relaunch failed; restoring the previous settings")
-        entry.update(result="failed", error=str(exc)[:300])
+        entry.update(result="failed", error=str(exc)[:300], temporaryChanges={})
         try:
             _restore_bound_env_file(env_path, snapshot)
             restored_env = load_env(env_path)
@@ -18399,10 +18603,12 @@ def _refit_gpu_residency(placement: dict, marker: str) -> dict | None:
         entry["toMarker"] = after
         _write_model_placement_record(refit=entry)
         return None
-    observed = _observe_llama_placement(retry_env, gguf_file=gguf_file)
+    observed = _observe_llama_placement(launch_env, gguf_file=gguf_file)
     _running, _pid, after = _llama_container_state()
     entry["toMarker"] = after or observed.get("runtimeStartedAt")
     entry["result"] = observed.get("status")
+    if temporary:
+        entry["containerId"] = _llama_container_id()
     if observed.get("status") in {"partial", "cpu_only"} and decision["cause"] == "other_processes":
         observed = _accept_partial_placement(
             observed, decision["cause"], other, policy="other_processes",
@@ -18412,17 +18618,164 @@ def _refit_gpu_residency(placement: dict, marker: str) -> dict | None:
         "cause": decision["cause"],
         "steps": list(plan["steps"]),
         "changes": changes,
+        "persistentChanges": persistent,
+        "temporaryChanges": temporary,
+        "temporary": bool(temporary),
         "firstPlacement": placement,
     }
+    if temporary:
+        observed["residencyAdjustment"]["note"] = (
+            "Other processes held GPU memory when llama-server started, so this "
+            "run uses smaller settings that are not saved; the next start with "
+            "enough free memory uses the saved settings again"
+        )
     _write_model_placement_record(observed, refit=entry)
     return observed
+
+
+def _temporary_residency_still_needed(refit: dict, placement: dict, env: dict) -> bool:
+    """Whether the saved .env settings would still spill on this start.
+
+    Replays the first partial load's projection (``refit.firstProjection``
+    under ``refit.firstSettings``) against the free memory llama.cpp logged
+    for the current run. True when unknown.
+    """
+    first = refit.get("firstProjection") if isinstance(refit.get("firstProjection"), dict) else {}
+    settings = refit.get("firstSettings") if isinstance(refit.get("firstSettings"), dict) else {}
+    free = placement.get("freeDeviceMiB")
+    if first.get("projectedDeviceMiB") is None or free is None or not settings:
+        return True
+    context = _positive_int(env.get("CTX_SIZE") or env.get("MAX_CONTEXT")) or 0
+    plan = _model_memory.plan_residency_fallback(
+        required_mib=float(first["projectedDeviceMiB"]),
+        available_mib=float(free),
+        settings=settings,
+        kv_mib=float(first.get("kvMiB") or 0.0),
+        compute_mib=float(first.get("gpuComputeMiB") or 0.0),
+        context_length=int(context),
+        allow_context_reduction=False,
+        context_floor=min(_model_memory.RESIDENCY_CONTEXT_FLOOR, int(context)),
+        gpu_count=max(int(first.get("deviceCount") or 1), 1),
+        locked_keys=tuple(_operator_residency_controls(env)),
+    )
+    if plan is None:
+        return True
+    persistent = refit.get("persistentChanges") if isinstance(refit.get("persistentChanges"), dict) else {}
+    return any(
+        str(persistent.get(key)) != str(value)
+        for key, value in plan["changes"].items()
+        if key.startswith("LLAMA_ARG_")
+    )
+
+
+def _maybe_restore_temporary_residency(placement: dict | None) -> dict | None:
+    """Drop the watcher's temporary settings once they are no longer needed.
+
+    A compose recreate (``ods restart``, activation, upgrade) already starts
+    from .env; this only records that. A ``docker restart`` or Docker's
+    restart policy at boot restarts the same container with its temporary
+    settings: when the saved .env settings fit the memory this start found
+    free, the container is recreated from .env once. The run the watcher
+    itself relaunched is never touched: it keeps serving, reported as
+    temporary, until the next start.
+    """
+    record = _read_model_placement_record()
+    refit = record.get("refit") if isinstance(record.get("refit"), dict) else None
+    if not refit or not refit.get("temporaryChanges") or refit.get("temporaryResolved"):
+        return None
+    if not isinstance(placement, dict) or placement.get("runtime") != "container":
+        return None
+    marker = str(placement.get("runtimeStartedAt") or "")
+    if not marker or marker == refit.get("toMarker") or not placement.get("observationComplete"):
+        return None
+    container = _llama_container_id()
+    if not container:
+        return None
+    if container != str(refit.get("containerId") or ""):
+        # Recreated (compose, activation, upgrade): it started from .env.
+        refit["temporaryResolved"] = {"at": _iso_now(), "how": "recreated", "marker": marker}
+        _write_model_placement_record(refit=refit)
+        return None
+    if placement.get("status") in {"partial", "cpu_only"} or refit.get("temporaryCheckedMarker") == marker:
+        return None  # a partial start is the re-fit's; each start is checked once
+    try:
+        env = load_env(INSTALL_DIR / ".env")
+    except (OSError, UnicodeError):
+        return None
+    if str(placement.get("modelFile") or "").casefold() != str(env.get("GGUF_FILE") or "").casefold():
+        return None
+    if _bootstrap_upgrade_active():
+        return None
+    age = _timestamp_age_seconds(marker)
+    if age is None or age < _RESIDENCY_REFIT_SETTLE_SECONDS:
+        return None
+    if _temporary_residency_still_needed(refit, placement, env):
+        refit["temporaryCheckedMarker"] = marker
+        _write_model_placement_record(refit=refit)
+        return None
+    acquired, _active = _begin_model_lifecycle(
+        _RESIDENCY_REFIT_OPERATION, str(env.get("GGUF_FILE") or ""),
+    )
+    if not acquired:
+        return None
+    try:
+        running, _pid, started = _llama_container_state()
+        if not running or started != marker:
+            return None
+        gguf_file = str(env.get("GGUF_FILE") or "")
+        llm_model_name = str(env.get("LLM_MODEL") or _local_model_name_from_gguf(gguf_file))
+        context = _positive_int(env.get("CTX_SIZE") or env.get("MAX_CONTEXT")) or 0
+        readiness = {
+            "model_id": llm_model_name,
+            "gguf_file": gguf_file,
+            "llm_model_name": llm_model_name,
+            "return_proof": True,
+            "require_exact_context": bool(context),
+            "fast_poll_seconds": _MODEL_READINESS_FAST_POLL_SECONDS,
+        }
+        temporary = dict(refit["temporaryChanges"])
+        logger.info(
+            "GPU memory is free again; recreating llama-server with the saved settings "
+            "instead of the temporary %s",
+            ", ".join(f"{key}={value}" for key, value in sorted(temporary.items())),
+        )
+        try:
+            _restart_llama_server_for_residency(env)
+            if not _wait_for_model_readiness(env, **readiness):
+                raise RuntimeError(f"{gguf_file} did not become ready with the saved settings")
+        except Exception as exc:
+            logger.exception("Restoring the saved llama-server settings failed; keeping the temporary ones")
+            refit["temporaryCheckedMarker"] = marker
+            refit["restoreError"] = str(exc)[:300]
+            try:
+                _restart_llama_server_for_residency(env, temporary)
+                _wait_for_model_readiness({**env, **temporary}, **readiness)
+                refit["containerId"] = _llama_container_id()
+                _running, _pid, after = _llama_container_state()
+                refit["toMarker"] = after
+            except Exception:
+                logger.exception("Could not relaunch llama-server with the temporary settings")
+            _write_model_placement_record(refit=refit)
+            return None
+        observed = _observe_llama_placement(env, gguf_file=gguf_file)
+        refit["temporaryResolved"] = {
+            "at": _iso_now(),
+            "how": "restored",
+            "marker": observed.get("runtimeStartedAt") or "",
+            "result": observed.get("status"),
+        }
+        _write_model_placement_record(observed, refit=refit)
+        return observed
+    finally:
+        _end_model_lifecycle(_RESIDENCY_REFIT_OPERATION)
 
 
 def _residency_watch_once() -> dict | None:
     """One watcher pass: observe the running model, re-fit it if needed."""
     placement = _refresh_model_placement()
     try:
-        _maybe_refit_gpu_residency(placement)
+        if _maybe_refit_gpu_residency(placement) is None:
+            _maybe_restore_temporary_residency(placement)
     except Exception:
         logger.exception("GPU residency re-fit failed")
     return placement
@@ -19124,7 +19477,7 @@ def _failed_llama_server_log_excerpt(container: str = "ods-llama-server") -> str
         return ""
 
 
-def _compose_restart_llama_server(env: dict):
+def _compose_restart_llama_server(env: dict, process_env_overrides: dict | None = None):
     """Restart llama-server via docker compose (host-native path).
 
     This is the primary restart strategy for Linux (systemd) where the agent
@@ -19137,14 +19490,24 @@ def _compose_restart_llama_server(env: dict):
     by the new container.
     Raises RuntimeError on any docker-layer failure so _do_model_activate can
     surface the error immediately instead of waiting for the health-check loop.
+
+    ``process_env_overrides`` go into compose's process environment, which
+    takes precedence over .env for this one container (the residency
+    watcher's temporary settings); .env itself is not changed.
     """
     gpu_backend = env.get("GPU_BACKEND", "nvidia")
     compose_flags = resolve_compose_flags()
+    process_env = (
+        {**os.environ, **{str(k): str(v) for k, v in process_env_overrides.items()}}
+        if process_env_overrides
+        else None
+    )
 
     def _run(argv, timeout):
         result = subprocess.run(
             argv, cwd=str(INSTALL_DIR),
             capture_output=True, text=True, timeout=timeout,
+            env=process_env,
         )
         if result.returncode != 0:
             raise RuntimeError(
