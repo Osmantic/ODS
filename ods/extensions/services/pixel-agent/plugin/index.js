@@ -769,7 +769,7 @@ export default definePluginEntry({
     }
     const researchTool = createPerplexicaResearchTool({ port: api.pluginConfig?.perplexicaPort,
       availability: discovery ? undefined : perplexicaAvailability,
-      outputChars: () => researchOutputChars(api.runtime?.config?.current?.() ?? api.config, AGENT_ID) });
+      outputChars: () => researchOutputChars(liveConfig(), AGENT_ID) });
     api.registerTool(onlyPixel(discovery ? () => researchTool
       : researchToolWhenAvailable(perplexicaAvailability, researchTool)), { names: ["pixel_ods_research"] });
     registerTool(api, createAgentSkillTool(), {names:['pixel_ods_skill']});

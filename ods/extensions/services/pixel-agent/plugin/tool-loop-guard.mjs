@@ -7032,15 +7032,6 @@ export function createToolLoopGuard({
     });
   }
 
-  // Allowance units one executed web call uses. Perplexica runs its own
-  // searches and returns search results, so it uses a search and a page-read
-  // unit, although it never reads a page for Pixel (no read receipt).
-  function webCost(toolName) {
-    if (toolName === "web_search") return { search: 1, fetch: 0 };
-    if (toolName === "pixel_ods_research") return { search: 1, fetch: 1 };
-    return { search: 0, fetch: 1 };
-  }
-
   // Page reads pixel_ods_search_read leaves for the host citation check: its
   // four-URL maximum, or a quarter of a smaller configured allowance.
   function searchReadReserve() {
@@ -7054,6 +7045,17 @@ export function createToolLoopGuard({
     const reads = Math.min(effective.fetch - state.fetch - reserve,
       effective.total - state.total - cost.search - reserve);
     return Math.max(0, Math.min(cost.fetch, reads));
+  }
+
+  // Allowance units one executed web call uses. Perplexica runs its own
+  // searches and returns search results, so it uses a search and a page-read
+  // unit, although it never reads a page for Pixel (no read receipt).
+  // pixel_ods_search_read is charged by its grant instead (searchReadCost,
+  // searchReadGrant), never through this table.
+  function webCost(toolName) {
+    if (toolName === "web_search") return { search: 1, fetch: 0 };
+    if (toolName === "pixel_ods_research") return { search: 1, fetch: 1 };
+    return { search: 0, fetch: 1 };
   }
 
   function exhaustedWebBudget(state, toolName, params) {
