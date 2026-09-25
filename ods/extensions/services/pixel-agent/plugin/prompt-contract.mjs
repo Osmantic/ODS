@@ -27,6 +27,7 @@ import {
   workspacePreviewMode,
 } from "./tool-loop-guard.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "./agent-skills.mjs";
+import { formatTurnGuidance } from "./turn-guidance.mjs";
 
 const PLAYGROUND_PROJECT_CONTRACT =
   "For a new project, choose one short descriptive folder under Playground, for example Playground/snake-game or Playground/weather-tool, and create every project file there. This is a real workspace folder, not a display label. Use the exact canonical paths returned by tools, including any collision suffix, for later reads, edits, exec workdir and preview relativeDirectory. Preserve explicitly requested paths and existing projects in their current locations; never move them into Playground. Keep shell commands relative to the chosen workdir; never invent host-specific paths.";
@@ -416,7 +417,9 @@ export function promptContractForAgent(
 // hybrid models (Qwen3.5/3.6, Qwen3-Coder-Next) that is a full re-prefill.
 // Keep system space byte-identical for a session and carry per-message
 // guidance in the current user turn, as OpenClaw's before_prompt_build
-// contract prescribes (appendContext is applied to the active prompt only).
+// contract prescribes. OpenClaw applies appendContext to the current owner
+// message only; turn-guidance.mjs stores it with that message so that later
+// requests replay exactly what the model saw.
 export function composePromptBuildResult(
   contract,
   { activity = "", execution = "", goal = "", repositoryEvidence = "" } = {}
@@ -430,7 +433,9 @@ export function composePromptBuildResult(
     ? contract.systemContext : contract.appendSystemContext;
   const turnContext = typeof contract.systemContext === "string"
     ? contract.turnContext : "";
-  const appendContext = join([goal, turnContext, repositoryEvidence], "\n\n");
+  // Labelled so that ODS recognises its own text once it is stored with the
+  // owner message (turn-guidance.mjs) and never mistakes it for owner prose.
+  const appendContext = formatTurnGuidance(join([goal, turnContext, repositoryEvidence], "\n\n"));
   return {
     appendSystemContext: join([activity, systemContext, execution], " "),
     ...(appendContext ? { appendContext } : {}),

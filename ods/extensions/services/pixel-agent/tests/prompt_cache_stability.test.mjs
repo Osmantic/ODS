@@ -12,6 +12,7 @@ import {
 import { ACTIVITY_CONTRACT } from "../plugin/activity-display.mjs";
 import { executionContext } from "../plugin/completion-assurance.mjs";
 import { GOAL_CONTRACT } from "../plugin/goal-progress.mjs";
+import { TURN_GUIDANCE_HEADER } from "../plugin/turn-guidance.mjs";
 
 const DELIVERY = "\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. If it asks for exact text, copy that full exact text. Do not answer with a generic acknowledgement. Do not output NO_REPLY.]";
 
@@ -88,7 +89,7 @@ test("message-selected guidance moves to the current turn without losing any tex
       );
       assert.ok(result.appendSystemContext.includes(contract.systemContext));
       if (contract.turnContext) {
-        assert.equal(result.appendContext, contract.turnContext);
+        assert.equal(result.appendContext, `${TURN_GUIDANCE_HEADER}\n${contract.turnContext}`);
         assert.ok(!result.appendSystemContext.includes(contract.turnContext));
       } else {
         assert.equal(result.appendContext, undefined);
@@ -119,9 +120,9 @@ test("goal mode and repository evidence ride on the turn, never in system space"
   const goal = compose(MAC_JOURNEY[2], { configuredContextWindow: 65536 }, { goal: GOAL_CONTRACT, repositoryEvidence: evidence }).result;
   assert.equal(goal.appendSystemContext, plain.appendSystemContext);
   assert.ok(!goal.appendSystemContext.includes(GOAL_CONTRACT));
-  assert.equal(goal.appendContext, `${GOAL_CONTRACT}\n\n${evidence}`);
+  assert.equal(goal.appendContext, `${TURN_GUIDANCE_HEADER}\n${GOAL_CONTRACT}\n\n${evidence}`);
   const both = compose(MAC_JOURNEY[0], { configuredContextWindow: 65536 }, { goal: GOAL_CONTRACT }).result;
-  assert.ok(both.appendContext.startsWith(`${GOAL_CONTRACT}\n\n`));
+  assert.ok(both.appendContext.startsWith(`${TURN_GUIDANCE_HEADER}\n${GOAL_CONTRACT}\n\n`));
   assert.ok(both.appendContext.includes(ODS_WORKSPACE_PREVIEW_CONTRACT.trim()));
 });
 
