@@ -23,6 +23,7 @@ import { createExtensionCompletionGate } from "./extension-completion-gate.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
 import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLaneStopReason, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
 import { composeProgressFinalization, createProgressFinalization, PROGRESS_FINALIZATION_INSTRUCTION } from "./progress-finalization.mjs";
+import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
@@ -10965,6 +10966,14 @@ export function createToolLoopGuard({
       });
     }
     if (state?.recursiveDeleteDenied || state?.progressBudget.exhausted || state?.clientCancelled || state?.webLoopAborted) return undefined;
+    // A silent sentinel is never an answer to an owner-authored chat message.
+    // One revision pass; the harness still refuses it after side effects.
+    if (state?.ownerIntentObserved && !state.managedTeamWorker && !state.silentOwnerReplyRetried &&
+        ownerInteractiveTurn(context, agentId) && silentReplyText(event?.lastAssistantMessage)) {
+      state.silentOwnerReplyRetried = true;
+      return {action: 'revise', reason: OWNER_VISIBLE_REPLY_REASON, retry: {
+        instruction: OWNER_VISIBLE_REPLY_INSTRUCTION, idempotencyKey: 'ods-owner-visible-reply', maxAttempts: 1}};
+    }
     const extensionStopped = state?.progressBudget.laneExhausted('extension');
     const workspaceStopped = state?.progressBudget.laneExhausted('workspace');
     const continuation =

@@ -88,8 +88,20 @@ downloads, managed extension requests and team coordination keep the strict
 stop text. The instruction is constant text at the end of the conversation,
 never system-prompt content.
 
-`tests/progress_finalization.test.mjs` and the real-harness fixture
-`tests/runtime_progress_finalization.integration.mjs` cover this path.
+## Silent owner replies
+
+An owner-authored dashboard or Portal message (a `user`-triggered run in the
+`agent:pixel:openai-user:ods-…` session) always needs a visible reply. If the
+final reply is only OpenClaw's silent sentinel (`NO_REPLY`, `HEARTBEAT_OK`, or
+their JSON forms), `owner-visible-reply.mjs` requests one revision pass with a
+fixed instruction. A second silent reply keeps the ingress fallback ("Pixel
+ended without a visible answer"). OpenClaw already retries an empty final reply
+once before this hook runs; heartbeat, cron and team turns keep `NO_REPLY`
+semantics, and the harness still refuses a revision after side effects.
+
+`tests/progress_finalization.test.mjs`, `tests/owner_visible_reply.test.mjs`
+and the real-harness fixtures `tests/runtime_progress_finalization.integration.mjs`
+and `tests/runtime_owner_visible_reply.integration.mjs` cover both paths.
 
 ## Search availability
 
