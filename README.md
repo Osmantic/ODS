@@ -85,7 +85,7 @@ Choose your system, copy the block, run it in a normal terminal. ODS installs th
 curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
 
-**Windows PowerShell**
+**Windows — Portal/Pixel through WSL2 (recommended)**
 
 ```powershell
 $ProgressPreference = "SilentlyContinue"
@@ -96,26 +96,32 @@ Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" 
 Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
 cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1
+.\ods\installers\windows.ps1 -Distro Ubuntu-24.04 -PassthroughArgs @("--pixel", "--no-hermes")
 ```
 
-Prerequisites: Docker must be installed and running. On Windows, use Docker Desktop with the WSL2 backend enabled and run the block in a normal, non-Administrator PowerShell window.
+Prerequisites: Docker must be installed and running. On Windows, install and initialize **Ubuntu 24.04 on WSL2**, enable systemd in Ubuntu, and enable Docker Desktop's **WSL2 engine and WSL integration for that distribution**. If Ubuntu is missing, run `wsl --install -d Ubuntu-24.04` in an Administrator PowerShell window, restart if requested, then open Ubuntu and create its Linux user/password. Run the installation block above in a normal, non-Administrator PowerShell window. Replace `Ubuntu-24.04` if your distribution has a different name (`wsl -l -v`).
+
+This command runs the Linux installer inside Ubuntu and explicitly requires **Pixel for Portal**, with Hermes disabled. You may be prompted for your Ubuntu sudo password. Docker Desktop using WSL2 internally is not enough: the ODS installer itself must run in the Ubuntu distribution. The root `install.ps1` is a separate native Windows path; it does **not** provision the Linux Pixel host runtime.
 
 The hosted Linux/macOS endpoint proxies the current bootstrap from repository `main`.
 Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
 [Installer Trust](ods/docs/INSTALLER_TRUST.md) to inspect the script or install
 a stable release or audited commit manually.
 
-Windows users should not run the `curl ... | bash` command from PowerShell. The PowerShell block above downloads the source ZIP and runs the same Windows installer used by the clone-based workflow. For more detail, see the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md).
+Windows users should not run the `curl ... | bash` command from PowerShell. The PowerShell block above downloads the public ODS source ZIP and delegates installation to Ubuntu/WSL2. For more detail, see the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md).
 
-After install, open **http://localhost:3000** and start chatting.
+After the installer completes successfully, open **http://localhost:3001** for the **Portal dashboard** (or the dashboard URL printed by the installer). **http://localhost:3000** is Open WebUI, a separate interface. Verify that Portal is available and send a message; a loaded dashboard alone does not prove Pixel is ready. If installation fails or Portal is degraded, follow the [Windows Quickstart checks](ods/docs/WINDOWS-QUICKSTART.md#verify-portalpixel) before proceeding.
 
-Uninstall later with the matching platform command:
+WSL GPU access must be checked separately. NVIDIA needs a supported Windows driver and GPU access inside WSL/Docker. A working AMD/Lemonade server on Windows does not automatically become an ODS-managed WSL backend. Use a supported backend detected inside WSL, CPU, or an explicitly configured reachable model endpoint; see the [WSL2 GPU guide](ods/docs/WINDOWS-WSL2-GPU-GUIDE.md).
+
+For Linux, macOS, or the recommended Windows/WSL installation, uninstall from the matching Linux/macOS terminal (open Ubuntu on Windows):
 
 ```bash
 cd ~/ods
 ./ods-uninstall.sh --force
 ```
+
+For a **native Windows** installation only:
 
 ```powershell
 $installDir = "$env:USERPROFILE\ods"
@@ -230,13 +236,13 @@ Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" 
 Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
 cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1
+.\ods\installers\windows.ps1 -Distro Ubuntu-24.04 -PassthroughArgs @("--pixel", "--no-hermes")
 ```
 
 > The `Set-ExecutionPolicy` command allows the installer script to run in the current session. It does not change your system-wide policy.
 > Running as Administrator is not recommended for the installer because user-level paths such as `.opencode`, `data/`, and `.env` can be created with admin-owned permissions.
 
-The installer detects your GPU, picks the right model, generates credentials, starts all services, and creates a Desktop shortcut to the Dashboard. Manage from the runtime directory with `.\ods.ps1 status`; uninstall with `.\ods.ps1 uninstall --force`.
+This is the recommended WSL path for Portal/Pixel. Complete the Ubuntu/systemd and Docker WSL-integration prerequisites in [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md). The runtime is normally `~/ods` inside Ubuntu; manage it there with `./ods status`. Open the Portal dashboard at the URL printed by the installer (normally http://localhost:3001). Native Windows `ods.ps1` commands do not manage this Linux runtime.
 
 </details>
 
