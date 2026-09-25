@@ -1,6 +1,6 @@
 # Windows entry point for the existing Linux Pixel installer.
 param(
-    [string]$Distro = "Ubuntu-24.04",
+    [string]$Distro = "",  # empty: reuse the single existing Ubuntu, else Ubuntu-24.04
     [switch]$DryRun,
     [switch]$Force,
     [switch]$NonInteractive,
