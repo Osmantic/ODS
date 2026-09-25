@@ -39,6 +39,10 @@ ODS_AP_SSID="${ODS_AP_SSID:-ODS-Setup}"
 ODS_AP_PASSWORD="${ODS_AP_PASSWORD:-}"
 ODS_AP_INTERFACE="${ODS_AP_INTERFACE:-wlan0}"
 ODS_AP_GATEWAY_IP="${ODS_AP_GATEWAY_IP:-192.168.7.1}"
+if ! [[ "${ODS_AP_GATEWAY_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+    echo "Error: ODS_AP_GATEWAY_IP must be a valid IPv4 address" >&2
+    exit 1
+fi
 # ODS_AP_PREFIX is CIDR prefix length used by `ip addr add`.
 # ODS_AP_NETMASK stays accepted (as dotted-decimal) for back-compat;
 # bring_up_interface converts it to a prefix when ODS_AP_PREFIX is
