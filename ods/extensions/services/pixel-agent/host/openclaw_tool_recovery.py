@@ -32,6 +32,9 @@ SANDBOX_CUSTODY_MODULES = {
 }
 FILE_OPERATIONS_MODULE = "agent-tools-D1DOpg6D.js"
 FILE_IDENTITY_MODULE = "sandbox-Y3MbG9Od.js"
+PROMPT_CONTEXT_HOOK_MODULE = "hook-runner-global-mWFYlTIy.js"
+PROMPT_CONTEXT_FORWARD_MODULE = "attempt.prompt-helpers-Cjcf83Hq.js"
+PROMPT_CONTEXT_RUNTIME_MODULE = "system-prompt-config-CK1eJh37.js"
 VERSION = "2026.6.33"
 
 
@@ -86,13 +89,15 @@ def verify_dependencies(runtime_root, manifest, module_name):
 
 def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
            module_name=MODULE):
-    if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE, COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE, FILE_OPERATIONS_MODULE, FILE_IDENTITY_MODULE, *SANDBOX_CUSTODY_MODULES.values()}:
+    if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE, COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE, PROMPT_CONTEXT_HOOK_MODULE, PROMPT_CONTEXT_FORWARD_MODULE, PROMPT_CONTEXT_RUNTIME_MODULE, FILE_OPERATIONS_MODULE, FILE_IDENTITY_MODULE, *SANDBOX_CUSTODY_MODULES.values()}:
         raise ValueError("unsupported runtime repair module")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     package = json.loads((runtime_root / "package.json").read_text(encoding="utf-8"))
     if package.get("name") != "openclaw":
         raise ValueError("runtime repair target is not OpenClaw")
     if package.get("version") != VERSION:
+        if module_name in {PROMPT_CONTEXT_HOOK_MODULE, PROMPT_CONTEXT_FORWARD_MODULE, PROMPT_CONTEXT_RUNTIME_MODULE}:
+            raise ValueError("durable Pixel context requires the reviewed OpenClaw version")
         return {"status": "not-applicable", "version": package.get("version")}
     state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = state_dir.lstat()
@@ -179,12 +184,24 @@ def main():
     selection.add_argument("--sandbox-custody", choices=tuple(SANDBOX_CUSTODY_MODULES))
     selection.add_argument("--file-operations", action="store_true")
     selection.add_argument("--file-identity", action="store_true")
+    selection.add_argument("--prompt-context-hook", action="store_true")
+    selection.add_argument("--prompt-context-forward", action="store_true")
+    selection.add_argument("--prompt-context-runtime", action="store_true")
     args = parser.parse_args()
     runtime_root = args.openclaw_bin.resolve(strict=True).parent
     options = {}
     if args.sandbox_custody:
         options = {"module_name": SANDBOX_CUSTODY_MODULES[args.sandbox_custody],
                    "manifest_path": MANIFEST.with_name(f"openclaw-sandbox-custody-{args.sandbox_custody}.json")}
+    elif args.prompt_context_hook:
+        options = {"module_name": PROMPT_CONTEXT_HOOK_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-prompt-context-hook.json")}
+    elif args.prompt_context_forward:
+        options = {"module_name": PROMPT_CONTEXT_FORWARD_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-prompt-context-forward.json")}
+    elif args.prompt_context_runtime:
+        options = {"module_name": PROMPT_CONTEXT_RUNTIME_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-prompt-context-runtime.json")}
     elif args.completion_recovery:
         options = {"module_name": COMPLETION_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-completion-recovery.json")}

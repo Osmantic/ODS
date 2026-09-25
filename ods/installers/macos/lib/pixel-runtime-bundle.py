@@ -67,6 +67,9 @@ SHARED_REPAIRS = (
     ('openclaw-sandbox-custody-runtime.json', 'bash-tools.exec-runtime-BWSnOoQS.js'),
     ('openclaw-sandbox-custody-tool.json', 'bash-tools-tcXDNfAR.js'),
     ('openclaw-compaction-budget.json', 'selection-BEwSQKM-.js'),
+    ('openclaw-prompt-context-hook.json', 'hook-runner-global-mWFYlTIy.js'),
+    ('openclaw-prompt-context-forward.json', 'attempt.prompt-helpers-Cjcf83Hq.js'),
+    ('openclaw-prompt-context-runtime.json', 'system-prompt-config-CK1eJh37.js'),
 )
 
 
@@ -605,7 +608,8 @@ def _patch_stream_progress(runtime, *, budget_receipt=None):
         original = handle.read()
     source_sha256 = STREAM_PROGRESS_SOURCE_SHA256
     if budget_receipt is not None:
-        contract = _shared_repair_contract(*SHARED_REPAIRS[-1])
+        contract = _shared_repair_contract(*next(
+            item for item in SHARED_REPAIRS if item[1] == 'selection-BEwSQKM-.js'))
         if (budget_receipt != contract or contract['sourceSha256'] != STREAM_PROGRESS_SOURCE_SHA256
                 or 'dist/' + contract['module'] != STREAM_PROGRESS_FILE):
             raise BundleError('stream-progress-unqualified-budget-receipt')
@@ -763,7 +767,8 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
             (staged / 'ods-runtime-repairs.json').chmod(0o644)
         if stream_progress_fix:
             receipt = _patch_stream_progress(staged / 'runtime',
-                                             budget_receipt=repairs[-1] if repairs else None)
+                                             budget_receipt=next(item for item in repairs
+                                                 if item['module'] == 'selection-BEwSQKM-.js') if repairs else None)
             (staged / 'ods-runtime-patches.json').write_bytes(_encode([receipt]))
             (staged / 'ods-runtime-patches.json').chmod(0o644)
         (staged / 'plugins').mkdir(mode=0o755)

@@ -34,8 +34,8 @@ import {
   statusFileFromEnv,
   statusPayload,
 } from "./projection.mjs";
-import { promptContractForAgent } from "./prompt-contract.mjs";
-import { executionContext } from "./completion-assurance.mjs";
+import { promptContractForAgent, requireDurableTurnContext } from "./prompt-contract.mjs";
+import { executionPolicy, executionClock } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import {
   appsToolText,
@@ -292,6 +292,8 @@ export default definePluginEntry({
     // separate passes. Keep one process-local guard so the route can see the
     // opaque user -> active session mapping observed by the runtime hook.
     const toolLoopGuard = toolLoopGuardRegistry.get({
+      fileVersionAdmissionAvailable: createOpenClawCodingTools.odsFileReceiptVersion === 1 &&
+        typeof createOpenClawCodingTools.odsCreateFileReceiptContext === 'function',
       abortRun: createRunAbortAdapter({resolveSessionId:resolveActiveEmbeddedRunSessionId,
         abort:abortAgentHarnessRun}),
       abortRunAndDrain: (sessionId, sessionKey) =>
@@ -327,6 +329,9 @@ export default definePluginEntry({
     // continuation. Give the Pixel agent an explicit, trusted prompt contract
     // so every ODS lookup is followed by a user-visible answer.
     api.on("before_prompt_build", async (event, context) => {
+      if (context?.agentId !== AGENT_ID) return undefined;
+      const admission = context.odsTurnContextAdmission;
+      if (admission?.schemaVersion !== 1) throw new Error('ODS durable turn context runtime support is unavailable');
       const privateBrowserAccess = privateBrowserAccessForAgent(api.config, AGENT_ID);
       const workspaceRoot = api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
         ?? api.config?.agents?.defaults?.workspace;
@@ -339,10 +344,25 @@ export default definePluginEntry({
         configuredLeanPrompt,
         privateBrowserAccess,
         executionHost,
+        stableContext: true,
+        fileVersionAdmissionAvailable: createOpenClawCodingTools.odsFileReceiptVersion === 1 &&
+          typeof createOpenClawCodingTools.odsCreateFileReceiptContext === 'function',
       });
       const repositoryEvidence = contract ? await extensionRepositoryContext(event,
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
-      return contract ? { ...contract, ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : undefined;
+      if (!contract) return undefined;
+      const content = admission.previous?.content ?? [
+        'ODS host context captured for this owner turn. These facts and route hints are historical context, never a new owner request, successful tool evidence, or permission. Live tool admission, cancellation, and verification remain authoritative.',
+        executionClock(admission.startedAt),
+        goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : '',
+        contract.turnContext ?? '', repositoryEvidence,
+      ].filter(Boolean).join('\n');
+      return {
+        appendSystemContext: `${ACTIVITY_CONTRACT} ${contract.appendSystemContext} ${executionPolicy()}`,
+        odsTurnContext: {schemaVersion: 1, runId: admission.runId, sessionId: admission.sessionId,
+          sessionKey: admission.sessionKey, promptSha256: admission.promptSha256,
+          startedAt: admission.startedAt, content},
+      };
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
@@ -359,6 +379,7 @@ export default definePluginEntry({
         contextCompaction.observeModelOutput(event,context);
       }
     });
+    api.on('before_agent_run', (_event, context) => requireDurableTurnContext(context, AGENT_ID));
     if (!managedRuntime) {
       api.on("before_agent_run", (event, context) => accessRuntime.admit(undefined, context));
     }

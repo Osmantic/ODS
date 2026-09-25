@@ -103,7 +103,8 @@ test('clock context is explicit, portable and preserves requested dates', () => 
   const value=executionContext(new Date('2026-09-16T00:03:00Z'));
   assert.match(value,/2026-09-16T00:03:00.000Z/);
   assert.match(value,/owner's explicit date and timezone/);
-  assert.match(value,/prefer write and verify the bytes with read/);
+  assert.match(value,/matching native verified readback receipt/);
+  assert.match(value,/Read fresh bytes when the receipt is missing, truncated, stale/);
   assert.match(value,/portable printf/);
   assert.match(value,/Do not claim a match when readback differs/);
 });

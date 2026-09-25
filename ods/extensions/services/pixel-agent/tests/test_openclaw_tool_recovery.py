@@ -279,6 +279,9 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
     ('OPENCLAW_FILE_OPERATIONS_MODULE', 'openclaw-file-operations.json', repair_module.FILE_OPERATIONS_MODULE),
     ('OPENCLAW_FILE_IDENTITY_MODULE', 'openclaw-file-identity.json', repair_module.FILE_IDENTITY_MODULE),
     ('OPENCLAW_COMPACTION_RESUME_MODULE', 'openclaw-compaction-resume.json', repair_module.COMPACTION_RESUME_MODULE),
+    ('OPENCLAW_PROMPT_CONTEXT_HOOK_MODULE', 'openclaw-prompt-context-hook.json', repair_module.PROMPT_CONTEXT_HOOK_MODULE),
+    ('OPENCLAW_PROMPT_CONTEXT_FORWARD_MODULE', 'openclaw-prompt-context-forward.json', repair_module.PROMPT_CONTEXT_FORWARD_MODULE),
+    ('OPENCLAW_PROMPT_CONTEXT_RUNTIME_MODULE', 'openclaw-prompt-context-runtime.json', repair_module.PROMPT_CONTEXT_RUNTIME_MODULE),
 ])
 def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_name, module_name):
     candidate_path = os.environ.get(environment)
@@ -307,7 +310,7 @@ def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_
         assert original.count(new) == 1
         original = original.replace(new, old)
     assert hashlib.sha256(original.encode()).hexdigest() == manifest["sourceSha256"]
-    versions = {manifest["sourceSha256"]: [], **manifest["previousReplacements"],
+    versions = {manifest["sourceSha256"]: [], **manifest.get("previousReplacements", {}),
                 manifest["patchedSha256"]: manifest["replacements"]}
     for expected, replacements in versions.items():
         runtime = tmp_path / expected

@@ -1,7 +1,7 @@
 {
   "version": "2026.6.33",
   "sourceSha256": "ae83457af1947f3eaf3e08f8fbde869a1c023a80acfbf0f27d3db887af1d36d3",
-  "patchedSha256": "0439891d0b7e7528af4c5d6a81be609ade3cae08f5f75347c94478462512d4bd",
+  "patchedSha256": "058192a9ff8ee9b68a4c1fdedbb243864351aa92891c5b9e4bea88a06261c31c",
   "replacements": [
     [
       "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = 6e4;",
@@ -34,6 +34,46 @@
     [
       "const providerPromptHistoryTruncation = truncateOversizedToolResultsInMessages(messages, contextTokenBudget,",
       "const providerPromptHistoryTruncation = truncateOversizedToolResultsInMessages(persistedToolResultModelProjection.apply(messages), contextTokenBudget,"
+    ],
+    [
+      "\t\tif (sm.wasRecoveredFromCorruptHeader?.() || preservesForkedBranch) {",
+      "        const odsBinding = params.odsTurnContextBinding;\n        const odsBranch = odsBinding ? sm.getBranch() : [];\n        const preservesOdsTurnContext = odsBinding && odsBranch.some(entry => entry.type === \"custom_message\" &&\n            entry.customType === ODS_TURN_CONTEXT_TYPE && entry.details?.runId === odsBinding.runId) &&\n            Boolean(prepareOdsTurnContext({...odsBinding,entries:odsBranch})?.previous);\n\t\tif (sm.wasRecoveredFromCorruptHeader?.() || preservesForkedBranch || preservesOdsTurnContext) {"
+    ],
+    [
+      "\t\t\t\tawait prepareSessionManagerForRun({\n\t\t\t\t\tsessionManager,",
+      "\t\t\t\tawait prepareSessionManagerForRun({\n                    odsTurnContextBinding: isRawModelRun ? undefined : {config:params.config,agentId:sessionAgentId,runId:params.runId,\n                        sessionId:params.sessionId,sessionKey:params.sessionKey,prompt:params.prompt,signal:runAbortController.signal},\n\t\t\t\t\tsessionManager,"
+    ],
+    [
+      "\t\tconst toolsRaw = !shouldConstructTools ? [] : (() => {",
+      "        const odsFileReceiptContext = createOpenClawCodingTools.odsFileReceiptVersion === 1 && typeof createOpenClawCodingTools.odsCreateFileReceiptContext === \"function\"\n            ? createOpenClawCodingTools.odsCreateFileReceiptContext({agentId:sessionAgentId,sessionKey:params.sessionKey,workspace:effectiveWorkspace,\n                enabled:!isRawModelRun && odsPromptContextEnabled(params.config,sessionAgentId)}) : undefined;\n\t\tconst toolsRaw = !shouldConstructTools ? [] : (() => {"
+    ],
+    [
+      "\t\t\tconst allTools = createOpenClawCodingTools({\n\t\t\t\tagentId: sessionAgentId,",
+      "\t\t\tconst allTools = createOpenClawCodingTools({\n                odsFileReceiptContext,\n\t\t\t\tagentId: sessionAgentId,"
+    ],
+    [
+      "function installModelPromptTransform(params) {",
+      "// Inlined by the exact-source SDK repair. Keep all state in the owned session.\n\nconst ODS_TURN_CONTEXT_TYPE = 'ods.turn-context.v1';\nconst contextDigest = value => createHash('sha256').update(value).digest('hex');\n\nfunction odsPromptContextEnabled(config, agentId) {\n  const plugins = config?.plugins;\n  return agentId === 'pixel' && plugins?.enabled !== false &&\n    plugins?.entries?.['pixel-ods']?.enabled === true &&\n    (!Array.isArray(plugins.allow) || plugins.allow.includes('pixel-ods')) &&\n    (!Array.isArray(plugins.deny) || !plugins.deny.includes('pixel-ods'));\n}\n\nfunction prepareOdsTurnContext({config, agentId, runId, sessionId, sessionKey,\n  prompt, entries, signal, now = () => new Date().toISOString()}) {\n  if (!odsPromptContextEnabled(config, agentId)) return undefined;\n  if (signal?.aborted) throw new Error('ODS turn context admission cancelled');\n  if (![runId, sessionId, sessionKey, prompt].every(value => typeof value === 'string') ||\n      !runId || !sessionId || !sessionKey) throw new Error('ODS turn context identity unavailable');\n  const binding = {runId, sessionId, sessionKey, promptSha256: contextDigest(prompt)};\n  const prior = entries.filter(entry => entry.type === 'custom_message' &&\n    entry.customType === ODS_TURN_CONTEXT_TYPE && entry.details?.runId === runId);\n  if (prior.length > 1) throw new Error('Duplicate ODS turn context');\n  const previous = prior[0];\n  if (previous && (previous.details?.source !== 'pixel-ods' ||\n      Object.entries(binding).some(([key, value]) => previous.details[key] !== value) ||\n      typeof previous.content !== 'string' ||\n      previous.details.contentSha256 !== contextDigest(previous.content))) {\n    throw new Error('ODS turn context binding mismatch');\n  }\n  const startedAt = previous?.details.startedAt ?? now();\n  if (typeof startedAt !== 'string' || !Number.isFinite(Date.parse(startedAt))) {\n    throw new Error('ODS turn context clock unavailable');\n  }\n  return Object.freeze({schemaVersion: 1, ...binding, startedAt,\n    previous: previous ? Object.freeze({...previous, details: Object.freeze({...previous.details})}) : undefined});\n}\n\nfunction admitOdsTurnContext(admission, descriptor, signal) {\n  if (!admission) {\n    if (descriptor !== undefined) throw new Error('ODS context outside enabled Pixel scope');\n    return undefined;\n  }\n  if (signal?.aborted) throw new Error('ODS turn context admission cancelled');\n  if (!descriptor || descriptor.schemaVersion !== 1 ||\n      ['runId', 'sessionId', 'sessionKey', 'promptSha256', 'startedAt'].some(key => descriptor[key] !== admission[key]) ||\n      typeof descriptor.content !== 'string' || descriptor.content.length === 0 ||\n      descriptor.content.length > 16384 ||\n      (admission.previous && descriptor.content !== admission.previous.content)) {\n    throw new Error('Invalid or changed trusted ODS turn context');\n  }\n  return {role: 'custom', customType: ODS_TURN_CONTEXT_TYPE, content: descriptor.content,\n    display: false, timestamp: Date.parse(admission.startedAt), details: {\n      source: 'pixel-ods', runId: admission.runId, sessionId: admission.sessionId,\n      sessionKey: admission.sessionKey, promptSha256: admission.promptSha256,\n      startedAt: admission.startedAt, contentSha256: contextDigest(descriptor.content),\n    }};\n}\n\n// A compaction may remove a custom message from the active context while its\n// durable source entry remains in this branch. Reintroduce only that admitted\n// current-run entry, before its active owner message, without rewriting either.\nfunction restoreOdsTurnContext(messages, context, prompt) {\n  if (!context) return messages;\n  const matching = messages.filter(message => message.role === 'custom' &&\n    message.customType === ODS_TURN_CONTEXT_TYPE && message.details?.runId === context.details.runId);\n  if (matching.length > 1 || matching.some(message => message.content !== context.content ||\n      ['source','sessionId','sessionKey','promptSha256','startedAt','runId','contentSha256']\n        .some(key => message.details[key] !== context.details[key]))) {\n    throw new Error('ODS active context differs from its durable receipt');\n  }\n  if (matching.length) return messages;\n  let index = messages.length;\n  for (let n = messages.length - 1; n >= 0; n--) {\n    const message = messages[n];\n    if (message.role !== 'user') continue;\n    const content = typeof message.content === 'string' ? message.content :\n      (message.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('\\n');\n    if (content === prompt) index = n;\n    break;\n  }\n  return [...messages.slice(0, index), context, ...messages.slice(index)];\n}\n\nfunction installModelPromptTransform(params) {"
+    ],
+    [
+      "\t\t\truntime: {\n\t\t\t\tsessionKey: params.sessionKey,",
+      "\t\t\truntime: {\n\t\t\t\todsStablePromptContext: !isRawModelRun && odsPromptContextEnabled(params.config, sessionAgentId),\n\t\t\t\tsessionKey: params.sessionKey,"
+    ],
+    [
+      "\t\t\t\tconst hookCtx = {\n\t\t\t\t\trunId: params.runId,",
+      "\t\t\t\tconst odsTurnContextAdmission = isRawModelRun ? undefined : prepareOdsTurnContext({\n                    config:params.config,agentId:sessionAgentId,runId:params.runId,sessionId:params.sessionId,\n                    sessionKey:params.sessionKey,prompt:params.prompt,entries:sessionManager.getBranch(),signal:runAbortController.signal});\n                const hookCtx = {\n                    odsTurnContextAdmission,\n\t\t\t\t\trunId: params.runId,"
+    ],
+    [
+      "\t\t\t\tconst promptBuildMessages = pruneProcessedHistoryImages(activeSession.messages) ?? activeSession.messages;",
+      "                Object.defineProperty(hookCtx,\"odsTurnContextAdmission\",{value:odsTurnContextAdmission,writable:false,configurable:false});\n                odsFileReceiptContext?.hydrateTrustedHistory(activeSession.messages);\n\t\t\t\tconst promptBuildMessages = pruneProcessedHistoryImages(activeSession.messages) ?? activeSession.messages;"
+    ],
+    [
+      "\t\t\t\tconst transcriptLeafId = sessionManager.getLeafEntry()?.id ?? null;",
+      "\t\t\t\tconst odsCurrentTurnContext = admitOdsTurnContext(odsTurnContextAdmission, hookResult?.odsTurnContext, runAbortController.signal);\n                if (odsCurrentTurnContext) {\n                    if (!odsTurnContextAdmission.previous) {\n                        sessionLockController.withOwnedSessionFileWrite(() => {\n                            sessionManager.appendCustomMessageEntry(odsCurrentTurnContext.customType,odsCurrentTurnContext.content,false,odsCurrentTurnContext.details);\n                            if (typeof sessionManager.rewriteFile !== \"function\") throw new Error(\"ODS context persistence unavailable\");\n                            flushSessionManagerFile(sessionManager);\n                        });\n                    }\n                    activeSession.agent.state.messages = restoreOdsTurnContext(activeSession.messages,odsCurrentTurnContext,params.prompt);\n                }\n                const transcriptLeafId = sessionManager.getLeafEntry()?.id ?? null;"
+    ],
+    [
+      "\t\t\t\t\t\t\t\treturn providerPromptHistoryTruncation.messages !== messages ? providerPromptHistoryTruncation.messages : messages;",
+      "                                const finalProviderMessages = providerPromptHistoryTruncation.messages !== messages ? providerPromptHistoryTruncation.messages : messages;\n                                odsFileReceiptContext?.updateVisible(finalProviderMessages);\n                                return finalProviderMessages;"
     ]
   ],
   "previousReplacements": {
@@ -73,6 +113,40 @@
       [
         "\t\t\t\tonBeforeLifecycleTerminal: () => {\n\t\t\t\t\tif (requiresCompletionRequiredAsyncTaskWait({\n\t\t\t\t\t\tsessionKey: params.sessionKey,\n\t\t\t\t\t\ttoolMetas: toolMetasForTerminal\n\t\t\t\t\t})) return;\n\t\t\t\t\tclearActiveEmbeddedRun(params.sessionId, queueHandle, params.sessionKey, params.sessionFile);\n\t\t\t\t},",
         "\t\t\t\t// agent_end may precede overflow compaction and continuation in this same\n\t\t\t\t// attempt. Retain its abort handle until the identity-checked outer finally."
+      ]
+    ],
+    "0439891d0b7e7528af4c5d6a81be609ade3cae08f5f75347c94478462512d4bd": [
+      [
+        "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = 6e4;",
+        "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = resolveCompactionTimeoutMs(params.config);"
+      ],
+      [
+        "\tlet heldLock = await acquireLock();\n\tconst activeWriteLock = new AsyncLocalStorage();",
+        "\tlet heldLock = await acquireLock();\n\tlet promptLockReacquisition;\n\tconst activeWriteLock = new AsyncLocalStorage();"
+      ],
+      [
+        "\t\tasync reacquireAfterPrompt() {\n\t\t\tawait waitForHeldLockDrain();\n\t\t\tif (takeoverDetected || heldLock) return;\n\t\t\tconst lock = await acquireLock();\n\t\t\ttry {\n\t\t\t\theldLock = lock;\n\t\t\t\tawait assertSessionFileFence();\n\t\t\t} catch (err) {\n\t\t\t\theldLock = void 0;\n\t\t\t\tawait lock.release();\n\t\t\t\tthrow err;\n\t\t\t}\n\t\t},",
+        "\t\tasync reacquireAfterPrompt() {\n\t\t\tawait waitForHeldLockDrain();\n\t\t\t// Split-turn summaries share one session: acquire and verify its lock once.\n\t\t\tif (promptLockReacquisition) return await promptLockReacquisition;\n\t\t\tif (takeoverDetected || heldLock) return;\n\t\t\tpromptLockReacquisition = (async () => {\n\t\t\t\tconst lock = await acquireLock();\n\t\t\t\ttry {\n\t\t\t\t\theldLock = lock;\n\t\t\t\t\tawait assertSessionFileFence();\n\t\t\t\t} catch (err) {\n\t\t\t\t\theldLock = void 0;\n\t\t\t\t\tawait lock.release();\n\t\t\t\t\tthrow err;\n\t\t\t\t}\n\t\t\t})();\n\t\t\ttry {\n\t\t\t\tawait promptLockReacquisition;\n\t\t\t} finally {\n\t\t\t\tpromptLockReacquisition = void 0;\n\t\t\t}\n\t\t},"
+      ],
+      [
+        "\t\t\t\tonBeforeLifecycleTerminal: () => {\n\t\t\t\t\tif (requiresCompletionRequiredAsyncTaskWait({\n\t\t\t\t\t\tsessionKey: params.sessionKey,\n\t\t\t\t\t\ttoolMetas: toolMetasForTerminal\n\t\t\t\t\t})) return;\n\t\t\t\t\tclearActiveEmbeddedRun(params.sessionId, queueHandle, params.sessionKey, params.sessionFile);\n\t\t\t\t},",
+        "\t\t\t\t// agent_end may precede overflow compaction and continuation in this same\n\t\t\t\t// attempt. Retain its abort handle until the identity-checked outer finally."
+      ],
+      [
+        "\t\t\tsessionManager = guardSessionManager(SessionManager.open(params.sessionFile), {",
+        "\t\t\tconst persistedToolResultModelProjection = createPersistedToolResultModelProjection({agentId: sessionAgentId, config: params.config});\n\t\t\tsessionManager = guardSessionManager(SessionManager.open(params.sessionFile), {"
+      ],
+      [
+        "\t\t\t\tonMessagePersisted: () => {\n\t\t\t\t\tsessionLockController.refreshAfterOwnedSessionWrite();",
+        "\t\t\t\tonMessagePersisted: (message) => {\n\t\t\t\t\tpersistedToolResultModelProjection.capture(message);\n\t\t\t\t\tsessionLockController.refreshAfterOwnedSessionWrite();"
+      ],
+      [
+        "function normalizeMessagesForLlmBoundary(messages, options) {",
+        "// Per-attempt projection of already-persisted tool feedback. Hooks run once.\nfunction createPersistedToolResultModelProjection({agentId, config} = {}) {\n\t// Persistence hooks on other agents/plugins keep their storage-only contract.\n\tconst enabled = agentId === \"pixel\" && config?.plugins?.enabled !== false &&\n\t\tconfig?.plugins?.entries?.[\"pixel-ods\"]?.enabled === true &&\n\t\t(!Array.isArray(config.plugins.allow) || config.plugins.allow.includes(\"pixel-ods\")) &&\n\t\t(!Array.isArray(config.plugins.deny) || !config.plugins.deny.includes(\"pixel-ods\"));\n\tconst projected = new Map();\n\tconst keyFor = (message) => message?.role === \"toolResult\" &&\n\t\ttypeof message.toolCallId === \"string\" && message.toolCallId.length > 0 &&\n\t\ttypeof message.toolName === \"string\" && message.toolName.length > 0 &&\n\t\tNumber.isSafeInteger(message.timestamp) && message.timestamp > 0\n\t\t? JSON.stringify([message.toolCallId, message.toolName, message.timestamp]) : void 0;\n\treturn {\n\t\tcapture(message) {\n\t\t\tif (!enabled) return;\n\t\t\tconst key = keyFor(message);\n\t\t\tif (!key) return;\n\t\t\t// Reused identities are ambiguous, even within one attempt.\n\t\t\tif (projected.has(key)) { projected.set(key, null); return; }\n\t\t\tif (projected.size >= 512) return;\n\t\t\tprojected.set(key, structuredClone(message));\n\t\t},\n\t\tapply(messages) {\n\t\t\tif (!enabled) return messages;\n\t\t\tconst counts = new Map();\n\t\t\tfor (const message of messages) { const key = keyFor(message); if (key) counts.set(key, (counts.get(key) ?? 0) + 1); }\n\t\t\tlet changed = false;\n\t\t\tconst result = messages.map(message => {\n\t\t\t\tconst key = keyFor(message), replacement = projected.get(key);\n\t\t\t\tif (!replacement || counts.get(key) !== 1) return message;\n\t\t\t\tchanged = true;\n\t\t\t\treturn structuredClone(replacement);\n\t\t\t});\n\t\t\treturn changed ? result : messages;\n\t\t}\n\t};\n}\nfunction normalizeMessagesForLlmBoundary(messages, options) {"
+      ],
+      [
+        "const providerPromptHistoryTruncation = truncateOversizedToolResultsInMessages(messages, contextTokenBudget,",
+        "const providerPromptHistoryTruncation = truncateOversizedToolResultsInMessages(persistedToolResultModelProjection.apply(messages), contextTokenBudget,"
       ]
     ]
   }

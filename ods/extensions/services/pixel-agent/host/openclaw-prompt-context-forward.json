@@ -1,0 +1,11 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "b643c77c4937fcd3e4f62c264a3f75124f7781a47ce3515e4af0dc8433dc3829",
+  "replacements": [
+    [
+      "\t\tsystemPrompt: promptBuildResult?.systemPrompt ?? beforeAgentStartResult?.systemPrompt,",
+      "\t\todsTurnContext: promptBuildResult?.odsTurnContext,\n\t\tsystemPrompt: promptBuildResult?.systemPrompt ?? beforeAgentStartResult?.systemPrompt,"
+    ]
+  ],
+  "patchedSha256": "65773c78531b8f5576a61857cafec42a570302c1b69acb03ac15f51caf7b2373"
+}

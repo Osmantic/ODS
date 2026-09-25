@@ -180,13 +180,14 @@ def test_shared_repairs_compose_deterministically_only_in_staging(artifacts, sha
     manifest, _ = bundle.verify(root, expected_digest=digest)
     repairs = json.loads((root / 'ods-runtime-repairs.json').read_bytes())
     stream = json.loads((root / 'ods-runtime-patches.json').read_bytes())[0]
-    assert len(repairs) == 14
+    assert len(repairs) == len(bundle.SHARED_REPAIRS)
     for receipt, (name, module) in zip(repairs, bundle.SHARED_REPAIRS):
         assert receipt['manifestSha256'] == hashlib.sha256((shared_repairs / name).read_bytes()).hexdigest()
-        expected = stream['patchedSha256'] if module == bundle.SHARED_REPAIRS[-1][1] else receipt['patchedSha256']
+        expected = stream['patchedSha256'] if 'dist/' + module == bundle.STREAM_PROGRESS_FILE else receipt['patchedSha256']
         assert bundle._file(root / 'runtime', 'dist/' + module)[3] == expected
         assert not {'backup', 'status', 'restored'} & receipt.keys()
-    assert repairs[-1]['patchedSha256'] == stream['sourceSha256']
+    selection_receipt = next(receipt for receipt in repairs if 'dist/' + receipt['module'] == bundle.STREAM_PROGRESS_FILE)
+    assert selection_receipt['patchedSha256'] == stream['sourceSha256']
     content = (root / 'runtime' / bundle.STREAM_PROGRESS_FILE).read_text()
     assert content.index('observe(') < content.index('const innerStreamFn') < content.index('buffer(')
     assert 'ods-runtime-repairs.json' in manifest['entries']

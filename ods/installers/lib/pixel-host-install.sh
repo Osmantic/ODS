@@ -4908,6 +4908,19 @@ ods_pixel_install_default_agent() {
             return 1
         fi
     done
+    # Typed host context must be supported before the plugin can admit a turn.
+    # These exact-source repairs preserve ordinary plugins and real runtime IDs.
+    local prompt_context_repair
+    for prompt_context_repair in hook forward runtime; do
+        if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+            "$plugin_root/host/openclaw_tool_recovery.py" \
+            --openclaw-bin "$openclaw_bin" "--prompt-context-$prompt_context_repair" \
+            --state-dir "$home/.openclaw/ods-runtime-patches/prompt-context-$prompt_context_repair" \
+            >>"$pixel_log" 2>&1; then
+            ai_bad "Pixel's durable prompt context repair could not verify its package bytes. See $pixel_log."
+            return 1
+        fi
+    done
     # Honor the configured compaction budget on slow local providers.
     if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
         "$plugin_root/host/openclaw_tool_recovery.py" \

@@ -1,0 +1,11 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "f0ad7f2085e0c9c3f69fbf5bc845033d589ea8b571bc2f4f8aa2f7c9813892fe",
+  "replacements": [
+    [
+      "const mergeBeforePromptBuild = (acc, next) => ({",
+      "const mergeBeforePromptBuild = (acc, next, hook) => ({\n\t\todsTurnContext: hook?.pluginId === \"pixel-ods\" ? next.odsTurnContext ?? acc?.odsTurnContext : acc?.odsTurnContext,"
+    ]
+  ],
+  "patchedSha256": "0956921915d0d1a4e12468377a5982b7e637e639af0f7b26474f6f7425df9224"
+}
