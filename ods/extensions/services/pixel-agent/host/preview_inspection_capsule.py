@@ -3,9 +3,11 @@
 
 import http.server
 import mimetypes
+import re
 import sys
 import threading
 import time
+import unicodedata
 import urllib.parse
 from preview_inspection_protocol import (
     CSP,
@@ -56,6 +58,100 @@ class InvalidSelector(Invalid):
     pass
 
 
+# Uncaught page exceptions are author-controlled text. Bound the count, the
+# number of distinct messages and each message, and replace every control,
+# format, private-use, surrogate or unassigned code point, so the receipt
+# carries inert data that cannot restructure the caller's text or its JSON.
+MAX_PAGE_ERRORS = 1000
+MAX_PAGE_ERROR_MESSAGES = 3
+MAX_PAGE_ERROR_CHARS = 200
+# Browser automation injects its own URL-less scripts into every document.
+# Playwright's service-worker block (kept below) reads navigator.serviceWorker,
+# which throws in every opaque-origin preview frame. An exception whose whole
+# stack lies in URL-less anonymous code is therefore not attributed to the
+# page. Page code runs from its document or script URL; the CSP forbids string
+# evaluation. An empty stack (a top-level page exception) is attributed.
+INJECTED_FRAME = re.compile(
+    r"at (?:async )?(?:<anonymous>|[^()]* \(<anonymous>(?::\d+:\d+)?\))(?::\d+:\d+)?"
+)
+
+
+def injected_only(stack):
+    frames = [
+        line.strip()
+        for line in str(stack or "")[:16384].splitlines()[1:]
+        if line.strip().startswith("at ")
+    ]
+    return bool(frames) and all(INJECTED_FRAME.fullmatch(frame) for frame in frames)
+
+
+def page_error_text(value):
+    try:
+        text = str(value)[: 16 * MAX_PAGE_ERROR_CHARS]
+    except Exception:
+        text = ""
+    text = " ".join(
+        "".join(
+            " "
+            if unicodedata.category(c).startswith("C")
+            or unicodedata.category(c) in ("Zl", "Zp")
+            else c
+            for c in text
+        ).split()
+    )
+    if len(text) > MAX_PAGE_ERROR_CHARS:
+        text = text[: MAX_PAGE_ERROR_CHARS - 1].rstrip() + "…"
+    return text or "(no message)"
+
+
+class PageErrors:
+    """Uncaught exceptions of the inspected page; never evidence of success."""
+
+    def __init__(self):
+        self.count = 0
+        self.messages = []
+
+    def record(self, error):
+        # Playwright delivers this from its event loop. Never let author data
+        # raise here: a failed record still counts as an uncaught exception.
+        try:
+            if injected_only(getattr(error, "stack", "")):
+                return
+        except Exception:
+            pass
+        self.count = min(self.count + 1, MAX_PAGE_ERRORS)
+        if len(self.messages) >= MAX_PAGE_ERROR_MESSAGES:
+            return
+        try:
+            name = str(getattr(error, "name", "") or "")
+            message = str(getattr(error, "message", "") or "")
+            raw = (
+                f"{name}: {message}"
+                if name and message and not message.startswith(name + ":")
+                else message or name
+            )
+        except Exception:
+            raw = ""
+        text = page_error_text(raw)
+        if text not in self.messages:
+            self.messages.append(text)
+
+    def receipt(self):
+        # Absent means none was observed; older capsules also omit it.
+        if not self.count:
+            return {}
+        return {"pageErrors": {"count": self.count, "messages": list(self.messages)}}
+
+
+def wrapper_document(prefix):
+    # Fixed and script-free: page script exceptions therefore come only from
+    # the sandboxed preview frame or a frame the preview itself created.
+    return (
+        f"<!doctype html><style>html,body{{margin:0;height:100%;overflow:hidden}}iframe{{border:0;width:100%;height:100%}}</style>"
+        f'<iframe name="inspection" sandbox="{SANDBOX}" src="{prefix}"></iframe>'
+    ).encode()
+
+
 def observe_until_stable(once, wait):
     # Keep the 100ms fast path. A finite transition may need more samples,
     # but changing observations never become a passing assertion on timeout.
@@ -79,6 +175,7 @@ def run_browser(bundle, playwright_factory=None):
     request, files = validate_bundle(bundle)
     prefix = "/" + request["siteId"] + "/"
     blocked = []
+    page_errors = PageErrors()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -87,10 +184,7 @@ def run_browser(bundle, playwright_factory=None):
         def do_GET(self):
             path = urllib.parse.urlsplit(self.path).path
             if path == "/__ods_inspection__.html":
-                body = (
-                    f"<!doctype html><style>html,body{{margin:0;height:100%;overflow:hidden}}iframe{{border:0;width:100%;height:100%}}</style>"
-                    f'<iframe name="inspection" sandbox="{SANDBOX}" src="{prefix}"></iframe>'
-                ).encode()
+                body = wrapper_document(prefix)
                 mime = "text/html"
             elif path.startswith(prefix):
                 name = urllib.parse.unquote(path[len(prefix) :]) or "index.html"
@@ -199,6 +293,9 @@ def run_browser(bundle, playwright_factory=None):
                 "websocket",
                 lambda _: blocked.append("websocket") if len(blocked) < 32 else None,
             )
+            # Registered before navigation so startup exceptions are included.
+            # Page-scoped (not context-wide): blocked popups are never recorded.
+            page.on("pageerror", page_errors.record)
             page.goto(
                 origin + "/__ods_inspection__.html", wait_until="load", timeout=8000
             )
@@ -369,6 +466,8 @@ def run_browser(bundle, playwright_factory=None):
                     break
             # Context is never reused. A click-only receipt proves dispatch,
             # not the post-click condition; callers must assert that condition.
+            # Page exceptions are separate evidence: they never change a step
+            # or receipt status, and callers must not treat them as verified.
             result = {
                 "schemaVersion": 1,
                 "kind": KIND,
@@ -384,6 +483,7 @@ def run_browser(bundle, playwright_factory=None):
                 "steps": results,
                 "diagnostics": diagnostics,
                 "blockedRequests": blocked,
+                **page_errors.receipt(),
                 "scope": SCOPE,
             }
             context.close()

@@ -268,6 +268,249 @@ class ProtocolTests(unittest.TestCase):
                 broker.snapshot_bundle(previews, request)
 
 
+STORAGE_ERROR = (
+    "Failed to read the 'sessionStorage' property from 'Window': The document "
+    "is sandboxed and lacks the 'allow-same-origin' flag."
+)
+
+
+class PageError:
+    def __init__(self, name, message, stack=""):
+        self.name, self.message, self.stack = name, message, stack
+
+
+# Observed with Playwright's service_workers="block" in an opaque-origin
+# preview frame: its URL-less init script throws before any page script runs.
+AUTOMATION_ERROR = PageError(
+    "SecurityError",
+    "Failed to read the 'serviceWorker' property from 'Navigator': Service worker "
+    "is disabled because the context is sandboxed and lacks the 'allow-same-origin' flag.",
+    "SecurityError: Failed to read the 'serviceWorker' property from 'Navigator'.\n"
+    "    at <anonymous>:3:15\n    at <anonymous>:5:7",
+)
+
+
+class ScriptedBrowser:
+    """Minimal Playwright double: the scripted page throws while loading and
+    while handling a click, as an author's page would. The real browser path
+    is covered by the opt-in BrowserTests and DockerCapsuleTests below."""
+
+    def __init__(self, load_errors=(), click_errors=()):
+        self.load_errors, self.click_errors = list(load_errors), list(click_errors)
+        self.handlers, self.calls, self.revealed = {}, [], False
+
+    def __call__(self):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    @property
+    def chromium(self):
+        return self
+
+    def launch(self, **_):
+        return self
+
+    def new_context(self, **_):
+        return self
+
+    def route(self, *_):
+        pass
+
+    def on(self, event, handler):
+        self.calls.append("on:" + event)
+        self.handlers.setdefault(event, []).append(handler)
+
+    def new_page(self):
+        return self
+
+    def set_default_timeout(self, _):
+        pass
+
+    def emit(self, errors):
+        for error in errors:
+            for handler in self.handlers.get("pageerror", []):
+                handler(error)
+
+    def goto(self, url, **_):
+        self.calls.append("goto")
+        self.url = url.replace("/__ods_inspection__.html", "/" + self.site + "/")
+        self.emit(self.load_errors)
+
+    def frame(self, name):
+        return self if name == "inspection" else None
+
+    def locator(self, _):
+        return self
+
+    def click(self, **_):
+        self.revealed = True
+        self.emit(self.click_errors)
+
+    def wait_for_timeout(self, _):
+        pass
+
+    def new_cdp_session(self, _):
+        return self
+
+    def send(self, method, params=None):
+        params = params or {}
+        if method == "Page.getFrameTree":
+            return {"frameTree": {"childFrames": [{"frame": {"id": "F", "name": "inspection"}}]}}
+        if method == "Page.createIsolatedWorld":
+            return {"executionContextId": 7}
+        if method == "Runtime.evaluate":
+            return {"result": {"objectId": "document"}}
+        if method == "Runtime.releaseObject":
+            return {}
+        function = params.get("functionDeclaration")
+        if function == capsule.DIAGNOSTIC:
+            return {"result": {"value": {"renderedHiddenAttributeCount": 0, "hiddenUntilFoundCount": 0}}}
+        if function == capsule.SELECTOR_COUNT:
+            return {"result": {"value": {"count": 1}}}
+        if function == capsule.OBSERVE_ELEMENT:
+            visible = params["objectId"] != "#item" or self.revealed
+            return {"result": {"value": {
+                "count": 1, "visible": visible, "display": "block" if visible else "none",
+                "visibility": "visible", "opacity": "1", "hidden": not visible,
+                "hiddenUntilFound": False, "rectCount": int(visible)}}}
+        return {"result": {"objectId": params["arguments"][0]["value"]}}
+
+    def close(self):
+        pass
+
+
+class PageErrorTests(unittest.TestCase):
+    def run_scripted(self, browser):
+        data = bundle("<p id=item hidden></p><button id=show>Show</button>", [
+            step("assert-hidden", "#item"), step("click", "#show"), step("assert-visible", "#item")])
+        browser.site = data["request"]["siteId"]
+        result = capsule.run_browser(data, playwright_factory=browser)
+        self.assertLessEqual(len(protocol.canonical(result)), protocol.MAX_RESULT)
+        return data["request"], result
+
+    def test_uncaught_errors_are_bounded_evidence_without_changing_status(self):
+        long_message = "\u202eline one\nline two\u200b\u2028" + "x" * 400 + "\ud800"
+        browser = ScriptedBrowser(
+            load_errors=[AUTOMATION_ERROR, *[PageError("SecurityError", STORAGE_ERROR)] * 3],
+            click_errors=[PageError("TypeError", long_message), PageError("RangeError", "too deep"),
+                          PageError("ReferenceError", "dropped after three distinct")])
+        request, result = self.run_scripted(browser)
+        # The listener exists before navigation, so startup exceptions count.
+        self.assertLess(browser.calls.index("on:pageerror"), browser.calls.index("goto"))
+        self.assertEqual(result["status"], "passed", result)
+        self.assertEqual([item["status"] for item in result["steps"]], ["passed"] * 3)
+        errors = result["pageErrors"]
+        self.assertEqual(errors["count"], 6)
+        self.assertEqual(errors["messages"][0], "SecurityError: " + STORAGE_ERROR)
+        self.assertEqual(errors["messages"][2], "RangeError: too deep")
+        typed = errors["messages"][1]
+        self.assertEqual(len(typed), capsule.MAX_PAGE_ERROR_CHARS)
+        self.assertTrue(typed.startswith("TypeError: line one line two x"), typed)
+        self.assertTrue(typed.endswith("\u2026"))
+        for message in errors["messages"]:
+            self.assertTrue(protocol.printable(message, 200, 800), message)
+        self.assertEqual(result["planSha256"], protocol.plan_hash(request))
+        self.assertEqual(set(result) - {"pageErrors"}, set(self.run_scripted(ScriptedBrowser())[1]))
+
+    def test_no_uncaught_error_keeps_legacy_receipt_shape(self):
+        _, result = self.run_scripted(ScriptedBrowser())
+        self.assertEqual(result["status"], "passed", result)
+        self.assertEqual(set(result), {"schemaVersion", "kind", "status", "siteId", "sha256",
+            "planSha256", "viewport", "steps", "diagnostics", "blockedRequests", "scope"})
+
+    def test_page_error_text_is_inert_and_bounded(self):
+        cases = {
+            "": "(no message)",
+            "\x00\x1b[31m\u2029\ufeff": "[31m",
+            "a\r\n\tb\u2028c": "a b c",
+            "\ue000private\U000e0001tag": "private tag",
+            "\ud83d lone surrogate": "lone surrogate",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=ascii(raw)):
+                self.assertEqual(capsule.page_error_text(raw), expected)
+                protocol.canonical({"message": capsule.page_error_text(raw)})
+        self.assertEqual(capsule.page_error_text("y" * 100000), "y" * 199 + "\u2026")
+
+    def test_record_is_saturating_distinct_and_never_raises(self):
+        errors = capsule.PageErrors()
+        self.assertEqual(errors.receipt(), {})
+
+        class Hostile:
+            @property
+            def message(self):
+                raise RuntimeError("author getter")
+
+        errors.record(Hostile())
+        errors.record(PageError("", ""))
+        errors.record(PageError(None, "plain"))
+        errors.record(PageError("Error", "Error: already named"))
+        for _ in range(capsule.MAX_PAGE_ERRORS + 50):
+            errors.record(PageError("Error", "flood"))
+        self.assertEqual(errors.receipt(), {"pageErrors": {
+            "count": capsule.MAX_PAGE_ERRORS,
+            "messages": ["(no message)", "plain", "Error: already named"]}})
+
+    def test_automation_injected_exceptions_are_not_page_errors(self):
+        origin = "http://127.0.0.1:41234/site-" + "a" * 24
+        errors = capsule.PageErrors()
+        for error in (
+            AUTOMATION_ERROR,
+            PageError("Error", "hidden",
+                      "Error: hidden\n    at Object.run (<anonymous>:1:2)\n    at async <anonymous>"),
+        ):
+            errors.record(error)
+        self.assertEqual(errors.receipt(), {})
+        # Stack shapes observed from page code: top-level (no frames), named
+        # functions, inline handlers, and an external script's anonymous body.
+        for error in (
+            PageError("SecurityError", STORAGE_ERROR),
+            PageError("SecurityError", "Failed to read the 'localStorage' property",
+                      f"SecurityError: x\n    at boot ({origin}/:1:62)\n    at {origin}/:1:70"),
+            PageError("TypeError", "Cannot read properties of undefined (reading 'x')",
+                      f"TypeError: x\n    at HTMLButtonElement.onclick ({origin}/:1:48)"),
+            PageError("Uncaught SecurityError", "external",
+                      f"Uncaught SecurityError: external\n    at <anonymous> ({origin}/app.js:1:0)"),
+            PageError("TypeError", "mixed",
+                      f"TypeError: mixed\n    at <anonymous>:1:1\n    at {origin}/:1:9"),
+        ):
+            errors.record(error)
+        self.assertEqual(errors.receipt()["pageErrors"]["count"], 5)
+
+    def test_wrapper_contributes_no_script(self):
+        document = capsule.wrapper_document("/site-" + "a" * 24 + "/").decode()
+        self.assertNotIn("<script", document.lower())
+        self.assertNotRegex(document, r"\son[a-z]+=")
+        self.assertIn('sandbox="' + protocol.SANDBOX + '"', document)
+        self.assertNotIn("allow-same-origin", document)
+
+    def test_broker_relays_page_errors_unchanged(self):
+        data = bundle("hi")
+        request = data["request"]
+        receipt = {"schemaVersion": 1, "kind": protocol.KIND, "status": "passed",
+                   "siteId": request["siteId"], "sha256": request["sha256"],
+                   "planSha256": protocol.plan_hash(request), "viewport": request["viewport"],
+                   "steps": [], "diagnostics": {}, "blockedRequests": [],
+                   "pageErrors": {"count": 1, "messages": ["SecurityError: " + STORAGE_ERROR]},
+                   "scope": protocol.SCOPE}
+        config = {"docker": "/usr/bin/docker", "imageId": "sha256:" + "a" * 64,
+                  "ownerUid": os.getuid(), "transport": "local", "snapshotRoot": "/owned"}
+
+        def process(argv, *_args, **_kwargs):
+            return protocol.canonical(receipt) if "run" in argv else b""
+
+        with (
+            patch.object(broker, "snapshot_bundle", return_value=data),
+            patch.object(broker, "bounded_process", side_effect=process),
+        ):
+            self.assertEqual(broker.inspect_request(request, config), receipt)
+
+
 @unittest.skipUnless(
     os.environ.get("ODS_PREVIEW_BROWSER_TESTS") == "1", "real Chromium opt in"
 )
@@ -471,6 +714,24 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("navigation", result["blockedRequests"])
 
+    def test_unguarded_storage_errors_are_reported_without_changing_steps(self):
+        # Fleet round 054: every functional check passed while startup and a
+        # click handler threw on the opaque-origin preview frame.
+        html = ('<p id="item">visible</p><script>sessionStorage.getItem("seen")</script>'
+                '<button onclick="localStorage.setItem(\'saved\', \'1\')">Save</button>')
+        result = self.check(html, [step("assert-visible", "#item"), step("click", name="Save")])
+        self.assertEqual(result["status"], "passed", result)
+        self.assertEqual(result["pageErrors"]["count"], 2, result)
+        self.assertEqual(result["pageErrors"]["messages"][0], "SecurityError: " + STORAGE_ERROR)
+        self.assertIn("'localStorage'", result["pageErrors"]["messages"][1])
+
+    def test_guarded_storage_reports_no_page_errors(self):
+        html = ('<p id="item">visible</p><script>let seen;try{seen=sessionStorage.getItem("seen")}'
+                'catch{seen=null}</script>')
+        result = self.check(html, [step("assert-visible", "#item")])
+        self.assertEqual(result["status"], "passed", result)
+        self.assertNotIn("pageErrors", result)
+
 
 @unittest.skipUnless(
     os.environ.get("ODS_INSPECTION_TEST_IMAGE"), "isolated Docker image test opt in"
@@ -562,6 +823,15 @@ class DockerCapsuleTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["steps"][0]["errorCode"], "visibility_mismatch")
+
+    def test_real_capsule_reports_storage_error(self):
+        result = self.invoke(
+            '<p id="item">visible</p><script>sessionStorage.getItem("seen")</script>',
+            [step("assert-visible", "#item")],
+        )
+        self.assertEqual(result["status"], "passed", result)
+        self.assertEqual(result["pageErrors"], {
+            "count": 1, "messages": ["SecurityError: " + STORAGE_ERROR]})
 
     def test_real_capsule_hung_script(self):
         start = time.monotonic()

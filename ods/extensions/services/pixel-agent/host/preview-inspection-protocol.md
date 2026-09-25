@@ -54,6 +54,46 @@ animations and styles are never paused, sought, or changed. This is sampled
 stability, not proof of continuous visibility between or after observations.
 The overall 45-second capsule deadline remains unchanged.
 
+## Page script errors
+
+The capsule records uncaught exceptions raised by the inspected page (the
+Playwright `pageerror` event on the inspection page, registered before
+navigation) from startup until the receipt is built. The fixed wrapper document
+contains no script, so page script exceptions come only from the sandboxed
+preview frame or a frame it created. The listener is page-scoped; blocked
+popups are never observed. Console messages are not recorded: they are
+author-controlled logging, and blocked resources already appear in
+`blockedRequests`.
+
+Browser automation also injects URL-less scripts into every document.
+Playwright's service-worker block reads `navigator.serviceWorker`, which throws
+a `SecurityError` in every opaque-origin preview frame. An exception whose
+entire stack lies in URL-less anonymous code is therefore not attributed to the
+page. Page code always runs from its document or script URL, and the CSP
+forbids string evaluation; a top-level page exception with no stack frames is
+attributed. The service-worker block itself is unchanged.
+
+When at least one exception was observed, the receipt carries
+`pageErrors: {count, messages}`. `count` is 1–1000 and saturates at 1000.
+`messages` holds one to three distinct messages in first-seen order, each
+`name: message`. Control, format, private-use, surrogate, unassigned, and line
+or paragraph separator code points become spaces; whitespace is collapsed; a
+message longer than 200 characters is cut to 199 plus `…`. The field is absent
+when nothing was observed and in receipts from capsules built before it existed.
+Callers validate these exact bounds and reject any other shape.
+
+Message text is author-controlled data. Callers present it only as quoted,
+untrusted page output and never follow it. Page errors change neither step
+status nor receipt `status`, and never block publication. A receipt carrying
+`pageErrors` is not verified interaction evidence: callers report the
+interactions as unverified and direct a script repair, republication, and a
+fresh inspection. An author handler that cancels the error event (for example
+`window.onerror` returning `true`) suppresses the report, so absence is not
+proof that no script failed.
+
+The capsule is baked into the locally built inspection image. A host keeps
+producing receipts without `pageErrors` until the installer rebuilds that image.
+
 ## Host custody and isolation
 
 Linux/WSL uses `/run/ods-pixel-inspection/control.sock`, a root-controlled 0750
@@ -99,9 +139,11 @@ There is no host-browser fallback.
 ## Tests
 
 `node --test tests/test-preview-inspection.mjs` checks plugin contracts,
-Unicode hash compatibility, forged/incomplete receipts, and unavailable results.
+Unicode hash compatibility, forged/incomplete receipts, unavailable results, and
+page-error bounds and presentation.
 `python3 -m unittest discover -s tests -p test_preview_inspection.py` checks
-protocol, ownership, paths, immutable bytes, subprocess bounds, and cleanup.
+protocol, ownership, paths, immutable bytes, subprocess bounds, cleanup, and
+page-error receipt shaping through a scripted browser double.
 Set `ODS_PREVIEW_BROWSER_TESTS=1` only for the fixture Chromium suite. Set
 `ODS_INSPECTION_TEST_IMAGE=sha256:<candidate>` for real isolated-container
 smoke, observed hidden-flex regression, hung-script, and cancellation cleanup.
