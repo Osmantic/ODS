@@ -337,6 +337,7 @@ export default function RemoteProvider({ compact = false }) {
   const [peerModelsLoading, setPeerModelsLoading] = useState(false)
   const [peerModelsError, setPeerModelsError] = useState(null)
   const [peerAction, setPeerAction] = useState(null)
+  const peerModelsRequest = useRef(false)
 
   const loadStatus = useCallback(async ({ quiet = false } = {}) => {
     if (!quiet) setLoading(true)
@@ -365,6 +366,8 @@ export default function RemoteProvider({ compact = false }) {
   }, [])
 
   const loadPeerModels = useCallback(async ({ quiet = false } = {}) => {
+    if (peerModelsRequest.current) return null
+    peerModelsRequest.current = true
     if (!quiet) setPeerModelsLoading(true)
     setPeerModelsError(null)
     try {
@@ -380,6 +383,7 @@ export default function RemoteProvider({ compact = false }) {
       return null
     } finally {
       if (!quiet) setPeerModelsLoading(false)
+      peerModelsRequest.current = false
     }
   }, [])
 
@@ -397,6 +401,17 @@ export default function RemoteProvider({ compact = false }) {
     }
     void loadPeerModels()
   }, [loadPeerModels, statusData?.capabilities?.odsPeerLifecycle, statusData])
+
+  useEffect(() => {
+    if (!statusData?.capabilities?.odsPeerLifecycle) return undefined
+    const refresh = () => { if (!document.hidden) void loadPeerModels({ quiet: true }) }
+    const interval = setInterval(refresh, 10000)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [loadPeerModels, statusData?.capabilities?.odsPeerLifecycle])
 
 
   const updateForm = (key, value) => {

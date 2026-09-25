@@ -354,6 +354,25 @@ test('renders remote provider status and proof receipt', async () => {
   expect(screen.getByRole('button', { name: /test route/i })).toBeEnabled()
 })
 
+test('refreshes peer download status automatically while the page is open', async () => {
+  vi.useFakeTimers()
+  try {
+    globalThis.fetch.mockResolvedValue(response(peerReadyStatusPayload))
+    render(createElement(RemoteProvider))
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByText('Download status')).toBeInTheDocument()
+    const initialStatusCalls = globalThis.fetch.mock.calls.filter(([url]) => url.includes('/download-status')).length
+    await act(async () => {
+      vi.advanceTimersByTime(10000)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(globalThis.fetch.mock.calls.filter(([url]) => url.includes('/download-status')).length).toBeGreaterThan(initialStatusCalls)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
 test('compact views keep the connection draft and never apply changes on navigation', async () => {
   globalThis.fetch.mockResolvedValue(response(statusPayload))
   render(createElement(RemoteProvider, { compact: true }))
