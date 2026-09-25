@@ -12349,6 +12349,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         committed = False
         mutation_started = False
         rollback_attempted = False
+        rollback_exception: BaseException | None = None
         runtime_restart_strategy: str | None = None
         readiness_diagnosis: dict = {}
         opencode_restarted = False
@@ -12459,7 +12460,7 @@ class AgentHandler(BaseHTTPRequestHandler):
 
         def rollback_and_prove() -> tuple[bool, str]:
             """Restore config/runtime/dependents and prove the prior route."""
-            nonlocal rollback_attempted
+            nonlocal rollback_attempted, rollback_exception
             rollback_attempted = True
             try:
                 if pixel_transaction is not None:
@@ -12631,7 +12632,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return True, ""
             except Exception as rollback_exc:
                 logger.exception("Failed to prove previous model route during rollback")
-                return False, str(rollback_exc)
+                rollback_exception = rollback_exc
+                return False, _failure_clause(rollback_exc)
 
         try:
             # Read current env BEFORE modification — needed for gpu_backend guard
@@ -13543,6 +13545,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 )
                 if runtime_failure.get("runtime_diagnosis"):
                     error += f". Cause: {runtime_failure['runtime_diagnosis']}"
+                if isinstance(rollback_exception, DockerUnresponsiveError):
+                    error += f". {DOCKER_UNRESPONSIVE_ADVICE}"
                 payload = {"error": error, "rolled_back": rolled_back, **runtime_failure}
                 if pixel_transaction is not None and not pixel_transaction.completed:
                     payload.update(pending=True, code='managed_model_recovery_required')
@@ -13563,11 +13567,17 @@ class AgentHandler(BaseHTTPRequestHandler):
                 runtime_failure = capture_runtime_failure()
                 rolled_back, rollback_error = rollback_and_prove()
             logger.exception("Model activation failed")
-            error = f"Model activation failed: {exc}"
+            # One clause per failure; Docker's owner advice is given once.
+            error = f"Model activation failed: {_failure_clause(exc)}"
             if rollback_error:
                 error += f"; rollback could not be proved: {rollback_error}"
             if runtime_failure.get("runtime_diagnosis"):
                 error += f". Cause: {runtime_failure['runtime_diagnosis']}"
+            if any(
+                isinstance(failure, DockerUnresponsiveError)
+                for failure in (exc, rollback_exception)
+            ):
+                error += f". {DOCKER_UNRESPONSIVE_ADVICE}"
             payload = {"error": error, **runtime_failure}
             if ((pixel_transaction is None and isinstance(exc, _PixelModelTransactionUncertain))
                     or (pixel_transaction is not None and not pixel_transaction.completed)):
@@ -16089,20 +16099,32 @@ def _patch_hermes_model_config(
         return False
 
 
+DOCKER_UNRESPONSIVE_ADVICE = (
+    "The host may be overloaded: if you just switched to a larger model, that "
+    "model may be the cause; otherwise try again once the machine is less busy."
+)
+
+
 class DockerUnresponsiveError(RuntimeError):
     """The Docker CLI did not answer in time, so the container state is unknown.
 
     Distinct from a definitive Docker answer (missing, stopped, exited,
-    unhealthy): nothing is known to be wrong with the container or the model.
+    unhealthy). ``fact`` is the failure without the owner advice, so a message
+    that reports several failures can give the advice once.
     """
+
+    def __init__(self, fact: str):
+        super().__init__(f"{fact}. {DOCKER_UNRESPONSIVE_ADVICE}")
+        self.fact = fact
 
 
 def _docker_unresponsive_error(subject: str, detail: str) -> DockerUnresponsiveError:
-    return DockerUnresponsiveError(
-        f"Docker was not responding while {subject} ({detail}). The host "
-        "appears overloaded; this is not a problem with the model. Try again "
-        "once the machine is less busy."
-    )
+    return DockerUnresponsiveError(f"Docker did not answer in time while {subject} ({detail})")
+
+
+def _failure_clause(exc: BaseException) -> str:
+    """One failure as a clause of a combined message, without Docker advice."""
+    return exc.fact if isinstance(exc, DockerUnresponsiveError) else str(exc)
 
 
 def _run_docker_probe(argv: list[str], subject: str) -> subprocess.CompletedProcess:
@@ -16188,11 +16210,12 @@ def _wait_for_container_health(container: str, attempts: int | None = None) -> N
 
     Polls ``attempts`` times, ``MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS``
     apart. A poll whose docker CLI call times out got no answer yet: it is
-    logged and the poll continues, but only within the wait's nominal window
-    (``attempts * MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS``), so an
-    unresponsive Docker cannot stretch the wait. If the last poll got no
-    answer, the wait raises :class:`DockerUnresponsiveError`. Definitive
-    answers keep their meaning: ``unhealthy`` raises
+    logged and polling continues only while the nominal window
+    (``attempts * MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS``) is open. If the
+    last poll got no answer, the wait raises :class:`DockerUnresponsiveError`.
+    Worst case when Docker never answers: the window plus one interval plus
+    one poll timeout (180 + 2 + 15 = 197 s for Hermes, 137 s otherwise).
+    Definitive answers keep their meaning: ``unhealthy`` raises
     :class:`ContainerUnhealthyError` at once.
     """
     if attempts is None:
@@ -16219,10 +16242,10 @@ def _wait_for_container_health(container: str, attempts: int | None = None) -> N
         except subprocess.TimeoutExpired as exc:
             unanswered += 1
             if attempt + 1 >= attempts or time.monotonic() >= deadline:
+                checks = "check" if unanswered == 1 else "checks"
                 raise _docker_unresponsive_error(
                     f"checking {container} health",
-                    f"{unanswered} health check(s) got no answer within "
-                    f"{CONTAINER_HEALTH_POLL_TIMEOUT_SECONDS}s, over "
+                    f"{unanswered} {checks} timed out over "
                     f"{time.monotonic() - started:.0f}s",
                 ) from exc
             logger.warning(

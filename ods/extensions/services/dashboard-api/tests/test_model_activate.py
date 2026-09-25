@@ -247,14 +247,18 @@ def test_health_wait_fails_as_docker_unresponsive_when_no_poll_answers(monkeypat
         _wait_for_container_health("ods-hermes")
 
     message = str(caught.value)
-    assert "Docker was not responding while checking ods-hermes health" in message
-    assert "not a problem with the model" in message
+    assert message.startswith("Docker did not answer in time while checking ods-hermes health (")
+    assert "that model may be the cause" in message
     assert not isinstance(caught.value, _mod.ContainerUnhealthyError)
     assert isinstance(caught.value, RuntimeError)
     # The unanswered polls used the wait's existing window, and no more.
     window = _health_window(_mod.HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS)
     elapsed = clock.now - started
-    assert window <= elapsed <= window + _mod.CONTAINER_HEALTH_POLL_TIMEOUT_SECONDS
+    assert window <= elapsed <= (
+        window
+        + _mod.MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS
+        + _mod.CONTAINER_HEALTH_POLL_TIMEOUT_SECONDS
+    )
     assert {timeout for _cmd, timeout in calls} == {15}
 
 
@@ -331,8 +335,10 @@ def test_one_shot_docker_probes_report_an_unanswered_call_as_docker_unresponsive
         probe(monkeypatch)
 
     message = str(caught.value)
-    assert f"Docker was not responding while {subject} (no answer within 60s)" in message
-    assert "not a problem with the model" in message
+    assert message == (
+        f"Docker did not answer in time while {subject} (no answer within 60s). "
+        + _mod.DOCKER_UNRESPONSIVE_ADVICE
+    )
     # One call with the longer single timeout; nothing is retried.
     assert [timeout for _cmd, timeout in calls] == [_mod.DOCKER_PROBE_TIMEOUT_SECONDS]
     assert clock.sleeps == []
@@ -9093,8 +9099,11 @@ class TestModelActivateRollback:
         assert env_path.read_text(encoding="utf-8") == env_text
         assert hermes_live.read_text(encoding="utf-8") == old_config
 
-    def test_unresponsive_docker_fails_activation_as_docker_not_model_problem(
-        self, tmp_path, monkeypatch,
+    @pytest.mark.parametrize(
+        "docker_recovers_for_rollback", [True, False], ids=["rollback-proved", "rollback-unproved"]
+    )
+    def test_unresponsive_docker_fails_activation_as_docker_not_answering(
+        self, tmp_path, monkeypatch, docker_recovers_for_rollback,
     ):
         install_dir, env_path, env_text, _hermes_live, _old_config, states = (
             self._write_hermes_rollback_fixture(tmp_path)
@@ -9114,7 +9123,8 @@ class TestModelActivateRollback:
             return subprocess.CompletedProcess(cmd, 0, "healthy\n", "")
 
         def restore(name, _state, **_kwargs):
-            docker_slow["value"] = False  # load eased before rollback
+            if docker_recovers_for_rollback:
+                docker_slow["value"] = False  # load eased before rollback
             return name == "ods-hermes"
 
         monkeypatch.setattr(_mod.subprocess, "run", run)
@@ -9128,11 +9138,26 @@ class TestModelActivateRollback:
         _mod.AgentHandler._do_model_activate(handler, "target-model")
 
         payload = handler.parse_response()
+        error = payload["error"]
         assert handler.response_code == 500
-        assert "Docker was not responding while checking ods-hermes health" in payload["error"]
-        assert "not a problem with the model" in payload["error"]
-        assert "Could not inspect health" not in payload["error"]
-        assert payload["rolled_back"] is True, payload
+        assert error.startswith(
+            "Model activation failed: Docker did not answer in time while "
+            "checking ods-hermes health ("
+        )
+        assert "Could not inspect health" not in error
+        # One clause per failure, the owner advice exactly once, at the end.
+        assert error.count(_mod.DOCKER_UNRESPONSIVE_ADVICE) == 1
+        assert error.endswith(". " + _mod.DOCKER_UNRESPONSIVE_ADVICE)
+        assert ".;" not in error and ".." not in error
+        if docker_recovers_for_rollback:
+            assert payload["rolled_back"] is True, payload
+            assert "rollback could not be proved" not in error
+        else:
+            assert payload["rolled_back"] is False, payload
+            assert (
+                "); rollback could not be proved: Docker did not answer in time "
+                "while checking ods-hermes health ("
+            ) in error
         # Unknown is not unhealthy: no extra recreate, and the forward wait
         # polled through its whole window before giving up.
         assert restarts.count("ods-hermes") == 1
