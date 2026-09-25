@@ -532,7 +532,11 @@ one event and the same Visit Philadelphia season guide for two. On `main` the
 same journey took 17 calls and cited venue pages. Every cited page had been
 read, so the read-receipt check passed the answer. The guide links each
 entry's title to the entry's own site, but `search_read` listed only
-same-site links, so the model never saw those own pages.
+same-site links, so the model never saw those own pages. The model does the
+same without `search_read`: in round 092 on `main` (`04f0a835`, tower2,
+Qwen3-Coder-Next, 29 calls) the answer cited one Visit Philadelphia month
+guide, read with `web_fetch`, for two of its three events. So the check below
+covers every read path, not only `search_read`.
 
 - **Listings** (`plugin/source-kind.mjs`). A read page that names at least
   five distinct dated entries is a listing: a calendar, a season guide, an
@@ -553,6 +557,9 @@ same-site links, so the model never saw those own pages.
   is not off-site. Such links print as `[L#]` next to the entry title;
   `details.pages[].ownLinks` keeps up to 48 per listing (URLs only; through
   Tool Search, where the model also sees `details`, only the printed ones).
+- **Other read paths.** Completion assurance also judges a `web_fetch` page
+  (its markdown text, with the same own-link rule) and a
+  `pixel_ods_web_extract` excerpt (text only, so no own links) as listings.
 - **Per-item source check** (`plugin/item-sources.mjs`, called from
   `before_agent_finalize` after the completion checks pass). It applies only
   when the owner asked for a source per item ("for each ... a direct official
@@ -579,12 +586,19 @@ and the OpenClaw 2026.6.33 extractor): the first call marks the aggregator
 and the guide as listings and prints `DesignPhiladelphia Festival [L6]`; the
 recorded answer gets one continuation naming designphiladelphia.org and
 easternstate.org for the two guide items; one `urls` call reads both with
-receipts, 4 tool calls in all. Main's passing round-089 answer (three venue
-detail pages) is accepted unchanged; round 090's answer gets one continuation
+receipts, 4 tool calls in all. On `main`'s own answers: round 089's (three
+venue detail pages) is accepted unchanged; round 090's gets one continuation
 for its Mt. Joy item, which cites an aggregator's tour page, while its film
-festival item passes on its stated 403. `tests/item_sources.test.mjs` covers
-the listing and own-link rules, the round 091 replay, one continuation at
-most, honest unavailability, and requests without a per-item source.
+festival item passes on its stated 403; tower2 round 092's (the month guide
+read with `web_fetch`) gets one continuation naming delawareriverfest.org and
+the Oktoberfest page for its two guide items. tower1 round 092 on `main`
+failed differently: its two detail-page citations were never read and the
+host citation check did not match them (the page says "October 18" without a
+year, the answer "October 18, 2026"), so the existing unread-source revision
+applies there first, as before. `tests/item_sources.test.mjs` covers the
+listing and own-link rules, the round 091 replay, the round 092 `web_fetch`
+and targeted-extraction paths, one continuation at most, honest
+unavailability, and requests without a per-item source.
 
 HTML extraction for every guarded read runs in a short-lived worker thread
 (`plugin/html-extraction.mjs`) that loads the SDK's own extractor, verified by
