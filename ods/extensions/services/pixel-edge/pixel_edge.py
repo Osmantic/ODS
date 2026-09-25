@@ -286,10 +286,12 @@ _EXACT_SINGLE_LINE_FILE = re.compile(
 _WORKSPACE_MUTATION_ROUTE = (
     "\n[ODS Portal workspace task route: Perform the requested workspace mutation "
     "before verification. When tool_call is visible, use it with id write and normal "
-    "write args for every new file. edit cannot create a file and requires a non-empty "
+    "write args for every new file you author. edit cannot create a file and requires a non-empty "
     "oldText copied from an existing file. Use edit or apply_patch only after reading "
     "an existing file. Then use exec only for "
-    "readback, tests, or the requested digest. Do not repeatedly list directories "
+    "readback, tests, the requested digest, or copies of existing files: make copies and "
+    "JSON maps of file contents with one short command that reads the real files, such as "
+    "cp or python3 with json.dump, never by re-typing them. Do not repeatedly list directories "
     "or hash proposed text instead of the created file.]"
 )
 _RUN_COMMAND_AND_WAIT_ROUTE = (
