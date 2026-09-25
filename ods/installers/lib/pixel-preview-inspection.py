@@ -34,6 +34,11 @@ RUNTIME_FILES = (
     "workspace_preview.py",
     "unix_peer.py",
 )
+# Last pre-document-lease broker, retained in ODS da73c0268dd65d312a029feebe83c8c505d20367.
+# Cleanup runs candidate code against the previous installation's source. Only
+# this known older generation may omit the newly introduced runtime helper.
+LEGACY_BROKER_SHA256 = "285b20118e81b06afa1346eb3418efd90adc390774c590e1347fb766aed53b33"
+LEGACY_RUNTIME_FILES = tuple(name for name in RUNTIME_FILES if name != "preview_inspection_leases.py")
 PROGRAM_ROOT = Path("/usr/local/libexec/ods-pixel-inspection")
 CONFIG = Path("/etc/ods-pixel-inspection.json")
 UNIT = Path("/etc/systemd/system/pixel-preview-inspection.service")
@@ -361,9 +366,19 @@ def linux_cleanup(*, source, owner_uid, remove=False):
     """
     if os.geteuid() != 0 or sys.platform != "linux":
         raise ValueError("linux-root-required")
+    runtime_files = RUNTIME_FILES
+    legacy_broker = None
+    if not os.path.lexists(Path(source) / "preview_inspection_leases.py"):
+        legacy_broker = source_bytes(Path(source) / "preview_inspection.py", owner_uid)
+        if hashlib.sha256(legacy_broker).hexdigest() != LEGACY_BROKER_SHA256:
+            raise ValueError("unrecognized-inspection-source-generation")
+        runtime_files = LEGACY_RUNTIME_FILES
     expected = {
-        PROGRAM_ROOT / name: source_bytes(Path(source) / name, owner_uid)
-        for name in RUNTIME_FILES
+        PROGRAM_ROOT / name: (
+            legacy_broker if name == "preview_inspection.py" and legacy_broker is not None
+            else source_bytes(Path(source) / name, owner_uid)
+        )
+        for name in runtime_files
     }
     expected[UNIT] = source_bytes(Path(source) / UNIT.name, owner_uid)
     present = []
