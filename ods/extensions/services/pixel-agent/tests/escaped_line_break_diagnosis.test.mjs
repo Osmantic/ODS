@@ -13,7 +13,8 @@ const FLEET_OUTPUT = "File \"/workspace/fleet-qualification-468ad70ff1cb-calc/su
 const FLEET_FILE = 'fleet-qualification-468ad70ff1cb-calc/sum_squares.py';
 const FLEET_DIAGNOSIS = '[ODS Pixel Python syntax] Line 10 of fleet-qualification-468ad70ff1cb-calc/sum_squares.py contains literal \\n escape sequences ' +
   'outside string literals where real line breaks belong (the file content was escaped twice). ' +
-  'Rewrite that file with real line breaks; keep escapes inside string literals unchanged.';
+  'Do not rewrite the file; re-typing repeats the escaping. Replace only those escape sequences with real line breaks ' +
+  'using a targeted edit; keep escapes inside string literals unchanged.';
 const HOST_ROOT = '/Users/michaelbradley/ods-fleet-install-c05f/data/pixel-native/home/.openclaw/workspace-pixel';
 
 const failed = (text, exitCode = 1) =>
@@ -47,7 +48,7 @@ test('tab escapes are named precisely and alone', () => {
   const tabs = 'def main():\n\\tprint("ok")\n';
   assert.match(diagnose(tabs, 2).text, /^\[ODS Pixel Python syntax\] Line 2 of project\/tool\.py contains literal \\t escape sequences outside string literals where real tabs belong/);
   const both = 'def main():\\n\\tprint("ok")\n';
-  assert.match(diagnose(both, 1).text, /contains literal \\n and \\t escape sequences outside string literals where real line breaks and tabs belong.*Rewrite that file with real line breaks and tabs;/);
+  assert.match(diagnose(both, 1).text, /contains literal \\n and \\t escape sequences outside string literals where real line breaks and tabs belong.*Replace only those escape sequences with real line breaks and tabs using a targeted edit;/);
 });
 
 test('real Python tracebacks agree with the diagnosis for escaped source and never for valid escapes', () => {
