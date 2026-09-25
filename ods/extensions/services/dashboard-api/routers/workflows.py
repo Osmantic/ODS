@@ -6,7 +6,7 @@ import logging
 import re
 
 import aiohttp
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from config import (
     SERVICES, WORKFLOW_DIR, WORKFLOW_CATALOG_FILE,
@@ -296,7 +296,11 @@ async def disable_workflow(workflow_id: str, api_key: str = Depends(verify_api_k
 
 
 @router.get("/api/workflows/{workflow_id}/executions")
-async def workflow_executions(workflow_id: str, limit: int = 20, api_key: str = Depends(verify_api_key)):
+async def workflow_executions(
+    workflow_id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    api_key: str = Depends(verify_api_key),
+):
     """Get recent executions for a workflow."""
     _validate_workflow_id(workflow_id)
     n8n_workflows = await get_n8n_workflows()
