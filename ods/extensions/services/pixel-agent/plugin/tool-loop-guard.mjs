@@ -17,7 +17,10 @@ import { isIP } from "node:net";
 import { isDeepStrictEqual } from "node:util";
 import { pythonSyntaxGuidance, escapedLineBreakDiagnosis } from './python-syntax-guidance.mjs';
 import { captureNativeWebSearchResult, projectNativeWebSearchResult, projectWebResult,
-  successfulTruncatedFetch, projectNativeFetchGuidance, TRUNCATED_FETCH_EXTRACTION_GUIDANCE } from "./web-result-projection.mjs";
+  successfulTruncatedFetch, projectNativeFetchGuidance, TRUNCATED_FETCH_EXTRACTION_GUIDANCE,
+  SEARCH_SOURCE_EVIDENCE_GUIDANCE, OMITTED_SEARCH_SNIPPETS_GUIDANCE } from "./web-result-projection.mjs";
+import { SEARCH_PACING_STREAK, SEARCH_PACING_REASON, searchTerms, nearDuplicateSearch, searchLeadUrls,
+  duplicateSearchReason, ownerResearchDate, staleSearchDate, staleSearchDateGuidance } from "./research-pacing.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
 import { createExtensionCompletionGate } from "./extension-completion-gate.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
@@ -6817,6 +6820,14 @@ export function createToolLoopGuard({
         privateNetworkPrompt: false,
         clientCancelled: false,
         fetchedUrls: new Map(),
+        // Research pacing (research-pacing.mjs). Run state, so it survives
+        // transcript compaction: bound search receipts with their result
+        // URLs, searches with leads since the last page read, and the
+        // owner-stated date used to flag stale dated queries.
+        searchLedger: [],
+        unreadSearchStreak: 0,
+        searchPacingPaused: false,
+        ownerResearchDate: undefined,
         githubCanonicalUrl: undefined,
         githubCanonicalSatisfied: false,
         odsRoutingInitialized: false,
@@ -8680,6 +8691,38 @@ export function createToolLoopGuard({
         : undefined;
     }
 
+    // Research pacing. Both refusals run nothing and are recorded as free
+    // corrections, so they consume neither the search allowance nor the
+    // failure budget. Beyond that bound the search proceeds unchanged: pacing
+    // never becomes a new way to fail a run. Direct and Tool Search forms
+    // share this point; an allowed outer call leaves its nested call allowed.
+    // The recall precedes the allowance check: after compaction a repeated
+    // search is how lost leads show up, including once searches are spent.
+    if (selectedToolName === "web_search" && state) {
+      const searchCallId = context?.toolCallId ?? event?.toolCallId;
+      const freeLeft = (kind) => (state.freeCorrections.get(kind) ?? 0) < FREE_CORRECTIONS_PER_KIND;
+      // Recalled or paused leads are useful only while a page can be read.
+      const readsLeft = Math.min(effective.fetch - state.fetch, effective.total - state.total) > 0;
+      const searchesLeft = Math.min(effective.search - state.search, effective.total - state.total) > 0;
+      const terms = searchTerms(selectedParams?.query);
+      const earlier = state.searchLedger.find((entry) => !entry.recalled &&
+        nearDuplicateSearch(terms, entry.terms));
+      if (earlier && readsLeft && freeLeft("search-duplicate")) {
+        // Recall once per earlier search. A deliberate repeat then proceeds.
+        earlier.recalled = true;
+        recordFreeCorrection(state, "search-duplicate", searchCallId, toolName);
+        return { block: true, blockReason: duplicateSearchReason(earlier.query, earlier.urls) };
+      }
+      if (state.unreadSearchStreak >= SEARCH_PACING_STREAK && !state.searchPacingPaused &&
+          readsLeft && searchesLeft && freeLeft("search-pacing")) {
+        // Pause once per streak; a model that finds no fitting lead may
+        // search again immediately.
+        state.searchPacingPaused = true;
+        recordFreeCorrection(state, "search-pacing", searchCallId, toolName);
+        return { block: true, blockReason: SEARCH_PACING_REASON };
+      }
+    }
+
     // Search and page-reading allowances are independent. Their denial and
     // retry state survive compaction; progress through another permitted tool
     // neither consumes that denial allowance nor resets it. Total exhaustion
@@ -8905,6 +8948,11 @@ export function createToolLoopGuard({
     const kind = toolName === "web_search" ? "search" : "fetch";
     state[kind] += 1;
     state.total += 1;
+    if (kind === "fetch") {
+      // Any page-reading attempt ends the unread-search streak.
+      state.unreadSearchStreak = 0;
+      state.searchPacingPaused = false;
+    }
     if (toolName === "web_fetch") {
       const fetchUrl = canonicalFetchUrl(event);
       const requestedChars = event?.params?.maxChars;
@@ -8951,6 +8999,7 @@ export function createToolLoopGuard({
       if (ownerIntent) state.githubExtensionRequest = /^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(ownerIntent);
       if (capabilities !== undefined) state.preparationExecutionHost = capabilities.executionHost;
       if (ownerIntent) state.playgroundOwnerIntent = ownerIntent;
+      if (ownerIntent) state.ownerResearchDate = ownerResearchDate(ownerIntent);
       if (ownerIntent) state.ownerQuestionIntent=requestsChoiceQuestion(ownerIntent);
       if (teamRole) {state.managedTeamWorker=true;state.managedTeamReadOnly=teamRole!=='Builder';state.managedTeamCoordinator=teamRole==='Coordinator';state.ownerQuestionIntent=teamQuestionIntent;}
       if (capabilities !== undefined) {
@@ -10635,6 +10684,23 @@ export function createToolLoopGuard({
                 : 'Do not call web_search again in this response; its allowance is exhausted. Do not invent source URLs.')
             : 'Finish with collected evidence or otherwise-authorized tools; do not claim unread sources were verified.');
       })() : undefined;
+    // Research pacing ledger: only a bound, successful search receipt is
+    // recorded. It keeps result URLs (never titles or excerpts) so a repeated
+    // search after compaction can be answered from this run's own evidence.
+    let staleDateGuidance;
+    if (researchBudgetGuidance) {
+      const receipt = compactNativeWebResult ? pending.capturedNativeWebSearchResult
+        : pending.capturedToolSearchEnvelope?.result;
+      const query = pending.selectedParams?.query;
+      const urls = searchLeadUrls(receipt?.details?.results);
+      if (typeof query === 'string' && query.trim()) {
+        state.searchLedger.push({query, terms: searchTerms(query), urls, recalled: false});
+        if (state.searchLedger.length > 32) state.searchLedger.shift();
+      }
+      if (urls.length > 0) state.unreadSearchStreak += 1;
+      const named = staleSearchDate(query, state.ownerResearchDate);
+      if (named) staleDateGuidance = staleSearchDateGuidance(named, state.ownerResearchDate);
+    }
     const nativeFailure = pending?.nativeUnittestFailure;
     const compactNativeVerification = nativeFailure && pending.transport === "exec" &&
       message.role === "toolResult" && message.toolName === "exec" &&
@@ -10859,6 +10925,16 @@ export function createToolLoopGuard({
       state.coachingDelivered.set(slot, {text, at: state.persistedResultCount});
       return true;
     };
+    // The fixed evidence and projection notes are identical on every search
+    // result. Keep them on the first and then per the coaching interval; the
+    // per-call budget line below still accompanies every search result.
+    if (researchBudgetGuidance) {
+      for (const [slot, text] of [['search-evidence', SEARCH_SOURCE_EVIDENCE_GUIDANCE],
+        ['search-omitted', OMITTED_SEARCH_SNIPPETS_GUIDANCE]]) {
+        const index = content.findIndex(block => block?.type === 'text' && block.text === text);
+        if (index >= 0 && !coachingDue(slot, text)) content.splice(index, 1);
+      }
+    }
     if (executionGuidance && !pending.pythonSyntaxGuidance && !content.some(block =>
         block?.type === 'text' && /\[ODS Pixel execution\]/.test(block.text)))
       content.push({type:'text',text:executionGuidance});
@@ -10867,6 +10943,7 @@ export function createToolLoopGuard({
     }
     if (sandboxPathCorrection) content.push({type:'text',text:sandboxPathCorrection});
     if (researchBudgetGuidance) content.push({type:'text',text:researchBudgetGuidance});
+    if (staleDateGuidance) content.push({type:'text',text:staleDateGuidance});
     if (pending?.pythonSyntaxGuidance && executionGuidance && !content.some(block => block?.type === 'text' &&
         /\[ODS Pixel (?:repair|Python syntax|execution)\]/.test(block.text)))
       content.push({type:'text',text:executionGuidance});

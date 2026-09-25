@@ -321,8 +321,10 @@ updated_tools["loopDetection"] = {
         "pingPong": True,
     },
 }
-# Search stays private through loopback-only SearXNG. Page retrieval uses
-# OpenClaw public-network SSRF guard with deliberately tighter ODS bounds;
+# Search goes to the selected provider: the external parallel-free service by
+# default for new installations (see pixel-agent/NATIVE-SEARCH.md), or an
+# owner-kept SearXNG. Page retrieval runs locally through OpenClaw's
+# public-network SSRF guard with deliberately tighter ODS bounds;
 # private/link-local targets and trusted environment proxies remain disabled.
 updated_fetch.update({
     "enabled": True,
