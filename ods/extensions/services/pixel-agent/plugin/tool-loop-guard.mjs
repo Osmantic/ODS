@@ -20,6 +20,7 @@ import { REDIRECT_ORDER_NOTE, stderrRedirectedBeforeStdoutFile } from './shell-r
 import { captureNativeWebSearchResult, projectNativeWebSearchResult, projectWebResult,
   successfulTruncatedFetch, projectNativeFetchGuidance, TRUNCATED_FETCH_EXTRACTION_GUIDANCE,
   SEARCH_SOURCE_EVIDENCE_GUIDANCE, OMITTED_SEARCH_SNIPPETS_GUIDANCE } from "./web-result-projection.mjs";
+import { binaryFetchReceipt } from "./web-result-projection.mjs";
 import { SEARCH_PACING_STREAK, SEARCH_PACING_REASON, searchTerms, nearDuplicateSearch, searchLeadUrls,
   duplicateSearchReason, ownerResearchDate, staleSearchDate, staleSearchDateGuidance } from "./research-pacing.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
@@ -9874,7 +9875,9 @@ export function createToolLoopGuard({
         (!event?.toolName || event.toolName === toolName) &&
         (!context?.sessionId || context.sessionId === state.currentSessionId) &&
         !event.error && isDeepStrictEqual(event.params, pendingToolRun.selectedParams)) {
-      pendingToolRun.successfulTruncatedNativeFetch = successfulTruncatedFetch(event.result);
+      // A PDF or other binary body is captured as its receipt, which
+      // projectNativeFetchGuidance persists in place of the bytes.
+      pendingToolRun.successfulTruncatedNativeFetch = binaryFetchReceipt(event.result) ?? successfulTruncatedFetch(event.result);
     }
     const directMutation =
       WORKSPACE_MUTATION_TOOLS.has(toolName) &&
