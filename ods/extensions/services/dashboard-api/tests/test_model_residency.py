@@ -27,11 +27,14 @@ from model_memory import (
     plan_residency_fallback,
     platform_reserve_mib,
     resident_configuration,
+    residency_is_decisive,
     runtime_memory_settings,
 )
 
 ROOT = Path(__file__).resolve().parents[4]
 CATALOG = ROOT / "config" / "model-library.json"
+# llama-server load logs captured on the fleet (llama.cpp b9014), unedited.
+PLACEMENT_LOGS = Path(__file__).resolve().parent / "fixtures" / "llama-placement"
 
 # llama.cpp b9014 projections measured on the fleet.
 QWEN35_9B = {
@@ -181,6 +184,97 @@ class TestFallbackPlanner:
         )
         assert plan["changes"] == {}
 
+    def test_ubatch_alone_keeps_llama_cpps_default_margin(self):
+        # 10 GB native Linux, 600 MiB held by a desktop: ubatch 256 is enough,
+        # so the 1024 MiB margin (room for other GPU apps) is kept.
+        plan = plan_residency_fallback(
+            required_mib=6492, available_mib=7400,
+            settings={"ubatch": 512, "fitTargetMiB": 1024, "cacheTypeK": "q8_0", "cacheTypeV": "q8_0"},
+            kv_mib=1088, compute_mib=493, context_length=65536,
+        )
+        assert plan["changes"] == {"LLAMA_ARG_UBATCH": "256"}
+        assert plan["fitTargetMiB"] == 1024
+
+    def test_ubatch_128_comes_before_q4_kv(self):
+        # The laptop's shipped profile with ~150 MiB held elsewhere: halving
+        # the compute buffer again is enough, the KV cache stays q8_0.
+        plan = plan_residency_fallback(
+            required_mib=6246, available_mib=6860 - 150,
+            settings={"ubatch": 256, "fitTargetMiB": 512, "cacheTypeK": "q8_0", "cacheTypeV": "q8_0"},
+            kv_mib=1088, compute_mib=246.5, context_length=65536,
+            allow_context_reduction=False,
+        )
+        assert plan["steps"] == ["ubatch 128"]
+        assert plan["cacheTypeK"] == "q8_0"
+
+    def test_ubatch_128_is_dropped_when_q4_kv_alone_fits(self):
+        # ~400 MiB held elsewhere: q4_0 is needed, and with it ubatch 256
+        # still fits, so prompt processing keeps its speed.
+        plan = plan_residency_fallback(
+            required_mib=6246, available_mib=6860 - 400,
+            settings={"ubatch": 256, "fitTargetMiB": 512, "cacheTypeK": "q8_0", "cacheTypeV": "q8_0"},
+            kv_mib=1088, compute_mib=246.5, context_length=65536,
+            allow_context_reduction=False,
+        )
+        assert plan["steps"] == ["KV cache q4_0"]
+        assert "LLAMA_ARG_UBATCH" not in plan["changes"]
+        assert plan["ubatch"] == 256
+        # ~650 MiB held elsewhere needs both.
+        both = plan_residency_fallback(
+            required_mib=6246, available_mib=6860 - 650,
+            settings={"ubatch": 256, "fitTargetMiB": 512, "cacheTypeK": "q8_0", "cacheTypeV": "q8_0"},
+            kv_mib=1088, compute_mib=246.5, context_length=65536,
+            allow_context_reduction=False,
+        )
+        assert both["steps"] == ["ubatch 128", "KV cache q4_0"]
+
+    def test_operator_controls_are_never_changed(self):
+        plan = plan_residency_fallback(
+            required_mib=6492, available_mib=6860,
+            settings={"ubatch": 512, "fitTargetMiB": 1536, "cacheTypeK": "q8_0", "cacheTypeV": "q8_0"},
+            kv_mib=1088, compute_mib=493, context_length=65536,
+            allow_context_reduction=False,
+            locked_keys=("LLAMA_ARG_FIT_TARGET",),
+        )
+        assert plan is None or "LLAMA_ARG_FIT_TARGET" not in plan["changes"]
+        best = plan_residency_fallback(
+            required_mib=6492, available_mib=6860,
+            settings={"ubatch": 512, "fitTargetMiB": 1536, "cacheTypeK": "q8_0", "cacheTypeV": "q8_0"},
+            kv_mib=1088, compute_mib=493, context_length=65536,
+            allow_context_reduction=False,
+            locked_keys=("LLAMA_ARG_FIT_TARGET", "LLAMA_ARG_UBATCH"), best_effort=True,
+        )
+        assert best["fits"] is False
+        assert best["fitTargetMiB"] == 1536 and best["ubatch"] == 512
+        assert best["steps"] == ["KV cache q4_0"]
+
+    def test_nothing_fits_returns_none_or_the_smallest_configuration(self):
+        kwargs = dict(
+            required_mib=6246, available_mib=6860 - 1200,
+            settings={"ubatch": 256, "fitTargetMiB": 512, "cacheTypeK": "q8_0", "cacheTypeV": "q8_0"},
+            kv_mib=1088, compute_mib=246.5, context_length=65536,
+        )
+        assert plan_residency_fallback(**kwargs) is None
+        best = plan_residency_fallback(best_effort=True, **kwargs)
+        assert best["fits"] is False
+        assert best["steps"] == ["ubatch 128", "KV cache q4_0"]
+        assert best["contextLength"] == 65536  # never below the agent floor
+
+    def test_every_gpu_keeps_its_own_margin(self):
+        # Two GPUs: llama.cpp sums need and free over devices but keeps the
+        # fit target free on each one.
+        settings = {"ubatch": 512, "fitTargetMiB": 1024, "cacheTypeK": "f16", "cacheTypeV": "f16"}
+        single = plan_residency_fallback(
+            required_mib=60000, available_mib=62000, settings=settings,
+            kv_mib=4000, compute_mib=900, context_length=131072, gpu_count=1,
+        )
+        assert single["changes"] == {}
+        dual = plan_residency_fallback(
+            required_mib=60000, available_mib=62000, settings=settings,
+            kv_mib=4000, compute_mib=900, context_length=131072, gpu_count=2,
+        )
+        assert dual["changes"] == {"LLAMA_ARG_UBATCH": "256"}
+
 
 class TestRuntimeSettings:
     def test_precedence_is_overrides_profile_env_default(self):
@@ -315,15 +409,41 @@ class TestPerformanceCores:
         cpuinfo.write_text("processor\t: 0\nflags\t\t: fpu sse sse2 avx2 hybrid_cpu\n")
         assert performance_core_count(sysfs_root=str(tmp_path), cpuinfo_path=str(cpuinfo), system="linux") == 6
 
+    @pytest.mark.parametrize(
+        ("model_name", "cores", "expected"),
+        [
+            # Performance cores only: every core counts.
+            ("12th Gen Intel(R) Core(TM) i5-12400F", 6, 6),
+            ("12th Gen Intel(R) Core(TM) i3-12100", 4, 4),
+            ("13th Gen Intel(R) Core(TM) i3-13100F", 4, 4),
+            # Hybrid parts whose split the OS hides keep the 3/8 estimate.
+            ("12th Gen Intel(R) Core(TM) i5-12600K", 10, 3),
+            ("12th Gen Intel(R) Core(TM) i5-12450H", 8, 3),
+            ("13th Gen Intel(R) Core(TM) i5-13400", 10, 3),
+        ],
+    )
+    def test_performance_only_intel_parts_use_every_core(self, tmp_path, model_name, cores, expected):
+        for cpu in range(cores):
+            self._cpu(tmp_path, cpu, cpu)
+        (tmp_path / "devices" / "system" / "cpu" / "online").write_text(f"0-{cores - 1}\n")
+        cpuinfo = tmp_path / "cpuinfo"
+        cpuinfo.write_text(f"processor\t: 0\nmodel name\t: {model_name}\nflags\t\t: fpu sse sse2 avx2\n")
+        assert performance_core_count(sysfs_root=str(tmp_path), cpuinfo_path=str(cpuinfo), system="linux") == expected
 
-# Every default the installer picks for an NVIDIA VRAM tier must stay fully
-# on the GPU. installers/phases/02-detection.sh runs the selector without
-# --agent-ready-only and, for the Pixel default, without a size ceiling; that
-# is the route below. Identities are the defaults before residency was
-# enforced, except 4GB: no capacity-ranked model can stay on a 4GB card
-# (Phi-4 mini needs 2376 MiB of weights, 1024 MiB of KV at 8K and 397 MiB of
-# compute against at most ~2.9 GB CUDA-usable), so the selector falls back to
-# the best model that can.
+
+# Every default the installer picks for an NVIDIA VRAM tier of 8 GB and up
+# must stay fully on the GPU. installers/phases/02-detection.sh runs the
+# selector without --agent-ready-only and, for the Pixel default, without a
+# size ceiling; that is the route below. Residency changes settings, never a
+# tier's model or context: every identity is the default from before
+# residency was enforced.
+#
+# Below 8 GB the residency estimate is not calibrated (no 4 or 6 GB card in
+# the fleet), so it only tunes settings. On 4 GB it predicts that the default
+# (Phi-4 mini at 8K) spills to the CPU; the selector keeps it anyway and the
+# placement is verified and reported after load. Which model 4 and 6 GB
+# tiers should default to belongs to the default-model work, which has to
+# measure it first.
 PRE_RESIDENCY_DEFAULTS = {
     4096: ("phi4-mini-q4", 8192),
     6144: ("phi4-mini-q4", 16384),
@@ -341,8 +461,10 @@ PRE_RESIDENCY_DEFAULTS = {
 }
 TIER_TABLE = [
     # vram_mb (sum over GPUs), platform, gpu count, model id, context, residency settings
-    (4096, "linux", 1, "qwen3.5-2b-q4", 65536, {"LLAMA_ARG_UBATCH": "256", "LLAMA_ARG_FIT_TARGET": "512"}),
-    (4096, "wsl", 1, "qwen3.5-2b-q4", 65536, {
+    # 4GB: predicted to spill and kept with its declared settings (see above).
+    (4096, "linux", 1, "phi4-mini-q4", 8192, {}),
+    (4096, "wsl", 1, "phi4-mini-q4", 8192, {}),
+    (6144, "wsl", 1, "phi4-mini-q4", 16384, {
         "LLAMA_ARG_UBATCH": "256", "LLAMA_ARG_FIT_TARGET": "512",
         "LLAMA_ARG_CACHE_TYPE_K": "q8_0", "LLAMA_ARG_CACHE_TYPE_V": "q8_0", "LLAMA_ARG_FLASH_ATTN": "on",
     }),
@@ -395,13 +517,15 @@ def test_nvidia_tier_defaults_are_fully_gpu_resident(vram_mb, platform, gpu_coun
     selected = ranked[0]
     runtime_profile = selected.get("_runtime_profile")
     assert (selected["id"], selector.effective_context_length(selected, runtime_profile)) == (model_id, context)
-    if vram_mb != 4096:
-        # Residency changes settings, never the tier's model or context.
-        assert (model_id, context) == PRE_RESIDENCY_DEFAULTS[vram_mb]
+    # Residency changes settings, never the tier's model or context.
+    assert (model_id, context) == PRE_RESIDENCY_DEFAULTS[vram_mb]
     residency = selected["_gpu_residency"]
+    assert selected["_residency_overrides"] == settings
+    if vram_mb == 4096:
+        assert residency["fits"] is False and selected["_residency_spills"] is True
+        return
     assert residency["fits"] is True, residency
     assert residency["headroomMiB"] >= 0
-    assert selected["_residency_overrides"] == settings
     # Re-check independently with the chosen settings applied.
     confirm = gpu_residency_fit(
         selected,
@@ -425,17 +549,31 @@ def test_pixel_agent_route_stays_resident_at_the_agent_floor(vram_mb, platform):
     assert selected["_gpu_residency"]["fits"] is True
 
 
-def test_4gb_default_change_is_forced_by_residency():
-    """The only identity change: the previous 4GB default cannot be resident."""
+def test_4gb_default_is_kept_and_its_predicted_spill_is_reported():
+    """Residency never changes the pick on GPUs below the calibrated range.
+
+    The estimate predicts that Phi-4 mini spills on a 4 GB card at any
+    context, but the platform reserve was fitted on 8 GB and larger cards and
+    no 4 GB card has been measured. The default stays as it was; activation
+    and the residency watcher verify the placement and report it. Choosing a
+    different 4 GB default is the default-model work's call.
+    """
     model = _catalog_by_id()["phi4-mini-q4"]
+    assert residency_is_decisive(model, 4096) is False
+    assert residency_is_decisive(model, 8151) is True
     for platform in ("linux", "wsl"):
         config = resident_configuration(
             model, total_vram_mb=4096, context_length=8192, gpu_platform=platform,
         )
-        assert config["fits"] is False
-        # Even with no KV cache at all, weights and compute exceed the budget.
-        weights_and_compute = config["residency"]["projection"]["weightsMiB"] + 198
-        assert weights_and_compute > config["residency"]["availableMiB"] - 512
+        assert config["fits"] is False and config["idleFits"] is False
+        selector, ranked = _installer_selection(4096, platform, 1)
+        selected = ranked[0]
+        assert selected["id"] == "phi4-mini-q4"
+        assert selector.effective_context_length(selected, selected.get("_runtime_profile")) == 8192
+        assert selected["_residency_overrides"] == {}
+        reason = selector.recommendation_reason(selected, 4.0, "VRAM", "nvidia", "high")
+        assert "does not stay fully on this GPU" in reason
+        assert "reported after load" in reason
 
 
 def test_selector_env_carries_the_residency_settings(tmp_path):
@@ -499,18 +637,55 @@ def test_other_gpu_users_are_budgeted():
         model, total_vram_mb=LAPTOP_TOTAL_MIB, runtime_profile=profile, gpu_platform="wsl",
         other_used_mib=400,
     )
-    assert idle["fits"] and idle["overrides"] == {}
+    assert idle["fits"] and idle["overrides"] == {} and idle["idleFits"]
     # 400 MiB held elsewhere (a desktop on the dGPU, Whisper): q4_0 KV keeps
     # every layer on the GPU at the same 64K context.
     assert busy["fits"] is True
     assert busy["overrides"]["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
     assert busy["contextLength"] == 65536
-    # Never trades the 64K agent floor: 2.5 GB held elsewhere is a refusal.
+    # Never trades the 64K agent floor. With 2.5 GB held elsewhere nothing
+    # fits, yet the model itself fits the idle GPU: the smallest allowed
+    # configuration is offered for a caller that loads anyway and reports.
     blocked = resident_configuration(
         model, total_vram_mb=LAPTOP_TOTAL_MIB, runtime_profile=profile, gpu_platform="wsl",
         other_used_mib=2500,
     )
-    assert blocked["fits"] is False
+    assert blocked["fits"] is False and blocked["idleFits"] is True
+    assert blocked["bestEffort"]["steps"] == ["ubatch 128", "KV cache q4_0"]
+    assert blocked["bestEffort"]["contextLength"] == 65536
+
+
+@pytest.mark.parametrize("platform", ["wsl", "linux"])
+@pytest.mark.parametrize("desktop_mib", [300, 600, 900])
+def test_8gb_default_absorbs_a_desktop_drawn_on_the_nvidia_gpu(platform, desktop_mib):
+    """A desktop on the dGPU (300-900 MiB) never changes the 8 GB default.
+
+    The installer measures memory already in use and plans the settings
+    around it: ubatch 128 and a q4_0 KV cache free up to ~635 MiB at the 64K
+    floor. What still does not fit is loaded anyway and reported after load.
+    """
+    selector = _load_selector()
+    catalog = selector.load_catalog(CATALOG)
+    capacity, _ = selector.usable_memory_gb("nvidia", "discrete", LAPTOP_TOTAL_MIB, 32)
+    ranked = selector.rank_models(
+        catalog, capacity, "qwen", True, "nvidia", "discrete", LAPTOP_TOTAL_MIB, 32, "amd64",
+        gpu_platform=platform, gpu_count=1, other_used_mib=desktop_mib,
+    )
+    selected = ranked[0]
+    assert selected["id"] == "qwen3.5-9b-q4"
+    assert selected["_runtime_profile"]["id"] == "nvidia-8gb-64k-q8-kv"
+    assert selector.effective_context_length(selected, selected["_runtime_profile"]) == 65536
+    assert selected["_residency_idle_fits"] is True
+    assert selected["_residency_overrides"]["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
+    if selected["_residency_fits"]:
+        assert selected["_gpu_residency"]["headroomMiB"] >= 0
+    else:
+        # Only the largest desktops outgrow what the 64K floor allows.
+        assert desktop_mib == 900
+        assert selected["_residency_best_effort"] is True
+        assert selected["_residency_overrides"]["LLAMA_ARG_UBATCH"] == "128"
+        reason = selector.recommendation_reason(selected, capacity, "VRAM", "nvidia", "high")
+        assert f"Other processes hold {desktop_mib} MiB" in reason
 
 
 def test_context_below_the_floor_is_never_reduced_further():
@@ -539,6 +714,96 @@ class TestPlacementLogFilter:
         assert is_llama_ready_line("main: server is listening on http://0.0.0.0:8080")
         assert is_llama_ready_line("srv  update_slots: all slots are idle")
         assert not is_llama_ready_line("load_tensors: offloaded 33/33 layers to GPU")
+
+
+class TestCapturedLoadLogs:
+    """Placement parsed from unedited llama.cpp b9014 logs captured on the fleet."""
+
+    def test_laptop_shipped_profile_is_29_of_33(self):
+        text = (PLACEMENT_LOGS / "laptop-rtx5070-wsl-b9014-v0-ub512-fitt1024.txt").read_text(encoding="utf-8")
+        placement = parse_llama_placement(text, expected_model_file="Qwen3.5-9B-Q4_K_M.gguf")
+        assert placement["status"] == "partial"
+        assert (placement["layersOnGpu"], placement["layersTotal"]) == (29, 33)
+        assert placement["projectedDeviceMiB"] == 6492
+        assert placement["freeDeviceMiB"] == 6860
+        assert placement["fitTargetMiB"] == 1024
+        assert placement["deviceCount"] == 1
+        assert placement["cpuKvMiB"] == pytest.approx(136 + 6.28)
+        plan = plan_residency_fallback(
+            required_mib=placement["projectedDeviceMiB"],
+            available_mib=placement["freeDeviceMiB"],
+            settings={"ubatch": 512, "fitTargetMiB": placement["fitTargetMiB"], "cacheTypeK": "q8_0", "cacheTypeV": "q8_0"},
+            kv_mib=placement["kvMiB"], compute_mib=placement["gpuComputeMiB"], context_length=65536,
+        )
+        # The benchmarked V1f fix, planned from the captured numbers alone.
+        assert plan["changes"] == {"LLAMA_ARG_UBATCH": "256", "LLAMA_ARG_FIT_TARGET": "512"}
+
+    def test_laptop_benchmarked_fix_is_fully_resident(self):
+        text = (PLACEMENT_LOGS / "laptop-rtx5070-wsl-b9014-v1f-ub256-fitt512.txt").read_text(encoding="utf-8")
+        placement = parse_llama_placement(text, expected_model_file="Qwen3.5-9B-Q4_K_M.gguf")
+        assert placement["status"] == "fully_resident"
+        assert (placement["layersOnGpu"], placement["layersTotal"]) == (33, 33)
+        assert placement["projectedDeviceMiB"] == 6246
+        assert placement["fitTargetMiB"] == 512
+        assert placement["cpuKvMiB"] == 0
+
+    def test_two_gpu_tower_is_fully_resident_with_a_margin_per_gpu(self):
+        text = (PLACEMENT_LOGS / "tower2-2xrtxpro6000-b9014-coder-next.txt").read_text(encoding="utf-8")
+        placement = parse_llama_placement(text, expected_model_file="qwen3-coder-next-Q4_K_M.gguf")
+        assert placement["status"] == "fully_resident"
+        assert (placement["layersOnGpu"], placement["layersTotal"]) == (49, 49)
+        assert placement["deviceCount"] == 2
+        assert placement["fitTargetMiB"] == 1024
+        assert placement["projectedDeviceMiB"] == 51357
+        assert placement["freeDeviceMiB"] == 192897
+        assert placement["overflowingLayers"] == 0
+
+
+def _moe_fit_log(device_lines, *, set_lines=()):
+    text = _load_log(49, 49, model="/models/qwen3-coder-next-Q4_K_M.gguf")
+    block = "\n".join([*set_lines, *device_lines])
+    return text.replace("llama_model_loader:", block + "\nllama_model_loader:", 1)
+
+
+def test_moe_overflow_to_the_next_gpu_stays_on_the_gpu():
+    """common/fit.cpp can split one MoE layer across two GPUs.
+
+    Its first overflowing layer then goes to the next device, not to system
+    memory (``set ngl_per_device[0].(n_layer, n_part, overflow_type)=(.., ..,
+    UP)``); only overflow beyond that, or on the last GPU, is on the CPU.
+    """
+    split = _moe_fit_log(
+        [
+            "common_params_fit_impl:   - CUDA0 (NVIDIA RTX PRO 6000): 25 layers ( 1 overflowing),  96000 MiB used,   1040 MiB free",
+            "common_params_fit_impl:   - CUDA1 (NVIDIA RTX PRO 6000): 24 layers ( 0 overflowing),  60000 MiB used,  36000 MiB free",
+        ],
+        set_lines=(
+            "common_params_fit_impl: set ngl_per_device[0].(n_layer, n_part, overflow_type)=(25,  1, UP), id_dense_start=1",
+        ),
+    )
+    placement = parse_llama_placement(split, expected_model_file="qwen3-coder-next-Q4_K_M.gguf")
+    assert placement["status"] == "fully_resident"
+    assert placement["overflowingLayers"] == 0
+    assert placement["nextGpuOverflowLayers"] == 1
+    assert placement["deviceCount"] == 2
+    filtered = "\n".join(line for line in split.splitlines() if is_placement_log_line(line))
+    assert parse_llama_placement(filtered, expected_model_file="qwen3-coder-next-Q4_K_M.gguf")["status"] == "fully_resident"
+    # More overflow than the one split layer, or overflow on the last GPU,
+    # puts expert weights in system memory.
+    spilled = _moe_fit_log(
+        [
+            "common_params_fit_impl:   - CUDA0 (NVIDIA RTX PRO 6000): 25 layers ( 3 overflowing),  96000 MiB used,   1040 MiB free",
+            "common_params_fit_impl:   - CUDA1 (NVIDIA RTX PRO 6000): 24 layers ( 2 overflowing),  96000 MiB used,   1030 MiB free",
+        ],
+        set_lines=(
+            "common_params_fit_impl: set ngl_per_device[0].(n_layer, n_part, overflow_type)=(25,  3, GATE), id_dense_start=1",
+            "common_params_fit_impl: set ngl_per_device[1].(n_layer, n_part, overflow_type)=(24,  2, UP), id_dense_start=1",
+        ),
+    )
+    placement = parse_llama_placement(spilled, expected_model_file="qwen3-coder-next-Q4_K_M.gguf")
+    assert placement["status"] == "partial"
+    assert placement["overflowingLayers"] == 2 + 2
+    assert placement["nextGpuOverflowLayers"] == 1
 
 
 def test_moe_fit_overflow_is_partial_even_when_every_layer_is_offloaded():

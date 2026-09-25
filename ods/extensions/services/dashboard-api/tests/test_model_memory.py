@@ -102,10 +102,11 @@ class TestArchitectureAwareKvCache:
         ("apple", 24, 65536), ("apple", 32, 65536),
         ("apple", 64, 128000), ("apple", 128, 128000),
         # Discrete GPUs must also hold every layer: the capacity context is
-        # kept (8GB adds a q8_0 KV cache to stay resident), while 4GB cannot
-        # hold Phi-4 mini's weights, KV cache and compute buffer at any context.
+        # kept (8GB adds a q8_0 KV cache to stay resident). 4GB is below the
+        # range the residency estimate is calibrated for: the capacity pick
+        # stays, and its predicted spill is only reported.
         *[(backend, memory, context) for backend in ("amd", "nvidia", "sycl")
-          for memory, context in ((4, None), (8, 32768), (16, 65536), (24, 128000))],
+          for memory, context in ((4, 8192), (8, 32768), (16, 65536), (24, 128000))],
     ])
     def test_phi4_context_scales_with_memory_in_both_rankers(self, monkeypatch, backend, memory, expected):
         import performance_oracle as oracle
@@ -130,16 +131,14 @@ class TestArchitectureAwareKvCache:
             [oracle.normalize_catalog_entry(raw)], gpu, "qwen", True,
             system_ram_gb=memory,
         )
-        if expected is None:
-            assert cli == dashboard == []
-            return
         assert len(cli) == len(dashboard) == 1
         for candidate in (cli[0], dashboard[0]):
             profile = candidate.get("_runtime_profile")
             assert selector.effective_context_length(candidate, profile) == expected
-            assert selector.effective_required_memory_gb(candidate, profile) <= capacity + 0.25
             if kind == "discrete":
-                assert candidate["_gpu_residency"]["fits"] is True
+                assert candidate["_gpu_residency"]["fits"] is (memory >= 8)
+            if kind != "discrete" or memory >= 8:
+                assert selector.effective_required_memory_gb(candidate, profile) <= capacity + 0.25
         if kind == "discrete":
             assert cli[0]["_residency_overrides"] == dashboard[0]["_residency_overrides"]
         assert raw["context_length"] == 128000

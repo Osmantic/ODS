@@ -7,7 +7,7 @@ import os
 import platform as _platform
 import re
 import sys
-from typing import Any
+from typing import Any, Iterable
 
 
 MEMORY_METADATA_KEYS = (
@@ -203,6 +203,29 @@ def context_fitting_model(
 # 29/33 layers at a third of its decode speed. These helpers model the same
 # arithmetic llama.cpp uses so selection, the dashboard, and activation agree
 # on what "fits" means, and so a partial load can be corrected.
+#
+# Entry points (keep callers on these; do not re-derive the arithmetic):
+#
+# - ``resident_configuration()`` is the one fit estimator for discrete GPUs:
+#   "which configuration of this model stays fully on this GPU?" for
+#   scripts/select-model.py (installer), performance_oracle.py (dashboard)
+#   and bin/ods-host-agent.py (activation preflight). Inputs: the catalog
+#   record, total VRAM (summed over ``gpu_count``), runtime profile, persisted
+#   env, context, platform, memory other processes hold, whether context may
+#   be traded, and the operator's pinned controls. Output: fits / overrides /
+#   steps / contextLength / residency / idleFits / bestEffort (documented on
+#   the function). A model selector gates on ``idleFits`` (the model, not
+#   today's desktop, decides the pick) and launches with ``overrides``, or
+#   with ``bestEffort`` when only memory held by other processes is short.
+# - ``residency_is_decisive()`` says whether that answer may change which
+#   model or context is picked (exact metadata on a calibrated GPU), or may
+#   only tune ubatch, fit target and KV cache type.
+# - ``gpu_residency_fit()`` evaluates one configuration without changing it
+#   (context options, re-checks).
+# - ``plan_residency_fallback()`` is the ladder both of them and the
+#   host agent's post-load re-fit use; the host agent feeds it llama.cpp's own
+#   logged projection instead of this module's estimate.
+# - ``parse_llama_placement()`` reads where llama.cpp actually put the model.
 
 MIB = 1024.0 * 1024.0
 
@@ -230,12 +253,64 @@ LLAMA_DEFAULT_UBATCH = 512
 # (perf/laptop-gpu-residency-bench.md, V1f): 512 kept 1111 MiB free at 60K.
 MIN_SAFE_FIT_TARGET_MIB = 512
 RESIDENCY_FALLBACK_UBATCH = 256
+# Late planner step, before a q4_0 KV cache: the compute buffer halves again
+# (123 MiB for a 248K vocabulary). It buys room for a desktop or another app
+# holding a few hundred MiB on an 8 GB card at the 64K agent floor.
+RESIDENCY_MIN_UBATCH = 128
+# The residency controls ODS writes itself, and the only values it writes.
+# Any other value in .env is the operator's own, and activation keeps it.
+RESIDENCY_CONTROL_KEYS = ("LLAMA_ARG_UBATCH", "LLAMA_ARG_FIT_TARGET")
+RESIDENCY_MANAGED_VALUES = {
+    "LLAMA_ARG_UBATCH": frozenset({str(RESIDENCY_FALLBACK_UBATCH), str(RESIDENCY_MIN_UBATCH)}),
+    "LLAMA_ARG_FIT_TARGET": frozenset({str(MIN_SAFE_FIT_TARGET_MIB)}),
+}
 # Allowance between this estimate and llama.cpp's own projection.
 RESIDENCY_PLAN_GUARD_MIB = 64
 STANDARD_CONTEXT_LENGTHS = (8192, 16384, 32768, 65536, 131072, 262144)
 # Agent/Hermes floor. A fallback never trades context below it, and never
 # shrinks a context that was already below it.
 RESIDENCY_CONTEXT_FLOOR = 65536
+
+# The platform reserve below was calibrated on 8 GB and larger cards (RTX 5070
+# Laptop 8151 MiB, RTX 5090 32607 MiB, RTX PRO 6000 97887 MiB per GPU). On
+# smaller GPUs the residency estimate still configures, verifies and reports,
+# but it never changes which model or context ODS picks, and activation does
+# not refuse on it: nothing below 8 GB has been measured (no 4 GB card in the
+# fleet). 7680 MiB admits every 8 GB class card (8151-8192 MiB reported).
+RESIDENCY_CALIBRATED_MIN_VRAM_MIB = 7680
+
+
+def residency_calibrated(total_vram_mb: object, gpu_count: int = 1) -> bool:
+    """True when the per-GPU memory is inside the calibrated range."""
+    per_gpu = _positive_number(total_vram_mb) / max(int(gpu_count or 1), 1)
+    return per_gpu >= RESIDENCY_CALIBRATED_MIN_VRAM_MIB
+
+
+def has_exact_residency_metadata(model: dict[str, Any]) -> bool:
+    """True when the catalog carries measured or GGUF-derived residency data.
+
+    Only then does the estimate reproduce llama.cpp's projection to the MiB.
+    Selection lets residency change which model or context it picks only for
+    such models on a calibrated GPU; everything else keeps the capacity fit
+    and relies on the post-load placement check.
+    """
+    residency = model.get("gpu_residency") if isinstance(model.get("gpu_residency"), dict) else {}
+    return bool(
+        _positive_number(residency.get("gpu_weights_mib"))
+        and _positive_number(residency.get("kv_bytes_per_token_f16"))
+    )
+
+
+def residency_is_decisive(model: dict[str, Any], total_vram_mb: object, gpu_count: int = 1) -> bool:
+    """True when full residency may change which model or context is picked.
+
+    Requires exact memory metadata for the model and a GPU inside the
+    calibrated range. Otherwise selection keeps its capacity fit, and
+    ``resident_configuration`` may only tune ubatch, fit target and KV cache
+    type; the placement is verified after load and reported.
+    """
+    return residency_calibrated(total_vram_mb, gpu_count) and has_exact_residency_metadata(model)
+
 
 # Marketing "8GB" cards report slightly under 8 GiB; the declared VRAM class
 # of catalog entries without exact metadata keeps its historical tolerance.
@@ -561,23 +636,38 @@ def plan_residency_fallback(
     context_floor: int = RESIDENCY_CONTEXT_FLOOR,
     guard_mib: float = RESIDENCY_PLAN_GUARD_MIB,
     gpu_count: int = 1,
+    locked_keys: Iterable[str] = (),
+    best_effort: bool = False,
 ) -> dict[str, Any] | None:
     """Return the smallest settings change expected to make full offload fit.
 
     ``required_mib`` is llama.cpp's full-offload projection for the current
     settings and ``available_mib`` the device memory it sees free before
     loading (read from the load log, or ``total - reserve - other`` when
-    planning before launch). Steps, in order, stop at the first that fits:
+    planning before launch), both summed over ``gpu_count`` devices; the fit
+    target is kept free on every device. Steps, in order, stop at the first
+    that fits:
 
-    1. ubatch 256 and fit target 512 MiB (benchmarked: identical output);
-    2. a q8_0 KV cache;
-    3. a smaller standard context, never below the agent floor, never below
+    1. ubatch 256 (benchmarked: identical output, 4-6% slower prefill);
+    2. fit target 512 MiB (benchmarked: still covers the ~256 MiB the
+       flash-attention pool grows by at 64K);
+    3. a q8_0 KV cache;
+    4. a smaller standard context, never below the agent floor, never below
        a context that was already under it, and never for an explicitly
        requested context;
-    4. a q4_0 KV cache.
+    5. ubatch 128 (the compute buffer halves again; prompt processing is
+       slower, the output is not quantized further; not benchmarked);
+    6. a q4_0 KV cache (benchmarked as a fallback: output diverges from
+       q8_0 but passed the edit and needle checks).
 
-    Returns ``None`` when no allowed configuration is expected to fit.
+    Keys in ``locked_keys`` (an operator's own ``LLAMA_ARG_UBATCH`` or
+    ``LLAMA_ARG_FIT_TARGET``) are never changed. The result carries
+    ``fits``. When nothing fits it returns ``None``, or with ``best_effort``
+    the most memory-saving allowed configuration with ``fits`` False, so a
+    caller that must load anyway (memory held by other processes) keeps as
+    many layers on the GPU as it can and reports the rest.
     """
+    locked = {str(key) for key in locked_keys}
     ubatch = int(settings.get("ubatch") or LLAMA_DEFAULT_UBATCH)
     fit_target = int(settings.get("fitTargetMiB") or LLAMA_DEFAULT_FIT_TARGET_MIB)
     cache_k = str(settings.get("cacheTypeK") or "f16").lower()
@@ -594,8 +684,9 @@ def plan_residency_fallback(
     def fits() -> bool:
         return need + guard_mib <= float(available_mib) - fit_target * devices
 
-    def result() -> dict[str, Any]:
+    def result(fitted: bool = True) -> dict[str, Any]:
         return {
+            "fits": fitted,
             "changes": dict(changes),
             "steps": list(steps),
             "projectedMiB": round(need, 2),
@@ -607,22 +698,28 @@ def plan_residency_fallback(
             "ubatch": ubatch,
         }
 
+    def shrink_ubatch(target: int) -> None:
+        nonlocal need, compute, ubatch
+        saved = compute * (1.0 - target / ubatch)
+        need -= saved
+        compute -= saved
+        ubatch = target
+        changes["LLAMA_ARG_UBATCH"] = str(target)
+        steps.append(f"ubatch {target}")
+
     if fits():
         return result()
 
-    if ubatch > RESIDENCY_FALLBACK_UBATCH:
-        saved = compute * (1.0 - RESIDENCY_FALLBACK_UBATCH / ubatch)
-        need -= saved
-        compute -= saved
-        ubatch = RESIDENCY_FALLBACK_UBATCH
-        changes["LLAMA_ARG_UBATCH"] = str(ubatch)
-        steps.append(f"ubatch {RESIDENCY_FALLBACK_UBATCH}")
-    if fit_target > MIN_SAFE_FIT_TARGET_MIB:
+    if ubatch > RESIDENCY_FALLBACK_UBATCH and "LLAMA_ARG_UBATCH" not in locked:
+        shrink_ubatch(RESIDENCY_FALLBACK_UBATCH)
+        if fits():
+            return result()
+    if fit_target > MIN_SAFE_FIT_TARGET_MIB and "LLAMA_ARG_FIT_TARGET" not in locked:
         fit_target = MIN_SAFE_FIT_TARGET_MIB
         changes["LLAMA_ARG_FIT_TARGET"] = str(fit_target)
         steps.append(f"fit target {MIN_SAFE_FIT_TARGET_MIB} MiB")
-    if fits():
-        return result()
+        if fits():
+            return result()
 
     def quantize_kv(next_type: str) -> None:
         nonlocal need, kv, cache_k, cache_v
@@ -660,11 +757,31 @@ def plan_residency_fallback(
             if fits():
                 return result()
 
+    # ubatch 128 only slows prompt processing; q4_0 changes the output.
+    ubatch_before_min = ubatch
+    if ubatch > RESIDENCY_MIN_UBATCH and "LLAMA_ARG_UBATCH" not in locked:
+        shrink_ubatch(RESIDENCY_MIN_UBATCH)
+        if fits():
+            return result()
+
     for next_type in kv_steps:
         quantize_kv(next_type)
         if fits():
+            if ubatch < ubatch_before_min:
+                # The quantized cache alone may be enough: keep the faster
+                # ubatch when it still fits.
+                restored = compute * (ubatch_before_min / ubatch - 1.0)
+                if need + restored + guard_mib <= float(available_mib) - fit_target * devices:
+                    need += restored
+                    compute += restored
+                    steps.remove(f"ubatch {ubatch}")
+                    ubatch = ubatch_before_min
+                    if ubatch == int(settings.get("ubatch") or LLAMA_DEFAULT_UBATCH):
+                        changes.pop("LLAMA_ARG_UBATCH", None)
+                    else:
+                        changes["LLAMA_ARG_UBATCH"] = str(ubatch)
             return result()
-    return None
+    return result(False) if best_effort and changes else None
 
 
 def resident_configuration(
@@ -679,26 +796,54 @@ def resident_configuration(
     other_used_mib: float = 0.0,
     weight_size_mb: int | float | None = None,
     allow_context_reduction: bool = True,
+    pinned: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Choose the configuration that keeps a model fully GPU-resident.
 
-    Order: the configuration as declared; then ``plan_residency_fallback``
-    (ubatch/fit target, quantized KV, context down to the agent floor) for
+    This is the single residency entry point for the installer selector,
+    the dashboard and activation (see the section comment above). Order: the
+    configuration as declared; then ``plan_residency_fallback`` (ubatch 256,
+    fit target 512, q8_0 KV, context down to the agent floor, ubatch 128,
+    q4_0 KV) for
     models whose memory is known exactly (measured or GGUF-derived
     ``gpu_residency``) because the planner works with thin margins; then,
     for models with only architecture metadata, the largest standard context
     at the declared settings. Context is never traded below the agent floor,
-    or below a configured context that is already under it. The result's
-    ``overrides`` are the llama.cpp env values to launch with and
-    ``contextLength`` the context to configure.
+    or below a configured context that is already under it.
+
+    ``other_used_mib`` is GPU memory held by other processes (a desktop,
+    Whisper, ComfyUI); ``gpu_count`` devices each keep their own reserve and
+    fit target. ``pinned`` holds an operator's own ``LLAMA_ARG_UBATCH`` /
+    ``LLAMA_ARG_FIT_TARGET``: they win over the runtime profile and the
+    planner never changes them.
+
+    Returns:
+
+    - ``fits``: every layer, the KV cache and the compute buffers stay on the
+      GPU with ``overrides`` applied at ``contextLength``;
+    - ``overrides``: llama.cpp env values to launch with (``pinned`` excluded)
+      and ``steps``, the same changes in words;
+    - ``residency``: the ``gpu_residency_fit`` record of the chosen (or, when
+      nothing fits, the declared) configuration;
+    - ``idleFits``: whether it would fit with nothing else holding GPU memory.
+      False means the model is too large for this GPU; True with ``fits``
+      False means other processes hold the memory it needs;
+    - ``bestEffort``: when nothing fits and the memory is known exactly, the
+      most memory-saving allowed configuration (``overrides``, ``steps``,
+      ``contextLength``, ``residency``) for callers that load anyway and
+      report the placement; otherwise None.
     """
-    kwargs = {
+    pinned_env = {
+        str(key): str(value)
+        for key, value in (pinned or {}).items()
+        if value is not None and str(value).strip() != ""
+    }
+    kwargs: dict[str, Any] = {
         "total_vram_mb": total_vram_mb,
         "runtime_profile": runtime_profile,
         "env": env,
         "gpu_platform": gpu_platform,
         "gpu_count": gpu_count,
-        "other_used_mib": other_used_mib,
         "weight_size_mb": weight_size_mb,
     }
     if context_length is None:
@@ -706,56 +851,80 @@ def resident_configuration(
             context_length = int(runtime_profile["context_length"])
         else:
             context_length = int(_positive_number(model.get("context_length"))) or None
-    declared = gpu_residency_fit(model, context_length=context_length, **kwargs)
-    if declared["fits"]:
-        return {
-            "fits": True, "residency": declared, "overrides": {}, "steps": [],
-            "contextLength": declared["projection"]["contextLength"],
-        }
 
-    projection = declared["projection"]
-    context = projection["contextLength"]
-    exact = projection["basis"] in {"measured", "gguf"}
-    plan = None if not exact else plan_residency_fallback(
-        required_mib=projection["totalMiB"],
-        available_mib=declared["availableMiB"],
-        settings=declared["settings"],
-        kv_mib=projection["kvMiB"],
-        compute_mib=projection["computeMiB"],
-        context_length=context,
-        allow_context_reduction=allow_context_reduction,
-        context_floor=min(RESIDENCY_CONTEXT_FLOOR, context),
-        gpu_count=gpu_count,
-    )
-    if plan is not None:
-        overrides = {
-            key: value for key, value in plan["changes"].items()
-            if key.startswith("LLAMA_ARG_")
-        }
-        planned = gpu_residency_fit(
-            model, context_length=plan["contextLength"], overrides=overrides, **kwargs,
+    def configure(other_mib: float, *, best_effort: bool) -> dict[str, Any]:
+        declared = gpu_residency_fit(
+            model, context_length=context_length, other_used_mib=other_mib,
+            overrides=pinned_env or None, **kwargs,
         )
-        if planned["fits"]:
+        if declared["fits"]:
             return {
-                "fits": True, "residency": planned, "overrides": overrides,
-                "steps": plan["steps"], "contextLength": plan["contextLength"],
+                "fits": True, "residency": declared, "overrides": {}, "steps": [],
+                "contextLength": declared["projection"]["contextLength"], "bestEffort": None,
+            }
+        projection = declared["projection"]
+        context = projection["contextLength"]
+        exact = projection["basis"] in {"measured", "gguf"}
+        plan = None if not exact else plan_residency_fallback(
+            required_mib=projection["totalMiB"],
+            available_mib=declared["availableMiB"],
+            settings=declared["settings"],
+            kv_mib=projection["kvMiB"],
+            compute_mib=projection["computeMiB"],
+            context_length=context,
+            allow_context_reduction=allow_context_reduction,
+            context_floor=min(RESIDENCY_CONTEXT_FLOOR, context),
+            gpu_count=gpu_count,
+            locked_keys=pinned_env,
+            best_effort=best_effort,
+        )
+        best = None
+        if plan is not None:
+            overrides = {
+                key: value for key, value in plan["changes"].items()
+                if key.startswith("LLAMA_ARG_")
+            }
+            planned = gpu_residency_fit(
+                model, context_length=plan["contextLength"], other_used_mib=other_mib,
+                overrides={**overrides, **pinned_env}, **kwargs,
+            )
+            if plan["fits"] and planned["fits"]:
+                return {
+                    "fits": True, "residency": planned, "overrides": overrides,
+                    "steps": plan["steps"], "contextLength": plan["contextLength"],
+                    "bestEffort": None,
+                }
+            best = {
+                "overrides": overrides, "steps": list(plan["steps"]),
+                "contextLength": plan["contextLength"], "residency": planned,
             }
 
-    if allow_context_reduction and not exact and _positive_number(model.get("block_count")):
-        floor = min(RESIDENCY_CONTEXT_FLOOR, context)
-        for candidate in sorted(STANDARD_CONTEXT_LENGTHS, reverse=True):
-            if candidate >= context or candidate < floor:
-                continue
-            reduced = gpu_residency_fit(model, context_length=candidate, **kwargs)
-            if reduced["fits"]:
-                return {
-                    "fits": True, "residency": reduced, "overrides": {},
-                    "steps": [f"context {candidate}"], "contextLength": candidate,
-                }
-    return {
-        "fits": False, "residency": declared, "overrides": {}, "steps": [],
-        "contextLength": context,
-    }
+        if allow_context_reduction and not exact and _positive_number(model.get("block_count")):
+            floor = min(RESIDENCY_CONTEXT_FLOOR, context)
+            for candidate in sorted(STANDARD_CONTEXT_LENGTHS, reverse=True):
+                if candidate >= context or candidate < floor:
+                    continue
+                reduced = gpu_residency_fit(
+                    model, context_length=candidate, other_used_mib=other_mib,
+                    overrides=pinned_env or None, **kwargs,
+                )
+                if reduced["fits"]:
+                    return {
+                        "fits": True, "residency": reduced, "overrides": {},
+                        "steps": [f"context {candidate}"], "contextLength": candidate,
+                        "bestEffort": None,
+                    }
+        return {
+            "fits": False, "residency": declared, "overrides": {}, "steps": [],
+            "contextLength": context, "bestEffort": best,
+        }
+
+    other = max(_positive_number(other_used_mib), 0.0)
+    config = configure(other, best_effort=True)
+    config["idleFits"] = bool(
+        config["fits"] or (other > 0 and configure(0.0, best_effort=False)["fits"])
+    )
+    return config
 
 
 # ---------------------------------------------------------------------------
@@ -775,12 +944,26 @@ _PROJECTION_RE = re.compile(
 )
 _TARGET_UNMET_RE = re.compile(r"cannot meet free memory target of (?P<target>\d+) MiB")
 _TARGET_MET_RE = re.compile(r"will leave -?\d+ >= (?P<target>\d+) MiB of free device memory")
-# The fit plan per device (common/fit.cpp). For MoE models llama.cpp can keep
-# a layer "on the GPU" while moving its expert weights to system memory:
-# "- CUDA0 (...): 49 layers (12 overflowing), ...". The load log still says
-# every layer is offloaded, so the overflow count is the only signal.
+# With several GPUs llama.cpp prints one line per device instead
+# (common/fit.cpp: "- CUDA0 (...): 97246 total, 16631 used, 79667 free vs.
+# target of 1024"); the projection line is then the sum over devices.
+_TARGET_DEVICE_RE = re.compile(
+    r"params_fit_impl:\s+- .+?:\s+-?\d+ total,\s+-?\d+ used,\s+-?\d+ free vs\. target of\s+(?P<target>\d+)"
+)
+# The fit plan per device, printed in device order (common/fit.cpp). For MoE
+# models llama.cpp can keep a layer "on the GPU" while moving part of it off
+# the device: "- CUDA0 (...): 49 layers (12 overflowing), ...". The load log
+# still says every layer is offloaded, so the overflow count is the signal.
+# All but one overflowing layer per device put their expert weights in system
+# memory. The first one goes to the next GPU when llama.cpp logged
+# "set ngl_per_device[i].(n_layer, n_part, overflow_type)=(.., .., UP|GATE|ATTN)"
+# for a device that is not the last; on the last device it goes to system
+# memory too.
 _FIT_DEVICE_RE = re.compile(
     r"params_fit_impl:\s+- .+?: +\d+ layers \( *(?P<overflow>\d+) overflowing\)"
+)
+_FIT_NEXT_DEVICE_RE = re.compile(
+    r"set ngl_per_device\[(?P<id>\d+)\]\.\(n_layer, n_part, overflow_type\)=\(\s*\d+,\s*\d+,\s*(?:UP|GATE|ATTN)\)"
 )
 _VOCAB_RE = re.compile(r"print_info: n_vocab\s+=\s+(?P<value>\d+)")
 _EMBD_RE = re.compile(r"print_info: n_embd\s+=\s+(?P<value>\d+)\s*$")
@@ -794,7 +977,9 @@ _PLACEMENT_LINE_MARKERS = (
     "projected to use",
     "free memory target",
     "of free device memory",
+    "vs. target of",
     "overflowing)",
+    "overflow_type)=(",
     "print_info: n_vocab",
     "print_info: n_embd",
 )
@@ -925,13 +1110,27 @@ def parse_llama_placement(
         return round(value, 2)
 
     projection = next((m for m in map(_PROJECTION_RE.search, block) if m), None)
-    target = next(
+    device_targets = [int(m.group("target")) for m in map(_TARGET_DEVICE_RE.search, block) if m]
+    target_match = next(
         (m for m in (_TARGET_UNMET_RE.search(l) or _TARGET_MET_RE.search(l) for l in block) if m),
         None,
     )
+    fit_target = (
+        int(target_match.group("target")) if target_match
+        else max(device_targets) if device_targets
+        else None
+    )
     vocab = next((m for m in map(_VOCAB_RE.search, block) if m), None)
     embd = next((m for m in map(_EMBD_RE.search, block) if m), None)
-    overflowing = sum(int(m.group("overflow")) for m in map(_FIT_DEVICE_RE.search, block) if m)
+    device_plan = [int(m.group("overflow")) for m in map(_FIT_DEVICE_RE.search, block) if m]
+    to_next_gpu = {int(m.group("id")) for m in map(_FIT_NEXT_DEVICE_RE.search, block) if m}
+    device_count = max(len(device_targets), len(device_plan), 1)
+    overflowing = 0
+    next_gpu_overflow = 0
+    for index, count in enumerate(device_plan):
+        spills_to_next = 1 if count and index in to_next_gpu and index < len(device_plan) - 1 else 0
+        next_gpu_overflow += spills_to_next
+        overflowing += count - spills_to_next
     on_gpu, layers_total = offloaded
     cpu_kv = total(_KV_BUFFER_RE, True) + total(_RS_BUFFER_RE, True)
     base.update({
@@ -945,10 +1144,14 @@ def parse_llama_placement(
         "gpuComputeMiB": total(_COMPUTE_BUFFER_RE, False),
         "projectedDeviceMiB": int(projection.group("need")) if projection else None,
         "freeDeviceMiB": int(projection.group("free")) if projection else None,
-        "fitTargetMiB": int(target.group("target")) if target else None,
+        "fitTargetMiB": fit_target,
+        "deviceCount": device_count,
         "vocabSize": int(vocab.group("value")) if vocab else None,
         "embeddingLength": int(embd.group("value")) if embd else None,
+        # Layers whose MoE expert weights llama.cpp's fit moved to system
+        # memory; a split to the next GPU stays on the GPU and is only noted.
         "overflowingLayers": overflowing,
+        "nextGpuOverflowLayers": next_gpu_overflow,
     })
     layers_resident = layers_total > 0 and on_gpu >= layers_total
     fully = bool(layers_resident and cpu_kv <= 0.0 and overflowing == 0)
@@ -971,10 +1174,15 @@ def parse_llama_placement(
             detail += f", MoE expert weights of {overflowing} layers moved to system memory by llama.cpp's fit"
         if cpu_kv > 0:
             detail += f", {cpu_kv:g} MiB of KV cache in system memory"
-        if projection and target:
+        if projection and fit_target is not None:
+            margin = (
+                f"a {fit_target} MiB margin"
+                if device_count == 1
+                else f"a {fit_target} MiB margin on each of {device_count} GPUs"
+            )
             detail += (
                 f"; llama.cpp projected {projection.group('need')} MiB against "
-                f"{projection.group('free')} MiB free with a {target.group('target')} MiB margin"
+                f"{projection.group('free')} MiB free with {margin}"
             )
         base["reason"] = detail
     return base
@@ -1030,6 +1238,13 @@ _INTEL_HYBRID_MODEL_RE = re.compile(
     r"1[234]th Gen Intel\(R\) Core",
     re.IGNORECASE,
 )
+# Desktop parts of those generations with performance cores only: every i3
+# x100 (4 P-cores) and the i5-12400/12490/12500/12600 without a K or H
+# suffix (6 P-cores). Their cores are all performance cores.
+_INTEL_PERFORMANCE_ONLY_MODEL_RE = re.compile(
+    r"i3-1[234]1\d0[FT]?\b|i5-12[456]\d0[FT]?\b",
+    re.IGNORECASE,
+)
 
 
 def performance_core_count(
@@ -1041,8 +1256,8 @@ def performance_core_count(
     """Physical performance cores to use for CPU-side llama.cpp work.
 
     Used only when a runtime profile intentionally keeps work on the CPU (MoE
-    expert offload). The compose default of 4 threads dates from DreamServer
-    and ignores the host; every logical core is worse on hybrid CPUs: on the
+    expert offload). The compose default of 4 threads predates ODS and
+    ignores the host; every logical core is worse on hybrid CPUs: on the
     Core Ultra 9 285H under WSL, 6 threads decoded 10% faster than 4 while 14
     threads decoded 64% slower (perf/laptop-gpu-residency-bench.md, V5a-c).
     Returns 0 when the count cannot be determined.
@@ -1097,7 +1312,10 @@ def performance_core_count(
             flags = line
         elif not model_name and lowered.startswith("model name"):
             model_name = line.partition(":")[2].strip()
-    if "hybrid_cpu" in flags.split() or _INTEL_HYBRID_MODEL_RE.search(model_name):
+    if "hybrid_cpu" in flags.split() or (
+        _INTEL_HYBRID_MODEL_RE.search(model_name)
+        and not _INTEL_PERFORMANCE_ONLY_MODEL_RE.search(model_name)
+    ):
         # A hybrid CPU whose P/E split is hidden. WSL exposes the Core Ultra 9
         # 285H as 16 identical cores with no hybrid flag or cpu_core set
         # (checked on windows-laptop-wsl-beta, 2026-09-25). Current Intel

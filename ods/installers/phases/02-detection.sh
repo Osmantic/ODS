@@ -571,6 +571,32 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
                 # itself cannot produce trusted metadata.
                 PIXEL_AGENT_MODEL_READY=false
             fi
+            # GPU memory other processes already hold (a desktop drawn on the
+            # NVIDIA GPU, another GPU app). The selector keeps the model it
+            # would pick on an idle GPU and plans its settings around this.
+            # A running ODS llama-server (installer rerun) is not "other", and
+            # its share cannot be told apart here, so nothing is measured then.
+            _selector_other_used_mib=0
+            if [[ "${GPU_BACKEND:-}" == "nvidia" ]] && command -v nvidia-smi >/dev/null 2>&1; then
+                _ods_llama_running=false
+                if command -v docker >/dev/null 2>&1; then
+                    if timeout 10 docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'ods-llama-server'; then
+                        _ods_llama_running=true
+                    elif [[ -f "$INSTALL_DIR/.env" ]] && ! timeout 10 docker ps >/dev/null 2>&1; then
+                        # A rerun that cannot list containers: do not guess.
+                        _ods_llama_running=true
+                    fi
+                fi
+                if [[ "$_ods_llama_running" != true ]]; then
+                    _selector_other_used_mib="$(timeout 10 nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null \
+                        | awk '/^[[:space:]]*[0-9]+/ { sum += $1 } END { printf "%d", sum + 0 }')"
+                    [[ "$_selector_other_used_mib" =~ ^[0-9]+$ ]] || _selector_other_used_mib=0
+                fi
+                unset _ods_llama_running
+                if [[ "$_selector_other_used_mib" -gt 0 ]]; then
+                    log "GPU memory already in use before ODS starts: ${_selector_other_used_mib} MiB"
+                fi
+            fi
             _run_catalog_selector() {
                 "$_selector_python" "$_selector_script" \
                     --catalog "$_selector_catalog" \
@@ -583,6 +609,7 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
                     --max-size-mb "$_selector_max_size_mb" \
                     --host-arch "${HOST_ARCH:-unknown}" \
                     --gpu-count "${GPU_COUNT:-1}" \
+                    --other-used-mib "${_selector_other_used_mib:-0}" \
                     --installable-only \
                     "$@" \
                     --env
@@ -598,7 +625,7 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
             fi
             export PIXEL_AGENT_MODEL_READY
             unset -f _run_catalog_selector
-            unset _selector_max_size_mb _pixel_default_selector
+            unset _selector_max_size_mb _pixel_default_selector _selector_other_used_mib
             if [[ -n "$_selector_env" ]]; then
                 if command -v load_model_selector_env_from_output >/dev/null 2>&1; then
                     load_model_selector_env_from_output <<< "$_selector_env"
@@ -658,7 +685,7 @@ if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${T
                 unset LLAMA_CPP_RELEASE_TAG_OVERRIDE LLAMA_CPP_SERVER_BINARY
                 unset LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
                 unset LLAMA_ARG_N_CPU_MOE LLAMA_ARG_NO_CACHE_PROMPT
-                unset LLAMA_ARG_UBATCH LLAMA_ARG_FIT_TARGET
+                unset LLAMA_ARG_UBATCH LLAMA_ARG_FIT_TARGET LLAMA_THREADS
                 unset LLAMA_ARG_CHECKPOINT_EVERY_NT LLAMA_ARG_SPEC_TYPE
                 unset LLAMA_ARG_SPEC_DRAFT_N_MAX LLAMA_ARG_SPLIT_MODE LLAMA_ARG_TENSOR_SPLIT
                 load_model_selector_env_from_output <<< "$_preserved_model_env"

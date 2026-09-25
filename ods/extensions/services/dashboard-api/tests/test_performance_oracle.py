@@ -1616,24 +1616,18 @@ def test_downloaded_gguf_header_replaces_stale_hub_context(
         evidence=[],
     )
 
-    from model_memory import platform_reserve_mib
-
     model = payload["models"][0]
     assert model["maxContextLength"] == 131072
     assert model["metadata"]["contextLimitKnown"] is True
     assert model["metadata"]["contextSource"] == "gguf_file"
     assert model["contextOptions"][-1]["contextLength"] == 131072
     assert model["contextOptions"][-1]["fullContext"] is True
-    # 36 blocks x 8 KV heads x (128 + 128) dims x f16 = 144 KiB per token;
-    # unknown vocabulary is budgeted conservatively in the compute buffer.
-    overhead = platform_reserve_mib(8192, "linux") + 1024
-    compute = 512 * 4 * (262144 + 4096) / 2**20
-    def required(context):
-        return round(-(-((500 + 147456 * context / 2**20 + compute + overhead) / 1024 * 100) // 1) / 100, 2)
-    assert model["contextLength"] == 8192
-    assert model["estimatedRequired"] == required(8192)
-    assert model["contextOptions"][-1]["estimatedRequired"] == required(131072)
+    # Without exact gpu_residency metadata the capacity fit decides, as in the
+    # installer; the residency estimate is attached for display only.
+    assert model["estimatedRequired"] == 1.61
+    assert model["contextOptions"][-1]["estimatedRequired"] == 18.49
     assert model["contextOptions"][-1]["fitsVram"] is False
+    assert model["gpuResidency"]["basis"] == "architecture"
 
 
 def test_configured_model_prefers_env_file_over_stale_process_env(data_dir, tmp_path, monkeypatch):
@@ -1762,7 +1756,7 @@ def test_pre_download_ranker_accounts_for_long_context_kv_on_4gb_gpu(data_dir, t
     assert by_id["phi4-mini-q4"]["estimatedRequired"] > by_id["phi4-mini-q4"]["vramRequired"]
 
 
-def test_qwen35_2b_is_the_4gb_pick_because_nothing_larger_stays_on_the_gpu(
+def test_qwen35_2b_fits_4gb_but_is_not_recommended_after_fleet_failures(
     data_dir,
     tmp_path,
     monkeypatch,
@@ -1786,15 +1780,15 @@ def test_qwen35_2b_is_the_4gb_pick_because_nothing_larger_stays_on_the_gpu(
     assert model["vramRequired"] == 3
     assert model["estimatedRequired"] <= 4
     assert model["fitsVram"] is True
-    # Phi-4 mini (the previous 4GB pick) needs its 2.3 GiB of weights, KV and
-    # compute buffers on the GPU plus llama.cpp's margin: more than a 4GB card
-    # offers after the driver reserve, so it would run partly on the CPU. The
-    # 2B is recommended despite its fleet failures because it is the only
-    # installable model that stays fully on the GPU.
+    assert model["recommended"] is False
+    # 4GB is below the range the residency estimate is calibrated for, so it
+    # changes neither the recommendation nor fitsVram there: the capacity fit
+    # decides, and the predicted spill is shown in gpuResidency. Whether a
+    # different 4GB default is needed is for the default-model work to
+    # measure and decide.
     phi_mini = next(item for item in payload["models"] if item["id"] == "phi4-mini-q4")
-    assert phi_mini["fitsVram"] is False
-    assert phi_mini["recommended"] is False
-    assert model["recommended"] is True
+    assert phi_mini["fitsVram"] is True
+    assert phi_mini["gpuResidency"]["fits"] is False
     compatibility = model["appCompatibility"]
     assert compatibility["hermesTalk"]["status"] == "verified"
     assert compatibility["openaiChat"]["status"] == "unsupported_until_revalidated"

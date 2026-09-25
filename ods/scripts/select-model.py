@@ -27,6 +27,7 @@ from model_memory import (
     performance_core_count,
     required_model_memory_gb,
     resident_configuration,
+    residency_is_decisive,
     runtime_memory_settings,
 )
 
@@ -183,14 +184,33 @@ def fits(required_gb: float, capacity_gb: float) -> bool:
 
 def residency_candidate(model: dict[str, Any], runtime_profile: dict[str, Any] | None,
                         config: dict[str, Any]) -> dict[str, Any]:
-    """Attach a resident configuration (and any context change) to a candidate."""
+    """Attach the residency decision (and any context change) to a candidate.
+
+    A fitting configuration carries its overrides. When other processes hold
+    the memory it needs (``idleFits`` but not ``fits``) the candidate carries
+    the most memory-saving allowed configuration instead and is marked
+    ``_residency_best_effort``: it is loaded anyway and its placement is
+    reported. A candidate that cannot stay on this GPU even when it is idle
+    keeps its declared settings (``_residency_spills``).
+    """
+    chosen = config
+    best_effort = False
+    if not config.get("fits") and config.get("idleFits") and config.get("bestEffort"):
+        chosen = config["bestEffort"]
+        best_effort = True
     candidate = {
         **model,
-        "_gpu_residency": config["residency"],
-        "_residency_overrides": dict(config.get("overrides") or {}),
-        "_residency_steps": list(config.get("steps") or []),
+        "_gpu_residency": chosen["residency"],
+        "_residency_fits": bool(config.get("fits")),
+        "_residency_idle_fits": bool(config.get("idleFits")),
+        "_residency_best_effort": best_effort,
+        "_residency_spills": not bool(config.get("idleFits")),
+        "_residency_overrides": (
+            dict(chosen.get("overrides") or {}) if config.get("idleFits") else {}
+        ),
+        "_residency_steps": list(chosen.get("steps") or []) if config.get("idleFits") else [],
     }
-    context = int(config.get("contextLength") or 0)
+    context = int(chosen.get("contextLength") or 0) if config.get("idleFits") else 0
     if context and context != effective_context_length(model, runtime_profile):
         candidate["max_context_length"] = model.get("max_context_length") or model.get("context_length")
         candidate["context_length"] = context
@@ -200,16 +220,20 @@ def residency_candidate(model: dict[str, Any], runtime_profile: dict[str, Any] |
 
 def hardware_fit(model: dict[str, Any], capacity_gb: float, backend: str, memory_type: str,
                  vram_mb: int, *, gpu_platform: str | None = None,
-                 gpu_count: int = 1) -> tuple[bool, dict[str, Any]]:
+                 gpu_count: int = 1, other_used_mib: float = 0.0) -> tuple[bool, dict[str, Any]]:
     """Return (fits, candidate): the capacity fit, then full GPU residency.
 
     The capacity fit (context-aware requirement against the GPU's memory) and
     therefore the ranking are unchanged. On a discrete GPU the candidate must
-    also stay fully GPU-resident: every layer, the KV cache and the compute
-    buffers after the driver/runtime reserve and llama.cpp's free-memory
-    margin. A candidate that fits only by spilling layers to the CPU is
-    dropped; one that fits with a smaller ubatch, a smaller margin or a
-    quantized KV cache carries those settings.
+    also stay fully GPU-resident on the idle GPU: every layer, the KV cache
+    and the compute buffers after the driver/runtime reserve and llama.cpp's
+    free-memory margin, possibly with a smaller ubatch, a smaller margin or a
+    quantized KV cache. The identity decision uses the idle GPU so a desktop
+    or another process holding memory at install time never swaps the
+    default model; its configuration is planned against ``other_used_mib``
+    (see ``residency_candidate``). A candidate that fits only by spilling
+    layers returns False with ``_capacity_fit`` set, so ``rank_models`` can
+    fall back to it when nothing on this GPU is resident.
     """
     runtime_profile = (
         model.get("_runtime_profile")
@@ -221,6 +245,14 @@ def hardware_fit(model: dict[str, Any], capacity_gb: float, backend: str, memory
         return False, candidate
     if not is_discrete_gpu(backend, memory_type, vram_mb):
         return True, candidate
+    # Residency decides which model and context to pick only where the
+    # estimate is exact: a catalog entry with measured or GGUF-derived
+    # memory on a GPU inside the calibrated range (8 GB and up). Elsewhere (a
+    # 4 or 6 GB card, or an entry with only architecture metadata) the
+    # capacity fit alone picks, as before residency was enforced; the
+    # estimate may still tune settings, and the placement is verified after
+    # load and reported.
+    decisive = residency_is_decisive(candidate, vram_mb, gpu_count)
     config = resident_configuration(
         candidate,
         total_vram_mb=vram_mb,
@@ -228,57 +260,13 @@ def hardware_fit(model: dict[str, Any], capacity_gb: float, backend: str, memory
         context_length=effective_context_length(candidate, runtime_profile),
         gpu_platform=gpu_platform,
         gpu_count=gpu_count,
+        other_used_mib=other_used_mib,
+        allow_context_reduction=decisive,
     )
-    if not config["fits"]:
-        return False, candidate
-    return True, residency_candidate(candidate, runtime_profile, config)
-
-
-def resident_fallback(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
-                      installable_only: bool, backend: str, memory_type: str,
-                      vram_mb: int, ram_gb: int, host_arch: str, max_size_mb: float,
-                      *, gpu_platform: str | None, gpu_count: int) -> dict[str, Any] | None:
-    """Best fully resident model when no capacity-ranked candidate is resident.
-
-    Used only on discrete GPUs where every capacity fit would spill layers to
-    the CPU (for example a 4GB card, where the capacity-ranked default needs
-    more memory than CUDA can offer). Candidates are judged at their catalog
-    or runtime-profile context and never trade context below the agent floor
-    unless that context is already below it.
-    """
-    pool: list[tuple[float, dict[str, Any]]] = []
-    for model in catalog:
-        if installable_only and not install_recommendation_allowed(model):
-            continue
-        if not family_allowed(model, profile) or not size_within_ceiling(model, max_size_mb):
-            continue
-        runtime_profile = matching_runtime_profile(model, backend, memory_type, vram_mb, ram_gb, host_arch)
-        if runtime_profile is None and hardware_matching_profiles(
-            model, backend, memory_type, vram_mb, host_arch, ram_gb
-        ):
-            continue
-        candidate = {**model, "_runtime_profile": runtime_profile} if runtime_profile else model
-        config = resident_configuration(
-            candidate,
-            total_vram_mb=vram_mb,
-            runtime_profile=runtime_profile,
-            gpu_platform=gpu_platform,
-            gpu_count=gpu_count,
-        )
-        if not config["fits"]:
-            continue
-        resident = residency_candidate(candidate, runtime_profile, config)
-        pool.append((score_model(resident, capacity_gb, profile), resident))
-    if not pool:
-        return None
-    pool.sort(
-        key=lambda item: (
-            item[0],
-            effective_context_length(item[1], item[1].get("_runtime_profile")),
-        ),
-        reverse=True,
-    )
-    return pool[0][1]
+    resident = residency_candidate(candidate, runtime_profile, config)
+    if decisive and not config["idleFits"]:
+        return False, {**resident, "_capacity_fit": True}
+    return True, resident
 
 
 def selector_required_memory_gb(model: dict[str, Any]) -> float:
@@ -436,15 +424,35 @@ def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
                 max_size_mb: float = 0,
                 agent_ready_only: bool = False,
                 gpu_platform: str | None = None,
-                gpu_count: int = 1) -> list[dict[str, Any]]:
+                gpu_count: int = 1,
+                other_used_mib: float = 0.0) -> list[dict[str, Any]]:
     def candidate_fit(model: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
         return hardware_fit(
             model, capacity_gb, backend, memory_type, vram_mb,
             gpu_platform=gpu_platform, gpu_count=gpu_count,
+            other_used_mib=other_used_mib,
         )
+
+    def order(pool: list[tuple[float, dict[str, Any]]]) -> list[dict[str, Any]]:
+        pool.sort(
+            key=lambda item: (
+                item[0],
+                effective_required_memory_gb(
+                    item[1], item[1].get("_runtime_profile"), residency=False
+                ),
+                effective_context_length(
+                    item[1], item[1].get("_runtime_profile")
+                ),
+            ),
+            reverse=True,
+        )
+        return [model for _, model in pool]
+
+    spilling: list[dict[str, Any]] = []
 
     def ranked_candidates(*, enforce_size_ceiling: bool) -> list[dict[str, Any]]:
         ranked_pool: list[tuple[float, dict[str, Any]]] = []
+        spill_pool: list[tuple[float, dict[str, Any]]] = []
         for model in catalog:
             if installable_only and not install_recommendation_allowed(model):
                 continue
@@ -468,23 +476,17 @@ def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
             )
             candidate_fits, candidate_model = candidate_fit(candidate_model)
             if not candidate_fits:
+                if candidate_model.get("_capacity_fit"):
+                    spill_pool.append(
+                        (score_model(candidate_model, capacity_gb, profile), candidate_model)
+                    )
                 continue
             ranked_pool.append(
                 (score_model(candidate_model, capacity_gb, profile), candidate_model)
             )
-        ranked_pool.sort(
-            key=lambda item: (
-                item[0],
-                effective_required_memory_gb(
-                    item[1], item[1].get("_runtime_profile"), residency=False
-                ),
-                effective_context_length(
-                    item[1], item[1].get("_runtime_profile")
-                ),
-            ),
-            reverse=True,
-        )
-        return [model for _, model in ranked_pool]
+        if not spilling:
+            spilling.extend(order(spill_pool))
+        return order(ranked_pool)
 
     ranked = ranked_candidates(enforce_size_ceiling=True)
     # A tier size ceiling is a resource preference, not permission to ship a
@@ -495,6 +497,15 @@ def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
         ranked = ranked_candidates(enforce_size_ceiling=False)
     if ranked:
         return ranked
+    if spilling:
+        # No capacity-ranked model stays fully on this GPU even when it is
+        # idle (a 4GB card, where Phi-4 mini at 8K needs ~3.7 GB of device
+        # memory against ~2.7 GB CUDA offers). Keep the capacity-ranked
+        # choice with its declared settings, as before GPU residency was
+        # enforced: its placement is verified after load and reported. Which
+        # model these tiers should default to is the default-model work's
+        # decision, not this estimator's (unmeasured on a 4GB card).
+        return spilling
     if agent_ready_only:
         return []
 
@@ -517,15 +528,6 @@ def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
             continue
         candidates.append((score_model(candidate_model, capacity_gb, profile), candidate_model))
     if not candidates:
-        if is_discrete_gpu(backend, memory_type, vram_mb):
-            # Every capacity fit would spill layers to the CPU. Offer the best
-            # model that stays fully on the GPU instead of a partial load.
-            resident = resident_fallback(
-                catalog, capacity_gb, profile, installable_only, backend, memory_type,
-                vram_mb, ram_gb, host_arch, max_size_mb,
-                gpu_platform=gpu_platform, gpu_count=gpu_count,
-            )
-            return [resident] if resident is not None else []
         # A hardware-matching profile is a safety boundary. If it failed its
         # RAM gate, do not reintroduce that model through the generic fallback.
         fallback_pool = [
@@ -625,6 +627,27 @@ def recommendation_reason(model: dict[str, Any], capacity_gb: float, memory_labe
     runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else None
     context_k = int(effective_context_length(model, runtime_profile) / 1024)
     required = effective_required_memory_gb(model, runtime_profile)
+    if isinstance(model.get("_gpu_residency"), dict) and not model.get("_residency_fits", True):
+        residency = model["_gpu_residency"]
+        projection = residency["projection"]
+        if model.get("_residency_spills"):
+            residency_note = (
+                f" It does not stay fully on this GPU even when the GPU is idle: "
+                f"llama.cpp needs about {projection['totalMiB'] / 1024:.1f}GB against "
+                f"{max(residency['budgetMiB'], 0) / 1024:.1f}GB after the driver/runtime "
+                f"reserve and its {residency['settings']['fitTargetMiB']} MiB margin, so "
+                f"some layers will run on the CPU; placement is reported after load."
+            )
+        else:
+            residency_note = (
+                f" Other processes hold {residency['otherUsedMiB']:.0f} MiB of GPU "
+                f"memory right now, so it is configured to use as little GPU memory "
+                f"as it can at {context_k}K context"
+                + (f" ({', '.join(model.get('_residency_steps') or [])})" if model.get("_residency_steps") else "")
+                + "; if that memory stays in use some layers run on the CPU and the "
+                "placement is reported after load."
+            )
+        return _base_reason(model, capacity_gb, memory_label, backend, runtime_profile) + residency_note
     if isinstance(model.get("_gpu_residency"), dict):
         residency = model["_gpu_residency"]
         label = (
@@ -642,6 +665,13 @@ def recommendation_reason(model: dict[str, Any], capacity_gb: float, memory_labe
             f"counted, on {backend}. Throughput still requires a local benchmark "
             f"after first launch."
         )
+    return _base_reason(model, capacity_gb, memory_label, backend, runtime_profile)
+
+
+def _base_reason(model: dict[str, Any], capacity_gb: float, memory_label: str,
+                 backend: str, runtime_profile: dict[str, Any] | None) -> str:
+    context_k = int(effective_context_length(model, runtime_profile) / 1024)
+    required = effective_required_memory_gb(model, runtime_profile, residency=False)
     if runtime_profile:
         label = runtime_profile.get("label") or runtime_profile.get("id") or "advanced runtime profile"
         runtime = runtime_profile.get("runtime") or "llama.cpp"
@@ -709,6 +739,12 @@ def main() -> int:
         "--gpu-count", type=int, default=1,
         help="Number of GPUs whose memory --vram-mb sums; each keeps its own reserve.",
     )
+    parser.add_argument(
+        "--other-used-mib", type=float, default=0.0,
+        help="GPU memory (MiB, summed over GPUs) already held by other processes, "
+             "such as a desktop drawn on the NVIDIA GPU. The model is chosen for the "
+             "idle GPU; its settings are planned so it stays resident beside them.",
+    )
     parser.add_argument("--installable-only", action="store_true")
     parser.add_argument(
         "--agent-ready-only",
@@ -727,6 +763,7 @@ def main() -> int:
     capacity_gb, memory_label = usable_memory_gb(args.backend, args.memory_type, args.vram_mb, args.ram_gb)
     gpu_platform = detect_gpu_platform() if args.platform == "auto" else args.platform
     gpu_count = max(int(args.gpu_count or 1), 1)
+    other_used_mib = max(float(args.other_used_mib or 0.0), 0.0)
     confidence = "high" if args.backend not in {"unknown", "none"} and capacity_gb > 0 else "medium"
     ranked = rank_models(
         catalog,
@@ -742,6 +779,7 @@ def main() -> int:
         args.agent_ready_only,
         gpu_platform=gpu_platform,
         gpu_count=gpu_count,
+        other_used_mib=other_used_mib,
     )
     if not ranked:
         if args.agent_ready_only:
@@ -760,7 +798,7 @@ def main() -> int:
         arch_candidates = rank_models(
             [arch_selected], capacity_gb, profile, args.installable_only,
             args.backend, args.memory_type, args.vram_mb, args.ram_gb, args.host_arch,
-            gpu_platform=gpu_platform, gpu_count=gpu_count,
+            gpu_platform=gpu_platform, gpu_count=gpu_count, other_used_mib=other_used_mib,
         )
         arch_selected = arch_candidates[0] if arch_candidates else None
     if arch_selected:
@@ -806,6 +844,8 @@ def main() -> int:
         "memory_capacity_gb": round(capacity_gb, 1),
         "memory_label": memory_label,
         "gpu_residency": selected.get("_gpu_residency"),
+        "gpu_residency_fits": selected.get("_residency_fits"),
+        "gpu_residency_idle_fits": selected.get("_residency_idle_fits"),
         "gpu_residency_adjustments": selected.get("_residency_steps") or [],
         "selected": selected_public,
         "reason": reason,

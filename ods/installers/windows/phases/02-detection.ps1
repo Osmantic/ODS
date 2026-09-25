@@ -112,6 +112,20 @@ if (-not $env:MODEL_PROFILE) {
 }
 
 $tierConfig = Resolve-TierConfig -Tier $selectedTier
+# GPU memory held by a running ODS llama-server (a re-run over an existing
+# install) is not another process's: do not plan the model around it.
+if ($gpuInfo.ContainsKey("UsedMB") -and $gpuInfo.UsedMB -gt 0) {
+    $odsLlamaRunning = $false
+    try {
+        $runningNames = & docker ps --format "{{.Names}}" 2>$null
+        if ($LASTEXITCODE -eq 0 -and ($runningNames -split "`n" | Where-Object { $_.Trim() -eq "ods-llama-server" })) {
+            $odsLlamaRunning = $true
+        }
+    } catch {
+        $odsLlamaRunning = $false
+    }
+    if ($odsLlamaRunning) { $gpuInfo.UsedMB = 0 }
+}
 $tierConfig = Resolve-CatalogModelRecommendation `
     -TierConfig $tierConfig `
     -Tier $selectedTier `
