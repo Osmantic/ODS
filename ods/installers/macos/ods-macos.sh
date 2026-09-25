@@ -732,6 +732,8 @@ start_native_llama() {
     # for, and only added when supported by, the selected runtime.
     macos_resolve_checkpoint_args "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$reasoning_fmt" || return 1
     llama_args+=(${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}"})
+    macos_resolve_chat_template_args "$INSTALL_DIR"
+    llama_args+=(${MACOS_NATIVE_CHAT_TEMPLATE_ARGS[@]+"${MACOS_NATIVE_CHAT_TEMPLATE_ARGS[@]}"})
     fi
 
     # Artifact and argument verification must precede termination of working inference.

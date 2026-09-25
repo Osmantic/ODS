@@ -584,6 +584,8 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
             unset _selector_max_size_mb _pixel_default_selector
             if [[ -n "$_selector_env" ]]; then
                 if command -v load_model_selector_env_from_output >/dev/null 2>&1; then
+                    # A chat template belongs to the selected model only.
+                    unset LLAMA_ARG_CHAT_TEMPLATE_FILE
                     load_model_selector_env_from_output <<< "$_selector_env"
                     log "Catalog model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"
                 else
@@ -644,6 +646,7 @@ if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${T
                 unset LLAMA_ARG_CHECKPOINT_EVERY_NT LLAMA_ARG_SPEC_TYPE
                 unset LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_RAM
                 unset LLAMA_ARG_SPEC_DRAFT_N_MAX LLAMA_ARG_SPLIT_MODE LLAMA_ARG_TENSOR_SPLIT
+                unset LLAMA_ARG_CHAT_TEMPLATE_FILE
                 load_model_selector_env_from_output <<< "$_preserved_model_env"
                 log "Preserved active local model across installer rerun: ${LLM_MODEL} (${GGUF_FILE})"
             fi

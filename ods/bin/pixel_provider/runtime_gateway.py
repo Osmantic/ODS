@@ -41,6 +41,13 @@ FIELDS = {'model','messages','stream','stream_options','max_tokens','max_complet
     'presence_penalty','frequency_penalty','logprobs','top_logprobs','user','n','reasoning_effort','chat_template_kwargs'}
 
 
+# Pixel asks Qwen chat templates to keep earlier (empty) think blocks so a
+# local llama.cpp server can reuse its prompt cache. A shared ODS host on an
+# earlier release rejects every template key except enable_thinking (HTTP 400),
+# and a cloud API has no use for it, so only local providers receive it.
+HOST_ONLY_TEMPLATE_KEYS = frozenset({'preserve_thinking'})
+
+
 class RuntimeErrorCode(ValueError):
     pass
 
@@ -71,10 +78,23 @@ def validate_request(payload):
             not isinstance(tool,dict) or tool.get('type') != 'function' for tool in payload['tools'])):
         raise RuntimeErrorCode('unsupported-tools')
     if 'chat_template_kwargs' in payload and (not isinstance(payload['chat_template_kwargs'],dict)
-            or set(payload['chat_template_kwargs']) != {'enable_thinking'}
-            or type(payload['chat_template_kwargs']['enable_thinking']) is not bool):
+            or not payload['chat_template_kwargs']
+            or not set(payload['chat_template_kwargs']) <= {'enable_thinking','preserve_thinking'}
+            or any(type(value) is not bool for value in payload['chat_template_kwargs'].values())):
         raise RuntimeErrorCode('unsupported-template-options')
     return payload
+
+
+def provider_request(payload,provider):
+    outgoing = copy.deepcopy(payload)
+    outgoing['model'] = provider['model']
+    template = outgoing.get('chat_template_kwargs')
+    if isinstance(template,dict) and (provider['kind'] != 'local' or provider['model'] == 'ods/shared'):
+        for key in HOST_ONLY_TEMPLATE_KEYS:
+            template.pop(key,None)
+        if not template:
+            del outgoing['chat_template_kwargs']
+    return outgoing
 
 
 async def pinned_target(provider):
@@ -221,8 +241,7 @@ def create_app(config,credentials,token,*,events=None,client_factory=None):
                     url,headers,extensions = await guarded(pinned_target(provider))
                     if credentials.get(provider['id']):
                         headers['Authorization'] = 'Bearer '+credentials[provider['id']]
-                    outgoing = copy.deepcopy(payload)
-                    outgoing['model'] = provider['model']
+                    outgoing = provider_request(payload,provider)
                     if 'max_tokens' not in outgoing and 'max_completion_tokens' not in outgoing:
                         leader = next(p for p in config['providers'] if p['id'] == config['roles']['leader'])
                         outgoing['max_tokens'] = min(1024,leader['maxOutputTokens'])

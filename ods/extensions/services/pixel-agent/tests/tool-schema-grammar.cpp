@@ -10,6 +10,25 @@
 
 int main() try {
     const auto input = nlohmann::ordered_json::parse(std::cin);
+    if (input.contains("render")) {
+        // Render an OpenAI chat request exactly as llama-server's Jinja path
+        // does (same message/tool parsing and template workarounds).
+        const auto & render = input.at("render");
+        const auto templates = common_chat_templates_init(nullptr, input.at("chatTemplate").get<std::string>());
+        common_chat_templates_inputs request;
+        request.messages = common_chat_msgs_parse_oaicompat(render.at("messages"));
+        request.tools = common_chat_tools_parse_oaicompat(render.value("tools", nlohmann::ordered_json::array()));
+        request.use_jinja = true;
+        request.add_generation_prompt = true;
+        request.enable_thinking = render.value("enableThinking", false);
+        // Keep the object alive for the loop: items() only references it.
+        const auto kwargs = render.value("chatTemplateKwargs", nlohmann::ordered_json::object());
+        for (const auto & [key, value] : kwargs.items()) {
+            request.chat_template_kwargs[key] = value.dump();
+        }
+        std::cout << nlohmann::ordered_json{{"prompt", common_chat_templates_apply(templates.get(), request).prompt}}.dump();
+        return 0;
+    }
     std::string grammar_text;
     if (input.contains("chatTemplate")) {
         // Run the same template/tool grammar composition as llama-server. No
