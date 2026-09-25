@@ -174,6 +174,9 @@ test: ## Run unit and contract tests
 	@echo "=== ods-update.sh rollback picks the newest backup ==="
 	@bash tests/test-update-rollback-latest-backup.sh
 	@echo ""
+	@echo "=== backup/restore disk-space preflight ==="
+	@bash tests/test-disk-space-preflight.sh
+	@echo ""
 	@echo "=== bootstrap-upgrade spawn closes inherited FDs ==="
 	@bash tests/test-bootstrap-upgrade-close-inherited-fds.sh
 	@echo ""

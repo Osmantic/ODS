@@ -310,6 +310,9 @@ jobs:
       - name: System service ownership and shutdown recovery
         run: bash tests/test-uninstall-mdns-unit.sh
 
+      - name: Disk Space Preflight Tests
+        run: bash tests/test-disk-space-preflight.sh
+
       - name: Windows Compose Failure Report Tests
         run: bash tests/test-windows-compose-failure-report.sh
 

@@ -40,6 +40,12 @@ mkdir -p "$FAKE_ODS/data/open-webui"
 mkdir -p "$FAKE_ODS/.backups"
 echo test > "$FAKE_ODS/.version"
 echo hello > "$FAKE_ODS/data/open-webui/file.txt"
+# Both scripts source lib/rsync.sh relative to ODS_DIR, before either reaches
+# its disk-space preflight. Without it they exit 1 at the source line — which
+# still looks like "the command failed", so the assertions below passed over
+# untested code.
+mkdir -p "$FAKE_ODS/lib"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$FAKE_ODS/lib/"
 
 info "Backup should fail preflight when disk is low"
 set +e
