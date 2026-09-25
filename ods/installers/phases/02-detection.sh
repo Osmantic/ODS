@@ -606,6 +606,9 @@ INSTALLER_RECOMMENDED_MODEL="${LLM_MODEL:-}"
 INSTALLER_RECOMMENDED_GGUF="${GGUF_FILE:-}"
 INSTALLER_RECOMMENDED_CONTEXT="${MAX_CONTEXT:-}"
 MODEL_SELECTION_SOURCE="installer"
+# Set only by a preserved contract whose recorded context was capped to the
+# model's native maximum; phase 03 reads it at the Hermes floor.
+unset MODEL_PRESERVED_RECORDED_CONTEXT
 if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${TIER:-}" != "CLOUD" ]]; then
     _preserve_script="$SCRIPT_DIR/scripts/preserve-active-model.py"
     if [[ -f "$_preserve_script" ]]; then

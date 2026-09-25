@@ -91,6 +91,9 @@ cp lib/python-cmd.sh "$fixture_dir/lib/"
 # The REC_* arguments are phase 02's fresh recommendation (INSTALLER_RECOMMENDED_*);
 # they default to the configured model, i.e. this run's own pick. A rerun that
 # preserved an older active model passes the recommendation it did not apply.
+# RECORDED_CONTEXT (environment) is preserve-active-model.py's
+# MODEL_PRESERVED_RECORDED_CONTEXT: the preserved pick's recorded context,
+# set only when it was capped to the model's native maximum.
 run_fit_case() {
     (
         set -euo pipefail
@@ -119,6 +122,7 @@ run_fit_case() {
         GGUF_FILE="$5"
         MAX_CONTEXT="$6"
         MODEL_SELECTION_SOURCE="$7"
+        MODEL_PRESERVED_RECORDED_CONTEXT="${RECORDED_CONTEXT:-}"
         INSTALLER_RECOMMENDED_MODEL="${8:-$4}"
         INSTALLER_RECOMMENDED_GGUF="${9:-$5}"
         INSTALLER_RECOMMENDED_CONTEXT="${10:-$6}"
@@ -140,6 +144,7 @@ run_fit_case() {
         printf 'INSTALLER_RECOMMENDED_CONTEXT=%s\n' "$INSTALLER_RECOMMENDED_CONTEXT"
         printf 'INSTALLER_RECOMMENDED_MODEL=%s\n' "$INSTALLER_RECOMMENDED_MODEL"
         printf 'HERMES_CONTEXT_BELOW_FLOOR=%s\n' "$HERMES_CONTEXT_BELOW_FLOOR"
+        printf 'MODEL_PRESERVED_RECORDED_CONTEXT=%s\n' "${MODEL_PRESERVED_RECORDED_CONTEXT:-}"
         printf 'WARNINGS=%s\n' "$WARNINGS"
     )
 }
@@ -208,6 +213,31 @@ if command -v python3 >/dev/null 2>&1; then
     out="$(run_fit_case 49140 128 4 deepseek-r1-distill-llama-70b DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf 65536 installer         qwen3.6-35b-a3b Qwen3.6-35B-A3B-UD-Q4_K_M.gguf 131072)"
     [[ "$(field "$out" INSTALLER_RECOMMENDED_CONTEXT)" == "131072" ]]         || fail "the recommended Qwen3.6-35B-A3B must keep its 131072, not the preserved R1-70B 65536: $out"
     pass "Linux phase 03 records the served context only for this run's own pick"
+
+    # (h) A rerun preserved an older installer pick recorded at a context
+    # above its native maximum (an older selector's Qwen3-30B-A3B at 131072 on
+    # a 40960-token GGUF): the helper capped it to 40960, below the floor. The
+    # installer chose it and it never served its record, so it is re-selected
+    # instead of being kept with Talk unavailable.
+    out="$(RECORDED_CONTEXT=131072 run_fit_case 49140 128 4 qwen3-30b-a3b Qwen3-30B-A3B-Q4_K_M.gguf 40960 installer \
+        qwen3.6-35b-a3b Qwen3.6-35B-A3B-UD-Q4_K_M.gguf 131072)"
+    [[ "$(field "$out" LLM_MODEL)" == "qwen3.6-35b-a3b" ]] || fail "a capped installer pick below the floor must be re-selected: $out"
+    [[ "$(field "$out" MAX_CONTEXT)" -ge 65536 ]] || fail "the re-selected model must serve the floor: $out"
+    [[ "$(field "$out" HERMES_CONTEXT_BELOW_FLOOR)" == "false" ]] || fail "the re-selection serves the floor: $out"
+    [[ "$(field "$out" INSTALLER_RECOMMENDED_MODEL)" == "qwen3.6-35b-a3b" ]] || fail "the re-selection is the recommendation: $out"
+    [[ "$(field "$out" WARNINGS)" == *"qwen3-30b-a3b (at 40960) cannot serve 64K here"* ]] \
+        || fail "the re-selection must be announced: $out"
+    [[ -z "$(field "$out" MODEL_PRESERVED_RECORDED_CONTEXT)" ]] || fail "phase 03 must clear the cap report: $out"
+    pass "Linux Hermes floor re-selects a capped installer pick left below the floor"
+
+    # (i) The same capped model chosen by the owner in the Dashboard is kept.
+    out="$(RECORDED_CONTEXT=131072 run_fit_case 49140 128 4 qwen3-30b-a3b Qwen3-30B-A3B-Q4_K_M.gguf 40960 dashboard \
+        qwen3.6-35b-a3b Qwen3.6-35B-A3B-UD-Q4_K_M.gguf 131072)"
+    [[ "$(field "$out" LLM_MODEL)" == "qwen3-30b-a3b" ]] || fail "a Dashboard choice must never be replaced: $out"
+    [[ "$(field "$out" MAX_CONTEXT)" == "40960" ]] || fail "a Dashboard choice keeps its native context: $out"
+    [[ "$(field "$out" HERMES_CONTEXT_BELOW_FLOOR)" == "true" ]] || fail "below-floor state must be exported: $out"
+    [[ "$(field "$out" WARNINGS)" == *"ODS Talk stays unavailable"* ]] || fail "the cap must say Talk is unavailable: $out"
+    pass "Linux Hermes floor keeps a capped Dashboard choice and says Talk is unavailable"
 else
     echo "  SKIP: python3 unavailable; fit re-check cases need the real selector"
 fi
