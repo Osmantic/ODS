@@ -34,7 +34,7 @@ import {
   statusFileFromEnv,
   statusPayload,
 } from "./projection.mjs";
-import { promptContractForAgent } from "./prompt-contract.mjs";
+import { composePromptBuildResult, promptContractForAgent } from "./prompt-contract.mjs";
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import {
@@ -342,7 +342,14 @@ export default definePluginEntry({
       });
       const repositoryEvidence = contract ? await extensionRepositoryContext(event,
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
-      return contract ? { ...contract, ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : undefined;
+      // Only configuration-derived text may enter system space; the goal,
+      // message-selected contracts and repository evidence ride on this turn.
+      return composePromptBuildResult(contract, {
+        activity: ACTIVITY_CONTRACT,
+        execution: executionContext(),
+        goal: goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : "",
+        repositoryEvidence,
+      });
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
