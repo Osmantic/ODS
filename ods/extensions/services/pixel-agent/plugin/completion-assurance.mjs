@@ -84,11 +84,28 @@ function sourceUrls(result) {
 
 // This text is part of the system prompt, so it must stay byte-identical across
 // turns: a per-turn clock here invalidates the local server's prompt cache for
-// the whole conversation behind it. OpenClaw already prefixes each owner
-// message with that message's own timestamp, which is stable when replayed.
-export function executionContext() {
+// the whole conversation behind it. Portal owner messages carry no envelope
+// timestamp, so state the host's calendar date: it changes once a day, not
+// once a turn.
+export function hostDateContext(now = new Date()) {
+  let zone = 'UTC';
+  try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { zone = 'UTC'; }
+  let date, weekday;
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {timeZone: zone, year: 'numeric', month: '2-digit',
+      day: '2-digit', weekday: 'long'}).formatToParts(now).map(part => [part.type, part.value]));
+    date = `${parts.year}-${parts.month}-${parts.day}`; weekday = parts.weekday;
+  } catch {
+    zone = 'UTC'; date = now.toISOString().slice(0, 10);
+    weekday = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][now.getUTCDay()];
+  }
+  return `Today's date on the host is ${weekday}, ${date} (time zone ${zone}). Treat it as the actual current date, not your training cutoff. `;
+}
+
+export function executionContext(now = new Date()) {
   return 'For exact file contents, prefer write and verify the bytes with read. If shell writing is required, use portable printf with a literal format, not echo -n or echo escape handling, which differs between shells. Do not claim a match when readback differs. ' +
-    'Each owner message begins with its timestamp from the host clock. Treat that as the actual current date, not your training cutoff. Honor the owner\'s explicit date and timezone. For current news, verify publication dates in sources; do not label older results as today\'s news. ' +
+    hostDateContext(now) +
+    'Honor the owner\'s explicit date and timezone. When searching, anchor dates and months to that current date. For current news, verify publication dates in sources; do not label older results as today\'s news. ' +
     'An action request requires execution, not a final promise. Short follow-ups such as "ok, consulte" continue the preceding owner task. Tool Search discovers capabilities, not news or files: use tool names in its query, then invoke the returned exact ID and schema. Empty search results do not prove that an event did not occur or that a date is future. Try a relevant public source directly or state what remains unverified. When a material preference is missing, discover pixel_ods_ask_user to present 1–3 questions with choices, then wait. Its exact arguments look like {"questions":[{"id":"style","question":"Which style?","options":["Minimal","Colorful"]}]}; translate the question and options into the owner language. Do not ask about routine steps or use choices as permission for unrelated actions.';
 }
 

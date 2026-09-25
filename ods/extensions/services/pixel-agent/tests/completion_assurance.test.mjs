@@ -101,17 +101,25 @@ test('a promise after partial progress still needs a delivered result', () => {
 });
 test('clock context is explicit, portable and preserves requested dates', () => {
   const value=executionContext();
-  assert.match(value,/Each owner message begins with its timestamp/);
+  assert.match(value,/Today's date on the host is \w+, \d{4}-\d{2}-\d{2} \(time zone [^)]+\)/);
   assert.match(value,/owner's explicit date and timezone/);
   assert.match(value,/prefer write and verify the bytes with read/);
   assert.match(value,/portable printf/);
   assert.match(value,/Do not claim a match when readback differs/);
 });
-test('system-prompt execution context carries no clock and is byte-stable across turns', async () => {
+test('system-prompt execution context carries the date but no clock and is byte-stable within a day', async () => {
   const first=executionContext();
   await new Promise(resolve=>setTimeout(resolve,5));
   assert.equal(executionContext(),first);
-  assert.doesNotMatch(first,/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+  assert.doesNotMatch(first,/\d{2}:\d{2}/);
+  // Portal owner messages carry no envelope timestamp, so the date must be here.
+  const {hostDateContext}=await import('../plugin/completion-assurance.mjs');
+  const zone=Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const noon=new Date('2026-09-25T12:00:00Z');
+  const sameDay=[new Date(noon.getTime()-60*1000), new Date(noon.getTime()+60*1000)];
+  for (const moment of sameDay) assert.equal(hostDateContext(moment), hostDateContext(noon), zone);
+  assert.notEqual(hostDateContext(noon), hostDateContext(new Date('2026-09-27T12:00:00Z')));
+  assert.match(executionContext(noon),/2026-09-2[456]/);
 });
 test('sources must come from structured tool evidence, not invented prose links', () => {
   const guard=createCompletionAssurance();guard.begin('Notícias de hoje');
