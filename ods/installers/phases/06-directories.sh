@@ -1373,8 +1373,8 @@ VIDEO_GID=$(getent group video 2>/dev/null | cut -d: -f3 || echo 44)
 RENDER_GID=$(getent group render 2>/dev/null | cut -d: -f3 || echo 992)
 
 #=== Intel Arc / oneAPI SYCL Settings ===
-ONEAPI_DEVICE_SELECTOR=level_zero:gpu
-SYCL_CACHE_PERSISTENT=1
+# Set level_zero:0 on hosts with more than one Intel GPU.
+ONEAPI_DEVICE_SELECTOR=$(dotenv_value "$(_env_get ONEAPI_DEVICE_SELECTOR level_zero:gpu)")
 ZES_ENABLE_SYSMAN=1
 INTEL_ENV
 fi)

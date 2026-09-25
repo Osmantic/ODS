@@ -1065,8 +1065,8 @@ MODEL_PERFORMANCE_LABEL=$performanceLabel
 GPU_BACKEND=$GpuBackend
 SYSTEM_RAM_GB=$SystemRamGB
 N_GPU_LAYERS=$nGpuLayers
-$(if ($LlamaServerImage) { "LLAMA_SERVER_IMAGE=$LlamaServerImage" } else { "#LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda" })
-$(if ($llamaServerImageFallback) { "LLAMA_SERVER_IMAGE_FALLBACK=$llamaServerImageFallback" } else { "#LLAMA_SERVER_IMAGE_FALLBACK=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014" })
+$(if ($LlamaServerImage) { "LLAMA_SERVER_IMAGE=$LlamaServerImage" } else { "#LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f" })
+$(if ($llamaServerImageFallback) { "LLAMA_SERVER_IMAGE_FALLBACK=$llamaServerImageFallback" } else { "#LLAMA_SERVER_IMAGE_FALLBACK=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f" })
 $(if ($llamaServerMemoryLimit) { "LLAMA_SERVER_MEMORY_LIMIT=$llamaServerMemoryLimit" })
 $(if ($LemonadeServerImage) { "LEMONADE_SERVER_IMAGE=$LemonadeServerImage" } else { "#LEMONADE_SERVER_IMAGE=ghcr.io/lemonade-sdk/lemonade-server:v10.2.0" })
 #=== llama.cpp Runtime Tuning ===

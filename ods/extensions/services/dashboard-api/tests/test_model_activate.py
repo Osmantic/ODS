@@ -2890,6 +2890,65 @@ class TestLaunchNativeLlamaServer:
         assert "deepseek" in cmd
         assert _kwargs["cwd"] == str(tmp_path)
 
+    @pytest.mark.parametrize(
+        ("help_text", "help_rc", "reasoning", "expected"),
+        [
+            # b9014 has --reasoning (default auto): pass the mode itself.
+            ("-rea, --reasoning [on|off|auto]\n--reasoning-format FORMAT\n", 0, "off", ["--reasoning", "off"]),
+            ("-rea, --reasoning [on|off|auto]\n--reasoning-format FORMAT\n", 0, "", ["--reasoning", "off"]),
+            ("-rea, --reasoning [on|off|auto]\n--reasoning-format FORMAT\n", 0, "on", ["--reasoning", "on"]),
+            # b8248 has no --reasoning: keep the format, and for off add
+            # --reasoning-budget 0, which disables thinking there.
+            ("--reasoning-format FORMAT\n--reasoning-budget N\n", 0, "off",
+             ["--reasoning-format", "none", "--reasoning-budget", "0"]),
+            ("--reasoning-format FORMAT\n--reasoning-budget N\n", 0, "on", ["--reasoning-format", "deepseek"]),
+            ("--reasoning-format FORMAT\n", 0, "off", ["--reasoning-format", "none"]),
+            # A mode that is not off/on/auto keeps the format mapping.
+            ("-rea, --reasoning [on|off|auto]\n", 0, "deepseek", ["--reasoning-format", "deepseek"]),
+            # An unreadable --help keeps the previous behaviour.
+            ("-rea, --reasoning [on|off|auto]\n", 1, "off", ["--reasoning-format", "none"]),
+        ],
+    )
+    def test_windows_passes_reasoning_where_the_runtime_has_it(
+        self, monkeypatch, tmp_path, help_text, help_rc, reasoning, expected,
+    ):
+        env_path = tmp_path / ".env"
+        env_path.write_text(
+            f"GGUF_FILE=test-model.gguf\nLLAMA_REASONING={reasoning}\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "data" / "models").mkdir(parents=True)
+        llama_bin = tmp_path / "llama-server" / "llama-server.exe"
+        llama_bin.parent.mkdir(parents=True)
+        llama_bin.write_text("", encoding="utf-8")
+        calls = []
+
+        class _FakeProc:
+            pid = 4321
+
+        def fake_run(cmd, **_kwargs):
+            assert cmd == [str(llama_bin), "--help"]
+            return subprocess.CompletedProcess(cmd, help_rc, help_text, "")
+
+        def fake_popen(cmd, **kwargs):
+            calls.append(cmd)
+            return _FakeProc()
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(_mod.subprocess, "Popen", fake_popen)
+
+        _launch_native_llama_server(
+            env_path, llama_bin, tmp_path / "data" / "llama-server.log", tmp_path / "data" / "llama-server.pid",
+        )
+
+        cmd = calls[0]
+        start = cmd.index(expected[0])
+        assert cmd[start:start + len(expected)] == expected
+        for flag in ("--reasoning", "--reasoning-format", "--reasoning-budget"):
+            assert (flag in cmd) == (flag in expected), flag
+
     def test_llm_bridge_is_disabled_before_native_bind(self, monkeypatch, tmp_path):
         env = {
             "GGUF_FILE": "test-model.gguf",
@@ -4106,6 +4165,48 @@ def test_model_gpu_plan_expands_davep_two_gpu_assignment(tmp_path, monkeypatch):
     merged = _mod._decode_gpu_assignment(updates["GPU_ASSIGNMENT_JSON_B64"])
     assert merged["gpu_assignment"]["strategy"] == "colocated"
     assert merged["gpu_assignment"]["services"]["whisper"]["gpus"] == ["GPU-ti-2"]
+
+
+@pytest.mark.parametrize("mode", ["tensor", "hybrid"])
+def test_nvidia_model_gpu_plan_never_emits_row_split(tmp_path, monkeypatch, mode):
+    # CUDA row split fails at model load from llama.cpp b9890 ("does not
+    # support split buffers") and is not fleet-qualified; NVIDIA tensor and
+    # hybrid assignments run with layer split.
+    _install_dir, target, env = _write_nvidia_gpu_plan_fixture(tmp_path, monkeypatch)
+    planned_gpus = ["GPU-ti-0", "GPU-1080", "GPU-ti-2"]
+    monkeypatch.setattr(
+        _mod,
+        "_run_nvidia_gpu_planner",
+        lambda *_args: {
+            "gpu_assignment": {
+                "version": "1.0",
+                "strategy": "dedicated",
+                "services": {
+                    "llama_server": {
+                        "gpus": planned_gpus,
+                        "gpu_indices": [0, 1, 2],
+                        "parallelism": {
+                            "mode": mode,
+                            "tensor_parallel_size": 3,
+                            "pipeline_parallel_size": 1,
+                            "tensor_split": [1, 1, 1],
+                        },
+                    }
+                },
+            }
+        },
+    )
+
+    plan = _mod._plan_nvidia_model_gpu_assignment(
+        env,
+        {"vram_required_gb": 24, "size_mb": 21110},
+        target,
+    )
+
+    assert plan is not None
+    assert plan["split_mode"] == "layer"
+    assert plan["env_updates"]["LLAMA_ARG_SPLIT_MODE"] == "layer"
+    assert plan["env_updates"]["LLAMA_ARG_TENSOR_SPLIT"] == "1,1,1"
 
 
 def test_model_gpu_plan_preserves_sufficient_existing_assignment(tmp_path, monkeypatch):
@@ -7550,6 +7651,55 @@ class TestModelActivateRollback:
 
         assert handler.response_code == 400
         assert "failed catalog verification" in handler.parse_response()["error"]
+        assert env_path.read_text(encoding="utf-8") == env_text
+        assert models_ini.read_text(encoding="utf-8") == ini_text
+
+    @pytest.mark.parametrize(
+        ("gpu_backend", "catalog_image", "blocked"),
+        [
+            ("nvidia", None, True),
+            ("cpu", None, True),
+            ("apple", "ghcr.io/ggml-org/llama.cpp:server-cuda-b11146@sha256:" + "a" * 64, True),
+            ("nvidia", "ghcr.io/ggml-org/llama.cpp:server-cuda-b11146@sha256:" + "a" * 64, False),
+        ],
+    )
+    def test_activation_refuses_model_the_default_runtime_cannot_load(
+        self, tmp_path, monkeypatch, gpu_backend, catalog_image, blocked,
+    ):
+        install_dir, env_path, env_text, models_ini, ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path, gpu_backend=gpu_backend)
+        )
+        library_path = install_dir / "config" / "model-library.json"
+        library = json.loads(library_path.read_text(encoding="utf-8"))
+        library["models"][0]["llama_server_image"] = catalog_image
+        library["models"][0]["default_runtime_compatibility"] = {
+            "status": "incompatible",
+            "runtime": "llama.cpp b9014",
+            "reason": "internal detail",
+            "userNote": "This model needs a newer llama.cpp runtime than ODS installs by default.",
+        }
+        library_path.write_text(json.dumps(library), encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+        reached_runtime = []
+
+        def refuse(*_args, **_kwargs):
+            reached_runtime.append(True)
+            raise RuntimeError("stop after the runtime-compatibility gate")
+
+        monkeypatch.setattr(_mod, "_select_runtime_profile", refuse)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        if blocked:
+            assert handler.response_code == 400
+            assert handler.parse_response()["error"] == (
+                "This model needs a newer llama.cpp runtime than ODS installs by default."
+            )
+            assert reached_runtime == []
+        else:
+            assert reached_runtime == [True]
         assert env_path.read_text(encoding="utf-8") == env_text
         assert models_ini.read_text(encoding="utf-8") == ini_text
 

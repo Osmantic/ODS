@@ -11,7 +11,7 @@
       "id": "base.llama-server",
       "type": "image",
       "path": "docker-compose.base.yml",
-      "value": "ghcr.io/ggml-org/llama.cpp:server-b9014"
+      "value": "ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53"
     },
     {
       "id": "base.open-webui",
@@ -23,25 +23,25 @@
       "id": "apple.llama-server",
       "type": "image",
       "path": "docker-compose.apple.yml",
-      "value": "ghcr.io/ggml-org/llama.cpp:server-b8248"
+      "value": "ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53"
     },
     {
       "id": "cpu.llama-server",
       "type": "image",
       "path": "docker-compose.cpu.yml",
-      "value": "ghcr.io/ggml-org/llama.cpp:server-b9014"
+      "value": "ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53"
     },
     {
       "id": "intel.llama-server",
       "type": "image",
       "path": "docker-compose.intel.yml",
-      "value": "ghcr.io/ggml-org/llama.cpp:server-intel-b8248"
+      "value": "ghcr.io/ggml-org/llama.cpp:server-intel-b9014@sha256:9c7bbaad3663523a3deb8927d3cfbf58d33f00a7634c69843e9eeeda01568c1b"
     },
     {
       "id": "nvidia.llama-server",
       "type": "image",
       "path": "docker-compose.nvidia.yml",
-      "value": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014"
+      "value": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
     },
     {
       "id": "ape.python",
@@ -358,26 +358,26 @@
   "allow_variable_refs": [
     {
       "path": "docker-compose.base.yml",
-      "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014}",
-      "default": "ghcr.io/ggml-org/llama.cpp:server-b9014",
+      "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53}",
+      "default": "ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53",
       "reason": "Core llama.cpp image can be overridden for testing, but the shipped default is locked."
     },
     {
       "path": "docker-compose.nvidia.yml",
-      "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014}",
-      "default": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014",
+      "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f}",
+      "default": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f",
       "reason": "NVIDIA llama.cpp image can be overridden for testing, but the shipped default is locked."
     },
     {
       "path": "docker-compose.cpu.yml",
-      "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014}",
-      "default": "ghcr.io/ggml-org/llama.cpp:server-b9014",
+      "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53}",
+      "default": "ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53",
       "reason": "CPU llama.cpp image can be overridden for testing, but the shipped default is locked."
     },
     {
       "path": "docker-compose.intel.yml",
-      "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-intel-b8248}",
-      "default": "ghcr.io/ggml-org/llama.cpp:server-intel-b8248",
+      "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-intel-b9014@sha256:9c7bbaad3663523a3deb8927d3cfbf58d33f00a7634c69843e9eeeda01568c1b}",
+      "default": "ghcr.io/ggml-org/llama.cpp:server-intel-b9014@sha256:9c7bbaad3663523a3deb8927d3cfbf58d33f00a7634c69843e9eeeda01568c1b",
       "reason": "Intel llama.cpp image can be overridden for testing, but the shipped default is locked."
     },
     {

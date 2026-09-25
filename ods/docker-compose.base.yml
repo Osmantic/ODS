@@ -22,12 +22,15 @@ services:
   # Serves OpenAI-compatible API on port 8080
   # ============================================
   llama-server:
-    image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014}
+    image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53}
     container_name: ods-llama-server
     restart: unless-stopped
+    # config/llama-server/models.ini is not mounted: llama-server reads a
+    # preset file only with --models-preset (router mode), which ODS does not
+    # use; the model comes from --model below. ODS still writes models.ini as
+    # a record of the active model.
     volumes:
       - ./data/models:/models:z
-      - ./config/llama-server/models.ini:/config/models.ini:ro,z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${OLLAMA_PORT:-11434}:8080"
     command:
@@ -62,12 +65,22 @@ services:
       # any value, even 0 or empty, disables prompt caching.
       - LLAMA_ARG_NO_CACHE_PROMPT
       - LLAMA_ARG_CHECKPOINT_EVERY_NT
+      # --checkpoint-min-step replaced --checkpoint-every-n-tokens in
+      # llama.cpp b9310 and has different semantics (minimum spacing, not a
+      # fixed interval). The pinned b9014 image reads only
+      # LLAMA_ARG_CHECKPOINT_EVERY_NT; b9310 and later read only this one.
+      - LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT
       # Per-model speculative decoding (e.g. draft-mtp from a runtime
       # profile). Passed through only when set; the NVIDIA and CPU overlays
       # default it to ${LLAMA_SPEC_TYPE:-ngram-mod}. The AMD (Lemonade), Intel,
       # Arc and Apple overlays add no default.
       - LLAMA_ARG_SPEC_TYPE
       - LLAMA_ARG_SPEC_DRAFT_N_MAX
+      # Draft-model KV cache types (--spec-draft-type-k/-v). These are the
+      # names llama.cpp reads; ODS's native launchers take
+      # LLAMA_ARG_SPEC_DRAFT_TYPE_K/V instead and pass them as flags.
+      - LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K
+      - LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V
     security_opt:
       - no-new-privileges:true
     logging: *default-logging

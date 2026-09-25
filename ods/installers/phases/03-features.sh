@@ -699,8 +699,11 @@ elif [[ "$VENDOR" == "amd" ]]; then
 fi
 
 _mode=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.llama_server.parallelism.mode // "none"')
+# NVIDIA: layer split for every multi-GPU mode. CUDA row split is not
+# fleet-qualified and fails at model load from llama.cpp b9890 ("does not
+# support split buffers"). AMD (Lemonade) keeps row for tensor/hybrid.
 case "$_mode" in
-  tensor|hybrid) LLAMA_ARG_SPLIT_MODE="row"   ;;
+  tensor|hybrid) if [[ "$VENDOR" == "nvidia" ]]; then LLAMA_ARG_SPLIT_MODE="layer"; else LLAMA_ARG_SPLIT_MODE="row"; fi ;;
   pipeline)      LLAMA_ARG_SPLIT_MODE="layer" ;;
   *)             LLAMA_ARG_SPLIT_MODE="none"  ;;
 esac

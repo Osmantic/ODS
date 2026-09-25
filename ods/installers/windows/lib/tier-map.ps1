@@ -241,7 +241,7 @@ function Resolve-GemmaTierConfig {
 
     # Keep this aligned with docker-compose.nvidia.yml so preflight validates
     # the same CUDA runtime image compose will start.
-    $runtimeImage = "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014"
+    $runtimeImage = "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
     $runtimeTag = "b9014"
 
     switch ($Tier) {
@@ -264,8 +264,8 @@ function Resolve-GemmaTierConfig {
                 TierName   = "NVIDIA Ultra (90GB+)"
                 LlmModel   = "gemma-4-31b-it"
                 GgufFile   = "gemma-4-31B-it-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf"
+                GgufSha256 = "38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84"
                 MaxContext = 131072
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "gemma4"
@@ -278,8 +278,8 @@ function Resolve-GemmaTierConfig {
                 TierName   = "Strix Halo 90+"
                 LlmModel   = "gemma-4-31b-it"
                 GgufFile   = "gemma-4-31B-it-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf"
+                GgufSha256 = "38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84"
                 MaxContext = 131072
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "gemma4"
@@ -291,9 +291,9 @@ function Resolve-GemmaTierConfig {
             return @{
                 TierName   = "Strix Halo Compact"
                 LlmModel   = "gemma-4-26b-a4b-it"
-                GgufFile   = "gemma-4-26B-A4B-it-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufFile   = "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/c099eb48e663fd284577b04978a94ffccb261841/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+                GgufSha256 = "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f"
                 MaxContext = 65536
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "gemma4"
@@ -347,9 +347,9 @@ function Resolve-GemmaTierConfig {
             return @{
                 TierName   = "Pro"
                 LlmModel   = "gemma-4-26b-a4b-it"
-                GgufFile   = "gemma-4-26B-A4B-it-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufFile   = "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/c099eb48e663fd284577b04978a94ffccb261841/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+                GgufSha256 = "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f"
                 MaxContext = 16384
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "gemma4"
@@ -362,8 +362,8 @@ function Resolve-GemmaTierConfig {
                 TierName   = "Enterprise"
                 LlmModel   = "gemma-4-31b-it"
                 GgufFile   = "gemma-4-31B-it-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf"
+                GgufSha256 = "38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84"
                 MaxContext = 65536
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "gemma4"

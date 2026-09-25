@@ -1518,6 +1518,59 @@ restart_windows_lemonade_with_previous_model() {
     restart_windows_lemonade_with_full_model "$previous_gguf" "previous model"
 }
 
+# Print the checkpoint interval llama-server.exe can take, or nothing. Called
+# in a command substitution, so warnings go to stderr (the upgrade log).
+# Mirrors installers/macos/lib/native-checkpoint-args.py and
+# installers/windows/lib/native-llama-args.ps1: llama.cpp removed
+# --checkpoint-every-n-tokens in b9310, and llama-server exits on a flag it
+# does not know. The setting is opt-in, so an unusable value is dropped with a
+# warning rather than failing the swap.
+windows_native_checkpoint_interval() {
+    local llama_exe="$1" value="$2" number="" help_text
+    [[ -n "$value" ]] || return 0
+    if [[ "$value" == "-1" ]]; then
+        number="-1"
+    elif [[ "$value" =~ ^[0-9]{1,12}$ ]] && (( 10#$value >= 1 && 10#$value <= 262144 )); then
+        number="$((10#$value))"
+    else
+        log "WARNING: LLAMA_ARG_CHECKPOINT_EVERY_NT=$value is not an integer from -1 to 262144 (0 is not allowed); starting llama-server without it." >&2
+        return 0
+    fi
+    if command -v timeout >/dev/null 2>&1; then
+        help_text="$(timeout 15 "$llama_exe" --help 2>&1)" || help_text=""
+    else
+        help_text="$("$llama_exe" --help 2>&1)" || help_text=""
+    fi
+    if ! grep -Eq -- '(^|[^[:alnum:]_-])--checkpoint-every-n-tokens([^[:alnum:]_-]|$)' <<< "$help_text"; then
+        log "WARNING: this llama-server has no --checkpoint-every-n-tokens (removed in llama.cpp b9310); starting it without LLAMA_ARG_CHECKPOINT_EVERY_NT." >&2
+        return 0
+    fi
+    printf '%s\n' "$number"
+}
+
+# Print which reasoning switch llama-server.exe takes for LLAMA_REASONING:
+# "reasoning" when it has --reasoning (b9014), "budget" when it lacks it but
+# has --reasoning-budget and the mode is off (b8248: budget 0 disables
+# thinking, and its default -1 leaves it on), or nothing to keep only the
+# --reasoning-format mapping. b9014 defaults --reasoning to auto, which turns
+# Qwen3.5 thinking on, and with --reasoning-format none the reasoning comes
+# back inside the reply. Mirrors installers/windows/lib/native-llama-args.ps1.
+windows_native_reasoning_flag() {
+    local llama_exe="$1" mode="$2" help_text
+    case "$mode" in off|on|auto) ;; *) return 0 ;; esac
+    if command -v timeout >/dev/null 2>&1; then
+        help_text="$(timeout 15 "$llama_exe" --help 2>&1)" || return 0
+    else
+        help_text="$("$llama_exe" --help 2>&1)" || return 0
+    fi
+    if grep -E -- '(^|[^[:alnum:]_-])--reasoning([^[:alnum:]_-]|$)' <<< "$help_text" | grep -qvi 'has been removed'; then
+        printf '%s\n' reasoning
+    elif [[ "$mode" == off ]] \
+        && grep -E -- '(^|[^[:alnum:]_-])--reasoning-budget([^[:alnum:]_-]|$)' <<< "$help_text" | grep -qvi 'has been removed'; then
+        printf '%s\n' budget
+    fi
+}
+
 restart_windows_native_llama_server_with_full_model() {
     is_windows_bash || return 1
 
@@ -1576,12 +1629,14 @@ restart_windows_native_llama_server_with_full_model() {
     ODS_WIN_CTX_SIZE="$ctx_size" \
     ODS_WIN_GPU_LAYERS="$(read_env_value N_GPU_LAYERS)" \
     ODS_WIN_REASONING_FORMAT="$reasoning_fmt" \
+    ODS_WIN_REASONING_MODE="$reasoning" \
+    ODS_WIN_REASONING_FLAG="$(windows_native_reasoning_flag "$llama_exe" "$reasoning")" \
     ODS_WIN_FLASH_ATTN="$(read_env_value LLAMA_ARG_FLASH_ATTN)" \
     ODS_WIN_CACHE_TYPE_K="$(read_env_value LLAMA_ARG_CACHE_TYPE_K)" \
     ODS_WIN_CACHE_TYPE_V="$(read_env_value LLAMA_ARG_CACHE_TYPE_V)" \
     ODS_WIN_N_CPU_MOE="$(read_env_value LLAMA_ARG_N_CPU_MOE)" \
     ODS_WIN_PARALLEL="$(read_env_value LLAMA_PARALLEL)" \
-    ODS_WIN_CHECKPOINT_EVERY_N_TOKENS="$(read_env_value LLAMA_ARG_CHECKPOINT_EVERY_NT)" \
+    ODS_WIN_CHECKPOINT_EVERY_N_TOKENS="$(windows_native_checkpoint_interval "$llama_exe" "$(read_env_value LLAMA_ARG_CHECKPOINT_EVERY_NT)")" \
     ODS_WIN_NO_CACHE_PROMPT="$(read_env_value LLAMA_ARG_NO_CACHE_PROMPT)" \
     ODS_WIN_SPEC_TYPE="$(read_env_value LLAMA_ARG_SPEC_TYPE)" \
     ODS_WIN_SPEC_DRAFT_N_MAX="$(read_env_value LLAMA_ARG_SPEC_DRAFT_N_MAX)" \
@@ -1641,9 +1696,13 @@ restart_windows_native_llama_server_with_full_model() {
                 "--port", $env:ODS_WIN_LLAMA_PORT,
                 "--n-gpu-layers", $gpuLayers,
                 "--ctx-size", $env:ODS_WIN_CTX_SIZE,
-                "--reasoning-format", $env:ODS_WIN_REASONING_FORMAT,
                 "--metrics"
             )
+            if ($env:ODS_WIN_REASONING_FLAG -eq "reasoning") { $args += @("--reasoning", $env:ODS_WIN_REASONING_MODE) }
+            else {
+                $args += @("--reasoning-format", $env:ODS_WIN_REASONING_FORMAT)
+                if ($env:ODS_WIN_REASONING_FLAG -eq "budget") { $args += @("--reasoning-budget", "0") }
+            }
             if ($env:ODS_WIN_FLASH_ATTN) { $args += @("--flash-attn", $env:ODS_WIN_FLASH_ATTN) }
             if ($env:ODS_WIN_CACHE_TYPE_K) { $args += @("--cache-type-k", $env:ODS_WIN_CACHE_TYPE_K) }
             if ($env:ODS_WIN_CACHE_TYPE_V) { $args += @("--cache-type-v", $env:ODS_WIN_CACHE_TYPE_V) }
@@ -3526,6 +3585,47 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
         if [[ ! -f "$_model_path" ]]; then
             log "WARNING: Model file not found at $_model_path"
         else
+            # Read reasoning mode from .env (default off to prevent thinking models
+            # from consuming the entire token budget on internal reasoning)
+            _reasoning=$(grep '^LLAMA_REASONING=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 || echo "")
+            [[ -z "$_reasoning" ]] && _reasoning="off"
+            case "$_reasoning" in
+                off)  _reasoning_fmt="none" ;;
+                on)   _reasoning_fmt="deepseek" ;;
+                *)    _reasoning_fmt="$_reasoning" ;;
+            esac
+
+            # Spell draft flags for this runtime and add the macOS defaults it
+            # supports (--ctx-checkpoints 32, --spec-type ngram-mod, and
+            # --reasoning on b9014 instead of this --reasoning-format), with the
+            # helper install-macos.sh and ods-macos.sh use, before the bootstrap
+            # model is stopped. A rejected setting must not strand the swap.
+            _llama_tuning_args=(--reasoning-format "$_reasoning_fmt")
+            _tuning_helper="$INSTALL_DIR/installers/macos/lib/native-checkpoint-args.py"
+            if [[ -f "$_tuning_helper" ]] && _tuning_file="$(mktemp)"; then
+                if "${ODS_PYTHON_CMD:-python3}" "$_tuning_helper" --binary "$LLAMA_SERVER_BIN" \
+                    --interval="$(read_env_value LLAMA_ARG_CHECKPOINT_EVERY_NT)" \
+                    --checkpoints="$(read_env_value LLAMA_ARG_CTX_CHECKPOINTS)" \
+                    --cache-mib="$(read_env_value LLAMA_ARG_CACHE_RAM)" \
+                    --idle-seconds="$(read_env_value LLAMA_ARG_SLEEP_IDLE_SECONDS)" \
+                    --min-spacing="$(read_env_value LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT)" \
+                    --explicit-spec-type="$(read_env_value LLAMA_ARG_SPEC_TYPE)" \
+                    --spec-default="$(read_env_value LLAMA_SPEC_TYPE)" \
+                    --draft-n-max="$(read_env_value LLAMA_ARG_SPEC_DRAFT_N_MAX)" \
+                    --draft-type-k="$(read_env_value LLAMA_ARG_SPEC_DRAFT_TYPE_K)" \
+                    --draft-type-v="$(read_env_value LLAMA_ARG_SPEC_DRAFT_TYPE_V)" \
+                    --reasoning-mode="$_reasoning" --reasoning-format-fallback="$_reasoning_fmt" \
+                    --apply-defaults > "$_tuning_file"; then
+                    _llama_tuning_args=()
+                    while IFS= read -r -d '' _tuning_field; do
+                        _llama_tuning_args+=("$_tuning_field")
+                    done < "$_tuning_file"
+                else
+                    log "WARNING: native llama-server tuning was rejected for this runtime; starting the full model without it. Fix .env, then run './ods-macos.sh restart'."
+                fi
+                rm -f "$_tuning_file"
+            fi
+
             # Capture old model path for rollback before we kill the process
             _old_pid=$(cat "$LLAMA_SERVER_PID_FILE" 2>/dev/null | tr -d '[:space:]')
             _old_model_path=""
@@ -3548,16 +3648,6 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
                 fi
             fi
 
-            # Read reasoning mode from .env (default off to prevent thinking models
-            # from consuming the entire token budget on internal reasoning)
-            _reasoning=$(grep '^LLAMA_REASONING=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 || echo "")
-            [[ -z "$_reasoning" ]] && _reasoning="off"
-            case "$_reasoning" in
-                off)  _reasoning_fmt="none" ;;
-                on)   _reasoning_fmt="deepseek" ;;
-                *)    _reasoning_fmt="$_reasoning" ;;
-            esac
-
             # Honour the unified BIND_ADDRESS knob (PR #964); empty/missing → loopback.
             _bind=$(grep '^BIND_ADDRESS=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             [[ -z "$_bind" ]] && _bind="127.0.0.1"
@@ -3570,13 +3660,11 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             _gpu_layers=$(grep '^N_GPU_LAYERS=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")
             [[ -z "$_gpu_layers" ]] && _gpu_layers="auto"
             _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
-            _spec_draft_n_max=$(grep '^LLAMA_ARG_SPEC_DRAFT_N_MAX=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _llama_args=(
                 --host "$_bind" --port "$_native_port"
                 --model "$_model_path"
                 --ctx-size "$_ctx_size"
                 --n-gpu-layers "$_gpu_layers"
-                --reasoning-format "$_reasoning_fmt"
                 --metrics
             )
             [[ -n "$_flash_attn" ]] && _llama_args+=(--flash-attn "$_flash_attn")
@@ -3584,7 +3672,7 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")
             [[ -n "$_n_cpu_moe" ]] && _llama_args+=(--n-cpu-moe "$_n_cpu_moe")
             [[ -n "$_spec_type" ]] && _llama_args+=(--spec-type "$_spec_type")
-            [[ -n "$_spec_draft_n_max" ]] && _llama_args+=(--spec-draft-n-max "$_spec_draft_n_max")
+            _llama_args+=(${_llama_tuning_args[@]+"${_llama_tuning_args[@]}"})
 
             # Relaunch with new model
             log "Starting native llama-server with ${_gguf_file}..."

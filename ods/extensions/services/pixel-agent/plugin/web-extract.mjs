@@ -195,6 +195,109 @@ export function selectEvidenceWindow(text, query) {
   };
 }
 
+// The page request, shaped like a browser's top-level navigation. Measured on
+// 2026-09-25 against pages from fleet rounds 061-068: several sites refuse an
+// inconsistent header set, not automation as such. A browser User-Agent with
+// undici's default `Sec-Fetch-Mode: cors` (OpenClaw web_fetch) got HTTP 406
+// from Xfinity Mobile Arena and Songkick, as a bare `Mozilla/5.0` agent did
+// from Philly Soul Now; web_fetch's two-year-old Chrome/122 got an AWS WAF 202
+// challenge from ESPN; the bare `undici` agent this reader used to send got
+// HTTP 503 from Amazon search. In interleaved runs over 32 pages a current
+// Chrome version with document-navigation fetch metadata was accepted on every
+// request. The trailing product token keeps it identifiable to site operators.
+// It is a plain GET: no JavaScript, cookies or challenge solving. The Chrome
+// version follows the four-weekly stable cadence from a dated anchor, so it
+// neither ages into a bot signal nor runs off with a wrong clock.
+//
+// Xfinity Mobile Arena still intermittently answers any browser-identified
+// request with 406 while accepting the plain request this reader used to send.
+// So a plain 403 or 406 refusal (never a challenge, rate limit or server
+// error) is followed by that earlier plain request, once. The second request
+// claims less, not more: it drops the browser identity.
+export const LEGACY_PAGE_REQUEST_HEADERS = Object.freeze({
+  Accept: "text/markdown, text/html;q=0.9, text/plain;q=0.8, application/json;q=0.7",
+  "Accept-Language": "en-US,en;q=0.9",
+});
+const PLAIN_REFUSALS = new Set([403, 406]);
+const CHROME_ANCHOR = Object.freeze({major: 151, at: Date.UTC(2026, 8, 1)});
+const CHROME_CADENCE_MS = 28 * 24 * 60 * 60 * 1000;
+const CHROME_MAX_ADVANCE = 26;
+export const PUBLIC_PAGE_PRODUCT_TOKEN = "ODS-Pixel/1.0";
+
+export function chromeMajorVersion(now = Date.now()) {
+  const elapsed = Number.isFinite(now) ? Math.max(0, now - CHROME_ANCHOR.at) : 0;
+  return CHROME_ANCHOR.major + Math.min(CHROME_MAX_ADVANCE, Math.floor(elapsed / CHROME_CADENCE_MS));
+}
+
+export function publicPageRequestHeaders(now = Date.now()) {
+  return {
+    Accept: "text/markdown, text/html;q=0.9, text/plain;q=0.8, application/json;q=0.7",
+    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) ` +
+      `Chrome/${chromeMajorVersion(now)}.0.0.0 Safari/537.36 ${PUBLIC_PAGE_PRODUCT_TOKEN}`,
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+  };
+}
+
+// Script, style, noscript and template content is raw text, not markup. The
+// pinned OpenClaw extractor tokenizes it as tags, and one inline script with a
+// `<` in it can swallow the rest of the document: Visit Philadelphia articles
+// came back as 4.8 KB of analytics JavaScript and no dates instead of 38-66 KB
+// of article text. Remove these elements (and comments) first, as an HTML
+// parser would: each ends at its own first closing tag, or at the end of the
+// document when unterminated. One linear pass; no backtracking regex.
+const RAW_TEXT_START = /<!--|<(script|style|noscript|template)(?=[\s/>])/gi;
+export function readableHtml(html) {
+  if (typeof html !== "string" || !html) return "";
+  let output = "";
+  let cursor = 0;
+  RAW_TEXT_START.lastIndex = 0;
+  for (let match; (match = RAW_TEXT_START.exec(html));) {
+    output += html.slice(cursor, match.index) + " ";
+    let end = html.length;
+    if (match[0] === "<!--") {
+      const close = html.indexOf("-->", match.index + 4);
+      if (close >= 0) end = close + 3;
+    } else {
+      const closer = new RegExp(`</${match[1]}\\s*>`, "gi");
+      closer.lastIndex = match.index + match[0].length;
+      const close = closer.exec(html);
+      if (close) end = close.index + close[0].length;
+    }
+    cursor = end;
+    RAW_TEXT_START.lastIndex = end;
+  }
+  return output + html.slice(cursor);
+}
+
+// Bot-verification interstitials are failures, never evidence. ODS does not
+// solve, wait out or work around them. Response headers are decisive; page
+// markers count only on an error status or a near-empty page, because normal
+// pages behind the same services carry the same scripts.
+const CHALLENGE_TITLE = /^(?:just a moment\.*|attention required! \| cloudflare|security verification|verifying you are human\.*|access denied|access to this page has been denied\.?|pardon our interruption\.*|let'?s get your identity verified|are you a (?:robot|human)\??|robot or human\??|human verification|one more step)$/i;
+const CHALLENGE_MARKUP = /\/cdn-cgi\/challenge-platform\/|\bcf_chl_opt\b|captcha-delivery\.com|_Incapsula_Resource|\bpx-captcha\b|\bawswaf\b|"response"\s*:\s*"identify"/i;
+const CHALLENGE_MAX_TEXT_CHARS = 1_500;
+const REFUSAL_BODY_BYTES = 65_536;
+
+export function botChallenge({headers, status, html = "", text} = {}) {
+  const header = name => {
+    try { return String(headers?.get?.(name) ?? ""); } catch { return ""; }
+  };
+  // Only headers sent on the interstitial itself; DataDome's x-datadome, for
+  // one, is on every protected page and is deliberately not used.
+  if (/challenge|captcha|block/i.test(header("cf-mitigated")) || /\S/.test(header("x-amzn-waf-action"))) return true;
+  const title = (String(html).match(/<title[^>]*>([\s\S]{0,200}?)<\/title>/i)?.[1] ?? "")
+    .replace(/&#39;|&apos;|&rsquo;/gi, "'").replace(/&amp;/gi, "&").replace(/\s+/g, " ").trim();
+  const failed = !(status >= 200 && status < 300);
+  const sparse = typeof text === "string" && text.trim().length < CHALLENGE_MAX_TEXT_CHARS;
+  if (CHALLENGE_TITLE.test(title)) return failed || sparse;
+  return CHALLENGE_MARKUP.test(String(html)) && (failed || sparse);
+}
+
 function wrappedEvidence(text, sourceUrl) {
   const id = randomBytes(12).toString("hex");
   return [
@@ -227,14 +330,18 @@ export const PUBLIC_PAGE_TEXT_TYPES = new Set([
 
 // The one public-page read path: OpenClaw's strict SSRF guard (pinned DNS, no
 // environment proxy, at most three redirects, each hop re-checked), the public
-// URL checks above on both the requested and the final URL, a 1 MB response
-// bound and bounded HTML-to-text extraction. pixel_ods_web_extract and the
-// host citation check (citation-verification.mjs) both use it, so neither can
-// read a page the other could not. The guarded response is always released.
+// URL checks above on both the requested and the final URL, the
+// browser-compatible GET (publicPageRequestHeaders) with its single plain
+// fallback after a plain 403/406, a 1 MB response bound, raw-text removal and
+// bounded HTML-to-text extraction, and bot-challenge detection.
+// pixel_ods_web_extract and the host citation check (citation-verification.mjs)
+// both use it, so neither can read a page the other could not. Every guarded
+// response is released.
 export function createPublicPageReader({
   guardedFetch,
   readResponseText,
   extractBasicHtmlContent,
+  now = Date.now,
 } = {}) {
   if (
     typeof guardedFetch !== "function" ||
@@ -250,43 +357,66 @@ export function createPublicPageReader({
     } catch {
       return { ok: false, reason: "invalid-url" };
     }
+    const requests = [publicPageRequestHeaders(now()), LEGACY_PAGE_REQUEST_HEADERS];
     let guarded;
     try {
-      guarded = await guardedFetch({
-        url,
-        maxRedirects: 3,
-        timeoutSeconds,
-        signal,
-        useEnvProxy: false,
-        init: {
-          headers: {
-            Accept: "text/markdown, text/html;q=0.9, text/plain;q=0.8, application/json;q=0.7",
-            "Accept-Language": "en-US,en;q=0.9",
-          },
-        },
-      });
-      const response = guarded.response;
-      const finalUrl = normalizedPublicUrl(guarded.finalUrl);
-      if (!response.ok) return { ok: false, reason: "http-status", status: response.status, finalUrl };
-      const contentType = (response.headers.get("content-type") ?? "")
-        .split(";", 1)[0]
-        .trim()
-        .toLowerCase();
-      if (!types.has(contentType)) {
-        return { ok: false, reason: "content-type", status: response.status, finalUrl,
-          contentType: contentType || "unknown" };
-      }
-      const body = await readResponseText(response, { maxBytes: MAX_RESPONSE_BYTES });
-      let text = body.text;
-      if (contentType === "text/html" || contentType === "application/xhtml+xml") {
-        const extracted = await extractBasicHtmlContent({
-          html: body.text,
-          url: finalUrl,
-          extractMode: "text",
+      for (let attempt = 1; ; attempt += 1) {
+        guarded = await guardedFetch({
+          url,
+          maxRedirects: 3,
+          timeoutSeconds,
+          signal,
+          useEnvProxy: false,
+          init: { headers: { ...requests[attempt - 1] } },
         });
-        text = extracted?.text ?? "";
+        const response = guarded.response;
+        const finalUrl = normalizedPublicUrl(guarded.finalUrl);
+        const contentType = (response.headers.get("content-type") ?? "")
+          .split(";", 1)[0]
+          .trim()
+          .toLowerCase();
+        if (!response.ok) {
+          // A refusal body is read only to recognise a bot challenge, within a
+          // small bound; it is never returned as evidence.
+          let challenge = botChallenge({ headers: response.headers, status: response.status });
+          if (!challenge) {
+            try {
+              const refusal = await readResponseText(response, { maxBytes: REFUSAL_BODY_BYTES });
+              challenge = botChallenge({ headers: response.headers, status: response.status, html: refusal.text });
+            } catch { /* An unreadable refusal is still just a refusal. */ }
+          }
+          if (!challenge && attempt < requests.length && PLAIN_REFUSALS.has(response.status) && !signal?.aborted) {
+            const refused = guarded;
+            guarded = undefined;
+            try { await refused.release?.(); } catch { /* Released or already closed. */ }
+            continue;
+          }
+          return { ok: false, reason: "http-status", status: response.status, finalUrl, requests: attempt,
+            ...(challenge ? { challenge: true } : {}) };
+        }
+        if (botChallenge({ headers: response.headers, status: response.status })) {
+          return { ok: false, reason: "challenge", status: response.status, finalUrl, requests: attempt };
+        }
+        if (!types.has(contentType)) {
+          return { ok: false, reason: "content-type", status: response.status, finalUrl, requests: attempt,
+            contentType: contentType || "unknown" };
+        }
+        const body = await readResponseText(response, { maxBytes: MAX_RESPONSE_BYTES });
+        let text = body.text;
+        if (contentType === "text/html" || contentType === "application/xhtml+xml") {
+          const extracted = await extractBasicHtmlContent({
+            html: readableHtml(body.text),
+            url: finalUrl,
+            extractMode: "text",
+          });
+          text = extracted?.text ?? "";
+          if (botChallenge({ headers: response.headers, status: response.status, html: body.text, text })) {
+            return { ok: false, reason: "challenge", status: response.status, finalUrl, requests: attempt };
+          }
+        }
+        return { ok: true, status: response.status, finalUrl, contentType, text, truncated: body.truncated,
+          requests: attempt };
       }
-      return { ok: true, status: response.status, finalUrl, contentType, text, truncated: body.truncated };
     } catch {
       // Guard denials (private address, redirect policy), timeouts and aborts
       // all mean "not read"; their details never reach the caller.
@@ -301,13 +431,15 @@ export function createPublicWebExtractTool({
   guardedFetch,
   readResponseText,
   extractBasicHtmlContent,
+  now,
 }) {
-  const readPage = createPublicPageReader({ guardedFetch, readResponseText, extractBasicHtmlContent });
+  const readPage = createPublicPageReader({ guardedFetch, readResponseText, extractBasicHtmlContent,
+    ...(now ? { now } : {}) });
 
   return {
     name: "pixel_ods_web_extract",
     description:
-      "Read one public HTTP(S) page through OpenClaw's strict SSRF guard. Omit query for a bounded page overview. Set query to a literal identifier such as '--parallel' or 'Path.exists' for targeted extraction beyond a truncated prefix. Short multi-keyword queries require 2-3 terms in one window. For GitHub start with the repository page and follow observed file links instead of guessing branches or filenames. A missing raw GitHub file falls back once to the repository overview, explicitly identified as a different source. Never use for local/private/raw-IP destinations.",
+      "Read one public HTTP(S) page through OpenClaw's strict SSRF guard. Omit query for a bounded page overview. Set query to a literal identifier such as '--parallel' or 'Path.exists' for targeted extraction beyond a truncated prefix. Short multi-keyword queries require 2-3 terms in one window. For GitHub start with the repository page and follow observed file links instead of guessing branches or filenames. A missing raw GitHub file falls back once to the repository overview, explicitly identified as a different source. It requests the page as a browser-compatible navigation, so it can read some public pages that refused web_fetch (for example HTTP 403 or 406); try it at most once for such a URL. It does not run JavaScript and never solves or bypasses bot challenges: a challenge or block is reported as not read. Never use for local/private/raw-IP destinations.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -344,6 +476,14 @@ export function createPublicWebExtractTool({
         }, true);
       }
 
+      // A bot-protection page is a refusal, not evidence; retrying or working
+      // around it is not an option this tool offers.
+      const challengeResult = (page) => textResult(
+        `The site answered with a bot-protection challenge or block (HTTP ${page.status}); no evidence was read. ` +
+          "ODS does not solve or bypass bot challenges. Do not retry this URL; use another source or report the page as unavailable.",
+        { boundary: "public-web-read-only", matched: false, status: page.status, challenge: true },
+        true
+      );
       const unavailable = () => textResult(
         "Targeted public web extraction was blocked or unavailable; no evidence was returned.",
         { boundary: "public-web-read-only", matched: false },
@@ -367,12 +507,14 @@ export function createPublicWebExtractTool({
               details: {...recovered.details, recovery: 'github-repository-overview',
                 failed_source_url: finalUrl, failed_status: 404}};
           }
+          if (page.challenge) return challengeResult(page);
           return textResult(
             `The public page returned HTTP ${page.status}; no evidence was extracted.`,
             { boundary: "public-web-read-only", matched: false, status: page.status },
             true
           );
         }
+        if (page.reason === "challenge") return challengeResult(page);
         if (page.reason === "content-type") {
           return textResult("The public page is not a supported text document.", {
             boundary: "public-web-read-only",
@@ -385,7 +527,7 @@ export function createPublicWebExtractTool({
         const extractedText = page.text;
         if (query === undefined) {
           const overview = extractedText.slice(0, MAX_EVIDENCE_CHARS).trim();
-          if (!overview) return textResult('The public page contained no readable text.', {
+          if (!overview) return textResult('The public page contained no readable text. It may build its content with JavaScript, which this reader does not run.', {
             boundary: 'public-web-read-only', mode: 'overview', matched: false, source_url: finalUrl,
           }, true);
           return textResult(wrappedEvidence(overview, finalUrl), {

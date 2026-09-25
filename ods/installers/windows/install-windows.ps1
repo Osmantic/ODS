@@ -87,6 +87,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "env-generator.ps1")
 . (Join-Path $LibDir "installed-footprint.ps1")
 . (Join-Path $LibDir "llm-endpoint.ps1")
+. (Join-Path $LibDir "native-llama-args.ps1")
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
@@ -698,6 +699,18 @@ if ($dryRun) {
                 # ── Fallback: llama-server.exe (Vulkan) ──
                 $llamaZip = Join-Path $env:TEMP $script:LLAMA_CPP_VULKAN_ASSET
                 if (-not (Test-Path $script:LLAMA_SERVER_EXE)) {
+                    # Refuse an unpinned tag before downloading anything, and
+                    # discard a cached archive from an earlier run that does not
+                    # match the pin.
+                    $expectedLlamaSha = $script:LLAMA_CPP_VULKAN_SHA256[$script:LLAMA_CPP_RELEASE_TAG]
+                    if (-not $expectedLlamaSha) {
+                        Write-AIError "No pinned SHA-256 for llama.cpp $($script:LLAMA_CPP_RELEASE_TAG) ($($script:LLAMA_CPP_VULKAN_ASSET)); refusing an unverified llama-server."
+                        exit 1
+                    }
+                    if ((Test-Path $llamaZip) -and ((Get-FileHash -LiteralPath $llamaZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedLlamaSha)) {
+                        Write-AIWarn "Discarding a cached $($script:LLAMA_CPP_VULKAN_ASSET) that does not match its pinned SHA-256."
+                        Remove-Item $llamaZip -Force -ErrorAction SilentlyContinue
+                    }
                     if (-not (Test-Path $llamaZip)) {
                         $dlOk = Invoke-DownloadWithRetry -Url $script:LLAMA_CPP_VULKAN_URL `
                             -Destination $llamaZip -Label "Downloading llama-server (Vulkan)"
@@ -708,6 +721,12 @@ if ($dryRun) {
                     }
 
                     Write-AI "Validating llama-server archive..."
+                    $actualLlamaSha = (Get-FileHash -LiteralPath $llamaZip -Algorithm SHA256).Hash.ToLowerInvariant()
+                    if ($actualLlamaSha -ne $expectedLlamaSha) {
+                        Remove-Item $llamaZip -Force -ErrorAction SilentlyContinue
+                        Write-AIError "llama-server archive SHA-256 mismatch for $($script:LLAMA_CPP_VULKAN_ASSET): expected $expectedLlamaSha, got $actualLlamaSha. The download was removed; re-run the installer."
+                        exit 1
+                    }
                     $zipValid = Test-ZipIntegrity -Path $llamaZip
                     if (-not $zipValid.Valid) {
                         Write-AIWarn "Archive is corrupt: $($zipValid.ErrorMessage)"
@@ -772,13 +791,20 @@ if ($dryRun) {
                     "on"    { $_reasoningFmt = "deepseek" }
                     default { $_reasoningFmt = $_reasoning }
                 }
-                $llamaArgs += @("--reasoning-format", $_reasoningFmt)
+                # b9014 has --reasoning and defaults it to auto, which turns
+                # Qwen3.5 thinking on; where the binary has the switch, pass
+                # the mode itself (as Docker does) instead of the format.
+                $llamaArgs += @(Get-ODSNativeReasoningArgs -Executable $script:LLAMA_SERVER_EXE -Mode $_reasoning -FallbackFormat $_reasoningFmt)
                 if ($_llamaEnv["LLAMA_ARG_FLASH_ATTN"]) { $llamaArgs += @("--flash-attn", $_llamaEnv["LLAMA_ARG_FLASH_ATTN"]) }
                 if ($_llamaEnv["LLAMA_ARG_CACHE_TYPE_K"]) { $llamaArgs += @("--cache-type-k", $_llamaEnv["LLAMA_ARG_CACHE_TYPE_K"]) }
                 if ($_llamaEnv["LLAMA_ARG_CACHE_TYPE_V"]) { $llamaArgs += @("--cache-type-v", $_llamaEnv["LLAMA_ARG_CACHE_TYPE_V"]) }
                 if ($_llamaEnv["LLAMA_ARG_N_CPU_MOE"]) { $llamaArgs += @("--n-cpu-moe", $_llamaEnv["LLAMA_ARG_N_CPU_MOE"]) }
                 if ($_llamaEnv["LLAMA_PARALLEL"]) { $llamaArgs += @("--parallel", $_llamaEnv["LLAMA_PARALLEL"]) }
-                if ($_llamaEnv["LLAMA_ARG_CHECKPOINT_EVERY_NT"]) { $llamaArgs += @("--checkpoint-every-n-tokens", $_llamaEnv["LLAMA_ARG_CHECKPOINT_EVERY_NT"]) }
+                # Only when this llama-server still has the flag (removed in
+                # llama.cpp b9310); an unknown flag stops llama-server.
+                $_checkpointArgs = Get-ODSNativeCheckpointIntervalArgs -Executable $script:LLAMA_SERVER_EXE -Value $_llamaEnv["LLAMA_ARG_CHECKPOINT_EVERY_NT"]
+                if ($_checkpointArgs.Warning) { Write-AIWarn $_checkpointArgs.Warning }
+                $llamaArgs += @($_checkpointArgs.Arguments)
                 if ($_llamaEnv["LLAMA_ARG_NO_CACHE_PROMPT"] -and $_llamaEnv["LLAMA_ARG_NO_CACHE_PROMPT"] -notin @("0", "false", "off", "no")) { $llamaArgs += @("--no-cache-prompt") }
                 if ($_llamaEnv["LLAMA_ARG_SPEC_TYPE"]) { $llamaArgs += @("--spec-type", $_llamaEnv["LLAMA_ARG_SPEC_TYPE"]) }
                 if ($_llamaEnv["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) { $llamaArgs += @("--spec-draft-n-max", $_llamaEnv["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) }

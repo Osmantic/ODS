@@ -5,7 +5,7 @@
 
 services:
   llama-server:
-    image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014}
+    image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f}
     environment:
       # n-gram speculative decoding. The target model verifies every drafted
       # token, so output is the target model's own. It needs llama.cpp b8955+

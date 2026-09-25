@@ -3,8 +3,13 @@
 
 macos_llama_asset_sha256() {
     # Independently hashed release assets; keep pins paired with tier-map releases.
+    # llama-<tag>-bin-macos-arm64.tar.gz from github.com/ggml-org/llama.cpp
+    # releases. Each digest matches the asset digest GitHub publishes for the
+    # release and a separate download hashed with sha256sum.
     case "$1" in
+        # Previous default pin, kept so rolling constants.sh back needs no new digest.
         b8210) printf '%s\n' '8cc228499f05adb69b92462f8060448bec75a7ba406f03c1fca8e628b4ff5c91' ;;
+        # Default pin (constants.sh); tag commit d4b0c22f9e67, 8,593,054 bytes.
         b9014) printf '%s\n' '565aecda0838daa433f363ae9a1c9ed6c94831de3fd093cb08179a5a3fd4f22d' ;;
         *) ai_err "No trusted checksum for llama.cpp release $1."; return 1 ;;
     esac

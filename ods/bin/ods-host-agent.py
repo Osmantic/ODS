@@ -1455,9 +1455,12 @@ def _plan_nvidia_model_gpu_assignment(
     )
 
     mode = str((planned_llama.get("parallelism") or {}).get("mode") or "none")
+    # CUDA row split is not fleet-qualified and fails at model load from
+    # llama.cpp b9890 ("does not support split buffers"), so NVIDIA uses
+    # layer split for every multi-GPU mode.
     split_mode = {
-        "tensor": "row",
-        "hybrid": "row",
+        "tensor": "layer",
+        "hybrid": "layer",
         "pipeline": "layer",
     }.get(mode, "none")
     tensor_split = (planned_llama.get("parallelism") or {}).get("tensor_split")
@@ -12094,6 +12097,10 @@ class AgentHandler(BaseHTTPRequestHandler):
         selected_store = _model_stores.store_for_model(INSTALL_DIR / "data", gguf_file, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
         try:
             local_runtime_profile = _model_stores.lemonade_profile(INSTALL_DIR / "data", gguf_file, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
+            if model_from_catalog and not local_runtime_profile:
+                runtime_block = _default_runtime_incompatibility(model, persisted_env)
+                if runtime_block:
+                    raise ValueError(runtime_block)
             if local_runtime_profile and _uses_lemonade_runtime(persisted_env) and not _is_windows_host_lemonade(persisted_env):
                 raise ValueError("This native runtime profile requires a host-managed runtime; configure the compatible binary inside the Lemonade container before activating it")
             if local_runtime_profile and not (_is_windows_host_lemonade(persisted_env) or _is_windows_host_llama_server(persisted_env) or persisted_env.get("GPU_BACKEND") == "apple"):
@@ -12921,7 +12928,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     llama_server_image
                     or env.get("LLAMA_SERVER_IMAGE")
                     or (
-                        "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014"
+                        "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
                         if gpu_backend == "nvidia"
                         else ""
                     )
@@ -17283,6 +17290,33 @@ def _nvidia_vram_gb() -> float:
     return 0.0
 
 
+def _default_runtime_incompatibility(model: dict, env: dict) -> str | None:
+    """Return why ODS's default llama.cpp runtime cannot serve a catalog model.
+
+    ``default_runtime_compatibility`` records a model the pinned llama.cpp
+    build cannot load. Such a model can only be activated with a runtime of
+    its own: a catalog image on a Docker llama.cpp backend, or a registered
+    native runtime (checked by the caller).
+    """
+    verdict = model.get("default_runtime_compatibility")
+    if not isinstance(verdict, dict) or _normalize_key(verdict.get("status")) != "incompatible":
+        return None
+    own_image = bool(model.get("llama_server_image")) or any(
+        isinstance(profile, dict) and profile.get("llama_server_image")
+        for profile in model.get("runtime_profiles") or []
+    )
+    image_is_used = not (
+        _normalize_key(env.get("GPU_BACKEND")) == "apple"
+        or _uses_lemonade_runtime(env)
+        or _is_windows_host_lemonade(env)
+        or _is_windows_host_llama_server(env)
+    )
+    if own_image and image_is_used:
+        return None
+    note = str(verdict.get("userNote") or "").strip()
+    return note or "This model needs a newer llama.cpp runtime than ODS ships by default."
+
+
 def _select_runtime_profile(model: dict, env: dict) -> dict | None:
     profiles = model.get("runtime_profiles")
     if not isinstance(profiles, list):
@@ -17427,8 +17461,39 @@ def _stop_macos_native_llama_server(pid_file: Path) -> None:
         pid_file.unlink(missing_ok=True)
 
 
-def _native_llama_tuning_arguments(env: dict, llama_bin: Path) -> list[str]:
-    """Qualify optional tuning before disrupting an existing listener."""
+# .env keys that the macOS native-checkpoint-args.py helper spells for the
+# selected runtime. llama.cpp b8210 only knows --draft-max and
+# --cache-type-{k,v}-draft; b9014 renamed them to --spec-draft-*.
+_MACOS_QUALIFIED_DRAFT_KEYS = (
+    ("LLAMA_ARG_SPEC_DRAFT_N_MAX", "--draft-n-max"),
+    ("LLAMA_ARG_SPEC_DRAFT_TYPE_K", "--draft-type-k"),
+    ("LLAMA_ARG_SPEC_DRAFT_TYPE_V", "--draft-type-v"),
+)
+
+
+def _native_llama_tuning_arguments(
+    env: dict,
+    llama_bin: Path,
+    *,
+    defaults: bool = True,
+    reasoning_format: str = "",
+) -> list[str]:
+    """Qualify optional tuning before disrupting an existing listener.
+
+    On macOS this also spells the speculative draft flags for the selected
+    runtime and, when ``defaults`` is true, adds the macOS defaults it
+    supports (``--ctx-checkpoints 32``; ``--spec-type ngram-mod`` unless
+    LLAMA_ARG_SPEC_TYPE is set or LLAMA_SPEC_TYPE=none). Registered model
+    profiles pass ``defaults=False`` and keep their own argument list.
+
+    With ``reasoning_format`` (the --reasoning-format mapped from
+    LLAMA_REASONING) the result also carries the reasoning flags, and the
+    caller must not pass --reasoning-format itself: ``--reasoning`` on
+    runtimes that have it (b9014, as Docker's LLAMA_ARG_REASONING), else that
+    ``--reasoning-format``.
+    """
+    if platform.system() != "Darwin":
+        return []
     tuning = INSTALL_DIR / "installers/macos/lib/native-checkpoint-args.py"
     # Same .env keys as installers/macos/lib/native-model.sh, which are also
     # llama.cpp's own env names for these flags.
@@ -17438,17 +17503,28 @@ def _native_llama_tuning_arguments(env: dict, llama_bin: Path) -> list[str]:
         ("LLAMA_ARG_CACHE_RAM", "--cache-mib"),
         ("LLAMA_ARG_SLEEP_IDLE_SECONDS", "--idle-seconds"),
         ("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT", "--min-spacing"),
-    )
-    if platform.system() == "Darwin" and any(env.get(key, "").strip() for key, _ in tuning_keys):
-        if not tuning.is_file():
+    ) + _MACOS_QUALIFIED_DRAFT_KEYS
+    explicit = any(env.get(key, "").strip() for key, _ in tuning_keys)
+    fallback = ["--reasoning-format", reasoning_format] if defaults and reasoning_format else []
+    if not explicit and not defaults:
+        return []
+    if not tuning.is_file():
+        if explicit:
             raise RuntimeError("Native runtime tuning validator is missing")
-        command = [sys.executable, str(tuning), "--binary", str(llama_bin)]
-        command.extend(option + "=" + env.get(key, "").strip() for key, option in tuning_keys)
-        result = subprocess.run(command, capture_output=True, timeout=20)
-        if result.returncode:
-            raise RuntimeError("Native runtime tuning was rejected")
-        return [part.decode("utf-8") for part in result.stdout.split(b"\0") if part]
-    return []
+        return fallback
+    command = [sys.executable, str(tuning), "--binary", str(llama_bin)]
+    command.extend(option + "=" + env.get(key, "").strip() for key, option in tuning_keys)
+    command.append("--explicit-spec-type=" + env.get("LLAMA_ARG_SPEC_TYPE", "").strip())
+    if defaults:
+        command.append("--spec-default=" + env.get("LLAMA_SPEC_TYPE", "").strip())
+        if reasoning_format:
+            command.append("--reasoning-mode=" + env.get("LLAMA_REASONING", "").strip())
+            command.append("--reasoning-format-fallback=" + reasoning_format)
+        command.append("--apply-defaults")
+    result = subprocess.run(command, capture_output=True, timeout=20)
+    if result.returncode:
+        raise RuntimeError("Native runtime tuning was rejected")
+    return [part.decode("utf-8") for part in result.stdout.split(b"\0") if part]
 
 
 def _restart_macos_native_llama_server(
@@ -17465,10 +17541,51 @@ def _restart_macos_native_llama_server(
     env = load_env(env_path)
     profile = _model_stores.lemonade_profile(INSTALL_DIR / "data", env.get("GGUF_FILE", ""))
     selected_binary = Path(profile["executable"]) if profile else llama_bin
-    _native_llama_tuning_arguments(env, selected_binary)
+    _native_llama_tuning_arguments(env, selected_binary, defaults=profile is None)
     _stop_macos_native_llama_server(pid_file)
     _configure_macos_llm_bridge(env_path)
     _launch_native_llama_server(env_path, llama_bin, llama_log, pid_file)
+
+
+def _windows_llama_reasoning_arguments(llama_bin: Path, reasoning: str, reasoning_fmt: str) -> list[str]:
+    """--reasoning on Windows runtimes that have it, else --reasoning-format.
+
+    Same rule as installers/windows/lib/native-llama-args.ps1 and the macOS
+    helper: llama.cpp b9014 defaults --reasoning to auto, which turns Qwen3.5
+    thinking on, and with --reasoning-format none the reasoning comes back
+    inside the reply. b8248 has no --reasoning and keeps the format mapping;
+    for off it also gets --reasoning-budget 0, which disables thinking there
+    (its default, -1, leaves thinking on).
+    """
+    mode = str(reasoning or "").strip().strip("\"'") or "off"
+    help_text = ""
+    if mode in {"off", "on", "auto"}:
+        try:
+            result = subprocess.run(
+                [str(llama_bin), "--help"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.SubprocessError):
+            result = None
+        if result is not None and result.returncode == 0:
+            help_text = (result.stdout or "") + (result.stderr or "")
+
+    def listed(flag: str) -> bool:
+        pattern = re.compile(r"(?<![\w-])" + re.escape(flag) + r"(?![\w-])")
+        return any(pattern.search(line) and "has been removed" not in line.lower()
+                   for line in help_text.splitlines())
+
+    if listed("--reasoning"):
+        return ["--reasoning", mode]
+    arguments = ["--reasoning-format", reasoning_fmt]
+    if mode == "off" and listed("--reasoning-budget"):
+        arguments += ["--reasoning-budget", "0"]
+    return arguments
 
 
 def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path, pid_file: Path):
@@ -17504,9 +17621,16 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         "--ctx-size", ctx_size,
         "--n-gpu-layers", gpu_layers,
         "--parallel", env.get("LLAMA_PARALLEL", "1"),
-        "--reasoning-format", reasoning_fmt,
-        "--metrics",
     ]
+    # On macOS the default runtime gets its reasoning flags from the tuning
+    # helper below (--reasoning on b9014, where --reasoning-format none put an
+    # empty think block into every reply). Everything else passes the format.
+    helper_reasoning = platform.system() == "Darwin" and profile is None
+    if not helper_reasoning and platform.system() == "Windows" and profile is None:
+        args.extend(_windows_llama_reasoning_arguments(llama_bin, reasoning, reasoning_fmt))
+    elif not helper_reasoning:
+        args.extend(["--reasoning-format", reasoning_fmt])
+    args.append("--metrics")
     optional_args = {
         "LLAMA_ARG_FLASH_ATTN": "--flash-attn",
         "LLAMA_ARG_CACHE_TYPE_K": "--cache-type-k",
@@ -17517,11 +17641,20 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         "LLAMA_ARG_SPEC_DRAFT_TYPE_K": "--spec-draft-type-k",
         "LLAMA_ARG_SPEC_DRAFT_TYPE_V": "--spec-draft-type-v",
     }
+    if platform.system() == "Darwin":
+        # The macOS helper spells these for the selected runtime instead.
+        for env_key, _ in _MACOS_QUALIFIED_DRAFT_KEYS:
+            optional_args.pop(env_key, None)
     for env_key, flag in optional_args.items():
         value = env.get(env_key, "").strip()
         if value:
             args.extend([flag, value])
-    args.extend(_native_llama_tuning_arguments(env, llama_bin))
+    args.extend(_native_llama_tuning_arguments(
+        env,
+        llama_bin,
+        defaults=profile is None,
+        reasoning_format=reasoning_fmt if helper_reasoning else "",
+    ))
     if _normalize_key(env.get("LLAMA_ARG_NO_CACHE_PROMPT")) not in {"", "0", "false", "off", "no"}:
         args.append("--no-cache-prompt")
     llama_log.parent.mkdir(parents=True, exist_ok=True)

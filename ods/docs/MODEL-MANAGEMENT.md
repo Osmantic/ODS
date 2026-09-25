@@ -362,7 +362,7 @@ mkdir -p data/models
 
 curl -L \
   -o data/models/Qwen3.5-9B-Q4_K_M.gguf \
-  https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf
+  https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf
 ```
 
 Then open Dashboard -> Models. If the filename matches a catalog entry, the

@@ -46,7 +46,7 @@ configure_llama_runtime_defaults() {
             # Gemma 4 GGUFs require a newer llama.cpp than the legacy ODS pin.
             # Keep this aligned with docker-compose.nvidia.yml so the installer
             # pre-pulls the same image compose will start.
-            LLAMA_SERVER_IMAGE="ghcr.io/ggml-org/llama.cpp:server-cuda-b9014"
+            LLAMA_SERVER_IMAGE="ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
             LLAMA_CPP_RELEASE_TAG_OVERRIDE="b9014"
             ;;
     esac
@@ -234,28 +234,28 @@ set_gemma4_tier_config() {
             TIER_NAME="NVIDIA Ultra (90GB+)"
             LLM_MODEL="gemma-4-31b-it"
             GGUF_FILE="gemma-4-31B-it-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_URL="https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf"
+            GGUF_SHA256="38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84"
             MAX_CONTEXT=131072
-            LLM_MODEL_SIZE_MB=19800
+            LLM_MODEL_SIZE_MB=17475
             ;;
         SH_LARGE)
             TIER_NAME="Strix Halo 90+"
             LLM_MODEL="gemma-4-31b-it"
             GGUF_FILE="gemma-4-31B-it-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_URL="https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf"
+            GGUF_SHA256="38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84"
             MAX_CONTEXT=131072
-            LLM_MODEL_SIZE_MB=19800
+            LLM_MODEL_SIZE_MB=17475
             ;;
         SH_COMPACT)
             TIER_NAME="Strix Halo Compact"
             LLM_MODEL="gemma-4-26b-a4b-it"
-            GGUF_FILE="gemma-4-26B-A4B-it-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_FILE="gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/c099eb48e663fd284577b04978a94ffccb261841/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+            GGUF_SHA256="f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f"
             MAX_CONTEXT=65536
-            LLM_MODEL_SIZE_MB=18000
+            LLM_MODEL_SIZE_MB=16162
             ;;
         0)
             # Keep the current tiny bootstrap-friendly Qwen path for the absolute minimum tier.
@@ -288,20 +288,20 @@ set_gemma4_tier_config() {
         3)
             TIER_NAME="Pro"
             LLM_MODEL="gemma-4-26b-a4b-it"
-            GGUF_FILE="gemma-4-26B-A4B-it-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_FILE="gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/c099eb48e663fd284577b04978a94ffccb261841/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+            GGUF_SHA256="f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f"
             MAX_CONTEXT=16384
-            LLM_MODEL_SIZE_MB=18000
+            LLM_MODEL_SIZE_MB=16162
             ;;
         4)
             TIER_NAME="Enterprise"
             LLM_MODEL="gemma-4-31b-it"
             GGUF_FILE="gemma-4-31B-it-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_URL="https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf"
+            GGUF_SHA256="38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84"
             MAX_CONTEXT=65536
-            LLM_MODEL_SIZE_MB=19800
+            LLM_MODEL_SIZE_MB=17475
             ;;
         *)
             error "Invalid tier: $TIER. Valid tiers: 0, 1, 2, 3, 4, CLOUD, NV_ULTRA, SH_LARGE, SH_COMPACT, ARC, ARC_LITE"

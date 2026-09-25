@@ -39,6 +39,31 @@ EXPECTED = {
         "size_bytes": 4977171584,
         "size_mb": 4747,
     },
+    # ggml-org deleted its Gemma 4 26B-A4B/31B Q4_K_M files upstream, so the
+    # old unpinned resolve/main URLs return 404. unsloth ships no plain
+    # Q4_K_M for the 26B-A4B MoE; UD-Q4_K_M is its Q4_K_M-class quant.
+    "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf": {
+        "id": "gemma4-26b-a4b-q4",
+        "url": (
+            "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/"
+            "resolve/c099eb48e663fd284577b04978a94ffccb261841/"
+            "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+        ),
+        "sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f",
+        "size_bytes": 16947541728,
+        "size_mb": 16162,
+    },
+    "gemma-4-31B-it-Q4_K_M.gguf": {
+        "id": "gemma4-31b-q4",
+        "url": (
+            "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/"
+            "resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/"
+            "gemma-4-31B-it-Q4_K_M.gguf"
+        ),
+        "sha256": "38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84",
+        "size_bytes": 18323733440,
+        "size_mb": 17475,
+    },
 }
 
 TIER_ARTIFACT = re.compile(

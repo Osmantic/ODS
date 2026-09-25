@@ -11,7 +11,10 @@
 #
 # Build args:
 #   ONEAPI_VERSION  oneAPI Base Toolkit image tag (default: 2025.0.0-0-devel-ubuntu22.04)
-#   LLAMA_TAG       llama.cpp git tag to build (default: b8248)
+#   LLAMA_TAG       llama.cpp git tag to build (default: b9014)
+#   LLAMA_COMMIT    commit the tag must resolve to (default: b9014's commit).
+#                   Set it to the new tag's commit when overriding LLAMA_TAG,
+#                   or to an empty value to build an unverified tag.
 #
 # Layers ordered for optimal Docker cache re-use:
 #   1. System build deps       — rarely changes; rebuilds only on ONEAPI_VERSION bump
@@ -29,7 +32,8 @@ ARG ONEAPI_VERSION=2025.0.0-0-devel-ubuntu22.04
 # ---------------------------------------------------------------------------
 FROM intel/oneapi-basekit:${ONEAPI_VERSION} AS builder
 
-ARG LLAMA_TAG=b8248
+ARG LLAMA_TAG=b9014
+ARG LLAMA_COMMIT=d4b0c22f9e67f0295e91dc1ab4f17c0fb2557fa4
 ENV DEBIAN_FRONTEND=noninteractive
 
 # cmake + ninja for fast parallel builds; libcurl for model URL loading
@@ -38,9 +42,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone at exact tag for reproducible builds
+# Clone at exact tag for reproducible builds, and refuse a tag that no
+# longer points at the pinned commit.
 RUN git clone --branch "${LLAMA_TAG}" --depth 1 \
-        https://github.com/ggml-org/llama.cpp /llama.cpp
+        https://github.com/ggml-org/llama.cpp /llama.cpp \
+    && actual="$(git -C /llama.cpp rev-parse HEAD)" \
+    && if [ -n "${LLAMA_COMMIT}" ] && [ "${actual}" != "${LLAMA_COMMIT}" ]; then \
+        echo "llama.cpp ${LLAMA_TAG} is ${actual}, expected ${LLAMA_COMMIT}" >&2; exit 1; \
+    fi
 
 WORKDIR /llama.cpp
 

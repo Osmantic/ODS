@@ -123,16 +123,16 @@ set_gemma4_tier_config() {
             TIER_NAME="Enterprise"
             LLM_MODEL="gemma-4-31b-it"
             GGUF_FILE="gemma-4-31B-it-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_URL="https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf"
+            GGUF_SHA256="38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84"
             MAX_CONTEXT=65536
             ;;
         3)
             TIER_NAME="Pro"
             LLM_MODEL="gemma-4-26b-a4b-it"
-            GGUF_FILE="gemma-4-26B-A4B-it-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_FILE="gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/c099eb48e663fd284577b04978a94ffccb261841/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+            GGUF_SHA256="f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f"
             MAX_CONTEXT=16384
             ;;
         2)

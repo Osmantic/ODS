@@ -5675,9 +5675,11 @@ class TestModelActivationModeAndMacosBridge:
             "auto",
             "--parallel",
             "1",
+            "--metrics",
+            # No tuning helper in this install: the reasoning format arrives
+            # through its fallback instead of --reasoning (b9014).
             "--reasoning-format",
             "none",
-            "--metrics",
         ]
         assert pid_file.read_text(encoding="utf-8").strip() == "4321"
 

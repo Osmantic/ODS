@@ -5,7 +5,10 @@
 // claim and gives one repair step. Precision over recall: anything ambiguous
 // is skipped, never reported, and dynamic script content counts as present.
 // A listed item name that is present, but whose card heading only contains it
-// while the other listed items are exact headings, is reported the same way.
+// while the other listed items are exact headings, is reported the same way,
+// as is a listed card name that is no heading at all beside such headings.
+// File names the owner lists for a named, published directory are checked
+// against the receipt's complete published path list.
 import {createHash} from 'node:crypto';
 import * as fs from 'node:fs';
 import path from 'node:path';
@@ -68,15 +71,43 @@ const COUNTS = {two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,
 // Named content units only. Steps, options, features, sections and projects
 // often describe work or structure rather than visible names; skip them.
 const ITEM_NOUNS = String.raw`cards?|events?|items?|products?|plans?|tiers?|tabs?|buttons?|links?|entries|entry|categor(?:y|ies)|dish(?:es)?|courses?|speakers?|members?|testimonials?|services?|tracks?|workshops?|activit(?:y|ies)|posts?|articles?|stor(?:y|ies)|chapters?|headings?|headlines?|titles?|badges?|cart[õo]es|cart[ãa]o|eventos?|itens|item|produtos?|planos?|abas?|bot[õo]es|bot[ãa]o|categorias?|pratos?|palestrantes?|membros?|depoimentos?|servi[çc]os?|oficinas?|atividades?|artigos?|cap[íi]tulos?|t[íi]tulos?`;
-const ENUMERATION = new RegExp(`${B}(${Object.keys(COUNTS).join('|')}|[2-9]|1[0-2])${E}\\s+((?:[\\p{L}-]+\\s+){0,3}?)(?:${ITEM_NOUNS})${E}((?:\\s+[\\p{L}-]+){0,3}?)\\s*:\\s*([^\\n.;!?]{1,600})`, 'giu');
+const ENUMERATION = new RegExp(`${B}(${Object.keys(COUNTS).join('|')}|[2-9]|1[0-2])${E}\\s+((?:[\\p{L}-]+\\s+){0,3}?)(${ITEM_NOUNS})${E}((?:\\s+[\\p{L}-]+){0,3}?)\\s*:\\s*([^\\n.;!?]{1,600})`, 'giu');
 const ITEM_DESCRIPTION = words(String.raw`or|ou|etc|that|which|with|showing|containing|featuring|including|que|com|mostrando|contendo|incluindo`);
 const ITEM_ARTICLE = /^(?:a|an|one|some|um|uma|uns|umas)\s/i;
+// Lists of cards or headings ("three event cards") name items that each carry
+// a heading; words after the noun ("tabs with titles") do not.
+const HEADED_ITEMS = words(String.raw`cards?|headings?|headlines?|titles?|cart[õo]es|cart[ãa]o|t[íi]tulos?`);
 
-function ownerProse(text) {
+// "create a public directory with index.html, ..." or "publish a folder
+// containing ...": a named directory, or the publication itself.
+const FILE_LIST_CUE = new RegExp(`${B}(?:(create|make|build|prepare|generate|produce|add|set\\s+up)|publish(?:\\s+only)?)` +
+  `\\s+(?:(?:a|an|the)\\s+)?(?:([A-Za-z0-9][\\w.-]{0,63})\\/?\\s+)?(directory|folder|site|preview)` +
+  `(?:\\s+(?:named|called)\\s+["'“‘]?([A-Za-z0-9][\\w.-]{0,63})["'”’]?\\/?)?` +
+  `\\s+(with|containing|that\\s+contains)\\s*:?\\s+`, 'giu');
+// Suffixes the host preview publishes (host/workspace_preview.py
+// ALLOWED_SUFFIXES; a contract test keeps them equal). Any other file type
+// makes the whole snapshot unpublishable, so it can never be required.
+export const PREVIEW_FILE_SUFFIXES = Object.freeze(['.html', '.htm', '.css', '.js', '.mjs', '.json', '.svg', '.png', '.jpg',
+  '.jpeg', '.gif', '.webp', '.ico', '.woff', '.woff2', '.ttf', '.txt', '.map', '.csv', '.tsv', '.md', '.markdown']);
+// Detection is broader than publication so that a listed source or document
+// is recognised as a file (and skips its list) rather than read as prose.
+const FILE_NAME = /(?<![\w.\/\\@:-])([A-Za-z0-9][\w-]*(?:\.[\w-]+)*\.(?:html?|css|m?js|json|svg|png|jpe?g|gif|webp|ico|woff2?|ttf|txt|map|csv|tsv|md|markdown|py|ipynb|sh|bash|ps1|bat|rb|go|rs|java|kt|php|pl|ts|tsx|jsx|sql|db|sqlite|toml|ini|cfg|conf|env|ya?ml|xml|pdf|docx?|xlsx?|pptx?|zip|gz|tgz|tar|log|lock|wasm|mp3|mp4|wav|webm|ogg|avif|bmp|tiff?|otf|eot|exe|bin))(?![\w\/\\@-]|\.[A-Za-z0-9])/gi;
+const LIBRARY_NAME = /^(?:node|vue|next|nuxt|three|chart|d3|express|react|angular|svelte|alpine|p5|htmx|anime|gsap)\.js$/i;
+const FILE_LEAD = new Set(['and', '&', 'plus', 'also', 'then', 'a', 'an', 'one', 'raw', 'byte-for-byte', 'exact', 'verbatim',
+  'source', 'plain', 'text', 'json', 'html', 'csv', 'copies', 'copy', 'file', 'files', 'named', 'called']);
+const FILE_FOLLOWING = /^(?:the\s+)?following(?:\s+files)?\s*:?\s*/i;
+const FILE_DROPPED = words(String.raw`removed|deleted|excluded|omitted|dropped|ignored|except|excluding|removing|deleting|minus`);
+// Optional or conditional requests are not requirements.
+const FILE_OPTIONAL = words(String.raw`optional(?:ly)?|if|unless|maybe|perhaps|possibly|ideally|preferably|may|might|could|(?:you|we)\s+can|nice\s+to\s+have|bonus|feel\s+free|opcional(?:mente)?|talvez|caso|se\s+poss[íi]vel`);
+// "the sales.csv data as a chart" or "export.csv the page generates" names
+// content or a runtime result, not a published file.
+const FILE_CONTENT = new RegExp(`^\\s*(?:contents?|data|output|rows|values|records)${E}|${B}(?:generat\\w*|client-side|runtime|when\\s+clicked|on\\s+(?:click|demand)|download\\w*|export(?:s|ed|ing)?)${E}`, 'iu');
+
+function ownerProse(text, {keepInlineCode = false} = {}) {
   // Code, fenced examples and block quotes never state visible requirements.
   return String(text ?? '').slice(0, MAX_OWNER_CHARS)
     .replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g, '\n')
-    .replace(/`[^`\n]*`/g, ' ')
+    .replace(/`([^`\n]*)`/g, keepInlineCode ? '$1' : ' ')
     .replace(/^[ \t]*>[^\n]*/gm, '\n');
 }
 
@@ -156,14 +187,65 @@ function enumerationItems(list, count) {
   return new Set(items.map(relaxed)).size === items.length ? items : undefined;
 }
 
+// Item literals carry the ordinal of their list: sibling-heading evidence for
+// a name comes only from the other names of the same list.
 function enumeratedLiterals(prose) {
   const found = [];
+  let list = 0;
   for (const match of prose.matchAll(ENUMERATION)) {
     const count = COUNTS[match[1].toLowerCase()] ?? Number(match[1]);
     const prefix = prose.slice(sentenceStart(prose, 0, match.index), match.index);
-    if (NEGATED.test(prefix) || EXAMPLE_BEFORE.test(prefix) || NON_VISUAL.test(`${match[2]} ${match[3]}`)) continue;
-    const items = enumerationItems(match[4], count);
-    if (items) found.push(...items.map(text => ({text, match: 'item', targets: []})));
+    if (NEGATED.test(prefix) || EXAMPLE_BEFORE.test(prefix) || NON_VISUAL.test(`${match[2]} ${match[4]}`)) continue;
+    const items = enumerationItems(match[5], count);
+    // The noun phrase ends before a connector: "event cards", not "tabs with titles".
+    const noun = `${match[2]}${match[3]}${match[4].replace(new RegExp(`\\s+(?:with|that|which|for|of|in|on|to|as|having|com|de|do|da|para|que|em)${E}[\\s\\S]*$`, 'iu'), '')}`;
+    const targets = HEADED_ITEMS.test(noun) ? ['heading'] : [];
+    if (items) found.push(...items.map(text => ({text, match: 'item', targets, list})));
+    if (items) list += 1;
+  }
+  return found;
+}
+
+// Each comma or "and" part is either [lead words] one publishable file name
+// [description without another file name], or continues the previous part's
+// description. Anything else (a nested list, "copy of x.py", a path, a file
+// type the host cannot publish, an optional, removed or runtime-made file)
+// skips the whole list.
+function fileListItems(clause) {
+  if (FILE_OPTIONAL.test(clause)) return undefined;
+  const items = [];
+  for (const part of clause.split(/,|\s+(?:and|&|plus)\s+/i)) {
+    const segment = part.replace(/["'“”‘’«»]/g, ' ').trim();
+    const names = [...segment.matchAll(FILE_NAME)].filter(name => !LIBRARY_NAME.test(name[1]));
+    if (!names.length) {
+      if (!items.length || /[\/\\]/.test(segment)) return undefined;
+      continue;
+    }
+    const lead = segment.slice(0, names[0].index).replace(FILE_FOLLOWING, '').replace(/:\s*$/, '').split(/\s+/).filter(Boolean);
+    const description = segment.slice(names[0].index + names[0][0].length);
+    if (names.length > 1 || /[\/\\]/.test(segment) || !lead.every(word => FILE_LEAD.has(word.toLowerCase())) ||
+        NEGATED.test(description) || FILE_DROPPED.test(description) || FILE_CONTENT.test(description) ||
+        !PREVIEW_FILE_SUFFIXES.includes(path.extname(names[0][1]).toLowerCase())) return undefined;
+    items.push(names[0][1]);
+  }
+  return items.length ? items : undefined;
+}
+
+function fileLiterals(prose) {
+  const found = [];
+  for (const match of prose.matchAll(FILE_LIST_CUE)) {
+    const prefix = prose.slice(sentenceStart(prose, 0, match.index), match.index);
+    // A created directory must be named so that it binds to the published
+    // one; "publish a (static) site containing" is the publication itself
+    // ("publish the site with x.js removed" is not a list of contents).
+    const folder = /^(?:directory|folder)$/i.test(match[3]);
+    const directory = match[4] ?? (folder ? match[2] : undefined) ?? '';
+    if (NEGATED.test(prefix) || EXAMPLE_BEFORE.test(prefix) || FILE_OPTIONAL.test(prefix) ||
+        (match[1] ? !folder || !directory : /^with$/i.test(match[5]))) continue;
+    const start = match.index + match[0].length;
+    const end = prose.slice(start).search(/[.!?;](?=\s|$)|\n/);
+    const items = fileListItems(prose.slice(start, end < 0 ? prose.length : start + end));
+    if (items) found.push(...items.map(text => ({text, match: 'file', targets: [], directory})));
   }
   return found;
 }
@@ -172,7 +254,8 @@ function enumeratedLiterals(prose) {
 export function extractRequestedLiterals(ownerText) {
   const prose = ownerProse(ownerText);
   const seen = new Set(), literals = [];
-  for (const literal of [...quotedLiterals(prose), ...enumeratedLiterals(prose)]) {
+  for (const literal of [...quotedLiterals(prose), ...enumeratedLiterals(prose),
+    ...fileLiterals(ownerProse(ownerText, {keepInlineCode: true}))]) {
     const key = relaxed(literal.text);
     if (!key || seen.has(key) || literals.length >= MAX_REQUESTED_LITERALS) continue;
     seen.add(key);
@@ -238,7 +321,7 @@ function readHtml(source, corpus) {
       if (element.name === 'title') corpus.titles.push(...values);
       if (element.name === 'h1') corpus.h1s.push(...values);
       if (/^h[1-6]$/.test(element.name) && values.length && corpus.headings.length <= MAX_HEADINGS) {
-        corpus.headings.push({level: Number(element.name[1]), forms: values});
+        corpus.headings.push({level: Number(element.name[1]), family: element.family, forms: values});
       }
     }
   };
@@ -252,7 +335,9 @@ function readHtml(source, corpus) {
       if (depth >= 0) close(depth);
       continue;
     }
+    let classes = '';
     for (const attribute of match[3].matchAll(/([^\s=/"'>]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) {
+      if (/^class$/i.test(attribute[1])) classes = attribute[2] ?? attribute[3] ?? attribute[4] ?? '';
       if (!TEXT_ATTRIBUTE.test(attribute[1])) continue;
       const value = decodeEntities(attribute[2] ?? attribute[3] ?? attribute[4] ?? '');
       corpus.attributes.push(value);
@@ -266,7 +351,9 @@ function readHtml(source, corpus) {
       continue;
     }
     if (!VOID_ELEMENTS.has(name) && !/\/\s*$/.test(match[3]) && stack.length < 1024) {
-      stack.push({name, joined: joined.length, spaced: spaced.length});
+      // Sibling card headings share their tag and class list.
+      const family = `${name}.${classes.split(/\s+/).filter(Boolean).sort().join('.')}`;
+      stack.push({name, joined: joined.length, spaced: spaced.length, family});
     }
   }
   text(html.slice(at));
@@ -289,7 +376,7 @@ function textCorpus(files) {
     titles: corpus.titles, h1s: corpus.h1s,
     // Every hN element in document order, with its level and relaxed forms.
     headings: () => form('headings', () => corpus.headings.length > MAX_HEADINGS ? []
-      : corpus.headings.map(({level, forms}) => ({level, forms, keys: forms.map(relaxed)}))),
+      : corpus.headings.map(({level, family, forms}) => ({level, family, forms, keys: forms.map(relaxed)}))),
     opaque: exact => form(`opaque:${exact}`, () => corpus.opaque.map(exact ? canonicalText : folded)),
     visible: exact => form(`visible:${exact}`, () => [...corpus.visible, ...corpus.attributes].map(exact ? canonicalText : folded)),
     elements: () => form('elements', () => new Set(corpus.elements.map(relaxed))),
@@ -311,16 +398,16 @@ const reportedHeading = value => {
 };
 
 // A listed item that is on the page but is never a whole heading, while a
-// heading of some level contains it. Reported only if another listed item is
-// exactly a heading of that same level (the items are evidently titled by
-// those headings) and the longer heading names no other listed item. Tower2
-// round 073: "Dawn jazz" was a badge; its h2 read "Dawn Jazz at the Rose
-// Pavilion" beside h2 "River Lantern Walk".
-function headingOnlyMatch(key, corpus, items) {
+// heading of some level contains it. Reported only if another item of the
+// same list is exactly a heading of that same level (the items are evidently
+// titled by those headings) and the longer heading names no other listed
+// item. Tower2 round 073: "Dawn jazz" was a badge; its h2 read "Dawn Jazz at
+// the Rose Pavilion" beside h2 "River Lantern Walk".
+function headingOnlyMatch(key, corpus, siblings, items) {
   const headings = corpus.headings();
   if (!headings.length || headings.some(heading => heading.keys.includes(key))) return undefined;
-  const others = items.filter(other => other !== key);
-  const levels = new Set(headings.filter(heading => heading.keys.some(value => others.includes(value)))
+  const others = items.filter(other => other !== key), evidence = siblings.filter(other => other !== key);
+  const levels = new Set(headings.filter(heading => heading.keys.some(value => evidence.includes(value)))
     .map(heading => heading.level));
   const match = headings.find(heading => levels.has(heading.level) &&
     heading.keys.some(value => containsPhrase(value, key)) &&
@@ -328,23 +415,43 @@ function headingOnlyMatch(key, corpus, items) {
   return match ? reportedHeading(match.forms.at(-1)) : undefined;
 }
 
-// Each miss is {} (absent), {target} (not the page title or h1) or {heading}
-// (a listed item only inside a longer heading).
-function literalMisses(literal, corpus, items) {
+// A listed card name that no hN heading equals or contains, while at least
+// two headings of one tag and class list include another item of the same
+// list exactly (the cards are evidently titled by those headings). Only
+// rendered heading text counts: comments, scripts and styles are never
+// heading text. Tower2 round 082: "Dawn jazz" was a badge; its card's
+// h2.event-title read "Sunrise Sessions" beside h2.event-title "River lantern walk".
+function unheadedItem(key, corpus, siblings) {
+  const headings = corpus.headings();
+  if (headings.some(heading => heading.keys.some(value => containsPhrase(value, key)))) return false;
+  const others = siblings.filter(other => other !== key);
+  const families = new Map();
+  for (const heading of headings) families.set(heading.family, [...families.get(heading.family) ?? [], heading]);
+  return [...families.values()].some(family => family.length > 1 &&
+    family.some(heading => heading.keys.some(value => others.includes(value))));
+}
+
+// Each miss is {} (absent), {target} (not the page title or h1), {heading}
+// (a listed item only inside a longer heading) or {unheaded} (a listed card
+// name that is no heading beside its sibling cards' headings).
+function literalMisses(literal, corpus, items, siblings) {
   const exact = literal.match === 'exact';
   const needle = exact ? canonicalText(literal.text) : folded(literal.text);
   // Script, data and style bytes may render the text at runtime. That is not
   // verified presence, but it is not a verified miss either.
   if (!needle || corpus.opaque(exact).some(source => source.includes(needle))) return [];
+  if (literal.match === 'item') {
+    const key = relaxed(needle);
+    if (!corpus.elements().has(key)) return [{}];
+    if (siblings.length < 2) return [];
+    const heading = headingOnlyMatch(key, corpus, siblings, items);
+    if (heading) return [{heading}];
+    return literal.targets.includes('heading') && unheadedItem(key, corpus, siblings) ? [{unheaded: true}] : [];
+  }
   if (literal.targets.length) {
     const equals = value => exact ? value === needle : relaxed(value) === relaxed(needle);
     return literal.targets.filter(target => !(target === 'page title' ? corpus.titles : corpus.h1s).some(equals))
       .map(target => ({target}));
-  }
-  if (literal.match === 'item') {
-    if (!corpus.elements().has(relaxed(needle))) return [{}];
-    const heading = items.length > 1 ? headingOnlyMatch(relaxed(needle), corpus, items) : undefined;
-    return heading ? [{heading}] : [];
   }
   return corpus.visible(exact).some(value => value.includes(needle)) ? [] : [{}];
 }
@@ -353,10 +460,13 @@ function literalMisses(literal, corpus, items) {
 export function missingRequestedText(literals, files) {
   if (!Array.isArray(literals) || !literals.length || !Array.isArray(files)) return [];
   const corpus = textCorpus(files);
-  const items = literals.filter(literal => literal.match === 'item').map(literal => relaxed(literal.text));
+  const listed = literals.filter(literal => literal.match === 'item');
+  const items = listed.map(literal => relaxed(literal.text));
   const missing = [];
   for (const literal of literals) {
-    for (const miss of literalMisses(literal, corpus, items)) {
+    if (literal.match === 'file') continue;
+    const siblings = listed.filter(other => other.list === literal.list).map(other => relaxed(other.text));
+    for (const miss of literalMisses(literal, corpus, items, siblings)) {
       missing.push(Object.freeze({text: literal.text, ...miss}));
     }
   }
@@ -408,6 +518,21 @@ function workspaceSnapshot(preview, receipt, workspaceRoot) {
   return boundSnapshot(preview, entries);
 }
 
+// Listed files absent from the receipt's complete published path list (any
+// depth), for literals bound to this directory's name or to the publication.
+// Undefined when no literal applies or the list is not complete.
+function missingPublishedFiles(literals, preview, receipt) {
+  const directory = preview.relativeDirectory.split('/').at(-1).toLowerCase();
+  const wanted = literals.filter(literal => literal.match === 'file' &&
+    (!literal.directory || literal.directory.toLowerCase() === directory));
+  if (!wanted.length) return undefined;
+  const paths = receipt?.sha256 === preview.sha256 && Array.isArray(receipt.publishedPaths) &&
+    receipt.publishedPathsOmitted === 0 ? receipt.publishedPaths : preview.files === 1 ? ['index.html'] : undefined;
+  if (!paths || paths.length !== preview.files || !paths.every(name => typeof name === 'string')) return undefined;
+  const names = new Set(paths.map(name => name.split('/').at(-1).toLowerCase()));
+  return wanted.filter(literal => !names.has(literal.text.toLowerCase())).map(literal => ({text: literal.text, file: true}));
+}
+
 // Checks requested literals against the exact published snapshot: current-run
 // written bytes first, then workspace files, each accepted only when they
 // reproduce the receipt's snapshot digest. Unbound input yields no result.
@@ -416,17 +541,22 @@ export function requestedTextCheck(literals, preview, {receipt, trackedContent, 
     if (!Array.isArray(literals) || !literals.length || !preview || !/^[a-f0-9]{64}$/.test(preview.sha256 ?? '') ||
         !Number.isSafeInteger(preview.files) || preview.files < 1 || preview.files > 128 ||
         typeof preview.relativeDirectory !== 'string') return undefined;
-    const files = trackedSnapshot(preview, trackedContent) ?? workspaceSnapshot(preview, receipt, workspaceRoot);
-    if (!files) return undefined;
+    const text = literals.filter(literal => literal.match !== 'file');
+    const files = text.length ? trackedSnapshot(preview, trackedContent) ?? workspaceSnapshot(preview, receipt, workspaceRoot)
+      : undefined;
+    const published = missingPublishedFiles(literals, preview, receipt);
+    if (!files && !published) return undefined;
     return Object.freeze({siteId: preview.siteId, sha256: preview.sha256,
-      missing: Object.freeze(missingRequestedText(literals, files))});
+      missing: Object.freeze([...files ? missingRequestedText(text, files) : [], ...published ?? []].map(Object.freeze))});
   } catch {
     return undefined;
   }
 }
 
-const absent = check => check.missing.filter(miss => !miss.heading);
+const absent = check => check.missing.filter(miss => !miss.heading && !miss.unheaded && !miss.file);
 const inHeadings = check => check.missing.filter(miss => miss.heading);
+const unheaded = check => check.missing.filter(miss => miss.unheaded);
+const unpublished = check => check.missing.filter(miss => miss.file);
 const missingList = misses => misses
   .map(miss => JSON.stringify(miss.text) + (miss.target ? ` (${miss.target})` : '')).join(', ');
 const nameList = misses => JSON.stringify([...new Set(misses.map(miss => miss.text))]);
@@ -435,14 +565,18 @@ const boundMisses = (preview, check) => Boolean(check?.missing?.length && previe
 const sentences = parts => parts.filter(Boolean).join(' ');
 
 // Byte-stable apart from the quoted owner literals, fixed target labels and
-// the snapshot's own heading text, so per-slot coaching dedupe applies.
+// the snapshot's own heading text and directory, so per-slot coaching dedupe applies.
 export function requestedTextInstruction(preview, check) {
   if (!boundMisses(preview, check)) return undefined;
-  const missing = absent(check);
+  const missing = absent(check), names = unheaded(check), files = unpublished(check);
   return sentences([
     missing.length && `Requested text not found: ${missingList(missing)}. Use the owner's exact wording, republish and re-inspect.`,
     ...inHeadings(check).map(miss => `${JSON.stringify(miss.text)} appears only inside a longer heading ` +
       `(${JSON.stringify(miss.heading)}); use the exact name as the heading, then republish and re-inspect.`),
+    names.length && `Requested names are on the page but not as headings, while other listed items are: ${nameList(names)}. ` +
+      'Use each exact name as the heading of its item, then republish and re-inspect.',
+    files.length && `Requested files are not in the published directory ${JSON.stringify(preview.relativeDirectory)}: ` +
+      `${nameList(files)}. Put each one inside that directory, then republish it.`,
   ]);
 }
 
@@ -462,22 +596,40 @@ export const REQUESTED_HEADING_REVISION_INSTRUCTION = [
   'republish with pixel_ods_workspace_preview, and keep everything else unchanged.',
 ];
 
+// The same for listed card names that are not headings at all.
+export const REQUESTED_ITEM_HEADING_REVISION_INSTRUCTION = [
+  'Requested names are still not headings on the published page: ',
+  '. Use each exact name as the whole heading of its item, with the same heading element as the other listed items, ' +
+  'put extra detail in body text, republish with pixel_ods_workspace_preview, and keep everything else unchanged.',
+];
+
+// The same for owner-listed files missing from the published directory.
+export const REQUESTED_FILE_REVISION_INSTRUCTION = [
+  'Requested files are still missing from the published directory: ',
+  '. Put each file inside the directory you published (copy an existing file there with one short command ' +
+  'instead of retyping it), republish that directory with pixel_ods_workspace_preview, and keep everything else unchanged.',
+];
+
 export function requestedTextRevisionInstruction(preview, check) {
   if (!boundMisses(preview, check)) return undefined;
-  const missing = absent(check), headings = inHeadings(check);
+  const missing = absent(check), headings = inHeadings(check), names = unheaded(check), files = unpublished(check);
   return sentences([
     missing.length && REQUESTED_TEXT_REVISION_INSTRUCTION.join(nameList(missing)),
     headings.length && REQUESTED_HEADING_REVISION_INSTRUCTION.join(nameList(headings)),
+    names.length && REQUESTED_ITEM_HEADING_REVISION_INSTRUCTION.join(nameList(names)),
+    files.length && REQUESTED_FILE_REVISION_INSTRUCTION.join(nameList(files)),
   ]);
 }
 
 export function requestedTextDeliveryNote(preview, check) {
   if (!boundMisses(preview, check)) return undefined;
-  const missing = absent(check), headings = inHeadings(check);
+  const missing = absent(check), headings = inHeadings(check), names = unheaded(check), files = unpublished(check);
   return sentences([
     missing.length && `The published page does not contain text the owner requested: ${missingList(missing)}.`,
     headings.length && 'The published page uses requested names only inside longer headings: ' +
       `${headings.map(miss => `${JSON.stringify(miss.text)} (${JSON.stringify(miss.heading)})`).join(', ')}.`,
+    names.length && `The published page shows requested names, but not as headings like the other listed items: ${missingList(names)}.`,
+    files.length && `The published directory does not contain files the owner requested: ${missingList(files)}.`,
     'The preview is available, but that requirement is not met.',
   ]);
 }

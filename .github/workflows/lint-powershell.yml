@@ -122,6 +122,10 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-llama-spec-type.ps1
 
+      - name: Windows llama-server Checkpoint Flag Probe Contract
+        shell: pwsh
+        run: ./tests/test-windows-native-checkpoint-args.ps1
+
       - name: Windows Catalog Source Boundary Contract
         shell: pwsh
         run: ./tests/test-windows-catalog-selector.ps1

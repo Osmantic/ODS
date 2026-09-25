@@ -503,7 +503,11 @@ act as a capability gate:
   one evidence window. The tool returns only that bounded, explicitly untrusted
   window. It is the targeted fallback when the normal `web_fetch` prefix is
   truncated before the requested detail; local, private, single-label,
-  credentialed, and raw-IP destinations remain blocked.
+  credentialed, and raw-IP destinations remain blocked. It requests a page as
+  a browser-compatible navigation that names `ODS-Pixel/1.0`, and only after a
+  plain 403 or 406 repeats the plain request once. Script and style text is
+  removed before extraction. A bot challenge or block is reported as not read;
+  ODS never solves, waits out or retries one, and runs no JavaScript.
 - `pixel_ods_download_promote` can publish one already-successful, exact broker
   download into one new relative path in Pixel's workspace. It cannot fetch,
   transform, overwrite, execute, or select an arbitrary host file.

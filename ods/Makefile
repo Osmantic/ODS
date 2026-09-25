@@ -25,6 +25,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== Tier map tests ==="
 	@bash tests/test-tier-map.sh
+	@python3 tests/test-model-library-pinned-urls.py
 	@bash tests/test-installer-context-parity.sh
 	@bash tests/test-hermes-context-floor.sh
 	@echo ""
@@ -87,9 +88,11 @@ test: ## Run unit and contract tests
 	@echo "=== Overlay/plist contracts ==="
 	@bash tests/contracts/test-overlay-map-coherence.sh
 	@bash tests/contracts/test-plist-log-paths.sh
+	@python3 tests/contracts/test-llama-cpp-compat.py
 	@python3 tests/contracts/test-llama-runtime-tunables.py
 	@python3 tests/contracts/test-llama-spec-default.py
 	@bash tests/test-llama-mtp-args.sh
+	@python3 -m unittest tests/test_macos_runtime_llama_args.py tests/test_macos_checkpoint_args.py
 	@echo ""
 	@echo "=== safe .env loading (quote/CRLF handling) ==="
 	@bash tests/test-safe-env.sh

@@ -52,8 +52,11 @@ HOST_AGENT_BRIDGE_PLIST_LABEL="com.ods.host-agent-bridge"
 HOST_AGENT_BRIDGE_PLIST="$HOME/Library/LaunchAgents/${HOST_AGENT_BRIDGE_PLIST_LABEL}.plist"
 HOST_AGENT_BRIDGE_LOG="$HOME/Library/Logs/ODS/ods-host-agent-bridge.log"
 
-# llama.cpp release for macOS Metal build (update when new releases ship)
-LLAMA_CPP_RELEASE_TAG="b8210"
+# llama.cpp release for macOS Metal build (update when new releases ship).
+# Same release as the Linux NVIDIA/CPU images. The asset's SHA-256 is pinned in
+# lib/native-runtime-download.sh; a new tag also needs a --help fixture in
+# tests/fixtures/llama-server-help/ (tests/test_macos_runtime_llama_args.py).
+LLAMA_CPP_RELEASE_TAG="b9014"
 LLAMA_CPP_MACOS_ASSET="llama-${LLAMA_CPP_RELEASE_TAG}-bin-macos-arm64.tar.gz"
 LLAMA_CPP_MACOS_URL="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_RELEASE_TAG}/${LLAMA_CPP_MACOS_ASSET}"
 

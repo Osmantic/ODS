@@ -640,8 +640,13 @@ LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 # LLAMA_ARG_CHECKPOINT_EVERY_NT=1024
 # Newer runtimes use minimum spacing instead of the legacy interval; never set both.
 # LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT=1024
-# LLAMA_ARG_CTX_CHECKPOINTS=8
+# Prompt checkpoints per slot. Unset uses 32 (about 50 MiB each for Qwen3.5-9B);
+# lower it, or set 0, to save memory.
+# LLAMA_ARG_CTX_CHECKPOINTS=32
 # LLAMA_ARG_CACHE_RAM=512
+# Lossless n-gram speculation (--spec-type ngram-mod) is on by default when the
+# installed llama-server supports it (b8955+; ODS pins b9014). Turn it off with:
+# LLAMA_SPEC_TYPE=none
 # Optional idle unloading: saves RAM between sessions, but loses prompt cache on sleep.
 # LLAMA_ARG_SLEEP_IDLE_SECONDS=120
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
