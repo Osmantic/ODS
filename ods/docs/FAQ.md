@@ -199,7 +199,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
 ```
 
-Do not run the `curl ... | bash` installer from Windows PowerShell.
+Do not run the `curl ... | bash` installer from Windows PowerShell. The Windows entry point guides Ubuntu/WSL2 preparation and requires Pixel with Hermes disabled. A restart, Ubuntu user setup and Docker WSL integration may be required; see [Windows Quickstart](WINDOWS-QUICKSTART.md).
 
 The wizard:
 1. Detects your hardware
