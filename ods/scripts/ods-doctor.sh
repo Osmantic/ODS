@@ -698,7 +698,14 @@ fi
 # reports it only in its load log. A model that lands partly on the CPU still
 # answers /health and chat, just several times slower (32/65 layers ran at
 # 1.5 tok/s on an RTX 5090), so read the running server's placement and fail
-# unless every layer is on the GPU or a CPU offload was configured.
+# unless every layer is on the GPU or a CPU offload was configured. An
+# ODS-managed GPU llama-server that has loaded its model but whose load log
+# does not state placement fails too ("unverified"): a llama.cpp upgrade or
+# log verbosity that stops printing it must not turn the check into a silent
+# pass. Lemonade manages placement itself and does not log it, so it is
+# skipped, like CPU-only installs, external LLMs and a server with no log to
+# read. A load section that rotated out of the log is "unknown" (a warning):
+# a restart logs a fresh one.
 GPU_RESIDENCY_JSON=""
 _doctor_check_gpu_residency() {
     local residency_script="$ROOT_DIR/scripts/llama_gpu_residency.py"
@@ -715,6 +722,10 @@ _doctor_check_gpu_residency() {
         mode_args=(--skip "the LLM is not served by an ODS-managed llama-server")
     elif [[ "$backend" == cpu ]]; then
         mode_args=(--skip "CPU-only install: the model runs on the CPU by design")
+    elif [[ "$backend" == amd || "$backend" == AMD || "${LLM_BACKEND:-}" == lemonade \
+            || "${AMD_INFERENCE_RUNTIME:-}" == lemonade ]]; then
+        # Same rule as the host agent's _uses_lemonade_runtime.
+        mode_args=(--skip "Lemonade manages GPU placement itself and does not log it")
     elif [[ "$(uname -s)" == Darwin && "${LLM_STATUS:-}" != ok ]]; then
         mode_args=(--skip "native llama-server is not responding")
     elif [[ "$(uname -s)" == Darwin ]]; then
@@ -732,6 +743,11 @@ _doctor_check_gpu_residency() {
             mode_args=(--skip "$container is not running")
         fi
     fi
+    # /health answers only once the model is loaded. Without it, a log that
+    # has not yet reported placement is a load in progress, not a failure.
+    if [[ "${mode_args[0]}" != --skip && "${LLM_STATUS:-}" == ok ]]; then
+        mode_args+=(--server-ready)
+    fi
 
     output="$("$PYTHON_CMD" "$residency_script" "${mode_args[@]}")" || rc=$?
     if (( rc != 0 )) || [[ -z "$output" ]]; then
@@ -746,7 +762,7 @@ print(d["status"] + "\t" + d["message"])' "$output")"
     message="${summary#*$'\t'}"
     case "$status" in
         pass|intentional) log_ok "GPU residency: $message" ;;
-        fail) log_fail "GPU residency: $message" ;;
+        fail|unverified) log_fail "GPU residency: $message" ;;
         unknown) log_warn "GPU residency: $message" ;;
         *) log_info "GPU residency: $message" ;;
     esac
@@ -1660,6 +1676,19 @@ def _collect_install_diagnoses(artifacts):
 
 
 def _gpu_residency_diagnoses(residency):
+    if residency.get("status") == "unverified":
+        return [
+            _diagnosis(
+                "ODS-LLM-GPU-PLACEMENT-UNVERIFIED",
+                "blocker",
+                "high",
+                "ODS cannot confirm the running model is on the GPU",
+                [_evidence(residency.get("source") or "llama-server", residency["message"])],
+                "A model that llama.cpp placed partly on the CPU answers health checks and chat, only several "
+                "times slower; without the placement lines in llama-server's load log that is not detectable.",
+                [residency["fix_hint"]],
+            )
+        ]
     if residency.get("status") != "fail":
         return []
     return [
@@ -1933,7 +1962,7 @@ elif amd_runtime.get("reason") and amd_runtime.get("reason") != "not_amd":
     print(f"  AMD Runtime:   {amd_runtime.get('reason')}")
 
 gpu_residency = data.get("runtime", {}).get("gpu_residency") or {}
-if gpu_residency.get("status") in {"pass", "fail", "intentional", "unknown"}:
+if gpu_residency.get("status") in {"pass", "fail", "intentional", "unverified", "unknown"}:
     print(f"  GPU residency: {gpu_residency.get('status')} - {gpu_residency.get('message')}")
 
 hermes_workers = data.get("runtime", {}).get("hermes_slash_workers", {})

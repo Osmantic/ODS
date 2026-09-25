@@ -471,6 +471,12 @@ jobs:
           python3 tests/contracts/test-llama-spec-default.py
           python3 -m unittest -v tests/test_macos_runtime_llama_args.py tests/test_macos_checkpoint_args.py
 
+      - name: GPU Residency Contract Tests
+        run: |
+          python3 tests/contracts/test-llama-placement-log.py
+          python3 tests/test-llama-gpu-residency.py
+          bash tests/test-ods-doctor-gpu-residency.sh
+
       - name: Pixel Public Source and Local Bundle Contract
         run: |
           python3 scripts/verify-pixel-bundle.py

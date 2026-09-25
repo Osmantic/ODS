@@ -91,6 +91,7 @@ test: ## Run unit and contract tests
 	@python3 tests/contracts/test-llama-cpp-compat.py
 	@python3 tests/contracts/test-llama-runtime-tunables.py
 	@python3 tests/contracts/test-llama-spec-default.py
+	@python3 tests/contracts/test-llama-placement-log.py
 	@bash tests/test-llama-mtp-args.sh
 	@python3 -m unittest tests/test_macos_runtime_llama_args.py tests/test_macos_checkpoint_args.py
 	@echo ""
