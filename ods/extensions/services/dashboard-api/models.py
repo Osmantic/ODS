@@ -208,6 +208,10 @@ class ModelLibraryEntry(BaseModel):
     fitsVram: Optional[bool]
     activationSupport: Optional[dict[str, Any]] = None
     fitsCurrentVram: Optional[bool]
+    # Discrete GPUs: the full-residency estimate behind fitsVram (llama.cpp's
+    # projected device memory, the budget after the driver reserve and
+    # llama.cpp's margin, and any ubatch/KV-cache adjustment it needs).
+    gpuResidency: Optional[dict[str, Any]] = None
     performance: Optional[dict[str, Any]] = None
     performanceLabel: Optional[str] = None
 

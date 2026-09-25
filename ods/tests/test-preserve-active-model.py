@@ -184,6 +184,89 @@ def test_preserved_context_is_clamped_to_the_declared_native_context() -> None:
         assert run_helper(env, catalog, imports, models_dir)["MAX_CONTEXT"] == "98304"
 
 
+def test_gpu_residency_controls_survive_an_upgrade() -> None:
+    """ubatch, fit target and threads are part of the preserved contract.
+
+    Without them an upgrade reloads the 8 GB default with llama.cpp's
+    ubatch 512 and 1024 MiB margin, which put 4 of 33 layers on the CPU.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        env.write_text(
+            env.read_text(encoding="utf-8")
+            + "LLAMA_ARG_UBATCH=256\nLLAMA_ARG_FIT_TARGET=512\nLLAMA_THREADS=6\n",
+            encoding="utf-8",
+        )
+        values = run_helper(env, catalog, imports, models_dir)
+        assert values["LLAMA_ARG_UBATCH"] == "256"
+        assert values["LLAMA_ARG_FIT_TARGET"] == "512"
+        assert values["LLAMA_THREADS"] == "6"
+
+    # A residency-planned configuration (a desktop held GPU memory at
+    # activation) is carried as it is, not reset to the profile's values.
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        env.write_text(
+            env.read_text(encoding="utf-8") + "LLAMA_ARG_UBATCH=128\nLLAMA_ARG_FIT_TARGET=512\n",
+            encoding="utf-8",
+        )
+        values = run_helper(env, catalog, imports, models_dir)
+        assert values["LLAMA_ARG_UBATCH"] == "128"
+        assert "LLAMA_THREADS" not in values
+
+    # An interrupted installer already replaced .env with a bootstrap
+    # model: the proven model's catalog profile supplies the controls again.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root)
+        data = json.loads(catalog.read_text(encoding="utf-8"))
+        data["models"][0]["runtime_profiles"][0]["env"].update(
+            {"LLAMA_ARG_UBATCH": "256", "LLAMA_ARG_FIT_TARGET": "512"}
+        )
+        catalog.write_text(json.dumps(data), encoding="utf-8")
+        state = root / "data" / "model-state.json"
+        state.write_text(
+            json.dumps(
+                {
+                    "schema": "ods.model-state.v1",
+                    "seq": 5,
+                    "routeSeq": 4,
+                    "operation": None,
+                    "desired": {"catalogId": "agent-test-q4"},
+                    "active": {
+                        "routeSeq": 4,
+                        "catalogId": "agent-test-q4",
+                        "runtimeModelId": "Agent-Test-Q4_K_M.gguf",
+                        "publicModel": "ods/current",
+                        "backend": {
+                            "kind": "llama-server",
+                            "endpointId": "llama-server-default",
+                            "nativeRoute": None,
+                        },
+                        "contextLength": 65536,
+                        "verifiedAt": "2026-09-25T15:16:00Z",
+                        "proof": {
+                            "identity": "Agent-Test-Q4_K_M.gguf",
+                            "completion": True,
+                        },
+                    },
+                    "availability": {"mode": "serve_active", "queueDeadline": None},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        replace_env(env, "LLM_MODEL=agent-test", "LLM_MODEL=bootstrap-model")
+        replace_env(env, "GGUF_FILE=Agent-Test-Q4_K_M.gguf", "GGUF_FILE=Bootstrap-2B.gguf")
+        replace_env(env, "MAX_CONTEXT=65536", "MAX_CONTEXT=32768")
+        replace_env(env, "CTX_SIZE=65536", "CTX_SIZE=32768")
+        values = run_helper(env, catalog, imports, models_dir, state=state)
+        assert values["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+        assert values["MODEL_RUNTIME_PROFILE"] == "nvidia-8gb-64k"
+        assert values["LLAMA_ARG_UBATCH"] == "256"
+        assert values["LLAMA_ARG_FIT_TARGET"] == "512"
+
+
 def test_valid_dashboard_import_is_preserved() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True)
@@ -472,6 +555,7 @@ def main() -> int:
         test_valid_curated_model_is_preserved,
         test_cpu_profile_host_ram_caps_are_preserved,
         test_preserved_context_is_clamped_to_the_declared_native_context,
+        test_gpu_residency_controls_survive_an_upgrade,
         test_external_registered_model_store_is_preserved,
         test_commented_model_contract_survives_rerun,
         test_commented_contract_reaches_installer_safe_loader,
