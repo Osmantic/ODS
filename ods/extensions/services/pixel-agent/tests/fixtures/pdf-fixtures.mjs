@@ -143,3 +143,71 @@ export function imageOnlyPdf() {
     {num: 5, dict: '/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode', stream: pixels},
   ], {root: 1});
 }
+
+// ASCII85 (PDF 32000-1 §7.4.3) with the "z" shorthand for four zero bytes.
+export function ascii85Encode(bytes) {
+  const out = [];
+  for (let i = 0; i < bytes.length; i += 4) {
+    const size = Math.min(4, bytes.length - i);
+    let value = 0;
+    for (let k = 0; k < 4; k++) value = value * 256 + (k < size ? bytes[i + k] : 0);
+    if (size === 4 && value === 0) { out.push('z'); continue; }
+    const digits = [];
+    for (let k = 0; k < 5; k++) { digits.unshift(String.fromCharCode(33 + (value % 85))); value = Math.floor(value / 85); }
+    out.push(digits.slice(0, size + 1).join(''));
+  }
+  return `${out.join('')}~>`;
+}
+
+// One page whose content stream is ASCII85: its text, then `zeros` zero
+// bytes written as "z" groups (one input byte for four output bytes).
+export function ascii85Pdf(lines, {zeros = 0} = {}) {
+  const content = Buffer.concat([Buffer.from(`${contentFor(lines, 'helvetica')}\n`, 'latin1'), Buffer.alloc(zeros)]);
+  return pdfFile([
+    {num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>'},
+    {num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'},
+    {num: 3, body: '<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>'},
+    {num: 4, dict: '/Filter /ASCII85Decode', stream: Buffer.from(ascii85Encode(content), 'latin1')},
+    {num: 5, body: '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'},
+  ], {root: 1});
+}
+
+// The review's first out-of-memory case (PR #6724): a 7.3 MB document whose
+// one content stream is ASCII85 "z" groups, 29 MB of zero bytes decoded.
+export const ascii85BombPdf = (zGroups = 7_300_000) => ascii85Pdf([], {zeros: zGroups * 4});
+
+// The review's second case: Type0 fonts whose ToUnicode maps are bfrange
+// lists of 65,536 targets each over codes that never repeat, about 15.6 MB
+// per map decoded from a few KB. Each font on the page loads its own map.
+export function cmapBombPdf({fonts = 3, ranges = 34} = {}) {
+  const hex8 = value => value.toString(16).toUpperCase().padStart(8, '0');
+  const list = `[${'<0041> '.repeat(65_536)}]`;
+  const lines = Array.from({length: ranges}, (_, r) => `<${hex8(r * 65_536)}> <${hex8(r * 65_536 + 65_535)}> ${list}`);
+  const cmap = ['begincmap', '1 begincodespacerange', '<00000000> <FFFFFFFF>', 'endcodespacerange',
+    `${ranges} beginbfrange`, ...lines, 'endbfrange', 'endcmap'].join('\n');
+  const names = Array.from({length: fonts}, (_, i) => `/F${i + 1}`);
+  const objects = [
+    {num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>'},
+    {num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'},
+    {num: 3, body: `<< /Type /Page /Parent 2 0 R /Resources << /Font << ${names.map((name, i) => `${name} ${10 + i} 0 R`).join(' ')} >> >> /Contents 4 0 R >>`},
+    {num: 4, dict: '', stream: Buffer.from(`BT ${names.map(name => `${name} 12 Tf <00000041> Tj`).join(' ')} ET`, 'latin1')},
+    {num: 5, body: '<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Bomb /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>'},
+  ];
+  for (let i = 0; i < fonts; i++) {
+    objects.push({num: 10 + i, body: `<< /Type /Font /Subtype /Type0 /BaseFont /Bomb /Encoding /Identity-H /DescendantFonts [5 0 R] /ToUnicode ${100 + i} 0 R >>`});
+    objects.push({num: 100 + i, dict: '/Filter /FlateDecode', stream: deflateSync(Buffer.from(cmap, 'latin1'), {level: 9})});
+  }
+  return pdfFile(objects, {root: 1});
+}
+
+// Inside every parser bound (7.6 MB, five objects), but its 1.9 million
+// empty dictionaries do not fit a 192 MB heap.
+export function emptyDictionaryBombPdf(count = 950_000) {
+  return pdfFile([
+    {num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>'},
+    {num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'},
+    {num: 3, body: '<< /Type /Page /Parent 2 0 R >>'},
+    {num: 4, body: `[${'<<>>'.repeat(count)}]`},
+    {num: 5, body: `[${'<<>>'.repeat(count)}]`},
+  ], {root: 1});
+}

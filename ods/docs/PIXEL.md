@@ -502,9 +502,11 @@ act as a capability gate:
   A bounded fallback accepts two or three keywords only when they co-occur in
   one evidence window. The tool returns only that bounded, explicitly untrusted
   window. A PDF is read as the text of its first 10 pages (at most 8 MB,
-  extracted in a worker thread within 5 seconds; nothing in it is run); an
-  image or other binary body, or a PDF whose text cannot be extracted
-  (encrypted, scanned, too large or too slow), is reported as not read with its
+  extracted within 5 seconds in a separate Node process with a 192 MB heap,
+  at most two at a time; nothing in it is run, and a document that exhausts
+  that heap ends only its own process); an image or other binary body, or a
+  PDF whose text cannot be extracted (encrypted, including owner-password-only
+  files; scanned; too large or too slow), is reported as not read with its
   type, size and reason. It is the targeted fallback when the normal `web_fetch` prefix is
   truncated before the requested detail; local, private, single-label,
   credentialed, and raw-IP destinations remain blocked. It requests a page as

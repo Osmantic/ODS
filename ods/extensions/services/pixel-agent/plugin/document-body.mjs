@@ -19,12 +19,13 @@ export const PDF_TYPES = new Set(['application/pdf', 'application/x-pdf', 'appli
 // makes the body a PDF, anything else stays "not a text document".
 const UNDECLARED_TYPES = new Set(['', 'application/octet-stream', 'binary/octet-stream', 'application/unknown',
   'application/download', 'application/x-download', 'application/force-download']);
+// RTF and PostScript are text formats, so they are not listed here.
 const BINARY_TYPES = new Set(['application/zip', 'application/gzip', 'application/x-gzip', 'application/x-tar',
   'application/x-7z-compressed', 'application/x-rar-compressed', 'application/vnd.rar', 'application/x-bzip2',
-  'application/x-xz', 'application/zstd', 'application/wasm', 'application/msword', 'application/rtf',
+  'application/x-xz', 'application/zstd', 'application/wasm', 'application/msword',
   'application/java-archive', 'application/x-msdownload', 'application/x-executable', 'application/x-sharedlib',
   'application/x-mach-binary', 'application/vnd.android.package-archive', 'application/epub+zip',
-  'application/x-shockwave-flash', 'application/postscript']);
+  'application/x-shockwave-flash']);
 const BINARY_PREFIXES = ['image/', 'audio/', 'video/', 'font/', 'model/', 'application/vnd.ms-',
   'application/vnd.openxmlformats-', 'application/vnd.oasis.opendocument.', 'application/x-font'];
 

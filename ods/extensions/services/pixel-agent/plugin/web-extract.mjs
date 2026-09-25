@@ -370,7 +370,7 @@ function textResult(text, details, isError = false) {
 // Receipts for documents that are not HTML or plain text: a PDF read as text,
 // or a body that was not read (document-body.mjs).
 const PDF_NOT_READ_TEXT = {
-  "too-large": "it is larger than the PDF size bound",
+  "too-large": "it is larger than the PDF reader's size or memory bounds",
   timeout: "text extraction did not finish within its time bound",
   encrypted: "it is encrypted",
   "no-text": "it has no extractable text (for example a scan, or text drawn as outlines)",

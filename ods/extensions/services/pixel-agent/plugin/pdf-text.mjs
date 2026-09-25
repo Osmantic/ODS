@@ -3,38 +3,53 @@
 //
 // OpenClaw's web_fetch returns any 2xx body as decoded text, so a PDF reaches
 // the model as undecoded bytes. This module reads a PDF's text itself, with
-// no dependency: plain JavaScript over node:zlib, run in a short-lived worker
-// thread that is terminated at its deadline or when the caller aborts, so the
-// gateway thread never parses a document.
+// no dependency: plain JavaScript over node:zlib, so the gateway thread never
+// parses a document.
 //
-// Bounds: at most PDF_TEXT_LIMITS.maxBytes of body, the first maxPages pages,
-// maxTextChars of text, maxDecodedBytes of decompressed streams (maxStreamBytes
-// for one stream), a worker heap limit and a wall-clock deadline. Nothing in
-// the document is executed: no font programs, scripts, links or embedded
-// files, no network and no file access.
+// Each extraction runs in its own short-lived Node process
+// (pdf-text-worker.mjs), started with an empty environment and a V8 heap
+// limit, and killed (SIGKILL) at its deadline or when the caller aborts. A
+// document that exhausts that heap ends only that process, and is reported as
+// too large. At most PDF_EXTRACTION_CONCURRENCY such processes run at once.
+// The process is not a sandbox: it has the gateway's file and network access,
+// and the extractor simply never uses them.
+//
+// Bounds inside the process: at most PDF_TEXT_LIMITS.maxBytes of body, the
+// first maxPages pages, maxTextChars of text, maxDecodedBytes of decoded
+// streams (maxStreamBytes for one stream, checked before a decoder grows its
+// output), maxObjects objects and maxTableEntries font table entries
+// (ToUnicode mappings and glyph widths, all fonts together), and a
+// wall-clock deadline. Nothing in the document is executed: no font
+// programs, scripts, links or embedded files.
 //
 // Read: classic and compressed object layouts (object streams), FlateDecode,
 // ASCII85 and ASCIIHex content streams, simple fonts (standard, WinAnsi and
 // MacRoman encodings with Differences) and composite fonts through their
-// ToUnicode maps, and form XObjects. Reported as not read: encrypted files,
+// ToUnicode maps, and form XObjects. Reported as not read: encrypted files
+// (including ones with only an owner password, which some readers open),
 // pages whose text is drawn as images or outlines (scans), composite fonts
 // without a ToUnicode map, and anything that does not fit the bounds.
 
-import {Worker} from 'node:worker_threads';
+import {spawn} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {constants as zlib, inflateRawSync, inflateSync} from 'node:zlib';
 
 export const PDF_TEXT_LIMITS = Object.freeze({
   maxBytes: 8 * 1024 * 1024,           // response body
   maxPages: 10,                        // the first pages, in page-tree order
-  timeoutMs: 5_000,                    // one extraction, worker start included
+  timeoutMs: 5_000,                    // one extraction: waiting, process start and parsing
   maxTextChars: 300_000,               // extracted text
-  maxStreamBytes: 16 * 1024 * 1024,    // one decompressed stream
-  maxDecodedBytes: 48 * 1024 * 1024,   // all decompressed streams together
+  maxStreamBytes: 16 * 1024 * 1024,    // one decoded stream
+  maxDecodedBytes: 48 * 1024 * 1024,   // all decoded streams together
   maxObjects: 250_000,
-  workerHeapMb: 192,
+  maxTableEntries: 500_000,            // ToUnicode mappings and glyph widths, all fonts together
+  heapMb: 192,                         // V8 heap of the extraction process
 });
+// Extraction processes running at once in one gateway; the others wait for a
+// free one within their own deadline.
+export const PDF_EXTRACTION_CONCURRENCY = 2;
 
-// Why a PDF was not read. Any other worker outcome is reported as unsupported.
+// Why a PDF was not read. Any other outcome is reported as unsupported.
 export const PDF_NOT_READ_REASONS = Object.freeze(['too-large', 'timeout', 'encrypted', 'no-text', 'unsupported',
   'unavailable']);
 const REASONS = new Set(PDF_NOT_READ_REASONS);
@@ -284,6 +299,7 @@ export function glyphUnicode(name) {
 
 const HEX_PAIR = /<([0-9A-Fa-f\s]*)>\s*<([0-9A-Fa-f\s]*)>/g;
 const RANGE = /<([0-9A-Fa-f\s]*)>\s*<([0-9A-Fa-f\s]*)>\s*(?:<([0-9A-Fa-f\s]*)>|\[([^\]]*)\])/g;
+const HEX_STRING = /<([0-9A-Fa-f\s]*)>/g;
 const hexBytes = hex => { hex = hex.replace(/\s/g, ''); return Buffer.from(hex.length % 2 ? `${hex}0` : hex, 'hex'); };
 const hexCode = hex => { const bytes = hexBytes(hex); let code = 0; for (const byte of bytes) code = code * 256 + byte; return {code, length: bytes.length}; };
 function utf16(bytes) {
@@ -292,42 +308,62 @@ function utf16(bytes) {
   if (bytes.length % 2) text += String.fromCharCode(bytes[bytes.length - 1]);
   return text;
 }
+// A mapping's Unicode value: at most 512 bytes, as §9.10.3 allows.
+const unicodeOf = hex => utf16(hexBytes(hex).subarray(0, 512));
 // Linear: each section ends at its own end keyword; a missing one ends parsing.
-function sections(text, begin, end) {
-  const found = [];
+function* sections(text, begin, end) {
   for (let at = text.indexOf(begin); at >= 0; at = text.indexOf(begin, at)) {
     const stop = text.indexOf(end, at + begin.length);
-    if (stop < 0) break;
-    found.push(text.slice(at + begin.length, stop));
+    if (stop < 0) return;
+    yield text.slice(at + begin.length, stop);
     at = stop + end.length;
   }
-  return found;
 }
 
-export function parseCMap(text) {
+// One map keeps at most CMAP_MAX_CODES mapped codes, CMAP_MAX_RANGES
+// bfrange runs and CMAP_MAX_CODESPACE code space ranges; later entries are
+// ignored. `budget.entries` is shared by every table of one document (maps
+// and glyph widths), and running out of it ends the extraction as too large.
+const CMAP_MAX_CODES = 65_536, CMAP_MAX_RANGES = 10_000, CMAP_MAX_CODESPACE = 256;
+function spend(budget) {
+  if (--budget.entries < 0) throw new Failure('too-large');
+}
+
+export function parseCMap(text, budget = {entries: Infinity}) {
   const cmap = {codespace: [], single: new Map(), ranges: []};
   for (const body of sections(text, 'begincodespacerange', 'endcodespacerange')) {
     for (const [, low, high] of body.matchAll(HEX_PAIR)) {
+      if (cmap.codespace.length >= CMAP_MAX_CODESPACE) break;
       const lo = hexCode(low), hi = hexCode(high);
-      if (lo.length >= 1 && lo.length <= 4 && lo.length === hi.length) cmap.codespace.push({bytes: lo.length, lo: lo.code, hi: hi.code});
+      if (lo.length < 1 || lo.length > 4 || lo.length !== hi.length) continue;
+      spend(budget);
+      cmap.codespace.push({bytes: lo.length, lo: lo.code, hi: hi.code});
     }
   }
   for (const body of sections(text, 'beginbfchar', 'endbfchar')) {
     for (const [, source, target] of body.matchAll(HEX_PAIR)) {
-      if (cmap.single.size >= 65_536) break;
-      cmap.single.set(hexCode(source).code, utf16(hexBytes(target)));
+      if (cmap.single.size >= CMAP_MAX_CODES) break;
+      spend(budget);
+      cmap.single.set(hexCode(source).code, unicodeOf(target));
     }
   }
   for (const body of sections(text, 'beginbfrange', 'endbfrange')) {
     for (const [, low, high, start, list] of body.matchAll(RANGE)) {
       const lo = hexCode(low).code, hi = hexCode(high).code;
-      if (hi < lo || hi - lo > 65_535 || cmap.ranges.length >= 10_000) continue;
+      if (hi < lo || hi - lo > 65_535) continue;
       if (start !== undefined) {
-        const units = utf16(hexBytes(start));
-        if (units) cmap.ranges.push({lo, hi, prefix: units.slice(0, -1), last: units.charCodeAt(units.length - 1)});
+        const units = cmap.ranges.length < CMAP_MAX_RANGES ? unicodeOf(start) : '';
+        if (!units) continue;
+        spend(budget);
+        cmap.ranges.push({lo, hi, prefix: units.slice(0, -1), last: units.charCodeAt(units.length - 1)});
       } else {
-        const targets = [...list.matchAll(/<([0-9A-Fa-f\s]*)>/g)];
-        targets.slice(0, hi - lo + 1).forEach(([, target], index) => cmap.single.set(lo + index, utf16(hexBytes(target))));
+        // A list names one target per code, read one at a time.
+        let code = lo;
+        for (const [, target] of list.matchAll(HEX_STRING)) {
+          if (code > hi || cmap.single.size >= CMAP_MAX_CODES) break;
+          spend(budget);
+          cmap.single.set(code++, unicodeOf(target));
+        }
       }
     }
   }
@@ -346,28 +382,33 @@ function cmapLookup(cmap, code) {
 // ---------------------------------------------------------------------------
 // Stream filters (§7.4) that text can use. Image codecs are never decoded.
 
-function ascii85(data) {
-  const out = [];
-  let group = 0, count = 0;
+// At most `max` bytes are written, into an array of at most four times the
+// input ("z" is one byte for four); more fails as too large.
+function ascii85(data, max) {
+  const out = new Uint8Array(Math.min(max, data.length * 4));
+  let size = 0, group = 0, count = 0;
+  const put = (value, bytes) => {
+    if (size + bytes > out.length) throw new Failure('too-large');
+    for (let k = 0; k < bytes; k++) out[size++] = (value >>> (24 - 8 * k)) & 255;
+  };
   for (let i = 0; i < data.length; i++) {
     const code = data[i];
     if (code === 126) break;
     if (WHITE[code]) continue;
-    if (code === 122 && count === 0) { out.push(0, 0, 0, 0); continue; }
+    if (code === 122 && count === 0) { put(0, 4); continue; }
     if (code < 33 || code > 117) return undefined;
     group = group * 85 + code - 33;
     if (++count === 5) {
-      out.push(Math.floor(group / 16777216) % 256, Math.floor(group / 65536) % 256, Math.floor(group / 256) % 256, group % 256);
+      put(group, 4);
       group = 0;
       count = 0;
     }
   }
   if (count > 1) {
     for (let k = count; k < 5; k++) group = group * 85 + 84;
-    out.push(...[Math.floor(group / 16777216) % 256, Math.floor(group / 65536) % 256, Math.floor(group / 256) % 256,
-      group % 256].slice(0, count - 1));
+    put(group, count - 1);
   }
-  return Uint8Array.from(out);
+  return out.subarray(0, size);
 }
 
 function asciiHex(data) {
@@ -388,6 +429,10 @@ class PdfDocument {
     this.deadline = deadline;
     this.ticks = 0;
     this.decoded = 0;
+    // Font table entries left for the whole document (parseCMap, cidWidths),
+    // and glyph lookups still cached (unicode).
+    this.tables = {entries: limits.maxTableEntries};
+    this.memoRoom = 262_144;
     this.objects = new Map();
     this.trailers = [];
     this.objectStreams = [];
@@ -480,6 +525,7 @@ class PdfDocument {
         this.tick();
         const known = this.objects.get(num);
         if (known && known.at > at) continue;
+        if (!known && this.objects.size >= this.limits.maxObjects) throw new Failure('too-large');
         try {
           this.objects.set(num, {at, value: parseValue(data, first + offset)[0]});
         } catch (error) {
@@ -501,22 +547,25 @@ class PdfDocument {
     let data = this.bytes.subarray(stream.start, stream.end);
     const filters = arrayOf(this.resolve(stream.dict.get('Filter'))).map(filter => this.resolve(filter));
     const parameters = arrayOf(this.resolve(stream.dict.get('DecodeParms'))).map(value => this.resolve(value));
+    // Every decoder stops at this stream's share of the decoded bytes bound.
+    const room = Math.min(this.limits.maxStreamBytes, this.limits.maxDecodedBytes - this.decoded);
     for (const [index, filter] of filters.entries()) {
       const predictor = parameters[index] instanceof Map ? this.resolve(parameters[index].get('Predictor')) : undefined;
       if (typeof predictor === 'number' && predictor > 1) return undefined;
-      if (filter === '/FlateDecode' || filter === '/Fl') data = this.inflate(data);
-      else if (filter === '/ASCII85Decode' || filter === '/A85') data = ascii85(data);
+      if (filter === '/FlateDecode' || filter === '/Fl') data = this.inflate(data, room);
+      else if (filter === '/ASCII85Decode' || filter === '/A85') data = ascii85(data, Math.max(0, room));
       else if (filter === '/ASCIIHexDecode' || filter === '/AHx') data = asciiHex(data);
       else return undefined;
       if (!data) return undefined;
+      if (data.byteLength > room) throw new Failure('too-large');
     }
     this.decoded += data.byteLength;
     if (this.decoded > this.limits.maxDecodedBytes) throw new Failure('too-large');
     return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('latin1');
   }
 
-  inflate(data) {
-    const maxOutputLength = Math.max(1, Math.min(this.limits.maxStreamBytes, this.limits.maxDecodedBytes - this.decoded));
+  inflate(data, room) {
+    const maxOutputLength = Math.max(1, room);
     // A stream cut short still yields the text before the cut.
     const options = {maxOutputLength, finishFlush: zlib.Z_SYNC_FLUSH};
     for (const inflate of [inflateSync, inflateRawSync]) {
@@ -589,13 +638,13 @@ class PdfDocument {
     const toUnicode = this.resolve(dict.get('ToUnicode'));
     if (toUnicode instanceof Stream) {
       const text = this.decode(toUnicode);
-      if (text) font.map = parseCMap(text);
+      if (text) font.map = parseCMap(text, this.tables);
     }
     if (font.composite) {
       const encoding = this.resolve(dict.get('Encoding'));
       if (encoding instanceof Stream) {
         const text = this.decode(encoding);
-        const codespace = text ? parseCMap(text).codespace : [];
+        const codespace = text ? parseCMap(text, this.tables).codespace : [];
         if (codespace.length) font.codespace = codespace;
       }
       font.codespace ??= font.map?.codespace.length ? font.map.codespace : [{bytes: 2, lo: 0, hi: 0xffff}];
@@ -642,18 +691,20 @@ class PdfDocument {
     return table;
   }
 
+  // At most 65,536 widths per font, each spent from the document's budget.
   cidWidths(entries) {
     const widths = new Map();
+    const set = (cid, width) => { spend(this.tables); widths.set(cid, width); };
     for (let i = 0; i < entries.length && widths.size < 65_536;) {
       const first = this.resolve(entries[i]), next = this.resolve(entries[i + 1]);
       if (typeof first !== 'number') break;
       if (Array.isArray(next)) {
-        next.forEach((width, index) => widths.set(first + index, numberOr(this.resolve(width), 0)));
+        for (let k = 0; k < next.length && widths.size < 65_536; k++) set(first + k, numberOr(this.resolve(next[k]), 0));
         i += 2;
       } else {
         const last = next, width = numberOr(this.resolve(entries[i + 2]), 0);
         if (typeof last !== 'number' || last < first) break;
-        for (let cid = first; cid <= last && widths.size < 65_536; cid++) widths.set(cid, width);
+        for (let cid = first; cid <= last && widths.size < 65_536; cid++) set(cid, width);
         i += 3;
       }
     }
@@ -690,8 +741,10 @@ class PdfDocument {
       const bytes = string.bytes;
       const size = Math.abs(state.size) * Math.hypot(state.matrix[2], state.matrix[3]) || Math.abs(state.size) || 1;
       let text = '', distance = 0;
+      const room = this.limits.maxTextChars;
       this.codes(font, bytes, (code, length) => {
-        text += this.unicode(font, code);
+        // Past the text bound the rest is never kept: stop growing it.
+        if (text.length <= room) text += this.unicode(font, code);
         const width = font ? this.width(font, code) * font.scale : 0.5;
         distance += (width * state.size + state.charSpacing + (length === 1 && code === 32 ? state.wordSpacing : 0)) * state.scale;
       });
@@ -838,7 +891,7 @@ class PdfDocument {
     text = font.map ? cmapLookup(font.map, code) : undefined;
     if (text === undefined && !font.composite) text = font.encoding[code];
     if (text === undefined || text === '') { font.unmapped++; text = ''; }
-    if (font.memo.size < 65_536) font.memo.set(code, text);
+    if (this.memoRoom > 0) { this.memoRoom--; font.memo.set(code, text); }
     return text;
   }
 
@@ -928,28 +981,69 @@ export function extractPdfTextSync(input, {limits: overrides = {}, budgetMs} = {
   return new PdfDocument(bytes, limits, deadline).extract();
 }
 
-// One extraction in its own worker thread: {ok: true, text, pagesRead,
-// pageCount, truncated} or {ok: false, reason}. The worker is terminated at
-// `timeoutMs` or when `signal` aborts ({ok: false, reason: "aborted"}); it
-// stops by itself a little earlier and then keeps the pages it finished.
+// The extraction process's script. A plugin loaded from anything but a file
+// has none, and every extraction is then reported as unavailable.
+const WORKER_SCRIPT = (() => {
+  try { return fileURLToPath(new URL('./pdf-text-worker.mjs', import.meta.url)); } catch { return undefined; }
+})();
+// The one JSON line a worker writes: the text, escaped, and a little more.
+const MAX_WORKER_OUTPUT = 4 * 1024 * 1024;
+
+// PDF_EXTRACTION_CONCURRENCY slots for the whole gateway. A slot is held
+// until its process has exited, not only until its result is known.
+let running = 0;
+const waiting = [];
+function whenSlotFree(start) {
+  if (running < PDF_EXTRACTION_CONCURRENCY) {
+    running++;
+    start();
+    return () => {};
+  }
+  waiting.push(start);
+  return () => { const at = waiting.indexOf(start); if (at >= 0) waiting.splice(at, 1); };
+}
+function releaseSlot() {
+  const next = waiting.shift();
+  if (next) next();
+  else running--;
+}
+
+// A worker that ended without a result: V8 aborts when the heap limit is
+// reached (SIGABRT, or exit code 134 on Windows), and a kernel OOM kill is a
+// SIGKILL that is not ours. Exit code 1 is Node failing to load the script.
+function endedWithout(code, signal) {
+  if (signal === 'SIGABRT' || signal === 'SIGKILL' || code === 134) return 'too-large';
+  return code === 1 ? 'unavailable' : 'unsupported';
+}
+
+// One extraction in its own process: {ok: true, text, pagesRead, pageCount,
+// truncated} or {ok: false, reason}. The process is killed at `timeoutMs`
+// after this call (time spent waiting for a slot included) or when `signal`
+// aborts ({ok: false, reason: "aborted"}); it stops by itself a little
+// earlier and then keeps the pages it finished.
 export function extractPdfText(bytes, {
   signal,
   timeoutMs = PDF_TEXT_LIMITS.timeoutMs,
   limits: overrides = {},
-  WorkerImpl = Worker,
-  workerUrl = new URL('./pdf-text-worker.mjs', import.meta.url),
+  spawnImpl = spawn,
+  execPath = process.execPath,
+  script = WORKER_SCRIPT,
+  now = Date.now,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
 } = {}) {
   const limits = {...PDF_TEXT_LIMITS, ...overrides};
   return new Promise(resolve => {
-    let worker, timer, settled = false;
+    let child, timer, cancelWait, settled = false;
     const finish = outcome => {
       if (settled) return;
       settled = true;
       clearTimer(timer);
       signal?.removeEventListener?.('abort', onAbort);
-      worker?.terminate?.()?.catch?.(() => {});
+      cancelWait?.();
+      if (child && child.exitCode === null && child.signalCode === null) {
+        try { child.kill('SIGKILL'); } catch { /* It has already exited. */ }
+      }
       resolve(outcome);
     };
     const onAbort = () => finish({ok: false, reason: 'aborted'});
@@ -958,33 +1052,57 @@ export function extractPdfText(bytes, {
       finish({ok: false, reason: 'too-large'});
       return;
     }
-    // A private copy is transferred, never shared with the caller.
-    const copy = new Uint8Array(bytes);
-    try {
-      worker = new WorkerImpl(workerUrl, {
-        workerData: {bytes: copy.buffer, limits, budgetMs: Math.max(50, timeoutMs - 250)},
-        transferList: [copy.buffer],
-        resourceLimits: {maxOldGenerationSizeMb: limits.workerHeapMb},
-        env: {},
+    // The worker stops itself 250 ms before it would be killed.
+    const deadline = now() + timeoutMs - 250;
+    const start = () => {
+      let released = false;
+      const release = () => { if (!released) { released = true; releaseSlot(); } };
+      const options = Buffer.from(JSON.stringify({limits, deadline})).toString('base64');
+      try {
+        if (!script) throw new Error('no worker script');
+        // No environment (so no NODE_OPTIONS) and no inherited flags.
+        child = spawnImpl(execPath, [`--max-old-space-size=${limits.heapMb}`, script, options],
+          {stdio: ['pipe', 'pipe', 'ignore'], env: {}, windowsHide: true});
+      } catch {
+        release();
+        finish({ok: false, reason: 'unavailable'});
+        return;
+      }
+      const output = [];
+      let size = 0;
+      child.on('error', () => {
+        // Spawning failed: there is no process to wait for.
+        if (child.pid === undefined) release();
+        finish({ok: false, reason: 'unavailable'});
       });
-    } catch {
-      finish({ok: false, reason: 'unavailable'});
-      return;
-    }
-    worker.unref?.();
+      child.on('close', (code, signalName) => {
+        release();
+        if (settled) return;
+        let message;
+        try { message = JSON.parse(Buffer.concat(output, size).toString('utf8')); } catch { message = undefined; }
+        if (message?.type === 'result' && typeof message.text === 'string' && message.text.length <= limits.maxTextChars &&
+            Number.isInteger(message.pagesRead) && Number.isInteger(message.pageCount)) {
+          finish({ok: true, text: message.text, pagesRead: message.pagesRead, pageCount: message.pageCount,
+            truncated: message.truncated === true});
+        } else if (message?.type === 'failed') {
+          finish({ok: false, reason: REASONS.has(message.reason) ? message.reason : 'unsupported'});
+        } else {
+          finish({ok: false, reason: message === undefined ? endedWithout(code, signalName) : 'unsupported'});
+        }
+      });
+      child.stdout?.on('data', chunk => {
+        size += chunk.length;
+        if (size > MAX_WORKER_OUTPUT) finish({ok: false, reason: 'unsupported'});
+        else output.push(chunk);
+      });
+      child.stdout?.on('error', () => {});
+      // A worker that exits early closes its end: the write error is expected.
+      child.stdin?.on('error', () => {});
+      child.stdin?.end(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    };
     signal?.addEventListener?.('abort', onAbort, {once: true});
     timer = setTimer(() => finish({ok: false, reason: 'timeout'}), timeoutMs);
-    worker.on('message', message => {
-      if (message?.type === 'result' && typeof message.text === 'string' && message.text.length <= limits.maxTextChars &&
-          Number.isInteger(message.pagesRead) && Number.isInteger(message.pageCount)) {
-        finish({ok: true, text: message.text, pagesRead: message.pagesRead, pageCount: message.pageCount,
-          truncated: message.truncated === true});
-      } else {
-        finish({ok: false, reason: REASONS.has(message?.reason) ? message.reason : 'unsupported'});
-      }
-    });
-    worker.on('error', error => finish({ok: false,
-      reason: error?.code === 'ERR_WORKER_OUT_OF_MEMORY' ? 'too-large' : 'unsupported'}));
-    worker.on('exit', () => finish({ok: false, reason: 'unsupported'}));
+    cancelWait = whenSlotFree(() => { if (!settled) start(); else releaseSlot(); });
+    if (settled) cancelWait();
   });
 }

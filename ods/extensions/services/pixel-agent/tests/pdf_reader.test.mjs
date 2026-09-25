@@ -9,8 +9,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
+import {spawn} from 'node:child_process';
+import {PassThrough} from 'node:stream';
+import {fileURLToPath} from 'node:url';
 import {deflateSync} from 'node:zlib';
-import {extractPdfText, extractPdfTextSync, glyphUnicode, PDF_TEXT_LIMITS} from '../plugin/pdf-text.mjs';
+import {extractPdfText, extractPdfTextSync, glyphUnicode, PDF_EXTRACTION_CONCURRENCY, PDF_TEXT_LIMITS} from '../plugin/pdf-text.mjs';
 import {binaryText, pdfExtractionTimeoutMs, webFetchBinaryBody} from '../plugin/document-body.mjs';
 import {createPublicPageReader, createPublicWebExtractTool, PUBLIC_PAGE_TEXT_TYPES} from '../plugin/web-extract.mjs';
 import {createCompletionAssurance} from '../plugin/completion-assurance.mjs';
@@ -18,7 +21,8 @@ import {createHostCitationVerifier} from '../plugin/citation-verification.mjs';
 import {binaryFetchNote, binaryFetchReceipt, projectBinaryFetch, projectWebResult} from '../plugin/web-result-projection.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {TOWER1_R060_FINAL_ANSWER} from './fixtures/philly-events-detail-links.mjs';
-import {imageOnlyPdf, pdfFile, textPdf} from './fixtures/pdf-fixtures.mjs';
+import {ascii85BombPdf, ascii85Pdf, cmapBombPdf, emptyDictionaryBombPdf, imageOnlyPdf, pdfFile, textPdf}
+  from './fixtures/pdf-fixtures.mjs';
 
 const REPLACEMENT = String.fromCharCode(0xfffd);
 const GUIDE = 'https://www.nvidia.com/content/geforce-gtx/geforce-rtx-5070-user-guide-r1.pdf';
@@ -130,49 +134,214 @@ test('decompression, text, size and time bounds hold', () => {
   assert.equal(reasonOf(() => extractPdfTextSync(slowPdf(), {budgetMs: 1})), 'timeout');
 });
 
-class StubWorker extends EventEmitter {
-  constructor(url, options) {
+test('decoders and font tables stop at their bounds before they grow', () => {
+  // ASCII85, with "z" groups and a final partial group, still decodes.
+  assert.equal(extractPdfTextSync(ascii85Pdf(GUIDE_PAGES[0], {zeros: 4096})).text, `[Page 1]\n${GUIDE_PAGES[0].join('\n')}`);
+  // The review's first case: 7.3 MB of "z" claims 29 MB, past the 16 MB
+  // stream bound; the decoder refuses before it writes past the bound.
+  assert.equal(reasonOf(() => extractPdfTextSync(ascii85BombPdf())), 'too-large');
+  assert.equal(reasonOf(() => extractPdfTextSync(ascii85Pdf(['x'], {zeros: 64 * 1024}), {limits: {maxStreamBytes: 32 * 1024}})),
+    'too-large');
+  // The review's second case: three ToUnicode maps of 2.2 million listed
+  // codes each. A map keeps its first 65,536 codes, so the page (one code
+  // per font) has no readable text, instead of 6.7 million map entries.
+  const started = performance.now();
+  assert.equal(reasonOf(() => extractPdfTextSync(cmapBombPdf())), 'no-text');
+  assert.ok(performance.now() - started < 4_000, 'the lists are read lazily, not collected');
+  // Ten such maps pass the document's 500,000 font table entries.
+  assert.equal(reasonOf(() => extractPdfTextSync(cmapBombPdf({fonts: 10, ranges: 1}))), 'too-large');
+  assert.equal(reasonOf(() => extractPdfTextSync(textPdf(GUIDE_PAGES, {font: 'type0'}), {limits: {maxTableEntries: 8}})),
+    'too-large');
+});
+
+// A spawned extraction process as the gateway sees it.
+class StubChild extends EventEmitter {
+  constructor(file, args, options) {
     super();
-    StubWorker.last = this;
-    this.url = url;
-    this.options = options;
-    this.terminated = 0;
+    StubChild.all.push(this);
+    Object.assign(this, {file, args, options, pid: 4242, exitCode: null, signalCode: null, kills: []});
+    this.stdin = new PassThrough();
+    this.stdout = new PassThrough();
+    this.input = [];
+    this.stdin.on('data', chunk => this.input.push(chunk));
   }
-  terminate() { this.terminated += 1; return Promise.resolve(1); }
-  unref() {}
+  static spawn(file, args, options) { return new StubChild(file, args, options); }
+  kill(signal) {
+    this.kills.push(signal);
+    setImmediate(() => this.exit(null, signal));
+    return true;
+  }
+  reply(message) { this.stdout.end(`${JSON.stringify(message)}\n`); setImmediate(() => this.exit(0, null)); }
+  exit(code, signal) {
+    if (this.exitCode !== null || this.signalCode !== null) return;
+    this.exitCode = code;
+    this.signalCode = signal;
+    setImmediate(() => { this.closed = true; this.emit('close', code, signal); });
+  }
+  // Every stub process has closed, so the slots they held are free.
+  static async drained() {
+    while (StubChild.all.some(child => !child.closed)) await new Promise(resolve => setImmediate(resolve));
+  }
+}
+StubChild.all = [];
+const stubbed = (options = {}) => extractPdfText(textPdf(GUIDE_PAGES), {spawnImpl: StubChild.spawn, ...options});
+// One extraction that starts its (stub) process at once: {result, child}.
+async function stubRun(options = {}) {
+  await StubChild.drained();
+  const count = StubChild.all.length;
+  const result = stubbed(options);
+  assert.equal(StubChild.all.length, count + 1, 'a free slot starts the process at once');
+  return {result, child: StubChild.all.at(-1)};
 }
 
-test('extraction runs in a worker thread and is terminated at its deadline or on abort', async () => {
+test('extraction runs in its own process, which is killed at its deadline or on abort', async () => {
   const real = await extractPdfText(textPdf(GUIDE_PAGES, {font: 'type0'}));
   assert.deepEqual(real, {ok: true, text: GUIDE_TEXT, pagesRead: 2, pageCount: 2, truncated: false});
 
   let fire, delay;
-  const pending = extractPdfText(textPdf(GUIDE_PAGES), {WorkerImpl: StubWorker, timeoutMs: 700,
+  const {result: pending, child} = await stubRun({timeoutMs: 700, now: () => 1_000_000,
     setTimer: (callback, ms) => { fire = callback; delay = ms; return 1; }, clearTimer: () => {}});
-  const {options} = StubWorker.last;
   assert.equal(delay, 700);
-  assert.equal(options.workerData.budgetMs, 450, 'the worker stops itself before it is terminated');
-  assert.deepEqual(options.transferList, [options.workerData.bytes], 'a private copy is transferred');
-  assert.equal(options.resourceLimits.maxOldGenerationSizeMb, PDF_TEXT_LIMITS.workerHeapMb);
-  assert.deepEqual(options.env, {}, 'no environment reaches the worker');
+  assert.equal(child.file, process.execPath);
+  assert.deepEqual(child.args.slice(0, 2), [`--max-old-space-size=${PDF_TEXT_LIMITS.heapMb}`,
+    fileURLToPath(new URL('../plugin/pdf-text-worker.mjs', import.meta.url))]);
+  const options = JSON.parse(Buffer.from(child.args[2], 'base64').toString('utf8'));
+  assert.equal(options.deadline, 1_000_450, 'the process stops itself before it is killed');
+  assert.deepEqual(options.limits, {...PDF_TEXT_LIMITS});
+  assert.deepEqual(child.options.env, {}, 'no environment, so no NODE_OPTIONS, reaches the process');
+  assert.deepEqual(child.options.stdio, ['pipe', 'pipe', 'ignore']);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(Buffer.concat(child.input), Buffer.from(textPdf(GUIDE_PAGES)), 'the document goes in on stdin');
   fire();
   assert.deepEqual(await pending, {ok: false, reason: 'timeout'});
-  assert.equal(StubWorker.last.terminated, 1);
+  assert.deepEqual(child.kills, ['SIGKILL']);
 
   const controller = new AbortController();
-  const aborted = extractPdfText(textPdf(GUIDE_PAGES), {WorkerImpl: StubWorker, signal: controller.signal});
+  const aborted = await stubRun({signal: controller.signal});
   controller.abort();
-  assert.deepEqual(await aborted, {ok: false, reason: 'aborted'});
-  assert.equal(StubWorker.last.terminated, 1);
-  const crashed = extractPdfText(textPdf(GUIDE_PAGES), {WorkerImpl: StubWorker});
-  StubWorker.last.emit('error', Object.assign(new Error('heap'), {code: 'ERR_WORKER_OUT_OF_MEMORY'}));
-  assert.deepEqual(await crashed, {ok: false, reason: 'too-large'});
-  const forged = extractPdfText(textPdf(GUIDE_PAGES), {WorkerImpl: StubWorker});
-  StubWorker.last.emit('message', {type: 'failed', reason: 'anything else'});
-  assert.deepEqual(await forged, {ok: false, reason: 'unsupported'});
+  assert.deepEqual(await aborted.result, {ok: false, reason: 'aborted'});
+  assert.deepEqual(aborted.child.kills, ['SIGKILL']);
+
+  // How a process that ended without a result is reported.
+  for (const [code, signal, reason] of [[null, 'SIGABRT', 'too-large'], [134, null, 'too-large'],
+    [null, 'SIGKILL', 'too-large'], [1, null, 'unavailable'], [0, null, 'unsupported'], [null, 'SIGSEGV', 'unsupported']]) {
+    const ended = await stubRun();
+    ended.child.exit(code, signal);
+    assert.deepEqual(await ended.result, {ok: false, reason}, `${code} ${signal}`);
+  }
+  const forged = await stubRun();
+  forged.child.reply({type: 'failed', reason: 'anything else'});
+  assert.deepEqual(await forged.result, {ok: false, reason: 'unsupported'});
+  const oversized = await stubRun();
+  oversized.child.reply({type: 'result', text: 'x'.repeat(PDF_TEXT_LIMITS.maxTextChars + 1), pagesRead: 1, pageCount: 1});
+  assert.deepEqual(await oversized.result, {ok: false, reason: 'unsupported'});
+  await StubChild.drained();
+  const failedSpawn = stubbed({spawnImpl: () => { throw new Error('EAGAIN'); }});
+  assert.deepEqual(await failedSpawn, {ok: false, reason: 'unavailable'});
+
+  // A worker that cannot start is not a property of the document.
+  const missing = await extractPdfText(textPdf(GUIDE_PAGES),
+    {script: fileURLToPath(new URL('./fixtures/no-such-worker.mjs', import.meta.url))});
+  assert.deepEqual(missing, {ok: false, reason: 'unavailable'});
+  const noExecutable = await extractPdfText(textPdf(GUIDE_PAGES),
+    {execPath: fileURLToPath(new URL('./fixtures/no-such-node', import.meta.url))});
+  assert.deepEqual(noExecutable, {ok: false, reason: 'unavailable'});
 });
 
-test('a long extraction leaves the event loop free and a real worker is stopped at the deadline', async () => {
+test(`at most ${PDF_EXTRACTION_CONCURRENCY} extraction processes run at once; the others wait inside their deadline`, async () => {
+  await StubChild.drained();
+  const before = StubChild.all.length;
+  const spawned = () => StubChild.all.slice(before);
+  const first = stubbed(), second = stubbed(), third = stubbed();
+  const controller = new AbortController();
+  const abandoned = stubbed({signal: controller.signal});
+  const late = stubbed({timeoutMs: 40});
+  assert.equal(spawned().length, PDF_EXTRACTION_CONCURRENCY);
+  controller.abort();
+  assert.deepEqual(await abandoned, {ok: false, reason: 'aborted'});
+  assert.deepEqual(await late, {ok: false, reason: 'timeout'}, 'waiting counts against the deadline');
+  assert.equal(spawned().length, PDF_EXTRACTION_CONCURRENCY, 'neither ever started a process');
+
+  const result = {type: 'result', text: GUIDE_TEXT, pagesRead: 2, pageCount: 2, truncated: false};
+  spawned()[0].reply(result);
+  assert.deepEqual(await first, {ok: true, text: GUIDE_TEXT, pagesRead: 2, pageCount: 2, truncated: false});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(spawned().length, 3, 'the third starts once the first process has exited');
+  spawned()[1].reply(result);
+  spawned()[2].reply(result);
+  assert.equal((await second).ok, true);
+  assert.equal((await third).ok, true);
+});
+
+// The gateway, as its own Node process: pixel_ods_web_extract reads a
+// fixture PDF served as application/pdf through the real reader and
+// extraction, and prints its result.
+const GATEWAY = `
+const [webExtract, fixtures, name] = process.argv.slice(1);
+const {createPublicWebExtractTool} = await import(webExtract);
+const body = (await import(fixtures))[name]();
+const tool = createPublicWebExtractTool({
+  guardedFetch: async ({url}) => ({response: new Response(body, {status: 200, headers: {'Content-Type': 'application/pdf'}}),
+    finalUrl: url, release() {}}),
+  readResponseText: async response => ({text: await response.text(), truncated: false}),
+  extractBasicHtmlContent: async ({html}) => ({text: html}),
+});
+const result = await tool.execute('c', {url: 'https://example.com/spec.pdf', query: 'TGP'});
+process.stdout.write(JSON.stringify({isError: result.isError, document: result.details.document, text: result.content[0].text}));
+`;
+function gatewayRead(fixture) {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', GATEWAY,
+    new URL('../plugin/web-extract.mjs', import.meta.url).href, new URL('./fixtures/pdf-fixtures.mjs', import.meta.url).href,
+    fixture], {stdio: ['ignore', 'pipe', 'ignore']});
+  const output = [];
+  child.stdout.on('data', chunk => output.push(chunk));
+  return new Promise(resolve => child.on('close', (code, signal) =>
+    resolve({code, signal, output: Buffer.concat(output).toString('utf8')})));
+}
+function notRead(bytes, reason) {
+  const why = reason === 'too-large' ? "it is larger than the PDF reader's size or memory bounds"
+    : 'it has no extractable text (for example a scan, or text drawn as outlines)';
+  return {isError: true, document: {kind: 'pdf', read: false, bytes, not_read: reason},
+    text: `The public page is a PDF document (application/pdf, ${bytes} bytes), but its text was not read: ${why}. ` +
+      'No evidence was extracted; do not cite it as read.'};
+}
+
+test('the review\'s out-of-memory documents leave the gateway running, with a not-read receipt', async () => {
+  // With extraction in a worker thread, each of these aborted the whole
+  // gateway process (exit 134 on node 22 and 24), or at best ended the
+  // worker with the wrong reason.
+  for (const [fixture, bytes, reason] of [['ascii85BombPdf', ascii85BombPdf().byteLength, 'too-large'],
+    ['cmapBombPdf', cmapBombPdf().byteLength, 'no-text']]) {
+    const {code, signal, output} = await gatewayRead(fixture);
+    assert.deepEqual({code, signal}, {code: 0, signal: null}, `${fixture}: the gateway process survived`);
+    assert.deepEqual(JSON.parse(output), notRead(bytes, reason), fixture);
+  }
+});
+
+// A real V8 heap exhaustion aborts the extraction process. On Linux and
+// macOS an abort leaves a crash report or core dump behind, so this runs by
+// default only on Windows, where Node exits with code 134 instead.
+const REAL_OOM = process.platform === 'win32' || process.env.ODS_PDF_OOM_TEST === '1';
+test('an extraction that exhausts its heap ends only its own process', {
+  skip: REAL_OOM ? false : 'a real out-of-memory abort leaves a crash report on this platform; set ODS_PDF_OOM_TEST=1 to run it',
+}, async () => {
+  // 7.6 MB of empty dictionaries is inside every parser bound, and nearly
+  // 2 million Maps do not fit the heap. In a worker thread it could abort the
+  // whole gateway too.
+  const exits = [];
+  const spawnImpl = (...args) => {
+    const child = spawn(...args);
+    child.on('exit', (code, signal) => exits.push({code, signal}));
+    return child;
+  };
+  assert.deepEqual(await extractPdfText(emptyDictionaryBombPdf(), {spawnImpl}), {ok: false, reason: 'too-large'});
+  assert.ok(exits[0].code === 134 || exits[0].signal === 'SIGABRT', `a real heap abort: ${JSON.stringify(exits)}`);
+  const {code, signal, output} = await gatewayRead('emptyDictionaryBombPdf');
+  assert.deepEqual({code, signal}, {code: 0, signal: null}, 'the gateway process survived');
+  assert.deepEqual(JSON.parse(output), notRead(emptyDictionaryBombPdf().byteLength, 'too-large'));
+});
+
+test('a long extraction leaves the event loop free and a real process is killed at the deadline', async () => {
   let ticks = 0;
   const interval = setInterval(() => { ticks += 1; }, 5);
   const started = performance.now();
@@ -232,7 +401,7 @@ test('an oversized PDF is a bounded not-read receipt, whether or not its size is
   const h = transport({body: big, headers: {'Content-Length': String(declared)}});
   const result = await h.tool.execute('big', {url: GUIDE, query: 'Total Graphics Power'});
   assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /is a PDF document \(application\/pdf, 9437184 bytes\), but its text was not read: it is larger than the PDF size bound/);
+  assert.match(result.content[0].text, /is a PDF document \(application\/pdf, 9437184 bytes\), but its text was not read: it is larger than the PDF reader's size or memory bounds/);
   assert.deepEqual(result.details.document, {kind: 'pdf', read: false, bytes: declared, not_read: 'too-large'});
   assert.ok(h.pulled() <= 128 * 1024, `only the signature was read (${h.pulled()} bytes)`);
   const undeclared = transport({body: big});
@@ -330,6 +499,9 @@ test('a web_fetch PDF or image body is not a page read, and cited alone needs a 
   const readme = fetchReceipt({contentType: 'application/octet-stream', body: 'Release notes: driver 580.1 adds RTX 5070 support.'});
   assert.equal(webFetchBinaryBody(readme.details), undefined);
   assert.equal(webFetchBinaryBody(fetchReceipt({contentType: 'image/svg+xml', body: '<svg><text>5070</text></svg>'}).details), undefined);
+  // RTF and PostScript are text.
+  assert.equal(webFetchBinaryBody(fetchReceipt({contentType: 'application/rtf', body: '{\\rtf1\\ansi RTX 5070: 250 W}'}).details), undefined);
+  assert.equal(webFetchBinaryBody(fetchReceipt({contentType: 'application/postscript', body: '%!PS-Adobe-3.0\n(RTX 5070) show'}).details), undefined);
   // A page decoded with the wrong charset keeps a few replacement characters.
   assert.equal(binaryText(`Programa${REPLACEMENT}${REPLACEMENT}o de eventos em Filad${REPLACEMENT}lfia `.repeat(40)), undefined);
 
