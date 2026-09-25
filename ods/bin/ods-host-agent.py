@@ -167,18 +167,14 @@ MODEL_ACTIVATION_HEALTH_ATTEMPTS = 60
 # same bounded, fail-closed health contract.
 HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS = 90
 MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS = 2
-# A read-only docker CLI probe that times out says nothing about the container:
-# on a heavily loaded host the daemon/CLI can simply be slow to answer (fleet:
-# one 15-second ``docker inspect`` timeout at load ~198 on 48 threads aborted
-# and rolled back a model swap although the container was healthy and the same
-# call took 0.01 s moments later). Activation-path probes therefore treat a CLI
-# timeout as "state unknown" and retry with a longer timeout after a short
-# backoff, failing only when their bounded budget is exhausted.
-DOCKER_PROBE_TIMEOUTS_SECONDS = (15, 30, 30)
-DOCKER_PROBE_RETRY_BACKOFF_SECONDS = (2, 5)
-DOCKER_PROBE_RETRY_BUDGET_SECONDS = (
-    sum(DOCKER_PROBE_TIMEOUTS_SECONDS) + sum(DOCKER_PROBE_RETRY_BACKOFF_SECONDS)
-)
+# One health poll's docker CLI timeout. A poll that gets no answer in time is
+# "no answer yet", not a failure: the readiness poll simply continues.
+CONTAINER_HEALTH_POLL_TIMEOUT_SECONDS = 15
+# Read-only one-shot docker CLI calls on the model activation/rollback path.
+# On a heavily loaded host the Docker CLI can take many seconds to answer
+# (fleet: a 15-second ``docker inspect`` timeout at load ~198 on 48 threads
+# rolled back a healthy model swap; the same call took 0.01 s moments later).
+DOCKER_PROBE_TIMEOUT_SECONDS = 60
 # A replaced llama-server container usually serves a small or mid-size model
 # within a few seconds. Probe densely for this window instead of sleeping a
 # fixed initial delay, then fall back to the regular 5-second schedule.
@@ -16094,77 +16090,38 @@ def _patch_hermes_model_config(
 
 
 class DockerUnresponsiveError(RuntimeError):
-    """Docker CLI probes kept timing out, so the container state is unknown.
+    """The Docker CLI did not answer in time, so the container state is unknown.
 
-    This is deliberately distinct from a definitive Docker answer (missing,
-    stopped, exited, unhealthy): nothing is known to be wrong with the
-    container or the model; Docker simply did not answer in time.
+    Distinct from a definitive Docker answer (missing, stopped, exited,
+    unhealthy): nothing is known to be wrong with the container or the model.
     """
 
 
-def _docker_unresponsive_error(
-    subject: str,
-    timed_out: int,
-    started: float,
-) -> DockerUnresponsiveError:
-    waited = max(0.0, time.monotonic() - started)
-    calls = "call" if timed_out == 1 else "calls"
+def _docker_unresponsive_error(subject: str, detail: str) -> DockerUnresponsiveError:
     return DockerUnresponsiveError(
-        f"Docker was not responding while {subject} ({timed_out} docker CLI "
-        f"{calls} timed out over {waited:.0f}s). The host appears overloaded; "
-        "this is not a problem with the model. Try again once the machine is "
-        "less busy."
+        f"Docker was not responding while {subject} ({detail}). The host "
+        "appears overloaded; this is not a problem with the model. Try again "
+        "once the machine is less busy."
     )
 
 
-def _docker_probe_backoff(consecutive_timeouts: int) -> float:
-    index = min(max(consecutive_timeouts, 1), len(DOCKER_PROBE_RETRY_BACKOFF_SECONDS)) - 1
-    return DOCKER_PROBE_RETRY_BACKOFF_SECONDS[index]
+def _run_docker_probe(argv: list[str], subject: str) -> subprocess.CompletedProcess:
+    """Run one read-only docker CLI call; a timeout means Docker is unresponsive.
 
-
-def _run_docker_probe(
-    argv: list[str],
-    subject: str,
-    *,
-    timeouts: tuple[float, ...] = DOCKER_PROBE_TIMEOUTS_SECONDS,
-) -> subprocess.CompletedProcess:
-    """Run a read-only docker CLI probe, retrying only CLI timeouts.
-
-    A completed process (whatever its exit code) and ``OSError`` reach the
-    caller unchanged, so definitive Docker answers keep their meaning. A
-    timeout means "state unknown": it is logged and retried with the next,
-    longer timeout after a short backoff. When every attempt times out the
-    probe raises :class:`DockerUnresponsiveError`. The budget is bounded by
-    ``sum(timeouts)`` plus the backoffs (``DOCKER_PROBE_RETRY_BUDGET_SECONDS``
-    for the defaults).
+    A completed process (any exit code) and ``OSError`` reach the caller
+    unchanged, so definitive Docker answers keep their meaning.
     """
-    if not timeouts:
-        raise ValueError("docker probe needs at least one timeout")
-    started = time.monotonic()
-    for index, timeout in enumerate(timeouts):
-        try:
-            return subprocess.run(
-                argv,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            if index + 1 >= len(timeouts):
-                raise _docker_unresponsive_error(subject, index + 1, started) from exc
-            backoff = _docker_probe_backoff(index + 1)
-            logger.warning(
-                "Docker did not answer within %ss while %s (attempt %d/%d); "
-                "state unknown, retrying in %ss with a %ss timeout",
-                timeout,
-                subject,
-                index + 1,
-                len(timeouts),
-                backoff,
-                timeouts[index + 1],
-            )
-            time.sleep(backoff)
-    raise AssertionError("unreachable")
+    try:
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=DOCKER_PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _docker_unresponsive_error(
+            subject, f"no answer within {DOCKER_PROBE_TIMEOUT_SECONDS}s"
+        ) from exc
 
 
 def _container_exists(container: str) -> bool:
@@ -16184,8 +16141,8 @@ def _container_exists(container: str) -> bool:
 
 
 def _container_running(container: str) -> bool:
-    # A persistently unresponsive Docker raises DockerUnresponsiveError instead
-    # of reporting a running container as stopped.
+    # An unresponsive Docker raises DockerUnresponsiveError instead of
+    # reporting a running container as stopped.
     try:
         result = _run_docker_probe(
             [
@@ -16229,15 +16186,14 @@ class ContainerUnhealthyError(RuntimeError):
 def _wait_for_container_health(container: str, attempts: int | None = None) -> None:
     """Wait until a restarted dependent is healthy, failing on terminal states.
 
-    Definitive Docker answers keep their meaning: ``unhealthy`` raises
-    :class:`ContainerUnhealthyError`; an exited container, an inspect error or
-    an invalid state raises ``RuntimeError``; ``starting`` is polled for
-    ``attempts`` observations. A docker CLI *timeout* only means "state
-    unknown": it is logged and retried with a longer timeout
-    (``DOCKER_PROBE_TIMEOUTS_SECONDS``) within this wait's wall-clock
-    deadline. Retries never extend the wait past that deadline; when it (or
-    the attempt budget) runs out on a timeout the wait raises
-    :class:`DockerUnresponsiveError`.
+    Polls ``attempts`` times, ``MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS``
+    apart. A poll whose docker CLI call times out got no answer yet: it is
+    logged and the poll continues, but only within the wait's nominal window
+    (``attempts * MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS``), so an
+    unresponsive Docker cannot stretch the wait. If the last poll got no
+    answer, the wait raises :class:`DockerUnresponsiveError`. Definitive
+    answers keep their meaning: ``unhealthy`` raises
+    :class:`ContainerUnhealthyError` at once.
     """
     if attempts is None:
         attempts = (
@@ -16245,55 +16201,40 @@ def _wait_for_container_health(container: str, attempts: int | None = None) -> N
             if container == "ods-hermes"
             else MODEL_ACTIVATION_HEALTH_ATTEMPTS
         )
-    argv = [
-        "docker", "inspect", "--type", "container", "--format",
-        "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
-        container,
-    ]
-    subject = f"checking {container} health"
     started = time.monotonic()
-    # The nominal poll window plus one full probe retry budget, so a slow
-    # Docker answer even at the end of the window still gets its retries.
-    deadline = (
-        started
-        + attempts * MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS
-        + DOCKER_PROBE_RETRY_BUDGET_SECONDS
-    )
-    consecutive_timeouts = 0
-    timed_out = 0
+    deadline = started + attempts * MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS
+    unanswered = 0
     for attempt in range(attempts):
-        timeout = DOCKER_PROBE_TIMEOUTS_SECONDS[
-            min(consecutive_timeouts, len(DOCKER_PROBE_TIMEOUTS_SECONDS) - 1)
-        ]
-        if consecutive_timeouts:
-            timeout = max(1.0, min(timeout, deadline - time.monotonic()))
         try:
             result = subprocess.run(
-                argv,
+                [
+                    "docker", "inspect", "--type", "container", "--format",
+                    "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+                    container,
+                ],
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=CONTAINER_HEALTH_POLL_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired as exc:
-            consecutive_timeouts += 1
-            timed_out += 1
-            remaining = deadline - time.monotonic()
-            if attempt + 1 >= attempts or remaining < 1:
-                raise _docker_unresponsive_error(subject, timed_out, started) from exc
-            backoff = min(_docker_probe_backoff(consecutive_timeouts), remaining - 1)
+            unanswered += 1
+            if attempt + 1 >= attempts or time.monotonic() >= deadline:
+                raise _docker_unresponsive_error(
+                    f"checking {container} health",
+                    f"{unanswered} health check(s) got no answer within "
+                    f"{CONTAINER_HEALTH_POLL_TIMEOUT_SECONDS}s, over "
+                    f"{time.monotonic() - started:.0f}s",
+                ) from exc
             logger.warning(
-                "Docker did not answer within %ss while %s (timeout %d, %.0fs "
-                "left before the readiness deadline); state unknown, retrying",
-                timeout,
-                subject,
-                timed_out,
-                remaining,
+                "Docker gave no answer within %ss while checking %s health; "
+                "the state is unknown, polling continues",
+                CONTAINER_HEALTH_POLL_TIMEOUT_SECONDS,
+                container,
             )
-            time.sleep(backoff)
+            time.sleep(MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS)
             continue
         except OSError as exc:
             raise RuntimeError(f"Could not inspect health for {container}: {exc}") from exc
-        consecutive_timeouts = 0
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip()
             raise RuntimeError(f"Could not inspect health for {container}: {detail[:300]}")
@@ -17333,11 +17274,9 @@ def _verify_openclaw_model_env(expected_model: str) -> None:
 def _read_hermes_container_config() -> str:
     if not _container_running("ods-hermes"):
         raise RuntimeError("Hermes live config is host-inaccessible and ods-hermes is not running")
-    # Read-only, so a CLI timeout is retried like any other activation probe.
     result = _run_docker_probe(
         ["docker", "exec", "ods-hermes", "cat", "/opt/data/config.yaml"],
         "reading the ods-hermes live config",
-        timeouts=(30, 60, 60),
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
@@ -18624,7 +18563,6 @@ def _recreate_llama_server(env: dict, override_image: str = ""):
     inspect_result = _run_docker_probe(
         ["docker", "inspect", container],
         f"inspecting {container}",
-        timeouts=(30, 60, 60),
     )
     if inspect_result.returncode != 0:
         raise RuntimeError(
