@@ -7049,6 +7049,7 @@ export function createToolLoopGuard({
       if (cost.search && state.search >= effective.search) return "search";
       if (state.fetch >= effective.fetch) return "fetch";
       if (state.total + cost.search >= effective.total) return "total";
+      // Not an exhausted budget: the reserve refusal is a free correction.
       return searchReadGrant(state, cost) < 1 ? "search-read" : null;
     }
     const kind = toolName === "web_search" ? "search" : "fetch";
@@ -7058,7 +7059,6 @@ export function createToolLoopGuard({
   function webBudgetReason(budget) {
     if (budget === "search") return WEB_SEARCH_BUDGET_EXHAUSTED_REASON;
     if (budget === "fetch") return WEB_FETCH_BUDGET_EXHAUSTED_REASON;
-    if (budget === "search-read") return SEARCH_READ_RESERVE_REASON;
     return WEB_BUDGET_EXHAUSTED_REASON;
   }
 
@@ -9071,6 +9071,15 @@ export function createToolLoopGuard({
     // neither consumes that denial allowance nor resets it. Total exhaustion
     // still applies to every web tool, including resolved Tool Search calls.
     const exhaustedBudget = exhaustedWebBudget(state, effectiveToolName, selectedParams);
+    // The search_read reserve is not an exhausted budget: page reads, searches
+    // and the total are all still available to web_fetch,
+    // pixel_ods_web_extract and web_search. Its refusal ran nothing, so it is
+    // a free correction (then an ordinary refused call), never a step toward
+    // the web-loop stop.
+    if (exhaustedBudget === "search-read") {
+      recordFreeCorrection(state, "search-read-reserve", context?.toolCallId ?? event?.toolCallId, toolName);
+      return { block: true, blockReason: SEARCH_READ_RESERVE_REASON };
+    }
     if (exhaustedBudget) {
       const reason = webBudgetReason(exhaustedBudget);
       let terminal = state.webTerminals.get(exhaustedBudget);
