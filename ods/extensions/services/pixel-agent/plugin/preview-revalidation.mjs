@@ -78,7 +78,7 @@ export function settledRevalidationReceipt(tool, event) {
 // Calls that cannot change workspace bytes, whatever their outcome. They
 // neither advance nor revoke a pending host revalidation. Preview inspection
 // renders the immutable published snapshot in the isolated inspection broker.
-const READ_ONLY_TOOLS = new Set(['read','web_search','web_fetch','pixel_ods_web_extract','pixel_ods_research','tool_search','tool_describe',
+const READ_ONLY_TOOLS = new Set(['read','web_search','web_fetch','pixel_ods_web_extract','pixel_ods_search_read','pixel_ods_research','tool_search','tool_describe',
   'pixel_ods_workspace_preview_inspect']);
 export function workspaceReadOnlyCall(tool, params) {
   if (tool === 'tool_call') {

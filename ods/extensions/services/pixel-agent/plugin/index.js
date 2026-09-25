@@ -53,10 +53,30 @@ import { createPublicPageReader, createPublicWebExtractTool } from "./web-extrac
 import { citationPageReadsAllowed, createHostCitationVerifier } from "./citation-verification.mjs";
 import { createStopSynthesisClient } from "./stop-synthesis.mjs";
 import { createExtensionRepositoryContext } from './extension-repository-context.mjs';
+import { createIsolatedHtmlExtractor, locateSdkExtractor } from './html-extraction.mjs';
+import { createSearchReadTool, searchReadAllowed, searchReadOutputChars, SEARCH_READ_TOOL } from './search-read.mjs';
+
+// The one guarded public-page reader of this process. pixel_ods_web_extract,
+// pixel_ods_search_read, the host citation check and the extension repository
+// context all read through it, so a page one can read the others can too, and
+// a reader improvement reaches all of them. HTML extraction runs in a worker
+// under a deadline (html-extraction.mjs); the SDK module it loads is located
+// at registration.
+let sdkRuntimeUrl;
+let extractionWarn;
+const publicPageReader = createPublicPageReader({
+  guardedFetch: fetchWithWebToolsNetworkGuard, readResponseText, extractBasicHtmlContent,
+  extractHtml: createIsolatedHtmlExtractor({
+    extract: extractBasicHtmlContent,
+    locate: () => (sdkRuntimeUrl ? locateSdkExtractor(sdkRuntimeUrl) : undefined),
+    warn: message => extractionWarn?.(message),
+  }),
+});
 
 const extensionRepositoryContext = createExtensionRepositoryContext({
   tool: createPublicWebExtractTool({
     guardedFetch: fetchWithWebToolsNetworkGuard, readResponseText, extractBasicHtmlContent,
+    readPage: publicPageReader,
   }),
 });
 import { createPerplexicaAvailability, createPerplexicaResearchTool, researchOutputChars,
@@ -257,6 +277,12 @@ export default definePluginEntry({
       } catch { /* preserve explicit unknown observations */ }
       runtimeIdentity = createRuntimeIdentity({pluginRoot, modulePath, openclawVersion:OPENCLAW_VERSION});
     }
+    if (api.registrationMode !== 'discovery' && !sdkRuntimeUrl) {
+      // Resolved while the SDK aliases are active, as for runtime identity.
+      try { sdkRuntimeUrl = import.meta.resolve('openclaw/plugin-sdk/agent-runtime'); }
+      catch { /* extraction stays in-process on a bounded prefix */ }
+      extractionWarn = message => api.logger.warn(message);
+    }
     execCancellationControl ??= createExecCancellationControl({
       executionHost: executionHostForAgent(api.config, AGENT_ID),
     });
@@ -318,9 +344,7 @@ export default definePluginEntry({
       // the same strict guard as pixel_ods_web_extract, only where the
       // operator's configuration permits page reads.
       hostCitationVerifier: createHostCitationVerifier({
-        readPage: createPublicPageReader({
-          guardedFetch: fetchWithWebToolsNetworkGuard, readResponseText, extractBasicHtmlContent,
-        }),
+        readPage: publicPageReader,
         allowed: () => citationPageReadsAllowed(api.runtime?.config?.current?.() ?? api.config, AGENT_ID),
       }),
       // After a tool-limit stop without an answer: one tool-free completion by
@@ -710,9 +734,27 @@ export default definePluginEntry({
         guardedFetch: fetchWithWebToolsNetworkGuard,
         readResponseText,
         extractBasicHtmlContent,
+        readPage: publicPageReader,
       }),
       { names: ["pixel_ods_web_extract"] }
     );
+
+    // One search through OpenClaw's configured web_search provider (in-process,
+    // without re-entering tool hooks), then the top results read through the
+    // shared reader. Offered only where the runtime search API exists and the
+    // operator's policy permits both the search and page reads; the tool list
+    // then stays the same for every turn of a configuration.
+    const liveConfig = () => api.runtime?.config?.current?.() ?? api.config;
+    const searchReadOffered = () => typeof api.runtime?.webSearch?.search === 'function' &&
+      searchReadAllowed(liveConfig(), AGENT_ID);
+    const searchReadTool = createSearchReadTool({
+      search: ({query, count, signal}) => api.runtime.webSearch.search({config: liveConfig(), args: {query, count}, signal}),
+      readPage: publicPageReader,
+      outputChars: () => searchReadOutputChars(liveConfig(), AGENT_ID),
+      available: searchReadOffered,
+    });
+    api.registerTool(onlyPixel(() => (api.registrationMode === 'discovery' || searchReadOffered() ? searchReadTool : null)),
+      {names: [SEARCH_READ_TOOL]});
 
     // Offered only while the owner's Perplexica answers /api/config with chat
     // and embedding defaults (OpenClaw keeps listing it from its descriptor

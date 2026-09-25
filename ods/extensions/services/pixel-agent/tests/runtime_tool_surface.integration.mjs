@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createPublicWebExtractTool } from '../plugin/web-extract.mjs';
+import { createSearchReadTool, SEARCH_READ_PARAMETERS } from '../plugin/search-read.mjs';
 import { createWorkspacePreviewInspectTool, INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash } from '../plugin/workspace-preview-inspect.mjs';
 
 const file = process.env.OPENCLAW_TOOL_SEARCH_MODULE;
@@ -41,14 +42,14 @@ test('working tools are direct while specialist tools remain in the real catalog
 
 test('the ordinary direct surface stays small while every specialist stays catalogued', () => {
   const nativeNames = ['read', 'write', 'edit', 'apply_patch', 'exec', 'process',
-    'web_fetch', 'web_search', 'pixel_ods_web_extract', 'pixel_ods_skill', 'pixel_ods_ask_user',
+    'web_fetch', 'web_search', 'pixel_ods_web_extract', 'pixel_ods_search_read', 'pixel_ods_skill', 'pixel_ods_ask_user',
     'pixel_ods_extensions', 'pixel_ods_extension_request_status', 'pixel_ods_workspace_preview', 'pixel_ods_workspace_preview_inspect'];
   const specialistNames = ['pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance',
     'pixel_ods_extension_request_retry', 'pixel_ods_source_proposal',
     'pixel_ods_python_library_proposal', 'pixel_ods_extension_proposal'];
   const result = run([...nativeNames, ...specialistNames].map(tool));
   assert.deepEqual(result.tools.map(t => t.name), [...controls.map(t => t.name), ...nativeNames]);
-  assert.equal(result.tools.length, 18); // Fifteen native tools plus the three search controls.
+  assert.equal(result.tools.length, 19); // Sixteen native tools plus the three search controls.
   assert.equal(result.catalogToolCount, nativeNames.length + specialistNames.length);
 });
 
@@ -158,6 +159,30 @@ test('targeted public extraction is directly offered with its exact bounded sche
   assert.match(result.content[0].text, /EXTERNAL_UNTRUSTED_CONTENT/);
   assert.equal((await direct.execute('private', {url:'http://127.0.0.1/specs'})).isError, true);
   assert.equal(calls, 1, 'native exposure cannot bypass public URL validation');
+});
+
+test('search-and-read is directly offered with its static schema and public-only reads', async () => {
+  const reads = [];
+  const searchRead = createSearchReadTool({
+    search: async () => ({provider: 'fixture', result: {results: [{url: 'https://docs.example.org/specs', title: 'Specs'}]}}),
+    readPage: async (url) => {
+      reads.push(url);
+      return {ok: true, status: 200, finalUrl: url, contentType: 'text/plain', text: 'Navigation
+Board power 250 W
+', truncated: false};
+    },
+  });
+  const direct = run([searchRead]).tools.find(t => t.name === searchRead.name);
+  assert.equal(direct, searchRead, 'retain the policy-filtered implementation object');
+  assert.equal(direct.parameters, SEARCH_READ_PARAMETERS);
+  const result = await direct.execute('search-read', {query: 'board power'});
+  assert.deepEqual(reads, ['https://docs.example.org/specs']);
+  assert.equal(result.details.receipts, 1);
+  assert.match(result.content[0].text, /Board power 250 W/);
+  assert.equal((await direct.execute('private', {urls: ['http://127.0.0.1/specs']})).isError, true);
+  assert.deepEqual(reads, ['https://docs.example.org/specs'], 'native exposure cannot bypass public URL validation');
+  const filtered = filterByPolicy([searchRead, tool('web_fetch')], {deny: ['pixel_ods_search_read']});
+  assert.deepEqual(run(filtered).tools.map(t => t.name), [...controls.map(t => t.name), 'web_fetch']);
 });
 
 test('native extraction preserves actual runtime policy denials and ambiguity deferral', () => {
