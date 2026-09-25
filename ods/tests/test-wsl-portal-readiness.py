@@ -72,6 +72,7 @@ esac
         result, calls = self.probe(port='4321')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('http://localhost:4321/pixel', result.stdout)
+        self.assertEqual(result.stdout.splitlines()[-1], 'ODS_PORTAL_URL=http://localhost:4321/pixel')
         self.assertIn('/run/ods-pixel/pixel-ingress.sock', calls)
         self.assertIn('http://127.0.0.1:4321/', calls)
 
