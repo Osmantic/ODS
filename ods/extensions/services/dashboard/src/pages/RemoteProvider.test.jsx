@@ -694,3 +694,9 @@ test('keeps the HTTP status when an error response is not JSON', async () => {
   expect(await screen.findByText('Request failed (502)')).toBeInTheDocument()
   expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
 })
+
+test('announces asynchronous status failures as alerts', async () => {
+  globalThis.fetch.mockResolvedValueOnce(response({ detail: 'gateway unavailable' }, 502))
+  render(createElement(RemoteProvider))
+  expect(await screen.findByRole('alert')).toHaveTextContent('gateway unavailable')
+})
