@@ -1,4 +1,6 @@
 # Prerequisite orchestration; actual installation remains in install-core.sh.
+. (Join-Path $PSScriptRoot 'wsl-portal-prereqs.ps1')
+
 function Write-ODSPortalStage([int]$Step, [string]$Title, [string]$Detail) {
     Write-Host ''
     $style = @{}
@@ -57,10 +59,10 @@ function Initialize-ODSPortalUbuntuUser([string]$Distro) {
     return $process.ExitCode
 }
 
-function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro, [string[]]$LinuxArguments, [string]$InstallRoot) {
+function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro, [string[]]$LinuxArguments, [string]$InstallRoot, [bool]$OpenPortal) {
     $delegate = Join-Path $InstallerRoot 'windows.ps1'
     $global:LASTEXITCODE = 0
-    & $delegate -Distro $Distro -InstallRoot $InstallRoot -PassthroughArgs $LinuxArguments | Out-Host
+    & $delegate -Distro $Distro -InstallRoot $InstallRoot -OpenPortal:$OpenPortal -PassthroughArgs $LinuxArguments | Out-Host
     $succeeded = $?
     $code = $global:LASTEXITCODE
     if ($code -ne 0) { return $code }
@@ -166,6 +168,75 @@ function Assert-ODSPortalNvidiaReady([string]$Distro, $WindowsDriver) {
     }
 }
 
+$script:ODSPortalDockerConsent = 'Docker Desktop is required to run the ODS containers. Install it now with winget? This accepts the Docker Subscription Service Agreement (https://www.docker.com/legal/docker-subscription-service-agreement/); Docker Desktop is free for personal use, education, non-commercial open source and small businesses. Windows will ask for administrator permission.'
+
+function Install-ODSPortalDockerBeforeRestart([bool]$NonInteractive) {
+    # Docker Desktop also needs a restart after installing, so share the one
+    # restart WSL already requires.
+    if ((Get-ODSPortalDockerDesktop).Installed) { return }
+    if (Confirm-ODSPortalPreparation $script:ODSPortalDockerConsent $NonInteractive) { Install-ODSPortalDockerDesktop }
+}
+
+function Initialize-ODSPortalWindowsFoundation([System.Collections.IDictionary]$Options, [string]$InstallerRoot, [bool]$NonInteractive) {
+    # Returns $null when WSL is ready, otherwise the exit code to stop with.
+    $present = [bool](Get-Command wsl.exe -ErrorAction SilentlyContinue)
+    $ready = $present -and ((Invoke-ODSPortalWsl -Arguments @('--status')).Code -eq 0)
+    Assert-ODSPortalHostCapacity $ready
+    if ($ready) { return $null }
+    if (-not $present) {
+        if (-not (Confirm-ODSPortalPreparation 'WSL is not installed. Enable Windows Subsystem for Linux and Virtual Machine Platform? Windows will ask for administrator permission, then a restart is needed.' $NonInteractive)) { return 1 }
+        $featureCode = Install-ODSPortalWslFeatures -MissingExecutable
+        if ($featureCode -notin @(0, 3010)) { throw "Windows feature preparation failed (exit $featureCode). Check Windows Update and virtualization support. See https://learn.microsoft.com/windows/wsl/install-manual ." }
+    } else {
+        if (-not (Confirm-ODSPortalPreparation 'WSL is not ready. Prepare it with wsl --install --no-distribution? Windows will ask for administrator permission; a restart may be needed.' $NonInteractive)) { return 1 }
+        $featureCode = Install-ODSPortalWslFeatures
+        if ($featureCode -notin @(0, 3010)) { throw "WSL feature preparation failed (exit $featureCode). Run wsl --status to inspect the Windows error." }
+    }
+    Install-ODSPortalDockerBeforeRestart $NonInteractive
+    return (Request-ODSPortalRestart $InstallerRoot $Options 'WSL was prepared and Windows needs a restart.')
+}
+
+function Get-ODSPortalDistroNames {
+    $list = Invoke-ODSPortalWsl -Arguments @('--list', '--quiet')
+    if ($list.Code -ne 0) { throw ('Cannot list WSL distributions: ' + $list.Output) }
+    return @($list.Output -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+
+function Install-ODSPortalUbuntu([string]$Distro, [System.Collections.IDictionary]$Options, [string]$InstallerRoot, [bool]$NonInteractive) {
+    # Returns $null once the distro exists with a default user, else an exit code.
+    if (-not (Confirm-ODSPortalPreparation "Download and install $Distro? It is installed under your Windows account; existing distributions are not changed." $NonInteractive)) { return 1 }
+    $installed = Invoke-ODSPortalWsl -Arguments @('--install', '--distribution', $Distro, '--no-launch')
+    if ($installed.Code -eq 3010) { return (Request-ODSPortalRestart $InstallerRoot $Options 'Windows needs a restart to finish installing Ubuntu.') }
+    if ($installed.Code -ne 0) { throw ('Ubuntu installation did not complete: ' + $installed.Output) }
+    if ($Distro -notin (Get-ODSPortalDistroNames)) { Register-ODSPortalDistro $Distro }
+    if ($Distro -notin (Get-ODSPortalDistroNames)) { throw "$Distro was downloaded but is not registered. Open it once from the Start menu, then rerun this command." }
+    New-ODSPortalLinuxAccount $Distro (Read-ODSPortalLinuxAccount)
+    return $null
+}
+
+function Initialize-ODSPortalDocker([string]$Distro, [System.Collections.IDictionary]$Options, [string]$InstallerRoot, [bool]$NonInteractive) {
+    # Returns $null when Docker and Compose work inside $Distro, else an exit code.
+    $desktop = Get-ODSPortalDockerDesktop
+    if (-not $desktop.Installed) {
+        if (-not (Confirm-ODSPortalPreparation $script:ODSPortalDockerConsent $NonInteractive)) { return 1 }
+        Install-ODSPortalDockerDesktop
+        return (Request-ODSPortalRestart $InstallerRoot $Options 'Docker Desktop was installed and needs a Windows restart before its first start.')
+    }
+    if (-not (Test-ODSPortalDockerEngine $desktop)) { Start-ODSPortalDockerDesktop $desktop }
+    $info = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--exec', 'docker', 'info')
+    if ($info.Code -ne 0) {
+        if (-not (Confirm-ODSPortalPreparation "Docker Desktop is running but is not connected to $Distro yet. Turn on Docker's WSL integration for $Distro? Docker Desktop restarts, so containers it is running stop briefly." $NonInteractive)) { return 1 }
+        Enable-ODSPortalDockerWslIntegration $desktop $Distro
+    }
+    foreach ($arguments in @(@('docker','info'), @('docker','compose','version'))) {
+        $probe = Invoke-ODSPortalWsl -Arguments (@('--distribution', $Distro, '--exec') + $arguments)
+        if ($probe.Code -ne 0) {
+            throw "Docker is not ready inside $Distro. Open Docker Desktop > Settings > Resources > WSL Integration, turn on $Distro and click Apply & restart. In Ubuntu, docker info AND docker compose version must succeed as your normal user. See https://docs.docker.com/desktop/features/wsl/ ."
+        }
+    }
+    return $null
+}
+
 function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string]$InstallerRoot) {
     $linuxArgs = @(Get-ODSPortalLinuxArguments $Options)
     $distro = if ($Options['Distro']) { [string]$Options['Distro'] } else { 'Ubuntu-24.04' }
@@ -177,45 +248,24 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     Write-Host '  Your workspace runs in Ubuntu. Open Portal from Windows.'
     if ($Options['DryRun']) {
         Write-Host 'Dry run: no features, distributions, tasks, services or files will be changed.'
-        Write-Host 'Plan: verify WSL2, Ubuntu user, systemd, Docker integration and, with an NVIDIA driver, GPU access from Ubuntu and Docker; run the Linux installer; verify Pixel ingress and Portal HTTP readiness.'
+        Write-Host 'Plan: check disk space and virtualization; prepare WSL2, Ubuntu and Docker Desktop when missing (continuing after a restart); verify the Ubuntu user, systemd, Docker integration and, with an NVIDIA driver, GPU access; run the Linux installer; verify Pixel ingress and Portal readiness; open Portal.'
         Write-Host ('Linux flags: ' + ($linuxArgs -join ' '))
         return 0
     }
     if ($env:OS -ne 'Windows_NT') { throw 'Run install.ps1 in Windows PowerShell. Inside Ubuntu use bash install.sh --pixel --no-hermes.' }
-    if (Test-ODSPortalAdministrator) { throw 'Open a normal, non-Administrator PowerShell window and rerun this command. Only Windows feature preparation will request elevation.' }
+    if (Test-ODSPortalAdministrator) { throw 'This window is running as Administrator. Close it, open PowerShell normally (Start menu > type PowerShell > press Enter, without "Run as administrator"), and paste the install command again. Setup asks for administrator permission only when Windows needs it.' }
     if (Test-ODSNativeWindowsInstall) { throw 'An existing native Windows ODS installation was found. It is not automatically migrated or deleted. Stop and migrate/remove that installation before creating a WSL stack, to avoid shared ports and Compose project conflicts. See ods/docs/WINDOWS-QUICKSTART.md.' }
-    Write-ODSPortalStage 1 'WINDOWS FOUNDATION' 'Checking WSL availability and systemd support.'
-    if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
-        if (-not (Confirm-ODSPortalPreparation 'WSL is unavailable. Enable Windows Subsystem for Linux and Virtual Machine Platform? Windows will request administrator permission. Save your work; restart Windows afterwards and rerun this command.' $nonInteractive)) { return 1 }
-        $featureCode = Install-ODSPortalWslFeatures -MissingExecutable
-        if ($featureCode -notin @(0, 3010)) { throw "Windows feature preparation failed (exit $featureCode). Check Windows Update and virtualization support. See https://learn.microsoft.com/windows/wsl/install-manual ." }
-        Write-Host 'Windows features prepared. Restart Windows, then rerun this command to finish WSL/Ubuntu preparation. ODS has not been installed yet.'
-        return 3010
-    }
-    $status = Invoke-ODSPortalWsl -Arguments @('--status')
-    if ($status.Code -ne 0) {
-        if (-not (Confirm-ODSPortalPreparation 'WSL is not ready. Prepare WSL with wsl --install --no-distribution? Windows will request administrator permission. Save your work; a restart may be required.' $nonInteractive)) { return 1 }
-        $featureCode = Install-ODSPortalWslFeatures
-        if ($featureCode -notin @(0, 3010)) { throw "WSL feature preparation failed (exit $featureCode). Run wsl --status to inspect the Windows error." }
-        Write-Host 'Restart Windows if requested, then rerun the same install.ps1 command from a normal PowerShell window. ODS has not been installed yet.'
-        return 3010
-    }
+    Write-ODSPortalStage 1 'WINDOWS FOUNDATION' 'Checking disk space, virtualization and WSL.'
+    $stop = Initialize-ODSPortalWindowsFoundation $Options $InstallerRoot $nonInteractive
+    if ($null -ne $stop) { return $stop }
     Assert-ODSPortalWslVersion
     Write-ODSPortalStage 2 'YOUR UBUNTU WORKSPACE' 'Finding an existing Ubuntu before offering a download.'
-    $list = Invoke-ODSPortalWsl -Arguments @('--list', '--quiet')
-    if ($list.Code -ne 0) { throw ('Cannot list WSL distributions: ' + $list.Output) }
-    $names = @($list.Output -split '\r?\n' | ForEach-Object { $_.Trim() })
+    $names = Get-ODSPortalDistroNames
     $distro = Resolve-ODSPortalDistro ([string]$Options['Distro']) $names
     Write-Host "Selected Ubuntu distribution: $distro"
     if ($distro -notin $names) {
-        if (-not (Confirm-ODSPortalPreparation "Install $distro using wsl --install? This downloads Ubuntu under your Windows account; existing distributions will not be removed." $nonInteractive)) { return 1 }
-        $installed = Invoke-ODSPortalWsl -Arguments @('--install', '--distribution', $distro, '--no-launch')
-        if ($installed.Code -eq 3010) {
-            Write-Host 'Windows requires a restart. Restart, then rerun the same command to finish Ubuntu setup.'
-            return 3010
-        }
-        if ($installed.Code -ne 0) { throw ('Ubuntu installation did not complete: ' + $installed.Output) }
-        if ((Initialize-ODSPortalUbuntuUser $distro) -ne 0) { throw "Finish $distro first-run setup, then rerun this command." }
+        $stop = Install-ODSPortalUbuntu $distro $Options $InstallerRoot $nonInteractive
+        if ($null -ne $stop) { return $stop }
     }
     $version = Invoke-ODSPortalWsl -Arguments @('--list', '--verbose')
     $versionPattern = '(?m)^\s*\*?\s*' + [regex]::Escape($distro) + '\s+.+\s+2\s*$'
@@ -237,15 +287,11 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     if ($init.Code -ne 0 -or $init.Output.Trim() -ne 'systemd') {
         throw "Enable systemd=true under [boot] in /etc/wsl.conf inside Ubuntu (preserve other settings). Then run wsl --terminate $distro from PowerShell, reopen Ubuntu and rerun this command."
     }
-    Write-ODSPortalStage 3 'CONTAINER CONNECTION' "Checking Docker and Compose inside $distro."
-    foreach ($arguments in @(@('docker','info'), @('docker','compose','version'))) {
-        $probe = Invoke-ODSPortalWsl -Arguments (@('--distribution', $distro, '--exec') + $arguments)
-        if ($probe.Code -ne 0) {
-            throw "Docker is not ready inside $distro. Install/start Docker Desktop, enable the WSL2 engine and Settings > Resources > WSL Integration for $distro. In Ubuntu, docker info AND docker compose version must succeed as your normal user. See https://docs.docker.com/desktop/features/wsl/ ."
-        }
-    }
+    Write-ODSPortalStage 3 'CONTAINER CONNECTION' "Checking Docker Desktop and Compose inside $distro."
+    $stop = Initialize-ODSPortalDocker $distro $Options $InstallerRoot $nonInteractive
+    if ($null -ne $stop) { return $stop }
     if (-not $Options['Cloud']) { Assert-ODSPortalNvidiaReady $distro (Get-ODSPortalWindowsNvidiaDriver) }
     Write-ODSPortalStage 4 'INSTALL PIXEL / PORTAL' "Prerequisites passed for $distro. Starting the Linux installer."
-    Write-Host '         Enter your Ubuntu sudo password there if requested.'
-    return Invoke-ODSPortalLinuxInstaller $InstallerRoot $distro $linuxArgs ([string]$Options['InstallDir'])
+    Write-Host '         When Ubuntu asks for your [sudo] password, type your Ubuntu password and press Enter. Nothing appears while you type.'
+    return Invoke-ODSPortalLinuxInstaller $InstallerRoot $distro $linuxArgs ([string]$Options['InstallDir']) (-not $nonInteractive)
 }
