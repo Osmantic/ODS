@@ -71,7 +71,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
 ```
 
-The Windows command guides Ubuntu/WSL2 preparation and requires Pixel, with no Hermes fallback. A restart, Ubuntu user setup and Docker WSL integration may be required. See [Windows Quickstart](docs/WINDOWS-QUICKSTART.md).
+The Windows command guides Ubuntu/WSL2 preparation and requires Pixel, with no Hermes fallback. It installs missing WSL, Docker Desktop and Ubuntu after asking, continues by itself after the one restart, and opens Portal when done. See [Windows Quickstart](docs/WINDOWS-QUICKSTART.md).
 
 Useful install flags:
 

@@ -46,6 +46,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rerun `ods\installers\windows\install-windows.ps1`. AMD machines that used
   the native Lemonade path now get a GPU backend detected inside WSL, CPU, or
   an explicitly configured endpoint.
+- Windows: setup now needs only the pasted PowerShell command. It checks disk
+  space and BIOS virtualization first. It installs Docker Desktop with winget
+  when missing (one restart shared with WSL) and continues by itself after
+  that restart through a one-time per-user `RunOnce` entry. For a new Ubuntu
+  it asks for the Linux username and password in PowerShell instead of the
+  Ubuntu window. It starts Docker Desktop and turns on its WSL integration for
+  the selected Ubuntu when needed, and finally opens Portal and adds an
+  **ODS Portal** desktop shortcut. `-NonInteractive` still installs nothing.
 - Linux on WSL: an NVIDIA driver older than 570 stops with Windows update
   instructions instead of installing `nvidia-driver-*` inside the distro,
   which breaks WSL GPU passthrough.
