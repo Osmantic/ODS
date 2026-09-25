@@ -17,7 +17,14 @@
 //    before the owner message (runtime-context-prompt resolveRuntimeContextPromptParts);
 //  - before_message_write on the owner message, whose persistence a revision
 //    pass suppresses after the hook ran (attempt.model-diagnostic-events:1250-1259);
-//  - the in-run model prompt transform (selection-BEwSQKM-.js:7923-7950);
+//  - the in-run model prompt transform (selection-BEwSQKM-.js:7923-7950),
+//    including an attempt that compacts and retries in place after a context
+//    overflow: the session is reloaded, so the transform finds the stored
+//    owner text instead of the transcript prompt and composes the
+//    prompt-build context around it (attempt.llm-boundary.ts replace(),
+//    agent-session.ts runAutoCompaction("overflow", true));
+//  - registered input text transforms, applied to every model request
+//    (plugin-text-transforms.ts wrapStreamFnTextTransforms);
 //  - an owner cancel writes an aborted, empty assistant message (dropped from
 //    requests) plus a prompt-error entry; a gateway crash writes nothing.
 
@@ -55,6 +62,12 @@ function removeLastPromptOccurrence(text, prompt) {
 }
 
 const text = value => [{type: 'text', text: value}];
+// OpenClaw composeModelPromptContext.
+const composeModelPrompt = parts => parts.filter(value => Boolean(value?.trim())).join('\n\n');
+// OpenClaw applyPluginTextReplacements over each registered input transform.
+const applyInputTransforms = (content, transforms = []) => typeof content === 'string'
+  ? transforms.flatMap(entry => entry.input ?? []).reduce((next, {from, to}) => next.replace(from, to), content)
+  : content;
 const plain = message => Array.isArray(message.content)
   ? message.content.filter(part => part.type === 'text').map(part => part.text).join('') : message.content;
 
@@ -86,7 +99,7 @@ export function createOpenClawChat({hooks, sessionKey = 'agent:pixel:openai-user
     hooks,
     // A gateway restart: the plugin (and its pending state) is new.
     restart(nextHooks) { chat.hooks = nextHooks; },
-    async attempt({prompt, runId, answer = 'Done.', toolCall, interrupt, revision = false}) {
+    async attempt({prompt, runId, answer = 'Done.', toolCall, interrupt, revision = false, overflow = false}) {
       const context = {agentId: 'pixel', sessionKey, runId, trigger: 'user'};
       const result = await chat.hooks.before_prompt_build({prompt, messages: structuredClone(transcript)}, context) ?? {};
       let effectivePrompt = prompt;
@@ -111,16 +124,26 @@ export function createOpenClawChat({hooks, sessionKey = 'agent:pixel:openai-user
       if (!revision) transcript.push(stored);
       leafIsMessage = true;
       const ownerIndex = revision ? -1 : transcript.length - 1;
+      let ownerForModel = promptForModel;
       const request = () => ({
         runId, revision,
         messages: [
           ...history,
           ...(runtimeContext ? [{role: 'user', content: `${RUNTIME_CONTEXT_HEADER}\n${runtimeContext}`}] : []),
-          {role: 'user', content: promptForModel},
+          {role: 'user', content: ownerForModel},
           ...requestMessages(ownerIndex === -1 ? [] : transcript.slice(ownerIndex + 1)),
-        ],
+        ].map(message => ({...message, content: applyInputTransforms(message.content, chat.hooks.textTransforms)})),
       });
       requests.push(request());
+      if (overflow && !revision) {
+        // The provider rejected that call with a context overflow. OpenClaw
+        // compacts (the summary replaces older history; the owner message is
+        // kept) and retries with the owner message as stored.
+        const reloaded = plain(stored);
+        ownerForModel = reloaded === promptForSession ? promptForModel
+          : composeModelPrompt([result.prependContext, reloaded, result.appendContext]);
+        requests.push(request());
+      }
       if (interrupt === 'crash') return {request: requests.at(-1), stored};
       if (interrupt === 'abort') {
         transcript.push({role: 'assistant', content: [], stopReason: 'aborted'});

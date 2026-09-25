@@ -1,8 +1,10 @@
-// Real pinned OpenClaw gateway, the plugin's actual prompt hooks, a scripted
-// provider: owner cancel, an owner message left unanswered by a gateway
-// restart and then resent or followed by another message, an OpenClaw
-// revision pass, and untrusted repository README text. Checks what the model
-// receives and what the session transcript keeps for later turns.
+// Real pinned OpenClaw gateway, the plugin's actual prompt hooks and text
+// transforms, a scripted provider: owner cancel, an owner message left
+// unanswered by a gateway restart and then resent or followed by another
+// message, an OpenClaw revision pass, untrusted repository README text, and a
+// context overflow that OpenClaw compacts and retries within the attempt.
+// Checks what the model receives and what the session transcript keeps for
+// later turns.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
@@ -51,6 +53,7 @@ function fixturePlugin(root) {
       const hooks = pixelPromptHooks({repositoryContext: createExtensionRepositoryContext({tool: {
         execute: async () => ({content: [{type: 'text', text: readme}]})}})});
       for (const name of ['before_prompt_build', 'before_message_write', 'agent_end']) api.on(name, hooks[name]);
+      for (const transforms of hooks.textTransforms) api.registerTextTransforms(transforms);
       const revised = new Set();
       api.on('before_agent_finalize', (event, context) => {
         const runId = context?.runId ?? event?.runId;
@@ -84,11 +87,20 @@ test('owner cancel, restart-interrupted messages, a revision pass and README evi
   const requests = [];
   const hanging = [];
   let hang = false;
+  let overflows = 0;
   const upstream = createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString());
     requests.push(body);
     if (hang) { hanging.push(res); return; }
+    if (overflows > 0) {
+      // llama-server's answer to a prompt larger than its context.
+      overflows -= 1;
+      res.writeHead(400, {'Content-Type': 'application/json'});
+      res.end(JSON.stringify({error: {code: 400, type: 'exceed_context_size_error',
+        message: 'the request exceeds the available context size, try increasing it'}}));
+      return;
+    }
     const content = `Answer ${requests.length}`;
     res.writeHead(200, {'Content-Type': 'text/event-stream'});
     res.write('data: ' + JSON.stringify({id: 'fixture', object: 'chat.completion.chunk', choices: [{index: 0, delta: {role: 'assistant', content}, finish_reason: null}]}) + '\n\n');
@@ -102,7 +114,8 @@ test('owner cancel, restart-interrupted messages, a revision pass and README evi
   const config = {logging: {file: join(root, 'runtime.log')}, update: {checkOnStart: false},
     gateway: {mode: 'local', bind: 'loopback', port, auth: {mode: 'token', token: TOKEN}, http: {endpoints: {chatCompletions: {enabled: true}}}},
     agents: {defaults: {workspace, skipBootstrap: true, sandbox: {mode: 'off'}, model: {primary: 'fixture/test'}, contextTokens: 65536, heartbeat: {every: '0m'}},
-      list: [{id: 'pixel', default: true, workspace}]},
+      list: [{id: 'pixel', default: true, workspace,
+        params: {chat_template_kwargs: {enable_thinking: false, preserve_thinking: true}}}]},
     models: {mode: 'replace', providers: {fixture: {baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`, api: 'openai-completions', apiKey: 'fixture-only',
       models: [{id: 'test', name: 'Fixture', contextWindow: 65536, maxTokens: 4096, reasoning: false, input: ['text']}]}}},
     tools: {loopDetection: {enabled: false}},
@@ -215,6 +228,36 @@ test('owner cancel, restart-interrupted messages, a revision pass and README evi
     const readme = transcript(root, 'readme');
     assert.ok(!JSON.stringify(readme.raw).includes('evil.example'), 'no README text anywhere in the transcript');
     assert.ok(researchSeen.startsWith(storedOwners(readme.messages)[0]));
+
+    // 6. The first call of a guided run overflows the provider's context:
+    // OpenClaw compacts, reloads the stored owner message and retries within
+    // the attempt. The retry sees what the rejected call saw, with one block.
+    await ask('overflow', QUESTION);
+    const overflowStart = requests.length;
+    overflows = 1;
+    await ask('overflow', RESEARCH);
+    const overflowRun = requests.slice(overflowStart);
+    const [rejected] = overflowRun;
+    const retried = overflowRun.at(-1);
+    const rejectedSeen = owners(rejected).at(-1);
+    assert.equal(overflows, 0, trace());
+    assert.ok(overflowRun.length >= 3, `rejected call, summary, retry\n${trace()}`);
+    assert.ok(rejectedSeen.includes(README_INJECTION) && rejectedSeen.split(TURN_GUIDANCE_HEADER).length === 2, trace());
+    assert.equal(owners(retried).at(-1), rejectedSeen, `the retry repeats the rejected owner message exactly\n${trace()}`);
+    const overflowStored = transcript(root, 'overflow');
+    assert.ok(overflowStored.raw.some(entry => entry.type === 'compaction'), trace());
+    assert.ok(!JSON.stringify(overflowStored.raw).includes('evil.example'), 'no README text in the transcript');
+    assert.equal(storedOwners(overflowStored.messages).at(-1),
+      rejectedSeen.slice(0, rejectedSeen.indexOf(`\n\n${REPOSITORY_EVIDENCE_HEADER}`)));
+
+    // Every Pixel model request carries the install's chat-template switches.
+    const summarizer = body => JSON.stringify(body.messages[0] ?? {}).includes('context summarization assistant');
+    assert.ok(overflowRun.some(summarizer), trace());
+    const pixelRequests = requests.filter(body => !summarizer(body));
+    assert.ok(pixelRequests.length > 10);
+    for (const body of pixelRequests) {
+      assert.deepEqual(body.chat_template_kwargs, {enable_thinking: false, preserve_thinking: true});
+    }
   } finally {
     if (child && child.exitCode === null) { const closed = once(child, 'close'); process.kill(-child.pid, 'SIGTERM'); await Promise.race([closed, delay(3000)]); if (child.exitCode === null) { process.kill(-child.pid, 'SIGKILL'); await closed; } }
     for (const res of hanging.splice(0)) res.destroy();

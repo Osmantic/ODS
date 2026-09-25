@@ -125,7 +125,10 @@ upstream default. Other agents and existing jobs are unaffected.
   never stored: it is untrusted upstream text, and history and compaction
   summaries must not present it as the owner's words. When an unanswered
   owner message is sent again, it reuses its stored block byte-for-byte, so
-  OpenClaw sends and stores it once.
+  OpenClaw sends and stores it once. When an attempt compacts and retries in
+  place after a context overflow, OpenClaw reloads the stored message and adds
+  the block again; a registered input text transform drops that second copy,
+  so the retry sees what the first call saw.
 - **Host-authoritative verification truth.** OpenClaw's OpenAI-compatible HTTP
   route does not dispatch channel delivery hooks. Before releasing a completion,
   the private ingress therefore asks the plugin for the exact run's bounded

@@ -35,7 +35,7 @@ import {
   statusPayload,
 } from "./projection.mjs";
 import { composePromptBuildResult, promptContractForAgent } from "./prompt-contract.mjs";
-import { createTurnGuidancePersistence, retryGuidance, withoutPersistedTurnGuidance } from "./turn-guidance.mjs";
+import { createTurnGuidancePersistence, registerTurnGuidanceTextTransforms, retryGuidance, withoutPersistedTurnGuidance } from "./turn-guidance.mjs";
 import { executionContext, turnHostDate } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import {
@@ -343,6 +343,9 @@ export default definePluginEntry({
     // continuation. Give the Pixel agent an explicit, trusted prompt contract
     // so every ODS lookup is followed by a user-visible answer.
     const turnGuidance = createTurnGuidancePersistence({agentId: AGENT_ID});
+    // An attempt that compacts and retries in place reloads the stored owner
+    // message; keep the model's view to one copy of its guidance block.
+    registerTurnGuidanceTextTransforms(api);
     api.on("before_prompt_build", async (rawEvent, context) => {
       // Earlier owner messages are stored with the guidance the model saw;
       // classify owner prose only.

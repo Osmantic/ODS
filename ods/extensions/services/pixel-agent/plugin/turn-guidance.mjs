@@ -143,6 +143,40 @@ export function retryGuidance(messages, prompt) {
   return isGuidanceBlock(guidance) ? guidance : undefined;
 }
 
+// OpenClaw adds appendContext to the owner message on each model call of the
+// attempt, to whatever text that message holds (attempt.llm-boundary.ts,
+// installModelPromptTransform: composeModelPromptContext around a text that is
+// not the transcript prompt). When an attempt compacts and retries in place
+// (agent-session.ts: a context-overflow error from the provider or the
+// tool-loop guard, then runAutoCompaction("overflow") and agent.continue()),
+// it reloads the session, so the owner message now holds the stored guidance
+// block and the model would receive that block twice in a row. OpenClaw passes
+// every model request through registered input text transforms, after that
+// composition; this one drops the second copy of an immediately repeated
+// block, so the retry sees exactly what the first call saw. Nothing else
+// matches it: a stored message holds one block, and a queued merge keeps two
+// different ones apart.
+const escapeRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// One whole block (it cannot run past its own end line), then the same bytes.
+export const REPEATED_TURN_GUIDANCE = new RegExp(
+  `(${escapeRegExp(BLOCK_START)}(?:(?!${escapeRegExp(BLOCK_END)})[\\s\\S])*${escapeRegExp(BLOCK_END)})\\1`);
+export const TURN_GUIDANCE_TEXT_TRANSFORMS = Object.freeze({
+  input: Object.freeze([Object.freeze({from: REPEATED_TURN_GUIDANCE, to: '$1'})]),
+});
+
+export function collapseRepeatedTurnGuidance(text) {
+  return typeof text === 'string' ? text.replace(REPEATED_TURN_GUIDANCE, '$1') : text;
+}
+
+// Registration is skipped on runtimes without the API and when the owner
+// disabled this plugin's prompt changes (then no guidance is added at all).
+export function registerTurnGuidanceTextTransforms(api) {
+  if (typeof api?.registerTextTransforms !== 'function') return false;
+  if (api.config?.plugins?.entries?.['pixel-ods']?.hooks?.allowPromptInjection === false) return false;
+  api.registerTextTransforms(TURN_GUIDANCE_TEXT_TRANSFORMS);
+  return true;
+}
+
 export function createTurnGuidancePersistence({agentId = 'pixel'} = {}) {
   const pending = new Map();
   const keyFor = context => typeof context?.sessionKey === 'string' && context.sessionKey

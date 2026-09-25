@@ -10,7 +10,7 @@ import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
 import {executionContext, turnHostDate} from '../plugin/completion-assurance.mjs';
 import {GOAL_CONTRACT} from '../plugin/goal-progress.mjs';
 import {composePromptBuildResult, promptContractForAgent} from '../plugin/prompt-contract.mjs';
-import {createTurnGuidancePersistence, retryGuidance, withoutPersistedTurnGuidance} from '../plugin/turn-guidance.mjs';
+import {createTurnGuidancePersistence, registerTurnGuidanceTextTransforms, retryGuidance, withoutPersistedTurnGuidance} from '../plugin/turn-guidance.mjs';
 import {privateBrowserAccessForAgent} from '../plugin/tool-loop-guard.mjs';
 import {executionHostForAgent} from '../plugin/access-runtime.mjs';
 import {registeredPixelTools} from './tool-grammar-registration.mjs';
@@ -61,12 +61,17 @@ export function pixelPromptHooks({goalActive = false, repositoryContext = async 
   const end = source.indexOf(endMarker, start);
   assert.ok(start >= 0 && end > start, 'expected the prompt-build hook registration block');
   const callbacks = {};
+  // Input text transforms the block registers, for a caller that applies them
+  // (OpenClaw does, to every model request).
+  const textTransforms = [];
   const config = {agents: {list: [{id: 'pixel', workspace: '/home/owner/.openclaw/workspace',
     sandbox: {mode: 'all'}, tools: {exec: {host: 'sandbox'}}}]}};
   vm.runInNewContext(source.slice(start, end + endMarker.length), {
-    api: {config, on: (name, callback) => { callbacks[name] = callback; }},
+    api: {config, on: (name, callback) => { callbacks[name] = callback; },
+      registerTextTransforms: transforms => { textTransforms.push(transforms); }},
     AGENT_ID: 'pixel', configuredContextWindow: 65536, configuredLeanPrompt: false,
-    createTurnGuidancePersistence, retryGuidance, withoutPersistedTurnGuidance, privateBrowserAccessForAgent, executionHostForAgent,
+    createTurnGuidancePersistence, registerTurnGuidanceTextTransforms, retryGuidance, withoutPersistedTurnGuidance,
+    privateBrowserAccessForAgent, executionHostForAgent,
     promptContractForAgent, composePromptBuildResult, ACTIVITY_CONTRACT, executionContext, turnHostDate, GOAL_CONTRACT,
     extensionRepositoryContext: repositoryContext,
     toolLoopGuard: {observeRun() {}, verificationStatus: () => undefined, observeRepositorySource() {},
@@ -78,7 +83,7 @@ export function pixelPromptHooks({goalActive = false, repositoryContext = async 
   for (const name of ['before_prompt_build', 'before_message_write', 'agent_end']) {
     assert.equal(typeof callbacks[name], 'function', name);
   }
-  return callbacks;
+  return Object.assign(callbacks, {textTransforms});
 }
 
 const text = value => [{type: 'text', text: value}];

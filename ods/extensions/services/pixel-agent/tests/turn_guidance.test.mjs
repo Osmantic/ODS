@@ -6,9 +6,12 @@ import {
   REPOSITORY_EVIDENCE_HEADER,
   TURN_GUIDANCE_END,
   TURN_GUIDANCE_HEADER,
+  TURN_GUIDANCE_TEXT_TRANSFORMS,
+  collapseRepeatedTurnGuidance,
   createTurnGuidancePersistence,
   formatRepositoryEvidence,
   formatTurnGuidance,
+  registerTurnGuidanceTextTransforms,
   retryGuidance,
   stripTurnGuidance,
   withTurnGuidance,
@@ -247,4 +250,40 @@ test("the plugin entry stores owner messages through before_message_write", asyn
   assert.match(source, /turnGuidance\.remember\(context, rawEvent\?\.prompt, storedGuidance\);/);
   assert.match(source, /withoutPersistedTurnGuidance\(rawEvent\?\.messages\)/);
   assert.match(source, /api\.on\("agent_end", \(_event, context\) => turnGuidance\.forget\(context\)\);/);
+});
+
+test("a guidance block repeated by an in-place retry reaches the model once", () => {
+  const guidance = guidanceFor(CREATE);
+  const evidence = formatRepositoryEvidence("# Widget\n\nREADME text");
+  const appendContext = `${guidance}\n\n${evidence}`;
+  const firstCall = openClawModelPrompt({ prompt: CREATE, appendContext });
+  // After the retry reloads the stored message, OpenClaw composes around it.
+  const retried = openClawModelPrompt({ prompt: withTurnGuidance(CREATE, guidance), appendContext });
+  assert.equal(retried.split(TURN_GUIDANCE_HEADER).length - 1, 2);
+  assert.equal(collapseRepeatedTurnGuidance(retried), firstCall);
+  // OpenClaw applies it with String.prototype.replace, like this.
+  const [{ from, to }] = TURN_GUIDANCE_TEXT_TRANSFORMS.input;
+  assert.equal(retried.replace(from, to), firstCall);
+  // Nothing else changes: one block, two different blocks, the same block
+  // with owner text between, text without blocks, non-strings.
+  const other = guidanceFor(UPDATE);
+  const queued = openClawModelPrompt({ prompt: openClawQueued(withTurnGuidance(CREATE, guidance), UPDATE), appendContext: other });
+  const repeatedApart = `${withTurnGuidance(CREATE, guidance)}\n\nOwner text\n\n${guidance}`;
+  for (const value of [firstCall, queued, repeatedApart, CREATE, "", `${guidance}${guidance}`]) {
+    assert.equal(collapseRepeatedTurnGuidance(value), value);
+  }
+  assert.equal(collapseRepeatedTurnGuidance(undefined), undefined);
+  // A block cannot swallow a following one: two stored blocks, then a repeat of the second.
+  const twice = `${withTurnGuidance(withTurnGuidance("A", guidance), other)}\n\n${other}`;
+  assert.equal(collapseRepeatedTurnGuidance(twice), withTurnGuidance(withTurnGuidance("A", guidance), other));
+});
+
+test("the repeated-guidance transform is registered unless prompt changes are disabled", () => {
+  const registered = [];
+  const api = config => ({ config, registerTextTransforms: transforms => registered.push(transforms) });
+  assert.equal(registerTurnGuidanceTextTransforms(api({})), true);
+  assert.deepEqual(registered, [TURN_GUIDANCE_TEXT_TRANSFORMS]);
+  assert.equal(registerTurnGuidanceTextTransforms(api({ plugins: { entries: { "pixel-ods": { hooks: { allowPromptInjection: false } } } } })), false);
+  assert.equal(registerTurnGuidanceTextTransforms({ config: {} }), false);
+  assert.equal(registered.length, 1);
 });
