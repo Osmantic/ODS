@@ -37,11 +37,12 @@ import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
-  boundInspectionPageErrors, pageErrorRepairInstruction, visibilityInspectionMatches, visibilityInspectionInstruction } from './preview-interaction-assurance.mjs';
+  boundInspectionPageErrors, pageErrorRepairInstruction, visibilityInspectionMatches, visibilityInspectionInstruction,
+  requestedVisibilityTransition, inheritedVisibilityTransition } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
-  requestedTextDeliveryNote } from './requested-literals.mjs';
+  requestedTextDeliveryNote, publishedElementOutline } from './requested-literals.mjs';
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -6966,8 +6967,35 @@ export function createToolLoopGuard({
       sessionPreviewVisibilityObligations.set(sessionId, Object.freeze({
         sessionKey:state.currentSessionKey, siteId:preview.siteId, sha256:preview.sha256,
         relativeDirectory:preview.relativeDirectory,
+        // Owner wording only (affected element, control, direction); no proof.
+        ...(state.workspaceTransitionIntent ? {transition:state.workspaceTransitionIntent} : {}),
       }));
     }
+  }
+
+  // Tool-result-time requirement for pixel_ods_workspace_preview_inspect.
+  // OpenClaw 2026.6.33 drops a before_agent_finalize revision after any plugin
+  // tool call, so an untested owner-requested show/hide change must be stated
+  // by the inspection result itself. Bound to this exact pending call (direct,
+  // or a Tool Search child of a pending tool_call) of the active run; a
+  // passing transition of the same snapshot earlier in the run satisfies it.
+  function previewInspectionTransition(toolCallId, params) {
+    if (!workspacePreviewInspectionAvailable || typeof toolCallId !== 'string' || !toolCallId) return undefined;
+    const parent = toolCallId.startsWith('tool_search_code:')
+      ? [...pendingToolRuns].find(([id, run]) => !id.startsWith('tool_search_code:') && run.transport === 'tool_call' &&
+        toolCallId.startsWith(toolSearchChildPrefix(id)))?.[1] : undefined;
+    const bound = [pendingToolRuns.get(toolCallId), parent].filter(run => run?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
+      isDeepStrictEqual(run.selectedParams, params));
+    const runId = bound[0]?.runId, state = runs.get(runId);
+    if (!state?.workspaceVisibilityInteractionRequired || bound.some(run => run.runId !== runId ||
+        run.inspectionSessionId !== state.currentSessionId || run.inspectionSessionKey !== state.currentSessionKey) ||
+        (state.currentSessionId && sessionRuns.get(state.currentSessionId) !== runId)) return undefined;
+    if (bound.some(({priorVisibilityInspection: prior}) => prior?.siteId === params.siteId && prior.sha256 === params.sha256 &&
+        prior.sessionId === state.currentSessionId && prior.sessionKey === state.currentSessionKey)) return undefined;
+    const intent = state.workspaceTransitionIntent, target = state.workspaceTransitionTarget;
+    const outline = target?.siteId === params.siteId && target.sha256 === params.sha256 ? target.outline : undefined;
+    return Object.freeze({...(intent?.target ? {target: intent.target} : {}), ...(outline ? {outline} : {}),
+      ...(intent?.control ? {control: intent.control} : {}), initiallyHidden: intent?.initiallyHidden !== false});
   }
 
   function rememberToolRun(
@@ -6985,8 +7013,14 @@ export function createToolLoopGuard({
       pendingToolRuns.delete(pendingToolRuns.keys().next().value);
     }
     const state = runs.get(runId);
+    // A Tool Search child (its own hooks, a child ID) is the same action as its
+    // pending tool_call parent, whose before hook already took the proof.
+    const parentPrior = selectedToolName === PREVIEW_INSPECTION_TOOL && toolCallId.startsWith('tool_search_code:')
+      ? [...pendingToolRuns].find(([id, run]) => !id.startsWith('tool_search_code:') && run.runId === runId &&
+        run.selectedToolName === PREVIEW_INSPECTION_TOOL && toolCallId.startsWith(toolSearchChildPrefix(id)))?.[1]
+        ?.priorVisibilityInspection : undefined;
     const priorVisibilityInspection = selectedToolName === PREVIEW_INSPECTION_TOOL
-      ? state?.workspaceVisibilityInspection : undefined;
+      ? state?.workspaceVisibilityInspection ?? parentPrior : undefined;
     // Keep the previous proof with this exact pending call. Until its receipt
     // validates, neither unfinished nor mismatched inspections retain a pass.
     if (selectedToolName === PREVIEW_INSPECTION_TOOL && state) {
@@ -9381,14 +9415,20 @@ export function createToolLoopGuard({
           visibilityObligation.relativeDirectory === trustedSessionPreview.relativeDirectory;
         if (preservesBoundBehavior) state.workspaceInheritedVisibilityObligation = Object.freeze({
           sessionId, sessionKey:state.currentSessionKey, ownerIntent,
+          ...(visibilityObligation.transition ? {transition:visibilityObligation.transition} : {}),
         });
         const inheritedVisibility = state.workspaceInheritedVisibilityObligation;
+        const inheritsVisibility = Boolean(inheritedVisibility) && inheritedVisibility.sessionId === sessionId &&
+          inheritedVisibility.sessionKey === state.currentSessionKey && inheritedVisibility.ownerIntent === ownerIntent;
         state.workspaceVisibilityInteractionRequired = workspacePreviewInspectionAvailable &&
-          state.workspacePreviewRequired && (requestsVisibilityInteraction(ownerLaneText(ownerIntent)) ||
-            (inheritedVisibility?.sessionId === sessionId && inheritedVisibility.sessionKey === state.currentSessionKey &&
-              inheritedVisibility.ownerIntent === ownerIntent));
+          state.workspacePreviewRequired && (requestsVisibilityInteraction(ownerLaneText(ownerIntent)) || inheritsVisibility);
         // Checked only against a successful publication; never gates publishing.
         state.requestedLiterals = extractRequestedLiterals(ownerIntent);
+        // Names the likely affected element and control for the inspection's
+        // corrective steps; a preserved behavior keeps the earlier wording.
+        state.workspaceTransitionIntent = state.workspaceVisibilityInteractionRequired
+          ? inheritedVisibilityTransition(requestedVisibilityTransition(ownerIntent, state.requestedLiterals),
+            inheritsVisibility ? inheritedVisibility.transition : undefined) : undefined;
         state.workspacePreviewMode = state.workspacePreviewRequired
           ? (trustedSessionPreview ? "continuation" : workspacePreviewMode(event?.messages, event?.prompt))
           : undefined;
@@ -10213,6 +10253,14 @@ export function createToolLoopGuard({
         state.workspaceRequestedTextCheck = requestedTextCheck(state.requestedLiterals, preview, {
           receipt: previewEvent.result?.details, trackedContent: state.successfulWriteContentByPath,
           workspaceRoot: state.configuredWorkspaceRoot});
+        // An outline of these same bytes (ids, classes, the owner-named
+        // heading) to choose one stable locator for corrective inspection
+        // steps; never evidence.
+        const transitionOutline = state.workspaceTransitionIntent ? publishedElementOutline(
+          state.workspaceTransitionIntent.target, preview, {receipt: previewEvent.result?.details,
+            trackedContent: state.successfulWriteContentByPath, workspaceRoot: state.configuredWorkspaceRoot}) : undefined;
+        state.workspaceTransitionTarget = transitionOutline
+          ? Object.freeze({siteId: preview.siteId, sha256: preview.sha256, outline: transitionOutline}) : undefined;
         state.previewRevalidationCandidate = Object.freeze({preview:Object.freeze({...preview}),
           sessionId:state.currentSessionId,sessionKey:state.currentSessionKey,workspaceRoot:state.configuredWorkspaceRoot});
         state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;
@@ -12238,6 +12286,7 @@ export function createToolLoopGuard({
       state.githubCanonicalSatisfied = true;
     },
     afterToolCall,
+    previewInspectionTransition,
     toolResultPersist,
     beforeAgentFinalize,
     recoverWorkspacePreview,

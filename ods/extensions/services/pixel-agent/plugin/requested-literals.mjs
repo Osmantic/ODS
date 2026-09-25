@@ -553,6 +553,109 @@ export function requestedTextCheck(literals, preview, {receipt, trackedContent, 
   }
 }
 
+// A bounded static outline of the published entry page for choosing one stable
+// inspection locator: each element's tag, id, classes and parent, headings'
+// authored accessible names, the class names the published scripts add,
+// remove or toggle, and the one heading whose text is the owner's phrase
+// (headingIndex). Read from the same digest-bound bytes as requestedTextCheck.
+// It names locators; it verifies nothing. Unbound or oversized pages yield
+// undefined.
+const MAX_OUTLINE_ELEMENTS = 4000, MAX_OUTLINE_NAME_CHARS = 120, MAX_TOGGLED_CLASSES = 64;
+const CSS_IDENTIFIER = /^-?[A-Za-z_][\w-]*$/;
+function htmlOutline(source) {
+  const html = source.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
+  const tag = /<(\/?)([A-Za-z][A-Za-z0-9-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/g;
+  const elements = [], stack = [], scripts = [];
+  let at = 0, match;
+  const text = raw => {
+    const open = stack.filter(item => item.text !== undefined);
+    if (open.length) { const value = decodeEntities(raw); for (const item of open) item.text += value; }
+  };
+  const close = depth => {
+    while (stack.length > depth) {
+      const item = stack.pop();
+      if (item.text === undefined) continue;
+      // Accessible name as authored: aria-label, else the collapsed text.
+      // aria-labelledby, or a name a locator cannot carry, leaves it unknown.
+      const element = elements[item.index], label = item.label?.trim() ? item.label : item.text;
+      const name = label.replace(/[\t\n\f\r ]+/g, ' ').trim();
+      element.text = canonicalText(item.text);
+      if (!item.labelledBy && name && Array.from(name).length <= MAX_OUTLINE_NAME_CHARS && !/[\p{C}\u2028\u2029]/u.test(name)) element.name = name;
+    }
+  };
+  while ((match = tag.exec(html))) {
+    text(html.slice(at, match.index));
+    at = tag.lastIndex;
+    const name = match[2].toLowerCase();
+    if (match[1]) {
+      const depth = stack.map(item => item.name).lastIndexOf(name);
+      if (depth >= 0) close(depth);
+      continue;
+    }
+    if (elements.length >= MAX_OUTLINE_ELEMENTS) return undefined;
+    const attributes = new Map();
+    for (const attribute of match[3].matchAll(/([^\s=/"'>]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) {
+      const key = attribute[1].toLowerCase();
+      if (!attributes.has(key)) attributes.set(key, decodeEntities(attribute[2] ?? attribute[3] ?? attribute[4] ?? ''));
+    }
+    const index = elements.push({tag: name, parent: stack.at(-1)?.index ?? -1,
+      ...(attributes.has('id') ? {id: attributes.get('id')} : {}),
+      classes: (attributes.get('class') ?? '').split(/[\t\n\f\r ]+/).filter(Boolean)}) - 1;
+    if (name === 'script' || name === 'style') {
+      const end = html.slice(at).search(new RegExp(`</${name}\\s*>`, 'i'));
+      if (name === 'script') scripts.push(end < 0 ? html.slice(at) : html.slice(at, at + end));
+      at = end < 0 ? html.length : at + end;
+      tag.lastIndex = at;
+      continue;
+    }
+    if (!VOID_ELEMENTS.has(name) && !/\/\s*$/.test(match[3]) && stack.length < 1024) {
+      const heading = /^h[1-6]$/.test(name);
+      if (heading) elements[index].heading = true;
+      stack.push({name, index, ...(heading ? {text: '', label: attributes.get('aria-label'),
+        labelledBy: attributes.has('aria-labelledby')} : {})});
+    }
+  }
+  text(html.slice(at));
+  close(0);
+  return {elements, scripts};
+}
+
+// Class names a published script adds, removes, toggles or replaces by literal.
+function toggledClasses(sources) {
+  const found = new Set();
+  for (const source of sources) {
+    for (const call of withoutComments(source, 'script').matchAll(
+      /\bclassList\s*\.\s*(?:add|remove|toggle|replace)\s*\(([^)]{0,300})\)|\.(?:addClass|removeClass|toggleClass)\s*\(([^)]{0,300})\)/g)) {
+      for (const quoted of (call[1] ?? call[2]).matchAll(/(["'`])([^"'`]{1,200})\1/g)) {
+        for (const value of quoted[2].split(/\s+/)) {
+          if (CSS_IDENTIFIER.test(value) && found.size < MAX_TOGGLED_CLASSES) found.add(value);
+        }
+      }
+    }
+  }
+  return [...found];
+}
+
+export function publishedElementOutline(phrase, preview, {receipt, trackedContent, workspaceRoot} = {}) {
+  try {
+    if (!preview || !/^[a-f0-9]{64}$/.test(preview.sha256 ?? '') || !Number.isSafeInteger(preview.files) ||
+        preview.files < 1 || preview.files > 128 || typeof preview.relativeDirectory !== 'string') return undefined;
+    const files = trackedSnapshot(preview, trackedContent) ?? workspaceSnapshot(preview, receipt, workspaceRoot);
+    const entry = files?.find(file => file.path === 'index.html');
+    const outline = entry && htmlOutline(entry.text);
+    if (!outline) return undefined;
+    const key = relaxed(phrase ?? '');
+    const headings = key ? outline.elements.flatMap((element, index) =>
+      element.heading && relaxed(element.text) === key ? [index] : []) : [];
+    const stateClasses = toggledClasses([...outline.scripts, ...files.filter(file => /\.m?js$/i.test(file.path)).map(file => file.text)]);
+    return Object.freeze({
+      elements: Object.freeze(outline.elements.map(({text, ...element}) => Object.freeze({...element, classes: Object.freeze(element.classes)}))),
+      stateClasses: Object.freeze(stateClasses), ...(headings.length === 1 ? {headingIndex: headings[0]} : {})});
+  } catch {
+    return undefined;
+  }
+}
+
 const absent = check => check.missing.filter(miss => !miss.heading && !miss.unheaded && !miss.file);
 const inHeadings = check => check.missing.filter(miss => miss.heading);
 const unheaded = check => check.missing.filter(miss => miss.unheaded);

@@ -3,6 +3,7 @@ import net from 'node:net';
 import {execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
+import {chooseTransitionTarget} from './inspection-target.mjs';
 
 export const INSPECTION_KIND = 'ods-pixel-preview-inspection';
 export const INSPECTION_SCOPE = 'Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.';
@@ -52,6 +53,66 @@ function transitionCoverageFeedback(request, result) {
     (hasClick ? 'The assertions before and after a click do not check opposite visibility of the same affected element. ' : 'This plan contains no click. ') +
     'If the owner requested show/hide behavior, inspect the actual affected element with assert-hidden(target), click(control), assert-visible(target), or the reverse. Use the same target locator in both assertions; a heading or button assertion cannot substitute for the affected element. Keep the existing verified publication unless a file repair is needed.';
 }
+// The owner asked for a show/hide change and these passing steps never held
+// one locator at opposite visibility around a click. Laptop round 100 asserted
+// the button, clicked it, then asserted ".event-card.sold-out.revealed"; tower2
+// round 102 asserted ".sold-out-card.hidden" hidden, clicked, then
+// ".sold-out-card:not(.hidden)" visible, locators that may name different
+// elements. Both answers then claimed the card was verified. OpenClaw 2026.6.33
+// drops before_agent_finalize revisions after a plugin tool call, so this
+// result is the last point that can steer the model: it is incomplete, never
+// "passed", and carries ready-to-send steps. The control is the model's own
+// first click locator (else the owner's quoted control name). The target is one
+// stable locator (inspection-target.mjs): the model's own locator with its
+// state qualifiers removed, as the published element's id when it has one,
+// checked against the published outline; else the owner-named heading. The
+// requirement comes from the run guard, bound to this exact call; without it
+// the result is unchanged.
+export const TRANSITION_UNTESTED = 'transition_untested';
+export function transitionCorrection(request, requirement) {
+  const clickAt = request.steps.findIndex(step => step.action === 'click');
+  const control = clickAt >= 0 ? request.steps[clickAt].locator
+    : requirement?.control ? {role: requirement.control.role, name: requirement.control.name, exact: true} : undefined;
+  const chosen = chooseTransitionTarget(request, {control, outline: requirement?.outline, phrase: requirement?.target});
+  const [first, last] = requirement?.initiallyHidden === false ? ['assert-visible', 'assert-hidden'] : ['assert-hidden', 'assert-visible'];
+  let args;
+  if (control && chosen) {
+    try {
+      args = {siteId: request.siteId, sha256: request.sha256, viewport: request.viewport,
+        steps: [{action: first, locator: chosen.locator}, {action: 'click', locator: control}, {action: last, locator: chosen.locator}]};
+      normalizeWorkspacePreviewInspectionParams(args);
+    } catch { args = undefined; }
+  }
+  const before = clickAt < 0 ? [] : request.steps.slice(0, clickAt).filter(step => !isDeepStrictEqual(step.locator, control));
+  return {args, basis: chosen?.basis, members: chosen?.members ?? [], first, last, target: requirement?.target,
+    click: clickAt >= 0, assertedBefore: before.length > 0};
+}
+const locatorText = locator => locator.selector !== undefined ? JSON.stringify(locator.selector) : `${locator.role} ${JSON.stringify(locator.name)}`;
+function transitionIncompleteFeedback(request, requirement) {
+  const {args, basis, members, first, last, target, click, assertedBefore} = transitionCorrection(request, requirement);
+  const why = [
+    `Preview inspection INCOMPLETE - not verified. The owner requested a show/hide change, but no single locator was asserted ${first.slice(7)} before a click and ${last.slice(7)} after it, so the requested change was not tested.`,
+    !click ? 'These steps contain no click.' : !assertedBefore ? 'Before the click, your steps asserted no affected element.' : '',
+    members.length > 1 ? `Your assertions used different locators (${members.map(locatorText).join(', ')}); a locator that includes the state it checks can match a different element before and after the click, so they do not show one element changing.` : '',
+  ].filter(Boolean).join(' ');
+  const keep = 'Do not change the site only for this check, and do not say the interaction works until an inspection with these steps passes.';
+  if (!args) return `${why} Next step: find the affected element and its control in your source, then call pixel_ods_workspace_preview_inspect ` +
+    `again on the same snapshot with steps ${first}(target), click(control), ${last}(target), using one unchanging target locator in both assertions, such as an id. ${keep}`;
+  const locator = args.steps[0].locator;
+  const own = members.length ? `your ${members.length > 1 ? 'locators' : 'locator'} ${members.map(locatorText).join(' and ')}` : undefined;
+  const owned = target ? `; it contains the requested ${JSON.stringify(target)} heading` : '';
+  const about = basis === 'id'
+    ? `The target ${locatorText(locator)} is the id, in the published source, of the element ${own} name${members.length > 1 ? '' : 's'} with state qualifiers removed${owned}.`
+    : basis === 'model'
+      ? `The target ${locatorText(locator)} is ${own} with state qualifiers removed; it matches exactly one element in the published source${owned}.`
+      : basis === 'unverified'
+        ? `The target ${locatorText(locator)} is ${own} with state qualifiers removed; if it does not match exactly one element, use a unique id of the affected element for both target steps instead.`
+        : basis === 'heading'
+          ? `The target is the heading ${JSON.stringify(locator.name ?? locator.selector)} of the requested ${JSON.stringify(target)} element, read from the published source; if that heading is not inside the element that hides, use a unique CSS selector such as an id of that element for both target steps instead.`
+          : `The target is a heading named ${JSON.stringify(target)} from the owner's request; if your heading text differs, copy it exactly from your source, or use a unique CSS selector such as an id of the affected element for both target steps.`;
+  return `${why} Next step: call pixel_ods_workspace_preview_inspect again (through tool_call if that is how you called it) with exactly these args: ${JSON.stringify(args)} ${about} Keep this click step and use the same target locator in both assertions. ${keep}`;
+}
+
 // Page exception text is untrusted author output. Quote it as data and give
 // one next step; its presence withholds interaction proof, not publication.
 function pageErrorFeedback(pageErrors) {
@@ -163,13 +224,16 @@ function nativeRequest(payload,{signal}={}) {
     child.stdin.on('error',()=>{}); child.stdin.end(JSON.stringify(payload));
   });
 }
-export function createWorkspacePreviewInspectTool({request,transport='unix'}={}) {
+// transitionRequirement(toolCallId, params) is supplied by the run guard. It
+// returns the owner's show/hide requirement for exactly this call, or
+// undefined; it can only withhold "passed", never grant it.
+export function createWorkspacePreviewInspectTool({request,transport='unix',transitionRequirement}={}) {
   if(!['unix','native'].includes(transport))throw Error('invalid inspection transport');
   request??=transport==='unix'?unixRequest:nativeRequest;
   return {name:'pixel_ods_workspace_preview_inspect',
     description:'Inspect an already published owned snapshot using bounded CSS or exact accessible role/name locators. Pass its exact siteId and sha256 from publication. Immediately after publication, check each requested interaction with an initial state assertion, the relevant click, then an explicit postcondition assertion matching the requested behavior. Do not wait until finalization. Each locator must match exactly one element. Exact role/name locators match rendered elements; assert-hidden also matches hidden ones, so one role/name can be asserted hidden, clicked into view, then asserted visible. This tests CSS layout visibility, not pixel paint, occlusion or clipping. The result also lists the rendered colors of the page by area at a desktop view as first loaded; use them to confirm a requested color change is actually visible. A click alone proves no behavioral result. Rendered hidden attributes are diagnostic; intentional CSS overrides are not automatically errors. Uncaught page script errors are reported and leave interactions unverified. Unavailable inspection is unverified, never success. No URLs or JavaScript accepted.',
     parameters:{type:'object',additionalProperties:false,required:['siteId','sha256','viewport','steps'],properties:{siteId:{type:'string',pattern:'^site-[a-f0-9]{24}$'},sha256:{type:'string',pattern:'^[a-f0-9]{64}$',description:'Full snapshot sha256 from the same publication receipt; not entrySha256 or a site suffix.'},viewport:{type:'object',additionalProperties:false,required:['width','height'],properties:{width:{type:'integer',minimum:240,maximum:1920},height:{type:'integer',minimum:240,maximum:1920}}},steps:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['action','locator'],properties:{action:{type:'string',enum:['assert-visible','assert-hidden','click']},locator:{oneOf:[{type:'object',additionalProperties:false,required:['selector'],properties:{selector:{type:'string',maxLength:256}}},{type:'object',additionalProperties:false,required:['role','name','exact'],properties:{role:{type:'string',enum:[...roles]},name:{type:'string',maxLength:120},exact:{const:true}}}]}}}}}},
-    execute:async(_id,params,signal)=>{
+    execute:async(toolCallId,params,signal)=>{
       let normalized;
       // Bad model arguments are not evidence that the installed broker is down.
       // Keep this outside the transport catch so the ordinary bounded correction
@@ -186,15 +250,28 @@ export function createWorkspacePreviewInspectTool({request,transport='unix'}={})
         const result=validateWorkspacePreviewInspectionReceipt(await request(normalized,{signal}),normalized);
         signal?.throwIfAborted();
         const pageErrors=inspectionPageErrors(result);
+        let requirement;
+        if (result.status==='passed' && !pageErrors && !hasVisibilityTransitionPlan(normalized) && typeof transitionRequirement==='function') {
+          try { requirement=transitionRequirement(toolCallId,params); } catch { requirement=undefined; }
+        }
         // Quote page text once, labelled; the evidence copy keeps only the count.
         const summary=pageErrors
           ? `Preview inspection ${result.status==='passed'?'steps passed, but':'failed, and'} ${pageErrorFeedback(pageErrors)}`
-          : `Preview inspection ${result.status}. ${transitionCoverageFeedback(normalized, result)}`;
+          : requirement ? transitionIncompleteFeedback(normalized, requirement)
+            : `Preview inspection ${result.status}. ${transitionCoverageFeedback(normalized, result)}`;
         // The palette is stated once, as its fixed line; the evidence copy omits it.
         const {renderedColors,...rest}=result;
         const palette=renderedColors?` ${renderedColorsLine(renderedColors)}`:'';
-        const evidence=pageErrors?{...rest,pageErrors:{count:pageErrors.count}}:rest;
-        return {content:[{type:'text',text:`${summary} ${INSPECTION_SCOPE}${palette} Evidence: ${JSON.stringify(evidence)}`}],details:result,...(result.status==='failed'?{isError:true}:{})};
+        // An incomplete inspection's evidence copy never reads "passed" overall;
+        // details.receipt keeps the capsule receipt unchanged.
+        const evidence=pageErrors?{...rest,pageErrors:{count:pageErrors.count}}:requirement?{...rest,status:'incomplete'}:rest;
+        const text=`${summary} ${INSPECTION_SCOPE}${palette} Evidence: ${JSON.stringify(evidence)}`;
+        // Incomplete is an error outcome: it is never a pass, and the capsule
+        // receipt it carries cannot bind interaction evidence.
+        if (requirement) return {content:[{type:'text',text}],isError:true,details:{schemaVersion:1,kind:INSPECTION_KIND,
+          status:'incomplete',errorCode:TRANSITION_UNTESTED,siteId:result.siteId,sha256:result.sha256,planSha256:result.planSha256,
+          scope:INSPECTION_SCOPE,receipt:result}};
+        return {content:[{type:'text',text}],details:result,...(result.status==='failed'?{isError:true}:{})};
       } catch {
         return {content:[{type:'text',text:'Preview inspection unavailable or invalid. Requested behavior remains unverified; retain the published artifact and do not claim these checks passed.'}],details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:signal?.aborted?'cancelled':'unavailable',scope:INSPECTION_SCOPE},isError:true};
       }
