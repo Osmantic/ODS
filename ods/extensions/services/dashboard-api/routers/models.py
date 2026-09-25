@@ -1396,6 +1396,7 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         context_size,
         catalog=_load_library(),
         downloaded_files_override=_installed_model_paths(),
+        placement=_agent_runtime_placement(agent_status),
     )
     _annotate_model_lifecycle(
         payload,
@@ -1622,6 +1623,17 @@ def _bootstrap_upgrade_download_conflict() -> dict[str, Any] | None:
         "activeOperation": "bootstrap_upgrade_retry_pending",
         "activeTarget": model_name,
     }
+
+
+def _agent_runtime_placement(agent_status: Optional[dict]) -> Optional[dict]:
+    """The host agent's observed placement of the running model, if any.
+
+    ``runtime.placement`` is written by the host agent after every activation
+    and refreshed when llama-server restarts; see bin/ods-host-agent.py.
+    """
+    runtime = (agent_status or {}).get("runtime") if isinstance(agent_status, dict) else None
+    placement = runtime.get("placement") if isinstance(runtime, dict) else None
+    return placement if isinstance(placement, dict) else None
 
 
 def _get_agent_model_status(timeout: int = 5) -> Optional[dict]:

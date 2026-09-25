@@ -585,6 +585,16 @@ def _model_lifecycle_conflict(requested_operation: str, active: dict) -> dict:
     return payload
 
 
+def _attach_runtime_placement(data: dict) -> None:
+    """Add ``runtime.placement`` (where llama.cpp put the running model)."""
+    try:
+        placement = _current_model_placement()
+    except Exception:
+        logger.exception("Could not observe model placement for status")
+        placement = None
+    data["runtime"] = {"placement": placement}
+
+
 def _model_lifecycle_status() -> dict:
     """Return the currently-owned model lifecycle operation, if any."""
     with _model_lifecycle_state_lock:
@@ -11145,6 +11155,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             data.update(_model_lifecycle_status())
             _verify_switchboard_route_for_status(data, "model-status")
             _project_switchboard_agent_viability(data)
+            _attach_runtime_placement(data)
             json_response(self, 200, data)
             return
         try:
@@ -11153,12 +11164,14 @@ class AgentHandler(BaseHTTPRequestHandler):
             data.update(_model_lifecycle_status())
             _verify_switchboard_route_for_status(data, "model-status")
             _project_switchboard_agent_viability(data)
+            _attach_runtime_placement(data)
             json_response(self, 200, data)
         except (json.JSONDecodeError, OSError):
             data = {"status": "idle"}
             data.update(_model_lifecycle_status())
             _verify_switchboard_route_for_status(data, "model-status")
             _project_switchboard_agent_viability(data)
+            _attach_runtime_placement(data)
             json_response(self, 200, data)
 
     def _handle_external_model_observation(self):
@@ -12361,6 +12374,20 @@ class AgentHandler(BaseHTTPRequestHandler):
         previous_pixel_context: int | None = None
         router_target_published = False
         previous_router_active = {}
+        residency_preflight: dict | None = None
+        residency_overrides: dict[str, str] = {}
+        residency_placement: dict | None = None
+        residency_adjustment: dict | None = None
+        container_override_image = ""
+        # The operator's own LLAMA_ARG_UBATCH / LLAMA_ARG_FIT_TARGET survive
+        # activation and bound the residency planner.
+        pinned_controls = _operator_residency_controls(persisted_env, library)
+        # Re-activating the running model can never be refused or rolled back
+        # for placement: the previous state is the same model.
+        reactivating_current_model = (
+            str(persisted_env.get("GGUF_FILE") or "").strip().casefold()
+            == str(gguf_file).strip().casefold()
+        )
 
         def restore_backups():
             if env_snapshot is not None:
@@ -12778,6 +12805,81 @@ class AgentHandler(BaseHTTPRequestHandler):
                     runtime_profile=runtime_profile,
                 )
 
+            # Full GPU residency: plan a configuration that keeps every layer
+            # on the GPU given memory other processes hold right now (or, when
+            # they hold what it needs, the smallest allowed one), and refuse
+            # before touching the running model only when an exact estimate
+            # proves a different model cannot stay on this GPU even when idle.
+            if (
+                str(gpu_backend).lower() == "nvidia"
+                and not lemonade_runtime
+                and not windows_native_llama
+                and not local_runtime_profile
+                and not gpu_assignment_plan
+            ):
+                try:
+                    residency_preflight = _gpu_residency_preflight(
+                        env_pre,
+                        model,
+                        target,
+                        launch_env=(
+                            {**_UNPROFILED_RUNTIME_ENV, **runtime_env}
+                            if runtime_profile
+                            else dict(_UNPROFILED_RUNTIME_ENV)
+                        ),
+                        context_length=int(context_length),
+                        allow_context_reduction=(
+                            requested_context_length is None and memory_fit is None
+                        ),
+                        pinned=pinned_controls,
+                        same_model=reactivating_current_model,
+                    )
+                except Exception:
+                    logger.exception("GPU residency preflight failed; relying on load verification")
+                    residency_preflight = None
+                if residency_preflight is not None:
+                    if residency_preflight["refuse"]:
+                        json_response(
+                            self,
+                            409,
+                            {
+                                "error": _gpu_residency_refusal(
+                                    str(model.get("name") or llm_model_name),
+                                    residency_preflight,
+                                ),
+                                "code": "model_not_gpu_resident",
+                                "requestedModelId": model_id,
+                                "gpuResidency": {
+                                    "requiredMiB": residency_preflight["residency"]["projection"]["totalMiB"],
+                                    "budgetMiB": residency_preflight["residency"]["budgetMiB"],
+                                    "idleBudgetMiB": round(
+                                        residency_preflight["residency"]["budgetMiB"]
+                                        + residency_preflight["otherUsedMiB"], 2,
+                                    ),
+                                    "otherUsedMiB": residency_preflight["otherUsedMiB"],
+                                    "fitTargetMiB": residency_preflight["residency"]["fitTargetMiB"],
+                                    "contextLength": residency_preflight["contextLength"],
+                                },
+                            },
+                        )
+                        return
+                    planned = residency_preflight.get("planned")
+                    if planned:
+                        residency_overrides = dict(planned["overrides"])
+                        if int(planned["contextLength"]) != int(context_length):
+                            context_length = int(planned["contextLength"])
+                        if planned["steps"]:
+                            logger.info(
+                                "GPU residency preflight for %s%s: %s",
+                                model_id,
+                                (
+                                    f" (other processes hold {residency_preflight['otherUsedMiB']:.0f} MiB; best effort)"
+                                    if planned["bestEffort"]
+                                    else ""
+                                ),
+                                ", ".join(planned["steps"]),
+                            )
+
             # Capture every mutable file and service state before the first write.
             env_snapshot = _snapshot_text_file(env_path)
             # A malformed install can leave models.ini as a directory; repair it
@@ -12906,19 +13008,37 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "LLAMA_ARG_CHECKPOINT_EVERY_NT",
                     "LLAMA_ARG_SPEC_TYPE",
                     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
+                    "LLAMA_ARG_UBATCH",
+                    "LLAMA_ARG_FIT_TARGET",
                 }
                 if runtime_profile:
                     for key, value in runtime_env.items():
-                        if key in runtime_keys and value is not None:
+                        if key in runtime_keys and value is not None and key not in pinned_controls:
                             updates[key] = str(value)
                 else:
-                    updates.update({
-                        "LLAMA_PARALLEL": "1",
-                        "LLAMA_ARG_FLASH_ATTN": "auto",
-                        "LLAMA_ARG_CACHE_TYPE_K": "f16",
-                        "LLAMA_ARG_CACHE_TYPE_V": "f16",
-                    })
+                    updates.update(_UNPROFILED_RUNTIME_ENV)
+                # Settings the residency preflight chose so every layer fits
+                # (never an operator's own ubatch or fit target).
+                updates.update({
+                    key: str(value)
+                    for key, value in residency_overrides.items()
+                    if key in runtime_keys and key not in pinned_controls
+                })
+                thread_removals: set[str] = set()
+                if _model_memory.runtime_memory_settings(runtime_profile)["intentionalOffload"]:
+                    # Declared MoE expert offload keeps work on the CPU: use
+                    # the performance cores, not compose's fixed 4 threads.
+                    performance_cores = _model_memory.performance_core_count()
+                    if performance_cores:
+                        updates["LLAMA_THREADS"] = str(performance_cores)
+                elif _ods_managed_threads(env_pre):
+                    # The previous model's offload thread count does not apply
+                    # to a model that runs entirely on the GPU; an operator's
+                    # own LLAMA_THREADS is kept.
+                    thread_removals.add("LLAMA_THREADS")
                 remove_keys = {
+                    *(key for key in ("LLAMA_ARG_UBATCH", "LLAMA_ARG_FIT_TARGET") if key not in pinned_controls),
+                    *thread_removals,
                     "LLAMA_ARG_N_CPU_MOE",
                     "LLAMA_ARG_NO_CACHE_PROMPT",
                     "LLAMA_ARG_CHECKPOINT_EVERY_NT",
@@ -13005,6 +13125,175 @@ class AgentHandler(BaseHTTPRequestHandler):
                     **_activation_readiness_cadence(),
                 )
 
+            def restart_runtime_for_residency(retry_env: dict) -> None:
+                if runtime_restart_strategy == "windows-native-llama":
+                    _restart_windows_native_llama_server(env_path, retry_env)
+                elif runtime_restart_strategy == "macos-native-llama":
+                    _restart_macos_native_llama_server(
+                        env_path, apple_llama_bin, apple_llama_log, apple_pid_file,
+                    )
+                elif runtime_restart_strategy == "container-llama":
+                    _recreate_llama_server(retry_env, override_image=container_override_image)
+                elif runtime_restart_strategy == "compose-llama":
+                    _compose_restart_llama_server(retry_env)
+                else:
+                    raise RuntimeError(
+                        f"GPU residency retry is unsupported for runtime {runtime_restart_strategy}"
+                    )
+
+            def enforce_gpu_residency() -> dict:
+                """Verify every layer landed on the GPU; relaunch once, else fail.
+
+                Reads llama.cpp's load log for the model that just proved
+                readiness. A partial load (layers or KV cache in system
+                memory) that the runtime profile did not declare triggers one
+                relaunch with a configuration planned from llama.cpp's own
+                projection. A load that stays partial fails the activation so
+                the existing rollback restores the previous model, except when
+                other processes hold the memory it needs (then the smallest
+                allowed configuration runs and the placement is reported),
+                when the running model itself is being re-activated, or when
+                the GPU is below the range the residency estimate is
+                calibrated for (the installer picks such a GPU's default by
+                capacity too, so activation must not refuse it).
+                """
+                nonlocal context_length, switchboard_run, residency_adjustment, env
+                current_env = load_env(env_path)
+                placement = _observe_llama_placement(current_env, gguf_file=gguf_file)
+                if placement.get("status") not in {"partial", "cpu_only"}:
+                    return placement
+
+                def accepted_policy(cause: str) -> str | None:
+                    """Why a partial load is kept and reported, or None."""
+                    if cause == "other_processes":
+                        return "other_processes"
+                    if reactivating_current_model:
+                        return "same_model"
+                    if cause == "too_large" and not _gpu_residency_calibrated_here():
+                        return "uncalibrated_gpu"
+                    return None
+
+                layer_limit = _explicit_gpu_layer_limit(current_env)
+                if layer_limit is not None and layer_limit < int(placement.get("layersTotal") or 0):
+                    raise ModelNotGpuResidentError(
+                        f"{gguf_file} loaded {placement.get('layersOnGpu')}/"
+                        f"{placement.get('layersTotal')} layers on the GPU because "
+                        f"N_GPU_LAYERS={layer_limit} in .env limits GPU layers; set "
+                        f"N_GPU_LAYERS=auto so the model stays fully on the GPU",
+                        placement,
+                    )
+                if residency_preflight is not None:
+                    other_used = float(residency_preflight.get("otherUsedMiB") or 0.0)
+                else:
+                    other_used = _measured_other_gpu_usage(current_env) or 0.0
+                allow_context_reduction = requested_context_length is None and memory_fit is None
+                decision = _residency_correction(
+                    placement,
+                    current_env,
+                    context_length=int(context_length),
+                    allow_context_reduction=allow_context_reduction,
+                    other_used_mib=other_used,
+                    pinned=pinned_controls,
+                )
+                plan = decision["plan"]
+                if plan is None:
+                    policy = accepted_policy(decision["cause"])
+                    if policy:
+                        logger.warning(
+                            "Model %s runs partly on the CPU (%s); keeping it and reporting (%s, %s)",
+                            gguf_file, placement.get("reason"), decision["cause"], policy,
+                        )
+                        return _accept_partial_placement(
+                            placement, decision["cause"], other_used, policy=policy,
+                        )
+                    raise ModelNotGpuResidentError(
+                        f"{gguf_file} is not fully on the GPU ({placement.get('reason')}) "
+                        f"and no allowed configuration fits; choose a smaller model or "
+                        f"context",
+                        placement,
+                    )
+                logger.warning(
+                    "Model %s loaded partially (%s); relaunching once with %s",
+                    gguf_file,
+                    placement.get("reason"),
+                    ", ".join(plan["steps"]),
+                )
+                for key, value in plan["changes"].items():
+                    _upsert_env_value(env_path, key, str(value))
+                new_context = int(plan["contextLength"])
+                if new_context != int(context_length):
+                    context_length = new_context
+                    _atomic_write_text(
+                        models_ini,
+                        f"[{llm_model_name}]\n"
+                        f"filename = {gguf_file}\n"
+                        f"load-on-startup = true\n"
+                        f"n-ctx = {context_length}\n",
+                    )
+                retry_env = load_env(env_path)
+                # Every later step (router configs, the final context proof,
+                # consumers) must see the relaunched runtime's .env, including
+                # a smaller CTX_SIZE; the stale copy would fail the exact
+                # context check and roll back a load that fits.
+                env = retry_env
+                restart_runtime_for_residency(retry_env)
+                retry_proof = _wait_for_model_readiness(
+                    retry_env,
+                    model_id=model_id,
+                    gguf_file=gguf_file,
+                    llm_model_name=llm_model_name,
+                    lemonade_model_id=lemonade_model_id,
+                    return_proof=True,
+                    require_exact_context=True,
+                    **_activation_readiness_cadence(),
+                )
+                if not retry_proof:
+                    raise ModelNotGpuResidentError(
+                        f"{gguf_file} did not become ready after the GPU residency "
+                        f"relaunch ({', '.join(plan['steps'])})",
+                        placement,
+                    )
+                if switchboard_run is not None:
+                    switchboard_run = {
+                        **switchboard_run,
+                        "identity": retry_proof.get("identity"),
+                        "contextLength": retry_proof.get("contextLength"),
+                        "contextVerified": retry_proof.get("contextVerified"),
+                        "verifiedAt": retry_proof.get("verifiedAt"),
+                    }
+                retried = _observe_llama_placement(retry_env, gguf_file=gguf_file)
+                residency_adjustment = {
+                    "steps": list(plan["steps"]),
+                    "changes": dict(plan["changes"]),
+                    "cause": decision["cause"],
+                    "firstPlacement": placement,
+                }
+                if retried.get("status") in {"partial", "cpu_only"}:
+                    cause = decision["cause"]
+                    if cause != "other_processes":
+                        cause = _residency_correction(
+                            retried,
+                            retry_env,
+                            context_length=int(context_length),
+                            allow_context_reduction=allow_context_reduction,
+                            other_used_mib=other_used,
+                            pinned=pinned_controls,
+                        )["cause"]
+                    policy = accepted_policy(cause)
+                    if policy:
+                        logger.warning(
+                            "Model %s still runs partly on the CPU after the relaunch (%s); "
+                            "keeping it and reporting (%s, %s)",
+                            gguf_file, retried.get("reason"), cause, policy,
+                        )
+                        return _accept_partial_placement(retried, cause, other_used, policy=policy)
+                    raise ModelNotGpuResidentError(
+                        f"{gguf_file} is still not fully on the GPU after relaunching "
+                        f"with {', '.join(plan['steps'])}: {retried.get('reason')}",
+                        retried,
+                    )
+                return retried
+
             # Restart llama-server with the new model.
             # Three strategies depending on platform / agent location:
             # - apple (macOS): llama-server runs natively via Metal, not Docker.
@@ -13075,6 +13364,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     )
                 )
                 runtime_restart_strategy = "container-llama"
+                container_override_image = override_image
                 if _switchboard_adapters is not None and not lemonade_runtime:
                     _sb_override = override_image
                     switchboard_adapter = _switchboard_adapters.ContainerLlamaAdapter(
@@ -13162,6 +13452,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 healthy = bool(runtime_identity)
 
             if healthy:
+                residency_placement = enforce_gpu_residency()
                 if lemonade_runtime:
                     _upsert_env_value(env_path, "LEMONADE_MODEL", lemonade_model_id)
                     env["LEMONADE_MODEL"] = lemonade_model_id
@@ -13449,11 +13740,26 @@ class AgentHandler(BaseHTTPRequestHandler):
                             else {"changed": False}
                         ),
                         "consumers": consumers,
+                        "placement": residency_placement,
+                        "residencyAdjustment": residency_adjustment,
+                        "residencyPreflight": (
+                            {
+                                "steps": list(residency_preflight.get("steps") or []),
+                                "overrides": dict(residency_preflight.get("overrides") or {}),
+                                "otherUsedMiB": residency_preflight.get("otherUsedMiB"),
+                                "headroomMiB": residency_preflight["residency"].get("headroomMiB"),
+                                "platform": residency_preflight.get("platform"),
+                            }
+                            if residency_preflight
+                            else None
+                        ),
                         "verifiedAt": str(final_runtime_proof.get("verifiedAt") or _iso_now()),
                         **({'modelTransactionId':pixel_transaction.id} if pixel_transaction is not None else {}),
                     },
                 )
                 committed = True  # system state is committed before the response write
+                if residency_placement is not None:
+                    _write_model_placement_record(residency_placement)
                 if pixel_transaction is not None:
                     # Keep both admission gates until the durable activation
                     # receipt and every consumer's proof are committed.
@@ -13513,6 +13819,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "context_length": int(context_length),
                         "gpu_assignment_changed": bool(gpu_assignment_plan),
                         "consumers": consumers,
+                        "placement": residency_placement,
+                        "residencyAdjustment": residency_adjustment,
                     },
                 )
             else:
@@ -13563,6 +13871,23 @@ class AgentHandler(BaseHTTPRequestHandler):
             if switchboard_run and not switchboard_run.get("ok"):
                 payload["failure_phase"] = switchboard_run.get("phase")
                 payload["failure_detail"] = switchboard_run.get("detail")
+            if isinstance(exc, ModelNotGpuResidentError):
+                payload.setdefault("code", "model_not_gpu_resident")
+                payload["placement"] = exc.placement
+                try:
+                    restored_env = load_env(env_path)
+                    _write_model_placement_record(
+                        _observe_llama_placement(restored_env) if rolled_back else None,
+                        rejected={
+                            "modelId": model_id,
+                            "ggufFile": gguf_file,
+                            "reason": str(exc),
+                            "placement": exc.placement,
+                            "at": _iso_now(),
+                        },
+                    )
+                except Exception:
+                    logger.exception("Could not record the rejected model placement")
             json_response(self, 500, payload)
 
     def _handle_model_delete(self):
@@ -17480,6 +17805,1319 @@ def _system_ram_gb() -> int:
         return 0
 
 
+# ---------------------------------------------------------------------------
+# Full GPU residency: preflight, post-load verification, and status
+# ---------------------------------------------------------------------------
+#
+# A model that llama.cpp silently splits between GPU and CPU runs several times
+# slower (29/33 layers decoded at 10 tok/s instead of 31 at 60K context on the
+# 8GB laptop). ODS therefore treats "every layer on the GPU" as an activation
+# invariant: activation plans a configuration that should fit, verifies what
+# llama.cpp actually did from its load log, retries once with a corrected
+# configuration, and otherwise fails and rolls back. MoE expert offload that a
+# runtime profile declares is the only accepted exception.
+
+_LLAMA_SERVER_CONTAINER = "ods-llama-server"
+_MODEL_PLACEMENT_FILE = "model-placement.json"
+# Bytes of llama-server log read per observation; only placement lines are kept.
+_PLACEMENT_LOG_LIMIT_BYTES = 256 * 1024 * 1024
+_PLACEMENT_LOG_TIMEOUT_SECONDS = 30.0
+_PLACEMENT_REFRESH_SECONDS = 15.0
+# Settings the host agent writes for a model without a runtime profile.
+_UNPROFILED_RUNTIME_ENV = {
+    "LLAMA_PARALLEL": "1",
+    "LLAMA_ARG_FLASH_ATTN": "auto",
+    "LLAMA_ARG_CACHE_TYPE_K": "f16",
+    "LLAMA_ARG_CACHE_TYPE_V": "f16",
+}
+# When the driver cannot attribute GPU memory per process (WSL and Windows
+# report no compute processes), the running llama-server's footprint is its
+# logged buffers plus this allowance for its CUDA context and the flash-
+# attention pool that converts a quantized KV cache to f16 as context fills.
+# Measured beyond the logged buffers: 612 MiB on native Linux (RTX 5090,
+# f16 KV), 411-445 MiB under WSL (RTX 5070 Laptop, q8_0 KV at 41K-60K).
+# Overestimating keeps the preflight optimistic; post-load verification is
+# authoritative.
+_LLAMA_RUNTIME_ALLOWANCE_MIB = {"linux": 900, "wsl": 512, "windows": 512, "macos": 0}
+_model_placement_cache_lock = threading.Lock()
+_model_placement_cache: dict = {"at": 0.0, "value": None}
+
+
+class ModelNotGpuResidentError(RuntimeError):
+    """The activated model could not be made fully GPU-resident."""
+
+    def __init__(self, message: str, placement: dict | None = None):
+        super().__init__(message)
+        self.placement = dict(placement or {})
+
+
+def _placement_runtime_kind(env: dict) -> str:
+    """How the configured llama.cpp runtime is managed, for placement reads."""
+    if _uses_lemonade_runtime(env):
+        return "lemonade"
+    backend = str(env.get("GPU_BACKEND") or "nvidia").strip().lower()
+    if backend in {"cpu", "none"}:
+        return "cpu"
+    if _is_windows_host_llama_server(env) or backend == "apple":
+        return "native"
+    return "container"
+
+
+def _llama_container_state() -> tuple[bool, int, str]:
+    """(running, host PID, StartedAt) of the llama-server container."""
+    try:
+        inspected = subprocess.run(
+            [
+                "docker", "inspect", "-f", "{{.State.Running}} {{.State.Pid}} {{.State.StartedAt}}",
+                _LLAMA_SERVER_CONTAINER,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False, 0, ""
+    parts = str(inspected.stdout or "").split()
+    if inspected.returncode != 0 or len(parts) != 3 or parts[0] != "true":
+        return False, 0, ""
+    try:
+        pid = int(parts[1])
+    except ValueError:
+        pid = 0
+    return True, pid, parts[2]
+
+
+def _native_llama_run_marker() -> str:
+    try:
+        pid = (INSTALL_DIR / "data" / ".llama-server.pid").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return f"pid:{pid}" if pid else ""
+
+
+def _collect_placement_lines(stream, *, stop_when_ready: bool) -> tuple[list[str], bool]:
+    """Keep only placement lines from a llama-server log byte stream.
+
+    Returns the kept lines and whether the server reported it was ready (the
+    load section is then complete). A server start line begins a new run, so
+    an appended native log yields only its newest run. Reading stops at the
+    ready line when ``stop_when_ready`` is set, or after
+    ``_PLACEMENT_LOG_LIMIT_BYTES``.
+    """
+    kept: list[str] = []
+    ready = False
+    consumed = 0
+    deadline = time.monotonic() + _PLACEMENT_LOG_TIMEOUT_SECONDS
+    for raw in stream:
+        consumed += len(raw)
+        line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        if _model_memory.is_llama_start_line(line):
+            kept.clear()
+            ready = False
+        if _model_memory.is_placement_log_line(line):
+            kept.append(line.rstrip("\r\n"))
+        if _model_memory.is_llama_ready_line(line):
+            ready = True
+            if stop_when_ready:
+                break
+        if consumed >= _PLACEMENT_LOG_LIMIT_BYTES or time.monotonic() > deadline:
+            break
+    return kept, ready
+
+
+def _read_llama_runtime_log(env: dict, *, runtime_kind: str | None = None) -> tuple[str, str, bool]:
+    """Return the placement lines of the current llama-server run.
+
+    Returns ``(text, run marker, complete)``. The marker is empty when no
+    llama-server run is observable (container missing or stopped, no native
+    log). ``complete`` means the server finished loading, so a log without a
+    placement line will not gain one later. Only placement lines are kept, so
+    a long-running server's request log costs one bounded streaming read.
+    """
+    kind = runtime_kind or _placement_runtime_kind(env)
+    if kind == "native":
+        candidates = [INSTALL_DIR / "data" / "llama-server.log"]
+        if platform.system() == "Darwin":
+            # The macOS LaunchAgent (native-llama-service.sh) logs here.
+            candidates.insert(0, Path.home() / "Library" / "Logs" / "ODS" / "llama-server.log")
+        existing = [path for path in candidates if path.is_file()]
+        if not existing:
+            return "", "", False
+        log_path = max(existing, key=lambda path: path.stat().st_mtime)
+        try:
+            size = log_path.stat().st_size
+            with log_path.open("rb") as handle:
+                # Appended across runs: parse_llama_placement picks the most
+                # recent load of the expected model from the kept lines.
+                if size > _PLACEMENT_LOG_LIMIT_BYTES:
+                    handle.seek(size - _PLACEMENT_LOG_LIMIT_BYTES)
+                lines, ready = _collect_placement_lines(handle, stop_when_ready=False)
+        except OSError:
+            return "", "", False
+        return "\n".join(lines), _native_llama_run_marker() or f"log:{size}", ready
+    if kind != "container":
+        return "", "", False
+    running, _pid, started = _llama_container_state()
+    if not running or not started:
+        return "", "", False
+    try:
+        process = subprocess.Popen(
+            ["docker", "logs", "--since", started, _LLAMA_SERVER_CONTAINER],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    except OSError:
+        return "", started, False
+    try:
+        lines, ready = _collect_placement_lines(process.stdout, stop_when_ready=True)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        try:
+            process.wait(timeout=10)
+        except subprocess.SubprocessError:
+            pass
+        if process.stdout is not None:
+            process.stdout.close()
+    return "\n".join(lines), started, ready
+
+
+def _observe_llama_placement(
+    env: dict,
+    *,
+    gguf_file: str | None = None,
+    runtime_kind: str | None = None,
+) -> dict:
+    """Observe where llama.cpp placed the configured model.
+
+    Returns the ``runtime.placement`` record shared with the dashboard, the
+    doctor and the fleet gate: layersOnGpu, layersTotal, cpuWeightMiB,
+    fullyResident, intentionalOffload, plus status/reason and the fit numbers
+    llama.cpp logged.
+    """
+    kind = runtime_kind or _placement_runtime_kind(env)
+    settings = _model_memory.runtime_memory_settings(None, env)
+    expected = str(gguf_file or env.get("GGUF_FILE") or "")
+    context = _positive_int(env.get("CTX_SIZE") or env.get("MAX_CONTEXT"))
+    common = {
+        "runtime": kind,
+        "observedAt": _iso_now(),
+        "contextLength": context,
+        "cacheTypeK": settings["cacheTypeK"],
+        "cacheTypeV": settings["cacheTypeV"],
+        "ubatch": settings["ubatch"],
+        "configuredFitTargetMiB": settings["fitTargetMiB"],
+        "nGpuLayers": str(env.get("N_GPU_LAYERS") or "auto"),
+    }
+    if kind in {"cpu", "lemonade"}:
+        return {
+            "schema": _model_memory.PLACEMENT_SCHEMA,
+            "source": kind,
+            "modelFile": expected or None,
+            "layersOnGpu": None,
+            "layersTotal": None,
+            "cpuWeightMiB": None,
+            "fullyResident": None,
+            "intentionalOffload": bool(settings["intentionalOffload"]),
+            "status": "not_applicable" if kind == "cpu" else "unverified",
+            "reason": (
+                "The CPU runtime does not use a GPU."
+                if kind == "cpu"
+                else "Lemonade manages GPU placement itself and does not report "
+                "layer offload; it requests every layer on the GPU."
+            ),
+            "runtimeStartedAt": "",
+            **common,
+        }
+    try:
+        text, marker, complete = _read_llama_runtime_log(env, runtime_kind=kind)
+    except Exception:  # placement observation must never break activation
+        logger.exception("Could not read the llama-server log for placement")
+        text, marker, complete = "", "", False
+    placement = _model_memory.parse_llama_placement(
+        text,
+        expected_model_file=expected or None,
+        intentional_offload=bool(settings["intentionalOffload"]),
+    )
+    placement.update(common)
+    placement["runtimeStartedAt"] = marker
+    # Final once placement is known or the server finished loading without
+    # reporting it; otherwise the status path observes the run again.
+    placement["observationComplete"] = bool(
+        placement.get("layersTotal") is not None or (marker and complete)
+    )
+    if not marker and placement.get("status") == "unverified":
+        placement["reason"] = "No running llama-server log was found."
+    return placement
+
+
+def _model_placement_path() -> Path:
+    return INSTALL_DIR / "data" / _MODEL_PLACEMENT_FILE
+
+
+def _read_model_placement_record() -> dict:
+    try:
+        value = json.loads(_model_placement_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _write_model_placement_record(
+    placement: dict | None = None,
+    *,
+    rejected: dict | None = None,
+    refit: dict | None = None,
+) -> None:
+    """Persist the running model's placement.
+
+    Also keeps the last rejected activation (``lastRejected``) and the
+    residency watcher's last relaunch (``refit``).
+    """
+    record = _read_model_placement_record()
+    record["schema"] = _model_memory.PLACEMENT_SCHEMA
+    if placement is not None:
+        record["placement"] = placement
+    if rejected is not None:
+        record["lastRejected"] = rejected
+    if refit is not None:
+        record["refit"] = refit
+    try:
+        _atomic_write_json(_model_placement_path(), record)
+    except OSError:
+        logger.exception("Could not persist model placement")
+        return
+    with _model_placement_cache_lock:
+        _model_placement_cache["at"] = time.monotonic()
+        _model_placement_cache["value"] = record.get("placement")
+
+
+def _refresh_model_placement() -> dict | None:
+    """Observe the running model's placement again when it may have changed.
+
+    Re-reads the llama-server log when the server restarted, the configured
+    model changed, or the last observation ran before the load finished, so
+    installer loads, reboots and restart-policy restarts are covered, not only
+    dashboard activations. Never runs while a model lifecycle operation owns
+    the runtime. The log read is bounded but can take seconds, so only the
+    residency watcher calls this; request handlers use
+    ``_current_model_placement``.
+    """
+    record = _read_model_placement_record()
+    placement = record.get("placement") if isinstance(record.get("placement"), dict) else None
+    with _model_lifecycle_state_lock:
+        busy = _model_lifecycle_operation is not None
+    if not busy:
+        try:
+            env = load_env(INSTALL_DIR / ".env")
+        except (OSError, UnicodeError):
+            env = {}
+        kind = _placement_runtime_kind(env) if env else ""
+        configured = str(env.get("GGUF_FILE") or "").casefold()
+        stale = (
+            placement is None
+            or str(placement.get("modelFile") or "").casefold() != configured
+            or placement.get("runtime") != kind
+            or not placement.get("observationComplete")
+        )
+        if kind == "container":
+            running, _pid, started = _llama_container_state()
+            if running and started and (stale or started != placement.get("runtimeStartedAt")):
+                # A docker restart keeps the watcher's temporary settings.
+                carried = _running_temporary_residency(record).get("changes", {})
+                placement = _observe_llama_placement({**env, **carried})
+                if carried:
+                    placement["temporarySettings"] = dict(carried)
+                _write_model_placement_record(placement)
+        elif kind == "native":
+            marker = _native_llama_run_marker()
+            if stale or (marker and marker != placement.get("runtimeStartedAt")):
+                observed = _observe_llama_placement(env)
+                if observed.get("runtimeStartedAt"):
+                    placement = observed
+                    _write_model_placement_record(placement)
+        elif kind in {"lemonade", "cpu"} and stale:
+            placement = _observe_llama_placement(env, runtime_kind=kind)
+    with _model_placement_cache_lock:
+        _model_placement_cache["at"] = time.monotonic()
+        _model_placement_cache["value"] = placement
+    return placement
+
+
+def _current_model_placement() -> dict | None:
+    """Placement of the running model for ``/v1/model/status``; never blocks.
+
+    Returns the last observation (in memory, else data/model-placement.json)
+    and wakes the residency watcher when that may be stale, so the status
+    endpoint never waits on ``docker logs`` (the dashboard reads it with a
+    5 s timeout).
+    """
+    now = time.monotonic()
+    with _model_placement_cache_lock:
+        if now - _model_placement_cache["at"] < _PLACEMENT_REFRESH_SECONDS:
+            return _model_placement_cache["value"]
+    record = _read_model_placement_record()
+    placement = record.get("placement") if isinstance(record.get("placement"), dict) else None
+    with _model_placement_cache_lock:
+        _model_placement_cache["at"] = time.monotonic()
+        _model_placement_cache["value"] = placement
+    _residency_watch_wakeup.set()
+    return placement
+
+
+# ---------------------------------------------------------------------------
+# Residency watcher: the install, boot and restart paths
+# ---------------------------------------------------------------------------
+#
+# Dashboard activation verifies placement itself. Every other start of
+# llama-server (the installer's first start, a reboot, ``ods restart``, a
+# restart-policy restart, bootstrap-upgrade's swap) is observed here: the
+# watcher reads the new run's load log and, when the model landed partly on
+# the CPU, relaunches it once with settings planned from llama.cpp's logged
+# numbers (never a different context: consumers were configured for it).
+
+_RESIDENCY_WATCH_INTERVAL_SECONDS = 30.0
+# A run must have served this long before the watcher relaunches it, so an
+# installer's health checks and pre-warm finish first.
+_RESIDENCY_REFIT_SETTLE_SECONDS = 90.0
+_RESIDENCY_REFIT_OPERATION = "gpu_residency_refit"
+# bootstrap-upgrade.sh statuses while it may still restart llama-server.
+_ACTIVE_BOOTSTRAP_STATUSES = {"starting", "downloading", "verifying", "swapping"}
+_BOOTSTRAP_STATUS_STALE_SECONDS = 6 * 3600
+_residency_watch_wakeup = threading.Event()
+
+
+def _timestamp_age_seconds(value: object) -> float | None:
+    """Seconds since an ISO-8601 timestamp (Docker StartedAt), or None."""
+    match = re.match(
+        r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})?$",
+        str(value or "").strip(),
+    )
+    if not match:
+        return None
+    offset = match.group(2) or "Z"
+    try:
+        moment = datetime.fromisoformat(
+            match.group(1) + ("+00:00" if offset == "Z" else offset)
+        )
+    except ValueError:
+        return None
+    return (datetime.now(timezone.utc) - moment).total_seconds()
+
+
+def _bootstrap_upgrade_active() -> bool:
+    """True while bootstrap-upgrade.sh may still download or swap the model."""
+    try:
+        data = json.loads(
+            (INSTALL_DIR / "data" / "bootstrap-status.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, UnicodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if str(data.get("status") or "").strip().casefold() not in _ACTIVE_BOOTSTRAP_STATUSES:
+        return False
+    age = _timestamp_age_seconds(data.get("updatedAt"))
+    # A killed upgrade can leave an active status behind; stop honoring it.
+    return age is None or age < _BOOTSTRAP_STATUS_STALE_SECONDS
+
+
+def _residency_managed_values(library: list[dict] | None = None) -> dict[str, set[str]]:
+    """Values ODS itself writes for the residency controls.
+
+    The planner's own values plus every value a catalog runtime profile
+    declares. Anything else found in .env is the operator's.
+    """
+    managed = {
+        key: set(values) for key, values in _model_memory.RESIDENCY_MANAGED_VALUES.items()
+    }
+    if library is None:
+        try:
+            library = _load_model_library_records()
+        except Exception:
+            library = []
+    for record in library or []:
+        for profile in record.get("runtime_profiles") or []:
+            profile_env = profile.get("env") if isinstance(profile, dict) else None
+            if not isinstance(profile_env, dict):
+                continue
+            for key in managed:
+                if profile_env.get(key) not in (None, ""):
+                    managed[key].add(str(profile_env[key]).strip())
+    return managed
+
+
+def _operator_residency_controls(env: dict, library: list[dict] | None = None) -> dict[str, str]:
+    """The operator's own LLAMA_ARG_UBATCH / LLAMA_ARG_FIT_TARGET, if any.
+
+    For example a larger fit target kept to leave room for ComfyUI. Activation
+    keeps them, and the residency planner never changes them.
+    """
+    managed = _residency_managed_values(library)
+    pinned: dict[str, str] = {}
+    for key in _model_memory.RESIDENCY_CONTROL_KEYS:
+        value = str(env.get(key) or "").strip()
+        if value and value not in managed.get(key, set()):
+            pinned[key] = value
+    return pinned
+
+
+def _ods_managed_threads(env: dict) -> bool:
+    """True when LLAMA_THREADS is the value ODS wrote for MoE expert offload."""
+    value = str(env.get("LLAMA_THREADS") or "").strip()
+    if not value:
+        return False
+    offload_declared = _model_memory.runtime_memory_settings(None, env)["intentionalOffload"]
+    return bool(offload_declared and value == str(_model_memory.performance_core_count()))
+
+
+def _measured_other_gpu_usage(env: dict) -> float | None:
+    """GPU memory (MiB) other processes hold now, or None when unmeasurable."""
+    snapshot = _nvidia_gpu_memory_snapshot()
+    if not snapshot or snapshot["totalMiB"] <= 0:
+        return None
+    return _other_gpu_usage_mib(env, snapshot, _model_memory.detect_gpu_platform())
+
+
+def _residency_correction(
+    placement: dict,
+    env: dict,
+    *,
+    context_length: int,
+    allow_context_reduction: bool,
+    other_used_mib: float,
+    pinned: dict | None = None,
+) -> dict:
+    """Plan a relaunch of a partial load from llama.cpp's own logged numbers.
+
+    Returns ``{"plan": plan or None, "cause": ...}``. Causes:
+
+    - ``configuration``: an allowed configuration fits; relaunch with it.
+    - ``other_processes``: the model would fit if other processes did not
+      hold ``other_used_mib``; the plan is the most memory-saving allowed
+      configuration (the rest is reported), or None when nothing is left to
+      shrink.
+    - ``too_large``: no allowed configuration fits even on an idle GPU.
+    - ``unexplained``: llama.cpp's projection fits yet the load is partial,
+      or it logged no projection; nothing to plan.
+    """
+    required = placement.get("projectedDeviceMiB")
+    available = placement.get("freeDeviceMiB")
+    if required is None or available is None:
+        return {"plan": None, "cause": "unexplained"}
+    settings = _model_memory.runtime_memory_settings(None, env)
+    if placement.get("fitTargetMiB"):
+        settings = {**settings, "fitTargetMiB": int(placement["fitTargetMiB"])}
+    common = {
+        "required_mib": float(required),
+        "settings": settings,
+        "kv_mib": float(placement.get("kvMiB") or 0.0),
+        "compute_mib": float(placement.get("gpuComputeMiB") or 0.0),
+        "context_length": int(context_length),
+        "allow_context_reduction": allow_context_reduction,
+        "context_floor": min(_model_memory.RESIDENCY_CONTEXT_FLOOR, int(context_length)),
+        "gpu_count": max(int(placement.get("deviceCount") or 1), 1),
+        "locked_keys": tuple(pinned or ()),
+    }
+    plan = _model_memory.plan_residency_fallback(available_mib=float(available), **common)
+    if plan is not None and plan.get("changes"):
+        return {"plan": plan, "cause": "configuration"}
+    if plan is not None:
+        return {"plan": None, "cause": "unexplained"}
+    other = max(float(other_used_mib or 0.0), 0.0)
+    if other > 0:
+        idle = _model_memory.plan_residency_fallback(
+            available_mib=float(available) + other, **common,
+        )
+        if idle is not None:
+            best = _model_memory.plan_residency_fallback(
+                available_mib=float(available), best_effort=True, **common,
+            )
+            return {
+                "plan": best if best is not None and best.get("changes") else None,
+                "cause": "other_processes",
+            }
+    return {"plan": None, "cause": "too_large"}
+
+
+def _accept_partial_placement(
+    placement: dict,
+    cause: str,
+    other_used_mib: float | None,
+    *,
+    policy: str | None = None,
+) -> dict:
+    """Mark a partial placement ODS keeps running and reports.
+
+    The status stays ``partial`` so the dashboard, doctor and fleet gate still
+    flag it; ``acceptedPartial`` says why ODS did not roll back: ``cause`` is
+    the re-fit diagnosis (``_residency_correction``) and ``policy`` the rule
+    that kept the load (``other_processes``, ``same_model`` or
+    ``uncalibrated_gpu``).
+    """
+    accepted = dict(placement)
+    other = round(float(other_used_mib), 2) if other_used_mib is not None else None
+    accepted["acceptedPartial"] = {
+        "cause": cause,
+        "policy": policy or cause,
+        "otherUsedMiB": other,
+    }
+    if cause == "other_processes" and other:
+        accepted["reason"] = (
+            f"{placement.get('reason') or 'Partly on the CPU'}; other processes hold "
+            f"about {other:.0f} MiB of GPU memory, so ODS runs the model with the "
+            f"smallest allowed settings until that memory is freed"
+        )
+    return accepted
+
+
+def _gpu_residency_calibrated_here() -> bool:
+    """Whether this host's NVIDIA GPUs are inside the calibrated range.
+
+    True when nvidia-smi cannot tell, so an unknown GPU keeps the strict
+    full-residency rule.
+    """
+    snapshot = _nvidia_gpu_memory_snapshot()
+    if not snapshot or snapshot["totalMiB"] <= 0:
+        return True
+    return _model_memory.residency_calibrated(snapshot["totalMiB"], snapshot["gpus"])
+
+
+def _restart_llama_server_for_residency(env: dict, overrides: dict | None = None) -> None:
+    """Recreate the llama-server container with the current .env.
+
+    ``overrides`` (LLAMA_ARG_* values) apply to this container only and are
+    never written to .env: the watcher's temporary settings for memory other
+    processes hold. Compose reads them from its process environment, which
+    takes precedence over .env; the inspected-recreate path takes them from
+    the launch env directly.
+    """
+    extra = {str(key): str(value) for key, value in (overrides or {}).items()}
+    launch_env = {**env, **extra}
+    if os.environ.get("ODS_HOST_INSTALL_DIR"):
+        # Keep the image the running container uses.
+        _recreate_llama_server(launch_env)
+    elif extra:
+        _compose_restart_llama_server(launch_env, extra)
+    else:
+        _compose_restart_llama_server(launch_env)
+
+
+def _llama_container_id() -> str:
+    """Docker ID of the llama-server container, or "" when there is none.
+
+    A ``docker restart`` (or Docker's restart policy at boot) keeps the ID
+    and the container's environment; a compose recreate replaces both.
+    """
+    try:
+        inspected = subprocess.run(
+            ["docker", "inspect", "-f", "{{.Id}}", _LLAMA_SERVER_CONTAINER],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if inspected.returncode != 0:
+        return ""
+    return str(inspected.stdout or "").strip()
+
+
+def _idle_cuda_free_estimate_mib(device_count: int) -> float | None:
+    """CUDA free memory a fresh llama-server would see on idle GPUs (MiB).
+
+    ``nvidia-smi`` total minus the calibrated platform reserve, summed over
+    the GPUs. The reserve stays at or above every calibrated host, so this
+    errs low: a load that logged at least this much free had the GPU to
+    itself. None when nvidia-smi cannot tell, or reports a different GPU
+    count than the load used.
+    """
+    snapshot = _nvidia_gpu_memory_snapshot()
+    if not snapshot or snapshot["totalMiB"] <= 0:
+        return None
+    gpus = max(int(snapshot.get("gpus") or 1), 1)
+    if device_count and gpus != int(device_count):
+        return None
+    per_gpu = float(snapshot["totalMiB"]) / gpus
+    reserve = _model_memory.platform_reserve_mib(per_gpu, _model_memory.detect_gpu_platform())
+    return max(per_gpu - reserve, 0.0) * gpus
+
+
+# nvidia-smi attribution noise below which the watcher treats the GPU as
+# holding nothing else (WSL and Windows estimate the server's own share).
+_RESIDENCY_OTHER_USAGE_NOISE_MIB = 64.0
+
+
+def _watcher_residency_plan(
+    placement: dict,
+    env: dict,
+    *,
+    context_length: int,
+    other_now_mib: float,
+    idle_free_mib: float | None,
+    pinned: dict | None = None,
+) -> dict:
+    """Plan the watcher's relaunch of a partial load, split by permanence.
+
+    The watcher writes a settings change to .env only when the GPU was idle
+    at load: nothing else measured on it now, and llama.cpp logged at least
+    the idle estimate free (``idle_free_mib``, which errs low). Otherwise the
+    shortfall may be memory other processes held at boot (a test container,
+    an app), so every change is temporary: it applies to the relaunched
+    container only, is reported, and is undone by any later start that has
+    room (``_maybe_restore_temporary_residency``). A downgrade made for
+    another process never reaches .env, activation or upgrades.
+
+    Returns ``{"cause", "persistent", "temporary", "plan", "relaunch",
+    "otherAtLoadMiB", "idleAvailableMiB", "availableNowMiB"}``. Causes are
+    those of ``_residency_correction``. ``relaunch`` is False when there is
+    nothing to relaunch with (only reported).
+    """
+    result: dict = {
+        "cause": "unexplained",
+        "persistent": {},
+        "temporary": {},
+        "plan": None,
+        "relaunch": False,
+        "otherAtLoadMiB": None,
+        "idleAvailableMiB": None,
+        "availableNowMiB": None,
+    }
+    required = placement.get("projectedDeviceMiB")
+    available = placement.get("freeDeviceMiB")
+    if required is None or available is None:
+        return result
+    free = float(available)
+    settings = _model_memory.runtime_memory_settings(None, env)
+    if placement.get("fitTargetMiB"):
+        settings = {**settings, "fitTargetMiB": int(placement["fitTargetMiB"])}
+    common = {
+        "required_mib": float(required),
+        "settings": settings,
+        "kv_mib": float(placement.get("kvMiB") or 0.0),
+        "compute_mib": float(placement.get("gpuComputeMiB") or 0.0),
+        "context_length": int(context_length),
+        "allow_context_reduction": False,
+        "context_floor": min(_model_memory.RESIDENCY_CONTEXT_FLOOR, int(context_length)),
+        "gpu_count": max(int(placement.get("deviceCount") or 1), 1),
+        "locked_keys": tuple(pinned or ()),
+    }
+    other_now = max(float(other_now_mib or 0.0), 0.0)
+    other_at_load = max(float(idle_free_mib) - free, 0.0) if idle_free_mib else 0.0
+    idle_available = free + max(other_now, other_at_load)
+    # What a relaunch now would see: the load's free memory, plus whatever
+    # other processes held at load and have released since.
+    available_now = free + max(other_at_load - other_now, 0.0)
+    result.update(
+        otherAtLoadMiB=round(other_at_load, 2),
+        idleAvailableMiB=round(idle_available, 2),
+        availableNowMiB=round(available_now, 2),
+    )
+    idle_gpu = other_now <= _RESIDENCY_OTHER_USAGE_NOISE_MIB and other_at_load <= 0.0
+    if idle_gpu:
+        plan = _model_memory.plan_residency_fallback(available_mib=free, **common)
+        if plan is None:
+            result["cause"] = "too_large"
+        elif plan.get("changes"):
+            result.update(
+                cause="configuration", persistent=dict(plan["changes"]), plan=plan, relaunch=True,
+            )
+        return result
+    if _model_memory.plan_residency_fallback(available_mib=idle_available, **common) is None:
+        result["cause"] = "too_large"
+        return result
+    result["cause"] = "other_processes"
+    plan = _model_memory.plan_residency_fallback(available_mib=available_now, **common)
+    if plan is None:
+        plan = _model_memory.plan_residency_fallback(
+            available_mib=available_now, best_effort=True, **common,
+        )
+    if plan is not None and plan.get("changes"):
+        result.update(temporary=dict(plan["changes"]), plan=plan, relaunch=True)
+    elif plan is not None and available_now > free + _model_memory.RESIDENCY_PLAN_GUARD_MIB:
+        # The memory held at load has been released: the same settings fit.
+        result.update(plan=plan, relaunch=True)
+    return result
+
+
+def _running_temporary_residency(record: dict | None = None) -> dict:
+    """The watcher's temporary settings the llama-server container still has.
+
+    ``{"changes": {...}, "containerId": ...}`` while the container the
+    watcher relaunched with them is still the one running (a ``docker
+    restart`` keeps them), else ``{}``.
+    """
+    record = record if record is not None else _read_model_placement_record()
+    refit = record.get("refit") if isinstance(record.get("refit"), dict) else {}
+    changes = refit.get("temporaryChanges")
+    container = str(refit.get("containerId") or "")
+    if not isinstance(changes, dict) or not changes or not container or refit.get("temporaryResolved"):
+        return {}
+    if _llama_container_id() != container:
+        return {}
+    return {"changes": {str(k): str(v) for k, v in changes.items()}, "containerId": container}
+
+
+def _maybe_refit_gpu_residency(placement: dict | None) -> dict | None:
+    """Relaunch a partially offloaded llama-server once with settings that fit.
+
+    Covers loads no activation verified: the installer's first start, a
+    reboot, ``ods restart`` and restart-policy restarts. Limited to NVIDIA
+    container runtimes; one relaunch per llama-server run; never while a model
+    lifecycle operation or bootstrap-upgrade.sh is active; only after the run
+    has served for ``_RESIDENCY_REFIT_SETTLE_SECONDS``. Settings are written
+    to .env only when the GPU was idle at load; when other processes held
+    memory, the relaunched container alone gets them (see
+    ``_watcher_residency_plan``). A model too large even for the idle GPU, or
+    an operator's numeric N_GPU_LAYERS, is only reported.
+    """
+    if not isinstance(placement, dict) or placement.get("status") not in {"partial", "cpu_only"}:
+        return None
+    if placement.get("runtime") != "container" or placement.get("acceptedPartial"):
+        return None
+    marker = str(placement.get("runtimeStartedAt") or "")
+    if not marker:
+        return None
+    try:
+        env = load_env(INSTALL_DIR / ".env")
+    except (OSError, UnicodeError):
+        return None
+    if str(env.get("GPU_BACKEND") or "nvidia").strip().lower() != "nvidia":
+        return None
+    if str(placement.get("modelFile") or "").casefold() != str(env.get("GGUF_FILE") or "").casefold():
+        return None
+    refit = _read_model_placement_record().get("refit")
+    if isinstance(refit, dict) and marker in {refit.get("fromMarker"), refit.get("toMarker")}:
+        return None
+    layer_limit = _explicit_gpu_layer_limit(env)
+    if layer_limit is not None and layer_limit < int(placement.get("layersTotal") or 0):
+        return None
+    if _bootstrap_upgrade_active():
+        return None
+    age = _timestamp_age_seconds(marker)
+    if age is None or age < _RESIDENCY_REFIT_SETTLE_SECONDS:
+        return None
+    acquired, _active = _begin_model_lifecycle(
+        _RESIDENCY_REFIT_OPERATION, str(env.get("GGUF_FILE") or ""),
+    )
+    if not acquired:
+        return None
+    try:
+        return _refit_gpu_residency(placement, marker)
+    finally:
+        _end_model_lifecycle(_RESIDENCY_REFIT_OPERATION)
+
+
+def _refit_gpu_residency(placement: dict, marker: str) -> dict | None:
+    """The relaunch behind ``_maybe_refit_gpu_residency`` (lifecycle held)."""
+    env_path = INSTALL_DIR / ".env"
+    env = load_env(env_path)
+    running, _pid, started = _llama_container_state()
+    if not running or started != marker:
+        return None  # restarted meanwhile; the next pass observes the new run
+    gguf_file = str(env.get("GGUF_FILE") or "")
+    llm_model_name = str(env.get("LLM_MODEL") or _local_model_name_from_gguf(gguf_file))
+    context = _positive_int(env.get("CTX_SIZE") or env.get("MAX_CONTEXT")) or 0
+    # A restarted container may still carry earlier temporary settings; plan
+    # from what this run actually used.
+    carried = _running_temporary_residency()
+    run_env = {**env, **carried.get("changes", {})}
+    other = _measured_other_gpu_usage(env)
+    idle_free = _idle_cuda_free_estimate_mib(int(placement.get("deviceCount") or 1))
+    pinned = _operator_residency_controls(env)
+    decision = _watcher_residency_plan(
+        placement,
+        run_env,
+        context_length=context,
+        other_now_mib=other or 0.0,
+        idle_free_mib=idle_free,
+        pinned=pinned,
+    )
+    first_settings = _model_memory.runtime_memory_settings(None, run_env)
+    entry: dict = {
+        "fromMarker": marker,
+        "modelFile": placement.get("modelFile"),
+        "cause": decision["cause"],
+        "otherUsedMiB": round(other, 2) if other is not None else None,
+        "otherAtLoadMiB": decision["otherAtLoadMiB"],
+        "at": _iso_now(),
+        # What restore checks the .env settings against on a later start.
+        "firstProjection": {
+            key: placement.get(key)
+            for key in ("projectedDeviceMiB", "freeDeviceMiB", "kvMiB", "gpuComputeMiB", "deviceCount")
+        },
+        "firstSettings": {
+            key: first_settings[key]
+            for key in ("cacheTypeK", "cacheTypeV", "ubatch", "fitTargetMiB", "parallel")
+        },
+    }
+    if not decision["relaunch"]:
+        entry["result"] = "reported"
+        if carried:
+            # Nothing relaunched: the running container keeps them.
+            entry.update(temporaryChanges=carried["changes"], containerId=carried["containerId"])
+        logger.warning(
+            "llama-server runs %s partly on the CPU (%s); no allowed setting "
+            "keeps it on the GPU (%s), reporting only",
+            gguf_file, placement.get("reason"), decision["cause"],
+        )
+        policy = (
+            "other_processes"
+            if decision["cause"] == "other_processes"
+            else "uncalibrated_gpu"
+            if decision["cause"] == "too_large" and not _gpu_residency_calibrated_here()
+            else None
+        )
+        reported = (
+            _accept_partial_placement(placement, decision["cause"], other, policy=policy)
+            if policy
+            else placement
+        )
+        _write_model_placement_record(reported, refit=entry)
+        return reported
+    plan = decision["plan"] or {"steps": [], "changes": {}}
+    persistent = {
+        key: str(value) for key, value in decision["persistent"].items() if key.startswith("LLAMA_ARG_")
+    }
+    temporary = {
+        key: str(value) for key, value in decision["temporary"].items() if key.startswith("LLAMA_ARG_")
+    }
+    changes = {**persistent, **temporary}
+    entry.update(
+        steps=list(plan["steps"]),
+        changes=changes,
+        persistentChanges=persistent,
+        temporaryChanges=temporary,
+    )
+    logger.warning(
+        "llama-server loaded %s partly on the CPU (%s); relaunching once with %s (%s)",
+        gguf_file,
+        placement.get("reason"),
+        ", ".join(plan["steps"]) or "the same settings",
+        "saved to .env" if persistent else "for this container only: other processes held GPU memory",
+    )
+    snapshot = _snapshot_text_file(env_path)
+    readiness = {
+        "model_id": llm_model_name,
+        "gguf_file": gguf_file,
+        "llm_model_name": llm_model_name,
+        "return_proof": True,
+        "require_exact_context": bool(context),
+        "fast_poll_seconds": _MODEL_READINESS_FAST_POLL_SECONDS,
+    }
+    try:
+        for key, value in persistent.items():
+            _upsert_env_value(env_path, key, value)
+        retry_env = load_env(env_path)
+        _restart_llama_server_for_residency(retry_env, temporary)
+        launch_env = {**retry_env, **temporary}
+        if not _wait_for_model_readiness(launch_env, **readiness):
+            raise RuntimeError(f"{gguf_file} did not become ready after the relaunch")
+    except Exception as exc:
+        logger.exception("GPU residency relaunch failed; restoring the previous settings")
+        entry.update(result="failed", error=str(exc)[:300], temporaryChanges={})
+        try:
+            _restore_bound_env_file(env_path, snapshot)
+            restored_env = load_env(env_path)
+            _restart_llama_server_for_residency(restored_env)
+            _wait_for_model_readiness(restored_env, **readiness)
+        except Exception:
+            logger.exception("Could not restore llama-server after a failed residency relaunch")
+        _running, _pid, after = _llama_container_state()
+        entry["toMarker"] = after
+        _write_model_placement_record(refit=entry)
+        return None
+    observed = _observe_llama_placement(launch_env, gguf_file=gguf_file)
+    _running, _pid, after = _llama_container_state()
+    entry["toMarker"] = after or observed.get("runtimeStartedAt")
+    entry["result"] = observed.get("status")
+    if temporary:
+        entry["containerId"] = _llama_container_id()
+    if observed.get("status") in {"partial", "cpu_only"} and decision["cause"] == "other_processes":
+        observed = _accept_partial_placement(
+            observed, decision["cause"], other, policy="other_processes",
+        )
+    observed["residencyAdjustment"] = {
+        "source": "watcher",
+        "cause": decision["cause"],
+        "steps": list(plan["steps"]),
+        "changes": changes,
+        "persistentChanges": persistent,
+        "temporaryChanges": temporary,
+        "temporary": bool(temporary),
+        "firstPlacement": placement,
+    }
+    if temporary:
+        observed["residencyAdjustment"]["note"] = (
+            "Other processes held GPU memory when llama-server started, so this "
+            "run uses smaller settings that are not saved; the next start with "
+            "enough free memory uses the saved settings again"
+        )
+    _write_model_placement_record(observed, refit=entry)
+    return observed
+
+
+def _temporary_residency_still_needed(refit: dict, placement: dict, env: dict) -> bool:
+    """Whether the saved .env settings would still spill on this start.
+
+    Replays the first partial load's projection (``refit.firstProjection``
+    under ``refit.firstSettings``) against the free memory llama.cpp logged
+    for the current run. True when unknown.
+    """
+    first = refit.get("firstProjection") if isinstance(refit.get("firstProjection"), dict) else {}
+    settings = refit.get("firstSettings") if isinstance(refit.get("firstSettings"), dict) else {}
+    free = placement.get("freeDeviceMiB")
+    if first.get("projectedDeviceMiB") is None or free is None or not settings:
+        return True
+    context = _positive_int(env.get("CTX_SIZE") or env.get("MAX_CONTEXT")) or 0
+    plan = _model_memory.plan_residency_fallback(
+        required_mib=float(first["projectedDeviceMiB"]),
+        available_mib=float(free),
+        settings=settings,
+        kv_mib=float(first.get("kvMiB") or 0.0),
+        compute_mib=float(first.get("gpuComputeMiB") or 0.0),
+        context_length=int(context),
+        allow_context_reduction=False,
+        context_floor=min(_model_memory.RESIDENCY_CONTEXT_FLOOR, int(context)),
+        gpu_count=max(int(first.get("deviceCount") or 1), 1),
+        locked_keys=tuple(_operator_residency_controls(env)),
+    )
+    if plan is None:
+        return True
+    persistent = refit.get("persistentChanges") if isinstance(refit.get("persistentChanges"), dict) else {}
+    return any(
+        str(persistent.get(key)) != str(value)
+        for key, value in plan["changes"].items()
+        if key.startswith("LLAMA_ARG_")
+    )
+
+
+def _maybe_restore_temporary_residency(placement: dict | None) -> dict | None:
+    """Drop the watcher's temporary settings once they are no longer needed.
+
+    A compose recreate (``ods restart``, activation, upgrade) already starts
+    from .env; this only records that. A ``docker restart`` or Docker's
+    restart policy at boot restarts the same container with its temporary
+    settings: when the saved .env settings fit the memory this start found
+    free, the container is recreated from .env once. The run the watcher
+    itself relaunched is never touched: it keeps serving, reported as
+    temporary, until the next start.
+    """
+    record = _read_model_placement_record()
+    refit = record.get("refit") if isinstance(record.get("refit"), dict) else None
+    if not refit or not refit.get("temporaryChanges") or refit.get("temporaryResolved"):
+        return None
+    if not isinstance(placement, dict) or placement.get("runtime") != "container":
+        return None
+    marker = str(placement.get("runtimeStartedAt") or "")
+    if not marker or marker == refit.get("toMarker") or not placement.get("observationComplete"):
+        return None
+    container = _llama_container_id()
+    if not container:
+        return None
+    if container != str(refit.get("containerId") or ""):
+        # Recreated (compose, activation, upgrade): it started from .env.
+        refit["temporaryResolved"] = {"at": _iso_now(), "how": "recreated", "marker": marker}
+        _write_model_placement_record(refit=refit)
+        return None
+    if placement.get("status") in {"partial", "cpu_only"} or refit.get("temporaryCheckedMarker") == marker:
+        return None  # a partial start is the re-fit's; each start is checked once
+    try:
+        env = load_env(INSTALL_DIR / ".env")
+    except (OSError, UnicodeError):
+        return None
+    if str(placement.get("modelFile") or "").casefold() != str(env.get("GGUF_FILE") or "").casefold():
+        return None
+    if _bootstrap_upgrade_active():
+        return None
+    age = _timestamp_age_seconds(marker)
+    if age is None or age < _RESIDENCY_REFIT_SETTLE_SECONDS:
+        return None
+    if _temporary_residency_still_needed(refit, placement, env):
+        refit["temporaryCheckedMarker"] = marker
+        _write_model_placement_record(refit=refit)
+        return None
+    acquired, _active = _begin_model_lifecycle(
+        _RESIDENCY_REFIT_OPERATION, str(env.get("GGUF_FILE") or ""),
+    )
+    if not acquired:
+        return None
+    try:
+        running, _pid, started = _llama_container_state()
+        if not running or started != marker:
+            return None
+        gguf_file = str(env.get("GGUF_FILE") or "")
+        llm_model_name = str(env.get("LLM_MODEL") or _local_model_name_from_gguf(gguf_file))
+        context = _positive_int(env.get("CTX_SIZE") or env.get("MAX_CONTEXT")) or 0
+        readiness = {
+            "model_id": llm_model_name,
+            "gguf_file": gguf_file,
+            "llm_model_name": llm_model_name,
+            "return_proof": True,
+            "require_exact_context": bool(context),
+            "fast_poll_seconds": _MODEL_READINESS_FAST_POLL_SECONDS,
+        }
+        temporary = dict(refit["temporaryChanges"])
+        logger.info(
+            "GPU memory is free again; recreating llama-server with the saved settings "
+            "instead of the temporary %s",
+            ", ".join(f"{key}={value}" for key, value in sorted(temporary.items())),
+        )
+        try:
+            _restart_llama_server_for_residency(env)
+            if not _wait_for_model_readiness(env, **readiness):
+                raise RuntimeError(f"{gguf_file} did not become ready with the saved settings")
+        except Exception as exc:
+            logger.exception("Restoring the saved llama-server settings failed; keeping the temporary ones")
+            refit["temporaryCheckedMarker"] = marker
+            refit["restoreError"] = str(exc)[:300]
+            try:
+                _restart_llama_server_for_residency(env, temporary)
+                _wait_for_model_readiness({**env, **temporary}, **readiness)
+                refit["containerId"] = _llama_container_id()
+                _running, _pid, after = _llama_container_state()
+                refit["toMarker"] = after
+            except Exception:
+                logger.exception("Could not relaunch llama-server with the temporary settings")
+            _write_model_placement_record(refit=refit)
+            return None
+        observed = _observe_llama_placement(env, gguf_file=gguf_file)
+        refit["temporaryResolved"] = {
+            "at": _iso_now(),
+            "how": "restored",
+            "marker": observed.get("runtimeStartedAt") or "",
+            "result": observed.get("status"),
+        }
+        _write_model_placement_record(observed, refit=refit)
+        return observed
+    finally:
+        _end_model_lifecycle(_RESIDENCY_REFIT_OPERATION)
+
+
+def _residency_watch_once() -> dict | None:
+    """One watcher pass: observe the running model, re-fit it if needed."""
+    placement = _refresh_model_placement()
+    try:
+        if _maybe_refit_gpu_residency(placement) is None:
+            _maybe_restore_temporary_residency(placement)
+    except Exception:
+        logger.exception("GPU residency re-fit failed")
+    return placement
+
+
+def _gpu_residency_watch_loop() -> None:
+    while True:
+        try:
+            _residency_watch_once()
+        except Exception:
+            logger.exception("GPU residency watcher pass failed")
+        _residency_watch_wakeup.wait(_RESIDENCY_WATCH_INTERVAL_SECONDS)
+        _residency_watch_wakeup.clear()
+
+
+def _start_gpu_residency_watcher() -> None:
+    threading.Thread(
+        target=_gpu_residency_watch_loop,
+        name="ods-gpu-residency-watch",
+        daemon=True,
+    ).start()
+
+
+def _nvidia_gpu_memory_snapshot() -> dict | None:
+    """Total/used memory of the visible NVIDIA GPUs (MiB), or None."""
+    nvidia_smi = _nvidia_smi_binary()
+    if not nvidia_smi:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                nvidia_smi,
+                "--query-gpu=memory.total,memory.used",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    rows = []
+    for line in str(result.stdout or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            rows.append((float(parts[0]), float(parts[1])))
+        except ValueError:
+            continue
+    if not rows:
+        return None
+    return {
+        "gpus": len(rows),
+        "totalMiB": sum(total for total, _used in rows),
+        "usedMiB": sum(used for _total, used in rows),
+    }
+
+
+def _nvidia_compute_app_usage() -> dict[int, float] | None:
+    """GPU memory per compute process (MiB, summed over GPUs), or None.
+
+    WSL and Windows WDDM drivers list no compute processes; None then means
+    "not attributable", not "nothing running".
+    """
+    nvidia_smi = _nvidia_smi_binary()
+    if not nvidia_smi:
+        return None
+    try:
+        result = subprocess.run(
+            [nvidia_smi, "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    usage: dict[int, float] = {}
+    for line in str(result.stdout or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) != 2:
+            continue
+        try:
+            pid, used = int(parts[0]), float(parts[1])
+        except ValueError:
+            continue
+        usage[pid] = usage.get(pid, 0.0) + used
+    return usage or None
+
+
+def _other_gpu_usage_mib(env: dict, snapshot: dict, gpu_platform: str) -> float:
+    """GPU memory held by anything other than the running llama-server.
+
+    ComfyUI, Whisper, a desktop session or any other process is budgeted; the
+    llama-server about to be replaced is not. Native Linux attributes memory
+    per process, so the running server's own usage is subtracted exactly.
+    Otherwise its logged buffers plus a runtime allowance are subtracted, and
+    when even those are unknown nothing is assumed held so the post-load
+    check decides instead of a guess.
+    """
+    used = max(float(snapshot.get("usedMiB") or 0.0), 0.0)
+    running, pid, _started = _llama_container_state()
+    if not running:
+        return used
+    per_process = _nvidia_compute_app_usage()
+    if per_process and pid in per_process:
+        return max(used - per_process[pid], 0.0)
+    try:
+        text, _marker, _complete = _read_llama_runtime_log(env, runtime_kind="container")
+    except Exception:
+        text = ""
+    current = _model_memory.parse_llama_placement(
+        text, expected_model_file=str(env.get("GGUF_FILE") or "") or None,
+    )
+    if current.get("layersTotal") is None:
+        return 0.0
+    footprint = (
+        float(current.get("gpuWeightMiB") or 0.0)
+        + float(current.get("gpuKvMiB") or 0.0)
+        + float(current.get("gpuComputeMiB") or 0.0)
+        + _LLAMA_RUNTIME_ALLOWANCE_MIB.get(gpu_platform, 900)
+    )
+    return max(used - footprint, 0.0)
+
+
+def _gpu_residency_preflight(
+    env: dict,
+    model: dict,
+    target: Path,
+    *,
+    launch_env: dict,
+    context_length: int,
+    allow_context_reduction: bool,
+    pinned: dict | None = None,
+    same_model: bool = False,
+) -> dict | None:
+    """Plan a fully GPU-resident launch on a single NVIDIA GPU.
+
+    Uses measured free memory (nvidia-smi minus the llama-server being
+    replaced) so ComfyUI, Whisper, a desktop, or another process holding VRAM
+    is budgeted. Returns None when it cannot measure; activation then relies
+    on post-load verification alone.
+
+    ``planned`` is the configuration to launch: the resident one, or, when
+    other processes hold the memory it needs, the most memory-saving allowed
+    one (reported after load). ``refuse`` is set only when a different model
+    than the running one cannot stay on this GPU even when it is idle, per an
+    exact estimate on a calibrated GPU; memory other processes hold never
+    causes a refusal.
+    """
+    snapshot = _nvidia_gpu_memory_snapshot()
+    if not snapshot or snapshot["gpus"] != 1 or snapshot["totalMiB"] <= 0:
+        return None
+    gpu_platform = _model_memory.detect_gpu_platform()
+    other = _other_gpu_usage_mib(env, snapshot, gpu_platform)
+    config = _model_memory.resident_configuration(
+        model,
+        total_vram_mb=snapshot["totalMiB"],
+        env=launch_env,
+        context_length=int(context_length),
+        gpu_platform=gpu_platform,
+        gpu_count=1,
+        other_used_mib=other,
+        weight_size_mb=_model_weight_size_mb(model, target),
+        allow_context_reduction=allow_context_reduction,
+        pinned=pinned,
+    )
+    exact = config["residency"]["projection"]["basis"] in {"measured", "gguf"}
+    calibrated = _model_memory.residency_calibrated(snapshot["totalMiB"], 1)
+    planned = None
+    if config["fits"]:
+        planned = {
+            "overrides": dict(config["overrides"]),
+            "steps": list(config["steps"]),
+            "contextLength": int(config["contextLength"]),
+            "bestEffort": False,
+        }
+    elif config["idleFits"] and config.get("bestEffort"):
+        best = config["bestEffort"]
+        planned = {
+            "overrides": dict(best["overrides"]),
+            "steps": list(best["steps"]),
+            "contextLength": int(best["contextLength"]),
+            "bestEffort": True,
+        }
+    return {
+        **config,
+        "planned": planned,
+        "refuse": bool(not config["idleFits"] and exact and calibrated and not same_model),
+        "otherUsedMiB": round(other, 2),
+        "platform": gpu_platform,
+    }
+
+
+def _gpu_residency_refusal(model_name: str, preflight: dict) -> str:
+    residency = preflight["residency"]
+    projection = residency["projection"]
+    return (
+        f"{model_name} cannot stay fully on this GPU at {projection['contextLength']} "
+        f"context, even with nothing else using it: llama.cpp needs about "
+        f"{projection['totalMiB'] / 1024:.1f} GB of GPU memory, but "
+        f"{max(residency['budgetMiB'] + residency['otherUsedMiB'], 0) / 1024:.1f} GB "
+        f"is available after the {residency['reserveMiB']} MiB driver/runtime reserve "
+        f"and llama.cpp's {residency['fitTargetMiB']} MiB safety margin. Running it "
+        f"would move layers to the CPU and make it several times slower; choose "
+        f"a smaller model or context."
+    )
+
+
+def _explicit_gpu_layer_limit(env: dict) -> int | None:
+    value = str(env.get("N_GPU_LAYERS") or "").strip().lower()
+    return int(value) if value.isdigit() else None
+
+
 def _nvidia_vram_gb() -> float:
     nvidia_smi = _nvidia_smi_binary()
     if not nvidia_smi:
@@ -17847,6 +19485,9 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         "LLAMA_ARG_FLASH_ATTN": "--flash-attn",
         "LLAMA_ARG_CACHE_TYPE_K": "--cache-type-k",
         "LLAMA_ARG_CACHE_TYPE_V": "--cache-type-v",
+        "LLAMA_ARG_UBATCH": "--ubatch-size",
+        "LLAMA_ARG_FIT_TARGET": "--fit-target",
+        "LLAMA_THREADS": "--threads",
         "LLAMA_ARG_N_CPU_MOE": "--n-cpu-moe",
         "LLAMA_ARG_SPEC_TYPE": "--spec-type",
         "LLAMA_ARG_SPEC_DRAFT_N_MAX": "--spec-draft-n-max",
@@ -17960,7 +19601,7 @@ def _failed_llama_server_log_excerpt(container: str = "ods-llama-server") -> str
         return ""
 
 
-def _compose_restart_llama_server(env: dict):
+def _compose_restart_llama_server(env: dict, process_env_overrides: dict | None = None):
     """Restart llama-server via docker compose (host-native path).
 
     This is the primary restart strategy for Linux (systemd) where the agent
@@ -17973,14 +19614,24 @@ def _compose_restart_llama_server(env: dict):
     by the new container.
     Raises RuntimeError on any docker-layer failure so _do_model_activate can
     surface the error immediately instead of waiting for the health-check loop.
+
+    ``process_env_overrides`` go into compose's process environment, which
+    takes precedence over .env for this one container (the residency
+    watcher's temporary settings); .env itself is not changed.
     """
     gpu_backend = env.get("GPU_BACKEND", "nvidia")
     compose_flags = resolve_compose_flags()
+    process_env = (
+        {**os.environ, **{str(k): str(v) for k, v in process_env_overrides.items()}}
+        if process_env_overrides
+        else None
+    )
 
     def _run(argv, timeout):
         result = subprocess.run(
             argv, cwd=str(INSTALL_DIR),
             capture_output=True, text=True, timeout=timeout,
+            env=process_env,
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -18078,6 +19729,11 @@ def _refresh_llama_cmd(command: list[str], env: dict) -> list[str]:
         "--ctx-size": str(env.get("CTX_SIZE") or env.get("MAX_CONTEXT") or "32768"),
         "--parallel": str(env.get("LLAMA_PARALLEL") or "1"),
     }
+    # Compose passes --threads ${LLAMA_THREADS:-4}: when activation clears an
+    # MoE offload thread count, a recreated container must go back to 4
+    # instead of keeping the inspected value.
+    threads = str(env.get("LLAMA_THREADS") or "").strip()
+    replacements["--threads"] = threads if threads.isdigit() and int(threads) > 0 else "4"
     refreshed = []
     index = 0
     while index < len(command):
@@ -18822,6 +20478,9 @@ def main():
         if platform.system() in ('Darwin', 'Linux'):
             threading.Thread(target=_monitor_native_pixel_access,
                              name='ods-pixel-startup-reproof', daemon=True).start()
+        # Verifies placement after installs, reboots and restarts, and
+        # relaunches a partial load once (activation verifies its own).
+        _start_gpu_residency_watcher()
         server.serve_forever()
     except KeyboardInterrupt:
         logger.info("Shutting down")

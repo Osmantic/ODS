@@ -29,6 +29,13 @@ RUNTIME_KEYS = (
     "LLAMA_ARG_CACHE_TYPE_K",
     "LLAMA_ARG_CACHE_TYPE_V",
     "LLAMA_ARG_N_CPU_MOE",
+    # GPU residency controls: a runtime profile's, the residency planner's or
+    # the operator's own values; an upgrade must not drop them, or the model
+    # can load partly on the CPU again.
+    "LLAMA_ARG_UBATCH",
+    "LLAMA_ARG_FIT_TARGET",
+    # CPU threads for declared MoE expert offload (or the operator's own).
+    "LLAMA_THREADS",
     "LLAMA_ARG_NO_CACHE_PROMPT",
     "LLAMA_ARG_CHECKPOINT_EVERY_NT",
     "LLAMA_ARG_SPEC_TYPE",
@@ -50,6 +57,9 @@ PORTABLE_STATE_RECOVERY_KEYS = {
     "LLAMA_ARG_FLASH_ATTN",
     "LLAMA_ARG_CACHE_TYPE_K",
     "LLAMA_ARG_CACHE_TYPE_V",
+    # Catalog-owned memory controls that keep the profile fully GPU-resident.
+    "LLAMA_ARG_UBATCH",
+    "LLAMA_ARG_FIT_TARGET",
 }
 
 
@@ -339,6 +349,12 @@ def valid_runtime_value(key: str, value: str) -> bool:
         return bool(re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", value))
     if key == "LLAMA_ARG_N_CPU_MOE":
         return value.isdigit() and int(value) <= 4096
+    if key == "LLAMA_ARG_UBATCH":
+        return value.isdigit() and 1 <= int(value) <= 65536
+    if key == "LLAMA_ARG_FIT_TARGET":
+        return value.isdigit() and 512 <= int(value) <= 1048576
+    if key == "LLAMA_THREADS":
+        return value.isdigit() and 1 <= int(value) <= 1024
     if key == "LLAMA_ARG_NO_CACHE_PROMPT":
         return value.lower() in {"", "on", "off", "true", "false", "0", "1"}
     if key == "LLAMA_ARG_CHECKPOINT_EVERY_NT":

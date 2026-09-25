@@ -1285,6 +1285,10 @@ LLAMA_ARG_CACHE_TYPE_K=${LLAMA_ARG_CACHE_TYPE_K:-f16}
 LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
 $(if [[ -n "${LLAMA_ARG_N_CPU_MOE:-}" ]]; then echo "LLAMA_ARG_N_CPU_MOE=${LLAMA_ARG_N_CPU_MOE}"; fi)
+# Full GPU residency: set by the selected runtime profile or residency plan.
+$(if [[ -n "${LLAMA_ARG_UBATCH:-}" ]]; then echo "LLAMA_ARG_UBATCH=${LLAMA_ARG_UBATCH}"; fi)
+$(if [[ -n "${LLAMA_ARG_FIT_TARGET:-}" ]]; then echo "LLAMA_ARG_FIT_TARGET=${LLAMA_ARG_FIT_TARGET}"; fi)
+$(if [[ -n "${LLAMA_THREADS:-}" ]]; then echo "LLAMA_THREADS=${LLAMA_THREADS}"; fi)
 $(if [[ -n "${LLAMA_ARG_NO_CACHE_PROMPT:-}" ]]; then echo "LLAMA_ARG_NO_CACHE_PROMPT=${LLAMA_ARG_NO_CACHE_PROMPT}"; fi)
 $(if [[ -n "${LLAMA_ARG_CHECKPOINT_EVERY_NT:-}" ]]; then echo "LLAMA_ARG_CHECKPOINT_EVERY_NT=${LLAMA_ARG_CHECKPOINT_EVERY_NT}"; fi)
 LLAMA_PARALLEL=${LLAMA_PARALLEL:-1}

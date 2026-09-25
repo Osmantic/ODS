@@ -2215,6 +2215,15 @@ def test_api_models_marks_installer_configured_model(test_client, monkeypatch, t
         "size_mb": 5760,
         "vram_required_gb": 8,
         "context_length": 32768,
+        # llama.cpp b9014 load log (windows-laptop-wsl-beta, 2026-09-25).
+        "gpu_residency": {
+            "basis": "measured",
+            "gpu_weights_mib": 4861.28,
+            "kv_bytes_per_token_f16": 32768,
+            "recurrent_state_mib": 50.25,
+            "vocab_size": 248320,
+            "embedding_length": 4096,
+        },
         "quantization": "Q4_K_M",
         "specialty": "General",
         "description": "Balanced default.",
