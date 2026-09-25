@@ -27,7 +27,7 @@ import {
   workspacePreviewMode,
 } from "./tool-loop-guard.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "./agent-skills.mjs";
-import { formatTurnGuidance } from "./turn-guidance.mjs";
+import { RESENT_OWNER_MESSAGE_NOTE, formatRepositoryEvidence, formatTurnGuidance } from "./turn-guidance.mjs";
 
 const PLAYGROUND_PROJECT_CONTRACT =
   "For a new project, choose one short descriptive folder under Playground, for example Playground/snake-game or Playground/weather-tool, and create every project file there. This is a real workspace folder, not a display label. Use the exact canonical paths returned by tools, including any collision suffix, for later reads, edits, exec workdir and preview relativeDirectory. Preserve explicitly requested paths and existing projects in their current locations; never move them into Playground. Keep shell commands relative to the chosen workdir; never invent host-specific paths.";
@@ -418,11 +418,11 @@ export function promptContractForAgent(
 // Keep system space byte-identical for a session and carry per-message
 // guidance in the current user turn, as OpenClaw's before_prompt_build
 // contract prescribes. OpenClaw applies appendContext to the current owner
-// message only; turn-guidance.mjs stores it with that message so that later
-// requests replay exactly what the model saw.
+// message only; turn-guidance.mjs stores the turnGuidance block with that
+// message so that later requests replay exactly what the model saw.
 export function composePromptBuildResult(
   contract,
-  { activity = "", execution = "", hostDate = "", goal = "", repositoryEvidence = "" } = {}
+  { activity = "", execution = "", hostDate = "", goal = "", repositoryEvidence = "", resentGuidance = "" } = {}
 ) {
   if (!contract) return undefined;
   const join = (parts, separator) => parts
@@ -433,11 +433,22 @@ export function composePromptBuildResult(
     ? contract.systemContext : contract.appendSystemContext;
   const turnContext = typeof contract.systemContext === "string"
     ? contract.turnContext : "";
-  // Labelled so that ODS recognises its own text once it is stored with the
-  // owner message (turn-guidance.mjs) and never mistakes it for owner prose.
-  const appendContext = formatTurnGuidance(join([hostDate, goal, turnContext, repositoryEvidence], "\n\n"));
+  // Labelled and closed so that ODS recognises its own text once it is stored
+  // with the owner message and never mistakes it for owner prose. A resent
+  // owner message reuses the block stored with its unanswered copy.
+  const turnGuidance = resentGuidance || formatTurnGuidance(join([hostDate, goal, turnContext], "\n\n"));
+  // Model-only text after the block, never stored: repository evidence is
+  // untrusted upstream content that must not become part of the owner's
+  // message in history or in a compaction summary.
+  const modelOnly = join([
+    formatRepositoryEvidence(repositoryEvidence),
+    resentGuidance ? RESENT_OWNER_MESSAGE_NOTE : "",
+  ], "\n\n");
+  const appendContext = join([turnGuidance, modelOnly], "\n\n");
   return {
     appendSystemContext: join([activity, systemContext, execution], " "),
     ...(appendContext ? { appendContext } : {}),
+    // Not an OpenClaw field: the part of appendContext to store (index.js).
+    ...(turnGuidance ? { turnGuidance } : {}),
   };
 }

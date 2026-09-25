@@ -10,7 +10,7 @@ import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
 import {executionContext, turnHostDate} from '../plugin/completion-assurance.mjs';
 import {GOAL_CONTRACT} from '../plugin/goal-progress.mjs';
 import {composePromptBuildResult, promptContractForAgent} from '../plugin/prompt-contract.mjs';
-import {createTurnGuidancePersistence, withoutPersistedTurnGuidance} from '../plugin/turn-guidance.mjs';
+import {createTurnGuidancePersistence, retryGuidance, withoutPersistedTurnGuidance} from '../plugin/turn-guidance.mjs';
 import {privateBrowserAccessForAgent} from '../plugin/tool-loop-guard.mjs';
 import {executionHostForAgent} from '../plugin/access-runtime.mjs';
 import {registeredPixelTools} from './tool-grammar-registration.mjs';
@@ -51,8 +51,10 @@ function legacyComposition(contract) {
 }
 
 // Extract and run the actual registration block for these hooks with only the
-// unrelated runtime services faked.
-export function pixelPromptHooks({goalActive = false} = {}) {
+// unrelated runtime services faked. repositoryContext stands in for the
+// plugin's README reader; cancelContextForRun for the Portal cancel note.
+export function pixelPromptHooks({goalActive = false, repositoryContext = async () => '',
+  cancelContextForRun = () => undefined} = {}) {
   const source = fs.readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8');
   const start = source.indexOf('    const turnGuidance = createTurnGuidancePersistence(');
   const endMarker = 'api.on("agent_end", (_event, context) => turnGuidance.forget(context));';
@@ -64,11 +66,11 @@ export function pixelPromptHooks({goalActive = false} = {}) {
   vm.runInNewContext(source.slice(start, end + endMarker.length), {
     api: {config, on: (name, callback) => { callbacks[name] = callback; }},
     AGENT_ID: 'pixel', configuredContextWindow: 65536, configuredLeanPrompt: false,
-    createTurnGuidancePersistence, withoutPersistedTurnGuidance, privateBrowserAccessForAgent, executionHostForAgent,
+    createTurnGuidancePersistence, retryGuidance, withoutPersistedTurnGuidance, privateBrowserAccessForAgent, executionHostForAgent,
     promptContractForAgent, composePromptBuildResult, ACTIVITY_CONTRACT, executionContext, turnHostDate, GOAL_CONTRACT,
-    extensionRepositoryContext: async () => '',
+    extensionRepositoryContext: repositoryContext,
     toolLoopGuard: {observeRun() {}, verificationStatus: () => undefined, observeRepositorySource() {},
-      promptContextForRun: () => undefined},
+      promptContextForRun: cancelContextForRun},
     accessRuntime: {isProbe: () => false},
     goalProgress: {begin() {}, active: () => goalActive},
     taskActivity: {begin() {}},

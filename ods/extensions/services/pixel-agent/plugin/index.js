@@ -35,7 +35,7 @@ import {
   statusPayload,
 } from "./projection.mjs";
 import { composePromptBuildResult, promptContractForAgent } from "./prompt-contract.mjs";
-import { createTurnGuidancePersistence, withoutPersistedTurnGuidance } from "./turn-guidance.mjs";
+import { createTurnGuidancePersistence, retryGuidance, withoutPersistedTurnGuidance } from "./turn-guidance.mjs";
 import { executionContext, turnHostDate } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import {
@@ -366,17 +366,20 @@ export default definePluginEntry({
       // Per-attempt, model-only context: not part of the cached system prompt.
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
       // Only configuration-derived text may enter system space. The host date,
-      // goal, message-selected contracts and repository evidence ride on this
-      // owner message and are stored with it.
-      const result = composePromptBuildResult(contract, {
+      // goal and message-selected contracts ride on this owner message and are
+      // stored with it; repository evidence rides on it for this run only.
+      const composed = composePromptBuildResult(contract, {
         activity: ACTIVITY_CONTRACT,
         execution: executionContext(),
         hostDate: turnHostDate(rawEvent?.messages),
         goal: goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : "",
         repositoryEvidence,
+        resentGuidance: retryGuidance(rawEvent?.messages, rawEvent?.prompt),
       });
-      turnGuidance.remember(context, rawEvent?.prompt, result?.appendContext);
-      return result && cancelContext ? {...result, prependContext: cancelContext} : result;
+      const {turnGuidance: storedGuidance, ...result} = composed ?? {};
+      turnGuidance.remember(context, rawEvent?.prompt, storedGuidance);
+      if (!composed) return undefined;
+      return cancelContext ? {...result, prependContext: cancelContext} : result;
     });
     // Store the owner message exactly as the model received it, so the next
     // owner turn replays the same bytes instead of a shorter message.

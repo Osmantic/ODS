@@ -12,7 +12,7 @@ import {
 import { ACTIVITY_CONTRACT } from "../plugin/activity-display.mjs";
 import { executionContext } from "../plugin/completion-assurance.mjs";
 import { GOAL_CONTRACT } from "../plugin/goal-progress.mjs";
-import { TURN_GUIDANCE_HEADER } from "../plugin/turn-guidance.mjs";
+import { TURN_GUIDANCE_END, TURN_GUIDANCE_HEADER, formatRepositoryEvidence } from "../plugin/turn-guidance.mjs";
 
 const DELIVERY = "\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. If it asks for exact text, copy that full exact text. Do not answer with a generic acknowledgement. Do not output NO_REPLY.]";
 
@@ -89,7 +89,8 @@ test("message-selected guidance moves to the current turn without losing any tex
       );
       assert.ok(result.appendSystemContext.includes(contract.systemContext));
       if (contract.turnContext) {
-        assert.equal(result.appendContext, `${TURN_GUIDANCE_HEADER}\n${contract.turnContext}`);
+        assert.equal(result.appendContext, `${TURN_GUIDANCE_HEADER}\n${contract.turnContext}\n${TURN_GUIDANCE_END}`);
+        assert.equal(result.turnGuidance, result.appendContext);
         assert.ok(!result.appendSystemContext.includes(contract.turnContext));
       } else {
         assert.equal(result.appendContext, undefined);
@@ -114,13 +115,17 @@ test("system space holds exactly the activity, conversation and execution contra
   assert.doesNotMatch(result.appendSystemContext, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
 });
 
-test("goal mode and repository evidence ride on the turn, never in system space", () => {
+test("goal mode and repository evidence ride on the turn, never in system space; evidence is never stored", () => {
   const evidence = "Repository evidence: README excerpt for example-org/example-extension.";
   const plain = compose(MAC_JOURNEY[2], { configuredContextWindow: 65536 }).result;
   const goal = compose(MAC_JOURNEY[2], { configuredContextWindow: 65536 }, { goal: GOAL_CONTRACT, repositoryEvidence: evidence }).result;
   assert.equal(goal.appendSystemContext, plain.appendSystemContext);
   assert.ok(!goal.appendSystemContext.includes(GOAL_CONTRACT));
-  assert.equal(goal.appendContext, `${TURN_GUIDANCE_HEADER}\n${GOAL_CONTRACT}\n\n${evidence}`);
+  assert.equal(goal.turnGuidance, `${TURN_GUIDANCE_HEADER}\n${GOAL_CONTRACT}\n${TURN_GUIDANCE_END}`);
+  assert.equal(goal.appendContext, `${goal.turnGuidance}\n\n${formatRepositoryEvidence(evidence)}`);
+  const evidenceOnly = compose(MAC_JOURNEY[2], { configuredContextWindow: 65536 }, { repositoryEvidence: evidence }).result;
+  assert.equal(evidenceOnly.turnGuidance, undefined, "nothing to store");
+  assert.equal(evidenceOnly.appendContext, formatRepositoryEvidence(evidence));
   const both = compose(MAC_JOURNEY[0], { configuredContextWindow: 65536 }, { goal: GOAL_CONTRACT }).result;
   assert.ok(both.appendContext.startsWith(`${TURN_GUIDANCE_HEADER}\n${GOAL_CONTRACT}\n\n`));
   assert.ok(both.appendContext.includes(ODS_WORKSPACE_PREVIEW_CONTRACT.trim()));
