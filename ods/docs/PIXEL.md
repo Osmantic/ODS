@@ -505,9 +505,10 @@ act as a capability gate:
   truncated before the requested detail; local, private, single-label,
   credentialed, and raw-IP destinations remain blocked. It requests a page as
   a browser-compatible navigation that names `ODS-Pixel/1.0`, and only after a
-  plain 403 or 406 repeats the plain request once. Script and style text is
-  removed before extraction. A bot challenge or block is reported as not read;
-  ODS never solves, waits out or retries one, and runs no JavaScript.
+  plain 403 or 406 repeats the plain request once, within the same read
+  timeout. Script and style text is removed before extraction. A bot challenge
+  or block is reported as not read; ODS never solves, waits out or retries one,
+  and runs no JavaScript.
 - `pixel_ods_search_read` runs one search through the configured provider and
   reads the top public results in parallel through the same guarded reader, or
   reads up to five given public URLs. It returns short query-focused excerpts
