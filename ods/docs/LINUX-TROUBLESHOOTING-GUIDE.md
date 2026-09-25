@@ -162,6 +162,29 @@ docker run --rm hello-world
 
 ---
 
+## Token Spy cannot store usage with rootful Docker
+
+Token Spy runs as container UID 1000. On Linux (including WSL2 with a Linux
+Docker daemon), an installation owned by another UID needs privileged access
+to prepare `data/token-spy`. Otherwise the service can report a healthy HTTP
+endpoint while logging `Database unavailable` and rejecting routed telemetry
+with HTTP 503.
+
+The installer uses its prepared sudo access for this ownership step and stops
+if an enabled Token Spy cannot be prepared. For an existing rootful installation,
+stop the affected service, repair its data ownership, and start it again:
+
+```bash
+cd ~/ods
+./ods-cli stop token-spy
+sudo chown -R 1000:1000 data/token-spy
+./ods-cli start token-spy
+```
+
+This preserves the database; it cannot recover telemetry rejected before the
+repair. Reinstalling from a source containing the fix also prepares ownership.
+For rootless Docker, use the namespace-aware repair below instead.
+
 ## Rootless Docker bind-mount ownership
 
 **Symptoms:** An ODS container repeatedly exits with `Permission denied` while

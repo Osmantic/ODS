@@ -590,8 +590,20 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
 
     # Prepare service-specific ownership after compose selection is final.
     _phase06_step "prepare-service-permissions"
-    if ! $_phase06_rootless; then
-        chown -R 1000:1000 "$INSTALL_DIR/data/token-spy" || warn "Failed to chown data/token-spy to 1000:1000 (non-fatal); container may crash if installer ran as a different uid"
+    if ! $_phase06_rootless && [[ -f "$INSTALL_DIR/extensions/services/token-spy/compose.yaml" ]]; then
+        # The image runs as UID 1000, independently of the installer owner.
+        # A warning here leaves a healthy-looking service unable to store usage.
+        # Do not use ods_sudo when unavailable: it deliberately returns success
+        # for skipped optional commands. A matching owner can still chown directly.
+        _token_spy_chown=(chown -R 1000:1000 "$INSTALL_DIR/data/token-spy")
+        if ods_sudo_available; then
+            _token_spy_chown=(ods_sudo "${_token_spy_chown[@]}")
+        fi
+        if ! "${_token_spy_chown[@]}"; then
+            error "Cannot prepare data/token-spy for container UID 1000. Grant privileged access or repair its ownership, then re-run the installer."
+            return 1
+        fi
+        unset _token_spy_chown
     fi
 
     # ── .env merge logic: preserve user-configured values on re-install ──
