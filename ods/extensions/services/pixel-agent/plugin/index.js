@@ -49,7 +49,8 @@ import {
   privateBrowserAccessForAgent,
 } from "./tool-loop-guard.mjs";
 import { withPixelCronDeliveryDefault } from "./cron-delivery-default.mjs";
-import { createPublicWebExtractTool } from "./web-extract.mjs";
+import { createPublicPageReader, createPublicWebExtractTool } from "./web-extract.mjs";
+import { citationPageReadsAllowed, createHostCitationVerifier } from "./citation-verification.mjs";
 import { createExtensionRepositoryContext } from './extension-repository-context.mjs';
 
 const extensionRepositoryContext = createExtensionRepositoryContext({
@@ -310,7 +311,17 @@ export default definePluginEntry({
       publishWorkspacePreview: previewRecoveryAllowed(api.config) ? (params, {signal}) =>
         createWorkspacePreviewTool({transport:api.pluginConfig?.workspacePreviewTransport})
           .execute('ods-preview-delivery', params, signal) : undefined,
+      // Cited pages the model never opened are read once by the host through
+      // the same strict guard as pixel_ods_web_extract, only where the
+      // operator's configuration permits page reads.
+      hostCitationVerifier: createHostCitationVerifier({
+        readPage: createPublicPageReader({
+          guardedFetch: fetchWithWebToolsNetworkGuard, readResponseText, extractBasicHtmlContent,
+        }),
+        allowed: () => citationPageReadsAllowed(api.runtime?.config?.current?.() ?? api.config, AGENT_ID),
+      }),
       warn: (message) => api.logger.warn(message),
+      info: (message) => api.logger.info?.(message),
     });
     const bundleExecution = createWorkspaceBundleExecution({
       readConfig: () => api.runtime?.config?.current?.() ?? api.config,
@@ -342,13 +353,23 @@ export default definePluginEntry({
       });
       const repositoryEvidence = contract ? await extensionRepositoryContext(event,
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
-      return contract ? { ...contract, ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : undefined;
+      // Per-attempt, model-only context: not part of the cached system prompt.
+      const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
+      return contract ? { ...contract, ...(cancelContext ? {prependContext:cancelContext} : {}), ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : undefined;
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
     );
     api.on("model_call_ended", (event, context) =>
       toolLoopGuard.observeModelEnd(event, context, AGENT_ID)
+    );
+    // In-session auto-compaction summarizes through the run's model stream;
+    // its model calls are not agent turns (see observeCompaction).
+    api.on("before_compaction", (_event, context) =>
+      toolLoopGuard.observeCompaction(context, "start")
+    );
+    api.on("after_compaction", (_event, context) =>
+      toolLoopGuard.observeCompaction(context, "end")
     );
     api.on("llm_input", (event, context) => {
       if (!accessRuntime.isProbe(context)) contextCompaction.observeModelInput(event, context);
@@ -364,6 +385,7 @@ export default definePluginEntry({
     }
     api.on("agent_end", (event, context) => {
       toolLoopGuard.endPreviewRevalidation(event, context);
+      toolLoopGuard.observeAgentEnd(event, context);
       if (!accessRuntime.isProbe(context)) { goalProgress.finish(event, context); taskActivity.finish(event, context); }
       if (!managedRuntime) return accessRuntime.finish({runId: event.runId}, context);
     });
@@ -458,9 +480,15 @@ export default definePluginEntry({
       const message = compactToolResultEnvelope(original);
       return message !== original ? {...decision, message} : decision;
     });
+    // Observation only (never blocks or rewrites): after a tool-limit stop the
+    // answer turn's message can carry partial-answer text with its tool calls.
+    api.on("before_message_write", (event, context) => {
+      toolLoopGuard.observeAssistantMessage(event, context, AGENT_ID);
+    });
     api.on("before_agent_finalize", async (event, context) => {
       await toolLoopGuard.revalidateWorkspacePreview(event, context, AGENT_ID);
       await toolLoopGuard.recoverWorkspacePreview(event, context, AGENT_ID);
+      await toolLoopGuard.verifyCitedPages(event, context, AGENT_ID);
       const guardDecision = toolLoopGuard.beforeAgentFinalize(event, context, AGENT_ID);
       const verification = toolLoopGuard.deliveryVerificationForRun(context?.runId ?? event?.runId);
       return goalProgress.finalize(event, context, {guardDecision,
@@ -519,6 +547,7 @@ export default definePluginEntry({
           sendJson(res, parsed.status, { error: "invalid verification request" });
           return true;
         }
+        await toolLoopGuard.settleDelivery(parsed.runId);
         const task = taskActivity.projection(parsed.runId);
         sendJson(res, 200, {...toolLoopGuard.deliveryVerificationForRun(parsed.runId), ...(task ? {task} : {})});
         return true;

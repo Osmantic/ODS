@@ -27,6 +27,7 @@ function hooks(guardResult, managedRuntime = false) {
       beforeToolCall: () => { calls.push('guard'); return guardResult; },
       afterToolCall: () => { calls.push('observe'); },
       endPreviewRevalidation() {},
+      observeAgentEnd() {},
     },
     taskActivity: {
       before: (_event, _context, blocked) => activity.push(blocked ? 'blocked' : 'before'),

@@ -6,6 +6,38 @@ AI-powered deep research and answer engine for ODS
 
 Perplexica is an open-source alternative to Perplexity AI. It combines SearXNG web search with your local LLM to answer questions with cited, up-to-date information. Instead of retrieving a static knowledge cutoff, Perplexica searches the web in real time and synthesizes results into a comprehensive answer.
 
+Upstream renamed the project to **Vane** in March 2026
+([ItzCrazyKns/Vane](https://github.com/ItzCrazyKns/Vane)); the UI now says
+Vane. ODS keeps the `perplexica` service id, `ods-perplexica` container name,
+port and volume names, so settings and chat history carry over.
+
+## Image pin
+
+ODS pins the upstream **slim** image for release `v1.12.2`:
+`itzcrazykns1337/vane:slim-v1.12.2@sha256:d2878cf9…` (full identity, per-platform
+digests and provenance in `config/perplexica-release.json`).
+
+- **slim** contains only the Next.js app and uses ODS's own `searxng` service.
+  The **full** image also bundles a SearXNG instance, which ODS does not need.
+- Vane 1.12.2 added a Chromium (Playwright) page scraper. The `slim-v1.12.2`
+  release image ships the Playwright package but not the browser (upstream
+  added it to `Dockerfile.slim` only after the release). Speed and Balanced
+  modes use SearXNG results and do not scrape, so they are unaffected. Quality
+  mode and the `scrape_url` tool cannot read pages with this image.
+- The app root moved from `/home/perplexica` to `/home/vane`. ODS mounts the
+  existing `perplexica-data` and `perplexica-uploads` volumes at the new paths.
+- Speed and Balanced rank SearXNG results with the configured embedding model.
+  The built-in `Xenova/all-MiniLM-L6-v2` is downloaded from Hugging Face into the
+  container on first use (again after each recreate); without Internet access
+  ranking is skipped and results are used unranked.
+
+To bump: pick a versioned `slim-vX.Y.Z` tag on Docker Hub, verify the manifest
+list with `docker buildx imagetools inspect`, review the upstream compare for
+Dockerfile, data-path, `/api/config`, `/api/search` and `/api/chat` changes, then
+update `compose.yaml`, `config/dependency-lock.json`,
+`installers/phases/08-images.sh` and `config/perplexica-release.json` together;
+`tests/test-perplexica-entrypoint.py` checks that they agree.
+
 ## Features
 
 - **Real-time web research**: Queries SearXNG to fetch live search results before answering
@@ -88,8 +120,8 @@ Environment variables (set in `.env`):
 
 | Volume | Purpose |
 |--------|---------|
-| `perplexica-data` | Conversation history, settings |
-| `perplexica-uploads` | Uploaded files for document research |
+| `perplexica-data` → `/home/vane/data` | Conversation history, settings (`config.json`, `db.sqlite`) and uploaded files (`data/uploads`) |
+| `perplexica-uploads` → `/home/vane/uploads` | Legacy mount kept for compatibility; the app stores uploads under `data/uploads` |
 
 ## Files
 

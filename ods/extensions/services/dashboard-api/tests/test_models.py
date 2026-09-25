@@ -2390,6 +2390,62 @@ def test_load_model_reconfigures_active_model_when_context_changes(
     )]
 
 
+@pytest.mark.parametrize("agent_outcome", ["activated", "failed"])
+def test_load_model_expires_status_cached_during_activation(
+    test_client,
+    monkeypatch,
+    tmp_path,
+    agent_outcome,
+):
+    """The confirming poll after the POST must not see the running lifecycle."""
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    model = {
+        "id": "qwen3.5-4b-q4",
+        "name": "Qwen 3.5 4B",
+        "gguf_file": "Qwen3.5-4B-Q4_K_M.gguf",
+        "size_mb": 2741,
+        "vram_required_gb": 5,
+        "context_length": 8192,
+        "quantization": "Q4_K_M",
+        "specialty": "Balanced",
+        "description": "Test model.",
+        "llm_model_name": "qwen3.5-4b",
+    }
+    _write_model_library(install_dir, [model])
+    (data_dir / "models" / model["gguf_file"]).write_text("model", encoding="utf-8")
+    (install_dir / ".env").write_text(
+        "ODS_MODE=local\nLLM_MODEL=previous\nGGUF_FILE=previous.gguf\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: "previous.gguf")
+    running = {
+        "lifecycle": {"active": True, "operation": "model_activation", "modelId": model["id"]},
+    }
+    settled = {"lifecycle": None}
+    agent_reads = []
+
+    def activate(path, body, timeout=30, **_kwargs):
+        # A dashboard poll during the activation caches the running lifecycle.
+        monkeypatch.setattr(models_router, "_agent_model_status_cache_value", running)
+        monkeypatch.setattr(models_router, "_agent_model_status_cache_at", models_router.time.monotonic())
+        if agent_outcome == "failed":
+            raise models_router.HTTPException(status_code=500, detail="rolled back")
+        return {"status": "activated", "model_id": body["model_id"]}
+
+    monkeypatch.setattr(models_router, "_call_agent_model", activate)
+    monkeypatch.setattr(
+        models_router,
+        "request_agent_json",
+        lambda method, path, **_kwargs: agent_reads.append((method, path)) or settled,
+    )
+
+    resp = test_client.post(f"/api/models/{model['id']}/load", headers=test_client.auth_headers)
+
+    assert resp.status_code == (200 if agent_outcome == "activated" else 500)
+    assert models_router._get_agent_model_status() is settled
+    assert agent_reads == [("GET", "/v1/model/status")]
+
+
 def test_load_model_allows_advanced_context_override_but_rejects_invalid_range(
     test_client,
     monkeypatch,

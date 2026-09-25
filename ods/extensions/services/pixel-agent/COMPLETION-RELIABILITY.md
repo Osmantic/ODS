@@ -20,6 +20,84 @@ If execution never occurred, delivery reports incompleteness instead of another
 promise. Existing Operations, publication and permission checks take precedence.
 Recovery does not replay side effects or grant additional permissions.
 
+## Cited pages that were not read
+
+When the owner asks for sources to be opened, every cited public URL needs a
+successful page read (a 2xx `web_fetch` with text, or matched targeted
+extraction) in the same response. A citation matches a read `url` or `finalUrl`
+after conservative normalization only: scheme and host case, default ports,
+the fragment and one trailing path slash. The query string is kept. A link the
+answer itself labels as unverified or not opened stays as written.
+
+Models often cite event detail links they saw on a listing page without
+opening them. Before judging the answer, the host reads those pages itself
+(`citation-verification.mjs`): at most four public URLs per answer, only for a
+source-read request whose run already got web results, and only when every
+unread citation can be checked. The reads use the same guarded reader as
+`pixel_ods_web_extract` (OpenClaw's strict SSRF guard, no environment proxy,
+three redirects, 1 MB, text extraction), in parallel under one 4-second
+deadline, and each counts against the response's page-reading and total web
+allowances. Nothing is read when the operator disabled or denied page reads,
+the owner excluded web access, a private-network request was denied, the run
+was cancelled, or the URL was already host-read in this run.
+
+A host read counts only when the page returns 2xx HTML or text on the cited
+site (not its root) and carries the claim anchors the answer attaches to that
+citation: the words of the item's title (title field, heading, bold name, link
+text or leading proper nouns) together, and the attributed date (day, month
+and any stated year), within 400 characters and with no other date between
+them. A time stated next to the date must not be contradicted; a claim without
+a date is anchored by its numbers. Anchors never come from the URL and
+URL-shaped page text is ignored, so a slug such as `flyers-capitals-9-26-26`
+matches only the page's own display title and date. Error pages, cancelled or
+postponed events and query strings that could echo the terms do not count. A
+verified page is a separate host-verification receipt, not a model read. When
+every unread citation verifies, the answer is delivered unchanged without
+another model turn; otherwise verified pages count as read and the rest follow
+the revision below. `tests/host_citation_verification.test.mjs` replays the
+tower3 and tower1 fleet cases.
+
+An answer that cites unread URLs gets one revision (idempotency key
+`ods-opened-source-attribution`). Its fixed instruction names exactly those
+URLs and asks the model to replace each with a page it actually read in this
+response or remove it and mark the claim unverified; where each item needs its
+own source, it prefers the item's own page to a shared listing. If the answer still cites
+unread URLs afterwards, or the harness refuses the revision, the owner receives
+that answer with only those links replaced by `[source not verified]`
+(`[fonte não verificada]` in Portuguese), Markdown link syntax around them
+flattened to text, and one fixed source-check note. Nothing else in the answer
+changes and no link is added. The outcome stays `failed`, so the harness and
+owner still see that verification was incomplete. The whole answer is replaced
+with the incomplete-research text only when none of its cited URLs was read,
+too little prose remains outside links, or it exceeds 20,000 characters. If a
+tool limit stops the revision pass, the answer from its tool-free answer turn
+(below) is newer and supersedes this armed delivery.
+`tests/partial_citation_delivery.test.mjs` replays the tower1 fleet case.
+
+## Owner-requested text
+
+`requested-literals.mjs` checks each published snapshot for exact text the
+owner asked for (a cued quotation or a counted list of names). A miss never
+blocks publication: the publication result carries a note, and delivery stays
+`failed` with the preview kept and a fixed statement of the missing text.
+
+Before that failure, the model gets one bounded revision per response. Its
+fixed instruction names the missing text as a JSON list and asks the model to
+add it exactly as requested (for example, as the card heading when the owner
+described a card title), republish with `pixel_ods_workspace_preview`, and keep
+everything else unchanged. The pinned harness refuses a `before_agent_finalize`
+revision after potential side effects, and a publication is one (tower1 round
+067: `before_agent_finalize requested revision after potential side effects;
+finalizing`). So the instruction goes on the model's next successful tool
+result for that same unrepaired snapshot, after the publication note, such as
+an inspection of it. Only when no such result occurs does finalization request
+it as a revision (idempotency key `pixel-ods-workspace-preview-requested-text`,
+one attempt). A republish that contains the text is judged normally; otherwise
+the unchanged failure delivery stands and no further revision is requested.
+Nothing is revised after owner cancellation or a tool-limit stop, and the
+revision grants no tool allowance. `tests/requested_text_revision.test.mjs`
+replays the tower1 case.
+
 ## Saved project delivery
 
 A model can successfully write an HTML project and then stop without calling
@@ -64,6 +142,95 @@ Each prompt also receives the current host UTC time. The model must preserve
 the owner's requested date/timezone, check source publication dates and avoid
 confusing its training cutoff with the actual date.
 
+## Tool-limit finalization
+
+When the run-progress budget (`run-progress-budget.mjs`) or the research
+web-loop terminal (a web tool requested again after two research-budget
+refusals) stops a response, the limits are unchanged and every tool stays
+blocked. `progress-finalization.mjs`
+grants one tool-free answer turn instead of discarding the gathered evidence.
+OpenClaw applies `tool_result_persist` to the saved transcript only, so the
+model learns of the stop through the refusal of its next tool call, whose text
+is one fixed instruction: answer from evidence already returned, keep the
+requested format, and mark missing or unverified items. The following model
+call is the answer turn. Parallel siblings in the refused call's model round
+receive the same instruction; with no observed model round, the next tool call
+ends the run. A model that answers without another tool call is treated the
+same way. OpenClaw's in-session auto-compaction summarizes through the run's own
+model stream; the summarization calls it starts (at most two, bracketed by
+`before_compaction`) are not counted as turns, so a compaction after the answer
+cannot forfeit it. Any other further model call still does.
+
+The owner receives that answer followed by host facts the model cannot alter:
+the tool-limit note, a failed or pending test result, cited links that were
+never read (when the owner asked for sources to be opened), and the last
+verified preview (with any owner-requested text the published page lacks) or an
+explicit statement that none was verified. The outcome stays `failed`; a
+research-loop stop also notes that the web research allowance was used up.
+
+Plugins cannot remove tools from a single model call, so some models still
+call a tool in the answer turn. That call is refused and the run is aborted at
+that tool boundary, as before. When the same assistant message also carries
+substantive answer text, that text is kept as a partial answer (tower3 r8):
+`before_message_write` observes the message, and it is matched to the refused
+call by tool-call ID, never by timing. OpenClaw writes the message before it
+dispatches the message's calls; the reverse order is handled too. The text
+must pass every check a tool-free answer passes and, with narration such as
+"Let me search once more" set aside, still hold at least 160 letters or digits
+across at least two other lines or sentences. Because the aborted run never
+reaches `before_agent_finalize`, its cited pages get the same bounded host
+verification there, and `/pixel-ods/verification` waits for it. The delivery
+adds a host fact that the requested calls were refused and did not run.
+
+An empty, silent, promise-only, tool-like, narration-only or oversized answer, a
+further model call, owner cancellation, or an unverified localhost URL in a
+visual task all fall back to the original stop text (the research-loop stop
+text for that path). Unless the owner cancelled, that text is followed by the
+host's list of pages read successfully in the response (tower2 round 061):
+current-run `web_fetch` and targeted-extraction read receipts plus host
+citation verifications, deduplicated, at most eight with a count of the rest,
+each with its page-reported title reduced to plain words when one is known.
+Only the list varies. Operations, exact downloads, managed extension requests
+and team coordination keep the strict stop text, with no list. The instruction
+is constant text at the end of the conversation, never system-prompt content.
+
+## Silent owner replies
+
+An owner-authored dashboard or Portal message (a `user`-triggered run in the
+`agent:pixel:openai-user:ods-…` session) always needs a visible reply. If the
+final reply is only OpenClaw's silent sentinel (`NO_REPLY`, `HEARTBEAT_OK`, or
+their JSON forms), `owner-visible-reply.mjs` requests one revision pass with a
+fixed instruction. A second silent reply keeps the ingress fallback ("Pixel
+ended without a visible answer"). OpenClaw already retries an empty final reply
+once before this hook runs; heartbeat, cron and team turns keep `NO_REPLY`
+semantics, and the harness still refuses a revision after side effects.
+
+`tests/progress_finalization.test.mjs`, `tests/partial_finalization.test.mjs`,
+`tests/owner_visible_reply.test.mjs` and the real-harness fixtures `tests/runtime_progress_finalization.integration.mjs`
+and `tests/runtime_owner_visible_reply.integration.mjs` cover both paths.
+
+## Owner cancellation
+
+Every recovery decision is bound to the run that armed it. An acknowledged
+owner cancel (`/pixel-ods/abort`) voids that run's completion assurance: no
+further revision, no armed replacement text, and any host citation read it is
+waiting on is aborted. OpenClaw already refuses a revision for an aborted
+attempt; if one started just before the cancel, its prompt is told to stop and
+its tool calls stay refused.
+
+OpenClaw keeps the cancelled request in the transcript without an answer, and a
+model otherwise treats it as still pending (tower1 round 067: a later "Reply
+with exactly …" ran the cancelled research first). The first owner turn after
+the cancel therefore gets fixed, model-only context (a `before_prompt_build`
+`prependContext`, never persisted as owner text) saying that request is
+withdrawn unless the new message asks to resume it. In that run, web evidence
+does not by itself require attribution: the missing-source revision applies
+only when the current message asks for research or source reads, or resends the
+cancelled request. A later message sees none of this.
+`tests/cancel_request_binding.test.mjs` replays the fleet case and a cancel
+before, during and after a revision is armed; the real-harness fixture
+`tests/runtime_cancel_recovery.integration.mjs` cancels through the ingress.
+
 ## Search availability
 
 Existing SearXNG installations can report HTTP 200 with zero results while their
@@ -74,6 +241,33 @@ the default for new installations. Existing owners' provider choices are retaine
 by the installer. Provider service availability remains an external dependency;
 neither engine guarantees coverage of a particular date or source. Only the
 public search brief should be sent to an external search provider.
+
+## Research pacing
+
+Search results are leads, and each one adds several kilobytes to the live
+context. On the fleet, research runs issued five to seven searches before
+reading a page. The context guard then compacted the conversation, the leads
+disappeared from view, the model repeated the same searches, and the search
+allowance ran out before any page was read. `plugin/research-pacing.mjs` adds
+three run-scoped checks, all delivered as tool results so the system prompt
+stays unchanged:
+
+- After three consecutive searches that returned leads without a page read in
+  between, the next search is paused once and the model is asked to read the
+  leads first. It may search again immediately if none fits.
+- A search that adds no term to an earlier search in the same response (same
+  model numbers and years, filler words such as "official" or "site" ignored)
+  is answered with that search's result URLs instead of running again. This
+  recovers leads lost to compaction, including after the search allowance is
+  spent, while pages can still be read. A deliberate second repeat runs.
+- When the owner states the date ("Today is YYYY-MM-DD", "as of ..."), a search
+  that names an earlier month is followed by a date check note.
+
+Pauses and recalls run nothing, do not use the search allowance and are not
+charged as tool failures; each is limited to two per response, after which
+searches proceed unchanged. The fixed evidence and projection notes on search
+results are repeated only at the normal coaching interval; the per-call
+research budget line stays on every result.
 
 ## Interactive clarification
 

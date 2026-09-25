@@ -2790,6 +2790,60 @@ class TestRecreateLlamaServerFromInspect:
             "--alias", "llama-server", "metrics-network", "ods-llama-server",
         ] in calls
 
+    @staticmethod
+    def _spec_env_values(argv):
+        return [
+            argv[index + 1]
+            for index, token in enumerate(argv[:-1])
+            if token == "-e" and argv[index + 1].startswith("LLAMA_ARG_SPEC_TYPE=")
+        ]
+
+    @pytest.mark.parametrize(
+        ("env_extra", "expected"),
+        [
+            ({"GPU_BACKEND": "nvidia"}, ["LLAMA_ARG_SPEC_TYPE=ngram-mod"]),
+            ({"GPU_BACKEND": "jetson"}, ["LLAMA_ARG_SPEC_TYPE=ngram-mod"]),
+            ({"GPU_BACKEND": "cpu"}, ["LLAMA_ARG_SPEC_TYPE=ngram-mod"]),
+            ({"GPU_BACKEND": "nvidia", "LLAMA_SPEC_TYPE": ""}, ["LLAMA_ARG_SPEC_TYPE=ngram-mod"]),
+            ({"GPU_BACKEND": "nvidia", "LLAMA_SPEC_TYPE": "none"}, ["LLAMA_ARG_SPEC_TYPE=none"]),
+            ({"GPU_BACKEND": "cpu", "LLAMA_SPEC_TYPE": "ngram-simple"}, ["LLAMA_ARG_SPEC_TYPE=ngram-simple"]),
+            (
+                {"GPU_BACKEND": "nvidia", "LLAMA_SPEC_TYPE": "none", "LLAMA_ARG_SPEC_TYPE": "draft-mtp"},
+                ["LLAMA_ARG_SPEC_TYPE=draft-mtp"],
+            ),
+            ({"GPU_BACKEND": "amd"}, []),
+            ({"GPU_BACKEND": "sycl"}, []),
+            ({"GPU_BACKEND": "apple"}, []),
+            ({"GPU_BACKEND": "cpu", "LLM_BACKEND": "lemonade"}, []),
+        ],
+    )
+    def test_recreate_keeps_the_compose_overlay_speculative_default(
+        self, monkeypatch, env_extra, expected,
+    ):
+        """A recreate drops inspected LLAMA_ARG_* values that .env does not
+        name, so it must re-derive docker-compose.{nvidia,cpu}.yml's default
+        instead of silently serving without speculation after a model switch."""
+        inspect_config = {
+            "Config": {
+                "Image": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014",
+                "Cmd": ["--model", "/models/old.gguf", "--metrics"],
+                "Env": [
+                    "PATH=/usr/bin",
+                    "GGUF_FILE=old.gguf",
+                    # Resolved by Compose from the overlay default.
+                    "LLAMA_ARG_SPEC_TYPE=ngram-mod",
+                ],
+            },
+            "HostConfig": {"Binds": ["/srv/models:/models:ro"]},
+            "NetworkSettings": {"Networks": {}},
+            "Mounts": [],
+        }
+        env = {"GGUF_FILE": "new.gguf", "CTX_SIZE": "8192", "MAX_CONTEXT": "8192", **env_extra}
+
+        argv, _calls = self._capture_recreate(monkeypatch, inspect_config, env)
+
+        assert self._spec_env_values(argv) == expected
+
 
 class TestLaunchNativeLlamaServer:
 
@@ -7278,7 +7332,9 @@ class TestModelActivateRollback:
             env_path.read_text(encoding="utf-8")
             + "MODEL_RECOMMENDED_MODEL=new-model\n"
             + "MODEL_RECOMMENDED_GGUF=new-model.gguf\n"
-            + "MODEL_RECOMMENDED_CONTEXT=131072\n",
+            + "MODEL_RECOMMENDED_CONTEXT=131072\n"
+            # Former checkpoint key name that no llama.cpp build reads.
+            + "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=-1\n",
             encoding="utf-8",
         )
         model_library = install_dir / "config" / "model-library.json"
@@ -7307,7 +7363,7 @@ class TestModelActivateRollback:
                         "LLAMA_ARG_CACHE_TYPE_V": "turbo3",
                         "LLAMA_ARG_N_CPU_MOE": "30",
                         "LLAMA_ARG_NO_CACHE_PROMPT": "1",
-                        "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS": "-1",
+                        "LLAMA_ARG_CHECKPOINT_EVERY_NT": "-1",
                         "LLAMA_ARG_SPEC_TYPE": "draft-mtp",
                         "LLAMA_ARG_SPEC_DRAFT_N_MAX": "3",
                     },
@@ -7340,7 +7396,8 @@ class TestModelActivateRollback:
         assert "LLAMA_SERVER_IMAGE=example.test/llama:turbo" in env_text
         assert "LLAMA_ARG_CACHE_TYPE_V=turbo3" in env_text
         assert "LLAMA_ARG_N_CPU_MOE=30" in env_text
-        assert "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=-1" in env_text
+        assert "LLAMA_ARG_CHECKPOINT_EVERY_NT=-1" in env_text
+        assert "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS" not in env_text
         assert "LLAMA_ARG_SPEC_TYPE=draft-mtp" in env_text
         assert "LLAMA_ARG_SPEC_DRAFT_N_MAX=3" in env_text
 

@@ -88,3 +88,37 @@ def test_empty_assets_do_not_bypass_file_count_limit(tmp_path, monkeypatch):
     with pytest.raises(MODULE.PreviewError):
         MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
     assert list(previews.iterdir()) == []
+
+
+def test_receipt_lists_empty_published_files(tmp_path):
+    workspace, previews, site = make_site(tmp_path)
+    receipt = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+    assert receipt["publishedEmptyPaths"] == ["app.js", "style.css"]
+    assert receipt["publishedEmptyPathsOmitted"] == 0
+    (site / "style.css").write_text("body { color: red; }\n")
+    receipt = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+    assert receipt["publishedEmptyPaths"] == ["app.js"]
+    (site / "app.js").write_text("console.log(1);\n")
+    receipt = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+    assert receipt["publishedEmptyPaths"] == []
+    assert receipt["publishedEmptyPathsOmitted"] == 0
+
+
+def test_empty_test_output_is_published_and_named(tmp_path):
+    # tower1 fleet run: `python3 -m unittest -v 2>&1 > public/test-results.txt`
+    # sent the runner's stderr to the exec result and left this file empty.
+    workspace, previews = tmp_path / "workspace", tmp_path / "previews"
+    workspace.mkdir(mode=0o700)
+    previews.mkdir(mode=0o700)
+    public = workspace / "coding" / "public"
+    public.mkdir(mode=0o700, parents=True)
+    (workspace / "coding").chmod(0o700)
+    for name, data in {"index.html": b"<h1>Totals</h1>", "sources.json": b"{}",
+                       "test-results.txt": b""}.items():
+        (public / name).write_bytes(data)
+        (public / name).chmod(0o600)
+    receipt = MODULE.publish_snapshot(workspace, previews, "coding/public", os.getuid())
+    assert receipt["status"] == "succeeded"
+    assert receipt["publishedPaths"] == ["index.html", "sources.json", "test-results.txt"]
+    assert receipt["publishedEmptyPaths"] == ["test-results.txt"]
+    assert receipt["publishedEmptyPathsOmitted"] == 0

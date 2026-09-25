@@ -539,6 +539,8 @@ If the host agent is unreachable, file-level operations (install, enable, disabl
 
 Uninstalling (`DELETE /api/extensions/{service_id}`) requires the extension to be disabled first (compose file must be renamed to `.disabled`). It then removes the extension directory from `user-extensions/` under file lock.
 
+One state is handled by the endpoint itself: an extension whose last install or start attempt failed (status `error`) still has an enabled `compose.yaml`, so the uninstall performs the disable step first. The host agent must stop the service before the definition is touched (a failed stop returns 502 and nothing is removed), and removal is refused with 409 while any enabled extension depends on it. Running, stopped, starting and unhealthy extensions still return 400 until they are disabled explicitly. Uninstall never deletes service data; purging stays a separate, confirmed request (`DELETE /api/extensions/{service_id}/data`).
+
 ### 8. Dashboard UI Status Polling
 
 The dashboard frontend polls `GET /api/extensions/catalog` to display extension status. Each extension's status is computed by checking:

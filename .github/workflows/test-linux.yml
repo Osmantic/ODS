@@ -442,6 +442,8 @@ jobs:
           bash tests/contracts/test-installer-contracts.sh
           bash tests/test-linux-ollama-port-override.sh
           bash tests/test-external-services.sh
+          bash tests/test-dashboard-data-permissions.sh
+          sudo -n python3 tests/test_dashboard_data_permissions.py
           bash tests/test-resolve-compose-resilient.sh
           bash tests/test-phase03-multigpu-tty.sh
           bash tests/test-pixel-support-services.sh
@@ -453,6 +455,7 @@ jobs:
           python3 tests/contracts/test-network-exposure-contracts.py
           python3 tests/contracts/test-remote-provider-egress-policy.py
           python3 tests/contracts/test-remote-provider-egress-service.py
+          python3 tests/contracts/test-llama-spec-default.py
 
       - name: Pixel Public Source and Local Bundle Contract
         run: |

@@ -779,6 +779,11 @@ if user_ext_dir.exists():
         for service_dir in sorted(user_ext_dir.iterdir()):
             if not service_dir.is_dir():
                 continue
+            # Extension IDs never start with a dot. The dashboard keeps its
+            # staging (.tmp) and definition backups (.backups) here; they are
+            # not legacy manifest-less extensions and must not warn.
+            if service_dir.name.startswith("."):
+                continue
             # Find manifest
             manifest_path = None
             for name in ("manifest.yaml", "manifest.yml", "manifest.json"):

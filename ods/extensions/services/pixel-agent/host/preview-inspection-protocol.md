@@ -19,7 +19,31 @@ Requests are limited to 8 KiB, 12 steps, viewport dimensions 240–1920 pixels,
 256 Unicode characters / 1024 UTF-8 bytes per CSS selector, and 120 characters /
 480 bytes per accessible name. Controls and formatting controls are rejected.
 Every locator must match exactly one element, including hidden assertions.
-Use CSS to identify a hidden element excluded from the accessibility tree.
+
+## Locator matching
+
+A CSS locator matches through the isolated world's `querySelectorAll`, hidden
+elements included. An exact role/name locator for `assert-visible` or `click`
+matches Chromium's accessibility tree, which contains only rendered elements.
+
+That tree omits hidden elements and computes no name for them, so for
+`assert-hidden` an exact role/name locator also matches hidden elements. The
+same role/name can therefore be asserted hidden, clicked into view, and asserted
+visible. The hidden-inclusive match follows Playwright's
+`getByRole(role, {name, exact: true, includeHidden: true})` role and accessible
+name rules; script, style, template, and noscript text never contributes.
+Names compare after whitespace is collapsed, case-sensitively. It runs in the
+isolated world. Chromium's rendered matches are kept and the union is
+de-duplicated by element identity, so a rendered element is matched exactly as
+for the other actions, and uniqueness counts rendered and hidden matches
+together.
+
+A step whose locator matches no element fails as `no_match` with
+`before: {count: 0}`. A step whose locator matches several elements fails as
+`selector_not_unique` with that count. Capsules built before `no_match` report
+zero matches as `selector_not_unique`, and callers accept both. Neither is
+evidence about visibility: the caller must correct the locator and retry on the
+same snapshot, not change the site to satisfy a locator.
 
 ## Evidence scope
 
@@ -144,7 +168,9 @@ page-error bounds and presentation.
 `python3 -m unittest discover -s tests -p test_preview_inspection.py` checks
 protocol, ownership, paths, immutable bytes, subprocess bounds, cleanup, and
 page-error receipt shaping through a scripted browser double.
-Set `ODS_PREVIEW_BROWSER_TESTS=1` only for the fixture Chromium suite. Set
+Set `ODS_PREVIEW_BROWSER_TESTS=1` only for the fixture Chromium suite; it also
+checks the hidden-inclusive role/name matcher against Playwright's own
+`includeHidden` engine. Set
 `ODS_INSPECTION_TEST_IMAGE=sha256:<candidate>` for real isolated-container
 smoke, observed hidden-flex regression, hung-script, and cancellation cleanup.
 These test-only variables never select a production image or grant authority.

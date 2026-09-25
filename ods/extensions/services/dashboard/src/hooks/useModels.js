@@ -191,7 +191,7 @@ function modelActivationModeError(effectiveMode, configuredMode, llmBackend, ext
   return null
 }
 
-function waitForActivationPoll(delay, signal) {
+function waitForActivationPoll(delay, signal, wake = null) {
   if (signal.aborted) return Promise.resolve()
   return new Promise(resolve => {
     const finish = () => {
@@ -201,6 +201,9 @@ function waitForActivationPoll(delay, signal) {
     }
     const timer = setTimeout(finish, delay)
     signal.addEventListener('abort', finish, { once: true })
+    // A settled activation request ends the wait early so the confirming
+    // status read is not held behind the regular poll interval.
+    if (wake) wake.then(finish, finish)
   })
 }
 
@@ -434,9 +437,18 @@ export function useModels() {
         context_length: requestedContextLength,
       })
     }
+    // The server answers the POST only after the model and its consumers are
+    // committed. Confirm right away instead of waiting out the poll interval;
+    // a joined in-flight activation or a dropped connection keeps polling.
+    let activationAnswered = false
+    let wakeActivationPoll = () => {}
+    let activationWake = new Promise(resolve => { wakeActivationPoll = resolve })
     const activationRequest = fetch(`/api/models/${encodeURIComponent(modelId)}/load`, activationRequestOptions)
       .then(async (response) => {
-        if (response.ok) return
+        if (response.ok) {
+          activationAnswered = true
+          return
+        }
 
         const body = await responseJson(response)
         if (response.status === 409) {
@@ -462,11 +474,19 @@ export function useModels() {
       // A dropped request does not prove activation failed. Continue polling
       // until the requested model appears or the explicit UI deadline expires.
       .catch(() => {})
+      .then(() => {
+        if (activationAnswered || activationError) {
+          activationAnswered = true
+          wakeActivationPoll()
+        }
+      })
 
     try {
       while (!controller.signal.aborted && Date.now() - startedAt < MODEL_ACTIVATION_TIMEOUT_MS) {
         const remainingMs = MODEL_ACTIVATION_TIMEOUT_MS - (Date.now() - startedAt)
-        await waitForActivationPoll(Math.min(MODEL_ACTIVATION_POLL_MS, remainingMs), controller.signal)
+        await waitForActivationPoll(Math.min(MODEL_ACTIVATION_POLL_MS, remainingMs), controller.signal, activationWake)
+        // Only the first wait after the server answered is cut short.
+        if (activationAnswered) activationWake = null
         if (controller.signal.aborted) return
 
         if (activationError) break

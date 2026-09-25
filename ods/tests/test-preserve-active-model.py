@@ -142,7 +142,7 @@ def test_valid_curated_model_is_preserved() -> None:
         for key in (
             "LLAMA_ARG_N_CPU_MOE",
             "LLAMA_ARG_NO_CACHE_PROMPT",
-            "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS",
+            "LLAMA_ARG_CHECKPOINT_EVERY_NT",
             "LLAMA_ARG_SPEC_TYPE",
             "LLAMA_ARG_SPEC_DRAFT_N_MAX",
             "LLAMA_ARG_SPLIT_MODE",

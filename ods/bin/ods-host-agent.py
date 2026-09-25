@@ -166,6 +166,11 @@ MODEL_ACTIVATION_HEALTH_ATTEMPTS = 60
 # two additional health intervals during model activation while preserving the
 # same bounded, fail-closed health contract.
 HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS = 90
+# A replaced llama-server container usually serves a small or mid-size model
+# within a few seconds. Probe densely for this window instead of sleeping a
+# fixed initial delay, then fall back to the regular 5-second schedule.
+_MODEL_READINESS_FAST_POLL_SECONDS = 30.0
+_MODEL_READINESS_FAST_POLL_INTERVAL_SECONDS = 0.5
 VALID_HOOK_NAMES = frozenset({
     "pre_install", "post_install", "pre_start", "post_start",
     "pre_uninstall", "post_uninstall",
@@ -5937,7 +5942,17 @@ def _core_recreate_compose_flags(flags: list[str]) -> list[str]:
             if index not in excluded and index - 1 not in excluded]
 
 
-def docker_compose_recreate(service_ids: list[str]) -> tuple:
+def docker_compose_converge(service_ids: list[str]) -> tuple:
+    """Apply the current compose definition without forcing a recreate.
+
+    Compose replaces a container only when its resolved service definition
+    (interpolated environment, image, mounts) no longer matches the running
+    instance, and otherwise leaves it untouched.
+    """
+    return docker_compose_recreate(service_ids, force_recreate=False)
+
+
+def docker_compose_recreate(service_ids: list[str], *, force_recreate: bool = True) -> tuple:
     """Force-recreate a set of allowed core services using the current compose stack."""
     ok, error = validate_core_recreate_ids(service_ids)
     if not ok:
@@ -5947,7 +5962,11 @@ def docker_compose_recreate(service_ids: list[str]) -> tuple:
         flags = _core_recreate_compose_flags(resolve_compose_flags())
     except (OSError, ValueError) as exc:
         return False, f"Could not resolve core Compose fragments: {exc}"
-    cmd = ["docker", "compose"] + flags + ["up", "-d", "--no-deps", "--force-recreate"] + service_ids
+    cmd = (
+        ["docker", "compose"] + flags + ["up", "-d", "--no-deps"]
+        + (["--force-recreate"] if force_recreate else [])
+        + service_ids
+    )
     compose_env = os.environ.copy()
     for key in ("GGUF_FILE", "LLM_MODEL", "LEMONADE_MODEL", "MAX_CONTEXT", "CTX_SIZE"):
         compose_env.pop(key, None)
@@ -6862,9 +6881,24 @@ def _enable_retry_work(service_id: str) -> None:
         # expected to be idempotent (check-then-create for secrets,
         # env vars, data dirs) so re-running repopulates anything an
         # earlier failed install may have left unset.
-        ok, _ = _run_post_install_hook(service_id, ext_dir)
+        # A failed library install is disabled (see _disable_unprepared_install);
+        # enabling it again for this retry must not leave an unresolvable
+        # definition in the merged Compose project either. Built-ins are not
+        # renamed here and keep the existing start path.
+        library_install = ext_dir == USER_EXTENSIONS_DIR / service_id
+        ok, hook_error = _run_post_install_hook(service_id, ext_dir)
         if not ok:
+            if library_install:
+                note = _disable_unprepared_install(service_id)
+                _write_progress(service_id, "error", "Setup failed",
+                                error=(hook_error or "Setup failed") + note)
             return
+        if library_install:
+            resolved, error = _resolve_install_compose(resolve_compose_flags())
+            if resolved is None:
+                error += _disable_unprepared_install(service_id)
+                _write_progress(service_id, "error", "Retry failed", error=error)
+                return
 
         _write_progress(service_id, "starting", "Starting container...")
         ok, err = docker_compose_action(service_id, "start")
@@ -7334,11 +7368,23 @@ def _build_install_sources(base, builds, services):
          *sorted(builds)], input=compiled.stdout, **options)
 
 
-def _install_build_diagnostic(result, services: dict) -> str:
+BUILD_DIAGNOSTIC_LIMIT = 7600
+BUILD_ERROR_LINE_LIMIT = 300
+
+
+def _install_build_diagnostic(result, services: dict, subject: str = 'build') -> str:
     """Bound untrusted build evidence and remove configured credential values.
 
     Redact before truncating so a tail cannot expose part of a credential.
     Never include the resolved Compose configuration or build plan.
+
+    BuildKit prints its step log first and the decisive error last, while the
+    dashboard card and other bounded readers show the beginning of a message.
+    Lead with the final error line (keeping its end, where Go error chains put
+    the root cause), then the tail of the log, both within one bound.
+
+    ``subject`` names the failed step in the message (``build`` for source
+    builds, ``Compose`` when the configuration itself could not be resolved).
     """
     output = '\n'.join(str(getattr(result, stream, '') or '')
                        for stream in ('stdout', 'stderr'))
@@ -7354,7 +7400,7 @@ def _install_build_diagnostic(result, services: dict) -> str:
         collect(load_env(INSTALL_DIR / '.env'))
     except (OSError, UnicodeError):
         # Do not disclose output if persisted credentials cannot be checked.
-        return 'Build diagnostics unavailable: credential redaction could not be completed.'
+        return f'{subject[:1].upper()}{subject[1:]} diagnostics unavailable: credential redaction could not be completed.'
     for definition in services.values():
         if not isinstance(definition, dict):
             continue
@@ -7370,8 +7416,83 @@ def _install_build_diagnostic(result, services: dict) -> str:
     output = re.sub(r'([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@', r'\1[REDACTED]@', output)
     output = re.sub(r'(?im)((?:[\w-]*(?:token|password|passwd|secret|api[_-]?key|credential)[\w-]*)[\x22\x27]?\s*[:=]\s*)(?:\x22[^\x22]*\x22|\x27[^\x27]*\x27|[^\s,;]+)',
                     r'\1[REDACTED]', output)
-    output = ''.join(c for c in output if c in '\n\t' or ord(c) >= 32).strip()
-    return output[-7600:] or 'No build diagnostic output was returned.'
+    output = ''.join(c for c in output if c in '\n\t' or ord(c) >= 32)
+    lines = [line.rstrip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return f'No {subject} diagnostic output was returned.'
+    final = next((line.strip() for line in reversed(lines)
+                  if not re.fullmatch(r'\s*[-=]+', line)), lines[-1].strip())
+    if len(final) > BUILD_ERROR_LINE_LIMIT:
+        final = '…' + final[-(BUILD_ERROR_LINE_LIMIT - 1):]
+    header = f'Untrusted {subject} error: {final}\nUntrusted {subject} diagnostic (tail):\n'
+    budget = BUILD_DIAGNOSTIC_LIMIT - len(header)
+    tail = '\n'.join(lines)
+    if len(tail) > budget:
+        tail = tail[-budget:]
+        cut = tail.find('\n')
+        if 0 <= cut < len(tail) - 1:
+            tail = tail[cut + 1:]  # Do not start the tail mid-line.
+    return header + tail
+
+
+def _resolve_install_compose(flags: list[str]) -> tuple[str | None, str]:
+    """Resolve the Compose project for an install, or explain why it cannot be.
+
+    Returns ``(resolved_json, "")`` or ``(None, error)``. Compose's own error
+    names what to fix (for example ``required variable X is missing a
+    value``), so the error keeps its redacted, bounded stderr. Standard
+    output is never reported: on success it is the fully interpolated
+    configuration, including credential values.
+    """
+    command = ["docker", "compose", *flags, "config", "--format", "json"]
+    result = subprocess.run(command, cwd=str(INSTALL_DIR), capture_output=True, text=True, timeout=30)
+    if result.returncode:
+        stderr_only = subprocess.CompletedProcess(command, result.returncode, '',
+                                                  getattr(result, 'stderr', '') or '')
+        diagnostic = _install_build_diagnostic(stderr_only, {}, 'Compose')
+        # Name unset `${NAME:?}` settings up front. The generic credential
+        # redaction rewrites the word after `..._PASSWORD:` in Compose's
+        # sentence, so read the names from Compose's fixed message format;
+        # only identifier characters are taken, never a value.
+        missing = list(dict.fromkeys(re.findall(
+            r'required variable ([A-Za-z_][A-Za-z0-9_]{0,127}) is missing a value', stderr_only.stderr)))
+        summary = (f"Missing required setting{'s' if len(missing) > 1 else ''}: "
+                   f"{', '.join(missing[:8])}. ") if missing else ""
+        return None, ("Could not resolve installation Compose configuration; containers were not started. "
+                      + summary + diagnostic)
+    return result.stdout, ""
+
+
+def _disable_unprepared_install(service_id: str) -> str:
+    """Take a library extension that failed before start out of the Compose project.
+
+    Every enabled extension is merged into one Compose project, so a
+    definition that cannot be resolved (a missing ``${NAME:?}`` setting) or
+    whose image could not be built fails model switches, other installs and
+    every ``ods`` stack command, not just this extension. Renaming
+    ``compose.yaml`` to ``compose.yaml.disabled`` restores the state before
+    the attempt without deleting its files, settings or data. The caller keeps
+    the failure visible in the progress record; this returns the sentence to
+    append to it ("" when there is nothing to disable, e.g. built-ins).
+    """
+    ext_dir = USER_EXTENSIONS_DIR / service_id
+    active = ext_dir / "compose.yaml"
+    inactive = ext_dir / "compose.yaml.disabled"
+    unable = ("\nODS could not turn this extension off automatically. Disable or remove it; "
+              "until then other ODS stack operations can fail with the same error.")
+    try:
+        if ext_dir.is_symlink() or not ext_dir.is_dir() or active.is_symlink() or not active.exists():
+            return ""
+        if not active.is_file() or inactive.exists() or inactive.is_symlink():
+            return unable
+        os.replace(active, inactive)
+    except OSError:
+        logger.exception("Could not disable failed installation of %s", service_id)
+        return unable
+    invalidate_compose_cache()
+    logger.warning("Disabled %s after it failed before start; files and data were kept", service_id)
+    return ("\nODS turned this extension off so the rest of the stack keeps working; its files, "
+            "settings and data were kept. Resolve the error above, then retry or remove it.")
 
 
 def _prepare_install_images(flags: list[str], service_id: str) -> tuple[bool, str]:
@@ -7381,12 +7502,11 @@ def _prepare_install_images(flags: list[str], service_id: str) -> tuple[bool, st
     manifest or pull a locally built image from an unrelated registry.
     """
     base = ["docker", "compose", *flags]
-    result = subprocess.run(base + ["config", "--format", "json"],
-                            cwd=str(INSTALL_DIR), capture_output=True, text=True, timeout=30)
-    if result.returncode:
-        return False, "Could not resolve installation Compose configuration"
+    resolved, error = _resolve_install_compose(flags)
+    if resolved is None:
+        return False, error
     try:
-        services = json.loads(result.stdout)['services']
+        services = json.loads(resolved)['services']
         if not isinstance(services, dict):
             raise ValueError()
         pending, seen, pulls, builds = [service_id], set(), [], []
@@ -7429,8 +7549,7 @@ def _prepare_install_images(flags: list[str], service_id: str) -> tuple[bool, st
         _write_progress(service_id, "pulling", "Building images from source...")
         result = _build_install_sources(base, builds, services)
         if result.returncode:
-            return False, ("Source image build failed; containers were not started. "
-                           "Untrusted build diagnostic (tail):\n" +
+            return False, ("Source image build failed; containers were not started. " +
                            _install_build_diagnostic(result, services))
     return True, ""
 
@@ -10671,9 +10790,17 @@ class AgentHandler(BaseHTTPRequestHandler):
                 # when no hook is declared — it does not pre-write any
                 # "Running setup..." progress, so extensions without a hook
                 # don't show a misleading setup phase in the dashboard.
+                #
+                # Until containers are requested, a failed step must not leave
+                # this definition enabled: its settings may be missing and
+                # Compose would then fail for the whole stack. Disable it
+                # first, then record the error the owner acts on.
                 if run_setup_hook:
-                    ok, _ = _run_post_install_hook(service_id, ext_dir)
+                    ok, hook_error = _run_post_install_hook(service_id, ext_dir)
                     if not ok:
+                        note = _disable_unprepared_install(service_id)
+                        _write_progress(service_id, "error", "Setup failed",
+                                        error=(hook_error or "Setup failed") + note)
                         return
 
                 # Step 2: Prepare images. Pulls may use a cached image on
@@ -10707,6 +10834,7 @@ class AgentHandler(BaseHTTPRequestHandler):
 
                 prepared, image_error = _prepare_install_images(pull_flags, service_id)
                 if not prepared:
+                    image_error += _disable_unprepared_install(service_id)
                     _write_progress(service_id, "error", "Installation failed", error=image_error)
                     return
 
@@ -12075,6 +12203,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         opencode_snapshot: dict | None = None
         perplexica_snapshot: dict | None = None
         container_states: dict[str, dict[str, bool]] = {}
+        litellm_inputs_before: dict | None = None
+        litellm_reuse: str | None = None
         opencode_runtime_state: dict | None = None
         committed = False
         mutation_started = False
@@ -12543,6 +12673,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                 env_pre,
                 container_states["ods-perplexica"],
             )
+            if container_states["ods-litellm"]["running"]:
+                # Fingerprint what the running gateway loaded before any write
+                # so a byte-identical re-render cannot force a no-op recreate.
+                litellm_inputs_before = _dependent_bind_inputs("ods-litellm")
             active_litellm_consumers = [
                 name
                 for name in ("ods-hermes", "ods-openclaw", "ods-perplexica")
@@ -12622,7 +12756,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "LLAMA_ARG_CACHE_TYPE_V",
                     "LLAMA_ARG_N_CPU_MOE",
                     "LLAMA_ARG_NO_CACHE_PROMPT",
-                    "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS",
+                    "LLAMA_ARG_CHECKPOINT_EVERY_NT",
                     "LLAMA_ARG_SPEC_TYPE",
                     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
                 }
@@ -12640,6 +12774,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 remove_keys = {
                     "LLAMA_ARG_N_CPU_MOE",
                     "LLAMA_ARG_NO_CACHE_PROMPT",
+                    "LLAMA_ARG_CHECKPOINT_EVERY_NT",
+                    # Former name; no llama.cpp build reads it. Drop stale lines.
                     "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS",
                     "LLAMA_ARG_SPEC_TYPE",
                     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
@@ -12697,6 +12833,18 @@ class AgentHandler(BaseHTTPRequestHandler):
                 "agentViable": _model_agent_viable(model, int(context_length)),
             }
 
+            def _activation_readiness_cadence() -> dict:
+                # Both container restart helpers return only after Docker has
+                # replaced the previous llama-server, so no stale runtime can
+                # answer an early probe. Native and Lemonade runtimes keep the
+                # original fixed-delay cadence.
+                if (
+                    runtime_restart_strategy in {"compose-llama", "container-llama"}
+                    and not lemonade_runtime
+                ):
+                    return {"fast_poll_seconds": _MODEL_READINESS_FAST_POLL_SECONDS}
+                return {}
+
             def _sb_wait_ready(_env, _gguf, _ctx, lemonade_model_id=""):
                 return _wait_for_model_readiness(
                     _env,
@@ -12706,6 +12854,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     lemonade_model_id=lemonade_model_id,
                     return_proof=True,
                     require_exact_context=requested_context_length is not None,
+                    **_activation_readiness_cadence(),
                 )
 
             # Restart llama-server with the new model.
@@ -12859,6 +13008,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     lemonade_model_id=lemonade_model_id,
                     return_identity=True,
                     require_exact_context=requested_context_length is not None,
+                    **_activation_readiness_cadence(),
                 )
                 healthy = bool(runtime_identity)
 
@@ -12956,12 +13106,26 @@ class AgentHandler(BaseHTTPRequestHandler):
 
                 # Recreate bind-configured dependents so Docker Desktop cannot
                 # retain stale inodes after the atomic config replacements.
+                # LiteLLM is the exception only when this activation provably
+                # changed nothing it loads (same healthy instance, identical
+                # bind-mounted bytes, unchanged Compose definition), as with
+                # the model-independent switchboard route. A recreate there
+                # reloads identical inputs yet costs a graceful stop, a full
+                # Python import, and a health cycle (~20s on the fleet).
                 litellm_restart_attempted = container_states["ods-litellm"]["running"]
-                litellm_restarted = _restart_existing_container(
-                    "ods-litellm",
-                    container_states["ods-litellm"],
-                    recreate=True,
-                )
+                if litellm_restart_attempted:
+                    litellm_reuse = _reuse_unchanged_dependent(
+                        "ods-litellm",
+                        litellm_inputs_before,
+                    )
+                if litellm_reuse is None:
+                    litellm_restarted = _restart_existing_container(
+                        "ods-litellm",
+                        container_states["ods-litellm"],
+                        recreate=True,
+                    )
+                else:
+                    litellm_restarted = litellm_reuse == "recreated"
                 if litellm_restarted:
                     # Recreated LiteLLM images can spend tens of seconds in
                     # dependency import/startup before accepting HTTP. Wait on
@@ -12969,6 +13133,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                     # refusals cannot exhaust the completion probe and roll
                     # back an otherwise healthy model swap.
                     _wait_for_container_health("ods-litellm")
+                if litellm_restarted or litellm_reuse == "reused":
+                    # Kept or recreated, the public route must still serve a
+                    # completion against the newly activated model.
                     _verify_litellm_route(env)
                 if hermes_patched:
                     hermes_restart_attempted = container_states["ods-hermes"]["running"]
@@ -13068,6 +13235,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "litellm": (
                         "restarted"
                         if litellm_restarted
+                        else "unchanged"
+                        if litellm_reuse == "reused"
                         else "stopped"
                         if container_states["ods-litellm"]["exists"]
                         else "not_installed"
@@ -14621,11 +14790,20 @@ def _wait_for_model_readiness(
     require_exact_context: bool = False,
     cancel_event: threading.Event | None = None,
     allow_model_warmup: bool = True,
+    fast_poll_seconds: float = 0.0,
+    fast_poll_interval: float = _MODEL_READINESS_FAST_POLL_INTERVAL_SECONDS,
 ) -> bool | str | dict[str, object]:
     """Prove exact runtime identity and one matching meaningful completion.
 
     Legacy callers receive a boolean. Identity callers receive the concrete
     runtime identity. Adapters receive identity, actual context, and proof time.
+
+    ``fast_poll_seconds`` opts into dense probing (every
+    ``fast_poll_interval``) for that long *before* the regular schedule, for
+    callers whose restart already removed the previous runtime. Time spent
+    there counts toward ``initial_delay``, and the full ``attempts`` schedule
+    still follows, so a slow load never fails earlier than before. Lemonade
+    keeps the regular cadence because its probes can send warmup loads.
     """
     gpu_backend = str(env.get("GPU_BACKEND") or "nvidia").lower()
     windows_native_llama = _is_windows_host_llama_server(env)
@@ -14671,6 +14849,30 @@ def _wait_for_model_readiness(
         completion_model = lemonade_model_id
         completion_prefix = str(env.get("LEMONADE_API_BASE_PATH") or "/api/v1")
     expected_context = _positive_int(env.get("CTX_SIZE") or env.get("MAX_CONTEXT"))
+
+    if fast_poll_seconds > 0 and not is_lemonade:
+        fast_interval = max(0.05, float(fast_poll_interval))
+        fast_started = time.monotonic()
+        fast_result = _wait_for_model_readiness(
+            env,
+            model_id=model_id,
+            gguf_file=gguf_file,
+            llm_model_name=llm_model_name,
+            lemonade_model_id=lemonade_model_id,
+            attempts=max(1, math.ceil(float(fast_poll_seconds) / fast_interval)),
+            initial_delay=0,
+            interval=fast_interval,
+            return_identity=return_identity,
+            return_proof=return_proof,
+            require_exact_context=require_exact_context,
+            cancel_event=cancel_event,
+            allow_model_warmup=allow_model_warmup,
+        )
+        # Every success contract is truthy; every not-ready result is falsy
+        # and falls through to the unchanged regular schedule below.
+        if fast_result:
+            return fast_result
+        initial_delay = max(0.0, float(initial_delay) - (time.monotonic() - fast_started))
 
     logger.info("Waiting for requested model identity %s at %s", gguf_file, identity_url)
     warmup_sent = False
@@ -15836,6 +16038,109 @@ def _restore_container_state(
             detail = (result.stderr or result.stdout or "").strip()
             raise RuntimeError(f"Could not restore stopped state for {container}: {detail[:300]}")
     return False
+
+
+def _dependent_bind_inputs(container: str) -> dict | None:
+    """Fingerprint a running dependent instance and its bind-mounted host files.
+
+    Returns ``None`` whenever the view cannot be proved from this host, for
+    example when the agent runs inside Docker Desktop and the mount sources
+    are not host-readable paths, or when a bind source is a directory. Callers
+    then keep the unconditional recreate.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "docker", "inspect", "--type", "container", "--format",
+                "{{json .}}", container,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    state = data.get("State")
+    container_id = data.get("Id")
+    if (
+        not isinstance(state, dict)
+        or state.get("Running") is not True
+        or not isinstance(container_id, str)
+        or not container_id
+    ):
+        return None
+    health = state.get("Health")
+    health_status = (
+        str(health.get("Status") or "").strip().casefold()
+        if isinstance(health, dict)
+        else "none"
+    )
+    mounts = data.get("Mounts")
+    if mounts is None:
+        mounts = []
+    if not isinstance(mounts, list):
+        return None
+    files: dict[str, str] = {}
+    for mount in mounts:
+        if not isinstance(mount, dict):
+            return None
+        if mount.get("Type") != "bind":
+            continue
+        source = mount.get("Source")
+        if not isinstance(source, str) or not source:
+            return None
+        path = Path(source)
+        try:
+            if not stat_mod.S_ISREG(path.stat().st_mode):
+                return None
+            files[source] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return None
+    return {"id": container_id, "health": health_status, "files": files}
+
+
+def _reuse_unchanged_dependent(container: str, before: dict | None) -> str | None:
+    """Keep a running dependent whose inputs this activation did not change.
+
+    ``before`` is :func:`_dependent_bind_inputs` captured before the
+    activation's first write. The instance is kept only when it is the same
+    healthy container, every bind-mounted host file is byte-identical to that
+    capture, and a non-forced Compose ``up`` confirms the service definition
+    (including ``.env`` interpolation) still matches. Recreating it would then
+    reload exactly what it already runs.
+
+    Returns ``"reused"`` for the untouched instance, ``"recreated"`` when
+    Compose itself replaced a drifted definition (the caller must wait for
+    health), or ``None`` when the caller must force-recreate as before.
+    """
+    if before is None:
+        return None
+    current = _capture_container_state(container)
+    if not current["exists"] or not current["running"]:
+        raise RuntimeError(f"{container} stopped during model activation")
+    now = _dependent_bind_inputs(container)
+    if (
+        now is None
+        or now["id"] != before["id"]
+        or now["files"] != before["files"]
+        or now["health"] not in {"healthy", "none"}
+    ):
+        return None
+    ok, error = docker_compose_converge([container.removeprefix("ods-")])
+    if not ok:
+        raise RuntimeError(f"Could not reconcile {container}: {error}")
+    after = _dependent_bind_inputs(container)
+    if after is not None and after["id"] == now["id"]:
+        return "reused"
+    return "recreated"
 
 
 def _opencode_config_paths() -> tuple[Path, ...]:
@@ -17125,12 +17430,14 @@ def _stop_macos_native_llama_server(pid_file: Path) -> None:
 def _native_llama_tuning_arguments(env: dict, llama_bin: Path) -> list[str]:
     """Qualify optional tuning before disrupting an existing listener."""
     tuning = INSTALL_DIR / "installers/macos/lib/native-checkpoint-args.py"
+    # Same .env keys as installers/macos/lib/native-model.sh, which are also
+    # llama.cpp's own env names for these flags.
     tuning_keys = (
-        ("LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS", "--interval"),
+        ("LLAMA_ARG_CHECKPOINT_EVERY_NT", "--interval"),
         ("LLAMA_ARG_CTX_CHECKPOINTS", "--checkpoints"),
         ("LLAMA_ARG_CACHE_RAM", "--cache-mib"),
         ("LLAMA_ARG_SLEEP_IDLE_SECONDS", "--idle-seconds"),
-        ("LLAMA_ARG_CHECKPOINT_MIN_STEP", "--min-spacing"),
+        ("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT", "--min-spacing"),
     )
     if platform.system() == "Darwin" and any(env.get(key, "").strip() for key, _ in tuning_keys):
         if not tuning.is_file():
@@ -17473,6 +17780,25 @@ def _append_network_settings(
         argv.extend(["--network-alias", str(alias)])
 
 
+# GPU_BACKEND values that scripts/resolve-compose-stack.sh serves with
+# docker-compose.nvidia.yml or docker-compose.cpu.yml. Both pin a llama.cpp
+# b9014 image and default LLAMA_ARG_SPEC_TYPE there.
+_LLAMA_SPEC_DEFAULT_BACKENDS = frozenset({"nvidia", "jetson", "cpu"})
+
+
+def _llama_spec_type_default(env: dict) -> str:
+    """Return the speculative type the NVIDIA/CPU Compose overlays would set.
+
+    Mirrors ``LLAMA_ARG_SPEC_TYPE=${LLAMA_ARG_SPEC_TYPE:-${LLAMA_SPEC_TYPE:-ngram-mod}}``
+    so a recreate from inspected state serves the same way as ``docker compose
+    up``. Lemonade, Intel/Arc and Apple backends get no default.
+    """
+    backend = str(env.get("GPU_BACKEND") or "").strip().lower()
+    if backend not in _LLAMA_SPEC_DEFAULT_BACKENDS or _uses_lemonade_runtime(env):
+        return ""
+    return str(env.get("LLAMA_SPEC_TYPE") or "").strip() or "ngram-mod"
+
+
 def _llama_recreate_argv(
     inspect_config: dict,
     env: dict,
@@ -17574,6 +17900,12 @@ def _llama_recreate_argv(
         ):
             if key in env:
                 replacement_env[key] = str(env.get(key) or "")
+    # Inspected LLAMA_ARG_* values that .env does not name are dropped below,
+    # so re-derive the overlay's speculative default instead of losing it.
+    if not str(replacement_env.get("LLAMA_ARG_SPEC_TYPE") or "").strip():
+        spec_type = _llama_spec_type_default(env)
+        if spec_type:
+            replacement_env["LLAMA_ARG_SPEC_TYPE"] = spec_type
     seen_env_keys = set()
     for entry in container_config.get("Env") or []:
         key = str(entry).split("=", 1)[0]

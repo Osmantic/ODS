@@ -16,20 +16,30 @@ import path from "node:path";
 import { isIP } from "node:net";
 import { isDeepStrictEqual } from "node:util";
 import { pythonSyntaxGuidance, escapedLineBreakDiagnosis } from './python-syntax-guidance.mjs';
+import { REDIRECT_ORDER_NOTE, stderrRedirectedBeforeStdoutFile } from './shell-redirect-order.mjs';
 import { captureNativeWebSearchResult, projectNativeWebSearchResult, projectWebResult,
-  successfulTruncatedFetch, projectNativeFetchGuidance, TRUNCATED_FETCH_EXTRACTION_GUIDANCE } from "./web-result-projection.mjs";
+  successfulTruncatedFetch, projectNativeFetchGuidance, TRUNCATED_FETCH_EXTRACTION_GUIDANCE,
+  SEARCH_SOURCE_EVIDENCE_GUIDANCE, OMITTED_SEARCH_SNIPPETS_GUIDANCE } from "./web-result-projection.mjs";
+import { SEARCH_PACING_STREAK, SEARCH_PACING_REASON, searchTerms, nearDuplicateSearch, searchLeadUrls,
+  duplicateSearchReason, ownerResearchDate, staleSearchDate, staleSearchDateGuidance } from "./research-pacing.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
+import { HOST_CITATION_LIMITS } from './citation-verification.mjs';
 import { createExtensionCompletionGate } from "./extension-completion-gate.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
 import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLaneStopReason, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
+import { assistantMessageText, composeProgressFinalization, composeReadPages, createProgressFinalization, partialFinalizationAnswer,
+  PROGRESS_FINALIZATION_INSTRUCTION } from "./progress-finalization.mjs";
+import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
   boundInspectionPageErrors, pageErrorRepairInstruction, visibilityInspectionMatches, visibilityInspectionInstruction } from './preview-interaction-assurance.mjs';
-import { workspaceRevalidationCandidate, completedPreviewInspection, boundedPreviewVerification } from "./preview-revalidation.mjs";
+import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
+import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
+  requestedTextDeliveryNote } from './requested-literals.mjs';
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -48,6 +58,15 @@ const COACHING_REPEAT_INTERVAL = 8;
 const MAX_COMPARE_SWAP_REPAIR_CHARS = 32_768;
 const MAX_COMPARE_SWAP_REPAIRS_PER_PATH = 3;
 const MAX_TRACKED_WORKSPACE_FILE_BYTES = 4 * 1024 * 1024;
+// Derived-write detection bounds. Below the minimum, re-typing costs less
+// than a corrective round trip; larger sources are never read; only the most
+// recent files this run wrote, edited or read are compared.
+const MIN_DERIVED_CONTENT_BYTES = 256;
+const MAX_DERIVED_SOURCE_BYTES = 256 * 1024;
+const MAX_DERIVED_WRITE_BYTES = 1024 * 1024;
+const MAX_DERIVED_SOURCE_CANDIDATES = 64;
+const MAX_DERIVED_JSON_STRINGS = 256;
+const MAX_DERIVED_JSON_DEPTH = 4;
 // Read-only capabilities allowed before an ODS-owned continuation of an
 // unfinished extension decision. A prepare call requires its separate,
 // validated no-work rejection; no generic exec or workspace mutation qualifies.
@@ -170,6 +189,13 @@ export const PHANTOM_PROCESS_REASON =
 // many answers are recorded without consuming the failure budget.
 export const FREE_CORRECTIONS_PER_KIND = 2;
 
+// Refusals for a write that re-types existing workspace files (see
+// derivedWriteMatch). Fixed text; only the appended matched paths vary.
+export const DERIVED_COPY_WRITE_REASON =
+  "Not written: this content re-types an existing workspace file. Copy existing files with one short exec command instead of re-typing them, for example cp SOURCE DESTINATION; it is byte-exact and much faster.";
+export const DERIVED_MAP_WRITE_REASON =
+  "Not written: string values in this JSON re-type existing workspace files. Generate a JSON map of file contents with one short exec command that reads the real files instead of re-typing them, for example python3 -c \"import json; json.dump({n: open(n, 'rb').read().decode('utf-8') for n in ['a.py', 'b.py']}, open('sources.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=2)\" with workdir set to their directory; it is byte-exact and much faster.";
+
 export const VERIFICATION_PENDING_DELIVERY_PREFIX =
   "Pixel stopped before the verification process reached a terminal result, so success is unverified. The workspace is preserved; ask Pixel to continue the run or inspect the process.";
 
@@ -255,6 +281,14 @@ export const WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX =
 
 export const CLIENT_CANCELLED_REASON =
   "The owner cancelled this Pixel response. Do not call another tool or continue the task in this turn.";
+
+// Model-only context for the first owner message after a cancel. The
+// cancelled request stays in the transcript without an answer, and a model
+// otherwise treats it as still pending (tower1 round 067).
+export const OWNER_CANCELLED_REQUEST_CONTEXT =
+  "[ODS Portal note, not owner text: the owner cancelled their previous message in this chat before it was answered. " +
+  "That request is withdrawn. Do not answer, continue or resume it, and do not use tools or cite evidence for it, " +
+  "unless the owner's current message below explicitly asks you to. Respond only to the current message.]";
 
 export const EXACT_DOWNLOAD_REQUIRES_BROKER_REASON =
   "Pixel cannot turn web_fetch or another transformed page view into an exact-byte download. Call pixel_ops_download_stage now; ODS will bind it to the owner's exact HTTPS URL, destination basename, and expected digest. Wait for that exact job with pixel_ops_job_wait, then publish only its verified receipt with pixel_ods_download_promote. Do not create a substitute file.";
@@ -630,6 +664,130 @@ function normalizeWorkspaceFilePath(value) {
     value = value.slice("workspace/".length);
   }
   return value.replace(/^(?:\.\/)+/, "");
+}
+
+// A normalized workspace-relative file path, or undefined for absolute,
+// traversing, empty-component or otherwise unusual spellings.
+function derivedWorkspacePath(value) {
+  if (typeof value !== "string" || !value || value.length > 1024 ||
+      value.startsWith("/") || /[\\\0]/.test(value)) return undefined;
+  return value.split("/").every((part) => part && part !== "." && part !== "..")
+    ? value : undefined;
+}
+
+// The exact bytes of one regular workspace file, or undefined. Links are
+// never followed below the configured root: every directory component and
+// the file itself must be lstat-real, the file is opened with O_NOFOLLOW and
+// must still be the same single-link inode of the expected size. Anything
+// missing, linked, special, hard-linked, oversized or changing is skipped.
+function readDerivedSource(base, relative, size) {
+  if (!Number.isSafeInteger(size) || size < 0 || size > MAX_DERIVED_SOURCE_BYTES) return undefined;
+  let fd;
+  try {
+    const parts = relative.split("/");
+    let cursor = base;
+    for (const part of parts.slice(0, -1)) {
+      cursor = path.join(cursor, part);
+      const entry = fs.lstatSync(cursor);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) return undefined;
+    }
+    const file = path.join(cursor, parts.at(-1));
+    const before = fs.lstatSync(file);
+    if (before.isSymbolicLink() || !before.isFile() || before.nlink !== 1 || before.size !== size) return undefined;
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== size) return undefined;
+    const bytes = Buffer.alloc(size + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = fs.readSync(fd, bytes, length, bytes.length - length, length);
+      if (count === 0) break;
+      length += count;
+    }
+    return length === size ? bytes.subarray(0, size) : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
+}
+
+// Does a write re-type existing workspace files? `copy`: the whole content
+// is one candidate file. `map`: the content is JSON (object or array) and at
+// least one string value is a whole candidate file, as in a sources.json that
+// maps filenames to their source text. Each comparison is byte-exact against
+// the file on disk now, never against remembered or read-result text, with
+// one tolerated difference: the file's single final newline, which re-typing
+// drops (tower1 round 058 dropped it from every sources.json value). No other
+// difference matches. Candidates are workspace-relative paths observed in
+// this run; the write target itself is never a candidate. A cheap lstat size
+// prefilter precedes any read, so the check can run on every write.
+export function derivedWriteMatch(root, writePath, content, candidates) {
+  if (typeof root !== "string" || !path.isAbsolute(root) || typeof content !== "string" ||
+      !Array.isArray(candidates) || candidates.length === 0) return undefined;
+  const size = Buffer.byteLength(content, "utf8");
+  if (size < MIN_DERIVED_CONTENT_BYTES || size > MAX_DERIVED_WRITE_BYTES) return undefined;
+  // Keyed by the size of the file each target can match.
+  const targets = new Map();
+  const addTarget = (kind, text) => {
+    const bytes = Buffer.from(text, "utf8");
+    if (bytes.length < MIN_DERIVED_CONTENT_BYTES || bytes.length > MAX_DERIVED_SOURCE_BYTES) return;
+    for (const [fileSize, withoutFinalNewline] of [[bytes.length, false], [bytes.length + 1, true]]) {
+      const sameSize = targets.get(fileSize) ?? [];
+      sameSize.push({kind, bytes, withoutFinalNewline});
+      targets.set(fileSize, sameSize);
+    }
+  };
+  addTarget("copy", content);
+  if (/^\s*[[{]/.test(content)) {
+    let parsed;
+    try { parsed = JSON.parse(content); } catch {}
+    let strings = 0;
+    const visit = (value, depth) => {
+      if (strings >= MAX_DERIVED_JSON_STRINGS || depth > MAX_DERIVED_JSON_DEPTH) return;
+      if (typeof value === "string") {
+        strings += 1;
+        addTarget("map", value);
+      } else if (value && typeof value === "object") {
+        for (const item of Array.isArray(value) ? value : Object.values(value)) visit(item, depth + 1);
+      }
+    };
+    if (parsed && typeof parsed === "object") visit(parsed, 0);
+  }
+  if (targets.size === 0) return undefined;
+  let base;
+  try {
+    // The configured root itself may be a platform alias (macOS /var); no
+    // link below it is followed.
+    base = fs.realpathSync(root);
+    if (!fs.statSync(base).isDirectory()) return undefined;
+  } catch {
+    return undefined;
+  }
+  const copies = [];
+  const maps = [];
+  const seen = new Set();
+  for (const candidate of candidates.slice(-MAX_DERIVED_SOURCE_CANDIDATES)) {
+    const relative = derivedWorkspacePath(candidate);
+    if (!relative || relative === writePath || seen.has(relative)) continue;
+    seen.add(relative);
+    let info;
+    try { info = fs.lstatSync(path.join(base, ...relative.split("/"))); } catch { continue; }
+    if (!info.isFile() || !targets.has(info.size)) continue;
+    const bytes = readDerivedSource(base, relative, info.size);
+    if (!bytes) continue;
+    for (const target of targets.get(info.size)) {
+      const matched = target.withoutFinalNewline
+        ? bytes[bytes.length - 1] === 0x0a && target.bytes.equals(bytes.subarray(0, -1))
+        : target.bytes.equals(bytes);
+      if (!matched) continue;
+      const matches = target.kind === "copy" ? copies : maps;
+      if (!matches.includes(relative)) matches.push(relative);
+    }
+  }
+  if (copies.length > 0) return {kind: "copy", files: copies};
+  if (maps.length > 0) return {kind: "map", files: maps};
+  return undefined;
 }
 
 function stripTrailingToolEnvelopeLeak(value) {
@@ -1328,6 +1486,12 @@ function canonicalPendingProcessSessionId(params, pendingSessions) {
   const alias = params.sessionId.match(/^session-(.+)-([1-9][0-9]*)$/);
   if (!alias || !pendingSessions.has(alias[1])) return undefined;
   return alias[1];
+}
+
+// The pinned runtime runs a Tool Search catalog tool under the child ID
+// `tool_search_code:<sanitized parent ID>:<tool>:<sequence>`.
+function toolSearchChildPrefix(parentId) {
+  return `tool_search_code:${String(parentId).trim().replace(/[^A-Za-z0-9_.:-]+/g, "_").slice(0, 120) || "call"}:`;
 }
 
 function toolCallFailed(event) {
@@ -6598,9 +6762,11 @@ export function createToolLoopGuard({
   verifyWorkspacePreview,
   workspacePreviewInspectionAvailable = false,
   publishWorkspacePreview,
+  hostCitationVerifier,
   execMarkerCleanupDelayMs = 5000,
   limits,
   warn = () => {},
+  info = () => {},
 } = {}) {
   const effective = normalizedLimits(limits);
   // This intentionally stays plugin-local. OpenClaw's runContext write API is
@@ -6609,6 +6775,10 @@ export function createToolLoopGuard({
   const runs = new Map();
   const activeUsers = new Map();
   const sessionRuns = new Map();
+  // The newest run observed per session key, and the owner cancel that the
+  // next owner message in that chat must start clean from.
+  const sessionKeyRuns = new Map();
+  const sessionCancellations = new Map();
   const pendingToolRuns = new Map();
   const sessionPreviews = new Map();
   // A prior owner requirement is not a passing inspection. Bind it to the
@@ -6688,13 +6858,52 @@ export function createToolLoopGuard({
   // result, so a model that keeps repeating the call still reaches the
   // unchanged consecutive/total failure fuses. A nested Tool Search execution
   // is charged through its outer tool_call receipt, whose ID differs, so it
-  // never receives the allowance.
+  // never receives the allowance. Returns whether this answer was free.
   function recordFreeCorrection(state, kind, callId, toolName) {
-    if (!state || typeof callId !== "string" || !callId || callId.startsWith("tool_search_code:")) return;
+    if (!state || typeof callId !== "string" || !callId || callId.startsWith("tool_search_code:")) return false;
     const used = state.freeCorrections.get(kind) ?? 0;
-    if (used >= FREE_CORRECTIONS_PER_KIND) return;
+    if (used >= FREE_CORRECTIONS_PER_KIND) return false;
     state.freeCorrections.set(kind, used + 1);
     state.progressBudget.observeResult({callId, tool: toolName, failed: false, discovery: true});
+    return true;
+  }
+
+  // Refusal text for a write that re-types files this run wrote, edited or
+  // read (see derivedWriteMatch), or undefined to let the write proceed.
+  // The refusal is a steer toward cp or a json.dump command, not a failed
+  // action, so it is never charged. Each run
+  // gets at most FREE_CORRECTIONS_PER_KIND of them, and at most one per
+  // destination path; after that the write proceeds, because refusing a
+  // model that re-types anyway would only cost another full re-typing. It
+  // is skipped where exec cannot follow it: owner exec exclusions, scoped
+  // single-file repairs, visual continuations, a new static site before its
+  // entry file exists, ODS-written Operations evidence and read-only team
+  // roles. Nested Tool Search executions and unidentified calls get no
+  // allowance and are never refused here.
+  function derivedWriteRefusal(state, selectedToolName, params, callId, toolName) {
+    if (selectedToolName !== "write" || typeof params?.content !== "string" ||
+        typeof callId !== "string" || !callId || callId.startsWith("tool_search_code:") ||
+        (state.freeCorrections.get("derived-write") ?? 0) >= FREE_CORRECTIONS_PER_KIND) return undefined;
+    const writePath = derivedWorkspacePath(normalizeWorkspaceFilePath(params.path));
+    const restriction = state.workspacePreviewRestrictions;
+    if (!writePath || state.derivedWriteRefusedPaths.has(writePath) ||
+        restriction?.exec || restriction?.mutation || restriction?.existingFile ||
+        state.workspaceVisualContinuationRequested || state.operationsWorkspaceContinuationRequested ||
+        state.managedTeamReadOnly ||
+        (state.workspacePreviewMode === "new-static" &&
+          ![...state.successfulWritePaths].some((value) => typeof value === "string" && value.endsWith("/index.html")))) {
+      return undefined;
+    }
+    const candidates = [...new Set([
+      ...state.successfulWritePaths, ...state.successfulEditPaths, ...state.successfulReadPaths,
+    ])];
+    const match = derivedWriteMatch(state.configuredWorkspaceRoot, writePath, params.content, candidates);
+    if (!match || !recordFreeCorrection(state, "derived-write", callId, toolName)) return undefined;
+    state.derivedWriteRefusedPaths.add(writePath);
+    const files = match.files.slice(0, 3).map((file) => JSON.stringify(file)).join(", ");
+    return match.kind === "copy"
+      ? `${DERIVED_COPY_WRITE_REASON} Existing file: ${files}.`
+      : `${DERIVED_MAP_WRITE_REASON} Repeated files: ${files}.`;
   }
 
   function pruneRuns() {
@@ -6707,6 +6916,28 @@ export function createToolLoopGuard({
     while (activeUsers.size >= MAX_TRACKED_RUNS) {
       activeUsers.delete(activeUsers.keys().next().value);
     }
+  }
+
+  function rememberBySessionKey(map, sessionKey, value) {
+    map.delete(sessionKey);
+    while (map.size >= MAX_TRACKED_RUNS) map.delete(map.keys().next().value);
+    map.set(sessionKey, value);
+  }
+
+  // Run binding across an owner cancel. The first owner turn that starts in
+  // the chat afterwards takes the cancel record: that run, and every attempt
+  // of it, is told the earlier request is withdrawn, and its completion
+  // assurance cannot bind web evidence to that request. A retry attempt of the
+  // cancelled run never takes it, and a later message never sees it again.
+  function takeOwnerCancellation(state, runId, context, agentId) {
+    if (state.cancelBoundaryObserved) return;
+    state.cancelBoundaryObserved = true;
+    const sessionKey = context?.sessionKey;
+    const record = typeof sessionKey === "string" ? sessionCancellations.get(sessionKey) : undefined;
+    if (!record || record.runId === runId || state.clientCancelled || !ownerInteractiveTurn(context, agentId)) return;
+    sessionCancellations.delete(sessionKey);
+    state.withdrawnOwnerRequest = record;
+    state.completionAssurance.followWithdrawnRequest(record.ownerText);
   }
 
   function rememberSessionPreview(sessionId, preview, state) {
@@ -6792,11 +7023,13 @@ export function createToolLoopGuard({
         extensionReadOnlyRecovery: {statusCalls:0, completedStatusCalls:0, otherToolSeen:false},
         extensionDecisionRecovery: {prepareCalls:0, unsafeToolSeen:false, gateRevisionRequested:false},
         progressBudget: createRunProgressBudget(),
+        progressFinalization: createProgressFinalization(),
         progressAbortAttempted: false,
         search: 0,
         fetch: 0,
         total: 0,
         webLoopAborted: false,
+        researchStopped: false,
         webTerminals: new Map(),
         codingExhausted: false,
         codingTerminalBlocks: 0,
@@ -6813,6 +7046,14 @@ export function createToolLoopGuard({
         privateNetworkPrompt: false,
         clientCancelled: false,
         fetchedUrls: new Map(),
+        // Research pacing (research-pacing.mjs). Run state, so it survives
+        // transcript compaction: bound search receipts with their result
+        // URLs, searches with leads since the last page read, and the
+        // owner-stated date used to flag stale dated queries.
+        searchLedger: [],
+        unreadSearchStreak: 0,
+        searchPacingPaused: false,
+        ownerResearchDate: undefined,
         githubCanonicalUrl: undefined,
         githubCanonicalSatisfied: false,
         odsRoutingInitialized: false,
@@ -6918,6 +7159,8 @@ export function createToolLoopGuard({
         backgroundExecStarted: false,
         // Budget-free corrective answers used so far, by kind.
         freeCorrections: new Map(),
+        // Destinations whose re-typed write was already refused once.
+        derivedWriteRefusedPaths: new Set(),
         execOriginalByWrapped: new Map(),
         verificationOriginalByWrapped: new Map(),
         currentSessionId: undefined,
@@ -6982,15 +7225,44 @@ export function createToolLoopGuard({
     }
   }
 
+  // After the budget stops a response, ordinary research, coding and visual
+  // work gets one tool-free answer turn (progress-finalization.mjs). Receipt-
+  // based work (Operations, exact downloads, managed extension requests, team
+  // coordination) keeps the strict stop text: a model summary must not stand
+  // in for those host receipts.
+  function progressFinalizationEligible(state) {
+    return !state.clientCancelled && !state.recursiveDeleteDenied &&
+      !state.unrequestedOperationsAborted && !state.webLoopAborted && !state.ownerQuestions &&
+      !state.operationsRequired && !state.exactDownloadRequested && !state.extensionCompletionGate?.active &&
+      !state.extensionPendingHandoff && !state.managedTeamCoordinator;
+  }
+
+  function progressFinalization(state) {
+    const finalization = state.progressFinalization;
+    if (state.progressBudget.exhausted) finalization.arm(progressFinalizationEligible(state));
+    return finalization;
+  }
+
+  // Session history can contain an unrelated publication. Preserve it for
+  // current preview work, but do not attach it to a later research failure.
+  function progressStopPreview(state) {
+    return state.workspacePreview ?? (state.workspacePreviewRequired &&
+      !state.workspacePreviewForbidden ? state.workspaceLastVerifiedPreview : undefined);
+  }
+
   function stopExhaustedRun(state, runId) {
     if (!state?.progressBudget.exhausted || state.progressAbortAttempted) return;
     const sessionId = state.currentSessionId;
     if (!sessionId || sessionRuns.get(sessionId) !== runId) return;
     try { execControl?.signal?.(runId); }
     catch (error) { warn(`Pixel progress-limit execution signal failed: ${String(error)}`); }
+    // Tools stay blocked while the single finalization answer turn is pending;
+    // its tool boundary or the next model end performs this abort instead.
+    if (progressFinalization(state).abortDeferred) return;
     // Do not clear the session or its history. Abort only its active harness
     // run; deliveryVerificationForRun retains the host-authoritative artifacts.
-    // Only called at model_call_ended. Aborting from model-start/stream
+    // Called at model_call_ended, or at a finalization-turn tool boundary after
+    // that provider stream completed. Aborting from model-start/stream
     // construction can strand the provider prompt and its session write lock.
     // Tool hooks enforce the terminal budget while this boundary is pending.
     let observed = false;
@@ -7020,7 +7292,34 @@ export function createToolLoopGuard({
     } catch { observe({callbackThrew:true}); }
   }
 
+  // Publication currency across later calls (see preview-revalidation.mjs).
+  // A call this guard refuses runs nothing: it neither advances nor revokes a
+  // pending host comparison, and its receipt is recognized by exact call ID.
   function beforeToolCall(event, context, agentId = "pixel") {
+    const decision = decideToolCall(event, context, agentId);
+    const toolName = context?.toolName ?? event?.toolName;
+    const { runId } = runIdentity(event, context);
+    const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
+    if (!state || workspaceReadOnlyCall(toolName, event?.params)) return decision;
+    const callId = context?.toolCallId ?? event?.toolCallId;
+    if (decision?.block === true && typeof callId === 'string' && callId) {
+      const refused = state.previewRevalidationRefusedCalls ??= new Set();
+      if (refused.size >= MAX_TRACKED_RUNS) refused.delete(refused.values().next().value);
+      refused.add(callId);
+      return decision;
+    }
+    state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
+    const selected = toolName === 'tool_call'
+      ? /^(?:openclaw:core:)?(?:exec|read|write|edit|apply_patch)$/.test(event?.params?.id ?? '')
+        ? {name:event.params.id.split(':').at(-1),params:event.params.args} : undefined
+      : {name:toolName,params:event?.params};
+    if (!workspaceRevalidationCandidate(selected?.name, selected?.params)) {
+      state.previewRevalidationCandidate = undefined;
+    }
+    return decision;
+  }
+
+  function decideToolCall(event, context, agentId) {
     if (context?.agentId !== agentId) return undefined;
     // OpenClaw 2026.6 does not consistently expose sessionKey during
     // before_prompt_build for OpenAI-compatible HTTP turns. Tool hooks do
@@ -7039,17 +7338,19 @@ export function createToolLoopGuard({
     // policy and deterministic routing active from runId alone; operations
     // that truly need a session still fail closed on the optional sessionId.
     const state = runId ? stateFor(runId) : undefined;
-    if (state) {
-      state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
-      const selected = toolName === 'tool_call'
-        ? /^(?:openclaw:core:)?(?:exec|read|write|edit|apply_patch)$/.test(event?.params?.id ?? '')
-          ? {name:event.params.id.split(':').at(-1),params:event.params.args}
-          : event?.params?.id === `openclaw:pixel-ods:${PREVIEW_INSPECTION_TOOL}`
-            ? {name:PREVIEW_INSPECTION_TOOL,params:event.params.args} : undefined
-        : {name:toolName,params:event?.params};
-      if (!workspaceRevalidationCandidate(selected?.name, selected?.params)) {
-        state.previewRevalidationCandidate = undefined;
+    // Every tool stays blocked after the budget stops the response. Until the
+    // model has seen the finalization instruction, the refusal carries it; a
+    // tool call during the answer turn ends the run at this boundary (the
+    // provider stream has already completed), keeping only substantive text
+    // from that same message as a partial answer (observeAssistantMessage).
+    if (state?.progressBudget.exhausted && progressFinalization(state).phase !== 'unavailable') {
+      const callId = context?.toolCallId ?? event?.toolCallId;
+      if (state.progressFinalization.toolBoundary(state.operationsPromptRound, callId) === 'instruct') {
+        return {block:true, blockReason:PROGRESS_FINALIZATION_INSTRUCTION};
       }
+      if (state.progressFinalization.partial) verifyPartialAnswer(state, runId, agentId);
+      stopExhaustedRun(state, runId);
+      return {block:true, blockReason:RUN_PROGRESS_STOP_REASON};
     }
     const malformedPath = malformedRelativeWorkspacePath(toolName, normalizedParams ?? event?.params,
       state?.configuredWorkspaceRoot, state?.playgroundOwnerIntent);
@@ -8636,6 +8937,38 @@ export function createToolLoopGuard({
         : undefined;
     }
 
+    // Research pacing. Both refusals run nothing and are recorded as free
+    // corrections, so they consume neither the search allowance nor the
+    // failure budget. Beyond that bound the search proceeds unchanged: pacing
+    // never becomes a new way to fail a run. Direct and Tool Search forms
+    // share this point; an allowed outer call leaves its nested call allowed.
+    // The recall precedes the allowance check: after compaction a repeated
+    // search is how lost leads show up, including once searches are spent.
+    if (selectedToolName === "web_search" && state) {
+      const searchCallId = context?.toolCallId ?? event?.toolCallId;
+      const freeLeft = (kind) => (state.freeCorrections.get(kind) ?? 0) < FREE_CORRECTIONS_PER_KIND;
+      // Recalled or paused leads are useful only while a page can be read.
+      const readsLeft = Math.min(effective.fetch - state.fetch, effective.total - state.total) > 0;
+      const searchesLeft = Math.min(effective.search - state.search, effective.total - state.total) > 0;
+      const terms = searchTerms(selectedParams?.query);
+      const earlier = state.searchLedger.find((entry) => !entry.recalled &&
+        nearDuplicateSearch(terms, entry.terms));
+      if (earlier && readsLeft && freeLeft("search-duplicate")) {
+        // Recall once per earlier search. A deliberate repeat then proceeds.
+        earlier.recalled = true;
+        recordFreeCorrection(state, "search-duplicate", searchCallId, toolName);
+        return { block: true, blockReason: duplicateSearchReason(earlier.query, earlier.urls) };
+      }
+      if (state.unreadSearchStreak >= SEARCH_PACING_STREAK && !state.searchPacingPaused &&
+          readsLeft && searchesLeft && freeLeft("search-pacing")) {
+        // Pause once per streak; a model that finds no fitting lead may
+        // search again immediately.
+        state.searchPacingPaused = true;
+        recordFreeCorrection(state, "search-pacing", searchCallId, toolName);
+        return { block: true, blockReason: SEARCH_PACING_REASON };
+      }
+    }
+
     // Search and page-reading allowances are independent. Their denial and
     // retry state survive compaction; progress through another permitted tool
     // neither consumes that denial allowance nor resets it. Total exhaustion
@@ -8661,6 +8994,18 @@ export function createToolLoopGuard({
         terminal.blocks = 1;
         terminal.round = state.operationsPromptRound;
         return { block: true, blockReason: reason };
+      }
+      // The research loop stops this response exactly as the progress budget
+      // does: no further tool runs, and this refusal carries the one-time
+      // tool-free answer instruction instead of an immediate abort. A tool
+      // call in that answer turn, or an ineligible run, still aborts.
+      if (state.progressFinalization.phase === "idle" && progressFinalizationEligible(state)) {
+        state.researchStopped = true;
+        state.progressBudget.stop();
+        warn(`Pixel stopped a repeated web-tool loop for run ${runId}; one tool-free answer turn remains`);
+        if (progressFinalization(state).toolBoundary(state.operationsPromptRound, context?.toolCallId ?? event?.toolCallId) === "instruct") {
+          return { block: true, blockReason: PROGRESS_FINALIZATION_INSTRUCTION };
+        }
       }
       let aborted = false;
       try {
@@ -8795,6 +9140,19 @@ export function createToolLoopGuard({
       }
     }
 
+    // Derived writes. Fleet, coding journey: on the laptop (Qwen3.5-9B, round
+    // 057) the model re-typed three source files into public/sources.json
+    // through write (5,033 output tokens, 410 s at ~12 tok/s) and one
+    // hand-escaped value no longer matched its file; on tower1 (round 058)
+    // every re-typed value lost its final newline. Both failed exactness. When
+    // a write repeats files this run already wrote or read, whole or as JSON
+    // string values, refuse it once with the command that copies them exactly.
+    // Every refusal above keeps precedence; direct and Tool Search forms share
+    // this point, and the answer is a free correction (see derivedWriteRefusal).
+    const derivedReason = derivedWriteRefusal(state, selectedToolName, selectedParams,
+      context?.toolCallId ?? event?.toolCallId, toolName);
+    if (derivedReason) return { block: true, blockReason: derivedReason };
+
     if (!WEB_TOOLS.has(toolName)) {
       if (selectedToolName === "exec" && execControl) {
         const params = { ...selectedParams };
@@ -8849,6 +9207,11 @@ export function createToolLoopGuard({
     const kind = toolName === "web_search" ? "search" : "fetch";
     state[kind] += 1;
     state.total += 1;
+    if (kind === "fetch") {
+      // Any page-reading attempt ends the unread-search streak.
+      state.unreadSearchStreak = 0;
+      state.searchPacingPaused = false;
+    }
     if (toolName === "web_fetch") {
       const fetchUrl = canonicalFetchUrl(event);
       const requestedChars = event?.params?.maxChars;
@@ -8895,6 +9258,7 @@ export function createToolLoopGuard({
       if (ownerIntent) state.githubExtensionRequest = /^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(ownerIntent);
       if (capabilities !== undefined) state.preparationExecutionHost = capabilities.executionHost;
       if (ownerIntent) state.playgroundOwnerIntent = ownerIntent;
+      if (ownerIntent) state.ownerResearchDate = ownerResearchDate(ownerIntent);
       if (ownerIntent) state.ownerQuestionIntent=requestsChoiceQuestion(ownerIntent);
       if (teamRole) {state.managedTeamWorker=true;state.managedTeamReadOnly=teamRole!=='Builder';state.managedTeamCoordinator=teamRole==='Coordinator';state.ownerQuestionIntent=teamQuestionIntent;}
       if (capabilities !== undefined) {
@@ -8910,7 +9274,12 @@ export function createToolLoopGuard({
       }
       if (typeof context?.sessionKey === "string" && context.sessionKey) {
         state.currentSessionKey = context.sessionKey;
+        rememberBySessionKey(sessionKeyRuns, context.sessionKey, runId);
       }
+      // The first attempt carries the owner's message; a later attempt of the
+      // same run carries a harness retry prompt instead.
+      if (ownerIntent) state.ownerRequestText ??= ownerIntent;
+      takeOwnerCancellation(state, runId, context, agentId);
       if (currentUserText(event?.messages, event?.prompt)) {
         state.ownerIntentObserved = true;
         state.workspacePreviewForbidden = ownerForbidsWorkspacePreview(event?.messages, event?.prompt);
@@ -8967,6 +9336,8 @@ export function createToolLoopGuard({
           state.workspacePreviewRequired && (requestsVisibilityInteraction(ownerLaneText(ownerIntent)) ||
             (inheritedVisibility?.sessionId === sessionId && inheritedVisibility.sessionKey === state.currentSessionKey &&
               inheritedVisibility.ownerIntent === ownerIntent));
+        // Checked only against a successful publication; never gates publishing.
+        state.requestedLiterals = extractRequestedLiterals(ownerIntent);
         state.workspacePreviewMode = state.workspacePreviewRequired
           ? (trustedSessionPreview ? "continuation" : workspacePreviewMode(event?.messages, event?.prompt))
           : undefined;
@@ -9158,6 +9529,38 @@ export function createToolLoopGuard({
     activeUsers.set(user, { runId, sessionId, sessionKey });
   }
 
+  // OpenClaw's in-session auto-compaction summarizes through the run's own
+  // model stream, so those model-call hooks carry this run's identity. They are
+  // not agent turns: the tool-limit answer turn, and an answer it produced,
+  // must survive them (tower3, 2026-09-25: a threshold compaction after the
+  // answer forfeited it). before_compaction opens a window on the Pixel run of
+  // that session; it covers at most the two summarization calls one compaction
+  // starts together, and closes when they end or after_compaction reports none.
+  const MAX_COMPACTION_MODEL_CALLS = 2;
+
+  // The run that currently owns the session with this key, if any: only the
+  // newest run observed for the key. An older run (a cancelled one, or one on
+  // a rotated session ID) never receives a later run's messages.
+  function activeSessionRun(sessionKey) {
+    if (typeof sessionKey !== "string" || !sessionKey) return undefined;
+    const runId = sessionKeyRuns.get(sessionKey);
+    const state = runId === undefined ? undefined : runs.get(runId);
+    if (state?.currentSessionKey === sessionKey && state.currentSessionId &&
+        sessionRuns.get(state.currentSessionId) === runId) return { runId, state };
+    return undefined;
+  }
+
+  function compactionRunState(context) {
+    return activeSessionRun(context?.sessionKey)?.state;
+  }
+
+  function observeCompaction(context, phase) {
+    const state = compactionRunState(context);
+    if (!state) return;
+    if (phase === "start") state.compactionWindow = { calls: new Set(), started: 0 };
+    else if (state.compactionWindow?.calls.size === 0) state.compactionWindow = undefined;
+  }
+
   function observeModelCall(event, context, agentId = "pixel") {
     if (context?.agentId !== undefined && context.agentId !== agentId) return;
     const runId = context?.runId ?? event?.runId;
@@ -9174,15 +9577,28 @@ export function createToolLoopGuard({
           (hasSessionId && context.sessionId !== state.currentSessionId) ||
           (hasSessionKey && context.sessionKey !== state.currentSessionKey)) return;
     }
+    const compaction = state.compactionWindow;
+    const compactionCall = Boolean(compaction) && typeof event?.callId === "string" && event.callId.length > 0 &&
+      compaction.started < MAX_COMPACTION_MODEL_CALLS;
+    if (compactionCall) {
+      compaction.calls.add(event.callId);
+      compaction.started += 1;
+    } else if (compaction) {
+      // Anything beyond the bounded summarization calls is an agent turn.
+      state.compactionWindow = undefined;
+    }
     state.operationsPromptRound += 1;
     state.progressBudget.beginModelRound();
+    if (state.progressBudget.exhausted && !compactionCall) progressFinalization(state).modelCallStarted();
   }
 
-  function observeModelEnd(_event, context, agentId = "pixel") {
+  function observeModelEnd(event, context, agentId = "pixel") {
     if (context?.agentId && context.agentId !== agentId) return;
     const runId = context?.runId;
     const state = runs.get(runId);
     if (!state || !context?.sessionId || context.sessionId !== state.currentSessionId) return;
+    const compaction = state.compactionWindow;
+    if (compaction?.calls.delete(event?.callId) && compaction.calls.size === 0) state.compactionWindow = undefined;
     if (state.extensionPendingHandoff && !state.workspaceLaneRequested && !state.extensionPendingAbortAcknowledged &&
         !state.clientCancelled && !state.progressBudget.exhausted &&
         sessionRuns.get(context.sessionId) === runId) {
@@ -9202,7 +9618,21 @@ export function createToolLoopGuard({
     if (!active) return false;
     let aborted = false;
     let executionSignalled = execControl ? false : true;
-    stateFor(active.runId).clientCancelled = true;
+    const cancelledState = stateFor(active.runId);
+    cancelledState.clientCancelled = true;
+    // Void this run's pending completion revision and replacement text, and
+    // stop any host citation read it is still waiting on (before_agent_finalize
+    // or a partial answer's check), before the harness abort settles.
+    cancelledState.completionAssurance.cancel();
+    cancelledState.hostCitationAbort?.abort();
+    // Recorded before the abort is awaited: the chat's next run cannot start
+    // until this one ends. The request text is known only for a run still in
+    // progress; the abort may otherwise have ended a run not yet observed.
+    const cancellation = {runId: active.runId,
+      ownerText: cancelledState.runEnded ? undefined : cancelledState.ownerRequestText};
+    if (typeof active.sessionKey === "string" && active.sessionKey) {
+      rememberBySessionKey(sessionCancellations, active.sessionKey, cancellation);
+    }
     if (execControl) {
       try {
         executionSignalled = Boolean(execControl.signal(active.runId));
@@ -9219,6 +9649,10 @@ export function createToolLoopGuard({
       }
     } catch (error) {
       warn(`Pixel client-cancel abort failed: ${String(error)}`);
+    }
+    // Without an acknowledged abort the run may still answer its request.
+    if (!aborted && sessionCancellations.get(active.sessionKey) === cancellation) {
+      sessionCancellations.delete(active.sessionKey);
     }
     const cancelled = aborted && executionSignalled;
     if (executionSignalled && typeof execControl?.clear === "function") {
@@ -9313,7 +9747,9 @@ export function createToolLoopGuard({
           ? boundInspectionPageErrors(inspected.params, inspected.result, state.workspacePreview) : undefined;
       }
     }
-    state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
+    const refusedCall = state.previewRevalidationRefusedCalls?.delete(toolCallId) === true && failedToolOutcome(event);
+    const noWorkspaceEffect = refusedCall || workspaceReadOnlyCall(toolName, event?.params);
+    if (!noWorkspaceEffect) state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
     // Nested Tool Search executions also emit hooks. Count only the outer
     // call (or an ordinary direct call), never both receipts for one action.
     if ((event?.result || event?.error) && !String(toolCallId).startsWith('tool_search_code:')) {
@@ -9413,8 +9849,7 @@ export function createToolLoopGuard({
           if (pending.transport !== "tool_call" || pending.runId !== runId ||
               pending.selectedToolName !== directMutation.name ||
               !isDeepStrictEqual(pending.selectedParams, event.params)) return false;
-          const parent = parentId.trim().replace(/[^A-Za-z0-9_.:-]+/g, "_").slice(0, 120) || "call";
-          const prefix = `tool_search_code:${parent}:${directMutation.name}:`;
+          const prefix = `${toolSearchChildPrefix(parentId)}${directMutation.name}:`;
           return toolCallId.startsWith(prefix) && /^[1-9][0-9]*$/.test(toolCallId.slice(prefix.length));
         })
       : [];
@@ -9466,6 +9901,9 @@ export function createToolLoopGuard({
           !Object.hasOwn(completed, 'sessionId')) {
         pendingToolRun.execCompletionGuidance = `[ODS Pixel execution] Exec returned completed with exit code ${completed.exitCode}. ` +
           'This result has no background session ID. Use the returned output; do not invent a session ID or poll a PID.';
+        // Informational only; the command already ran as written.
+        if (stderrRedirectedBeforeStdoutFile(pendingToolRun.selectedParams?.command))
+          pendingToolRun.redirectOrderNote = REDIRECT_ORDER_NOTE;
       }
     }
     if (completedExecution && pendingToolRun?.runId === runId &&
@@ -9508,16 +9946,12 @@ export function createToolLoopGuard({
       typeof toolCallId === 'string' ? [...pendingToolRuns].filter(([parentId,pending]) => {
         if (pending.transport !== 'tool_call' || pending.runId !== runId ||
             pending.selectedToolName !== toolName || !isDeepStrictEqual(pending.selectedParams,event.params)) return false;
-        const parent = parentId.trim().replace(/[^A-Za-z0-9_.:-]+/g,'_').slice(0,120) || 'call';
-        const prefix = `tool_search_code:${parent}:${toolName}:`;
+        const prefix = `${toolSearchChildPrefix(parentId)}${toolName}:`;
         return toolCallId.startsWith(prefix) && /^[1-9][0-9]*$/.test(toolCallId.slice(prefix.length));
       }) : [];
-    if (state.previewRevalidationCandidate && revalidationParents.length !== 1) {
+    if (state.previewRevalidationCandidate && revalidationParents.length !== 1 && !noWorkspaceEffect) {
       const selectedName = pendingToolRun?.selectedToolName;
-      const completed = toolName === 'tool_call'
-        ? selectedName === PREVIEW_INSPECTION_TOOL
-          ? toolSearchEventEnvelope(event, selectedName, 'pixel-ods')
-          : toolSearchSelectedToolEvent(event, selectedName, 'core') : event;
+      const completed = toolName === 'tool_call' ? toolSearchSelectedToolEvent(event, selectedName, 'core') : event;
       const candidate = state.previewRevalidationCandidate;
       const paired = pendingToolRun?.runId === runId && pendingToolRun.transport === toolName &&
         (event?.runId === undefined || event.runId === runId) &&
@@ -9526,18 +9960,22 @@ export function createToolLoopGuard({
         (context?.sessionId === undefined || context.sessionId === candidate.sessionId) &&
         (context?.sessionKey === undefined || context.sessionKey === candidate.sessionKey) &&
         state.currentSessionId === candidate.sessionId && state.currentSessionKey === candidate.sessionKey &&
-        isDeepStrictEqual(completed?.params,pendingToolRun.selectedParams) &&
+        // An exec receipt carries the executed (cancellation-wrapped) params;
+        // eligibility still classifies the model's original command.
+        isDeepStrictEqual(completed?.params,selectedName === 'exec' ? pendingToolRun.executedParams : pendingToolRun.selectedParams) &&
         workspaceRevalidationCandidate(selectedName, pendingToolRun.selectedParams);
-      const terminal = paired && !failedToolOutcome(event) && completed?.result && !toolCallFailed(completed) &&
-        (selectedName !== PREVIEW_INSPECTION_TOOL ||
-          workspacePreviewInspectionAvailable && completedPreviewInspection(completed.params,completed.result,candidate.preview)) &&
-        (selectedName !== 'exec' || (completed.result.details?.status === 'completed' &&
-          completed.result.details.exitCode === 0 && !runningExecSessionId(completed)));
+      // Settled, not necessarily successful: the host digest decides what the
+      // call changed. A failed test or CLI demo exits and leaves nothing running.
+      const terminal = paired && Boolean(completed?.result) && settledRevalidationReceipt(selectedName, completed) &&
+        (selectedName !== 'exec' || completed.result.details.exitCode !== 0 || !failedToolOutcome(event)) &&
+        !runningExecSessionId(completed);
       if (terminal) state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;
       else state.previewRevalidationCandidate = undefined;
     }
+    // A command that exited non-zero may also have changed published files.
     if (state.workspacePreview && (successfulMutation ||
-        (completedExecution?.result && !toolCallFailed(completedExecution) &&
+        (completedExecution?.result && (!toolCallFailed(completedExecution) ||
+          settledRevalidationReceipt('exec', completedExecution)) &&
           !isLiteralEcho(completedCommand)))) {
       // Shell commands and patches need not declare all affected files.
       // Preserve the immutable host snapshot, but require fresh publication
@@ -9715,6 +10153,10 @@ export function createToolLoopGuard({
         state.workspacePreviewDirectory = preview.relativeDirectory;
         state.workspacePreviewModelAuthored = workspacePreviewAuthorshipMatches(state, preview);
         state.workspacePreview = preview;
+        // Bound to this snapshot's bytes; checked before tracked content clears.
+        state.workspaceRequestedTextCheck = requestedTextCheck(state.requestedLiterals, preview, {
+          receipt: previewEvent.result?.details, trackedContent: state.successfulWriteContentByPath,
+          workspaceRoot: state.configuredWorkspaceRoot});
         state.previewRevalidationCandidate = Object.freeze({preview:Object.freeze({...preview}),
           sessionId:state.currentSessionId,sessionKey:state.currentSessionKey,workspaceRoot:state.configuredWorkspaceRoot});
         state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;
@@ -10438,6 +10880,19 @@ export function createToolLoopGuard({
     };
   }
 
+  // One bounded revision per run for a published snapshot that lacks
+  // owner-requested text. The pinned harness refuses a finalization revision
+  // after potential side effects, and publishing always is one (tower1 round
+  // 067). So after the model has seen the publication note, the fixed
+  // instruction goes on its next successful tool result for that same
+  // snapshot; finalization requests it only when that never happened.
+  function takeRequestedTextRevision(state) {
+    const instruction = requestedTextRevisionInstruction(state.workspacePreview, state.workspaceRequestedTextCheck);
+    if (!instruction || state.requestedTextRevisionSpent || state.clientCancelled) return undefined;
+    state.requestedTextRevisionSpent = true;
+    return instruction;
+  }
+
   function trustedWorkspacePreviewContinuation(state) {
     if (
       !state?.workspacePreviewRequired ||
@@ -10452,6 +10907,13 @@ export function createToolLoopGuard({
     const prerequisite = visualContinuationPrerequisite(state);
     if (prerequisite) return prerequisite;
     if (state.workspacePreview) {
+      if (requestedTextInstruction(state.workspacePreview, state.workspaceRequestedTextCheck)) {
+        const instruction = takeRequestedTextRevision(state);
+        // Once spent, the honest failure delivery stands; no further pass.
+        return instruction ? {stage: 'workspace-preview-requested-text', instruction}
+          : {stage: 'workspace-preview-requested-text',
+            finalize: 'Owner-requested text is still missing after the bounded revision.'};
+      }
       if (workspacePreviewReadbackComplete(state)) {
         if (state.workspaceVisibilityInteractionRequired &&
             !workspaceVisibilityInspectionPassed(state) &&
@@ -10503,6 +10965,15 @@ export function createToolLoopGuard({
     const toolCallId = context?.toolCallId ?? event?.toolCallId ?? event?.message?.toolCallId;
     const pending = pendingToolRuns.get(toolCallId);
     pendingToolRuns.delete(toolCallId);
+    // A Tool Search child's result is folded into this outer receipt and never
+    // persisted on its own, so its pending run ends here. Otherwise it stays
+    // pending and finalization can never compare the published bytes.
+    if (typeof toolCallId === 'string' && toolCallId && !toolCallId.startsWith('tool_search_code:')) {
+      const prefix = toolSearchChildPrefix(toolCallId);
+      for (const id of [...pendingToolRuns.keys()]) {
+        if (id.startsWith(prefix) && /^[A-Za-z0-9_-]+:[1-9][0-9]*$/.test(id.slice(prefix.length))) pendingToolRuns.delete(id);
+      }
+    }
     // Native validation/loop rejections skip before_tool_call and persist with
     // a sessionKey but no runId. Resolve only the currently owned session;
     // otherwise these failures never consume the run's progress budget.
@@ -10527,6 +10998,9 @@ export function createToolLoopGuard({
       state.progressBudget.observeResult({callId: toolCallId, tool: message.toolName,
         failed: true, lane:progressLane});
     }
+    // Transcript copy only: OpenClaw applies tool_result_persist to the saved
+    // session, not to the live context of this run. The finalization
+    // instruction therefore travels as a before_tool_call refusal.
     if (state?.progressBudget.exhausted) {
       return {message: {...message, content: [{type: 'text', text: RUN_PROGRESS_STOP_REASON}]}};
     }
@@ -10575,6 +11049,23 @@ export function createToolLoopGuard({
                 : 'Do not call web_search again in this response; its allowance is exhausted. Do not invent source URLs.')
             : 'Finish with collected evidence or otherwise-authorized tools; do not claim unread sources were verified.');
       })() : undefined;
+    // Research pacing ledger: only a bound, successful search receipt is
+    // recorded. It keeps result URLs (never titles or excerpts) so a repeated
+    // search after compaction can be answered from this run's own evidence.
+    let staleDateGuidance;
+    if (researchBudgetGuidance) {
+      const receipt = compactNativeWebResult ? pending.capturedNativeWebSearchResult
+        : pending.capturedToolSearchEnvelope?.result;
+      const query = pending.selectedParams?.query;
+      const urls = searchLeadUrls(receipt?.details?.results);
+      if (typeof query === 'string' && query.trim()) {
+        state.searchLedger.push({query, terms: searchTerms(query), urls, recalled: false});
+        if (state.searchLedger.length > 32) state.searchLedger.shift();
+      }
+      if (urls.length > 0) state.unreadSearchStreak += 1;
+      const named = staleSearchDate(query, state.ownerResearchDate);
+      if (named) staleDateGuidance = staleSearchDateGuidance(named, state.ownerResearchDate);
+    }
     const nativeFailure = pending?.nativeUnittestFailure;
     const compactNativeVerification = nativeFailure && pending.transport === "exec" &&
       message.role === "toolResult" && message.toolName === "exec" &&
@@ -10604,6 +11095,9 @@ export function createToolLoopGuard({
       (!context?.runId || context.runId === pending.runId) &&
       (!event?.runId || event.runId === pending.runId)
       ? (pending.pythonSyntaxGuidance ?? (!Object.hasOwn(syntaxReceipt.details, 'sessionId') ? pending.execCompletionGuidance : undefined)) : undefined;
+    // Same exact-call binding as the completed-exec receipt above.
+    const redirectOrderNote = executionGuidance && !Object.hasOwn(syntaxReceipt.details, 'sessionId')
+      ? pending.redirectOrderNote : undefined;
     const sandboxPathCorrection = pending?.sandboxPathCorrection &&
       message.role === 'toolResult' && message.toolName === pending.transport &&
       (!message.toolCallId || message.toolCallId === toolCallId) &&
@@ -10710,6 +11204,20 @@ export function createToolLoopGuard({
       ) {
         return undefined;
       }
+      // A requested-text miss needs a republish, so it precedes inspection.
+      const requestedText = requestedTextInstruction(state.workspacePreview, state.workspaceRequestedTextCheck);
+      if (requestedText) {
+        // The publication receipt carries the note. A later successful result
+        // for the same unrepaired snapshot (tower1: an inspection) carries the
+        // one bounded revision instead of the deduplicated note.
+        const publication = (pending?.selectedToolName ?? message.toolName) === WORKSPACE_PREVIEW_TOOL ||
+          Boolean(validatedToolSearchEnvelope(message.details, WORKSPACE_PREVIEW_TOOL, "pixel-ods"));
+        const revision = !publication && state.requestedTextNoted === state.workspacePreview.sha256
+          ? takeRequestedTextRevision(state) : undefined;
+        if (revision) return `[ODS Pixel next step] ${revision}`;
+        state.requestedTextNoted = state.workspacePreview.sha256;
+        return `[ODS Pixel next step] ${requestedText}`;
+      }
       if (workspacePreviewReadbackComplete(state)) {
         if (state.workspaceVisibilityInteractionRequired &&
             !workspaceVisibilityInspectionPassed(state)) {
@@ -10799,14 +11307,27 @@ export function createToolLoopGuard({
       state.coachingDelivered.set(slot, {text, at: state.persistedResultCount});
       return true;
     };
+    // The fixed evidence and projection notes are identical on every search
+    // result. Keep them on the first and then per the coaching interval; the
+    // per-call budget line below still accompanies every search result.
+    if (researchBudgetGuidance) {
+      for (const [slot, text] of [['search-evidence', SEARCH_SOURCE_EVIDENCE_GUIDANCE],
+        ['search-omitted', OMITTED_SEARCH_SNIPPETS_GUIDANCE]]) {
+        const index = content.findIndex(block => block?.type === 'text' && block.text === text);
+        if (index >= 0 && !coachingDue(slot, text)) content.splice(index, 1);
+      }
+    }
     if (executionGuidance && !pending.pythonSyntaxGuidance && !content.some(block =>
         block?.type === 'text' && /\[ODS Pixel execution\]/.test(block.text)))
       content.push({type:'text',text:executionGuidance});
+    if (redirectOrderNote && !content.some(block => block?.type === 'text' && block.text === redirectOrderNote))
+      content.push({type:'text',text:redirectOrderNote});
     if (workspaceStageInstruction && coachingDue('workspace', workspaceStageInstruction)) {
       content.push({ type: "text", text: workspaceStageInstruction });
     }
     if (sandboxPathCorrection) content.push({type:'text',text:sandboxPathCorrection});
     if (researchBudgetGuidance) content.push({type:'text',text:researchBudgetGuidance});
+    if (staleDateGuidance) content.push({type:'text',text:staleDateGuidance});
     if (pending?.pythonSyntaxGuidance && executionGuidance && !content.some(block => block?.type === 'text' &&
         /\[ODS Pixel (?:repair|Python syntax|execution)\]/.test(block.text)))
       content.push({type:'text',text:executionGuidance});
@@ -10911,9 +11432,137 @@ export function createToolLoopGuard({
     return true;
   }
 
+  // Before the answer is judged, the host may read up to four cited public
+  // pages the model never opened (citation-verification.mjs). Each read counts
+  // against this response's page-reading and total web allowances; nothing is
+  // read when they cannot cover every candidate, when the operator disabled or
+  // denied page reads, when the owner excluded web access or a private-network
+  // denial occurred, or when the run was cancelled or stopped for good. A URL
+  // is never host-read twice in a run. A verified page becomes a distinct
+  // host-verification receipt, never a model read.
+  async function verifyCitedPages(event, context, agentId = 'pixel') {
+    if (context?.agentId !== agentId || typeof hostCitationVerifier?.verify !== 'function') return undefined;
+    const runId = context?.runId ?? event?.runId;
+    const state = typeof runId === 'string' && runId ? runs.get(runId) : undefined;
+    if (!state || state.clientCancelled || state.webLoopAborted || state.recursiveDeleteDenied || state.ownerQuestions ||
+        state.privateNetworkExhausted || state.privateNetworkRequestDenied || state.workspacePreviewRestrictions?.web ||
+        state.extensionCompletionGate?.active ||
+        // After a tool-limit stop only a still-pending answer turn, or the
+        // partial answer kept from it, is judged.
+        (state.progressBudget.exhausted && !['pending', 'instructed', 'turn', 'partial'].includes(progressFinalization(state).phase))) {
+      return undefined;
+    }
+    const answer = event?.lastAssistantMessage;
+    const candidates = state.completionAssurance.hostVerificationCandidates(answer);
+    if (!candidates) return undefined;
+    const {urls, portuguese} = candidates;
+    const attempted = state.hostCitationAttempted ??= new Set();
+    const records = state.hostCitationVerifications ??= [];
+    const remaining = Math.min(effective.fetch - state.fetch, effective.total - state.total);
+    const skip = reason => {
+      const record = {urls, skipped: reason, fetched: 0, verified: [], elapsedMs: 0};
+      if (records.length < 8) records.push(record);
+      return record;
+    };
+    if (urls.length > HOST_CITATION_LIMITS.maxUrls) return skip('too-many-citations');
+    if (urls.some(url => attempted.has(url)) ||
+        attempted.size + urls.length > HOST_CITATION_LIMITS.maxUrlsPerRun) return skip('already-attempted');
+    if (urls.length > remaining) return skip('web-allowance');
+    if (!hostCitationVerifier.allowed()) return skip('web-disabled');
+    let outcome;
+    // An owner cancel aborts these reads (abortUserRun); the run's
+    // finalization then ends without waiting out the read budget.
+    const cancellation = new AbortController();
+    state.hostCitationAbort = cancellation;
+    try {
+      outcome = await hostCitationVerifier.verify({answer, urls, portuguese, signal: cancellation.signal});
+    } catch (error) {
+      // Best effort: a verifier fault leaves the ordinary citation checks.
+      warn(`Pixel host citation verification failed for run ${runId}: ${String(error)}`);
+      for (const url of urls) attempted.add(url);
+      state.fetch += urls.length;
+      state.total += urls.length;
+      return skip('verifier-error');
+    } finally {
+      if (state.hostCitationAbort === cancellation) state.hostCitationAbort = undefined;
+    }
+    if (outcome.fetched) for (const url of urls) attempted.add(url);
+    state.fetch += outcome.fetched;
+    state.total += outcome.fetched;
+    if (runs.get(runId) !== state || state.clientCancelled) return undefined;
+    for (const receipt of outcome.verified) state.completionAssurance.observeHostVerification(receipt.url);
+    if (records.length < 8) records.push({urls, ...outcome});
+    if (outcome.fetched) {
+      info(`Pixel host-verified ${outcome.verified.length}/${urls.length} cited page(s) for run ${runId} in ${outcome.elapsedMs} ms`);
+    }
+    return outcome;
+  }
+
+  // A partial answer ends the run by abort, so before_agent_finalize never
+  // judges it: its cited pages are verified here instead, once, and delivery
+  // (settleDelivery) waits for that bounded check.
+  function verifyPartialAnswer(state, runId, agentId = 'pixel') {
+    const answer = state?.progressFinalization.partial ? state.progressFinalization.answer : undefined;
+    if (!answer || state.partialAnswerVerification) return;
+    state.partialAnswerVerification = Promise.resolve()
+      .then(() => verifyCitedPages({lastAssistantMessage: answer}, {agentId, runId}, agentId))
+      .catch(error => { warn(`Pixel partial-answer citation check failed for run ${runId}: ${String(error)}`); });
+  }
+
+  async function settleDelivery(runId) {
+    const pending = typeof runId === 'string' ? runs.get(runId)?.partialAnswerVerification : undefined;
+    if (pending) await pending;
+  }
+
+  // before_message_write (synchronous, transcript order). After a tool-limit
+  // stop, the answer turn's message may carry answer text together with tool
+  // calls; progress-finalization.mjs keeps that text as a partial answer only
+  // for the message whose call IDs reach the tool boundary in the turn.
+  function observeAssistantMessage(event, context, agentId = 'pixel') {
+    try {
+      const agent = context?.agentId ?? event?.agentId;
+      if (agent !== undefined && agent !== agentId) return undefined;
+      const message = event?.message;
+      if (message?.role !== 'assistant' || !Array.isArray(message.content)) return undefined;
+      const calls = message.content.filter(block => block?.type === 'toolCall').map(block => block.id);
+      if (!calls.length) return undefined;
+      const active = activeSessionRun(context?.sessionKey ?? event?.sessionKey);
+      if (!active) return undefined;
+      const {runId, state} = active;
+      if (!state.progressBudget.exhausted || state.clientCancelled || state.recursiveDeleteDenied || state.webLoopAborted) return undefined;
+      const finalization = state.progressFinalization;
+      if (finalization.phase !== 'turn' && finalization.phase !== 'failed') return undefined;
+      const preview = progressStopPreview(state);
+      const options = {localUrlsForbidden: Boolean(state.workspacePreviewRequired || state.workspacePreviewAttempted),
+        allowedUrls: preview?.url ? [preview.url] : []};
+      finalization.assistantMessage(assistantMessageText(message), calls, text => partialFinalizationAnswer(text, options));
+      if (finalization.partial) verifyPartialAnswer(state, runId, agentId);
+    } catch (error) {
+      warn(`Pixel assistant-message observation failed: ${String(error)}`);
+    }
+    return undefined;
+  }
+
   function endPreviewRevalidation(event, context) {
     const state = runs.get(context?.runId ?? event?.runId);
     if (state) {state.previewRevalidationCandidate=undefined;state.previewVerificationGeneration=(state.previewVerificationGeneration ?? 0)+1;}
+  }
+
+  // agent_end: a later cancel for this user can no longer name this run's
+  // request as the one it withdrew.
+  function observeAgentEnd(event, context) {
+    const state = runs.get(context?.runId ?? event?.runId);
+    if (state) state.runEnded = true;
+  }
+
+  // Model-only prompt context for one attempt (before_prompt_build
+  // prependContext); never persisted as owner text. A cancelled run's own
+  // retry attempt is told to stop, and the first owner turn after a cancel is
+  // told the earlier request is withdrawn.
+  function promptContextForRun(runId) {
+    const state = typeof runId === "string" ? runs.get(runId) : undefined;
+    if (state?.clientCancelled) return CLIENT_CANCELLED_REASON;
+    return state?.withdrawnOwnerRequest ? OWNER_CANCELLED_REQUEST_CONTEXT : undefined;
   }
 
   function beforeAgentFinalize(event, context, agentId = "pixel") {
@@ -10925,7 +11574,24 @@ export function createToolLoopGuard({
       state.ownerQuestions=choiceQuestionFromText(event?.lastAssistantMessage);
     }
     if (state?.ownerQuestions) return {action:'finalize', reason:'Waiting for the owner clarification answer.'};
+    if (state?.progressBudget.exhausted && !state.clientCancelled && !state.recursiveDeleteDenied && !state.webLoopAborted) {
+      // The answer turn's final text is captured once and never revised here:
+      // no further model pass is requested after the budget stopped the run.
+      const preview = progressStopPreview(state);
+      progressFinalization(state).accept(event?.lastAssistantMessage, {
+        localUrlsForbidden: Boolean(state.workspacePreviewRequired || state.workspacePreviewAttempted),
+        allowedUrls: preview?.url ? [preview.url] : [],
+      });
+    }
     if (state?.recursiveDeleteDenied || state?.progressBudget.exhausted || state?.clientCancelled || state?.webLoopAborted) return undefined;
+    // A silent sentinel is never an answer to an owner-authored chat message.
+    // One revision pass; the harness still refuses it after side effects.
+    if (state?.ownerIntentObserved && !state.managedTeamWorker && !state.silentOwnerReplyRetried &&
+        ownerInteractiveTurn(context, agentId) && silentReplyText(event?.lastAssistantMessage)) {
+      state.silentOwnerReplyRetried = true;
+      return {action: 'revise', reason: OWNER_VISIBLE_REPLY_REASON, retry: {
+        instruction: OWNER_VISIBLE_REPLY_INSTRUCTION, idempotencyKey: 'ods-owner-visible-reply', maxAttempts: 1}};
+    }
     const extensionStopped = state?.progressBudget.laneExhausted('extension');
     const workspaceStopped = state?.progressBudget.laneExhausted('workspace');
     const continuation =
@@ -10941,6 +11607,7 @@ export function createToolLoopGuard({
         state.extensionDecisionRecovery.gateRevisionRequested = decision?.action === 'revise';
       return decision;
     }
+    if (continuation.finalize) return {action: 'finalize', reason: continuation.finalize};
     return {
       action: "revise",
       reason: "Pixel has not completed every owner-requested verified step.",
@@ -11065,10 +11732,12 @@ export function createToolLoopGuard({
       const checkIncomplete = checkStatus === "failed" || checkStatus === "pending";
       const checkText = checkStatus === "failed" ? VERIFICATION_FAILED_DELIVERY_PREFIX
         : checkStatus === "pending" ? VERIFICATION_PENDING_DELIVERY_PREFIX : "";
+      const requestedTextMissing = requestedTextDeliveryNote(state.workspacePreview, state.workspaceRequestedTextCheck);
       return {
-        status: checkIncomplete ? checkStatus : interactionUnverified ? "failed" : "passed",
+        status: checkIncomplete ? checkStatus : interactionUnverified || requestedTextMissing ? "failed" : "passed",
         text:
           (checkText ? `${checkText}\n\n` : "") +
+          (requestedTextMissing ? `${requestedTextMissing}\n\n` : "") +
           (interactionUnverified ? "The requested show/hide interaction has not passed browser inspection. The published preview is available, but that behavior remains unverified.\n\n" : "") +
           (state.workspaceVisibilityInteractionRequired && !interactionUnverified
             ? "Browser inspection passed for the submitted show/hide checks only; this does not verify all requested behavior.\n\n" : "") +
@@ -11302,17 +11971,39 @@ export function createToolLoopGuard({
       return {status:'failed', text:'ODS did not observe a verified managed installation receipt for this GitHub extension request.'};
     }
     if (state?.ownerQuestions && !state.clientCancelled) return {status:'pending',text:questionsText(state.ownerQuestions),questions:state.ownerQuestions};
-    if (state?.completionAssurance.terminal && verification.status === 'none') {
+    // Completion assurance arms its terminal before a revision and is not
+    // consulted after a stop, so a tool-limit answer is always the newer one.
+    const stopAnswer = state?.progressBudget.exhausted && !state.clientCancelled
+      ? state.progressFinalization.answer : undefined;
+    if (state?.completionAssurance.terminal && verification.status === 'none' && !stopAnswer) {
       return {status:state.completionAssurance.terminalStatus, text:state.completionAssurance.terminal};
     }
     if (state?.progressBudget.exhausted) {
-      // Session history can contain an unrelated publication. Preserve it for
-      // current preview work, but do not attach it to a later research failure.
-      const preview = state.workspacePreview ?? (state.workspacePreviewRequired &&
-        !state.workspacePreviewForbidden ? state.workspaceLastVerifiedPreview : undefined);
+      const preview = progressStopPreview(state);
+      const receipt = preview ? {preview: {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', ...preview}} : {};
+      // The request is still incomplete ('failed'); only the finalization
+      // turn's validated answer replaces the canned stop text, followed by
+      // host facts that the model cannot alter.
+      const answer = !state.clientCancelled ? state.progressFinalization.answer : undefined;
+      if (answer) {
+        return {status: 'failed', text: composeProgressFinalization(answer, {preview,
+          previewExpected: Boolean(state.workspacePreviewRequired && !state.workspacePreviewForbidden),
+          verificationStatus: state.latestVerificationStatus, researchLimit: state.researchStopped,
+          unverifiedLinks: state.completionAssurance.unverifiedCitations(answer),
+          refusedToolCalls: state.progressFinalization.partial,
+          requestedTextMissing: requestedTextDeliveryNote(preview, state.workspaceRequestedTextCheck)}), ...receipt};
+      }
+      // Without an answer, the fixed stop text is followed by the host's list
+      // of pages read successfully, when this run could have been finalized
+      // (receipt-based work keeps the strict stop text).
+      const readPages = !state.clientCancelled && progressFinalization(state).phase !== 'unavailable'
+        ? composeReadPages(state.completionAssurance.readPages) : '';
+      const pages = readPages ? `\n\n${readPages}` : '';
+      // Without an answer, a research-loop stop keeps its specific text.
+      if (state.researchStopped) return {status: 'failed', text: WEB_LOOP_DELIVERY_REASON + pages, ...receipt};
       return {status: 'failed', text: RUN_PROGRESS_STOP_REASON + (preview
-        ? `\n\n[Open last published preview](${preview.url})\n\nThis is the last verified publication, not proof that all requested work completed.` : ''),
-        ...(preview ? {preview: {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', ...preview}} : {})};
+        ? `\n\n[Open last published preview](${preview.url})\n\nThis is the last verified publication, not proof that all requested work completed.` : '') +
+        pages, ...receipt};
     }
     // An acknowledged harness abort can end the model without a final token.
     // Preserve existing artifact/evidence delivery; for an otherwise empty
@@ -11401,10 +12092,18 @@ export function createToolLoopGuard({
     beforeAgentFinalize,
     recoverWorkspacePreview,
     revalidateWorkspacePreview,
+    verifyCitedPages,
+    // Read-only host-verification records for one run (diagnostics and tests).
+    citationVerificationForRun: runId => [...(runs.get(runId)?.hostCitationVerifications ?? [])],
     endPreviewRevalidation,
+    observeAgentEnd,
+    promptContextForRun,
     replyPayloadSending,
     observeRun,
     observeModelCall,
+    observeCompaction,
+    observeAssistantMessage,
+    settleDelivery,
     abortUserRun,
     verificationForRun,
     deliveryVerificationForRun,

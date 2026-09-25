@@ -1,4 +1,5 @@
 import { RUN_PROGRESS_STOP_REASON } from "../plugin/run-progress-budget.mjs";
+import { PROGRESS_FINALIZATION_INSTRUCTION } from "../plugin/progress-finalization.mjs";
 import test from "node:test";
 import vm from 'node:vm';
 
@@ -315,6 +316,11 @@ test('native blocks that bypass tool hooks cannot keep model continuations runni
   guard.observeRun(context,'pixel',{prompt:'Make a site'});
   for(let i=0;i<9;i++) guard.observeModelCall({},context);
   assert.deepEqual(aborted,[]);
+  guard.observeModelEnd({},context);
+  // The call that tripped the budget may still answer without tools
+  // (graceful finalization). A further hookless continuation is not waited for.
+  assert.deepEqual(aborted,[]);
+  guard.observeModelCall({},context);
   guard.observeModelEnd({},context);
   assert.deepEqual(aborted,['session-loop']);
   assert.equal(guard.deliveryVerificationForRun('run-loop').status,'failed');
@@ -8828,7 +8834,11 @@ test("research exhaustion preserves report delivery without inferred workspace i
         : {url: "https://docs.python.org/3/library/csv.html", query: "reader"};
       assert.equal(invoke(blockedName, blockedArgs).blockReason, reason);
       assert.notEqual(invoke("read", { path: "research/report.md" })?.block, true);
-      assert.equal(invoke(blockedName, blockedArgs).blockReason, WEB_LOOP_ABORT_REASON);
+      // The research stop carries the one-time answer instruction; without
+      // model hooks, the next call ends the run.
+      assert.equal(invoke(blockedName, blockedArgs).blockReason, PROGRESS_FINALIZATION_INSTRUCTION);
+      assert.deepEqual(aborts, []);
+      assert.equal(invoke("read", { path: "research/report.md" }).blockReason, RUN_PROGRESS_STOP_REASON);
       assert.deepEqual(aborts, ["session-1"]);
       // A fresh run gets a fresh web budget.
       assert.equal(call(guard, "web_search", {
@@ -9051,8 +9061,16 @@ test("web exhaustion lets a whole model batch finish before escalating", () => {
     assert.notEqual(invoke("read", { path: "report.md" })?.block, true);
     assert.deepEqual(aborts, []);
     nextRound();
+    // The stop's refusal (and its batch siblings) carries the one-time answer
+    // instruction; a tool call in the following answer turn ends the run.
     assert.equal(invoke("web_search", { query: "still ignoring warnings" }).blockReason,
-      WEB_LOOP_ABORT_REASON);
+      PROGRESS_FINALIZATION_INSTRUCTION);
+    assert.equal(invoke("web_search", { query: "sibling in the same batch" }).blockReason,
+      PROGRESS_FINALIZATION_INSTRUCTION);
+    assert.deepEqual(aborts, []);
+    nextRound();
+    assert.equal(invoke("web_search", { query: "ignoring the answer turn" }).blockReason,
+      RUN_PROGRESS_STOP_REASON);
     assert.deepEqual(aborts, ["session-1"]);
     assert.equal(call(guard, "web_search", {
       context: { agentId: "pixel", runId: "run-2", sessionId: "session-2" },
@@ -9167,12 +9185,20 @@ test("without model hooks the finite web-loop fallback aborts only the active ru
   assert.equal(call(guard, "web_search").blockReason, WEB_BUDGET_EXHAUSTED_REASON);
   assert.equal(call(guard, "read"), undefined);
   assert.equal(call(guard, "web_search").blockReason, WEB_BUDGET_EXHAUSTED_REASON);
+  // The stop grants one tool-free answer; with no model hooks the call-count
+  // bound still ends the run at the next call.
   assert.deepEqual(call(guard, "web_search"), {
     block: true,
-    blockReason: WEB_LOOP_ABORT_REASON,
+    blockReason: PROGRESS_FINALIZATION_INSTRUCTION,
+  });
+  assert.deepEqual(aborts, []);
+  assert.match(warnings[0], /repeated web-tool loop.*one tool-free answer turn remains/);
+  assert.deepEqual(call(guard, "web_search"), {
+    block: true,
+    blockReason: RUN_PROGRESS_STOP_REASON,
   });
   assert.deepEqual(aborts, ["session-1"]);
-  assert.match(warnings[0], /active run aborted=true/);
+  assert.match(warnings.join("\n"), /progress-limit abort observation: .*"acknowledged":true/);
 });
 
 test("does not constrain other agents or non-web tools", () => {
@@ -13344,11 +13370,13 @@ test("an abort failure is contained and remains a blocked tool result", () => {
   call(guard, "web_search");
   assert.equal(call(guard, "read"), undefined);
   assert.equal(call(guard, "web_search").blockReason, WEB_BUDGET_EXHAUSTED_REASON);
+  assert.equal(call(guard, "web_search").blockReason, PROGRESS_FINALIZATION_INSTRUCTION);
   const result = call(guard, "web_search");
   assert.equal(result.block, true);
-  assert.equal(result.blockReason, WEB_LOOP_ABORT_REASON);
-  assert.match(warnings[0], /abort failed/);
-  assert.deepEqual(guard.deliveryVerificationForRun("run-1"), { status: "none" });
+  assert.equal(result.blockReason, RUN_PROGRESS_STOP_REASON);
+  assert.match(warnings.join("\n"), /progress-limit abort observation: .*"callbackThrew":true/);
+  // The response stays stopped: the forfeited answer turn delivers the research stop text.
+  assert.deepEqual(guard.deliveryVerificationForRun("run-1"), { status: "failed", text: WEB_LOOP_DELIVERY_REASON });
 });
 
 test("acknowledged research aborts deliver their cause without replacing an unexhausted reply", () => {
@@ -13370,12 +13398,13 @@ test("acknowledged research aborts deliver their cause without replacing an unex
       assert.deepEqual(guard.deliveryVerificationForRun("run-1"), {status: "none"},
         "reaching a limit does not erase a useful final answer");
       assert.equal(search().blockReason, WEB_BUDGET_EXHAUSTED_REASON);
-      assert.equal(search().blockReason, WEB_LOOP_ABORT_REASON);
-      assert.deepEqual(guard.deliveryVerificationForRun("run-1"), acknowledged
-        ? {status: "failed", text: WEB_LOOP_DELIVERY_REASON}
-        : {status: "none"});
+      assert.equal(search().blockReason, PROGRESS_FINALIZATION_INSTRUCTION);
+      // A tool call instead of the one tool-free answer ends the run; with or
+      // without an acknowledged abort, the stopped response delivers its cause.
+      assert.equal(search().blockReason, RUN_PROGRESS_STOP_REASON);
+      assert.deepEqual(guard.deliveryVerificationForRun("run-1"), {status: "failed", text: WEB_LOOP_DELIVERY_REASON});
       const rewritten = guard.replyPayloadSending({runId: "run-1", kind: "final", payload: {text: ""}});
-      assert.equal(rewritten?.payload?.text, acknowledged ? WEB_LOOP_DELIVERY_REASON : undefined);
+      assert.equal(rewritten?.payload?.text, WEB_LOOP_DELIVERY_REASON);
       assert.deepEqual(guard.deliveryVerificationForRun("another-run"), {status: "none"},
         "the failure belongs only to the aborted run");
     }
@@ -15605,7 +15634,7 @@ test('an unacknowledged progress abort is retried at model end until confirmed',
   const guard=createToolLoopGuard({abortRun:(id,key)=>{attempts.push([id,key]);return attempts.length===2;}});
   const context={agentId:'pixel',runId:'retry-abort',sessionId:'session-retry',sessionKey:'agent:pixel:retry'};
   guard.observeRun(context,'pixel',{prompt:'Make a site'});
-  for(let i=0;i<9;i++) guard.observeModelCall({},context);
+  for(let i=0;i<10;i++) guard.observeModelCall({},context); // 10th: no answer turn after the trip
   guard.observeModelEnd({},context);
   assert.equal(attempts.length,1);
   guard.observeModelEnd({},context);
@@ -15660,7 +15689,7 @@ test('progress abort diagnostics are owned, sanitized, capped and do not change 
     abort:id=>{calls.push(['abort',id]);return false;}})});
   const context={agentId:'pixel',runId:'private-run',sessionId:'private-session',sessionKey:'private-key'};
   guard.observeRun(context,'pixel',{prompt:'PRIVATE PROMPT'},{executionHost:'sandbox'});
-  for(let i=0;i<9;i++) guard.observeModelCall({},context);
+  for(let i=0;i<10;i++) guard.observeModelCall({},context); // 10th: no answer turn after the trip
   assert.equal(calls.length,0,'no abort before the safe model-end boundary');
   for(let i=0;i<5;i++) guard.observeModelEnd({},context);
   assert.equal(calls.filter(x=>x[0]==='resolve').length,5);
@@ -15685,7 +15714,7 @@ test('progress abort diagnostics cannot change acknowledgement or callback excep
       resolveSessionId:()=>undefined,abort:()=>{attempts++;if(outcome==='throw')throw new Error('private SDK failure');return outcome==='ack';}})});
     const context={agentId:'pixel',runId:'owned-run',sessionId:'owned-session',sessionKey:'owned-key'};
     guard.observeRun(context,'pixel',{prompt:'Make a site'});
-    for(let i=0;i<9;i++) guard.observeModelCall({},context);
+    for(let i=0;i<10;i++) guard.observeModelCall({},context); // 10th: no answer turn after the trip
     for(let i=0;i<5;i++) assert.doesNotThrow(()=>guard.observeModelEnd({},context));
     assert.equal(attempts,outcome==='ack'?1:5);
     assert.equal(observations,outcome==='ack'?1:3);
@@ -15706,7 +15735,7 @@ test('progress abort observations allowlist custom callback data and reset per o
   for(const runId of ['one','two']) {
     const context={agentId:'pixel',runId,sessionId:'tracked-'+runId};
     guard.observeRun(context,'pixel',{prompt:'Make a site'},{executionHost:'private-mode'});
-    for(let i=0;i<9;i++) guard.observeModelCall({},context);
+    for(let i=0;i<10;i++) guard.observeModelCall({},context); // 10th: no answer turn after the trip
     for(let i=0;i<4;i++) guard.observeModelEnd({},context);
   }
   const records=messages.map(x=>JSON.parse(x.substring(x.indexOf('{'))));
@@ -15763,7 +15792,9 @@ test("repeated writes allow a different repair but remain bounded by actual fail
     if (repair) {
       assert.notEqual(different?.block, true, "two failed no-ops must not prohibit a changed repair");
     } else {
-      assert.equal(different.blockReason, RUN_PROGRESS_STOP_REASON,
+      // Still refused; the first refusal after the stop carries the one-time
+      // tool-free answer instruction instead of the owner-facing stop text.
+      assert.equal(different.blockReason, PROGRESS_FINALIZATION_INSTRUCTION,
         "four consecutive failed results exhaust the shared budget");
     }
   }
@@ -16089,12 +16120,12 @@ test('invalid JSON publication stays failed until repaired files are republished
   assert.equal(guard.verificationForRun(context.runId).status,'passed');
 });
 
-for(const fault of ['unknown-exec','failed','running','env','pending-read','wrong-run','wrong-session','wrong-key','ended']) test(`final preview revalidation fails closed: ${fault}`,async()=>{
+for(const fault of ['detached-exec','timed-out','running','env','pending-read','wrong-run','wrong-session','wrong-key','ended']) test(`final preview revalidation fails closed: ${fault}`,async()=>{
   let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
-  const params={command:fault==='unknown-exec'?'python3 test.py':'ls -la signal-garden/'};
+  const params={command:fault==='detached-exec'?'python3 test.py &':'ls -la signal-garden/'};
   if(fault==='env')params.env={PATH:'/workspace'};
   const result={content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}};
-  if(fault==='failed'){result.isError=true;result.details.exitCode=1;}
+  if(fault==='timed-out'){result.isError=true;result.details={status:'failed',exitCode:null,timedOut:true,failureKind:'overall-timeout'};}
   if(fault==='running'){result.details={status:'running',sessionId:'background-session'};}
   invoke('exec',params,result,'inspection');
   if(fault==='pending-read')invoke('read',{path:'signal-garden/index.html'},null,'pending');
@@ -16295,7 +16326,35 @@ for(const deferred of [false,true]) for(const matched of [false,true]) test(`com
   assert.equal(guard.verificationForRun(context.runId).status,matched?'passed':'failed');
 });
 
-for(const fault of ['failed-write','failed-check','pending-check','missing-result','foreign-completion','changed-root','cancelled']) test(`post-effect revalidation keeps independent rejection: ${fault}`,async()=>{
+// A call the guard refuses runs nothing; its blocked receipt, reported through
+// both hooks as OpenClaw does, neither advances nor revokes the comparison.
+test('a refused call after publication keeps the pending host comparison',async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
+  invoke('exec',{command:'python3 report.py data.csv'},{content:[{type:'text',text:'{}'}],details:{status:'completed',exitCode:0}},'demo');
+  const params={path:'signal-garden/index.html',oldText:'garden',newText:'garden'},ctx={...context,toolName:'edit',toolCallId:'noop'};
+  const refused=guard.beforeToolCall({toolName:'edit',toolCallId:'noop',params},ctx);
+  assert.equal(refused?.block,true);
+  const receipt={isError:true,content:[{type:'text',text:refused.blockReason}],details:{status:'blocked',deniedReason:'plugin-before-tool-call',reason:refused.blockReason}};
+  guard.afterToolCall({toolName:'edit',toolCallId:'noop',params,result:receipt,error:refused.blockReason},ctx);
+  guard.toolResultPersist({toolName:'edit',toolCallId:'noop',message:{role:'toolResult',toolName:'edit',toolCallId:'noop',...receipt}},ctx);
+  assert.equal(await guard.revalidateWorkspacePreview({},context),true);
+  assert.equal(probes,1);
+  assert.equal(guard.verificationForRun(context.runId).status,'passed');
+});
+
+// Tower2 round 061: an exited check settles; host bytes, not its exit code,
+// decide publication currency, and the failed check still rejects delivery.
+test('a failed check after publication regains byte currency but keeps its independent rejection',async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
+  invoke('exec',{command:'python3 -m unittest'},{isError:true,content:[{type:'text',text:'FAILED (failures=1)'}],details:{status:'completed',exitCode:1}},'failed');
+  const before=guard.verificationForRun(context.runId).status;
+  assert.notEqual(before,'passed');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),true);
+  assert.equal(probes,1);
+  assert.equal(guard.verificationForRun(context.runId).status,before,'currency cannot pass a failed check');
+});
+
+for(const fault of ['failed-write','pending-check','missing-result','foreign-completion','changed-root','cancelled']) test(`post-effect revalidation keeps independent rejection: ${fault}`,async()=>{
   let probes=0;const user='ods-'+'c'.repeat(64);
   const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;},{context:{sessionKey:`agent:pixel:openai-user:${user}`},guard:{abortRunAndDrain:async()=>({aborted:true,drained:true,forceCleared:false})}});
   const result={content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}};
@@ -16327,8 +16386,8 @@ for(const name of ['write','read','exec']) test(`nested core ${name} waits for i
   const childContext={...context,toolName:name,toolCallId:child};
   const childPrepared=guard.beforeToolCall({toolName:name,toolCallId:child,params:args},childContext);
   assert.notEqual(childPrepared?.block,true,childPrepared?.blockReason);
+  // As in production, only the outer tool_call result is persisted.
   guard.afterToolCall({toolName:name,toolCallId:child,params:childPrepared?.params??args,result},childContext);
-  guard.toolResultPersist({toolName:name,toolCallId:child,message:{role:'toolResult',toolName:name,toolCallId:child,...result}},childContext);
   assert.equal(await guard.revalidateWorkspacePreview({},context),false);
   assert.equal(probes,0);
   const outerResult=wrappedCoreResult(name,result);
@@ -16338,6 +16397,40 @@ for(const name of ['write','read','exec']) test(`nested core ${name} waits for i
   assert.equal(probes,1);
 });
 
+
+// strixy round 069: publication through Tool Search. OpenClaw runs the catalog
+// tool under a child ID with its own before/after hooks, but persists only the
+// outer tool_call result, so the child run must end with the outer receipt.
+for(const id of ['pixel_ods_workspace_preview','openclaw:pixel-ods:pixel_ods_workspace_preview']) test(`a Tool Search publication arms the host comparison: ${id}`,async()=>{
+  let probes=0;
+  const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',sessionKey:'agent:pixel:test'};
+  const guard=createToolLoopGuard({verifyWorkspacePreview:async()=>{probes++;return true;}});
+  guard.observeRun(context,'pixel',{prompt:'Build and publish a website in existing signal-garden.'});
+  const call=(toolName,toolCallId,params,result,{persist=true}={})=>{
+    const ctx={...context,toolName,toolCallId};
+    const prepared=guard.beforeToolCall({toolName,toolCallId,params},ctx);
+    assert.notEqual(prepared?.block,true,prepared?.blockReason);
+    guard.afterToolCall({toolName,toolCallId,params:prepared?.params??params,result},ctx);
+    if(persist)guard.toolResultPersist({toolName,toolCallId,message:{role:'toolResult',toolName,toolCallId,...result}},ctx);
+  };
+  const write={path:'signal-garden/index.html',content:'<!doctype html><title>Model-authored garden</title>'};
+  call('write','write',write,{content:[{type:'text',text:'written'}],details:{status:'completed'}});
+  const snapshot=workspacePreviewSnapshot('signal-garden',[write]);
+  const args={relativeDirectory:'signal-garden'};
+  const published={content:[{type:'text',text:'published'}],details:{schemaVersion:1,kind:'ods-pixel-workspace-preview',status:'succeeded',relativeDirectory:'signal-garden',port:9437,url:`http://${snapshot.siteId}.localhost:9437/${snapshot.siteId}/`,...snapshot,httpStatus:200,readbackVerified:true,executable:false,overwritten:false}};
+  const outer={...context,toolName:'tool_call',toolCallId:'publish'};
+  guard.beforeToolCall({toolName:'tool_call',toolCallId:'publish',params:{id,args}},outer);
+  call('pixel_ods_workspace_preview','tool_search_code:publish:pixel_ods_workspace_preview:1',args,published,{persist:false});
+  const receipt=wrappedPluginResult('pixel-ods','pixel_ods_workspace_preview',published);
+  guard.afterToolCall({toolName:'tool_call',toolCallId:'publish',params:{id,args},result:receipt},outer);
+  guard.toolResultPersist({toolName:'tool_call',toolCallId:'publish',message:{role:'toolResult',toolName:'tool_call',toolCallId:'publish',...receipt}},outer);
+  assert.equal(guard.verificationForRun(context.runId).status,'passed');
+  call('exec','smoke',{command:"printf 'category,amount\\nfood,0.10\\n' > /tmp/smoke.csv && python3 report.py /tmp/smoke.csv"},{content:[{type:'text',text:'{"food": "0.10"}'}],details:{status:'completed',exitCode:0}});
+  assert.notEqual(guard.verificationForRun(context.runId).status,'passed');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),true);
+  assert.equal(probes,1);
+  assert.equal(guard.verificationForRun(context.runId).status,'passed');
+});
 
 for(const wrapped of [false,true]) for(const fault of ['changed-params','outer-error','outer-result-error','event-run','event-call','event-tool','context-session','context-key']) test(`revalidation completion binding rejects ${fault}, wrapped=${wrapped}`,async()=>{
   let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
@@ -16363,12 +16456,35 @@ for(const wrapped of [false,true]) for(const fault of ['changed-params','outer-e
 });
 
 
-for(const command of ['python3 report.py test-data.csv','sh -c "sleep 1; touch site/index.html" >/dev/null 2>&1 &','setsid sh -c "sleep 1; touch site/index.html" >/dev/null 2>&1 &']) test(`arbitrary exec cannot regain publication currency: ${command}`,async()=>{
+for(const command of ['sh -c "sleep 1; touch site/index.html" >/dev/null 2>&1 &','setsid sh -c "sleep 1; touch site/index.html" >/dev/null 2>&1 &','nohup python3 watch.py >/dev/null 2>&1']) test(`detached exec cannot regain publication currency: ${command}`,async()=>{
   let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
   invoke('exec',{command},{content:[{type:'text',text:'shell exited'}],details:{status:'completed',exitCode:0}},'unsafe-exec');
   assert.equal(await guard.revalidateWorkspacePreview({},context),false);
   assert.equal(probes,0,'shell success does not attest descendant quiescence');
   assert.notEqual(guard.verificationForRun(context.runId).status,'passed');
+});
+
+// Tower2 coding-v1 round 060: publish, one read-only CLI demo, final answer.
+// Production wraps exec for cancellation, so the receipt binds to executed
+// params; only the host's re-derived snapshot digest decides currency.
+for(const deferred of [false,true]) for(const matched of [true,false]) test(`completed foreground exec requests host equality under production exec wrapping, deferred=${deferred}, matched=${matched}`,async()=>{
+  let probes=0;
+  const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return matched;},
+    {guard:{execControl:{prepare:(_run,command)=>`/control/wrapper ${Buffer.from(command).toString('base64')}`}}});
+  const args={command:'python3 report.py /tmp/test.csv && python3 report.py /tmp/header_only.csv',workdir:'/workspace/signal-garden'};
+  const result={content:[{type:'text',text:'{"food": "15.75"}\n{}'}],details:{status:'completed',exitCode:0}};
+  invoke(deferred?'tool_call':'exec',deferred?{id:'openclaw:core:exec',args}:args,deferred?wrappedCoreResult('exec',result):result,'cli-demo');
+  assert.notEqual(guard.verificationForRun(context.runId).status,'passed','immediate invalidation preserved');
+  // Read-only calls, even blocked or failed, neither advance nor revoke it.
+  const list={toolName:'process',toolCallId:'sessions',params:{action:'list'}},listContext={...context,toolName:'process',toolCallId:'sessions'};
+  const blocked=guard.beforeToolCall(list,listContext);assert.equal(blocked?.block,true);
+  const receipt={isError:true,content:[{type:'text',text:blocked.blockReason}],details:{status:'blocked'}};
+  guard.afterToolCall({...list,error:blocked.blockReason,result:receipt},listContext);
+  guard.toolResultPersist({toolName:'process',toolCallId:'sessions',message:{role:'toolResult',toolName:'process',toolCallId:'sessions',...receipt}},listContext);
+  invoke('read',{path:'signal-garden/missing.txt'},{isError:true,content:[{type:'text',text:'ENOENT'}]},'missing-read');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),matched);
+  assert.equal(probes,1);
+  assert.equal(guard.verificationForRun(context.runId).status,matched?'passed':'failed');
 });
 
 for(const wrapped of [false,true]) for(const name of ['edit','apply_patch']) for(const matched of [false,true]) test(`completed ${name} outside publication requires host equality, wrapped=${wrapped}, matched=${matched}`,async()=>{

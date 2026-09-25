@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/swagger-api/swagger-ui",
   "license": "Apache-2.0",
-  "image": "docker.swagger.io/swaggerapi/swagger-ui:v5.33.0@sha256:f9b8432be04e320406157e26c3ff52a7e9a4bea7eabe5477e9636791737eb119",
-  "registry_checked_at": "2026-09-20",
+  "image": "docker.io/swaggerapi/swagger-ui:v5.33.0@sha256:f9b8432be04e320406157e26c3ff52a7e9a4bea7eabe5477e9636791737eb119",
+  "registry_checked_at": "2026-09-25",
   "platforms": [
     "linux/amd64",
     "linux/arm",

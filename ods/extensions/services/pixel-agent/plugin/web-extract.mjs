@@ -210,11 +210,32 @@ function textResult(text, details, isError = false) {
   return { content: [{ type: "text", text }], details, ...(isError ? { isError: true } : {}) };
 }
 
-export function createPublicWebExtractTool({
+const EXTRACTION_TYPES = new Set([
+  "text/html",
+  "application/xhtml+xml",
+  "text/plain",
+  "text/markdown",
+  "application/json",
+]);
+// Text documents only: the host citation check reads prose, never JSON.
+export const PUBLIC_PAGE_TEXT_TYPES = new Set([
+  "text/html",
+  "application/xhtml+xml",
+  "text/plain",
+  "text/markdown",
+]);
+
+// The one public-page read path: OpenClaw's strict SSRF guard (pinned DNS, no
+// environment proxy, at most three redirects, each hop re-checked), the public
+// URL checks above on both the requested and the final URL, a 1 MB response
+// bound and bounded HTML-to-text extraction. pixel_ods_web_extract and the
+// host citation check (citation-verification.mjs) both use it, so neither can
+// read a page the other could not. The guarded response is always released.
+export function createPublicPageReader({
   guardedFetch,
   readResponseText,
   extractBasicHtmlContent,
-}) {
+} = {}) {
   if (
     typeof guardedFetch !== "function" ||
     typeof readResponseText !== "function" ||
@@ -222,6 +243,66 @@ export function createPublicWebExtractTool({
   ) {
     throw new TypeError("Pixel public web extraction dependencies are unavailable");
   }
+  return async function readPublicPage(rawUrl, { signal, timeoutSeconds = 20, types = EXTRACTION_TYPES } = {}) {
+    let url;
+    try {
+      url = normalizedPublicUrl(rawUrl);
+    } catch {
+      return { ok: false, reason: "invalid-url" };
+    }
+    let guarded;
+    try {
+      guarded = await guardedFetch({
+        url,
+        maxRedirects: 3,
+        timeoutSeconds,
+        signal,
+        useEnvProxy: false,
+        init: {
+          headers: {
+            Accept: "text/markdown, text/html;q=0.9, text/plain;q=0.8, application/json;q=0.7",
+            "Accept-Language": "en-US,en;q=0.9",
+          },
+        },
+      });
+      const response = guarded.response;
+      const finalUrl = normalizedPublicUrl(guarded.finalUrl);
+      if (!response.ok) return { ok: false, reason: "http-status", status: response.status, finalUrl };
+      const contentType = (response.headers.get("content-type") ?? "")
+        .split(";", 1)[0]
+        .trim()
+        .toLowerCase();
+      if (!types.has(contentType)) {
+        return { ok: false, reason: "content-type", status: response.status, finalUrl,
+          contentType: contentType || "unknown" };
+      }
+      const body = await readResponseText(response, { maxBytes: MAX_RESPONSE_BYTES });
+      let text = body.text;
+      if (contentType === "text/html" || contentType === "application/xhtml+xml") {
+        const extracted = await extractBasicHtmlContent({
+          html: body.text,
+          url: finalUrl,
+          extractMode: "text",
+        });
+        text = extracted?.text ?? "";
+      }
+      return { ok: true, status: response.status, finalUrl, contentType, text, truncated: body.truncated };
+    } catch {
+      // Guard denials (private address, redirect policy), timeouts and aborts
+      // all mean "not read"; their details never reach the caller.
+      return { ok: false, reason: "blocked" };
+    } finally {
+      guarded?.release?.();
+    }
+  };
+}
+
+export function createPublicWebExtractTool({
+  guardedFetch,
+  readResponseText,
+  extractBasicHtmlContent,
+}) {
+  const readPage = createPublicPageReader({ guardedFetch, readResponseText, extractBasicHtmlContent });
 
   return {
     name: "pixel_ods_web_extract",
@@ -263,33 +344,23 @@ export function createPublicWebExtractTool({
         }, true);
       }
 
-      let guarded;
+      const unavailable = () => textResult(
+        "Targeted public web extraction was blocked or unavailable; no evidence was returned.",
+        { boundary: "public-web-read-only", matched: false },
+        true
+      );
       try {
-        guarded = await guardedFetch({
-          url,
-          maxRedirects: 3,
-          timeoutSeconds: 20,
-          signal,
-          useEnvProxy: false,
-          init: {
-            headers: {
-              Accept: "text/markdown, text/html;q=0.9, text/plain;q=0.8, application/json;q=0.7",
-              "Accept-Language": "en-US,en;q=0.9",
-            },
-          },
-        });
-        const response = guarded.response;
-        const finalUrl = normalizedPublicUrl(guarded.finalUrl);
-        if (!response.ok) {
+        const page = await readPage(url, { signal, timeoutSeconds: 20 });
+        if (page.reason === "http-status") {
+          const finalUrl = page.finalUrl;
           // A missing raw file does not prove the repository is unavailable.
           // Read its index once through the same guard, with explicit provenance.
           const target = new URL(finalUrl);
           const parts = target.pathname.split('/').filter(Boolean);
-          if (!recoveryAttempted && response.status === 404 && target.hostname === 'raw.githubusercontent.com' &&
+          if (!recoveryAttempted && page.status === 404 && target.hostname === 'raw.githubusercontent.com' &&
               parts.length >= 4 && /^[A-Za-z0-9-]{1,39}$/.test(parts[0]) &&
               /^[A-Za-z0-9._-]{1,100}$/.test(parts[1]) && !['.', '..'].includes(parts[1])) {
             const repositoryUrl = `https://github.com/${parts[0]}/${parts[1]}`;
-            guarded.release?.(); guarded = undefined;
             const recovered = await execute(_toolCallId, {url: repositoryUrl}, signal, true);
             return {...recovered,
               content: [{type: 'text', text: `The requested file returned HTTP 404: ${finalUrl}. It was not read. The following result is from the repository page; inspect its actual file links before another file request.`}, ...recovered.content],
@@ -297,40 +368,21 @@ export function createPublicWebExtractTool({
                 failed_source_url: finalUrl, failed_status: 404}};
           }
           return textResult(
-            `The public page returned HTTP ${response.status}; no evidence was extracted.`,
-            { boundary: "public-web-read-only", matched: false, status: response.status },
+            `The public page returned HTTP ${page.status}; no evidence was extracted.`,
+            { boundary: "public-web-read-only", matched: false, status: page.status },
             true
           );
         }
-        const contentType = (response.headers.get("content-type") ?? "")
-          .split(";", 1)[0]
-          .trim()
-          .toLowerCase();
-        if (
-          !new Set([
-            "text/html",
-            "application/xhtml+xml",
-            "text/plain",
-            "text/markdown",
-            "application/json",
-          ]).has(contentType)
-        ) {
+        if (page.reason === "content-type") {
           return textResult("The public page is not a supported text document.", {
             boundary: "public-web-read-only",
             matched: false,
-            content_type: contentType || "unknown",
+            content_type: page.contentType,
           }, true);
         }
-        const body = await readResponseText(response, { maxBytes: MAX_RESPONSE_BYTES });
-        let extractedText = body.text;
-        if (contentType === "text/html" || contentType === "application/xhtml+xml") {
-          const extracted = await extractBasicHtmlContent({
-            html: body.text,
-            url: finalUrl,
-            extractMode: "text",
-          });
-          extractedText = extracted?.text ?? "";
-        }
+        if (!page.ok) return unavailable();
+        const finalUrl = page.finalUrl;
+        const extractedText = page.text;
         if (query === undefined) {
           const overview = extractedText.slice(0, MAX_EVIDENCE_CHARS).trim();
           if (!overview) return textResult('The public page contained no readable text.', {
@@ -338,20 +390,20 @@ export function createPublicWebExtractTool({
           }, true);
           return textResult(wrappedEvidence(overview, finalUrl), {
             boundary: 'public-web-read-only', mode: 'overview', matched: false,
-            source_url: finalUrl, response_truncated: body.truncated,
+            source_url: finalUrl, response_truncated: page.truncated,
             evidence_truncated_before: false,
             evidence_truncated_after: extractedText.length > MAX_EVIDENCE_CHARS,
           });
         }
         const evidence = selectEvidenceWindow(extractedText, query);
         if (!evidence) {
-          const qualifier = body.truncated ? " within the bounded response" : " on the page";
+          const qualifier = page.truncated ? " within the bounded response" : " on the page";
           return textResult(
             `The public page was fetched, but the exact query was not found${qualifier}. Do not infer the requested fact from this result.`,
             {
               boundary: "public-web-read-only",
               matched: false,
-              response_truncated: body.truncated,
+              response_truncated: page.truncated,
               source_url: finalUrl,
             }
           );
@@ -361,18 +413,12 @@ export function createPublicWebExtractTool({
           matched: true,
           matched_query: evidence.matchedQuery,
           source_url: finalUrl,
-          response_truncated: body.truncated,
+          response_truncated: page.truncated,
           evidence_truncated_before: evidence.truncatedBefore,
           evidence_truncated_after: evidence.truncatedAfter,
         });
       } catch {
-        return textResult(
-          "Targeted public web extraction was blocked or unavailable; no evidence was returned.",
-          { boundary: "public-web-read-only", matched: false },
-          true
-        );
-      } finally {
-        guarded?.release?.();
+        return unavailable();
       }
   }
 }

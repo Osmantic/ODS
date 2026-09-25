@@ -278,23 +278,108 @@ class TestCaching:
     def teardown_method(self):
         _reset_cache()
 
-    def test_cache_returns_same_result(self, tmp_path):
-        """Second call within TTL returns cached result without rescanning."""
+    def test_cache_returns_same_result(self, tmp_path, monkeypatch):
+        """Second call within TTL on unchanged directories does not rescan."""
+        import user_extensions
+
         user_dir = tmp_path / "user"
         ext_dir = user_dir / "my-ext"
         _write_manifest(ext_dir, _make_manifest("my-ext"))
         (ext_dir / "compose.yaml").write_text("services: {}\n")
 
+        scans = []
+        real_scan = user_extensions.scan_user_extension_services
+        monkeypatch.setattr(user_extensions, "scan_user_extension_services",
+                            lambda directory: scans.append(directory) or real_scan(directory))
+
         r1 = get_user_services_cached(user_dir, ttl=60.0)
-        assert "my-ext" in r1
-
-        # Remove the extension directory — cache should still return old result
-        import shutil
-        shutil.rmtree(ext_dir)
-
         r2 = get_user_services_cached(user_dir, ttl=60.0)
+        assert "my-ext" in r1
         assert r2 == r1
-        assert "my-ext" in r2
+        assert len(scans) == 1
+
+    def test_install_is_visible_before_ttl(self, tmp_path):
+        """A scan taken just before an install must not hide the new
+        extension from the catalog health probe for the rest of the TTL."""
+        user_dir = tmp_path / "user"
+        user_dir.mkdir()
+        assert get_user_services_cached(user_dir, ttl=300.0) == {}
+
+        ext_dir = user_dir / "my-ext"
+        _write_manifest(ext_dir, _make_manifest("my-ext"))
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+
+        assert "my-ext" in get_user_services_cached(user_dir, ttl=300.0)
+
+    def test_disable_enable_are_visible_before_ttl(self, tmp_path):
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "my-ext"
+        _write_manifest(ext_dir, _make_manifest("my-ext"))
+        compose = ext_dir / "compose.yaml"
+        compose.write_text("services: {}\n")
+        assert "my-ext" in get_user_services_cached(user_dir, ttl=300.0)
+
+        compose.rename(ext_dir / "compose.yaml.disabled")
+        assert get_user_services_cached(user_dir, ttl=300.0) == {}
+
+        (ext_dir / "compose.yaml.disabled").rename(compose)
+        assert "my-ext" in get_user_services_cached(user_dir, ttl=300.0)
+
+    def test_removal_is_visible_before_ttl(self, tmp_path):
+        import shutil
+
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "my-ext"
+        _write_manifest(ext_dir, _make_manifest("my-ext"))
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+        assert "my-ext" in get_user_services_cached(user_dir, ttl=300.0)
+
+        shutil.rmtree(ext_dir)
+        assert get_user_services_cached(user_dir, ttl=300.0) == {}
+
+    def test_manifest_replacement_is_visible_before_ttl(self, tmp_path):
+        """An update swaps in a new manifest; its health path must be used."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "my-ext"
+        _write_manifest(ext_dir, _make_manifest("my-ext", health="/health"))
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+        assert get_user_services_cached(user_dir, ttl=300.0)["my-ext"]["health"] == "/health"
+
+        replacement = tmp_path / "manifest.new"
+        replacement.write_text(yaml.dump(_make_manifest("my-ext", health="/api/ready")))
+        replacement.replace(ext_dir / "manifest.yaml")
+        assert get_user_services_cached(user_dir, ttl=300.0)["my-ext"]["health"] == "/api/ready"
+
+    def test_missing_directory_is_cached_until_it_appears(self, tmp_path):
+        user_dir = tmp_path / "user"
+        assert get_user_services_cached(user_dir, ttl=300.0) == {}
+
+        ext_dir = user_dir / "my-ext"
+        _write_manifest(ext_dir, _make_manifest("my-ext"))
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+        assert "my-ext" in get_user_services_cached(user_dir, ttl=300.0)
+
+    def test_unrelated_entries_do_not_force_rescans(self, tmp_path, monkeypatch):
+        """Staging/backup directories and stray files are not scanned, so
+        they must not defeat the cache either."""
+        import user_extensions
+
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "my-ext"
+        _write_manifest(ext_dir, _make_manifest("my-ext"))
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+
+        scans = []
+        real_scan = user_extensions.scan_user_extension_services
+        monkeypatch.setattr(user_extensions, "scan_user_extension_services",
+                            lambda directory: scans.append(directory) or real_scan(directory))
+
+        get_user_services_cached(user_dir, ttl=300.0)
+        (user_dir / ".backups" / "my-ext").mkdir(parents=True)
+        (user_dir / "README.txt").write_text("notes\n")
+        (ext_dir / "data").mkdir()
+        get_user_services_cached(user_dir, ttl=300.0)
+        assert len(scans) == 1
 
     def test_cache_ttl_expires(self, tmp_path, monkeypatch):
         """After TTL, cache rescans the directory."""

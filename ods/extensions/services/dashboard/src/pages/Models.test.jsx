@@ -772,6 +772,34 @@ test('allows explicit Talk-incompatible models to run with an agent-readiness wa
   expect(deleteButton).toBeEnabled()
 })
 
+test.each([false, true])('explains blocked apps with user copy, never the internal fleet note (compact=%s)', (compact) => {
+  const fleetNote = 'Fleet model-UI run 2026-07-16T18-10Z on windows-laptop failed; keep it out of ODS Talk release coverage until revalidated.'
+  const talkCopy = "This model isn't supported in ODS Talk yet. Switch to a recommended model to use ODS Talk."
+  const agentCopy = 'Not verified for agent tasks, so responses may fail. Switch to a recommended model for agent features.'
+  useModelsMock.mockReturnValue(baseState({
+    models: [model({
+      name: 'IBM Granite 3.3 2B Instruct',
+      status: 'downloaded',
+      appCompatibility: {
+        openaiChat: { status: 'verified', reason: 'direct chat passed', userMessage: 'Verified for chat.' },
+        hermesTalk: { status: 'unsupported_until_revalidated', reason: fleetNote, userMessage: talkCopy },
+        agentViability: { status: 'not_agent_viable', reason: fleetNote, userMessage: agentCopy },
+      },
+    })],
+  }))
+
+  const { container } = render(createElement(MemoryRouter, null, createElement(Models, { compact })))
+
+  if (compact) {
+    expect(screen.getByText(talkCopy)).toBeInTheDocument()
+    expect(screen.getByText(agentCopy)).toBeInTheDocument()
+    expect(screen.queryByText('Verified for chat.')).not.toBeInTheDocument()
+  } else {
+    expect(container.querySelector(`[title="${talkCopy} ${agentCopy}"]`)).not.toBeNull()
+  }
+  expect(container.innerHTML).not.toMatch(/Fleet model-UI run|release coverage|revalidated/)
+})
+
 test('distinguishes verified and adaptive Pixel capability without excluding models', () => {
   useModelsMock.mockReturnValue(baseState({
     models: [

@@ -1647,6 +1647,20 @@ def _get_agent_model_status(timeout: int = 5) -> Optional[dict]:
         return status
 
 
+def _invalidate_agent_model_status_cache() -> None:
+    """Forget the cached host-agent model status.
+
+    Reads hold the lock across the host-agent request, so an in-flight read
+    finishes (and caches) before this reset, never after it. Only the
+    timestamp is reset: a lock-free reader then sees either the previous
+    consistent entry or an expired one, never a torn value.
+    """
+    global _agent_model_status_cache_at
+
+    with _agent_model_status_cache_lock:
+        _agent_model_status_cache_at = 0.0
+
+
 # Large GGUF downloads can report the row as downloaded before the host-agent
 # releases the model_download lifecycle lock. Keep this finite so unrelated
 # conflicts still surface, but cover observed 30s+ multipart teardown lag.
@@ -2254,12 +2268,18 @@ def load_model(
             activation_context = configured_context
     if activation_context is not None:
         activation_body["context_length"] = activation_context
-    result = _call_agent_model(
-        "/v1/model/activate",
-        activation_body,
-        timeout=2700,
-        retry_download_busy_seconds=_MODEL_DOWNLOAD_BUSY_ACTIVATION_GRACE_SECONDS,
-    )
+    try:
+        result = _call_agent_model(
+            "/v1/model/activate",
+            activation_body,
+            timeout=2700,
+            retry_download_busy_seconds=_MODEL_DOWNLOAD_BUSY_ACTIVATION_GRACE_SECONDS,
+        )
+    finally:
+        # A status read cached while the activation ran still reports its
+        # lifecycle as active. Drop it so the dashboard's confirming poll,
+        # sent as soon as this response lands, sees the settled state.
+        _invalidate_agent_model_status_cache()
     return result
 
 

@@ -987,6 +987,10 @@ class TestModelAllowlist(BaseEdgeTest):
         self.assertIn("edit cannot create a file", content)
         self.assertIn("Perform the requested workspace mutation before verification", content)
         self.assertIn("Do not repeatedly list directories", content)
+        # Copies and JSON maps of existing files come from a command, never
+        # from write: the route must not restrict exec to readback and tests.
+        self.assertIn("or copies of existing files", content)
+        self.assertIn("cp or python3 with json.dump, never by re-typing them", content)
 
     async def test_run_and_wait_gets_one_exec_then_exact_process_poll_route(self):
         async with self.client.post(

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createWorkspacePreviewTool,
+  EMPTY_PUBLISHED_FILES_PREFIX,
   normalizeWorkspacePreviewParams,
   testing,
 } from "../plugin/workspace-preview.mjs";
@@ -261,6 +262,78 @@ test("rejects unsafe, unbounded, inconsistent or incomplete file-list receipts",
   ]) {
     const tool = createWorkspacePreviewTool({ request: async () => succeededResponse(fields) });
     const result = await tool.execute("bad-list", { relativeDirectory: "demo-site" });
+    assert.equal(result.isError, true, JSON.stringify(fields));
+    assert.equal(result.details.status, "failed");
+    assert.doesNotMatch(JSON.stringify(result), /private\.txt|secret\.txt/);
+  }
+});
+
+// tower1 7402eb38 coding journey: `2>&1 > public/test-results.txt` left the
+// published file empty and the final answer called it the unittest output.
+const FLEET_EMPTY_RECEIPT = {
+  relativeDirectory: "fleet-qualification-489210351f87-coding/public",
+  publishedPaths: ["index.html", "sources.json", "test-results.txt"], publishedPathsOmitted: 0,
+  publishedEmptyPaths: ["test-results.txt"], publishedEmptyPathsOmitted: 0,
+};
+
+test("receipt names zero-byte published files without failing publication", async () => {
+  const tool = createWorkspacePreviewTool({ request: async () => succeededResponse(FLEET_EMPTY_RECEIPT) });
+  const result = await tool.execute("fleet-empty", { relativeDirectory: FLEET_EMPTY_RECEIPT.relativeDirectory });
+  assert.equal(result.isError, undefined);
+  assert.equal(result.details.status, "succeeded");
+  assert.deepEqual(result.details.publishedEmptyPaths, ["test-results.txt"]);
+  const text = result.content[0].text;
+  assert.equal(EMPTY_PUBLISHED_FILES_PREFIX, "Published files that are empty (0 bytes): ");
+  assert.ok(text.includes("Published files that are empty (0 bytes): test-results.txt. "), text);
+  assert.equal(text.split(EMPTY_PUBLISHED_FILES_PREFIX).length, 2);
+  assert.match(text, /Verified browser URL: http:\/\/site-/);
+});
+
+test("empty-file note lists every shown path and counts the omitted ones", async () => {
+  const tool = createWorkspacePreviewTool({ request: async () => succeededResponse({
+    files: 40, publishedPaths: ["app.js", "index.html"], publishedPathsOmitted: 38,
+    publishedEmptyPaths: ["app.js", "logs/run.txt"], publishedEmptyPathsOmitted: 3,
+  }) });
+  const result = await tool.execute("bounded-empty", { relativeDirectory: "demo-site" });
+  assert.equal(result.isError, undefined);
+  assert.ok(result.content[0].text.includes(`${EMPTY_PUBLISHED_FILES_PREFIX}app.js, logs/run.txt, 3 more. `));
+});
+
+test("no empty-file note when nothing is empty or the host sent no empty-file list", async () => {
+  for (const fields of [
+    { publishedPaths: ["index.html", "test-results.txt"], publishedPathsOmitted: 1,
+      publishedEmptyPaths: [], publishedEmptyPathsOmitted: 0 },
+    { publishedPaths: ["index.html", "test-results.txt"], publishedPathsOmitted: 1 },
+    {},
+  ]) {
+    const tool = createWorkspacePreviewTool({ request: async () => succeededResponse(fields) });
+    const result = await tool.execute("no-empty", { relativeDirectory: "demo-site" });
+    assert.equal(result.isError, undefined, JSON.stringify(fields));
+    assert.doesNotMatch(result.content[0].text, /empty \(0 bytes\)/);
+  }
+});
+
+test("rejects empty-file lists that are unsafe, unbounded or inconsistent with the file list", async () => {
+  const paths = { publishedPaths: ["index.html", "sources.json", "test-results.txt"], publishedPathsOmitted: 0 };
+  for (const fields of [
+    { publishedEmptyPaths: ["test-results.txt"], publishedEmptyPathsOmitted: 0 },
+    { ...paths, publishedEmptyPaths: ["test-results.txt"] },
+    { ...paths, publishedEmptyPathsOmitted: 0 },
+    { ...paths, publishedEmptyPaths: ["index.html"], publishedEmptyPathsOmitted: 0 },
+    { ...paths, publishedEmptyPaths: ["other.txt"], publishedEmptyPathsOmitted: 0 },
+    { ...paths, publishedEmptyPaths: ["test-results.txt", "sources.json"], publishedEmptyPathsOmitted: 0 },
+    { ...paths, publishedEmptyPaths: ["sources.json", "sources.json"], publishedEmptyPathsOmitted: 0 },
+    { ...paths, publishedEmptyPaths: ["sources.json", "test-results.txt"], publishedEmptyPathsOmitted: 1 },
+    { ...paths, publishedEmptyPaths: ["test-results.txt"], publishedEmptyPathsOmitted: -1 },
+    { ...paths, publishedEmptyPaths: ["test-results.txt"], publishedEmptyPathsOmitted: 0.5 },
+    { ...paths, publishedEmptyPaths: "test-results.txt", publishedEmptyPathsOmitted: 0 },
+    { ...paths, publishedEmptyPaths: ["../private.txt"], publishedEmptyPathsOmitted: 0 },
+    { ...paths, publishedEmptyPaths: ["a\nsecret.txt"], publishedEmptyPathsOmitted: 0 },
+    { files: 40, publishedPaths: ["index.html"], publishedPathsOmitted: 39,
+      publishedEmptyPaths: Array.from({ length: 33 }, (_, i) => `e${String(i).padStart(2, "0")}.txt`), publishedEmptyPathsOmitted: 0 },
+  ]) {
+    const tool = createWorkspacePreviewTool({ request: async () => succeededResponse(fields) });
+    const result = await tool.execute("bad-empty-list", { relativeDirectory: "demo-site" });
     assert.equal(result.isError, true, JSON.stringify(fields));
     assert.equal(result.details.status, "failed");
     assert.doesNotMatch(JSON.stringify(result), /private\.txt|secret\.txt/);

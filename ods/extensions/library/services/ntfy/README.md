@@ -32,6 +32,8 @@ The image is pinned to ntfy **2.28.0** and its multi-architecture digest. CPU on
 
 Authentication and the 24-hour message cache persist in `data/ntfy`. `ods disable ntfy` preserves them; enable again to resume. Stop the service before copying this directory for a consistent backup, and restore the entire directory while stopped. Do not delete it to reset a password: use `docker exec -it ods-ntfy ntfy user change-pass operator`.
 
+The container runs as the ODS install owner (`ODS_UID:ODS_GID` in `.env`, default `1000:1000`) with a read-only root filesystem and no Linux capabilities. ODS creates `data/ntfy` as that owner, so keep that ownership when restoring. If ntfy exits with `unable to open database file`, stop it and run `sudo chown -R "$(id -u):$(id -g)" data/ntfy` from the ODS directory as the install owner. Rootless Docker maps the container user to a different host UID and is outside the tested contract.
+
 No upstream relay, Firebase, email, attachments, or browser push service is configured. The local web inbox and API work without these; iOS background push and browser push are outside this extension's default contract. Notifications can contain sensitive text, so use brief job summaries and limit topic access.
 
 References: [ntfy installation](https://docs.ntfy.sh/install/), [authentication and configuration](https://docs.ntfy.sh/config/), [2.28.0 release](https://github.com/binwiederhier/ntfy/releases/tag/v2.28.0).

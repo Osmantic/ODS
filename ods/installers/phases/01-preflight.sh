@@ -52,11 +52,22 @@ ods_preflight_require_jq
 # image/model download to look like an unexplained installer hang.
 _phase01_check_required_network() {
     [[ "${OFFLINE_MODE:-false}" == "true" ]] && return 0
-    local target target_name url status
+    local target target_name url status attempt reached
     for target in "GitHub|https://github.com" "Docker Hub|https://registry-1.docker.io/v2/"; do
         IFS='|' read -r target_name url <<< "$target"
-        if ! status="$(curl -sS --connect-timeout 5 --max-time 10 -o /dev/null \
-            -w '%{http_code}' "$url")"; then
+        # A single transient DNS or connect failure must not abort an install
+        # that the forced-reinstall preflight cleared moments earlier: retry a
+        # few times before concluding that the target is unreachable.
+        reached=false
+        for attempt in 1 2 3; do
+            if status="$(curl -sS --connect-timeout 5 --max-time 10 -o /dev/null \
+                -w '%{http_code}' "$url")"; then
+                reached=true
+                break
+            fi
+            [[ "$attempt" -lt 3 ]] && sleep "${ODS_PREFLIGHT_NETWORK_RETRY_DELAY:-3}"
+        done
+        if [[ "$reached" != true ]]; then
             error "Could not reach ${target_name}. Check DNS, proxy, or captive-portal access, then re-run the installer."
         fi
         # Docker Registry v2 intentionally challenges anonymous clients with

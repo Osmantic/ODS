@@ -27,7 +27,22 @@ export function hasVisibilityTransitionPlan(request) {
         isDeepStrictEqual(before.locator, after.locator))));
 }
 
+// A locator that matched no element, or several, produced no measurement. Say
+// which, and how to fix the locator; never suggest changing the site for it.
+function locatorFeedback(step) {
+  const at = `Step ${step.index + 1} (${step.action})`, count = step.before.count;
+  const retry = 'retry the inspection on the same published snapshot. Do not change the site only to satisfy a locator. Requested behavior remains unverified.';
+  if (count !== 0) return `${at} matched ${count} elements; a locator must match exactly one, so nothing was measured and later steps did not run. Use a more specific CSS selector such as an id, or a unique exact name, and ${retry}`;
+  const semantic = step.locator.role !== undefined;
+  const scope = !semantic ? '' : step.action !== 'assert-hidden'
+    ? ` For ${step.action}, role/name locators match only rendered elements, so a hidden element is not matched.`
+    : step.errorCode === 'no_match' ? ' Hidden elements were searched too, so no element has exactly that role and accessible name.'
+      : ' This inspector cannot match a hidden element by role/name; use a CSS selector such as an id for it.';
+  return `${at} matched no element, so nothing was measured and later steps did not run.${scope} Copy the exact role and accessible name (case, spacing, punctuation) or a CSS selector such as an id from your source, and ${retry}`;
+}
 function transitionCoverageFeedback(request, result) {
+  const unmatched = result.steps?.find(step => step.errorCode === 'no_match' || step.errorCode === 'selector_not_unique');
+  if (unmatched) return locatorFeedback(unmatched);
   const syntaxFailure = result.steps?.find(step => step.errorCode === 'invalid_selector');
   if (syntaxFailure) return `Step ${syntaxFailure.index + 1} has invalid CSS selector syntax; that step produced no visibility measurement and later steps were not executed. Use a standard CSS selector from the actual source, or a supported role with the exact accessible name and exact:true. Text-matching extensions such as :contains() are not CSS selectors. Correct the locator and retry the inspection on the same published snapshot; do not remove the requested behavior checks. For show/hide behavior, keep assertions of opposite visibility for the same affected element around the control click. Requested behavior remains unverified.`;
   if (result.status !== 'passed') return 'Requested behavior remains unverified; a failed inspection does not establish a visibility transition.';
@@ -96,7 +111,9 @@ export function validateWorkspacePreviewInspectionReceipt(value, request) {
       return;
     }
     const keys=['index','action','locator','before','stable','status',...(step.after===undefined?[]:['after']),...(step.errorCode===undefined?[]:['errorCode'])];
-    if(!exact(step,keys)||step.index!==i||step.action!==request.steps[i].action||canonical(step.locator)!==canonical(request.steps[i].locator)||!stateValid(step.before)||typeof step.stable!=='boolean'||!['passed','failed'].includes(step.status)||(step.after!==undefined&&!stateValid(step.after))||(step.errorCode!==undefined&&!['selector_not_unique','unstable','click_failed','visibility_mismatch'].includes(step.errorCode))) throw Error('invalid action evidence');
+    if(!exact(step,keys)||step.index!==i||step.action!==request.steps[i].action||canonical(step.locator)!==canonical(request.steps[i].locator)||!stateValid(step.before)||typeof step.stable!=='boolean'||!['passed','failed'].includes(step.status)||(step.after!==undefined&&!stateValid(step.after))||(step.errorCode!==undefined&&!['no_match','selector_not_unique','unstable','click_failed','visibility_mismatch'].includes(step.errorCode))) throw Error('invalid action evidence');
+    // no_match is exactly zero matches; older capsules also reported zero as selector_not_unique.
+    if((step.errorCode==='no_match'&&(!exact(step.before,['count'])||step.before.count!==0))||(step.errorCode==='selector_not_unique'&&(!exact(step.before,['count'])||step.before.count===1))) throw Error('invalid match evidence');
     if(step.status==='passed' && (!step.stable||step.before.count!==1||step.errorCode!==undefined||(step.action==='click' ? step.after===undefined : step.before.visible!==(step.action==='assert-visible')))) throw Error('unsupported inspection pass');
   });
   const passed=value.steps.length===request.steps.length&&value.steps.every(s=>s.status==='passed')&&value.blockedRequests.length===0;
@@ -128,7 +145,7 @@ export function createWorkspacePreviewInspectTool({request,transport='unix'}={})
   if(!['unix','native'].includes(transport))throw Error('invalid inspection transport');
   request??=transport==='unix'?unixRequest:nativeRequest;
   return {name:'pixel_ods_workspace_preview_inspect',
-    description:'Inspect an already published owned snapshot using bounded CSS or exact accessible role/name locators. Pass its exact siteId and sha256 from publication. Immediately after publication, check each requested interaction with an initial state assertion, the relevant click, then an explicit postcondition assertion matching the requested behavior. Do not wait until finalization. Each locator must match exactly one element, even for hidden assertions. This tests CSS layout visibility, not pixel paint, occlusion or clipping. A click alone proves no behavioral result. Rendered hidden attributes are diagnostic; intentional CSS overrides are not automatically errors. Uncaught page script errors are reported and leave interactions unverified. Unavailable inspection is unverified, never success. No URLs or JavaScript accepted.',
+    description:'Inspect an already published owned snapshot using bounded CSS or exact accessible role/name locators. Pass its exact siteId and sha256 from publication. Immediately after publication, check each requested interaction with an initial state assertion, the relevant click, then an explicit postcondition assertion matching the requested behavior. Do not wait until finalization. Each locator must match exactly one element. Exact role/name locators match rendered elements; assert-hidden also matches hidden ones, so one role/name can be asserted hidden, clicked into view, then asserted visible. This tests CSS layout visibility, not pixel paint, occlusion or clipping. A click alone proves no behavioral result. Rendered hidden attributes are diagnostic; intentional CSS overrides are not automatically errors. Uncaught page script errors are reported and leave interactions unverified. Unavailable inspection is unverified, never success. No URLs or JavaScript accepted.',
     parameters:{type:'object',additionalProperties:false,required:['siteId','sha256','viewport','steps'],properties:{siteId:{type:'string',pattern:'^site-[a-f0-9]{24}$'},sha256:{type:'string',pattern:'^[a-f0-9]{64}$',description:'Full snapshot sha256 from the same publication receipt; not entrySha256 or a site suffix.'},viewport:{type:'object',additionalProperties:false,required:['width','height'],properties:{width:{type:'integer',minimum:240,maximum:1920},height:{type:'integer',minimum:240,maximum:1920}}},steps:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['action','locator'],properties:{action:{type:'string',enum:['assert-visible','assert-hidden','click']},locator:{oneOf:[{type:'object',additionalProperties:false,required:['selector'],properties:{selector:{type:'string',maxLength:256}}},{type:'object',additionalProperties:false,required:['role','name','exact'],properties:{role:{type:'string',enum:[...roles]},name:{type:'string',maxLength:120},exact:{const:true}}}]}}}}}},
     execute:async(_id,params,signal)=>{
       let normalized;

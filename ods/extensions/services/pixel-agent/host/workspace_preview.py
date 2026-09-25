@@ -446,7 +446,8 @@ def publish_snapshot(
         "relativeDirectory": relative_directory,
         "siteId": site_id,
         "files": len(captured),
-        **(_published_path_feedback(observed) if PROFILE_ID is None else {}),
+        **(_published_path_feedback(observed, [relative for relative, data in captured if not data])
+           if PROFILE_ID is None else {}),
         "bytes": total,
         "sha256": full_digest,
         "entryFile": "index.html",
@@ -491,8 +492,7 @@ def verify_current_snapshot(workspace, previews, request, owner_uid):
             "boundary": BOUNDARY, **_profile_fields()}
 
 
-def _published_path_feedback(paths):
-    """Bounded names from the verified snapshot; never infer requested files."""
+def _bounded_paths(paths):
     ordered = sorted(paths)
     shown = []
     total = 0
@@ -501,7 +501,19 @@ def _published_path_feedback(paths):
             break
         shown.append(relative)
         total += len(relative)
-    return {"publishedPaths": shown, "publishedPathsOmitted": len(ordered) - len(shown)}
+    return shown, len(ordered) - len(shown)
+
+
+def _published_path_feedback(paths, empty_paths=()):
+    """Bounded names from the verified snapshot; never infer requested files.
+
+    Zero-byte files are listed separately. They are legitimate (for example an
+    empty stylesheet), so this is information for the model, not a failure.
+    """
+    shown, omitted = _bounded_paths(paths)
+    empty, empty_omitted = _bounded_paths(empty_paths)
+    return {"publishedPaths": shown, "publishedPathsOmitted": omitted,
+            "publishedEmptyPaths": empty, "publishedEmptyPathsOmitted": empty_omitted}
 
 
 def snapshot_manifest(previews: pathlib.Path, site_id: str) -> bytes:

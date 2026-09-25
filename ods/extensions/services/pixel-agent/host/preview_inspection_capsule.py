@@ -54,6 +54,221 @@ SELECTOR_COUNT = r"""function(selector) {
 }"""
 
 
+# Chromium's accessibility tree omits hidden elements and computes no name for
+# them, so an exact role/name locator could never address the element an
+# assert-hidden step expects to be hidden. For assert-hidden only, exact
+# role/name matching also includes hidden elements, following Playwright's
+# getByRole(role, {name, exact: true, includeHidden: true}) role and name rules
+# (script, style, template and noscript text never contributes). It runs in the
+# isolated world, so page script cannot replace the DOM or style APIs it reads.
+# Chromium's own rendered matches are passed in and kept, so a rendered element
+# is matched exactly as before; the union is de-duplicated by identity.
+ROLE_NAME_INCLUDING_HIDDEN = r"""function(role, name, ...rendered) {
+  const VALID = new Set(('alert alertdialog application article banner blockquote button caption cell checkbox code ' +
+    'columnheader combobox complementary contentinfo definition deletion dialog directory document emphasis feed figure ' +
+    'form generic grid gridcell group heading img insertion link list listbox listitem log main mark marquee math meter ' +
+    'menu menubar menuitem menuitemcheckbox menuitemradio navigation none note option paragraph presentation progressbar ' +
+    'radio radiogroup region row rowgroup rowheader scrollbar search searchbox separator slider spinbutton status strong ' +
+    'subscript superscript switch tab table tablist tabpanel term textbox time timer toolbar tooltip tree treegrid treeitem').split(' '));
+  const GLOBAL = ('atomic busy controls current describedby details dropeffect flowto grabbed hidden keyshortcuts label ' +
+    'labelledby live owns relevant roledescription').split(' ').map(a => 'aria-' + a);
+  const CONTENT = new Set(('button cell checkbox columnheader gridcell heading link menuitem menuitemcheckbox menuitemradio ' +
+    'option radio row rowheader switch tab tooltip treeitem').split(' '));
+  const DESCENDANT = new Set(['', ...('caption code contentinfo definition deletion emphasis insertion list listitem mark none ' +
+    'paragraph presentation region row rowgroup section strong subscript superscript table term time').split(' ')]);
+  const TAG = {article:'article', aside:'complementary', blockquote:'blockquote', button:'button', caption:'caption', code:'code',
+    datalist:'listbox', dd:'definition', del:'deletion', details:'group', dfn:'term', dialog:'dialog', dt:'term', em:'emphasis',
+    fieldset:'group', figure:'figure', h1:'heading', h2:'heading', h3:'heading', h4:'heading', h5:'heading', h6:'heading',
+    hr:'separator', html:'document', ins:'insertion', li:'listitem', main:'main', mark:'mark', math:'math', menu:'list',
+    meter:'meter', nav:'navigation', ol:'list', optgroup:'group', option:'option', output:'status', p:'paragraph',
+    progress:'progressbar', search:'search', strong:'strong', sub:'subscript', sup:'superscript', svg:'img', table:'table',
+    tbody:'rowgroup', td:'cell', textarea:'textbox', tfoot:'rowgroup', th:'columnheader', thead:'rowgroup', time:'time',
+    tr:'row', ul:'list'};
+  const INPUT = {button:'button', checkbox:'checkbox', image:'button', number:'spinbutton', radio:'radio', range:'slider',
+    reset:'button', submit:'button'};
+  const IGNORED = new Set(['script', 'style', 'template', 'noscript']);
+  const LANDMARK = 'article:not([role]), aside:not([role]), main:not([role]), nav:not([role]), section:not([role]), ' +
+    '[role=article], [role=complementary], [role=main], [role=navigation], [role=region]';
+  const tag = e => String(e.localName || '').toLowerCase();
+  const style = (e, pseudo) => { try { return getComputedStyle(e, pseudo); } catch { return null; } };
+  const idRefs = (e, attribute) => {
+    const value = e.getAttribute(attribute), root = e.getRootNode(), out = [];
+    for (const id of (value || '').split(' ').filter(Boolean)) {
+      let target = null;
+      try { target = root.querySelector('#' + CSS.escape(id)); } catch {}
+      if (target && !out.includes(target)) out.push(target);
+    }
+    return out;
+  };
+  const named = e => e.hasAttribute('aria-label') || e.hasAttribute('aria-labelledby');
+  const implicit = e => {
+    const t = tag(e);
+    if (t === 'a' || t === 'area') return e.hasAttribute('href') ? 'link' : null;
+    if (t === 'select') return e.hasAttribute('multiple') || e.size > 1 ? 'listbox' : 'combobox';
+    if (t === 'img') return e.getAttribute('alt') === '' && !e.getAttribute('title') && !GLOBAL.some(a => e.hasAttribute(a)) &&
+      Number.isNaN(Number(String(e.getAttribute('tabindex')))) ? 'presentation' : 'img';
+    if (t === 'header' || t === 'footer') return e.closest(LANDMARK) ? null : t === 'header' ? 'banner' : 'contentinfo';
+    if (t === 'form' || t === 'section') return named(e) ? (t === 'form' ? 'form' : 'region') : null;
+    if (t === 'input') {
+      const type = String(e.type).toLowerCase();
+      if (type === 'search') return e.hasAttribute('list') ? 'combobox' : 'searchbox';
+      if (['email', 'tel', 'text', 'url', ''].includes(type)) {
+        const list = idRefs(e, 'list')[0];
+        return list && tag(list) === 'datalist' ? 'combobox' : 'textbox';
+      }
+      if (type === 'hidden') return null;
+      return type === 'file' ? 'button' : INPUT[type] || 'textbox';
+    }
+    return TAG[t] || null;
+  };
+  const focusable = e => {
+    const t = tag(e);
+    if (e.disabled === true) return false;
+    const native = ['button', 'details', 'select', 'textarea'].includes(t) ||
+      ((t === 'a' || t === 'area') && e.hasAttribute('href')) || (t === 'input' && !e.hidden);
+    return native || !Number.isNaN(Number(String(e.getAttribute('tabindex'))));
+  };
+  const roleOf = e => {
+    const explicit = (e.getAttribute('role') || '').split(' ').map(r => r.trim()).find(r => VALID.has(r)) || null;
+    if (!explicit) return implicit(e);
+    if ((explicit === 'none' || explicit === 'presentation') && (GLOBAL.some(a => e.hasAttribute(a)) || focusable(e)))
+      return implicit(e);
+    return explicit;
+  };
+  const unescape = s => s.replace(/\\([0-9a-fA-F]{1,6})\s?|\\([\s\S])/g, (_, hex, ch) => {
+    if (!hex) return ch;
+    const code = parseInt(hex, 16);
+    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '�';
+  });
+  const cssContent = (e, pseudo) => {
+    const s = style(e, pseudo), value = s && s.content;
+    if (!value || value === 'none' || value === 'normal' || s.display === 'none' || s.visibility === 'hidden') return undefined;
+    const tokens = [], token = /\s*(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|attr\(\s*([^\s()]+)\s*\)|(\/))\s*/y;
+    for (let at = 0; at < value.length;) {
+      token.lastIndex = at;
+      const m = token.exec(value);
+      if (!m) return undefined;
+      at = token.lastIndex;
+      tokens.push(m[4] ? {slash: true} : m[3] !== undefined ? {text: e.getAttribute(m[3]) || ''} : {text: unescape(m[1] ?? m[2])});
+    }
+    const slash = tokens.findIndex(t => t.slash);
+    if (slash === -1 && !pseudo) return undefined;
+    const parts = slash === -1 ? tokens : tokens.slice(slash + 1);
+    if (parts.some(t => t.slash)) return undefined;
+    const text = parts.map(t => t.text).join('');
+    return pseudo && (s.display || 'inline') !== 'inline' ? ' ' + text + ' ' : text;
+  };
+  const labels = e => { try { return [...(e.labels || [])]; } catch { return []; } };
+  const fromLabels = (list, o) =>
+    list.map(label => alternative(label, {visited: o.visited, label: true})).filter(Boolean).join(' ');
+  const inner = (e, o) => {
+    const out = [cssContent(e, '::before') || ''], own = cssContent(e);
+    const visit = node => {
+      if (node.nodeType === 1) {
+        const display = (style(node) || {}).display || 'inline';
+        const text = alternative(node, o);
+        out.push(display !== 'inline' || node.nodeName === 'BR' ? ' ' + text + ' ' : text);
+      } else if (node.nodeType === 3) out.push(node.textContent || '');
+    };
+    if (own !== undefined) out.push(own);
+    else if (tag(e) === 'slot' && e.assignedNodes().length) e.assignedNodes().forEach(visit);
+    else {
+      for (let child = e.firstChild; child; child = child.nextSibling) if (!child.assignedSlot) visit(child);
+      if (e.shadowRoot) for (let child = e.shadowRoot.firstChild; child; child = child.nextSibling) visit(child);
+      idRefs(e, 'aria-owns').forEach(visit);
+    }
+    out.push(cssContent(e, '::after') || '');
+    return out.join('');
+  };
+  function alternative(e, o) {
+    const visited = o.visited, t = tag(e);
+    if (visited.has(e)) return '';
+    if (IGNORED.has(t)) { visited.add(e); return ''; }
+    const child = {...o, target: o.target === 'self' ? 'descendant' : o.target};
+    const labelledBy = e.hasAttribute('aria-labelledby') ? idRefs(e, 'aria-labelledby') : [];
+    if (!o.labelledBy) {
+      const text = labelledBy.map(ref => alternative(ref, {visited, labelledBy: true})).join(' ');
+      if (text) return text;
+    }
+    const r = roleOf(e) || '';
+    if (o.label || o.labelledBy || o.target === 'descendant') {
+      if (r === 'textbox') { visited.add(e); return t === 'input' || t === 'textarea' ? e.value : e.textContent || ''; }
+      if (r === 'combobox' || r === 'listbox') {
+        visited.add(e);
+        if (t !== 'select') return t === 'input' ? e.value : '';
+        const selected = [...e.selectedOptions];
+        if (!selected.length && e.options.length) selected.push(e.options[0]);
+        return selected.map(option => alternative(option, child)).join(' ');
+      }
+      if (['progressbar', 'scrollbar', 'slider', 'spinbutton', 'meter'].includes(r)) {
+        visited.add(e);
+        for (const a of ['aria-valuetext', 'aria-valuenow']) if (e.hasAttribute(a)) return e.getAttribute(a) || '';
+        return e.getAttribute('value') || '';
+      }
+      if (r === 'menu') { visited.add(e); return ''; }
+    }
+    const label = e.getAttribute('aria-label') || '';
+    if (label.trim()) { visited.add(e); return label; }
+    if (r !== 'presentation' && r !== 'none') {
+      const type = t === 'input' ? String(e.type) : '';
+      if (['button', 'submit', 'reset'].includes(type)) {
+        visited.add(e);
+        if ((e.value || '').trim()) return e.value;
+        return type === 'submit' ? 'Submit' : type === 'reset' ? 'Reset' : e.getAttribute('title') || '';
+      }
+      if (type === 'file' || type === 'image') {
+        visited.add(e);
+        if (labels(e).length && !o.labelledBy) return fromLabels(labels(e), o);
+        if (type === 'file') return 'Choose File';
+        for (const a of ['alt', 'title']) if ((e.getAttribute(a) || '').trim()) return e.getAttribute(a);
+        return 'Submit';
+      }
+      if (!labelledBy.length && t === 'button') { visited.add(e); if (labels(e).length) return fromLabels(labels(e), o); }
+      if (!labelledBy.length && ['textarea', 'select', 'input'].includes(t)) {
+        visited.add(e);
+        if (labels(e).length) return fromLabels(labels(e), o);
+        const placeholder = t === 'textarea' || ['text', 'password', 'search', 'tel', 'email', 'url'].includes(type);
+        const title = e.getAttribute('title') || '';
+        return !placeholder || title ? title : e.getAttribute('placeholder') || '';
+      }
+      if (t === 'img' || t === 'area') {
+        visited.add(e);
+        const alt = e.getAttribute('alt') || '';
+        return alt.trim() ? alt : e.getAttribute('title') || '';
+      }
+    }
+    if (CONTENT.has(r) || (o.target === 'descendant' && DESCENDANT.has(r)) || o.labelledBy || o.label ||
+        (t === 'summary' && r !== 'presentation' && r !== 'none')) {
+      visited.add(e);
+      const text = inner(e, child);
+      if (o.target === 'self' ? text.trim() : text) return text;
+    }
+    visited.add(e);
+    if (r !== 'presentation' && r !== 'none' || t === 'iframe') {
+      const title = e.getAttribute('title') || '';
+      if (title.trim()) return title;
+    }
+    return '';
+  }
+  const flat = s => s.split(' ').map(c => c.replace(/\r\n/g, '\n').replace(/[​­]/g, '')
+    .replace(/\s\s*/g, ' ')).join(' ').trim();
+  const normal = s => s.replace(/[​­]/g, '').trim().replace(/\s+/g, ' ');
+  const want = normal(name), out = [...new Set(rendered)];
+  const walk = root => {
+    for (const e of root.querySelectorAll('*')) {
+      if (roleOf(e) === role && !out.includes(e) &&
+          normal(flat(alternative(e, {visited: new Set(), target: 'self'}))) === want) out.push(e);
+      if (e.shadowRoot) walk(e.shadowRoot);
+    }
+  };
+  walk(document);
+  return out;
+}"""
+# Bounds Chromium matches carried into the hidden-inclusive union; more than
+# one match already fails uniqueness.
+MAX_RENDERED_MATCHES = 32
+
+
 class InvalidSelector(Invalid):
     pass
 
@@ -342,7 +557,64 @@ def run_browser(bundle, playwright_factory=None):
                 "Runtime.evaluate", {"expression": "document", "contextId": world}
             )["result"]["objectId"]
 
-            def once(locator):
+            def including_hidden(locator, nodes, owned):
+                # Carry Chromium's rendered matches into the isolated world and
+                # add hidden-inclusive exact role/name matches by identity.
+                unresolved = max(0, len(nodes) - MAX_RENDERED_MATCHES)
+                rendered = []
+                for n in nodes[:MAX_RENDERED_MATCHES]:
+                    try:
+                        rendered.append(cdp.send(
+                            "DOM.resolveNode",
+                            {"backendNodeId": n["backendDOMNodeId"], "executionContextId": world},
+                        )["object"]["objectId"])
+                    except Exception:
+                        # Not in this frame's world (e.g. a nested frame):
+                        # still a match for uniqueness, never an observation.
+                        unresolved += 1
+                owned.extend(rendered)
+                result = cdp.send(
+                    "Runtime.callFunctionOn",
+                    {
+                        "executionContextId": world,
+                        "functionDeclaration": ROLE_NAME_INCLUDING_HIDDEN,
+                        "arguments": [{"value": locator["role"]}, {"value": locator["name"]},
+                                      *({"objectId": h} for h in rendered)],
+                        "returnByValue": False,
+                    },
+                )
+                if result.get("exceptionDetails"):
+                    raise Invalid("inspection failed")
+                matches = result["result"]["objectId"]
+                owned.append(matches)
+                count = unresolved + cdp.send(
+                    "Runtime.callFunctionOn",
+                    {"objectId": matches, "functionDeclaration": "function(){return this.length}",
+                     "returnByValue": True},
+                )["result"]["value"]
+                if count != 1:
+                    return count, None
+                if unresolved:
+                    raise Invalid("preview element unavailable")
+                node = cdp.send(
+                    "Runtime.callFunctionOn",
+                    {"objectId": matches, "functionDeclaration": "function(){return this[0]}",
+                     "returnByValue": False},
+                )["result"]["objectId"]
+                return 1, node
+
+            def once(locator, include_hidden=False):
+                owned = []
+                try:
+                    return measure(locator, include_hidden, owned)
+                finally:
+                    for object_id in dict.fromkeys(owned):
+                        try:
+                            cdp.send("Runtime.releaseObject", {"objectId": object_id})
+                        except Exception:
+                            pass
+
+            def measure(locator, include_hidden, owned):
                 if blocked:
                     raise Invalid("preview navigation or request blocked")
                 if "selector" in locator:
@@ -381,33 +653,36 @@ def run_browser(bundle, playwright_factory=None):
                         and n.get("name", {}).get("value") == locator["name"]
                         and n.get("backendDOMNodeId")
                     ]
-                    if len(nodes) != 1:
+                    if include_hidden:
+                        count, node = including_hidden(locator, nodes, owned)
+                        if count != 1:
+                            return {"count": count}
+                    elif len(nodes) != 1:
                         return {"count": len(nodes)}
-                    node = cdp.send(
-                        "DOM.resolveNode",
-                        {
-                            "backendNodeId": nodes[0]["backendDOMNodeId"],
-                            "executionContextId": world,
-                        },
-                    )["object"]["objectId"]
-                try:
-                    result = cdp.send(
-                        "Runtime.callFunctionOn",
-                        {
-                            "objectId": node,
-                            "functionDeclaration": OBSERVE_ELEMENT,
-                            "returnByValue": True,
-                        },
-                    )
-                    if result.get("exceptionDetails"):
-                        raise Invalid("inspection failed")
-                    return result["result"]["value"]
-                finally:
-                    cdp.send("Runtime.releaseObject", {"objectId": node})
+                    else:
+                        node = cdp.send(
+                            "DOM.resolveNode",
+                            {
+                                "backendNodeId": nodes[0]["backendDOMNodeId"],
+                                "executionContextId": world,
+                            },
+                        )["object"]["objectId"]
+                owned.append(node)
+                result = cdp.send(
+                    "Runtime.callFunctionOn",
+                    {
+                        "objectId": node,
+                        "functionDeclaration": OBSERVE_ELEMENT,
+                        "returnByValue": True,
+                    },
+                )
+                if result.get("exceptionDetails"):
+                    raise Invalid("inspection failed")
+                return result["result"]["value"]
 
-            def observe(locator):
+            def observe(locator, include_hidden=False):
                 return observe_until_stable(
-                    lambda: once(locator), page.wait_for_timeout
+                    lambda: once(locator, include_hidden), page.wait_for_timeout
                 )
 
             page.wait_for_timeout(100)
@@ -415,7 +690,11 @@ def run_browser(bundle, playwright_factory=None):
             results = []
             for index, step in enumerate(request["steps"]):
                 try:
-                    before, stable = observe(step["locator"])
+                    # Only a hidden assertion may address a hidden element by
+                    # role/name; assert-visible and click stay rendered-only.
+                    before, stable = observe(
+                        step["locator"], step["action"] == "assert-hidden"
+                    )
                 except InvalidSelector:
                     # No DOM observation exists for invalid syntax. Preserve
                     # prior evidence and the exact failing step, then stop.
@@ -429,7 +708,9 @@ def run_browser(bundle, playwright_factory=None):
                     "stable": stable,
                     "status": "failed",
                 }
-                if before.get("count") != 1:
+                if before.get("count") == 0:
+                    item["errorCode"] = "no_match"
+                elif before.get("count") != 1:
                     item["errorCode"] = "selector_not_unique"
                 elif not stable:
                     item["errorCode"] = "unstable"

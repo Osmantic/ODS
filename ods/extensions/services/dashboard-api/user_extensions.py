@@ -2,6 +2,7 @@
 
 import logging
 import re
+import stat
 import threading
 import time
 from pathlib import Path
@@ -167,25 +168,77 @@ _cache: dict[str, Any] = {}
 _cache_lock = threading.Lock()
 
 
+def _file_identity(path: Path) -> tuple[int, int, int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _scan_signature(user_ext_dir: Path) -> tuple | None:
+    """Fingerprint the filesystem state ``scan_user_extension_services`` reads.
+
+    Covers which extension directories exist, whether each is enabled
+    (``compose.yaml`` present) and the identity of its manifest, so an
+    install, enable, disable, removal or update is seen on the next call
+    instead of up to one TTL later. Costs a few ``stat`` calls per extension;
+    no manifest is parsed.
+    """
+    try:
+        entries = sorted(Path(user_ext_dir).iterdir())
+    except OSError:
+        return None
+    signature = []
+    for item in entries:
+        if not _SERVICE_ID_RE.match(item.name):
+            continue
+        try:
+            mode = item.lstat().st_mode
+        except OSError:
+            continue
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            continue
+        signature.append((
+            item.name,
+            _file_identity(item / "compose.yaml"),
+            _file_identity(item / "manifest.yaml"),
+        ))
+    return tuple(signature)
+
+
 def get_user_services_cached(
     user_ext_dir: Path, ttl: float = 30.0,
 ) -> dict[str, dict[str, Any]]:
     """Return cached result of ``scan_user_extension_services()``.
 
-    Re-scans when *ttl* seconds have elapsed since the last scan for the given directory.
+    Re-scans as soon as the extension directories change (see
+    ``_scan_signature``), and otherwise when *ttl* seconds have elapsed since
+    the last scan for the given directory. The TTL still bounds values the
+    scan reads from outside those directories (``public_url`` settings).
+
+    Without the signature a scan taken just before an install hid the new
+    extension from the catalog health probe for the rest of the TTL, so every
+    dashboard install reported ``installing`` for ~30 s after its container
+    was already answering.
     """
     cache_key = str(user_ext_dir.resolve()) if hasattr(user_ext_dir, "resolve") else str(user_ext_dir)
+    signature = _scan_signature(user_ext_dir)
     with _cache_lock:
         now = time.monotonic()
         entry = _cache.get(cache_key)
-        if entry and (now - entry["timestamp"] < ttl):
+        if (entry and now - entry["timestamp"] < ttl
+                and entry["signature"] == signature):
             return entry["result"].copy()
 
+    # The signature is taken before scanning: a change racing the scan leaves
+    # a newer result under an older signature, which forces the next rescan.
     result = scan_user_extension_services(user_ext_dir)
     with _cache_lock:
         _cache[cache_key] = {
             "result": result,
             "timestamp": time.monotonic(),
+            "signature": signature,
         }
     return result.copy()
 

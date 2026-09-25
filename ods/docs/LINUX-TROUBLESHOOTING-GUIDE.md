@@ -283,6 +283,27 @@ Corporate proxies may require `HTTP_PROXY` / `HTTPS_PROXY` in Docker’s systemd
 
 ---
 
+## Dashboard password or Portal result storage is unavailable
+
+On a Linux install owned by a user other than UID 1000, the Dashboard API
+can report healthy while password setup returns HTTP 503 or Portal cannot
+create `data/pixel-chat-results`. The shipped API runs as UID/GID 1000 and
+needs write/search access to the shared `data` parent.
+
+Rerun the corrected Linux installer against the existing installation. Phase
+06 preserves the parent's owner, assigns the
+parent to runtime group 1000, and grants that group read/write/search access.
+It also excludes private `pixel-chat-results` from the generic host-owner
+repair and restores that tree to API UID/GID 1000 if an older reinstall
+changed it. File contents/modes and unrelated service data are preserved.
+It does not add world-write permission. Rootless Docker applies ownership inside the Docker namespace;
+do not substitute a host-side numeric chown for that mapping. A denied repair
+stops installation before a healthy API can be mistaken for writable storage.
+
+Existing passwords and chat receipts remain in place. Rolling back source
+does not undo the parent metadata repair. Restoring its previous group/mode
+can make Dashboard persistence unavailable again.
+
 ## Getting help
 
 When opening an issue, attach a **field install report** (see [FIELD-INSTALL-REPORT-LINUX.md](FIELD-INSTALL-REPORT-LINUX.md)) and the JSON from:

@@ -29,6 +29,32 @@ def step(action, selector=None, name=None):
     }
 
 
+def role_step(action, role, name):
+    return {"action": action, "locator": {"role": role, "name": name, "exact": True}}
+
+
+# Round 060 (strixy, Qwen3.6-35B-A3B): the owner's hidden sold-out card. The
+# model asserted it hidden by exact role/name, clicked, then asserted it
+# visible; every assert-hidden returned count 0 and it rewrote the site 4 times.
+FLEET_EVENTS_HTML = (
+    "<!doctype html><title>Riverside Events</title><h1>Riverside Events</h1>"
+    '<section class="cards"><article class="card"><h2>Dawn Jazz</h2></article>'
+    '<article class="card"><h2>River Lantern Walk</h2></article>'
+    '<article class="card" id="midnight-card" hidden><h2>Midnight Sold-Out Concert</h2>'
+    '<span class="tag">Sold out</span></article></section>'
+    '<button id="toggle" onclick="const c=document.getElementById(\'midnight-card\');'
+    "c.hidden=!c.hidden;this.textContent=c.hidden?'Show sold out':'Hide sold out'\">Show sold out</button>"
+)
+MIDNIGHT = ("heading", "Midnight Sold-Out Concert")
+FLEET_PLAN = [
+    role_step("assert-visible", "heading", "Dawn Jazz"),
+    role_step("assert-visible", "heading", "River Lantern Walk"),
+    role_step("assert-hidden", *MIDNIGHT),
+    role_step("click", "button", "Show sold out"),
+    role_step("assert-visible", *MIDNIGHT),
+]
+
+
 def bundle(html, steps=None):
     data = html.encode()
     name = b"index.html"
@@ -511,6 +537,142 @@ class PageErrorTests(unittest.TestCase):
             self.assertEqual(broker.inspect_request(request, config), receipt)
 
 
+class SemanticBrowser(ScriptedBrowser):
+    """The fleet page through the capsule's CDP calls. Chromium's accessibility
+    tree (queryAXTree) exposes only rendered, named elements; the isolated-world
+    hidden-inclusive matcher is modelled by the element table below."""
+
+    def __init__(self, elements):
+        super().__init__()
+        # element id -> (role, name, visible before click, visible after click)
+        self.elements = elements
+        self.matcher_calls, self.live = [], {}
+
+    def visible(self, element):
+        return self.elements[element][3 if self.revealed else 2]
+
+    def remote(self, value):
+        object_id = "obj-%d" % (len(self.live) + len(self.released))
+        self.live[object_id] = value
+        return object_id
+
+    @property
+    def released(self):
+        return self.__dict__.setdefault("_released", [])
+
+    def send(self, method, params=None):
+        params = params or {}
+        function = params.get("functionDeclaration")
+        if method == "Accessibility.queryAXTree":
+            return {"nodes": [
+                {"role": {"value": role}, "name": {"value": name}, "backendDOMNodeId": element}
+                for element, (role, name, *_) in self.elements.items()
+                if (role, name) == (params["role"], params["accessibleName"]) and self.visible(element)
+            ]}
+        if method == "DOM.resolveNode":
+            return {"object": {"objectId": self.remote(params["backendNodeId"])}}
+        if method == "Runtime.releaseObject":
+            self.released.append(params["objectId"])
+            self.live.pop(params["objectId"])
+            return {}
+        if function == capsule.ROLE_NAME_INCLUDING_HIDDEN:
+            role, name, *rendered = [a.get("value", a.get("objectId")) for a in params["arguments"]]
+            self.matcher_calls.append((role, name))
+            union = [self.live[r] for r in rendered]
+            union += [e for e, (r, n, *_) in self.elements.items() if (r, n) == (role, name) and e not in union]
+            return {"result": {"objectId": self.remote(union)}}
+        if function == "function(){return this.length}":
+            return {"result": {"value": len(self.live[params["objectId"]])}}
+        if function == "function(){return this[0]}":
+            return {"result": {"objectId": self.remote(self.live[params["objectId"]][0])}}
+        if function == capsule.OBSERVE_ELEMENT:
+            visible = self.visible(self.live[params["objectId"]])
+            return {"result": {"value": {
+                "count": 1, "visible": visible, "display": "block" if visible else "none",
+                "visibility": "visible", "opacity": "1", "hidden": not visible,
+                "hiddenUntilFound": False, "rectCount": int(visible)}}}
+        return super().send(method, params)
+
+    def get_by_role(self, role, name, exact):
+        assert exact is True
+        return self
+
+
+class HiddenRoleLocatorTests(unittest.TestCase):
+    FLEET = {
+        "dawn": ("heading", "Dawn Jazz", True, True),
+        "river": ("heading", "River Lantern Walk", True, True),
+        "midnight": ("heading", "Midnight Sold-Out Concert", False, True),
+        "toggle": ("button", "Show sold out", True, False),
+    }
+
+    def run_plan(self, elements, steps):
+        browser = SemanticBrowser(elements)
+        data = bundle(FLEET_EVENTS_HTML, steps)
+        browser.site = data["request"]["siteId"]
+        return browser, capsule.run_browser(data, playwright_factory=browser)
+
+    def test_fleet_plan_passes_with_hidden_inclusive_assert_hidden(self):
+        browser, result = self.run_plan(self.FLEET, FLEET_PLAN)
+        self.assertEqual(result["status"], "passed", result)
+        hidden = result["steps"][2]
+        self.assertEqual(hidden["before"]["count"], 1)
+        self.assertFalse(hidden["before"]["visible"])
+        self.assertTrue(result["steps"][4]["before"]["visible"])
+        # Only the hidden assertion used hidden-inclusive matching; the click
+        # and assert-visible steps kept Chromium's rendered-only resolution.
+        self.assertEqual(set(browser.matcher_calls), {MIDNIGHT})
+        self.assertEqual(browser.live, {}, "every remote object is released")
+
+    def test_rendered_only_resolution_is_unchanged_for_assert_visible(self):
+        _, result = self.run_plan(self.FLEET, [role_step("assert-visible", *MIDNIGHT)])
+        self.assertEqual(result["steps"][0]["before"], {"count": 0})
+        self.assertEqual(result["steps"][0]["errorCode"], "no_match")
+
+    def test_hide_transition_uses_the_same_locator(self):
+        elements = {**self.FLEET, "midnight": ("heading", "Midnight Sold-Out Concert", True, False)}
+        _, result = self.run_plan(elements, [role_step("assert-visible", *MIDNIGHT),
+                                             role_step("click", "button", "Show sold out"),
+                                             role_step("assert-hidden", *MIDNIGHT)])
+        self.assertEqual(result["status"], "passed", result)
+
+    def test_visible_target_of_assert_hidden_is_a_visibility_mismatch(self):
+        _, result = self.run_plan(self.FLEET, [role_step("assert-hidden", "heading", "Dawn Jazz")])
+        self.assertEqual(result["steps"][0]["errorCode"], "visibility_mismatch")
+        self.assertEqual(result["steps"][0]["before"]["count"], 1)
+
+    def test_uniqueness_counts_rendered_and_hidden_matches(self):
+        elements = {**self.FLEET, "copy": ("heading", "Midnight Sold-Out Concert", True, True)}
+        browser, result = self.run_plan(elements, [role_step("assert-hidden", *MIDNIGHT)])
+        self.assertEqual(result["steps"][0]["before"], {"count": 2})
+        self.assertEqual(result["steps"][0]["errorCode"], "selector_not_unique")
+        self.assertEqual(browser.live, {})
+
+    def test_no_match_is_reported_as_no_match(self):
+        for plan in ([role_step("assert-hidden", "heading", "Midnight sold-out concert")],
+                     [step("assert-hidden", "#missing")]):
+            with self.subTest(plan=plan):
+                browser = SemanticBrowser(self.FLEET)
+                if "selector" in plan[0]["locator"]:
+                    browser = ScriptedBrowser()
+                    browser.send = lambda method, params=None, send=browser.send: (
+                        {"result": {"value": {"count": 0}}}
+                        if (params or {}).get("functionDeclaration") == capsule.SELECTOR_COUNT
+                        else send(method, params))
+                data = bundle(FLEET_EVENTS_HTML, plan)
+                browser.site = data["request"]["siteId"]
+                result = capsule.run_browser(data, playwright_factory=browser)
+                self.assertEqual(result["steps"][0]["before"], {"count": 0})
+                self.assertEqual(result["steps"][0]["errorCode"], "no_match")
+                self.assertEqual(result["status"], "failed")
+
+    def test_matcher_source_is_bounded_and_read_only(self):
+        source = capsule.ROLE_NAME_INCLUDING_HIDDEN
+        for forbidden in ("setAttribute", "removeAttribute", "innerHTML", "textContent =",
+                          ".style.", "click(", "dispatchEvent", "focus(", "fetch(", "eval(", "Function("):
+            self.assertNotIn(forbidden, source)
+
+
 @unittest.skipUnless(
     os.environ.get("ODS_PREVIEW_BROWSER_TESTS") == "1", "real Chromium opt in"
 )
@@ -624,7 +786,11 @@ class BrowserTests(unittest.TestCase):
     def test_unknown_selector(self):
         result = self.check("<p>empty</p>", [step("assert-hidden", "#missing")])
         self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["steps"][0]["errorCode"], "no_match")
+        self.assertEqual(result["steps"][0]["before"], {"count": 0})
+        result = self.check("<p class=x>a</p><p class=x>b</p>", [step("assert-hidden", ".x")])
         self.assertEqual(result["steps"][0]["errorCode"], "selector_not_unique")
+        self.assertEqual(result["steps"][0]["before"], {"count": 2})
 
     def test_invalid_css_retains_failing_step_and_recovery_checks(self):
         html = ('<h1>Fixture events</h1><article class="event-card">'
@@ -713,6 +879,131 @@ class BrowserTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "failed")
         self.assertIn("navigation", result["blockedRequests"])
+
+    def test_fleet_hidden_card_by_role_and_name(self):
+        result = self.check(FLEET_EVENTS_HTML, FLEET_PLAN)
+        self.assertEqual(result["status"], "passed", result)
+        self.assertEqual(result["steps"][2]["before"]["count"], 1)
+        self.assertFalse(result["steps"][2]["before"]["visible"])
+        self.assertTrue(result["steps"][4]["before"]["visible"])
+        # The reverse plan hides the same card again by the same locator.
+        shown = FLEET_EVENTS_HTML.replace(' id="midnight-card" hidden>', ' id="midnight-card">').replace(
+            ">Show sold out</button>", ">Hide sold out</button>")
+        result = self.check(shown, [role_step("assert-visible", *MIDNIGHT),
+                                    role_step("click", "button", "Hide sold out"),
+                                    role_step("assert-hidden", *MIDNIGHT)])
+        self.assertEqual(result["status"], "passed", result)
+
+    def test_every_hiding_technique_the_fleet_tried(self):
+        for hidden in ('<article hidden><h2>Midnight Sold-Out Concert</h2></article>',
+                       '<style>.off{display:none}</style><article class=off><h2>Midnight Sold-Out Concert</h2></article>',
+                       '<article style="visibility:hidden"><h2>Midnight Sold-Out Concert</h2></article>',
+                       '<article style="visibility:hidden;opacity:0"><h2>Midnight Sold-Out Concert</h2></article>',
+                       '<article aria-hidden="true" hidden><h2>Midnight Sold-Out Concert</h2></article>',
+                       '<h2 hidden>Midnight Sold-Out Concert</h2>'):
+            with self.subTest(hidden=hidden):
+                result = self.check("<h2>Dawn Jazz</h2>" + hidden, [role_step("assert-hidden", *MIDNIGHT)])
+                self.assertEqual(result["status"], "passed", result)
+
+    def test_role_locator_semantics_outside_assert_hidden_are_unchanged(self):
+        html = "<h2>Dawn Jazz</h2><article hidden><h2>Midnight Sold-Out Concert</h2></article>"
+        result = self.check(html, [role_step("assert-visible", *MIDNIGHT)])
+        self.assertEqual(result["steps"][0]["before"], {"count": 0})
+        self.assertEqual(result["steps"][0]["errorCode"], "no_match")
+        result = self.check(html, [role_step("assert-hidden", "heading", "Dawn Jazz")])
+        self.assertEqual(result["steps"][0]["errorCode"], "visibility_mismatch")
+        result = self.check('<button hidden>Reveal</button>', [role_step("click", "button", "Reveal")])
+        self.assertEqual(result["steps"][0]["before"], {"count": 0})
+
+    def test_hidden_inclusive_matching_keeps_uniqueness_and_exact_names(self):
+        card = "<article hidden><h2>Midnight Sold-Out Concert</h2></article>"
+        for html, expected in ((card * 2, 2), (card + "<h2>Midnight Sold-Out Concert</h2>", 2),
+                               (card.replace("Midnight", "Midnight "), 1),
+                               (card.replace("Sold-Out", "sold-out"), 0),
+                               ("<article hidden><h3 role=none>Midnight Sold-Out Concert</h3></article>", 0),
+                               ("<template><h2>Midnight Sold-Out Concert</h2></template>", 0)):
+            with self.subTest(html=html):
+                result = self.check("<p>x</p>" + html, [role_step("assert-hidden", *MIDNIGHT)])
+                self.assertEqual(result["steps"][0]["before"].get("count"), expected, result)
+                if expected != 1:
+                    self.assertEqual(result["steps"][0]["errorCode"],
+                                     "no_match" if expected == 0 else "selector_not_unique")
+
+    def test_author_script_cannot_spoof_hidden_role_matching(self):
+        html = ("<article hidden><h2>Midnight Sold-Out Concert</h2></article><script>"
+                "Element.prototype.getAttribute=()=>'heading';Document.prototype.querySelectorAll=()=>[];"
+                "Element.prototype.querySelectorAll=()=>[];window.getComputedStyle=()=>({display:'block'});"
+                "Object.defineProperty(Node.prototype,'textContent',{get(){return 'spoof'}});</script>")
+        result = self.check(html, [role_step("assert-hidden", *MIDNIGHT)])
+        self.assertEqual(result["status"], "passed", result)
+
+    def test_hidden_role_matcher_agrees_with_playwright_include_hidden(self):
+        # The capsule's isolated-world matcher is a port of Playwright's
+        # getByRole(includeHidden) rules; compare against the pinned engine.
+        from playwright.sync_api import sync_playwright
+
+        html = (
+            '<style>.off{display:none}.arrow::before{content:"\\2193  "}</style>'
+            '<h2>Dawn Jazz</h2><article hidden><h2>Midnight Sold-Out Concert</h2></article>'
+            '<div class=off><h3>Late Show</h3></div><h4 style="visibility:hidden">Ghost Tour</h4>'
+            '<div aria-hidden="true"><button>Close banner</button></div>'
+            '<button hidden aria-label="Open menu">&#9776;</button>'
+            '<span id=lbl hidden>Filter events</span><button aria-labelledby="lbl" hidden>x</button>'
+            '<label for=q>Search dates</label><input id=q type=text hidden>'
+            '<label hidden><input type=checkbox> Only free events</label>'
+            '<input type=submit value="Book now" hidden><input type=reset hidden>'
+            '<a href="#x" hidden>Buy <strong>tickets</strong></a><a hidden>Plain</a>'
+            '<button hidden><span>Show</span><div>sold out</div></button>'
+            '<button class=arrow>Show items</button><button class=arrow hidden>Hidden items</button>'
+            '<div role="tab" hidden>Schedule</div><span role="switch" aria-label="Dark mode" hidden></span>'
+            '<h2 role="none" hidden>Not a heading</h2><div hidden><h2>Encore</h2></div><h2 hidden>Encore</h2>'
+            '<a href="#t" title="Map" hidden></a>'
+            '<label hidden>City <select><option>Oslo</option><option selected>Bergen</option></select></label>'
+            '<h2>Tonight <span hidden>only</span></h2>'
+            '<input type=radio aria-labelledby="lbl2" hidden><span id=lbl2 hidden>Seat <b>A</b></span>'
+            '<div role="button" hidden><img alt="Star"> Favourite</div>'
+            '<h5 hidden title="Tooltip heading"></h5><template><h2>Template</h2></template>'
+        )
+        queries = [
+            ("heading", "Dawn Jazz"), ("heading", "Midnight Sold-Out Concert"), ("heading", "Late Show"),
+            ("heading", "Ghost Tour"), ("button", "Close banner"), ("button", "Open menu"), ("button", "☰"),
+            ("button", "Filter events"), ("textbox", "Search dates"), ("checkbox", "Only free events"),
+            ("button", "Book now"), ("button", "Reset"), ("link", "Buy tickets"), ("link", "Plain"),
+            ("button", "Show sold out"), ("button", "Show items"), ("button", "↓ Show items"),
+            ("button", "Hidden items"), ("button", "↓ Hidden items"), ("tab", "Schedule"),
+            ("switch", "Dark mode"), ("heading", "Not a heading"), ("heading", "Encore"), ("link", "Map"),
+            ("combobox", "City Bergen"), ("combobox", "City"), ("heading", "Tonight only"),
+            ("heading", "Tonight"), ("radio", "Seat A"), ("button", "Star Favourite"),
+            ("heading", "Tooltip heading"), ("heading", "Template"), ("heading", "midnight sold-out concert"),
+            ("heading", "Midnight  Sold-Out   Concert"),
+        ]
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            try:
+                page = browser.new_page()
+                page.set_content("<!doctype html>" + html)
+                cdp = page.context.new_cdp_session(page)
+                frame = cdp.send("Page.getFrameTree")["frameTree"]["frame"]["id"]
+                world = cdp.send("Page.createIsolatedWorld", {"frameId": frame, "worldName": "parity"})
+                disagreements, matched = [], 0
+                for role, name in queries:
+                    expected = page.get_by_role(role, name=name, exact=True, include_hidden=True).count()
+                    result = cdp.send("Runtime.callFunctionOn", {
+                        "executionContextId": world["executionContextId"],
+                        "functionDeclaration": capsule.ROLE_NAME_INCLUDING_HIDDEN,
+                        "arguments": [{"value": role}, {"value": name}], "returnByValue": False})
+                    self.assertNotIn("exceptionDetails", result, result)
+                    actual = cdp.send("Runtime.callFunctionOn", {
+                        "objectId": result["result"]["objectId"],
+                        "functionDeclaration": "function(){return this.length}", "returnByValue": True,
+                    })["result"]["value"]
+                    matched += bool(expected)
+                    if actual != expected:
+                        disagreements.append((role, name, expected, actual))
+                self.assertEqual(disagreements, [])
+                self.assertGreaterEqual(matched, 20, "fixture must exercise real matches")
+            finally:
+                browser.close()
 
     def test_unguarded_storage_errors_are_reported_without_changing_steps(self):
         # Fleet round 054: every functional check passed while startup and a
@@ -832,6 +1123,10 @@ class DockerCapsuleTests(unittest.TestCase):
         self.assertEqual(result["status"], "passed", result)
         self.assertEqual(result["pageErrors"], {
             "count": 1, "messages": ["SecurityError: " + STORAGE_ERROR]})
+
+    def test_real_capsule_hidden_card_by_role_and_name(self):
+        result = self.invoke(FLEET_EVENTS_HTML, FLEET_PLAN)
+        self.assertEqual(result["status"], "passed", result)
 
     def test_real_capsule_hung_script(self):
         start = time.monotonic()

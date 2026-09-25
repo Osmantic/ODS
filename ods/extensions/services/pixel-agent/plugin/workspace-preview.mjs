@@ -73,9 +73,13 @@ function validResponse(value, request) {
   ];
   const hasPaths = value && typeof value === "object" &&
     (Object.hasOwn(value, "publishedPaths") || Object.hasOwn(value, "publishedPathsOmitted"));
-  const receiptKeys = hasPaths
-    ? [...expectedKeys, "publishedPaths", "publishedPathsOmitted"].sort()
-    : expectedKeys;
+  const hasEmptyPaths = value && typeof value === "object" &&
+    (Object.hasOwn(value, "publishedEmptyPaths") || Object.hasOwn(value, "publishedEmptyPathsOmitted"));
+  const receiptKeys = [
+    ...expectedKeys,
+    ...(hasPaths ? ["publishedPaths", "publishedPathsOmitted"] : []),
+    ...(hasEmptyPaths ? ["publishedEmptyPaths", "publishedEmptyPathsOmitted"] : []),
+  ].sort();
   if (
     !value ||
     typeof value !== "object" ||
@@ -111,16 +115,30 @@ function validResponse(value, request) {
     throw new Error("invalid Pixel workspace preview response");
   }
   if (hasPaths && (
-    !Array.isArray(value.publishedPaths) || value.publishedPaths.length > 32 ||
-    value.publishedPaths.some((path) => typeof path !== "string" ||
-      path.length < 1 || path.split("/").some((part) => !PATH_COMPONENT.test(part))) ||
-    value.publishedPaths.reduce((size, path) => size + path.length, 0) > 2048 ||
-    value.publishedPaths.some((path, index, paths) => index > 0 && paths[index - 1] >= path) ||
-    !Number.isInteger(value.publishedPathsOmitted) || value.publishedPathsOmitted < 0 ||
+    !validPathList(value.publishedPaths, value.publishedPathsOmitted) ||
     value.publishedPaths.length + value.publishedPathsOmitted !== value.files ||
     (value.publishedPathsOmitted === 0 && !value.publishedPaths.includes(value.entryFile))
   )) throw new Error("invalid Pixel workspace preview file list");
+  // Zero-byte published files: a subset of the file list, never the entry.
+  if (hasEmptyPaths && (
+    !hasPaths ||
+    !validPathList(value.publishedEmptyPaths, value.publishedEmptyPathsOmitted) ||
+    value.publishedEmptyPaths.length + value.publishedEmptyPathsOmitted > value.files - 1 ||
+    value.publishedEmptyPaths.includes(value.entryFile) ||
+    (value.publishedPathsOmitted === 0 &&
+      value.publishedEmptyPaths.some((path) => !value.publishedPaths.includes(path)))
+  )) throw new Error("invalid Pixel workspace preview empty-file list");
   return value;
+}
+
+// Bounded, sorted, unique workspace-relative names as the host emits them.
+function validPathList(paths, omitted) {
+  return Array.isArray(paths) && paths.length <= 32 &&
+    paths.every((path) => typeof path === "string" &&
+      path.length >= 1 && path.split("/").every((part) => PATH_COMPONENT.test(part))) &&
+    paths.reduce((size, path) => size + path.length, 0) <= 2048 &&
+    paths.every((path, index) => index === 0 || paths[index - 1] < path) &&
+    Number.isInteger(omitted) && omitted >= 0;
 }
 
 function publishedPathFeedback(response) {
@@ -133,6 +151,17 @@ function publishedPathFeedback(response) {
       ? `${response.publishedPathsOmitted} additional published paths omitted from this bounded list. `
       : "This is the complete published file list. ") +
     "Compare the delivered files with the owner's request; this receipt does not determine whether requested files or checks are missing. ";
+}
+
+// Informational only: empty files can be legitimate, so publication stands.
+export const EMPTY_PUBLISHED_FILES_PREFIX = "Published files that are empty (0 bytes): ";
+
+function emptyPathFeedback(response) {
+  const shown = response.publishedEmptyPaths ?? [];
+  const omitted = response.publishedEmptyPathsOmitted ?? 0;
+  if (shown.length + omitted === 0) return "";
+  return EMPTY_PUBLISHED_FILES_PREFIX +
+    [...shown, ...(omitted > 0 ? [`${omitted} more`] : [])].join(", ") + ". ";
 }
 
 function socketRequest(payload, { socketPath = SOCKET_PATH, signal, timeoutMs = 30_000 } = {}) {
@@ -276,6 +305,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
               `Inspection snapshot: ${JSON.stringify({siteId:response.siteId,sha256:response.sha256})}. ` +
               'Use pixel_ods_workspace_preview_inspect for this owned preview, not public web_fetch or shell HTTP. Copy both identifiers exactly; sha256 is the full snapshot digest, not entrySha256 or the shortened site suffix. ' +
               publishedPathFeedback(response) +
+              emptyPathFeedback(response) +
               "This receipt proves publication and HTTP readback only, not successful startup, interactions or durable browser storage. Verify requested behavior in the actual preview before claiming it works. " +
               "If the owner requested derived source files or process logs, publication does not verify their correspondence to executed files or output. If that comparison is missing or fails, repair from the final executed bytes and republish before claiming completion.",
           }],

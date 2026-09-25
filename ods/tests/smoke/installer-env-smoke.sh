@@ -159,6 +159,13 @@ export ENABLE_OPENCLAW=true
     signal() { :; }
     show_phase() { :; }
     sudo() { return 0; }
+    ods_sudo() {
+        case \"\$1\" in
+            chmod) \"\$@\" ;;
+            chgrp) command sudo -n \"\$@\" ;;
+            *) return 0 ;;
+        esac
+    }
 
     docker() {
         if [[ \"\$1\" == \"info\" && \"\${2:-}\" == \"--format\" ]]; then

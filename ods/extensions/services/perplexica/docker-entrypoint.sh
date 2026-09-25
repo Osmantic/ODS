@@ -26,11 +26,22 @@ if [ "$SCRAPE_MAX_CHARS" -lt 1000 ]; then
     SCRAPE_MAX_CHARS=30000
 fi
 
-patch_scrape_url() {
-    search_root="/home/perplexica/.next/server"
+# Upstream renamed Perplexica to Vane in v1.12.2 and moved the app from
+# /home/perplexica to /home/vane. Prefer the image's working directory, then
+# both known layouts, so operator image overrides of either line still patch.
+find_server_bundle() {
+    for app_root in "$PWD" /home/vane /home/perplexica; do
+        if [ -d "$app_root/.next/server" ]; then
+            printf '%s\n' "$app_root/.next/server"
+            return 0
+        fi
+    done
+    return 1
+}
 
-    if [ ! -d "$search_root" ]; then
-        log "Perplexica server bundle not found at $search_root; skipping scrape_url patch"
+patch_scrape_url() {
+    if ! search_root="$(find_server_bundle)"; then
+        log "Perplexica server bundle not found under $PWD, /home/vane or /home/perplexica; skipping scrape_url patch"
         return 0
     fi
 
@@ -53,11 +64,14 @@ const [file, maxRaw] = process.argv.slice(2);
 const max = Number.parseInt(maxRaw, 10);
 const source = fs.readFileSync(file, "utf8");
 
-if (source.includes(`content:k.slice(0,${max})`)) {
+// A restarted container keeps its patched bundle. Minified variable names
+// differ per upstream build, so recognize any previously capped push site.
+if (/\.push\(\{content:[A-Za-z_$][\w$]*\.slice\(0,\d+\),metadata:\{url:/.test(source)) {
   process.exit(0);
 }
 
-const pattern = /([A-Za-z_$][\w$]*\.push\(\{content:)([A-Za-z_$][\w$]*)(,metadata:\{url:[A-Za-z_$][\w$]*,title:[A-Za-z_$][\w$]*\}\}\))/g;
+// Perplexica <=1.12.1 pushes `title:j`; Vane 1.12.2 pushes `title:k.title`.
+const pattern = /([A-Za-z_$][\w$]*\.push\(\{content:)([A-Za-z_$][\w$]*)(,metadata:\{url:[A-Za-z_$][\w$]*,title:[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\}\}\))/g;
 let replacements = 0;
 const patched = source.replace(pattern, (match, prefix, contentVar, suffix) => {
   replacements += 1;

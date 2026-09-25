@@ -5,6 +5,9 @@ services:
     command: [serve]
     restart: unless-stopped
     init: true
+    # Run as the install owner: ODS pre-creates data/ntfy as that user, and
+    # root without CAP_DAC_OVERRIDE cannot create the SQLite files there.
+    user: "${ODS_UID:-1000}:${ODS_GID:-1000}"
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

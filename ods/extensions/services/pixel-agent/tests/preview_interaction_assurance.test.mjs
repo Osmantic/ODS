@@ -161,8 +161,10 @@ test(`published inspections then grep -o require bound receipts and host bytes: 
   const grep=call(guard,'exec',{command:"grep -o '<h1>[^<]*</h1>' site/index.html"},'final-grep',grepResult);
   persist(grep.event,grepResult,grep.ctx);
   assert.notEqual(guard.verificationForRun(context.runId).status,'passed');
-  assert.equal(await guard.revalidateWorkspacePreview({},context),fault==='none');
-  assert.equal(probes,['none','host-bytes'].includes(fault)?1:0);
+  // Inspection is read-only for currency: host bytes alone restore it, while
+  // an unbound interaction receipt still fails delivery independently.
+  assert.equal(await guard.revalidateWorkspacePreview({},context),fault!=='host-bytes');
+  assert.equal(probes,1);
   assert.equal(guard.verificationForRun(context.runId).status,fault==='none'?'passed':'failed');
 });
 

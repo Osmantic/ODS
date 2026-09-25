@@ -24,6 +24,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unexpired chat-only guest cookies. Owners renew through the existing owner
   card or authenticated dashboard flow; default direct Hermes access is unchanged.
 
+### Changed
+- Perplexica now runs upstream release v1.12.2, published under its new name
+  Vane (`itzcrazykns1337/vane:slim-v1.12.2`, digest-pinned). The UI shows the
+  Vane name; ODS keeps the `perplexica` service, port and volumes, so settings
+  and chat history carry over. Speed and Balanced searches now rank SearXNG
+  results with the configured embedding model; the default built-in model is
+  downloaded from Hugging Face on the first search after each container
+  recreate, and offline hosts fall back to unranked results. The slim release
+  image has no Chromium, so Quality mode and the `scrape_url` tool cannot read
+  pages.
+- llama-server on the NVIDIA and CPU images (llama.cpp b9014) now uses lossless
+  n-gram speculative decoding (`--spec-type ngram-mod`) unless the model's
+  runtime profile sets its own `LLAMA_ARG_SPEC_TYPE`. On an RTX 5090 with
+  Qwen3.5-27B, a copy-heavy edit fell from 89.5 s to 13.3 s and a whole-file
+  rewrite from 70.1 s to 15.6 s. Novel generation and prefill did not change.
+  Set `LLAMA_SPEC_TYPE=none` in `.env` to turn it off. Lemonade, Intel/Arc,
+  Apple and native macOS/Windows runtimes are unchanged.
+
+### Fixed
+- `LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS` is now `LLAMA_ARG_CHECKPOINT_EVERY_NT`,
+  the name llama.cpp reads. Docker llama-server ignored the old name. Dashboard
+  restarts of native macOS inference now read the same checkpoint keys as the
+  installer (`LLAMA_ARG_CHECKPOINT_EVERY_NT`,
+  `LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT`).
+
 ## [3.0.0] - 2026-09-24
 
 ODS V3 was published as `v3.0.0` on September 24, 2026. Full fleet

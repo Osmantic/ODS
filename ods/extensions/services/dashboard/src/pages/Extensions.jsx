@@ -11,6 +11,9 @@ import { serviceUrl } from '../lib/serviceUrls'
 import { createRecoveryTracker } from '../utils/recoveryTracker'
 import MetalMetricIcon from '../components/MetalMetricIcon'
 import FittedLibraryPage from '../components/FittedLibraryPage'
+import {
+  ExtensionSettingsFields, installPlanSettings, missingSettingsRefusal, saveExtensionSettings,
+} from '../components/ExtensionInstallSettings'
 import './extensions-refined.css'
 
 // Re-export so existing importers of getTemplateStatus from this module keep working.
@@ -110,6 +113,12 @@ export default function Extensions({ compact = false }) {
   const [refreshing, setRefreshing] = useState(false)
   const [progressMap, setProgressMap] = useState({})
   const [depConfirm, setDepConfirm] = useState(null)
+  // Values typed into the dialog's required settings. Kept only until they
+  // are submitted or the dialog closes; never echoed back from the API.
+  const [settingValues, setSettingValues] = useState({})
+  const [settingsBusy, setSettingsBusy] = useState(false)
+  const dialogSeq = useRef(0)
+  const settingsSave = useRef(null)
   const [templates, setTemplates] = useState([])
   const [pollingLost, setPollingLost] = useState(false)
   const installProgressRef = useRef(null)
@@ -224,6 +233,38 @@ export default function Extensions({ compact = false }) {
     return () => document.removeEventListener('keydown', handler)
   }, [confirm])
 
+  // Each dialog has its own identity. Opening, replacing or closing one
+  // discards typed settings and cancels its pending settings requests, so a
+  // secret never outlives the dialog it was typed in and a cancelled dialog
+  // never goes on to install.
+  const dialogId = confirm?.id
+  useEffect(() => {
+    setSettingValues({})
+    setSettingsBusy(false)
+    if (!dialogId) return undefined
+    const request = new AbortController()
+    const current = confirm
+    if (current.action === 'install' && current.settings?.loading) {
+      const timeout = setTimeout(() => request.abort(), 15000)
+      fetch(`/api/extensions/${current.ext.id}/install-plan`, { signal: request.signal, cache: 'no-store' })
+        .then(async response => (response.ok ? installPlanSettings(await response.json(), current.ext.id) : null))
+        .catch(() => null)
+        .then(fields => {
+          // Without a plan the install endpoint still refuses missing
+          // settings, and this dialog then asks for them.
+          setConfirm(open => (open?.id === dialogId
+            ? { ...open, settings: { ...open.settings, fields: fields || [], loading: false } } : open))
+        })
+        .finally(() => clearTimeout(timeout))
+    }
+    return () => {
+      request.abort()
+      if (settingsSave.current?.id === dialogId) settingsSave.current.controller.abort()
+    }
+  }, [dialogId])
+
+  const openDialog = dialog => setConfirm({ ...dialog, id: ++dialogSeq.current })
+
   const fetchCatalog = async () => {
     try {
       if (!catalog) setLoading(true)
@@ -274,6 +315,19 @@ export default function Extensions({ compact = false }) {
           const ext = extensions.find(e => e.id === serviceId)
           setMutating(null)
           setDepConfirm({ ext, missingDeps: detail.missing_dependencies })
+          return
+        }
+        // Nothing was installed or enabled: ask for the listed settings in
+        // the same dialog, then repeat the request.
+        const refusal = (action === 'install' || action === 'enable') && res.status === 400
+          ? missingSettingsRefusal(detail) : null
+        const refusedExt = refusal && extensions.find(e => e.id === serviceId)
+        if (refusedExt) {
+          openDialog({
+            action, ext: refusedExt, autoEnableDeps,
+            message: refusal.message,
+            settings: { serviceId: refusal.serviceId, fields: refusal.fields, loading: false, error: '' },
+          })
           return
         }
         if (action === 'update' && !force && res.status === 409 && detail?.force_available === true
@@ -328,7 +382,11 @@ export default function Extensions({ compact = false }) {
       install: `Install ${ext.name}? This will download and start the service.`,
       enable: `Enable ${ext.name}? The service will be started.`,
       disable: `Disable ${ext.name}? The service will be stopped.`,
-      uninstall: `Remove ${ext.name}? You can reinstall it from the library.`,
+      // A failed extension still has an enabled definition; the API stops
+      // whatever the failed attempt left running before removing it.
+      uninstall: ext.status === 'error'
+        ? `Remove ${ext.name}? ODS will stop anything its failed setup left running, then remove it. Service data is kept, and you can reinstall it from the library.`
+        : `Remove ${ext.name}? You can reinstall it from the library.`,
       purge: `Permanently delete all data for ${ext.name}? This cannot be undone.`,
       update: ext.update_status === 'unknown'
         ? `ODS could not inspect the installed files for ${ext.name}. Refresh from the ODS library? This replaces the installed definition, including any local changes, and retains the current files as a rollback backup.`
@@ -339,7 +397,51 @@ export default function Extensions({ compact = false }) {
         : `Update ${ext.name} from the ODS library? The current definition will be retained for rollback.`,
       rollback: `Restore the previous ${ext.name} extension definition? Current service data and configuration will be preserved.`,
     }
-    setConfirm({ action, ext, message: messages[action] })
+    // Install asks for required settings in the dialog itself (loaded from
+    // the install plan), before any request that copies or starts anything.
+    openDialog({
+      action, ext, message: messages[action],
+      ...(action === 'install'
+        ? { settings: { serviceId: ext.id, fields: [], loading: true, error: '' } } : {}),
+    })
+  }
+
+  const confirmAction = async () => {
+    const current = confirm
+    if (!current || settingsBusy || current.settings?.loading) return
+    const run = () => handleMutation(current.ext.id, current.action, {
+      autoEnableDeps: current.autoEnableDeps === true,
+      force: current.action === 'update' && (
+        current.ext.locally_modified || ['untracked', 'unknown'].includes(current.ext.update_status)
+      ),
+    })
+    const fields = current.settings?.fields || []
+    if (!fields.length) return run()
+    const values = Object.fromEntries(fields.map(field => [field.key, settingValues[field.key] || '']))
+    const showError = error => setConfirm(open => (open?.id === current.id
+      ? { ...open, settings: { ...open.settings, error } } : open))
+    if (Object.values(values).some(value => !value.trim())) {
+      showError('Enter every required setting.')
+      return
+    }
+    const controller = new AbortController()
+    settingsSave.current = { id: current.id, controller }
+    setSettingsBusy(true)
+    setSettingValues({})
+    const timeout = setTimeout(() => controller.abort(), 60000)
+    try {
+      await saveExtensionSettings(current.settings.serviceId, values, controller.signal)
+    } catch (err) {
+      const reason = err.name === 'AbortError' ? 'Saving settings did not finish.' : String(err.message || '')
+      showError(`${/[.!?]$/.test(reason) ? reason : `${reason}.`} Nothing was installed or started.`)
+      return
+    } finally {
+      clearTimeout(timeout)
+      if (settingsSave.current?.controller === controller) settingsSave.current = null
+      setSettingsBusy(false)
+    }
+    // A dialog closed while saving is a cancelled request: never install.
+    if (!controller.signal.aborted) await run()
   }
 
   if (loading && !catalog) {
@@ -542,20 +644,38 @@ export default function Extensions({ compact = false }) {
             {confirm.action === 'disable' && confirm.ext.dependents?.length > 0 && (
               <DisableDependentWarning dependents={confirm.ext.dependents} />
             )}
+            {confirm.settings?.loading && (
+              <p className="mb-5 flex items-center gap-2 text-[11px] text-theme-text-muted/70">
+                <Loader2 size={12} className="animate-spin" /> Checking required settings…
+              </p>
+            )}
+            {confirm.settings?.fields?.length > 0 && (
+              <ExtensionSettingsFields
+                fields={confirm.settings.fields}
+                values={settingValues}
+                disabled={settingsBusy}
+                onChange={(key, value) => setSettingValues(current => ({ ...current, [key]: value }))}
+              />
+            )}
+            {confirm.settings?.error && (
+              <p role="alert" className="mb-4 text-[11px] leading-relaxed text-red-300">{confirm.settings.error}</p>
+            )}
             <div className="flex justify-end gap-3">
               <button onClick={() => setConfirm(null)} autoFocus className="px-4 py-2 text-[10px] font-mono uppercase tracking-[0.16em] text-theme-text-muted/65 hover:text-theme-text transition-colors">Cancel</button>
               <button
-                onClick={() => handleMutation(confirm.ext.id, confirm.action, {
-                  force: confirm.action === 'update' && (
-                    confirm.ext.locally_modified || ['untracked', 'unknown'].includes(confirm.ext.update_status)
-                  ),
-                })}
-                className={`px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg transition-colors ${
+                onClick={confirmAction}
+                disabled={settingsBusy || confirm.settings?.loading === true}
+                className={`px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg transition-colors disabled:opacity-50 ${
                   confirm.action === 'uninstall' || confirm.action === 'purge' ? 'bg-red-500/15 text-red-400 hover:bg-red-500/25' :
                   'bg-theme-accent/15 text-theme-accent-light hover:bg-theme-accent/25'
                 }`}
               >
-                {confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge' : confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)}
+                {(() => {
+                  const label = confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge'
+                    : confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)
+                  if (settingsBusy) return 'Saving…'
+                  return confirm.settings?.fields?.length ? `Save and ${label.toLowerCase()}` : label
+                })()}
               </button>
             </div>
           </div>

@@ -1,10 +1,12 @@
 import json
+import re
 from pathlib import Path
 
 from helpers import record_model_performance
 from models import GPUInfo, ModelLibraryResponse
 from performance_oracle import (
     build_models_payload,
+    collect_runtime_flags,
     current_model_matches,
     evaluate_performance,
     load_evidence,
@@ -78,6 +80,17 @@ def test_performance_env_readers_share_matching_quote_contract(monkeypatch, tmp_
     assert read_env_file_value("UNMATCHED", tmp_path) == "catalog-v2'"
     assert read_env_value("PROCESS_ONLY", tmp_path) == "runtime-v2"
     assert read_persisted_env_value("UNMATCHED", tmp_path) == "catalog-v2'"
+
+
+def test_runtime_flags_read_the_llama_cpp_checkpoint_env_name(tmp_path, monkeypatch):
+    for key in ("LLAMA_ARG_CHECKPOINT_EVERY_NT", "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS",
+                "LLAMA_CHECKPOINT_EVERY_N_TOKENS"):
+        monkeypatch.delenv(key, raising=False)
+    (tmp_path / ".env").write_text("LLAMA_ARG_CHECKPOINT_EVERY_NT=-1\n", encoding="utf-8")
+    assert collect_runtime_flags(tmp_path)["checkpoint_every_n_tokens"] == "-1"
+    # Evidence recorded under the former key name still matches.
+    (tmp_path / ".env").write_text("LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=-1\n", encoding="utf-8")
+    assert collect_runtime_flags(tmp_path)["checkpoint_every_n_tokens"] == "-1"
 
 
 def _official_model_catalog():
@@ -418,6 +431,128 @@ def test_model_payload_projects_explicit_app_compatibility(data_dir, tmp_path):
     assert compatibility["perplexica"]["status"] == "unsupported_until_revalidated"
     assert compatibility["perplexica"]["reason"] == "Perplexica probe failed"
     assert compatibility["perplexica"]["evidence"] == "fleet-run/perplexica"
+    assert compatibility["perplexica"]["userMessage"] == (
+        "This model isn't supported in Perplexica yet. Switch to a recommended model to use Perplexica."
+    )
+
+
+TALK_NOT_SUPPORTED_COPY = (
+    "This model isn't supported in ODS Talk yet. Switch to a recommended model to use ODS Talk."
+)
+_INTERNAL_COPY_MARKERS = re.compile(
+    r"fleet|revalidat|release coverage|harness|cycle-\d|\d{4}-\d{2}-\d{2}T|tok/s|websocket|model-ui",
+    re.IGNORECASE,
+)
+
+
+def test_app_compatibility_user_message_is_generic_by_app_and_status():
+    internal = (
+        "Fleet model-UI run 2026-07-16T18-10Z on windows-laptop loaded this model; keep it out "
+        "of ODS Talk release coverage until revalidated."
+    )
+    compatibility = model_app_compatibility({
+        "app_compatibility": {
+            "hermes_talk": {"status": "unsupported_until_revalidated", "reason": internal},
+            "agent_viability": {"status": "not_agent_viable", "reason": internal},
+            "openai_chat": {"status": "verified", "reason": "direct chat passed"},
+            "perplexica": {"status": "unsupported_until_revalidated", "reason": internal},
+            "open_webui": {"status": "verified"},
+        },
+    })
+
+    assert compatibility["hermesTalk"]["userMessage"] == TALK_NOT_SUPPORTED_COPY
+    assert compatibility["agentViability"]["userMessage"] == (
+        "Not verified for agent tasks, so responses may fail. "
+        "Switch to a recommended model for agent features."
+    )
+    assert compatibility["openaiChat"]["userMessage"] == "Verified for chat."
+    assert compatibility["perplexica"]["userMessage"] == (
+        "This model isn't supported in Perplexica yet. Switch to a recommended model to use Perplexica."
+    )
+    assert compatibility["openWebui"]["userMessage"] == "Verified with Open WebUI."
+    assert compatibility["pixelAgent"]["userMessage"] == "Not yet tested for Portal agent tasks."
+    # The internal fleet note stays available to operators and tooling, unchanged.
+    assert compatibility["hermesTalk"]["reason"] == internal
+    assert compatibility["hermesTalk"]["status"] == "unsupported_until_revalidated"
+
+
+def test_app_compatibility_user_note_overrides_generic_copy():
+    compatibility = model_app_compatibility({
+        "app_compatibility": {
+            "hermes_talk": {
+                "status": "unsupported_until_revalidated",
+                "reason": "internal fleet note",
+                "userNote": "  Voice replies   work, but typed chat is not supported yet. ",
+            },
+            "perplexica": {"status": "unsupported_until_revalidated", "user_note": "x" * 281},
+        },
+    })
+
+    assert compatibility["hermesTalk"]["userMessage"] == (
+        "Voice replies work, but typed chat is not supported yet."
+    )
+    # An oversized note is ignored rather than truncated mid-sentence.
+    assert compatibility["perplexica"]["userMessage"].startswith(
+        "This model isn't supported in Perplexica yet."
+    )
+
+
+def test_out_of_scope_app_compatibility_reports_untested_copy():
+    compatibility = model_app_compatibility(
+        {
+            "app_compatibility": {
+                "hermes_talk": {
+                    "status": "unsupported_until_revalidated",
+                    "hostScope": ["tower2"],
+                    "reason": "internal fleet note",
+                },
+            },
+        },
+        runtime_context={"hosts": ["windows-laptop"]},
+    )
+
+    assert compatibility["hermesTalk"]["status"] == "unknown"
+    assert compatibility["hermesTalk"]["userMessage"] == "Not yet tested with ODS Talk."
+    assert compatibility["agentViability"]["userMessage"] == "Not yet tested for agent tasks."
+
+
+def test_real_granite_talk_block_projects_user_copy_and_keeps_internal_note():
+    model = next(
+        model for model in _official_model_catalog() if model["id"] == "granite3.3-2b-instruct-q4"
+    )
+
+    compatibility = model_app_compatibility(model, runtime_context={"hosts": ["tower1"]})
+
+    assert compatibility["hermesTalk"]["status"] == "unsupported_until_revalidated"
+    assert compatibility["agentViability"]["status"] == "not_agent_viable"
+    assert compatibility["hermesTalk"]["reason"].startswith("Fleet model-UI run")
+    assert compatibility["hermesTalk"]["userMessage"] == TALK_NOT_SUPPORTED_COPY
+    assert "Fleet" not in compatibility["agentViability"]["userMessage"]
+
+
+def test_real_catalog_user_messages_never_carry_internal_fleet_notes():
+    catalog = _official_model_catalog()
+    hosts = {"windows-laptop", "tower1"}
+    for model in catalog:
+        for entry in (model.get("app_compatibility") or {}).values():
+            if not isinstance(entry, dict):
+                continue
+            for scoped in [entry, *(entry.get("scopedOverrides") or [])]:
+                scope = scoped.get("hostScope") if isinstance(scoped, dict) else None
+                hosts.update([scope] if isinstance(scope, str) else [str(host) for host in scope or []])
+
+    checked = 0
+    for model in catalog:
+        for host in sorted(hosts):
+            compatibility = model_app_compatibility(model, runtime_context={"hosts": [host]})
+            for key, entry in compatibility.items():
+                message = entry["userMessage"]
+                assert message, (model["id"], host, key)
+                assert not _INTERNAL_COPY_MARKERS.search(message), (model["id"], host, key, message)
+                if entry.get("reason"):
+                    assert entry["reason"] not in message, (model["id"], host, key)
+                checked += 1
+    assert checked > 100
 
 
 def test_scoped_app_compatibility_applies_only_to_matching_runtime():
@@ -511,6 +646,7 @@ def test_host_scoped_positive_override_preserves_global_negative_elsewhere():
         "status": "verified",
         "label": "Perplexica verified on Strixy",
         "reason": "Fresh exact Strixy proof",
+        "userMessage": "Verified with Perplexica.",
     }
     assert wrong_backend["perplexica"]["status"] == "unsupported_until_revalidated"
     assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
@@ -959,6 +1095,14 @@ def test_measured_local_too_slow_blocks_agent_compatibility(data_dir, tmp_path):
     assert compatibility["hermesTalk"]["status"] == "unsupported_until_revalidated"
     assert compatibility["agentViability"]["status"] == "not_agent_viable"
     assert "0.5 tok/s" in compatibility["agentViability"]["reason"]
+    assert compatibility["hermesTalk"]["userMessage"] == (
+        "This model is too slow on this machine for ODS Talk "
+        "(0.5 tokens/sec measured, 2+ needed). Switch to a smaller or faster model to use ODS Talk."
+    )
+    assert compatibility["agentViability"]["userMessage"] == (
+        "Too slow on this machine for agent tasks (0.5 tokens/sec measured, 2+ needed)."
+    )
+    assert "agent-required" not in compatibility["pixelAgent"]["userMessage"]
 
 
 def test_published_exact_too_slow_blocks_agent_compatibility(data_dir, tmp_path):

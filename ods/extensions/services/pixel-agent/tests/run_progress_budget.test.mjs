@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createRunProgressBudget, failedToolOutcome, isLiteralEcho} from '../plugin/run-progress-budget.mjs';
+import {createRunProgressBudget, failedToolOutcome, isLiteralEcho, RUN_PROGRESS_LIMITS} from '../plugin/run-progress-budget.mjs';
 
 test('outer and nested failure receipts do not masquerade as successful progress', () => {
   for (const event of [{error:'unavailable'}, {result:{isError:true}},
@@ -120,6 +120,15 @@ test('unclassified failures and two exhausted lanes still stop the full run', ()
   }
   assert.deepEqual(both.exhaustedLanes,['extension','workspace']);
   assert.equal(both.exhausted,true);
+});
+
+test('an external stop is sticky and changes no limit', () => {
+  const budget = createRunProgressBudget();
+  budget.stop();
+  assert.equal(budget.exhausted, true);
+  budget.observeResult({callId: 'later', tool: 'read', params: {path: 'x'}, failed: false});
+  assert.equal(budget.exhausted, true);
+  assert.deepEqual(RUN_PROGRESS_LIMITS, {consecutiveFailures: 4, totalFailures: 12, roundsWithoutProgress: 8, identicalSuccesses: 2});
 });
 
 test('verified pending process receipts do not exhaust progress rounds', () => {

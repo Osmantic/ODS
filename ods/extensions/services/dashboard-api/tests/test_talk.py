@@ -22,6 +22,140 @@ def talk_client(test_client, signed_talk_cookie, monkeypatch):
     return test_client
 
 
+TALK_NOT_SUPPORTED_COPY = (
+    "This model isn't supported in ODS Talk yet. Switch to a recommended model to use ODS Talk."
+)
+GRANITE_FLEET_NOTE = (
+    "Fleet model-UI run 2026-07-16T18-10Z on windows-laptop loaded this model successfully and "
+    "the runtime reported granite3.3-2b-instruct-q4, but ODS Talk returned a Hermes websocket "
+    "closed error and then fetch failed during the streamed verification prompt; keep it out of "
+    "ODS Talk release coverage until revalidated."
+)
+
+
+def _talk_catalog():
+    return [
+        {
+            "id": "granite3.3-2b-instruct-q4",
+            "name": "IBM Granite 3.3 2B Instruct",
+            "gguf_file": "granite-3.3-2b-instruct-Q4_K_M.gguf",
+            "app_compatibility": {
+                "agent_viability": {
+                    "status": "not_agent_viable",
+                    "reason": GRANITE_FLEET_NOTE.replace("ODS Talk release", "agent-required release"),
+                    "evidence": "fleet-test/runs/example/model-ui/cycle-003/windows-laptop",
+                },
+                "hermes_talk": {
+                    "status": "unsupported_until_revalidated",
+                    "reason": GRANITE_FLEET_NOTE,
+                    "evidence": "fleet-test/runs/example/model-ui/cycle-003/windows-laptop",
+                },
+            },
+        },
+        {
+            "id": "qwen3.5-9b-q4",
+            "name": "Qwen 3.5 9B",
+            "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+            "app_compatibility": {"hermes_talk": {"status": "verified"}},
+        },
+        {
+            "id": "phi4-mini-q4",
+            "name": "Phi-4 Mini",
+            "gguf_file": "Phi-4-mini-instruct-Q4_K_M.gguf",
+            "app_compatibility": {"agent_viability": {"status": "not_agent_viable"}},
+        },
+    ]
+
+
+def _patch_talk_catalog(monkeypatch, env, catalog=None):
+    async def fake_state(service_id):
+        return {"configured": True, "status": "healthy", "id": service_id}
+
+    async def live_model():
+        return "granite-3.3-2b-instruct-Q4_K_M.gguf"
+
+    entries = catalog if catalog is not None else _talk_catalog()
+    monkeypatch.setattr("routers.talk._service_state", fake_state)
+    monkeypatch.setattr("routers.talk.get_loaded_model", live_model)
+    monkeypatch.setattr("routers.talk.load_model_catalog", lambda _install_dir: entries)
+    monkeypatch.setattr("routers.talk.read_env_file_value", lambda key, _install_dir: env.get(key, ""))
+    monkeypatch.setattr("routers.talk.read_env_value", lambda key, _install_dir: env.get(key, ""))
+    monkeypatch.setattr("routers.talk.model_compatibility_runtime_context", lambda _install_dir: {})
+
+
+def test_talk_status_never_returns_internal_fleet_note(talk_client, monkeypatch):
+    _patch_talk_catalog(monkeypatch, {"MODEL_RECOMMENDED_MODEL": "qwen3.5-9b-q4"})
+
+    resp = talk_client.get("/api/talk/status")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["capabilities"]["text_chat"] is False
+    assert data["reasonCode"] == "model_not_supported"
+    assert data["reason"] == TALK_NOT_SUPPORTED_COPY
+    for marker in ("Fleet", "windows-laptop", "release coverage", "revalidated", "websocket"):
+        assert marker not in data["reason"]
+    hermes_talk = data["modelCompatibility"]["hermesTalk"]
+    # Status semantics and the internal note are unchanged for tooling.
+    assert hermes_talk["status"] == "unsupported_until_revalidated"
+    assert hermes_talk["reason"] == GRANITE_FLEET_NOTE
+    assert hermes_talk["userMessage"] == TALK_NOT_SUPPORTED_COPY
+    assert data["modelCompatibility"]["recommendedModel"] == {
+        "id": "qwen3.5-9b-q4",
+        "name": "Qwen 3.5 9B",
+    }
+
+
+def test_talk_status_skips_recommended_model_that_is_also_blocked(talk_client, monkeypatch):
+    _patch_talk_catalog(monkeypatch, {"MODEL_RECOMMENDED_MODEL": "phi4-mini-q4"})
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["reasonCode"] == "model_not_supported"
+    assert data["modelCompatibility"]["recommendedModel"] is None
+
+
+def test_talk_status_does_not_recommend_the_active_model(talk_client, monkeypatch):
+    _patch_talk_catalog(monkeypatch, {"MODEL_RECOMMENDED_MODEL": "granite3.3-2b-instruct-q4"})
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["modelCompatibility"]["recommendedModel"] is None
+
+
+def test_talk_status_prefers_catalog_user_note(talk_client, monkeypatch):
+    catalog = _talk_catalog()
+    catalog[0]["app_compatibility"]["hermes_talk"]["userNote"] = (
+        "Granite can't keep up with Talk's tools yet. Pick another model for now."
+    )
+    _patch_talk_catalog(monkeypatch, {}, catalog)
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["reason"] == "Granite can't keep up with Talk's tools yet. Pick another model for now."
+
+
+def test_talk_stream_rejects_blocked_model_with_user_copy(talk_client, monkeypatch):
+    _patch_talk_catalog(monkeypatch, {})
+
+    resp = talk_client.post("/api/talk/message/stream", json={"text": "hello"})
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == TALK_NOT_SUPPORTED_COPY
+
+
+def test_talk_status_ready_model_has_no_reason_code(talk_client, monkeypatch):
+    async def fake_state(service_id):
+        return {"configured": True, "status": "healthy", "id": service_id}
+
+    monkeypatch.setattr("routers.talk._service_state", fake_state)
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["capabilities"]["text_chat"] is True
+    assert data["reason"] is None
+    assert data["reasonCode"] is None
+
+
 def test_talk_rejects_api_key_without_session(test_client):
     resp = test_client.post(
         "/api/talk/message",
@@ -68,7 +202,10 @@ def test_talk_status_disables_text_chat_for_incompatible_active_model(talk_clien
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["capabilities"]["text_chat"] is False
-    assert data["reason"] == "Phi direct chat works, but agent validation failed."
+    # The catalog note is internal fleet QA; Talk only ever gets user copy.
+    assert data["reason"] == TALK_NOT_SUPPORTED_COPY
+    assert data["reasonCode"] == "model_not_supported"
+    assert "revalidated" not in data["reason"]
 
 
 def test_talk_message_rejects_incompatible_model_before_hermes(talk_client, monkeypatch):
@@ -95,7 +232,7 @@ def test_talk_message_rejects_incompatible_model_before_hermes(talk_client, monk
 
     resp = talk_client.post("/api/talk/message", json={"text": "hello"})
     assert resp.status_code == 409, resp.text
-    assert resp.json()["detail"] == "Active model is not agent ready."
+    assert resp.json()["detail"] == TALK_NOT_SUPPORTED_COPY
     assert calls == []
 
 
@@ -175,7 +312,8 @@ def test_talk_status_falls_back_to_configured_model_without_live_runtime(talk_cl
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["capabilities"]["text_chat"] is False
-    assert data["reason"] == "Configured bootstrap model is not agent ready."
+    assert data["reason"] == TALK_NOT_SUPPORTED_COPY
+    assert data["reasonCode"] == "model_not_supported"
     assert data["modelCompatibility"]["activeModel"]["id"] == "qwen3.5-2b-q4"
 
 

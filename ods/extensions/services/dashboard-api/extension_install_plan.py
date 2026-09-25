@@ -9,6 +9,45 @@ class InstallPlanError(ValueError):
     pass
 
 
+def declares_setup_hook(svc):
+    """Whether installation runs a post-install hook that owns its settings.
+
+    The host agent resolves ``hooks.post_install`` first and falls back to
+    ``setup_hook``. Library hooks generate the required values they declare,
+    so the owner is not asked for them before an installation that runs one.
+    """
+    hooks = svc.get('hooks')
+    post_install = hooks.get('post_install') if isinstance(hooks, dict) else None
+    return any(isinstance(value, str) and bool(value.strip())
+               for value in (post_install, svc.get('setup_hook')))
+
+
+def configuration_fields(key, svc, configured):
+    """Validate declared settings and report only whether each one is present."""
+    declarations = svc.get('env_vars', [])
+    if not isinstance(declarations, list) or len(declarations) > 128:
+        raise InstallPlanError(f'Invalid configuration declarations: {key}')
+    fields, seen = [], set()
+    for item in declarations:
+        if not isinstance(item, dict) or not isinstance(item.get('key'), str) or not KEY.fullmatch(item['key']):
+            raise InstallPlanError(f'Invalid configuration declaration: {key}')
+        name = item['key']
+        required, secret = item.get('required', False), item.get('secret', False)
+        if name in seen or type(required) is not bool or type(secret) is not bool:
+            raise InstallPlanError(f'Ambiguous configuration declaration: {key}')
+        seen.add(name)
+        # Only presence crosses this boundary; never project .env values or defaults.
+        present = configured(name)
+        if type(present) is not bool:
+            raise InstallPlanError('Invalid configuration presence result')
+        description = item.get('description', '')
+        if not isinstance(description, str):
+            raise InstallPlanError(f'Invalid configuration description: {key}')
+        fields.append({'key': name, 'required': required, 'secret': secret, 'configured': present,
+                       'description': description[:500]})
+    return fields
+
+
 def build_install_plan(target, entries, load_service, configured, protected=()):
     if not isinstance(target, str) or not ID.fullmatch(target):
         raise InstallPlanError('Invalid extension ID')
@@ -62,31 +101,14 @@ def build_install_plan(target, entries, load_service, configured, protected=()):
             action, reason = 'blocked', 'ODS manages this service'
         if action == 'install' and row.get('installable') is not True:
             action, reason = 'blocked', 'No installable recipe for this host'
-        declarations = svc.get('env_vars', [])
-        if not isinstance(declarations, list) or len(declarations) > 128:
-            raise InstallPlanError(f'Invalid configuration declarations: {key}')
-        fields, seen = [], set()
-        for item in declarations:
-            if not isinstance(item, dict) or not isinstance(item.get('key'), str) or not KEY.fullmatch(item['key']):
-                raise InstallPlanError(f'Invalid configuration declaration: {key}')
-            name = item['key']
-            required, secret = item.get('required', False), item.get('secret', False)
-            if name in seen or type(required) is not bool or type(secret) is not bool:
-                raise InstallPlanError(f'Ambiguous configuration declaration: {key}')
-            seen.add(name)
-            # Only presence crosses this boundary; never project .env values or defaults.
-            present = configured(name)
-            if type(present) is not bool:
-                raise InstallPlanError('Invalid configuration presence result')
-            description = item.get('description', '')
-            if not isinstance(description, str):
-                raise InstallPlanError(f'Invalid configuration description: {key}')
-            fields.append({'key': name, 'required': required, 'secret': secret, 'configured': present,
-                           'description': description[:500]})
+        fields = configuration_fields(key, svc, configured)
         missing = [field['key'] for field in fields if field['required'] and not field['configured']]
         steps.append({'extensionId': key, 'status': status, 'action': action,
                       'dependsOn': deps, 'configuration': fields,
                       'missingConfiguration': missing if action in {'install', 'enable'} else [],
+                      # Installation runs this hook first; it writes the
+                      # settings it owns. Presence is still reported above.
+                      'setupHook': declares_setup_hook(svc),
                       'reason': reason})
         visiting.remove(key)
         visited.add(key)

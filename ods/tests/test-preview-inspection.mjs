@@ -136,3 +136,58 @@ test('native inspection fixes Python environment and cwd while retaining exact r
   assert.equal(called,true); assert.equal(result.details.status,'passed');
  } finally {childProcess.execFile=originalExec;syncBuiltinESMExports();Object.defineProperty(process,'platform',platform);}
 });
+
+// Round 060 (strixy): assert-hidden by exact role/name on the hidden card
+// returned count 0 as selector_not_unique four times; the model rewrote the site.
+const fleetParams=()=>({siteId:'site-'+'a'.repeat(24),sha256:'a'.repeat(64),viewport:{width:375,height:812},steps:[
+ {action:'assert-visible',locator:{role:'heading',name:'Dawn Jazz',exact:true}},
+ {action:'assert-hidden',locator:{role:'heading',name:'Midnight Sold-Out Concert',exact:true}},
+ {action:'click',locator:{role:'button',name:'Show sold out',exact:true}},
+ {action:'assert-visible',locator:{role:'heading',name:'Midnight Sold-Out Concert',exact:true}}]});
+function unmatched(request,index,errorCode,count) {
+ const value=receipt(request);value.status='failed';value.steps=value.steps.slice(0,index+1);
+ value.steps[index]={index,...request.steps[index],before:{count},stable:true,status:'failed',errorCode};
+ value.steps.slice(0,index).forEach(step=>{step.before=state(step.action!=='assert-hidden');});
+ return value;
+}
+test('no_match is exactly zero matches; legacy zero-match selector_not_unique stays valid',()=>{
+ const request=normalize(fleetParams());
+ assert.ok(validate(unmatched(request,1,'no_match',0),request));
+ assert.ok(validate(unmatched(request,1,'selector_not_unique',0),request),'older capsules');
+ assert.ok(validate(unmatched(request,1,'selector_not_unique',2),request));
+ for(const [code,before] of [['no_match',{count:2}],['no_match',{count:1}],['no_match',state(false)],['selector_not_unique',{count:1}],['selector_not_unique',state(false)],['no_matches',{count:0}]]) {
+  const bad=unmatched(request,1,code,0);bad.steps[1].before=before;
+  assert.throws(()=>validate(bad,request),undefined,JSON.stringify([code,before]));
+ }
+});
+test('unmatched locators get one actionable locator fix, never a site change',async()=>{
+ const run=async value=>(await createWorkspacePreviewInspectTool({request:async()=>value}).execute('locator',fleetParams())).content[0].text;
+ const request=normalize(fleetParams());
+ const legacy=await run(unmatched(request,1,'selector_not_unique',0));
+ assert.ok(legacy.startsWith('Preview inspection failed. Step 2 (assert-hidden) matched no element, so nothing was measured and later steps did not run. This inspector cannot match a hidden element by role/name; use a CSS selector such as an id for it.'),legacy);
+ const hidden=await run(unmatched(request,1,'no_match',0));
+ assert.match(hidden,/Step 2 \(assert-hidden\) matched no element.* Hidden elements were searched too, so no element has exactly that role and accessible name\./);
+ const visible=await run(unmatched(request,3,'no_match',0));
+ assert.match(visible,/Step 4 \(assert-visible\) matched no element.* For assert-visible, role\/name locators match only rendered elements, so a hidden element is not matched\./);
+ const many=await run(unmatched(request,1,'selector_not_unique',2));
+ assert.match(many,/Step 2 \(assert-hidden\) matched 2 elements; a locator must match exactly one/);
+ const css=fleetParams();css.steps[1].locator={selector:'#midnight-card h2'};
+ const cssText=(await createWorkspacePreviewInspectTool({request:async r=>unmatched(r,1,'no_match',0)}).execute('css',css)).content[0].text;
+ assert.match(cssText,/Step 2 \(assert-hidden\) matched no element, so nothing was measured and later steps did not run\. Copy the exact/);
+ for(const text of [legacy,hidden,visible,many,cssText]) {
+  assert.match(text,/retry the inspection on the same published snapshot\. Do not change the site only to satisfy a locator\. Requested behavior remains unverified\./);
+  assert.doesNotMatch(text.slice(0,text.indexOf(' Evidence: ')),/selector_not_unique|not unique|failed inspection does not establish/);
+  assert.equal(text.match(/retry/g).length,1);
+ }
+});
+test('tool description states role/name matching for hidden assertions',()=>{
+ const {description}=createWorkspacePreviewInspectTool({request:async()=>{}});
+ assert.match(description,/Exact role\/name locators match rendered elements; assert-hidden also matches hidden ones, so one role\/name can be asserted hidden, clicked into view, then asserted visible\./);
+ assert.doesNotMatch(description,/even for hidden assertions/);
+});
+test('capsule applies hidden-inclusive role matching to assert-hidden only',()=>{
+ const source=fs.readFileSync(new URL('../extensions/services/pixel-agent/host/preview_inspection_capsule.py',import.meta.url),'utf8');
+ assert.match(source,/observe\(\s*step\["locator"\], step\["action"\] == "assert-hidden"\s*\)/);
+ assert.equal(source.match(/= including_hidden\(locator, nodes, owned\)/g).length,1);
+ assert.match(source,/if before\.get\("count"\) == 0:\s*item\["errorCode"\] = "no_match"/);
+});

@@ -1,6 +1,6 @@
 services:
   weaviate:
-    image: cr.weaviate.io/semitechnologies/weaviate:1.36.2@sha256:eda7b079b05e7e05deab9e90aae0de718720235e5b57577f0745c94cdd04c599
+    image: docker.io/semitechnologies/weaviate:1.36.2@sha256:eda7b079b05e7e05deab9e90aae0de718720235e5b57577f0745c94cdd04c599
     container_name: ods-weaviate
     restart: unless-stopped
     security_opt:

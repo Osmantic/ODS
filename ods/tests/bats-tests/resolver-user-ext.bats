@@ -241,3 +241,22 @@ _refute_output_path() {
     _assert_output_path "data/user-extensions/gpusvc/compose.yaml"
     _assert_output_path "data/user-extensions/gpusvc/compose.nvidia.yaml"
 }
+
+@test "user-ext: dashboard staging and backup directories are not extensions" {
+    # The dashboard keeps data/user-extensions/.tmp (library staging) and
+    # .backups (definition rollback copies). Extension IDs never start with a
+    # dot, so neither may be treated as a manifest-less legacy extension.
+    local root="$FIXTURE_DIR/data/user-extensions"
+    mkdir -p "$root/.tmp/.gotify-abc123" "$root/.backups/gotify"
+    printf 'services: {}\n' > "$root/.backups/gotify/compose.yaml"
+    local ext_dir="$root/realsvc"
+    mkdir -p "$ext_dir"
+    printf 'services: {}\n' > "$ext_dir/compose.yaml"
+
+    _run_resolver --gpu-backend nvidia --tier 1
+    assert_success
+    refute_output --partial "WARNING: .tmp"
+    refute_output --partial "WARNING: .backups"
+    _refute_output_path "data/user-extensions/.backups"
+    _assert_output_path "data/user-extensions/realsvc/compose.yaml"
+}

@@ -33,7 +33,8 @@ Environment variables (set in `.env`):
 | `LLAMA_ARG_CACHE_TYPE_K` | `f16` | KV cache key precision. Use `q8_0` to reduce long-context memory pressure |
 | `LLAMA_ARG_CACHE_TYPE_V` | `f16` | KV cache value precision. Use `q8_0` to reduce long-context memory pressure |
 | `LLAMA_ARG_N_CPU_MOE` | unset | Optional MoE-only CPU expert offload (`--n-cpu-moe`). Leave unset for dense models |
-| `LLAMA_ARG_SPEC_TYPE` | unset | Optional speculative decoding mode (`--spec-type`). Use only with supported GGUF/runtime combinations |
+| `LLAMA_SPEC_TYPE` | `ngram-mod` on the NVIDIA and CPU images | Default speculative decoding when the model sets no `LLAMA_ARG_SPEC_TYPE`. Set `none` to turn it off. See [N-gram speculative decoding](#n-gram-speculative-decoding) |
+| `LLAMA_ARG_SPEC_TYPE` | unset | Optional per-model speculative decoding mode (`--spec-type`), normally written by a runtime profile. Overrides `LLAMA_SPEC_TYPE`. Use only with supported GGUF/runtime combinations |
 | `LLAMA_ARG_SPEC_DRAFT_N_MAX` | unset | Optional speculative draft token cap (`--spec-draft-n-max`) |
 | `LLAMA_SERVER_MEMORY_LIMIT` | `64G` | Docker memory limit for the container |
 
@@ -59,6 +60,43 @@ LLAMA_ARG_N_CPU_MOE=25
 ```
 
 Tune this value per machine. Lower values keep more work on GPU and can be faster if enough VRAM is available; higher values reduce VRAM pressure. Leave this unset for dense models.
+
+### N-gram speculative decoding
+
+On the NVIDIA and CPU images, ODS starts llama-server with `--spec-type ngram-mod` (set through `LLAMA_ARG_SPEC_TYPE`). llama.cpp drafts tokens by matching n-grams already in the context, and the model verifies every draft before it is emitted. The output is still the model's own, so this is lossless. It speeds up requests that repeat the context: file edits, whole-file rewrites and quoting.
+
+On an RTX 5090 with Qwen3.5-27B Q4_K_M and llama.cpp b9014:
+
+| Workload | Without | With `ngram-mod` |
+|---|---|---|
+| Copy-heavy edit of a 6.1k-token file | 89.5 s | 13.3 s |
+| Whole-file rewrite, prior file in context as raw text | 70.1 s | 15.6 s |
+| Same rewrite, prior file JSON-escaped in context | 70.3 s | 60.6 s |
+| Novel generation and 24k-token prefill | no change (±0.5%) | no change (±0.5%) |
+
+VRAM did not change. Draft sizes keep llama.cpp's defaults (`--spec-ngram-mod-n-match 24`, `--spec-ngram-mod-n-min 48`, `--spec-ngram-mod-n-max 64`).
+
+To turn it off, add this to `.env` and restart llama-server:
+
+```env
+LLAMA_SPEC_TYPE=none
+```
+
+A model runtime profile that sets `LLAMA_ARG_SPEC_TYPE` (for example `draft-mtp`) takes precedence over `LLAMA_SPEC_TYPE`.
+
+The default applies only where the pinned llama.cpp build has the benchmarked implementation: the dedicated ngram-mod parameters (b8955 and later) and speculative checkpoints for hybrid models such as Qwen3.5 (b8842 and later).
+
+| Runtime | llama.cpp | Default |
+|---|---|---|
+| NVIDIA Docker (`docker-compose.nvidia.yml`) | b9014 | `ngram-mod` |
+| CPU Docker (`docker-compose.cpu.yml`) | b9014 | `ngram-mod` |
+| AMD (Lemonade, `docker-compose.amd.yml`) | Lemonade-managed | none; not a llama.cpp launch that ODS controls |
+| Intel Arc / SYCL (`docker-compose.intel.yml`, `docker-compose.arc.yml`) | b8248 | none |
+| Apple Docker (`docker-compose.apple.yml`) and native macOS Metal | b8248 / b8210 | none |
+| Native Windows llama-server (Vulkan fallback) | b8248 | none |
+| Registered native model-store profiles | qualified executable | none; the profile keeps its own argument list |
+
+Builds b8210 and b8248 accept `--spec-type ngram-mod`, but they predate both changes. They draft with the generic 12-token lookup, which upstream logs as too small, and they turn speculation off for hybrid models. Remote and cloud providers never start llama-server.
 
 ### MTP speculative decoding
 

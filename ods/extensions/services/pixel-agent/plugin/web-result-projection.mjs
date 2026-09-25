@@ -37,7 +37,7 @@ function nativeSearchText(text) {
   return `${text.slice(0, end)}\n…(truncated)…`;
 }
 
-const OMITTED_SEARCH_SNIPPETS_GUIDANCE = "ODS search projection (not source evidence): Some descriptions or excerpts were omitted to fit the native result limit while preserving complete source titles, URLs and metadata. Search hits remain leads; read the selected pages within the existing research allowance before making claims. Omitted snippets do not establish that a fact is absent.";
+export const OMITTED_SEARCH_SNIPPETS_GUIDANCE = "ODS search projection (not source evidence): Some descriptions or excerpts were omitted to fit the native result limit while preserving complete source titles, URLs and metadata. Search hits remain leads; read the selected pages within the existing research allowance before making claims. Omitted snippets do not establish that a fact is absent.";
 
 function boundedNativeSearchContent(payload, text) {
   if (text.length <= NATIVE_SEARCH_TEXT_CHARS) return { text, omitted: false };

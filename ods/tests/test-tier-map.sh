@@ -429,7 +429,7 @@ _selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
     --host-arch amd64 \
     --installable-only \
     --env)"
-LLM_MODEL="" GGUF_FILE="" MAX_CONTEXT="" MODEL_RUNTIME_PROFILE="" LLAMA_ARG_N_CPU_MOE="" LLAMA_ARG_FLASH_ATTN="" LLAMA_ARG_CACHE_TYPE_K="" LLAMA_ARG_CACHE_TYPE_V="" LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=""
+LLM_MODEL="" GGUF_FILE="" MAX_CONTEXT="" MODEL_RUNTIME_PROFILE="" LLAMA_ARG_N_CPU_MOE="" LLAMA_ARG_FLASH_ATTN="" LLAMA_ARG_CACHE_TYPE_K="" LLAMA_ARG_CACHE_TYPE_V="" LLAMA_ARG_CHECKPOINT_EVERY_NT=""
 load_selector_env "$_selector_env"
 assert_eq "SELECTOR_LLM_MODEL" "qwen3.5-9b" "$LLM_MODEL"
 assert_eq "SELECTOR_GGUF_FILE" "Qwen3.5-9B-Q4_K_M.gguf" "$GGUF_FILE"
@@ -439,7 +439,7 @@ assert_eq "SELECTOR_N_CPU_MOE" "" "$LLAMA_ARG_N_CPU_MOE"
 assert_eq "SELECTOR_FLASH_ATTN" "on" "$LLAMA_ARG_FLASH_ATTN"
 assert_eq "SELECTOR_CACHE_K" "q8_0" "$LLAMA_ARG_CACHE_TYPE_K"
 assert_eq "SELECTOR_CACHE_V" "q8_0" "$LLAMA_ARG_CACHE_TYPE_V"
-assert_eq "SELECTOR_CHECKPOINTS" "" "$LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"
+assert_eq "SELECTOR_CHECKPOINTS" "" "$LLAMA_ARG_CHECKPOINT_EVERY_NT"
 echo ""
 
 echo "Catalog selector (8GB NVIDIA gemma uses upstream catalog fit):"

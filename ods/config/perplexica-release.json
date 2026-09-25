@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "upstreamName": "Vane (formerly Perplexica)",
+  "repository": "https://github.com/ItzCrazyKns/Vane",
+  "version": "1.12.2",
+  "tag": "v1.12.2",
+  "releaseUrl": "https://github.com/ItzCrazyKns/Vane/releases/tag/v1.12.2",
+  "publishedAt": "2026-04-10T13:30:52Z",
+  "sourceCommit": "9e8d883768c43520464345fefe58654f5cee451b",
+  "variant": "slim",
+  "image": "itzcrazykns1337/vane:slim-v1.12.2@sha256:d2878cf9c91962aa3fc053b59bc9b89adcbdcaeb7ee36b54906e853464b2c190",
+  "platformManifests": {
+    "linux/amd64": "sha256:0111e0ea460b2edb2bdc777699cdfe20e8bba62caf96f074f1193367b115bc71",
+    "linux/arm64": "sha256:357250a8b93cd688032feaa062e5c8b81448664dd404da693aa42d4dc3ea3a25"
+  },
+  "appRoot": "/home/vane",
+  "previousImage": "itzcrazykns1337/perplexica:slim-latest@sha256:6e399abf4ff587822b0ef0df11f36088fb928e17ac61556fe89beb68d48c378e",
+  "knownLimitations": [
+    "The slim-v1.12.2 image ships the playwright package without a Chromium browser; upstream added it to Dockerfile.slim after the release (commit adc68fc050). Quality mode and the scrape_url tool cannot read pages; Speed and Balanced mode do not scrape and are unaffected."
+  ],
+  "verification": "Official GitHub release and Docker Hub manifest list queried 2026-09-25; the release-event docker-build run 24245416338 built slim-v1.12.2 from sourceCommit. The image carries no OCI revision label. This identity receipt does not assert fleet qualification."
+}

@@ -110,7 +110,10 @@ def test_install_prepares_only_dependency_images_and_surfaces_build_failure(monk
     assert ok is (build_exit == 0)
     assert 'private' not in error
     if build_exit:
-        assert '[REDACTED] build output' in error
+        assert error.splitlines()[0] == ('Source image build failed; containers were not started. '
+                                         'Untrusted build error: [REDACTED] build output')
+        assert error.splitlines()[1] == 'Untrusted build diagnostic (tail):'
+        assert error.endswith('\n[REDACTED] build output')
     base = ['docker', 'compose', '-p', 'ods']
     assert calls == [base + ['config', '--format', 'json'], base + ['pull', 'demo-db'],
                      base + ['build', '--build-arg', 'BUILDKIT_CONTEXT_KEEP_GIT_DIR=1', 'demo', 'demo-worker']]
@@ -127,6 +130,7 @@ def test_build_diagnostic_preserves_actual_pip_failure_and_redacts_before_tail(t
     output = ('x' * 16000 + '\nprocess-value persisted-value compose-value build-value\n'
               'https://user:pass@example.org/repo?token=query-value\nBearer bearer-value\n' + failure)
     actual = _mod._install_build_diagnostic(types.SimpleNamespace(stderr=output), services)
+    assert actual.startswith(f'Untrusted build error: {failure}\nUntrusted build diagnostic (tail):\n')
     assert actual.endswith(failure)
     assert len(actual) <= 7600
     for secret in ['process-value', 'persisted-value', 'compose-value', 'build-value',
@@ -134,10 +138,95 @@ def test_build_diagnostic_preserves_actual_pip_failure_and_redacts_before_tail(t
         assert secret not in actual
 
 
+# Verbatim `docker compose build swagger-ui` output from tower2 (Compose 5.1.0,
+# buildx 0.31.1, 2026-09-25). The whole log fit the old 7600-character "tail",
+# so the message began at BuildKit step #1 and a 400-character excerpt of it
+# ended inside the FROM digest, 35 characters before the first error line.
+SWAGGER_UI_BUILD_LOG = '\n'.join([
+    '#1 [internal] load local bake definitions',
+    '#1 reading from stdin 620B done',
+    '#1 DONE 0.0s',
+    '',
+    '#2 [internal] load build definition from Dockerfile',
+    '#2 transferring dockerfile: 273B done',
+    '#2 DONE 0.0s',
+    '',
+    '#3 [internal] load metadata for docker.swagger.io/swaggerapi/swagger-ui:v5.33.0@sha256:f9b8432be04e320406157e26c3ff52a7e9a4bea7eabe5477e9636791737eb119',
+    '#3 ERROR: failed to copy: httpReadSeeker: failed open: unexpected status from GET request to https://docker.swagger.io/v2/swaggerapi/swagger-ui/manifests/sha256:f9b8432be04e320406157e26c3ff52a7e9a4bea7eabe5477e9636791737eb119: 429 Too Many Requests',
+    'toomanyrequests: You have reached your unauthenticated pull rate limit. https://www.docker.com/increase-rate-limit',
+    '------',
+    ' > [internal] load metadata for docker.swagger.io/swaggerapi/swagger-ui:v5.33.0@sha256:f9b8432be04e320406157e26c3ff52a7e9a4bea7eabe5477e9636791737eb119:',
+    '------',
+    '',
+    ' Image ods/swagger-ui:5.33.0-local-v1 Building ',
+    'Dockerfile:1',
+    '',
+    '--------------------',
+    '',
+    '   1 | >>> FROM docker.swagger.io/swaggerapi/swagger-ui:v5.33.0@sha256:f9b8432be04e320406157e26c3ff52a7e9a4bea7eabe5477e9636791737eb119',
+    '',
+    '   2 |     COPY nginx.conf /etc/nginx/nginx.conf',
+    '',
+    '   3 |     COPY index.html ods-initializer.js /usr/share/nginx/html/',
+    '',
+    '--------------------',
+    '',
+    'failed to solve: docker.swagger.io/swaggerapi/swagger-ui:v5.33.0@sha256:f9b8432be04e320406157e26c3ff52a7e9a4bea7eabe5477e9636791737eb119: failed to resolve source metadata for docker.swagger.io/swaggerapi/swagger-ui:v5.33.0@sha256:f9b8432be04e320406157e26c3ff52a7e9a4bea7eabe5477e9636791737eb119: failed to copy: httpReadSeeker: failed open: unexpected status from GET request to https://docker.swagger.io/v2/swaggerapi/swagger-ui/manifests/sha256:f9b8432be04e320406157e26c3ff52a7e9a4bea7eabe5477e9636791737eb119: 429 Too Many Requests',
+    '',
+    'toomanyrequests: You have reached your unauthenticated pull rate limit. https://www.docker.com/increase-rate-limit',
+    '',
+])
+
+
+def test_build_failure_message_leads_with_the_final_error_not_the_first_build_step(tmp_path, monkeypatch):
+    monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+    monkeypatch.setattr(_mod.platform, 'system', lambda: 'Linux')
+    services = {'swagger-ui': {'image': 'ods/swagger-ui:5.33.0-local-v1',
+                               'build': {'context': str(tmp_path), 'dockerfile': 'Dockerfile'}}}
+    def run(command, **kwargs):
+        if command[-3:] == ['config', '--format', 'json']:
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps({'services': services}), stderr='')
+        assert command == ['docker', 'compose', '-p', 'ods', 'build', 'swagger-ui']
+        return types.SimpleNamespace(returncode=1, stdout='', stderr=SWAGGER_UI_BUILD_LOG)
+    monkeypatch.setattr(_mod.subprocess, 'run', run)
+    monkeypatch.setattr(_mod, '_write_progress', lambda *args: None)
+
+    ok, error = _mod._prepare_install_images(['-p', 'ods'], 'swagger-ui')
+
+    assert ok is False
+    first = error.splitlines()[0]  # The dashboard card's collapsed summary.
+    assert first == ('Source image build failed; containers were not started. Untrusted build error: '
+                     'toomanyrequests: You have reached your unauthenticated pull rate limit. '
+                     'https://www.docker.com/increase-rate-limit')
+    assert 'unauthenticated pull rate limit' in error[:400]
+    assert error.splitlines()[1] == 'Untrusted build diagnostic (tail):'
+    tail = error.splitlines()[2:]
+    assert tail[0] == '#1 [internal] load local bake definitions'  # Whole log fits the bound.
+    assert tail[-2].endswith('429 Too Many Requests') and tail[-2].startswith('failed to solve: ')
+    assert tail[-1].startswith('toomanyrequests: ')
+    assert '' not in tail
+
+
+def test_build_diagnostic_tail_is_bounded_and_keeps_end_of_long_error_line(tmp_path, monkeypatch):
+    monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+    steps = '\n'.join(f'#{n} [stage {n}] RUN step {n} ' + 'o' * 80 for n in range(400))
+    chain = 'failed to solve: ' + 'wrapped: ' * 200 + 'exit code: 137'
+    actual = _mod._install_build_diagnostic(types.SimpleNamespace(stderr=steps + '\n' + chain), {})
+    first, label, *tail = actual.splitlines()
+    assert first.startswith('Untrusted build error: …') and first.endswith('wrapped: exit code: 137')
+    assert len(first) == len('Untrusted build error: ') + _mod.BUILD_ERROR_LINE_LIMIT
+    assert label == 'Untrusted build diagnostic (tail):'
+    assert len(actual) <= _mod.BUILD_DIAGNOSTIC_LIMIT
+    assert tail[0].startswith('#') and tail[0].endswith('o' * 80)  # No partial first line.
+    assert tail[-1] == chain and tail[-2].startswith('#399 ')
+
+
 def test_build_diagnostic_supports_stdout_and_absent_output(tmp_path, monkeypatch):
     monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
-    assert _mod._install_build_diagnostic(types.SimpleNamespace(stderr='', stdout='failed step'), {}) == 'failed step'
+    assert _mod._install_build_diagnostic(types.SimpleNamespace(stderr='', stdout='failed step'), {}) == (
+        'Untrusted build error: failed step\nUntrusted build diagnostic (tail):\nfailed step')
     assert 'No build diagnostic' in _mod._install_build_diagnostic(types.SimpleNamespace(), {})
+    assert 'No build diagnostic' in _mod._install_build_diagnostic(types.SimpleNamespace(stderr='\n \n'), {})
 
 
 @pytest.mark.parametrize('build_exit', [0, 1])

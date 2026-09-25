@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -33,6 +34,9 @@ BRAVE_DIR = ROOT / "extensions" / "services" / "brave-search"
 HEALTH_PHASE = ROOT / "installers" / "phases" / "12-health.sh"
 SUMMARY_PHASE = ROOT / "installers" / "phases" / "13-summary.sh"
 REPAIR_SCRIPT = ROOT / "scripts" / "repair" / "repair-perplexica.sh"
+RELEASE = ROOT / "config" / "perplexica-release.json"
+DEPENDENCY_LOCK = ROOT / "config" / "dependency-lock.json"
+IMAGES_PHASE = ROOT / "installers" / "phases" / "08-images.sh"
 
 
 def _node_cmd_or_skip() -> str | None:
@@ -133,20 +137,110 @@ def test_bind_mounted_entrypoints_do_not_require_executable_bit() -> None:
         assert f"exec {mounted_script}" not in compose
 
 
+def _scrape_patch_program() -> str:
+    """Return the Node program the entrypoint runs against each bundle file."""
+    lines = ENTRYPOINT.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.rstrip().endswith("<<'NODE'"))
+    end = next(i for i in range(start + 1, len(lines)) if lines[i] == "NODE")
+    return "\n".join(lines[start + 1:end]) + "\n"
+
+
+def _run_scrape_patch(node: str, tmp: Path, bundle: str, max_chars: int = 30000) -> tuple[int, str]:
+    program = tmp / "patch.js"
+    program.write_text(_scrape_patch_program(), encoding="utf-8")
+    chunk = tmp / "641.js"
+    chunk.write_text(bundle, encoding="utf-8")
+    result = subprocess.run(
+        [node, str(program), str(chunk), str(max_chars)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.returncode, chunk.read_text(encoding="utf-8")
+
+
 def test_entrypoint_patches_scrape_url_result_content() -> None:
     script = ENTRYPOINT.read_text(encoding="utf-8")
     assert "name:\"scrape_url\"" in script
     assert "PERPLEXICA_SCRAPE_URL_MAX_CHARS" in script
-    assert "content:k.slice(0,${max})" in script
+    # Vane 1.12.2 moved the app root from /home/perplexica to /home/vane.
+    assert 'for app_root in "$PWD" /home/vane /home/perplexica; do' in script
+    assert 'search_root="/home/perplexica/.next/server"' not in script
 
-    sample = 'g.push({content:k,metadata:{url:a,title:j}})'
-    pattern = re.compile(
-        r"([A-Za-z_$][\w$]*\.push\(\{content:)"
-        r"([A-Za-z_$][\w$]*)"
-        r"(,metadata:\{url:[A-Za-z_$][\w$]*,title:[A-Za-z_$][\w$]*\}\}\))"
+
+def test_scrape_patch_caps_legacy_and_vane_bundles_idempotently() -> None:
+    node = _node_cmd_or_skip()
+    if node is None:
+        return
+
+    # Push sites copied from the minified 641.js chunk of each pinned image.
+    legacy = (
+        'name:"scrape_url",x;let k=e.turndown(i);'
+        'g.push({content:k,metadata:{url:a,title:j}})}catch(b){'
     )
-    patched = pattern.sub(lambda m: f"{m.group(1)}{m.group(2)}.slice(0,30000){m.group(3)}", sample)
-    assert patched == 'g.push({content:k.slice(0,30000),metadata:{url:a,title:j}})'
+    vane = (
+        'name:"scrape_url",x;i.data.subSteps[d].reading.push({content:"",metadata:{url:a,title:k.title}}),'
+        'b.session;else m=k.content;j.push({content:m,metadata:{url:a,title:k.title}})}catch(b){'
+    )
+    cases = (
+        (legacy, 'g.push({content:k.slice(0,30000),metadata:{url:a,title:j}})'),
+        (vane, 'j.push({content:m.slice(0,30000),metadata:{url:a,title:k.title}})'),
+    )
+    for bundle, expected in cases:
+        with tempfile.TemporaryDirectory(prefix="ods-perplexica-patch-") as temp_dir:
+            tmp = Path(temp_dir)
+            code, patched = _run_scrape_patch(node, tmp, bundle)
+            assert code == 0
+            assert expected in patched
+            assert patched.count(".slice(0,30000)") == 1
+            # The reading-progress push has a literal empty content and must
+            # stay untouched.
+            if bundle is vane:
+                assert 'reading.push({content:"",metadata:{url:a,title:k.title}})' in patched
+
+            # `docker restart` reuses the patched layer; the second start must
+            # recognize any minified variable name rather than fail closed.
+            code, repatched = _run_scrape_patch(node, tmp, patched)
+            assert code == 0
+            assert repatched == patched
+
+    with tempfile.TemporaryDirectory(prefix="ods-perplexica-patch-") as temp_dir:
+        code, _ = _run_scrape_patch(node, Path(temp_dir), 'name:"scrape_url",unknownShape()')
+        assert code == 2
+
+
+def test_release_pin_is_consistent_across_surfaces() -> None:
+    release = json.loads(RELEASE.read_text(encoding="utf-8"))
+    image = release["image"]
+    assert re.fullmatch(
+        r"itzcrazykns1337/vane:slim-v\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", image
+    ), image
+    assert release["tag"] == f"v{release['version']}"
+    assert f"slim-{release['tag']}@" in image
+    assert re.fullmatch(r"[0-9a-f]{40}", release["sourceCommit"])
+    assert set(release["platformManifests"]) == {"linux/amd64", "linux/arm64"}
+    for digest in release["platformManifests"].values():
+        assert re.fullmatch(r"sha256:[0-9a-f]{64}", digest), digest
+
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    assert compose["services"]["perplexica"]["image"] == image
+
+    lock = json.loads(DEPENDENCY_LOCK.read_text(encoding="utf-8"))
+    pin = next(entry for entry in lock["entries"] if entry.get("id") == "perplexica.app")
+    assert pin["value"] == image
+
+    assert f'PULL_LIST+=("{image}|' in IMAGES_PHASE.read_text(encoding="utf-8")
+
+
+def test_compose_mounts_state_under_the_pinned_app_root() -> None:
+    release = json.loads(RELEASE.read_text(encoding="utf-8"))
+    app_root = release["appRoot"]
+    volumes = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["perplexica"]["volumes"]
+    # The named volumes keep their ODS names, so an upgrade remounts the same
+    # settings, chat history and uploads at the renamed image's app root.
+    assert f"perplexica-data:{app_root}/data" in volumes
+    assert f"perplexica-uploads:{app_root}/uploads" in volumes
+    assert not any("/home/perplexica/" in volume for volume in volumes)
 
 
 def test_env_schema_allows_scrape_cap_override() -> None:
@@ -740,6 +834,9 @@ if __name__ == "__main__":
     test_search_adapter_config_and_secret_contracts()
     test_bind_mounted_entrypoints_do_not_require_executable_bit()
     test_entrypoint_patches_scrape_url_result_content()
+    test_scrape_patch_caps_legacy_and_vane_bundles_idempotently()
+    test_release_pin_is_consistent_across_surfaces()
+    test_compose_mounts_state_under_the_pinned_app_root()
     test_env_schema_allows_scrape_cap_override()
     test_compose_restores_image_command()
     test_entrypoint_falls_back_to_node_server_when_no_args()

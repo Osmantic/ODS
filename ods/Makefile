@@ -68,6 +68,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-ods-doctor-env-reader.sh
 	@echo "=== Docker rootless bind-mount ownership ==="
 	@bash tests/test-rootless-docker-ownership.sh
+	@bash tests/test-dashboard-data-permissions.sh
+	@python3 tests/test_dashboard_data_permissions.py
 	@bash tests/test-token-spy-install-owner.sh
 	@bash tests/test-cli-status-docker-error.sh
 	@python3 tests/test-cli-stt-env.py
@@ -86,6 +88,8 @@ test: ## Run unit and contract tests
 	@bash tests/contracts/test-overlay-map-coherence.sh
 	@bash tests/contracts/test-plist-log-paths.sh
 	@python3 tests/contracts/test-llama-runtime-tunables.py
+	@python3 tests/contracts/test-llama-spec-default.py
+	@bash tests/test-llama-mtp-args.sh
 	@echo ""
 	@echo "=== safe .env loading (quote/CRLF handling) ==="
 	@bash tests/test-safe-env.sh

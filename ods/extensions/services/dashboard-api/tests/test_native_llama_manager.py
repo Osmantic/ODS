@@ -103,3 +103,23 @@ def test_tuning_arguments_preserve_zero_and_idle(managed, monkeypatch):
     result = host._native_llama_tuning_arguments({'LLAMA_ARG_CTX_CHECKPOINTS': '0', 'LLAMA_ARG_SLEEP_IDLE_SECONDS': '120'}, root / 'binary')
     assert result == ['--ctx-checkpoints', '0', '--sleep-idle-seconds', '120']
     assert '--checkpoints=0' in commands[0]
+
+
+def test_tuning_arguments_read_the_installer_checkpoint_keys(managed, monkeypatch):
+    """Dashboard restarts must honour the same .env keys as native-model.sh."""
+    root, _ = managed
+    (root / 'installers/macos/lib/native-checkpoint-args.py').touch()
+    commands = []
+    def run(args, **kwargs):
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout=b'')
+    monkeypatch.setattr(host.subprocess, 'run', run)
+    host._native_llama_tuning_arguments({'LLAMA_ARG_CHECKPOINT_EVERY_NT': '1024'}, root / 'binary')
+    host._native_llama_tuning_arguments({'LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT': '2048'}, root / 'binary')
+    assert '--interval=1024' in commands[0]
+    assert '--min-spacing=2048' in commands[1]
+    # Former names are not read by llama.cpp or by the installer.
+    commands.clear()
+    assert host._native_llama_tuning_arguments(
+        {'LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS': '-1', 'LLAMA_ARG_CHECKPOINT_MIN_STEP': '512'}, root / 'binary') == []
+    assert commands == []

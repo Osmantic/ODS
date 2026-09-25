@@ -44,6 +44,9 @@ export function createRunProgressBudget() {
   const exhaustedLanes = new Set();
   return {
     get exhausted() { return terminal; },
+    // Another guard (the research web-loop terminal) stopped the response.
+    // Sticky, like exhaustion; it grants nothing and changes no limit.
+    stop() { terminal = true; },
     get exhaustedLanes() { return [...exhaustedLanes]; },
     laneExhausted(lane) { return exhaustedLanes.has(lane); },
     beginModelRound() {

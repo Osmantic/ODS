@@ -6,6 +6,14 @@
 services:
   llama-server:
     image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014}
+    environment:
+      # n-gram speculative decoding. The target model verifies every drafted
+      # token, so output is the target model's own. It needs llama.cpp b8955+
+      # (dedicated ngram-mod params) and b8842+ (checkpoints for hybrid models
+      # such as Qwen3.5); the pinned b9014 image has both. An explicit
+      # per-model LLAMA_ARG_SPEC_TYPE (e.g. draft-mtp) wins. Set
+      # LLAMA_SPEC_TYPE=none in .env to turn it off.
+      - LLAMA_ARG_SPEC_TYPE=${LLAMA_ARG_SPEC_TYPE:-${LLAMA_SPEC_TYPE:-ngram-mod}}
     deploy:
       resources:
         reservations:
