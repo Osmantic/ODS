@@ -1,5 +1,4 @@
 """No-inference source-custody test; only copies of the pinned SDK are repaired."""
-import hashlib
 import importlib.util
 import json
 import os

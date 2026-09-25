@@ -559,7 +559,9 @@ def test_managed_service_snapshots_preserve_existing_state_before_any_write(monk
     else:
         result = installer._managed_service_snapshots(plan)
         assert len(result) == len(records)
-        assert len(checked) == len(records) - (5 if legacy else 0)
+        expected_checked = {r['path'] for r in records if disk[r['path']] is not None}
+        assert {str(path) for path in checked} == expected_checked
+        assert len(checked) == len(expected_checked)
         assert all(item['before'] == disk[item['path']] for item in result)
         updated = installer._managed_service_record(result, 'after')
         assert updated['selection'] == plan['native_services']

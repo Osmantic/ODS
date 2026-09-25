@@ -3,13 +3,15 @@ from pathlib import Path
 import unittest
 
 spec = importlib.util.spec_from_file_location('pixel_measurement', Path(__file__).parents[1]/'scripts/pixel_measurement.py')
-m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
 
 
 class MeasurementTests(unittest.TestCase):
     def test_six_counterbalanced_blocks_preserve_task_and_checkpoint(self):
         identities={k:'a'*64 for k in ['source','runtime','model','serving','capabilities','oracle']}
-        task={'prompt':'Keep source bytes unchanged.'}; checkpoint={'files':[{'path':'a.py','sha256':'b'*64,'mode':420}], 'history':'c'*64}
+        task={'prompt':'Keep source bytes unchanged.'}
+        checkpoint={'files':[{'path':'a.py','sha256':'b'*64,'mode':420}], 'history':'c'*64}
         value=m.paired_schedule(42,task,checkpoint,identities,'combined')
         self.assertEqual(value,m.paired_schedule(42,task,checkpoint,identities,'combined'))
         self.assertEqual(sum(r['arms'][0]=='baseline' for r in value['blocks']),3)

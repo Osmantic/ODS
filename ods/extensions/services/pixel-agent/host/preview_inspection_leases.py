@@ -5,7 +5,7 @@ import re
 import uuid
 
 from preview_inspection_protocol import (
-    Invalid, MAX_BUNDLE, MAX_RESULT, canonical, exact, strict_json, validate_request,
+    Invalid, MAX_RESULT, canonical, exact, strict_json, validate_request,
 )
 
 LABEL = "org.osmantic.ods.inspection."
