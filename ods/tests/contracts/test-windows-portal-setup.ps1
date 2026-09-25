@@ -21,6 +21,28 @@ function Reset-Scenario {
     $script:userSetupCode = 0
     $script:nvidiaDriver = $null
     $script:releaseOverride = $null
+    $script:downloaded = $false
+    $script:registerNeeded = $false
+    $script:virtualization = $true
+    $script:freeGB = 200
+    $script:dockerInstalled = $true
+    $script:engineUp = $true
+    $script:integrated = $true
+}
+function Test-ODSPortalVirtualization { $script:calls.Add('virt-check'); return $script:virtualization }
+function Get-ODSPortalFreeSystemGB { return $script:freeGB }
+function Get-ODSPortalDockerDesktop { return [pscustomobject]@{ Installed=$script:dockerInstalled; Exe='docker-desktop.exe'; Cli='docker.exe' } }
+function Install-ODSPortalDockerDesktop { $script:calls.Add('docker-install'); $script:dockerInstalled = $true }
+function Test-ODSPortalDockerEngine($Desktop) { return $script:engineUp }
+function Start-ODSPortalDockerDesktop($Desktop) { $script:calls.Add('docker-start'); $script:engineUp = $true }
+function Enable-ODSPortalDockerWslIntegration($Desktop, [string]$Distro) { $script:calls.Add('docker-integrate:' + $Distro); if ($script:scenario -ne 'docker') { $script:integrated = $true } }
+function Register-ODSPortalResume([string]$InstallerRoot, [System.Collections.IDictionary]$Options) { $script:calls.Add('resume') }
+function Register-ODSPortalDistro([string]$Distro) { $script:calls.Add('register:' + $Distro); $script:registerNeeded = $false }
+function Read-ODSPortalLinuxAccount { $script:calls.Add('account-prompt'); return [pscustomobject]@{ Name='maria'; Password='not-logged' } }
+function New-ODSPortalLinuxAccount([string]$Distro, $Account) {
+    $script:calls.Add('account:' + $Distro + ':' + $Account.Name)
+    if ($script:userSetupCode -ne 0) { throw 'account creation failed' }
+    if ($script:scenario -eq 'resume-user') { $script:scenario='ready' }
 }
 function Get-ODSPortalWindowsNvidiaDriver { return $script:nvidiaDriver }
 function Test-ODSPortalAdministrator { return $script:scenario -eq 'admin' }
@@ -36,8 +58,9 @@ function Initialize-ODSPortalUbuntuUser([string]$Distro) {
     if ($script:scenario -eq 'resume-user') { $script:scenario='ready' }
     return $script:userSetupCode
 }
-function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro, [string[]]$LinuxArguments, [string]$InstallRoot) {
+function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro, [string[]]$LinuxArguments, [string]$InstallRoot, [bool]$OpenPortal) {
     $script:calls.Add('install:' + $Distro)
+    $script:openPortal = $OpenPortal
     $script:capturedArguments = $LinuxArguments
     $script:capturedRoot = $InstallRoot
     return $script:delegateCode
@@ -50,8 +73,8 @@ function Invoke-ODSPortalWsl([string[]]$Arguments) {
     switch -Regex ($key) {
         '^--version$' { $output="Versao do WSL: 2.6.1.0`nVersao do kernel: 6.6.87.2"; if ($script:scenario -eq 'old-wsl') { $output="WSL version: 0.60.0`nKernel version: 6.6.87.2" }; if ($script:scenario -eq 'inbox-wsl') { $code=1; $output='Invalid command line option' }; break }
         '^--status$' { if ($script:scenario -eq 'features') { $code=1 }; break }
-        '^--list --quiet$' { if ($script:scenario -ne 'missing') { $output='Ubuntu-24.04' }; if ($script:scenario -eq 'existing-ubuntu') { $output='Ubuntu' }; break }
-        '^--install --distribution Ubuntu-24.04 --no-launch$' { $code=$script:downloadCode; break }
+        '^--list --quiet$' { if ($script:scenario -ne 'missing' -or ($script:downloaded -and -not $script:registerNeeded)) { $output='Ubuntu-24.04' }; if ($script:scenario -eq 'existing-ubuntu') { $output='Ubuntu' }; break }
+        '^--install --distribution Ubuntu-24.04 --no-launch$' { $code=$script:downloadCode; if ($code -eq 0) { $script:downloaded = $true }; break }
         '^--list --verbose$' { $output='* Ubuntu-24.04    Em Execucao   2'; if ($script:scenario -eq 'wsl1') { $output=$output -replace '2$', '1' }; if ($script:scenario -eq 'existing-ubuntu') { $output='* Ubuntu    Stopped    2' }; break }
         '^--distribution Ubuntu --exec id -u$' { $output='1000'; break }
         '^--distribution Ubuntu --exec cat /etc/os-release$' { $output="NAME=`"Ubuntu`"`nID=ubuntu`nVERSION_ID=`"24.04`""; if ($script:releaseOverride) { $output=$script:releaseOverride }; break }
@@ -60,7 +83,7 @@ function Invoke-ODSPortalWsl([string[]]$Arguments) {
         '^--distribution Ubuntu --exec docker (info|compose version)$' { break }
         '^--distribution Ubuntu-24.04 --exec id -u$' { $output='1000'; if ($script:scenario -in @('root','resume-user')) { $output='0' }; break }
         '^--distribution Ubuntu-24.04 --exec ps -p 1 -o comm=$' { $output='systemd'; if ($script:scenario -eq 'init') { $output='init' }; break }
-        '^--distribution Ubuntu-24.04 --exec docker info$' { if ($script:scenario -eq 'docker') { $code=1 }; break }
+        '^--distribution Ubuntu-24.04 --exec docker info$' { if ($script:scenario -eq 'docker' -or -not $script:integrated) { $code=1 }; break }
         '^--distribution Ubuntu-24.04 --exec docker compose version$' { if ($script:scenario -eq 'compose') { $code=1 }; break }
         '^--distribution Ubuntu-24.04 --exec /usr/lib/wsl/lib/nvidia-smi -L$' { $output='GPU 0: NVIDIA GeForce RTX 4060 (UUID: GPU-00000000)'; if ($script:scenario -eq 'gpu-hidden') { $code=1; $output='command not found' }; break }
         '^--distribution Ubuntu-24.04 --exec docker info --format \{\{json \.Runtimes\}\}$' { $output='{"io.containerd.runc.v2":{"path":"runc"},"nvidia":{"path":"/usr/bin/nvidia-container-runtime"},"runc":{"path":"runc"}}'; if ($script:scenario -eq 'no-nvidia-runtime') { $output='{"io.containerd.runc.v2":{"path":"runc"},"runc":{"path":"runc"}}' }; break }
@@ -132,7 +155,9 @@ try {
     $script:scenario='missing'
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'new Ubuntu initializes then installs'
     Check ($script:calls.Contains('--install --distribution Ubuntu-24.04 --no-launch')) 'downloads selected Ubuntu only'
-    Check ($script:calls.Contains('user:Ubuntu-24.04')) 'first-run user setup remains interactive'
+    Check ($script:calls.Contains('account:Ubuntu-24.04:maria')) 'first Ubuntu account is created from PowerShell'
+    Check (-not $script:calls.Contains('user:Ubuntu-24.04')) 'new Ubuntu never opens the interactive Ubuntu window'
+    Check ([Array]::IndexOf($script:calls.ToArray(), 'account:Ubuntu-24.04:maria') -lt [Array]::IndexOf($script:calls.ToArray(), 'install:Ubuntu-24.04')) 'account exists before ODS installs'
     Reset-Scenario
     $script:scenario='resume-user'
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'resume completes Ubuntu account setup before ODS'
@@ -146,7 +171,8 @@ try {
     Reset-Scenario
     $script:scenario='missing'; $script:downloadCode=3010
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 3010) 'Ubuntu requiring reboot preserves restart exit'
-    Check (-not $script:calls.Contains('user:Ubuntu-24.04') -and -not $script:calls.Contains('install:Ubuntu-24.04')) 'restart stops before user setup and ODS'
+    Check (-not $script:calls.Contains('account-prompt') -and -not $script:calls.Contains('install:Ubuntu-24.04')) 'restart stops before user setup and ODS'
+    Check ($script:calls.Contains('resume')) 'Ubuntu restart registers automatic continuation'
     foreach ($phase in @('download', 'user-setup')) {
         Reset-Scenario
         $script:scenario='missing'
@@ -163,6 +189,8 @@ try {
     $script:scenario='no-wsl'
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 3010) 'missing WSL executable offers feature activation and requires restart'
     Check ($script:calls.Contains('enable-optional-features')) 'missing executable uses Windows optional features instead of unavailable wsl command'
+    Check ($script:calls.Contains('resume')) 'WSL feature restart registers automatic continuation'
+    Check ($script:calls.Contains('virt-check')) 'virtualization is checked before enabling WSL'
     Check (-not $script:calls.Contains('--status') -and -not $script:calls.Contains('install:Ubuntu-24.04')) 'missing executable never invokes WSL or ODS before restart'
     foreach ($case in @('missing','features','no-wsl')) {
         Reset-Scenario
@@ -188,6 +216,55 @@ try {
         try { $null=Invoke-ODSPortalSetup $bad 'unused' } catch { $rejected=$true }
         Check ($rejected -and $script:calls.Count -eq 0) 'invalid options fail before system operations'
     }
+    Reset-Scenario
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'ready host installs'
+    Check ($script:openPortal) 'interactive install opens Portal at the end'
+    Check (-not $script:calls.Contains('virt-check')) 'working WSL skips the firmware virtualization probe'
+    Reset-Scenario
+    $null = Invoke-ODSPortalSetup @{NonInteractive=$true} 'unused'
+    Check (-not $script:openPortal) 'non-interactive install never opens a browser'
+    Reset-Scenario
+    $script:freeGB = 12
+    $message=''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match '40 GB' -and $script:calls.Count -le 1) 'low disk space stops before any change'
+    Reset-Scenario
+    $script:scenario='no-wsl'; $script:virtualization=$false
+    $message=''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'BIOS' -and -not $script:calls.Contains('features')) 'disabled virtualization stops before enabling WSL'
+    Reset-Scenario
+    $script:scenario='no-wsl'; $script:dockerInstalled=$false
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 3010) 'WSL and Docker Desktop share one restart'
+    Check ($script:calls.Contains('features') -and $script:calls.Contains('docker-install') -and $script:calls.Contains('resume')) 'missing Docker Desktop is installed before the WSL restart'
+    Reset-Scenario
+    $script:scenario='missing'; $script:registerNeeded=$true
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'Store Ubuntu is registered without its account wizard'
+    Check ($script:calls.Contains('register:Ubuntu-24.04')) 'unregistered download uses the Ubuntu launcher'
+    Reset-Scenario
+    $script:dockerInstalled=$false
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 3010) 'installing Docker Desktop requests a restart'
+    Check ($script:calls.Contains('docker-install') -and $script:calls.Contains('resume') -and -not $script:calls.Contains('install:Ubuntu-24.04')) 'Docker Desktop install continues after restart, not before'
+    Reset-Scenario
+    $script:dockerInstalled=$false; $script:allowPreparation=$false
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 1) 'declining Docker Desktop cancels setup'
+    Check (-not $script:calls.Contains('docker-install')) 'declined Docker Desktop is never installed'
+    Reset-Scenario
+    $script:engineUp=$false
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'stopped Docker Desktop is started automatically'
+    Check ($script:calls.Contains('docker-start')) 'Docker Desktop start was requested'
+    Reset-Scenario
+    $script:integrated=$false
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'missing WSL integration is enabled automatically'
+    Check ($script:calls.Contains('docker-integrate:Ubuntu-24.04')) 'integration targets the selected distro'
+    Reset-Scenario
+    $script:integrated=$false; $script:allowPreparation=$false
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 1 -and -not $script:calls.Contains('docker-integrate:Ubuntu-24.04')) 'declining WSL integration changes nothing'
+    Reset-Scenario
+    $script:integrated=$false
+    $rejected=$false
+    try { $null = Invoke-ODSPortalSetup @{NonInteractive=$true} 'unused' } catch { $rejected=$true }
+    Check (-not $script:calls.Contains('docker-integrate:Ubuntu-24.04') -and -not $script:calls.Contains('install:Ubuntu-24.04')) 'non-interactive setup never changes Docker Desktop settings'
     # Exercise the actual root script in a child PowerShell, with only its
     # destination replaced. This catches failures swallowed at script boundaries.
     $fixture = Join-Path ([IO.Path]::GetTempPath()) ('ods-portal-entry-' + [guid]::NewGuid().ToString('N'))
