@@ -99,7 +99,10 @@ for (const refresh of [false,true]) for (const publishFails of [false,true]) tes
     if(refresh)assert.equal(readFileSync(join(workspace,'check-count'),'utf8'),'1','verification command must execute exactly once');
     try { assert.equal(readFileSync(join(workspace,'Playground/signal-garden/index.html'),'utf8'),html); }
     catch(error) { throw new Error(error.message+'\n'+JSON.stringify(toolResults)+'\n'+body+'\n'+log); }
-    assert.equal(readFileSync(join(root,'published'),'utf8'),'Playground/signal-garden\n'.repeat(refresh?2:1));
+    let publications;
+    try {publications=readFileSync(join(root,'published'),'utf8');}
+    catch(error){throw new Error(error.message+'\n'+JSON.stringify(toolResults)+'\n'+body+'\n'+log);}
+    assert.equal(publications,'Playground/signal-garden\n'.repeat(refresh?2:1),JSON.stringify(toolResults)+'\n'+body+'\n'+log);
     const verdicts=readFileSync(join(root,'verdicts.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
     assert.equal(verdicts.at(-1).verification.status,publishFails?'failed':'passed',JSON.stringify(verdicts));
     const frames=body.split(/\r?\n/).filter(line=>line.startsWith('data: {')).map(line=>JSON.parse(line.slice(6)));
