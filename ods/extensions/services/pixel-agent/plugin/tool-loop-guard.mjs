@@ -26,6 +26,7 @@ import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, 
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
+import {bindDefaultPreviewInspection} from './preview-default-binding.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
   visibilityInspectionMatches, visibilityInspectionInstruction } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, completedPreviewInspection, boundedPreviewVerification } from "./preview-revalidation.mjs";
@@ -6628,6 +6629,18 @@ export function createToolLoopGuard({
 
   function rememberSessionPreview(sessionId, preview, state) {
     if (typeof sessionId !== "string" || !sessionId || !preview) return;
+    if (state && !state.implicitPreviewSuperseded &&
+        typeof state.currentSessionKey === 'string' && state.currentSessionKey) {
+      state.implicitPreviewDirectories ??= new Set();
+      // Two distinct directories permanently make the default ambiguous for
+      // this run. No need to retain an unbounded publication history.
+      if (state.implicitPreviewDirectories.size < 2) {
+        state.implicitPreviewDirectories.add(preview.relativeDirectory);
+      }
+      state.implicitPreviewBinding = Object.freeze({sessionId,
+        sessionKey:state.currentSessionKey, siteId:preview.siteId,
+        sha256:preview.sha256, relativeDirectory:preview.relativeDirectory});
+    }
     if (sessionPreviews.has(sessionId)) sessionPreviews.delete(sessionId);
     while (sessionPreviews.size >= MAX_TRACKED_RUNS) {
       const oldest = sessionPreviews.keys().next().value;
@@ -6950,6 +6963,26 @@ export function createToolLoopGuard({
     // policy and deterministic routing active from runId alone; operations
     // that truly need a session still fail closed on the optional sessionId.
     const state = runId ? stateFor(runId) : undefined;
+    // Resolve convenience arguments before normal policy/budget checks and
+    // pending-call capture, so the executed plan and its receipt stay identical.
+    const previewBinding = state?.implicitPreviewBinding;
+    const input = normalizedParams ?? event?.params;
+    const isInspection = toolName === PREVIEW_INSPECTION_TOOL ||
+      (toolName === 'tool_call' && [PREVIEW_INSPECTION_TOOL,
+        `openclaw:pixel-ods:${PREVIEW_INSPECTION_TOOL}`].includes(input?.id));
+    if (isInspection && previewBinding && state.implicitPreviewDirectories?.size === 1 &&
+        state.currentSessionId === previewBinding.sessionId &&
+        state.currentSessionKey === previewBinding.sessionKey &&
+        sessionRuns.get(previewBinding.sessionId) === runId &&
+        (!context.sessionId || context.sessionId === previewBinding.sessionId) &&
+        (!context.sessionKey || context.sessionKey === previewBinding.sessionKey) &&
+        !state.clientCancelled && !state.workspacePreviewForbidden &&
+        state.workspacePreview?.sha256 === previewBinding.sha256 &&
+        state.workspacePreview?.relativeDirectory === previewBinding.relativeDirectory) {
+      const bound = bindDefaultPreviewInspection(toolName === 'tool_call' ? input.args : input,
+        previewBinding);
+      if (bound) normalizedParams = toolName === 'tool_call' ? {...input, args:bound} : bound;
+    }
     if (state) {
       state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
       const selected = toolName === 'tool_call'
@@ -8780,6 +8813,16 @@ export function createToolLoopGuard({
           userMessageRequestsPrivateUrl(event?.messages, event?.prompt);
       }
       if (typeof sessionId === "string" && sessionId) {
+        // A new owner turn retires the previous run's convenience binding.
+        // Late tool hooks may refresh sessionRuns, but cannot revive it.
+        const priorRunId = sessionRuns.get(sessionId);
+        if (ownerIntent && priorRunId && priorRunId !== runId) {
+          const priorState = runs.get(priorRunId);
+          if (priorState) {
+            priorState.implicitPreviewSuperseded = true;
+            priorState.implicitPreviewBinding = undefined;
+          }
+        }
         state.currentSessionId = sessionId;
         sessionRuns.delete(sessionId);
         while (sessionRuns.size >= MAX_TRACKED_RUNS) sessionRuns.delete(sessionRuns.keys().next().value);

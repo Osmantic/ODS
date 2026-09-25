@@ -7,6 +7,92 @@ import {INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash, normalizeWorkspac
 
 const owner='Create and publish a website in a new workspace directory site. Add a button that toggles hidden details.';
 const context={agentId:'pixel',runId:'run',sessionId:'session',sessionKey:'opaque-key'};
+
+test('host binds omitted inspection identifiers before execution and still requires the transition',()=>{
+  const {guard,preview}=setup();
+  const {siteId,sha256,...implicit}=plan(preview);
+  const prepared=call(guard,PREVIEW_INSPECTION_TOOL,implicit,'implicit-inspect');
+  assert.deepEqual(prepared.event.params,{...implicit,siteId,sha256});
+  assert.notEqual(guard.verificationForRun('run').status,'passed');
+  guard.afterToolCall({...prepared.event,result:{details:receipt(prepared.event.params)}},prepared.ctx);
+  assert.equal(guard.verificationForRun('run').status,'passed');
+});
+
+test('wrapped inspection gets the same host-bound snapshot without rewriting explicit choices',()=>{
+  const {guard,preview}=setup();
+  const {siteId,sha256,...implicit}=plan(preview);
+  const wrapped=call(guard,'tool_call',{id:`openclaw:pixel-ods:${PREVIEW_INSPECTION_TOOL}`,args:implicit},'wrapped-default');
+  assert.deepEqual(wrapped.event.params.args,{...implicit,siteId,sha256});
+  const partial=call(guard,PREVIEW_INSPECTION_TOOL,{...implicit,siteId},'partial');
+  assert.equal(partial.event.params.sha256,undefined,'never repair partial model identifiers silently');
+});
+
+test('changed workspace and another run cannot reuse an implicit publication binding',()=>{
+  const {guard,preview}=setup();
+  const {siteId,sha256,...implicit}=plan(preview);
+  assert.equal(guard.invalidateWorkspaceBundle(context),true);
+  const changed=call(guard,PREVIEW_INSPECTION_TOOL,implicit,'changed');
+  assert.equal(changed.event.params.sha256,undefined);
+  const other={...context,runId:'other-run',sessionId:'other-session',sessionKey:'other-key'};
+  guard.observeRun(other,'pixel',{prompt:'Inspect the website.'});
+  const unrelated=call(guard,PREVIEW_INSPECTION_TOOL,implicit,'other',undefined,other);
+  assert.equal(unrelated.event.params.sha256,undefined);
+});
+test('implicit inspection cannot cross a supplied session identity or a replaced run',()=>{
+  for(const mismatch of [{sessionId:'foreign-session'},{sessionKey:'foreign-key'}]) {
+    const {guard,preview}=setup();
+    const {siteId,sha256,...implicit}=plan(preview);
+    const prepared=guard.beforeToolCall({toolName:PREVIEW_INSPECTION_TOOL,runId:'run',params:implicit},
+      {...context,...mismatch,toolName:PREVIEW_INSPECTION_TOOL});
+    assert.equal(prepared?.params?.sha256,undefined);
+  }
+  const {guard,preview}=setup();
+  const {siteId,sha256,...implicit}=plan(preview);
+  guard.observeRun({...context,runId:'replacement'},'pixel',{prompt:'Inspect this website.'});
+  const old=guard.beforeToolCall({toolName:PREVIEW_INSPECTION_TOOL,runId:'run',params:implicit},context);
+  assert.equal(old?.params?.sha256,undefined);
+});
+
+test('republishing a revised website binds the new digest and requires fresh proof',()=>{
+  const {guard,preview}=setup();
+  const next=revisePublishedSite(guard,preview);
+  const {siteId,sha256,...implicit}=plan(next.preview);
+  const prepared=call(guard,PREVIEW_INSPECTION_TOOL,implicit,'new-default',undefined,next.ctx);
+  assert.deepEqual(prepared.event.params,{...implicit,siteId,sha256});
+  assert.notEqual(sha256,preview.sha256);
+  assert.notEqual(guard.verificationForRun(next.ctx.runId).status,'passed');
+  guard.afterToolCall({...prepared.event,result:{details:receipt(prepared.event.params)}},prepared.ctx);
+  assert.equal(guard.verificationForRun(next.ctx.runId).status,'passed');
+});
+
+test('multiple published directories do not choose an implicit target even after returning to the first',()=>{
+  const {guard,preview}=setup();
+  const second={...preview,relativeDirectory:preview.relativeDirectory+'-other'};
+  call(guard,'read',{path:second.relativeDirectory+'/index.html'},'read-other',
+    {content:[{type:'text',text:'<!doctype html><button>Show details</button><p hidden>Details</p>'}]});
+  call(guard,'pixel_ods_workspace_preview',{relativeDirectory:second.relativeDirectory},'publish-other',{details:second});
+  call(guard,'pixel_ods_workspace_preview',{relativeDirectory:preview.relativeDirectory},'publish-original',{details:preview});
+  const {siteId,sha256,...implicit}=plan(preview);
+  const prepared=call(guard,PREVIEW_INSPECTION_TOOL,implicit,'ambiguous');
+  assert.equal(prepared.event.params.sha256,undefined);
+  const explicit=call(guard,PREVIEW_INSPECTION_TOOL,plan(preview),'explicit');
+  assert.deepEqual(explicit.event.params,plan(preview));
+});
+
+test('cancellation retires implicit inspection even if the native abort is not acknowledged',async()=>{
+  const {guard,preview}=setup();
+  const user='ods-'+'a'.repeat(64);
+  const ctx={...context,sessionKey:'agent:pixel:openai-user:'+user};
+  guard.observeRun(ctx,'pixel',{prompt:owner});
+  call(guard,'pixel_ods_workspace_preview',{relativeDirectory:preview.relativeDirectory},'owned-publish',{details:preview},ctx);
+  const {siteId,sha256,...implicit}=plan(preview);
+  const before=call(guard,PREVIEW_INSPECTION_TOOL,implicit,'before-cancel',undefined,ctx);
+  assert.equal(before.event.params.sha256,sha256);
+  assert.equal(await guard.abortUserRun(user),false);
+  const after=guard.beforeToolCall({toolName:PREVIEW_INSPECTION_TOOL,runId:ctx.runId,params:implicit},ctx);
+  assert.equal(after?.params?.sha256,undefined);
+});
+
 test('bundle output mutation invalidates publication and interaction until fresh verification',()=>{
   const {guard,preview}=setup();
   const observed=inspection(guard,plan(preview));
