@@ -535,7 +535,13 @@ function awaitingByteCheck({verified=true}={}) {
   const grep=(id='grep')=>{const g=call(guard,'exec',{command:'cd /workspace && grep -n "details" site/index.html',workdir:'/workspace'},id,grepResult);persist(g,grepResult);};
   const finish=(observed,{ctx=observed.ctx,result=observed.result}={})=>{guard.afterToolCall({...observed.event,result},ctx);persist(observed,result);};
   const inspect=(params=plan(preview),options={})=>{const observed=inspection(guard,params,options);finish(observed);return observed;};
-  return {guard,preview,grep,inspect,finish,probes:()=>probes};
+  // Writes and publishes new bytes, both settled like a real turn.
+  const publish=(content,id)=>{const next=republish(guard,preview,content,id);
+    for (const [name,callId,result] of [['write',id+'-write',{content:[{type:'text',text:'Successfully wrote file.'}]}],
+      ['pixel_ods_workspace_preview',id+'-publish',{details:next}]])
+      persist({event:{toolName:name,toolCallId:callId},ctx:{...context,toolName:name,toolCallId:callId}},result);
+    return next;};
+  return {guard,preview,grep,inspect,finish,publish,probes:()=>probes};
 }
 
 for (const wrapped of [false,true]) for (const order of ['grep-then-inspect','inspect-then-grep','inspect-across-grep'])
@@ -615,6 +621,58 @@ test(`R092: a receipt binds nothing once the pending snapshot is dropped: ${drop
   call(r.guard,'pixel_ods_workspace_preview',{relativeDirectory:r.preview.relativeDirectory},'republish',{details:r.preview},runContext);
   const outcome=r.guard.verificationForRun('run');
   assert.equal(outcome.preview?.sha256,r.preview.sha256);
+  assert.equal(outcome.status,'failed');
+  assert.match(outcome.text,/show\/hide interaction has not passed browser inspection/);
+});
+
+// PR #6726 review probes. An inspection that settles after a parallel write
+// binds to the snapshot awaiting its byte check; the host byte comparison then
+// decides whether that snapshot is still what the workspace holds.
+for (const identical of [true,false])
+test(`R092: an inspection that settles after a parallel write counts only if the write left the published bytes unchanged (${identical?'identical':'changed'} write)`,async()=>{
+  const r=awaitingByteCheck({verified:identical});
+  const started=inspection(r.guard,plan(r.preview),{id:'parallel-inspect'});
+  const content=identical?'<!doctype html><button>Show details</button><p hidden>Details</p>'
+    :'<!doctype html><button>Show details</button><p id="details" hidden>Changed details</p>';
+  const written={content:[{type:'text',text:'Successfully wrote file.'}]};
+  r.finish(call(r.guard,'write',{path:'site/index.html',content},'parallel-write'),{result:written});
+  r.finish(started);
+  assert.notEqual(r.guard.verificationForRun('run').status,'passed');
+  assert.equal(await r.guard.revalidateWorkspacePreview({},context),identical);
+  assert.equal(r.probes(),1);
+  const outcome=r.guard.verificationForRun('run');
+  assert.equal(outcome.status,identical?'passed':'failed',outcome.text);
+  if (!identical) assert.match(outcome.text,/not been verified again since later tool activity/);
+});
+
+// A receipt for an older snapshot that settles after a newer publication and a
+// grep names a snapshot that is no longer pending; it binds nothing.
+test('R092: a late receipt for an earlier snapshot never verifies the newer snapshot awaiting its byte check',async()=>{
+  const r=awaitingByteCheck();
+  const late=inspection(r.guard,plan(r.preview),{id:'late-inspect'});
+  const next=r.publish('<!doctype html><title>B</title><button>Show details</button><p id="details" hidden>Details</p>','b');
+  assert.notEqual(next.sha256,r.preview.sha256);
+  r.grep();
+  r.finish(late);
+  assert.equal(await r.guard.revalidateWorkspacePreview({},context),true);
+  const outcome=r.guard.verificationForRun('run');
+  assert.equal(outcome.preview.sha256,next.sha256);
+  assert.equal(outcome.status,'failed');
+  assert.match(outcome.text,/show\/hide interaction has not passed browser inspection/);
+});
+
+// A pass bound to the pending snapshot is bound to its bytes, not to the run:
+// a later publication of different bytes still needs its own inspection.
+test('R092: a pass on the snapshot awaiting its byte check does not verify a later publication of different bytes',async()=>{
+  const r=awaitingByteCheck();
+  r.grep();
+  r.inspect();
+  const next=r.publish('<!doctype html><title>B</title><button>Show details</button><p id="details" hidden>Details</p>','b');
+  assert.notEqual(next.sha256,r.preview.sha256);
+  assert.equal(await r.guard.revalidateWorkspacePreview({},context),false,'the newer snapshot is already current');
+  assert.equal(r.probes(),0);
+  const outcome=r.guard.verificationForRun('run');
+  assert.equal(outcome.preview.sha256,next.sha256);
   assert.equal(outcome.status,'failed');
   assert.match(outcome.text,/show\/hide interaction has not passed browser inspection/);
 });
