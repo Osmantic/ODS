@@ -168,34 +168,103 @@ def test_entrypoint_patches_scrape_url_result_content() -> None:
     assert 'search_root="/home/perplexica/.next/server"' not in script
 
 
-def test_scrape_patch_caps_legacy_and_vane_bundles_idempotently() -> None:
+# The scrape_url action objects from the minified .next/server/chunks/641.js of
+# the pinned itzcrazykns1337/vane:slim-v1.12.2 image and of the previous
+# itzcrazykns1337/perplexica:slim-latest pin, exactly as bundled except for the
+# shortened tool-description string. Vane source: v1.12.2
+# src/lib/agents/search/researcher/actions/scrapeURL.ts (`enabled: (_) => true`).
+VANE_SCRAPE_ACTION = (
+    "{name:\"scrape_url\",schema:i,getToolDescription:()=>\"Scrape the provided URLs.\",getDescript"
+    "ion:()=>j,enabled:a=>!0,execute:async(a,b)=>{a.urls=a.urls.slice(0,3);let c=crypto.randomU"
+    "UID(),d=!1,i=b.session.getBlock(b.researchBlockId),j=[];return await Promise.all(a.urls.ma"
+    "p(async a=>{try{let k=await e.A.scrape(a);if(!d&&i&&\"research\"===i.type)d=!0,i.data.subSte"
+    "ps.push({id:c,type:\"reading\",reading:[{content:\"\",metadata:{url:a,title:k.title}}]}),b.ses"
+    "sion.updateBlock(b.researchBlockId,[{op:\"replace\",path:\"/data/subSteps\",value:i.data.subSt"
+    "eps}]);else if(d&&i&&\"research\"===i.type){let d=i.data.subSteps.findIndex(a=>a.id===c);i.d"
+    "ata.subSteps[d].reading.push({content:\"\",metadata:{url:a,title:k.title}}),b.session.update"
+    "Block(b.researchBlockId,[{op:\"replace\",path:\"/data/subSteps\",value:i.data.subSteps}])}let "
+    "l=(0,f.A)(k.content,4e3,500),m=\"\";if(l.length>1)try{await Promise.all(l.map(async a=>{let "
+    "c=await b.llm.generateObject({messages:[{role:\"system\",content:g},{role:\"user\",content:`<q"
+    "ueries>Summarize</queries>\n<scraped_data>${a}</scraped_data>`}],schema:h});m+=c.extracted_"
+    "facts+\"\\n\"}))}catch(a){console.log(\"Error during extraction, falling back to raw content\","
+    "a),m=l[0]}else m=k.content;j.push({content:m,metadata:{url:a,title:k.title}})}catch(b){j.p"
+    "ush({content:`Failed to fetch content from ${a}: ${b}`,metadata:{url:a,title:`Error scrapi"
+    "ng ${a}`}})}})),{type:\"search_results\",results:j}}}"
+)
+LEGACY_SCRAPE_ACTION = (
+    "{name:\"scrape_url\",schema:f,getToolDescription:()=>\"Scrape the provided URLs.\",getDescript"
+    "ion:()=>g,enabled:a=>!0,execute:async(a,b)=>{a.urls=a.urls.slice(0,3);let c=crypto.randomU"
+    "UID(),d=!1,f=b.session.getBlock(b.researchBlockId),g=[];return await Promise.all(a.urls.ma"
+    "p(async a=>{try{let h=await fetch(a),i=await h.text(),j=i.match(/<title>(.*?)<\\/title>/i)?"
+    ".[1]||`Content from ${a}`;if(!d&&f&&\"research\"===f.type)d=!0,f.data.subSteps.push({id:c,ty"
+    "pe:\"reading\",reading:[{content:\"\",metadata:{url:a,title:j}}]}),b.session.updateBlock(b.res"
+    "earchBlockId,[{op:\"replace\",path:\"/data/subSteps\",value:f.data.subSteps}]);else if(d&&f&&\""
+    "research\"===f.type){let d=f.data.subSteps.findIndex(a=>a.id===c);f.data.subSteps[d].readin"
+    "g.push({content:\"\",metadata:{url:a,title:j}}),b.session.updateBlock(b.researchBlockId,[{op"
+    ":\"replace\",path:\"/data/subSteps\",value:f.data.subSteps}])}let k=e.turndown(i);g.push({cont"
+    "ent:k,metadata:{url:a,title:j}})}catch(b){g.push({content:`Failed to fetch content from ${"
+    "a}: ${b}`,metadata:{url:a,title:`Error fetching ${a}`}})}})),{type:\"search_results\",result"
+    "s:g}}}"
+)
+
+# Evaluates an action object with the bundle's free names stubbed. scrape()
+# (Vane) and fetch() (legacy) record each URL the action tries to open.
+_SCRAPE_ACTION_HARNESS = """
+const fs = require("fs");
+const calls = [];
+var e = {A: {scrape: async (url) => { calls.push(url); throw new Error("blocked"); }}, turndown: (html) => String(html)};
+var f = {A: (text) => [text]}, g = "", h = {}, i = {}, j = "";
+globalThis.fetch = async (url) => { calls.push(url); throw new Error("blocked"); };
+const action = eval("(" + fs.readFileSync(process.argv[2], "utf8") + ")");
+(async () => {
+  const result = await action.execute(
+    {urls: ["http://169.254.169.254/latest/meta-data", "http://litellm:4000/v1/models"]},
+    {session: {getBlock: () => undefined, updateBlock() {}}, researchBlockId: "r", llm: {}});
+  process.stdout.write(JSON.stringify({
+    offered: ["speed", "balanced", "quality"].map((mode) => action.enabled({mode, sources: ["web"]})),
+    calls, results: result.results.length}));
+})();
+"""
+
+
+def _run_scrape_action(node: str, tmp: Path, action: str) -> dict:
+    source = tmp / "action.js"
+    source.write_text(action, encoding="utf-8")
+    harness = tmp / "harness.js"
+    harness.write_text(_SCRAPE_ACTION_HARNESS, encoding="utf-8")
+    result = subprocess.run(
+        [node, str(harness), str(source)], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_scrape_patch_disables_and_caps_legacy_and_vane_bundles_idempotently() -> None:
     node = _node_cmd_or_skip()
     if node is None:
         return
 
-    # Push sites copied from the minified 641.js chunk of each pinned image.
-    legacy = (
-        'name:"scrape_url",x;let k=e.turndown(i);'
-        'g.push({content:k,metadata:{url:a,title:j}})}catch(b){'
-    )
-    vane = (
-        'name:"scrape_url",x;i.data.subSteps[d].reading.push({content:"",metadata:{url:a,title:k.title}}),'
-        'b.session;else m=k.content;j.push({content:m,metadata:{url:a,title:k.title}})}catch(b){'
-    )
     cases = (
-        (legacy, 'g.push({content:k.slice(0,30000),metadata:{url:a,title:j}})'),
-        (vane, 'j.push({content:m.slice(0,30000),metadata:{url:a,title:k.title}})'),
+        (LEGACY_SCRAPE_ACTION, 'g.push({content:k.slice(0,30000),metadata:{url:a,title:j}})'),
+        (VANE_SCRAPE_ACTION, 'j.push({content:m.slice(0,30000),metadata:{url:a,title:k.title}})'),
     )
-    for bundle, expected in cases:
+    for action, expected in cases:
         with tempfile.TemporaryDirectory(prefix="ods-perplexica-patch-") as temp_dir:
             tmp = Path(temp_dir)
+            bundle = f"let k={action},l=1;"
             code, patched = _run_scrape_patch(node, tmp, bundle)
             assert code == 0
+            assert "enabled:a=>!1,execute:async(a,b)=>{a.urls=[];" in patched
+            assert "enabled:a=>!0" not in patched
             assert expected in patched
             assert patched.count(".slice(0,30000)") == 1
+            # Only the two patched sites change.
+            assert patched == bundle.replace("enabled:a=>!0", "enabled:a=>!1").replace(
+                "a.urls=a.urls.slice(0,3);", "a.urls=[];"
+            ).replace(expected.replace(".slice(0,30000)", ""), expected)
             # The reading-progress push has a literal empty content and must
             # stay untouched.
-            if bundle is vane:
+            if action is VANE_SCRAPE_ACTION:
                 assert 'reading.push({content:"",metadata:{url:a,title:k.title}})' in patched
 
             # `docker restart` reuses the patched layer; the second start must
@@ -204,9 +273,61 @@ def test_scrape_patch_caps_legacy_and_vane_bundles_idempotently() -> None:
             assert code == 0
             assert repatched == patched
 
+
+def test_patched_scrape_url_is_never_offered_and_opens_no_url() -> None:
+    node = _node_cmd_or_skip()
+    if node is None:
+        return
+
+    for action in (VANE_SCRAPE_ACTION, LEGACY_SCRAPE_ACTION):
+        with tempfile.TemporaryDirectory(prefix="ods-perplexica-patch-") as temp_dir:
+            tmp = Path(temp_dir)
+            # Upstream: offered in every mode, and opens internal addresses.
+            upstream = _run_scrape_action(node, tmp, action)
+            assert upstream["offered"] == [True, True, True]
+            assert upstream["calls"] == [
+                "http://169.254.169.254/latest/meta-data", "http://litellm:4000/v1/models"
+            ]
+            code, patched = _run_scrape_patch(node, tmp, action)
+            assert code == 0
+            # Patched: never offered, and a model that names it anyway opens
+            # nothing (ActionRegistry.executeAll does not check enabled()).
+            disabled = _run_scrape_action(node, tmp, patched)
+            assert disabled == {"offered": [False, False, False], "calls": [], "results": 0}
+
+
+def test_scrape_patch_fails_closed_on_unknown_shapes() -> None:
+    node = _node_cmd_or_skip()
+    if node is None:
+        return
+
     with tempfile.TemporaryDirectory(prefix="ods-perplexica-patch-") as temp_dir:
-        code, _ = _run_scrape_patch(node, Path(temp_dir), 'name:"scrape_url",unknownShape()')
-        assert code == 2
+        tmp = Path(temp_dir)
+        # scrape_url that cannot be disabled: the container must not start.
+        unknown = 'name:"scrape_url",unknownShape()'
+        code, unchanged = _run_scrape_patch(node, tmp, unknown)
+        assert (code, unchanged) == (3, unknown)
+        enabled_elsewhere = VANE_SCRAPE_ACTION.replace(
+            "a.urls=a.urls.slice(0,3);", "a.urls=a.urls.slice(0,5);"
+        )
+        code, unchanged = _run_scrape_patch(node, tmp, enabled_elsewhere)
+        assert (code, unchanged) == (3, enabled_elsewhere)
+        # Disabled, but the result push site is unknown.
+        no_push = VANE_SCRAPE_ACTION.replace("j.push({content:m,", "j.unshift({content:m,")
+        code, unchanged = _run_scrape_patch(node, tmp, no_push)
+        assert (code, unchanged) == (2, no_push)
+
+
+def test_entrypoint_reports_a_failed_disable_and_stops() -> None:
+    script = ENTRYPOINT.read_text(encoding="utf-8")
+    assert "could not disable it" in script
+    assert 'if [ "$status" -eq 3 ]; then' in script
+    patch_block = script[script.index("patch_scrape_url() {"):script.index("\npatch_scrape_url\n")]
+    assert patch_block.index("could not disable it") < patch_block.index("return 1", patch_block.index("could not disable it"))
+    # set -eu: a failed patch stops the entrypoint before the app starts.
+    assert script.splitlines().count("patch_scrape_url") == 1
+    assert script.index("\npatch_scrape_url\n") < script.index('exec docker-entrypoint.sh "$@"')
+    assert "set -eu" in script
 
 
 def test_release_pin_is_consistent_across_surfaces() -> None:
@@ -834,7 +955,10 @@ if __name__ == "__main__":
     test_search_adapter_config_and_secret_contracts()
     test_bind_mounted_entrypoints_do_not_require_executable_bit()
     test_entrypoint_patches_scrape_url_result_content()
-    test_scrape_patch_caps_legacy_and_vane_bundles_idempotently()
+    test_scrape_patch_disables_and_caps_legacy_and_vane_bundles_idempotently()
+    test_patched_scrape_url_is_never_offered_and_opens_no_url()
+    test_scrape_patch_fails_closed_on_unknown_shapes()
+    test_entrypoint_reports_a_failed_disable_and_stops()
     test_release_pin_is_consistent_across_surfaces()
     test_compose_mounts_state_under_the_pinned_app_root()
     test_env_schema_allows_scrape_cap_override()

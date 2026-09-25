@@ -24,6 +24,8 @@ function sourceReadsRequested(text) {
 // Only current-run, successful page receipts establish that a page was read.
 // Search hits, related links embedded in a page and delegated summaries do not.
 // This is an attribution boundary, not verification of the claims on a page.
+// pixel_ods_research (Perplexica) never qualifies: speed and balanced modes
+// answer from search snippets, and its sources are search results.
 function openedSourceUrls(tool, result) {
   const details = result?.details;
   let candidates = [];
@@ -155,7 +157,7 @@ const MIN_PROSE_CHARS = 20;
 
 // A Markdown link or autolink around a neutralised destination becomes plain
 // text. The marker contains spaces, so an unmatched form is never a link.
-function unwrapMarker(text, marker) {
+export function unwrapMarker(text, marker) {
   const m = marker.replace(/[[\]]/g, '\\$&');
   const link = new RegExp(`!?\\[((?:[^\\[\\]\\n]|${m}){0,500})\\]\\(\\s*<?${m}>?(?:\\s+(?:"[^"\\n]*"|'[^'\\n]*'))?\\s*\\)`, 'g');
   return text.replace(link, (_, label) => label.trim() && label.trim() !== marker ? `${label} ${marker}` : marker)

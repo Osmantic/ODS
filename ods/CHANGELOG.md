@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Security
+- Perplexica's internal `scrape_url` action is disabled at container start. It
+  opened any URL its model named, without address validation, from the
+  Perplexica container on the ODS network, and Perplexica offered it in every
+  mode, so a request or a search result could steer it to an internal service.
+  Asking Perplexica about a specific URL now answers from search results.
 - The dashboard asks for sign-in when it is reached from another device: LAN
   mode, ODS proxy (`dashboard.<device>.local`), a reverse proxy or Tailscale
   Serve. Previously its proxy added the admin API key to every request, so
