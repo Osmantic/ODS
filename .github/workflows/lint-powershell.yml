@@ -77,6 +77,15 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-portal-setup.ps1
 
+      - name: Windows Portal Prerequisite Contracts (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-portal-prereqs.ps1
+
+      - name: Windows Portal Prerequisite Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-portal-prereqs.ps1
+
       - name: WSL Portal Completion Gate
         if: runner.os == 'Linux'
         shell: bash
