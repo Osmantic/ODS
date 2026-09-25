@@ -14,7 +14,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'installers/verify-wsl-portal.sh'
 @unittest.skipUnless(os.name == 'posix', 'requires Bash')
 class PortalReadiness(unittest.TestCase):
     def probe(self, *, service=0, health='{"status":"ok"}', http=0, port='3001', available=True,
-              api_code=200, api_body=None):
+              api_code=200, api_body=None, not_ready_first=0):
+        served = {'count': 0}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bindir = root / 'bin'
@@ -22,6 +23,12 @@ class PortalReadiness(unittest.TestCase):
             class Handler(BaseHTTPRequestHandler):
                 def do_GET(self):
                     valid = self.path == '/api/pixel/status' and self.headers.get('Authorization') == 'Bearer do-not-print'
+                    served['count'] += 1
+                    if valid and served['count'] <= not_ready_first:
+                        self.send_response(200)
+                        self.end_headers()
+                        self.wfile.write(b'{"available":false,"state":"model_unavailable","detail":"Model is loading"}')
+                        return
                     self.send_response(api_code if valid else 403)
                     if api_code == 302:
                         self.send_header('Location', 'http://127.0.0.1:1/do-not-follow')
@@ -64,7 +71,7 @@ esac
     def test_ready_uses_configured_port(self):
         result, calls = self.probe(port='4321')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('http://localhost:4321', result.stdout)
+        self.assertIn('http://localhost:4321/pixel', result.stdout)
         self.assertIn('/run/ods-pixel/pixel-ingress.sock', calls)
         self.assertIn('http://127.0.0.1:4321/', calls)
 
@@ -88,6 +95,17 @@ esac
         result, _ = self.probe(available=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Portal API verification failed', result.stderr)
+
+    def test_unavailable_reports_nonsecret_detail(self):
+        result, _ = self.probe(not_ready_first=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Model is loading', result.stderr)
+        self.assertIn('model_unavailable', result.stderr)
+
+    def test_authentication_failure_names_the_key_without_printing_it(self):
+        result, _ = self.probe(api_code=401)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('rejected the installed DASHBOARD_API_KEY', result.stderr)
 
     def test_invalid_or_oversized_status_fails(self):
         for body in (b'not json', b'{"available":"true"}', b'x' * 65537):
