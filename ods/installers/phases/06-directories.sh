@@ -134,6 +134,8 @@ else
     source "$SCRIPT_DIR/lib/dotenv-quote.sh"
     # shellcheck source=../../lib/safe-env.sh
     source "$SCRIPT_DIR/lib/safe-env.sh"
+    # shellcheck source=../lib/hermes-data-dir.sh
+    source "$SCRIPT_DIR/installers/lib/hermes-data-dir.sh"
 
     _env_existing=""
     [[ -f "$INSTALL_DIR/.env" ]] && _env_existing="$INSTALL_DIR/.env"
@@ -348,22 +350,8 @@ else
     # status and ODS Talk JSON-RPC paths fail with PermissionError.
     if ! $_phase06_rootless \
         && [[ "${ENABLE_HERMES:-false}" == "true" && -d "$INSTALL_DIR/data/hermes" ]]; then
-        _hermes_metadata=$(stat -c '%u:%g:%a' "$INSTALL_DIR/data/hermes" 2>/dev/null || true)
-        if [[ "$_hermes_metadata" != "$_phase06_compose_uid:$_phase06_compose_gid:700" ]]; then
-            if ! ods_sudo_available; then
-                error "Hermes requires data/hermes ownership $_phase06_compose_uid:$_phase06_compose_gid and mode 700 with a rootful runtime. Grant privileged access or disable Hermes, then re-run ODS."
-                return 1
-            fi
-            ods_sudo chown -R "$_phase06_compose_uid:$_phase06_compose_gid" "$INSTALL_DIR/data/hermes" 2>/dev/null || {
-                error "Failed to restore data/hermes ownership to $_phase06_compose_uid:$_phase06_compose_gid"
-                return 1
-            }
-            ods_sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || {
-                error "Failed to preserve private mode 700 on data/hermes"
-                return 1
-            }
-        fi
-        unset _hermes_metadata
+        ods_ensure_hermes_private_dir "$INSTALL_DIR/data/hermes" \
+            "$_phase06_compose_uid" "$_phase06_compose_gid" || return 1
     fi
 
     # Fix ownership of data/config dirs that may have been created by containers
