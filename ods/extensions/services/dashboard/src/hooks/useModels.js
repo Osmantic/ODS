@@ -285,9 +285,13 @@ export function useModels() {
 
     const requestId = ++modelsRequestRef.current
     const controller = new AbortController()
+    let timedOut = false
     const cancel = () => controller.abort()
     signal?.addEventListener('abort', cancel, { once: true })
-    const timeout = setTimeout(() => controller.abort(), MODELS_FETCH_TIMEOUT_MS)
+    const timeout = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, MODELS_FETCH_TIMEOUT_MS)
     try {
       const response = await fetch('/api/models', { signal: controller.signal })
       if (!response.ok) throw new Error('Failed to fetch models')
@@ -320,7 +324,9 @@ export function useModels() {
       if (signal?.aborted) return null
       if (requestId >= latestSettledModelsRequestRef.current) {
         latestSettledModelsRequestRef.current = requestId
-        setFetchError(err.message)
+        setFetchError(timedOut
+          ? 'Loading models timed out. Check the model service and retry.'
+          : err.message)
       }
       // No silent fallback - let error propagate to UI
     } finally {
