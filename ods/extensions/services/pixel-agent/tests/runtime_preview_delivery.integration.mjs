@@ -36,7 +36,7 @@ for (const refresh of [false,true]) for (const publishFails of [false,true]) tes
   mkdirSync(join(root,'node_modules'));symlinkSync(pkg,join(root,'node_modules','openclaw'));
   const plugin=join(root,'plugin');mkdirSync(plugin);
   writeFileSync(join(plugin,'package.json'),JSON.stringify({name:'preview-fixture',version:'1.0.0',type:'module',openclaw:{extensions:['./index.mjs']}}));
-  writeFileSync(join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'preview-fixture',activation:{onStartup:true},configSchema:{type:'object',properties:{}}}));
+  writeFileSync(join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'preview-fixture',activation:{onStartup:true},contracts:{tools:['pixel_ods_workspace_preview']},configSchema:{type:'object',properties:{}}}));
   writeFileSync(join(plugin,'index.mjs'),`
     import {createToolLoopGuard} from ${JSON.stringify(new URL('../plugin/tool-loop-guard.mjs',import.meta.url).href)};
     import {createWorkspacePreviewTool} from ${JSON.stringify(new URL('../plugin/workspace-preview.mjs',import.meta.url).href)};
