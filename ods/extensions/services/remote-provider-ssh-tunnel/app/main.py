@@ -301,7 +301,14 @@ class SshProcessSupervisor:
             self._notice_exited_locked(now)
             try:
                 argv = _combined_ssh_argv(plan)
-            except ValueError:
+            except ValueError as exc:
+                # _combined_ssh_argv only raises with static, non-sensitive
+                # messages describing a malformed plan shape (e.g. "missing
+                # a local forward") — never argv contents or secrets — so
+                # it's safe and useful to log the message itself, unlike
+                # the exc.__class__.__name__-only convention used below for
+                # OSError from process start (which can carry paths).
+                LOGGER.warning("ssh plan argv invalid: %s", exc)
                 self._stop_process_locked()
                 self._last_payload = _health_from_plan(
                     _error_plan("ssh_plan_unavailable", secret_dir=self.secret_dir),
