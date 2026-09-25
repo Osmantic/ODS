@@ -7170,6 +7170,7 @@ export function createToolLoopGuard({
         failedVerificationAttempts: 0,
         latestVerificationStatus: undefined,
         latestVerificationFingerprint: undefined,
+        latestVerificationPassedGeneration: undefined,
         wrappedExecFailurePending: false,
         suppressStaleExecWarning: false,
         recursiveDeleteAuthorized: false,
@@ -8863,7 +8864,12 @@ export function createToolLoopGuard({
       selectedToolName === "exec" &&
       !verificationCommandIsAuditable(selectedParams)
     ) {
-      if (state) state.latestVerificationStatus = "failed";
+      // The refusal runs nothing, so it cannot invalidate a real pass when no
+      // call that could change the workspace has run since that pass.
+      if (state && !(state.latestVerificationStatus === "passed" &&
+          state.latestVerificationPassedGeneration === state.previewVerificationGeneration)) {
+        state.latestVerificationStatus = "failed";
+      }
       // The refusal runs nothing; repeats (often with a variant redirect) are
       // bounded by recordFreeCorrection instead of each draining the budget.
       recordFreeCorrection(state, "verification-not-auditable",
@@ -10533,6 +10539,7 @@ export function createToolLoopGuard({
         if (pending.verificationFingerprint) {
           state.failedVerificationAttempts = 0;
           state.latestVerificationStatus = "passed";
+          state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
         }
       }
       return;
@@ -10642,6 +10649,7 @@ export function createToolLoopGuard({
       if (verificationFingerprint) {
         state.failedVerificationAttempts = 0;
         state.latestVerificationStatus = "passed";
+        state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
       }
     }
   }
