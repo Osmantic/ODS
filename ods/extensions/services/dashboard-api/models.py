@@ -218,6 +218,25 @@ class ModelLibraryGpu(BaseModel):
     vramFree: float
 
 
+class ModelRuntimePlacement(BaseModel):
+    """llama-server's load-time layer placement, from the host agent."""
+
+    layersOnGpu: int
+    layersTotal: int
+    cpuWeightMiB: Optional[float] = None
+    fullyResident: bool
+    intentionalOffload: bool = False
+    # resident | intentional | partial | cpu_only (model_placement.py)
+    state: str
+    detail: Optional[str] = None
+
+
+class ModelRuntimeStatus(BaseModel):
+    # None when the host agent predates placement reporting or the placement
+    # is unknown; the UI must not read that as "fits the GPU".
+    placement: Optional[ModelRuntimePlacement] = None
+
+
 class ModelLibraryResponse(BaseModel):
     models: list[ModelLibraryEntry]
     gpu: Optional[ModelLibraryGpu] = None
@@ -235,3 +254,4 @@ class ModelLibraryResponse(BaseModel):
     configuredMode: str = "unknown"
     llmBackend: str = "unknown"
     externalLemonade: bool = False
+    runtime: ModelRuntimeStatus = Field(default_factory=ModelRuntimeStatus)

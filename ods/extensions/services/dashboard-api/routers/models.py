@@ -48,6 +48,7 @@ from host_agent_client import (
     request_json as request_agent_json,
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
+from model_placement import is_unintended_cpu_placement, runtime_placement
 from pixel_runtime_state import pixel_stream_active
 from performance_oracle import (
     build_models_payload,
@@ -175,6 +176,24 @@ def _annotate_model_lifecycle(payload: dict[str, Any], lifecycle: Optional[dict[
         if isinstance(model, dict) and current_model_matches(model, str(target), str(target)):
             model["modelOperation"] = lifecycle
             return
+
+
+def _visible_runtime_placement(
+    agent_status: Optional[dict],
+    payload: dict[str, Any],
+    gpu_info: Any,
+    loaded_model: Optional[str],
+) -> Optional[dict[str, Any]]:
+    """The running model's placement, when it describes what the page shows.
+
+    Placement describes the server that is running now; while a switch is in
+    flight it may still describe the previous model. Without a GPU there is
+    nothing to be resident on.
+    """
+    lifecycle = payload.get("modelLifecycle") or {}
+    if not gpu_info or not loaded_model or lifecycle.get("operation") == "model_activation":
+        return None
+    return runtime_placement(agent_status)
 
 
 def _configured_ods_mode() -> str:
@@ -1402,10 +1421,16 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         _model_lifecycle_from_agent_status(agent_status),
     )
     loaded_entry = next((m for m in payload["models"] if m["status"] == "loaded"), None) or {}
+    placement = _visible_runtime_placement(agent_status, payload, gpu_info, loaded_model)
+    payload["runtime"] = {"placement": placement}
     sample_key = (loaded_model, metrics.get("throughput_sampled_at"))
+    # A speed measured while layers sit on the CPU is not this GPU's speed for
+    # the model; recording it would under-rate the model for every later
+    # recommendation on this hardware.
     if (gpu_info and loaded_model and live_tps > 0
             and sample_key[1] is not None and sample_key != _last_recorded_throughput_sample
-            and loaded_entry.get("metadata", {}).get("source") != "runtime"):
+            and loaded_entry.get("metadata", {}).get("source") != "runtime"
+            and not is_unintended_cpu_placement(placement)):
         _last_recorded_throughput_sample = sample_key
         signature = build_sample_signature(
             loaded_entry or {"id": loaded_model, "gguf": _read_active_model()},

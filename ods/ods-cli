@@ -2644,6 +2644,19 @@ if llm_backend:
     if local_warn:
         print(f"    {YELLOW}⚠{NC} Note: Unused local llama-server container is running")
 
+gpu_residency = runtime.get('gpu_residency') or {}
+residency_status = gpu_residency.get('status')
+residency_message = gpu_residency.get('message', '')
+if residency_status in ('pass', 'intentional'):
+    print(f"  {GREEN}✓{NC} GPU residency: {residency_message}")
+elif residency_status == 'fail':
+    print(f"  {RED}✗{NC} GPU residency: {residency_message}")
+    if gpu_residency.get('fix_hint'):
+        print(f"    Fix: {gpu_residency['fix_hint']}")
+    has_failures = True
+elif residency_status == 'unknown':
+    print(f"  {YELLOW}?{NC} GPU residency: {residency_message}")
+
 dgx_check = runtime.get('dgx_spark_cuda_arch_check', {})
 dgx_status = dgx_check.get('status')
 dgx_message = dgx_check.get('message', '')

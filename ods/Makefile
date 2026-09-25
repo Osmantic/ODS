@@ -56,6 +56,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== ods-doctor rootless subordinate IDs ==="
 	@bash tests/test-ods-doctor-rootless-subid.sh
+	@echo "=== ods-doctor GPU residency (partial offload fails) ==="
+	@python3 tests/test-llama-gpu-residency.py
+	@bash tests/test-ods-doctor-gpu-residency.sh
 	@echo "=== ods-test.sh reports HTTP 000 for a failed probe ==="
 	@bash tests/test-ods-test-http-code.sh
 	@echo "=== ods-test.sh completes and reports when checks fail ==="
