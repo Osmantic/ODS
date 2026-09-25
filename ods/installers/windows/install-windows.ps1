@@ -2253,7 +2253,7 @@ if (-not $cloudMode) {
         Write-AIError "LLM not serving: $($llmReady.Detail)"
         if (-not $llmReady.FileExists) {
             Write-Host "    Model file missing: $($llmReady.ModelFile)" -ForegroundColor DarkGray
-            Write-Host "    Re-run the installer to (re)download it: .\install.ps1" -ForegroundColor DarkGray
+            Write-Host "    Re-run the installer to (re)download it: .\ods\installers\windows\install-windows.ps1" -ForegroundColor DarkGray
         }
     }
 }
