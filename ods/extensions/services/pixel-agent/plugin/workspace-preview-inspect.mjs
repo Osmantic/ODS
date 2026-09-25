@@ -27,9 +27,50 @@ export function hasVisibilityTransitionPlan(request) {
         isDeepStrictEqual(before.locator, after.locator))));
 }
 
+// The classes of a selector whose last compound is only an optional tag or id
+// plus two or more classes, such as ".event-card.hidden"; otherwise none.
+function compoundClasses(selector) {
+  if (typeof selector !== 'string' || /[[\]()"':\\,*]/.test(selector)) return [];
+  const last = selector.trim().split(/\s*[\s>+~]\s*/).at(-1);
+  if (!/^(?:[A-Za-z][A-Za-z0-9-]*)?(?:#[A-Za-z_-][\w-]*)?(?:\.[A-Za-z_-][\w-]*){2,}$/.test(last)) return [];
+  return [...last.matchAll(/\.([A-Za-z_-][\w-]*)/g)].map(match => match[1]);
+}
+const STATE_CLASS = /^(?:is-|has-)|^(?:hidden|hide|show|shown|visible|invisible|open|opened|closed|collapsed|expanded|active|inactive|revealed|toggled|selected|d-none|sr-only)$/i;
+const stateClass = classes => classes.find(name => STATE_CLASS.test(name)) ?? classes.at(-1);
+const visibilityWord = action => action === 'assert-hidden' ? 'hidden' : 'visible';
+// A class, attribute or pseudo-class can stop matching when page state
+// changes; a bare id or tag selector names the element itself.
+const STATEFUL_SELECTOR = /\.[A-Za-z_-]|\[|:/;
+// A CSS selector with such a part that matched exactly one element in an
+// earlier passed step and none after a passed click in between: the click
+// changed what the selector matches (fleet: laptop, round 081,
+// ".event-card.hidden" whose "hidden" class the click removed). That is
+// locator evidence, not a site defect; the step still fails and nothing is
+// verified. An id or tag that stops matching keeps the ordinary reply, since
+// the element itself is gone.
+function stateDependentLocator(step, request, result) {
+  if (step.errorCode !== 'no_match' || typeof step.locator?.selector !== 'string' ||
+      !STATEFUL_SELECTOR.test(step.locator.selector)) return undefined;
+  const same = before => canonical(before.locator) === canonical(step.locator);
+  const earlier = result.steps.slice(0, step.index).findLast(before => same(before) && before.status === 'passed' &&
+    before.action.startsWith('assert-'));
+  const click = earlier && result.steps.slice(earlier.index + 1, step.index)
+    .find(between => between.action === 'click' && between.status === 'passed');
+  if (!click || request.steps[earlier.index]?.action !== earlier.action) return undefined;
+  const classes = compoundClasses(step.locator.selector);
+  const example = classes.length ? ` (for example by removing the class ${JSON.stringify(stateClass(classes))})` : '';
+  const assertions = earlier.action === step.action ? 'both assertions'
+    : `both the ${visibilityWord(earlier.action)} and the ${visibilityWord(step.action)} assertion`;
+  return `Step ${step.index + 1} (${step.action}) matched no element. Step ${earlier.index + 1} matched exactly one element with this same selector before the click in step ${click.index + 1}, ` +
+    `so the click changed which elements ${JSON.stringify(step.locator.selector)} matches${example}. ` +
+    'That is not evidence of a site defect; do not change the site for it. Retry the inspection on this same snapshot with a locator that does not depend on the toggled state, ' +
+    `such as the element's id, in ${assertions}. Requested behavior remains unverified.`;
+}
 // A locator that matched no element, or several, produced no measurement. Say
 // which, and how to fix the locator; never suggest changing the site for it.
-function locatorFeedback(step) {
+function locatorFeedback(step, request, result) {
+  const stateDependent = request && result ? stateDependentLocator(step, request, result) : undefined;
+  if (stateDependent) return stateDependent;
   const at = `Step ${step.index + 1} (${step.action})`, count = step.before.count;
   const retry = 'retry the inspection on the same published snapshot. Do not change the site only to satisfy a locator. Requested behavior remains unverified.';
   if (count !== 0) return `${at} matched ${count} elements; a locator must match exactly one, so nothing was measured and later steps did not run. Use a more specific CSS selector such as an id, or a unique exact name, and ${retry}`;
@@ -38,11 +79,14 @@ function locatorFeedback(step) {
     ? ` For ${step.action}, role/name locators match only rendered elements, so a hidden element is not matched.`
     : step.errorCode === 'no_match' ? ' Hidden elements were searched too, so no element has exactly that role and accessible name.'
       : ' This inspector cannot match a hidden element by role/name; use a CSS selector such as an id for it.';
-  return `${at} matched no element, so nothing was measured and later steps did not run.${scope} Copy the exact role and accessible name (case, spacing, punctuation) or a CSS selector such as an id from your source, and ${retry}`;
+  const classes = !semantic && step.errorCode === 'no_match' && request?.steps.some(item => item.action === 'click')
+    ? compoundClasses(step.locator.selector) : [];
+  const toggled = classes.length ? ` A state class that a click adds or removes, such as ${JSON.stringify(stateClass(classes))} in ${JSON.stringify(step.locator.selector)}, matches in only one state.` : '';
+  return `${at} matched no element, so nothing was measured and later steps did not run.${scope}${toggled} Copy the exact role and accessible name (case, spacing, punctuation) or a CSS selector such as an id from your source, and ${retry}`;
 }
 function transitionCoverageFeedback(request, result) {
   const unmatched = result.steps?.find(step => step.errorCode === 'no_match' || step.errorCode === 'selector_not_unique');
-  if (unmatched) return locatorFeedback(unmatched);
+  if (unmatched) return locatorFeedback(unmatched, request, result);
   const syntaxFailure = result.steps?.find(step => step.errorCode === 'invalid_selector');
   if (syntaxFailure) return `Step ${syntaxFailure.index + 1} has invalid CSS selector syntax; that step produced no visibility measurement and later steps were not executed. Use a standard CSS selector from the actual source, or a supported role with the exact accessible name and exact:true. Text-matching extensions such as :contains() are not CSS selectors. Correct the locator and retry the inspection on the same published snapshot; do not remove the requested behavior checks. For show/hide behavior, keep assertions of opposite visibility for the same affected element around the control click. Requested behavior remains unverified.`;
   if (result.status !== 'passed') return 'Requested behavior remains unverified; a failed inspection does not establish a visibility transition.';
