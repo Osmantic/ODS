@@ -47,6 +47,7 @@ jobs:
           node-version: '24'
       - run: node --test ods/extensions/services/pixel-agent/tests/compaction_lock.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/read_range.test.mjs
+      - run: node --test ods/extensions/services/pixel-agent/tests/tool_result_projection.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/persisted_tool_model_projection.test.mjs ods/extensions/services/pixel-agent/tests/exec_completion_feedback.test.mjs
       - name: Verify bounded preview delivery across platforms
         run: |
@@ -60,6 +61,11 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_read_range.integration.mjs
+      - name: Verify every tool result reaches the model with the pinned projection
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_tool_result_projection.integration.mjs
       - name: Verify native compaction lock and abort ownership
         shell: bash
         env:
@@ -88,6 +94,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_progress_finalization.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_owner_visible_reply.integration.mjs
+      - name: Verify tool results reach real provider requests past the aggregate budget
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_tool_result_delivery.integration.mjs
   runtime:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
