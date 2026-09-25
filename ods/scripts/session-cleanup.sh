@@ -18,7 +18,7 @@ set -euo pipefail
 # Strix Halo: OpenClaw runs in Docker, sessions are in data volume
 OPENCLAW_DIR="${OPENCLAW_DIR:-$HOME/ods/data/openclaw/home}"
 SESSIONS_DIR="${SESSIONS_DIR:-$OPENCLAW_DIR/agents/main/sessions}"
-SESSIONS_JSON="$SESSIONS_DIR/sessions.json"
+SESSIONS_JSON="${SESSIONS_JSON:-$SESSIONS_DIR/sessions.json}"
 MAX_SIZE="${MAX_SIZE:-256000}"
 
 usage() {
@@ -51,7 +51,7 @@ if [ ! -f "$SESSIONS_JSON" ]; then
 fi
 
 if [ ! -d "$SESSIONS_DIR" ]; then
-    echo "[$(date)] Sessions directory not found at $SESSIONS_DIR, skipping"
+    echo "[$(date)] INFO: Sessions directory not found at $SESSIONS_DIR, skipping"
     exit 0
 fi
 
