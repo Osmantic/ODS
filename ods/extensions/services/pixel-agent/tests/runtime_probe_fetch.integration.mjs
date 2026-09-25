@@ -11,7 +11,7 @@ import {createRequire} from 'node:module';
 const source=process.env.OPENCLAW_PACKAGE_DIR;
 assert(source && path.isAbsolute(source));
 assert.equal(JSON.parse(fs.readFileSync(path.join(source,'package.json'))).version,'2026.6.33');
-const root=fs.mkdtempSync(path.join(os.tmpdir(),'ods-probe-sdk-'));
+const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'ods-probe-sdk-')));
 process.once('exit',()=>fs.rmSync(root,{recursive:true,force:true}));
 const runtimeRequire=createRequire(path.join(source,'package.json'));
 const sha=x=>crypto.createHash('sha256').update(x).digest('hex');

@@ -14,7 +14,7 @@ import {createProbeIngressHeader,odsAdmissionCanonical,odsAdmissionMac,odsAdmiss
 
 const source=process.env.OPENCLAW_PACKAGE_DIR;
 test('real gateway admission rejects replay/concurrency/duplicate headers and preserves ordinary requests',{skip:!source||typeof process.getuid!=='function',timeout:90000},async()=>{
- const root=fs.mkdtempSync(path.join(os.tmpdir(),'ods-probe-gateway-'));fs.chmodSync(root,0o700);
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'ods-probe-gateway-')));fs.chmodSync(root,0o700);
  const runtime=path.join(root,'runtime'),leaseRoot=path.join(root,'leases'),workspace=path.join(root,'workspace');
  fs.mkdirSync(leaseRoot,{mode:0o700});fs.mkdirSync(workspace);
  fs.cpSync(source,runtime,{recursive:true,dereference:false});

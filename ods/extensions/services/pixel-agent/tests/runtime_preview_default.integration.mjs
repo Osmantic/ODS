@@ -1,28 +1,20 @@
 // Actual pinned SDK preview dispatch; recording inspector and deterministic provider, no browser/model inference.
 // The fixture seeds a validated publication receipt; it does not qualify browser rendering.
 import test,{after} from 'node:test';
-import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
 import {spawn} from 'node:child_process';
-import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync,readFileSync,rmSync,cpSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync,readFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
+import {preparePromptContextRuntime} from './prompt_context_runtime_fixture.mjs';
 const installed=process.env.OPENCLAW_PACKAGE;
 let pkg=installed, runtimeCopy;
 if(installed) {
-  const manifest=JSON.parse(readFileSync(new URL('../host/openclaw-compaction-budget.json',import.meta.url)));
-  const hash=text=>createHash('sha256').update(text).digest('hex');
-  let source=readFileSync(join(installed,'dist/selection-BEwSQKM-.js'),'utf8');
-  const prior=hash(source)===manifest.patchedSha256?manifest.replacements:manifest.previousReplacements[hash(source)];
-  if(prior)for(const [before,value] of [...prior].reverse()){assert.equal(source.split(value).length,2);source=source.replace(value,before);}
-  assert.equal(hash(source),manifest.sourceSha256,'refuse unknown SDK source');
-  for(const [before,value] of manifest.replacements){assert.equal(source.split(before).length,2);source=source.replace(before,value);}
-  assert.equal(hash(source),manifest.patchedSha256);
-  runtimeCopy=mkdtempSync(join(tmpdir(),'ods-preview-reviewed-runtime-'));pkg=join(runtimeCopy,'package');
-  cpSync(installed,pkg,{recursive:true});writeFileSync(join(pkg,'dist/selection-BEwSQKM-.js'),source);
+  runtimeCopy=mkdtempSync(join(tmpdir(),'ods-preview-reviewed-runtime-'));
+  pkg=preparePromptContextRuntime(installed,runtimeCopy);
 }
 after(()=>{if(runtimeCopy)rmSync(runtimeCopy,{recursive:true,force:true});});
 for(const mode of ['direct','deferred']) test(`real SDK preview default binding: ${mode}`,{skip:!pkg,timeout:90000},async()=>{
@@ -58,6 +50,7 @@ for(const mode of ['direct','deferred']) test(`real SDK preview default binding:
     import {PREVIEW_INSPECTION_TOOL} from ${JSON.stringify(new URL('../plugin/preview-interaction-assurance.mjs',import.meta.url).href)};
     import {createWorkspacePreviewInspectTool,INSPECTION_KIND,INSPECTION_SCOPE,inspectionPlanHash,normalizeWorkspacePreviewInspectionParams} from ${JSON.stringify(new URL('../plugin/workspace-preview-inspect.mjs',import.meta.url).href)};
     import {appendFileSync} from 'node:fs';
+    import {requireDurableTurnContext} from ${JSON.stringify(new URL('../plugin/prompt-contract.mjs',import.meta.url).href)};
     const owner='Create and publish a website in a new workspace directory site. Add a button that toggles hidden details.';
     let context,guard,preview,retired=false;
     const save=row=>appendFileSync(${JSON.stringify(join(root,'hooks.jsonl'))},JSON.stringify(row)+'\\n');
@@ -105,7 +98,12 @@ function receipt(params) {
 
     export default {id:'pixel-ods',register(api){
       api.registerTool(createWorkspacePreviewInspectTool({request:async params=>{save({hook:'runner',params});const {schemaVersion,action,...plan}=params;return receipt(plan);}}));
-      api.on('before_prompt_build',(event,ctx)=>{if(!guard){context=ctx;({guard,preview}=setup());save({hook:'seed',siteId:preview.siteId,sha256:preview.sha256});}else guard.observeRun(ctx,'pixel',event);});
+      api.on('before_agent_run',(_event,ctx)=>requireDurableTurnContext(ctx,'pixel'));
+      api.on('before_prompt_build',(event,ctx)=>{
+        if(!guard){context=ctx;({guard,preview}=setup());save({hook:'seed',siteId:preview.siteId,sha256:preview.sha256});}else guard.observeRun(ctx,'pixel',event);
+        const admission=ctx.odsTurnContextAdmission;
+        return {odsTurnContext:{...admission,content:admission.previous?.content ?? 'Preview default binding fixture.'}};
+      });
       api.on('before_tool_call',(event,ctx)=>{if(!retired&&ctx.toolCallId==='preview-2'){retired=true;guard.observeRun({...ctx,runId:'replacement-owner-run'},'pixel',{prompt:'Inspect this website.'});}const result=guard.beforeToolCall(event,ctx);save({hook:'before',id:ctx.toolCallId,params:result?.params??event.params,block:result?.block});return result;});
       api.on('after_tool_call',(event,ctx)=>{const result=guard.afterToolCall(event,ctx);save({hook:'after',id:ctx.toolCallId,params:event.params,status:event.result?.details?.status,verification:guard.verificationForRun(ctx.runId)?.status});return result;});
       api.on('tool_result_persist',(event,ctx)=>guard.toolResultPersist(event,ctx));
