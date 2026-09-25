@@ -27,7 +27,7 @@ function Confirm-ODSPortalPreparation([string]$Message, [bool]$NonInteractive) {
     $script:calls.Add('confirm')
     return (-not $NonInteractive -and $script:allowPreparation)
 }
-function Install-ODSPortalWslFeatures { $script:calls.Add('features'); return $script:featureCode }
+function Install-ODSPortalWslFeatures([switch]$MissingExecutable) { $script:calls.Add('features'); if ($MissingExecutable) { $script:calls.Add('enable-optional-features') }; return $script:featureCode }
 function Initialize-ODSPortalUbuntuUser([string]$Distro) { $script:calls.Add('user:' + $Distro); return $script:userSetupCode }
 function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro, [string[]]$LinuxArguments, [string]$InstallRoot) {
     $script:calls.Add('install:' + $Distro)
@@ -80,7 +80,7 @@ try {
     Check (($script:capturedArguments -join ' ') -match '--all --no-langfuse') 'explicit disable follows all'
     Check ($script:capturedRoot -eq '/home/user/ODS data') 'Linux install path forwarded intact'
     Check ($script:calls.Contains('--distribution Ubuntu-24.04 --exec docker compose version')) 'checks Compose inside selected distro'
-    foreach ($failure in @('admin','native','wsl1','root','init','docker','compose','old-wsl','inbox-wsl','no-wsl')) {
+    foreach ($failure in @('admin','native','wsl1','root','init','docker','compose','old-wsl','inbox-wsl')) {
         Reset-Scenario
         $script:scenario = $failure
         $rejected = $false
@@ -109,7 +109,12 @@ try {
     $script:scenario='missing'; $script:allowPreparation=$false
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 1) 'declining Ubuntu download cancels setup'
     Check (-not $script:calls.Contains('--install --distribution Ubuntu-24.04 --no-launch')) 'declining performs no download'
-    foreach ($case in @('missing','features')) {
+    Reset-Scenario
+    $script:scenario='no-wsl'
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 3010) 'missing WSL executable offers feature activation and requires restart'
+    Check ($script:calls.Contains('enable-optional-features')) 'missing executable uses Windows optional features instead of unavailable wsl command'
+    Check (-not $script:calls.Contains('--status') -and -not $script:calls.Contains('install:Ubuntu-24.04')) 'missing executable never invokes WSL or ODS before restart'
+    foreach ($case in @('missing','features','no-wsl')) {
         Reset-Scenario
         $script:scenario=$case
         Check ((Invoke-ODSPortalSetup @{NonInteractive=$true} 'unused') -eq 1) "$case non-interactive stops"

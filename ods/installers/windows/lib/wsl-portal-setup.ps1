@@ -39,8 +39,14 @@ function Confirm-ODSPortalPreparation([string]$Message, [bool]$NonInteractive) {
     return (Read-Host 'Continue? [y/N]') -match '^(y|yes)$'
 }
 
-function Install-ODSPortalWslFeatures {
+function Install-ODSPortalWslFeatures([switch]$MissingExecutable) {
     # Elevate only Windows features, never ODS or distro ownership. No auto reboot.
+    if ($MissingExecutable) {
+        $helper = Join-Path (Split-Path -Parent $PSScriptRoot) 'enable-wsl-features.ps1'
+        $shell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell/v1.0/powershell.exe'
+        $process = Start-Process -FilePath $shell -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $helper + '"')) -Verb RunAs -WindowStyle Hidden -Wait -PassThru
+        return $process.ExitCode
+    }
     $process = Start-Process -FilePath 'wsl.exe' -ArgumentList @('--install', '--no-distribution') -Verb RunAs -WindowStyle Hidden -Wait -PassThru
     return $process.ExitCode
 }
@@ -133,7 +139,11 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     if (Test-ODSNativeWindowsInstall) { throw 'An existing native Windows ODS installation was found. It is not automatically migrated or deleted. Stop and migrate/remove that installation before creating a WSL stack, to avoid shared ports and Compose project conflicts. See ods/docs/WINDOWS-QUICKSTART.md.' }
     Write-ODSPortalStage 1 'WINDOWS FOUNDATION' 'Checking WSL availability and systemd support.'
     if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
-        throw 'wsl.exe is unavailable. Update Windows and enable Windows Subsystem for Linux and Virtual Machine Platform in Windows Features, then restart. Follow https://learn.microsoft.com/windows/wsl/install-manual before rerunning setup. ODS has not been installed.'
+        if (-not (Confirm-ODSPortalPreparation 'WSL is unavailable. Enable Windows Subsystem for Linux and Virtual Machine Platform? Windows will request administrator permission. Save your work; restart Windows afterwards and rerun this command.' $nonInteractive)) { return 1 }
+        $featureCode = Install-ODSPortalWslFeatures -MissingExecutable
+        if ($featureCode -notin @(0, 3010)) { throw "Windows feature preparation failed (exit $featureCode). Check Windows Update and virtualization support. See https://learn.microsoft.com/windows/wsl/install-manual ." }
+        Write-Host 'Windows features prepared. Restart Windows, then rerun this command to finish WSL/Ubuntu preparation. ODS has not been installed yet.'
+        return 3010
     }
     $status = Invoke-ODSPortalWsl -Arguments @('--status')
     if ($status.Code -ne 0) {
