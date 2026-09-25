@@ -68,6 +68,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-ods-doctor-env-reader.sh
 	@echo "=== Docker rootless bind-mount ownership ==="
 	@bash tests/test-rootless-docker-ownership.sh
+	@bash tests/test-dashboard-data-permissions.sh
+	@python3 tests/test_dashboard_data_permissions.py
 	@bash tests/test-cli-status-docker-error.sh
 	@python3 tests/test-cli-stt-env.py
 	@echo ""

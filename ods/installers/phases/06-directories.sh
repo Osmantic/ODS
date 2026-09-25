@@ -590,6 +590,12 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
 
     # Prepare service-specific ownership after compose selection is final.
     _phase06_step "prepare-service-permissions"
+    # shellcheck source=../lib/dashboard-data.sh
+    source "$SCRIPT_DIR/installers/lib/dashboard-data.sh"
+    if ! ods_prepare_dashboard_data "$INSTALL_DIR" "$_phase06_rootless"; then
+        error "Could not prepare Dashboard data for passwords and Portal chat results. Verify privileged Docker/host access, then re-run the installer."
+        return 1
+    fi
     if ! $_phase06_rootless; then
         chown -R 1000:1000 "$INSTALL_DIR/data/token-spy" || warn "Failed to chown data/token-spy to 1000:1000 (non-fatal); container may crash if installer ran as a different uid"
     fi
