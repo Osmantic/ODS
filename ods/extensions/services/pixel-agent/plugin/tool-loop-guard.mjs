@@ -42,6 +42,8 @@ import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidat
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
   requestedTextDeliveryNote } from './requested-literals.mjs';
+import { escapedLineBreakScan, escapedLineBreakText, ESCAPED_LINE_BREAK_WRITE_NEXT } from './python-syntax-guidance.mjs';
+import { editMissError, editPairs, editRecovery, withoutMismatchHead } from './edit-recovery.mjs';
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -719,6 +721,27 @@ function readDerivedSource(base, relative, size) {
   } finally {
     if (fd !== undefined) try { fs.closeSync(fd); } catch {}
   }
+}
+
+// One current workspace file for recovery notes, with the same confinement:
+// a normalized workspace-relative path below the configured root, never a
+// link, at most MAX_DERIVED_SOURCE_BYTES. Undefined on any doubt.
+function readWorkspaceBytes(root, relative) {
+  const file = derivedWorkspacePath(normalizeWorkspaceFilePath(relative));
+  if (typeof root !== "string" || !path.isAbsolute(root) || !file) return undefined;
+  try {
+    const base = fs.realpathSync(root);
+    const info = fs.lstatSync(path.join(base, ...file.split("/")));
+    return info.isFile() ? readDerivedSource(base, file, info.size) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+function readWorkspaceText(root, relative) {
+  const bytes = readWorkspaceBytes(root, relative);
+  try { return bytes ? STRICT_UTF8.decode(bytes) : undefined; } catch { return undefined; }
 }
 
 // Does a write re-type existing workspace files? `copy`: the whole content
@@ -3268,7 +3291,75 @@ function compactCleanVerificationResult(message, pending) {
   };
 }
 
-function compactFailedUnittestText(result) {
+// Every failing test of a multi-failure unittest run: the first FAIL/ERROR
+// block in full, then each other block's header, last workspace frame and
+// final exception line (header only, marked, when both repeat an earlier one).
+// Fleet (laptop, Qwen3.5-9B, round 081, coding_v1): keeping only the last
+// block showed "FAILED (failures=1, errors=1)" with the FAIL body alone, and
+// the model spent 19 single-test runs finding the hidden ERROR. Undefined for
+// a single failure or an unusual layout, which keep the one-block summary.
+const MULTI_FAILURE_SUMMARY_CHARS = 2400;
+const MAX_LISTED_FAILURES = 6;
+function multipleUnittestFailures(lines) {
+  const ranIndex = lines.findLastIndex((line) => /^Ran\s+[1-9][0-9]*\s+tests?\s+in\s+/.test(line));
+  const headers = lines.flatMap((line, index) => /^(?:FAIL|ERROR):\s+/.test(line) ? [index] : []);
+  if (headers.length < 2 || ranIndex < 0 || headers.at(-1) > ranIndex) return undefined;
+  const exception = /^(?:AssertionError|[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception))(?::|$)/;
+  const blocks = headers.map((start, position) => {
+    let end = position + 1 < headers.length ? headers[position + 1] : ranIndex;
+    while (end > start + 1 && /^(?:[=-]{20,}|\s*)$/.test(lines[end - 1])) end -= 1;
+    let errorIndex = -1, lastFrame = -1, workspaceFrame = -1;
+    for (let index = start + 1; index < end; index += 1) {
+      if (exception.test(lines[index])) errorIndex = index;
+    }
+    for (let index = start + 1; index < errorIndex; index += 1) {
+      if (!/^\s*File\s+"/.test(lines[index])) continue;
+      lastFrame = index;
+      if (lines[index].includes("/workspace/")) workspaceFrame = index;
+    }
+    // The primary block keeps today's detail window within its own bounds.
+    let frameIndex = -1;
+    for (let index = errorIndex - 1; index > start; index -= 1) {
+      if (/^\s*File\s+"/.test(lines[index])) {
+        frameIndex = index;
+        if (lines[index].includes("/workspace/")) break;
+      }
+    }
+    const detailStart = frameIndex >= 0 ? frameIndex : Math.max(start + 1, errorIndex - 3);
+    const detailEnd = errorIndex >= detailStart ? Math.min(end, errorIndex + 12) : Math.min(end, detailStart + 20);
+    const name = /^(?:FAIL|ERROR):\s+(\S+)/.exec(lines[start])?.[1] ?? lines[start];
+    return {header: lines[start], name, detail: lines.slice(detailStart, detailEnd),
+      frame: workspaceFrame >= 0 ? lines[workspaceFrame] : lastFrame >= 0 ? lines[lastFrame] : undefined,
+      error: errorIndex >= 0 ? lines[errorIndex] : undefined};
+  });
+  const [first, ...others] = blocks;
+  const tail = lines.slice(ranIndex);
+  const render = (withFrames, listed) => {
+    const seen = new Set([`${first.frame}\n${first.error}`]);
+    const out = [first.header, ...first.detail, `Also failing (${others.length}):`];
+    for (const block of others.slice(0, listed)) {
+      const key = `${block.frame}\n${block.error}`;
+      if (block.error && seen.has(key)) { out.push(`${block.header} [same error as above]`); continue; }
+      seen.add(key);
+      out.push(block.header, ...(withFrames && block.frame ? [block.frame] : []), ...(block.error ? [block.error] : []));
+    }
+    if (others.length > listed) {
+      const names = others.slice(listed).map((block) => block.name);
+      out.push(`+${names.length} more failing test${names.length === 1 ? "" : "s"}: ${names.slice(0, 12).join(", ")}${names.length > 12 ? ", …" : ""}`);
+    }
+    return [...out, ...tail].join("\n").trim();
+  };
+  let listed = Math.min(others.length, MAX_LISTED_FAILURES);
+  let summary = render(true, listed);
+  if (summary.length > MULTI_FAILURE_SUMMARY_CHARS) summary = render(false, listed);
+  while (summary.length > MULTI_FAILURE_SUMMARY_CHARS && listed > 0) summary = render(false, --listed);
+  if (summary.length > MULTI_FAILURE_SUMMARY_CHARS) {
+    summary = `${first.header}\n${summary.slice(-(MULTI_FAILURE_SUMMARY_CHARS - first.header.length - 1))}`;
+  }
+  return summary;
+}
+
+function compactFailedUnittestText(result, { boundDiagnosis = false } = {}) {
   if (
     !result ||
     typeof result !== "object" ||
@@ -3285,6 +3376,7 @@ function compactFailedUnittestText(result) {
   const source = values.sort((left, right) => right.length - left.length)[0];
   if (typeof source !== "string" || source.length < 600) return undefined;
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const everyFailure = multipleUnittestFailures(lines);
   const failureIndex = lines.findLastIndex((line) => /^(?:FAIL|ERROR):\s+/.test(line));
   const ranIndex = lines.findLastIndex((line) => /^Ran\s+[1-9][0-9]*\s+tests?\s+in\s+/.test(line));
   const diagnosticEnd = ranIndex > failureIndex ? ranIndex : lines.length;
@@ -3311,11 +3403,13 @@ function compactFailedUnittestText(result) {
   if (failureIndex >= 0) summaryLines.push(lines[failureIndex]);
   summaryLines.push(...lines.slice(detailStart, detailEnd));
   if (ranIndex >= 0) summaryLines.push(...lines.slice(ranIndex));
-  let summary = summaryLines.join("\n").trim();
-  if (summary.length > 1400) {
+  let summary = everyFailure ?? summaryLines.join("\n").trim();
+  if (!everyFailure && summary.length > 1400) {
     summary = `${summaryLines[0]}\n${summary.slice(-1320)}`;
   }
-  const escapedNewlineHint =
+  // A diagnosis bound to this run's written bytes is more precise than this
+  // generic hint and must not be shadowed by it (Mac round 078).
+  const escapedNewlineHint = !boundDiagnosis &&
     /SyntaxError: unexpected character after line continuation character/.test(summary) &&
     summary.includes("\\n")
       ? "\n[ODS Pixel repair] Python could not parse the reported file. Read the reported line and nearby lines, then make one targeted edit: literal backslash-n outside a Python string must be a real line break. Preserve valid escapes inside strings; do not globally replace them. Rerun the same unittest command before rewriting other files. Keep the requested assertions intact; parsing failure does not verify behavior."
@@ -3345,7 +3439,7 @@ function compactWorkspaceCoreResult(message, pending, state) {
       )
     : [];
   if (verificationFingerprintIsPythonUnittest(pending?.verificationFingerprint)) {
-    const failedSummary = compactFailedUnittestText(result);
+    const failedSummary = compactFailedUnittestText(result, {boundDiagnosis: pending?.escapedLineBreakBound === true});
     if (failedSummary) content = [{ type: "text", text: failedSummary }];
   }
   const details = result?.details;
@@ -6918,6 +7012,74 @@ export function createToolLoopGuard({
       : `${DERIVED_MAP_WRITE_REASON} Repeated files: ${files}.`;
   }
 
+  function addFileRecoveryNote(pending, text) {
+    if (typeof text !== "string" || !text) return;
+    pending.fileRecoveryNote = typeof pending.fileRecoveryNote === "string" ? `${pending.fileRecoveryNote}\n${text}` : text;
+  }
+
+  // Another tool call of the same model message (still pending: OpenClaw
+  // runs them in parallel and persists them together) that writes, edits or
+  // patches this file. Its change may already be in the bytes this note reads,
+  // or land after it; either way "resend unchanged" is unsafe.
+  function siblingChangesFile(runId, toolCallId, pending, file) {
+    return [...pendingToolRuns].some(([id, other]) => other !== pending && id !== toolCallId &&
+      !id.startsWith("tool_search_code:") &&
+      other.runId === runId && other.modelRound === pending.modelRound &&
+      WORKSPACE_MUTATION_TOOLS.has(other.selectedToolName) &&
+      workspaceMutationFiles(other.selectedToolName, other.selectedParams)
+        .some((path) => derivedWorkspacePath(normalizeWorkspaceFilePath(path)) === file));
+  }
+
+  // Edit-miss recovery (edit-recovery.mjs): the closest current text for each
+  // missed edit of this exact failed receipt. It keeps no state between
+  // calls and never changes what runs. The note is computed from the file as
+  // it is when this call's after hook runs, which can include changes that
+  // parallel calls of the same model message made before then; when such a
+  // call targets this file the note asks for a read before any resend.
+  // Nested Tool Search results are folded into their outer receipt, which
+  // carries the note.
+  function observeEditOutcome(state, runId, toolName, toolCallId, event, pending) {
+    if (typeof toolCallId !== "string" || !toolCallId || toolCallId.startsWith("tool_search_code:") ||
+        pending?.runId !== runId || pending.selectedToolName !== "edit" || pending.transport !== toolName ||
+        (event?.runId && event.runId !== runId) || (event?.toolCallId && event.toolCallId !== toolCallId)) return;
+    const receipt = toolName === "tool_call" ? toolSearchEventEnvelope(event, "edit", "core") : event;
+    const executed = toolName === "tool_call" ? receipt?.params ?? event?.params?.args : event?.params;
+    if (!isDeepStrictEqual(executed, pending.selectedParams) || (!toolCallFailed(event) && !toolCallFailed(receipt))) return;
+    const file = derivedWorkspacePath(normalizeWorkspaceFilePath(pending.selectedParams?.path));
+    const texts = (result) => Array.isArray(result?.content)
+      ? result.content.flatMap((block) => block?.type === "text" && typeof block.text === "string" ? [block.text] : []) : [];
+    const error = editMissError(receipt?.result?.details?.error, event?.result?.details?.error,
+      typeof event?.error === "string" ? event.error : undefined, ...texts(receipt?.result), ...texts(event?.result));
+    const edits = editPairs(pending.selectedParams);
+    if (!file || !error || !edits) return;
+    const content = readWorkspaceText(state.configuredWorkspaceRoot, file);
+    const recovery = content === undefined ? undefined
+      : editRecovery(content, edits, { siblingChange: siblingChangesFile(runId, toolCallId, pending, file) });
+    if (!recovery) return;
+    addFileRecoveryNote(pending, recovery.note);
+    pending.stripMismatchHead = true;
+  }
+
+  // Write-time escaped line breaks (python-syntax-guidance.mjs): scan the
+  // bytes this exact write left on disk. Identical re-writes of those bytes
+  // are refused with the same text (see the repeated-write refusal).
+  function observePythonWrite(state, runId, toolName, toolCallId, mutation, pending, writePath) {
+    if (!writePath?.endsWith(".py") || typeof toolCallId !== "string" || !toolCallId ||
+        toolCallId.startsWith("tool_search_code:") || pending?.runId !== runId ||
+        pending.selectedToolName !== "write" || pending.transport !== toolName ||
+        !isDeepStrictEqual(mutation?.event?.params, pending.selectedParams)) return;
+    const current = readWorkspaceText(state.configuredWorkspaceRoot, writePath);
+    const scan = current === undefined ? undefined : escapedLineBreakScan(writePath, current);
+    if (!scan) return;
+    const text = escapedLineBreakText(scan, ESCAPED_LINE_BREAK_WRITE_NEXT);
+    addFileRecoveryNote(pending, text);
+    pending.pythonRepairNote = true;
+    const content = pending.selectedParams?.content;
+    if (typeof content === "string") {
+      (state.escapedLineBreakDiagnoses ??= new Map()).set(writePath, { file: writePath, content, text });
+    }
+  }
+
   function pruneRuns() {
     while (runs.size >= MAX_TRACKED_RUNS) {
       runs.delete(runs.keys().next().value);
@@ -7006,6 +7168,8 @@ export function createToolLoopGuard({
       verificationFingerprint,
       transport,
       selectedToolTarget,
+      // The model call (one assistant message) this tool call belongs to.
+      modelRound: state?.operationsPromptRound,
     });
   }
 
@@ -9939,9 +10103,12 @@ export function createToolLoopGuard({
         isDeepStrictEqual(syntaxExecution.params, pendingToolRun.executedParams)) {
       // A traceback bound to recorded run-written bytes gets the exact diagnosis;
       // repeated identical writes of those bytes cite it in their refusal.
+      // The current bytes (confined read) supply the self-checking repair command.
       const escapedLineBreak = escapedLineBreakDiagnosis(syntaxExecution.result,
-        state.successfulWriteContentByPath, state.configuredWorkspaceRoot);
+        state.successfulWriteContentByPath, state.configuredWorkspaceRoot,
+        file => readWorkspaceText(state.configuredWorkspaceRoot, file));
       if (escapedLineBreak) (state.escapedLineBreakDiagnoses ??= new Map()).set(escapedLineBreak.file, escapedLineBreak);
+      pendingToolRun.escapedLineBreakBound = Boolean(escapedLineBreak);
       pendingToolRun.pythonSyntaxGuidance = escapedLineBreak?.text ??
         pythonSyntaxGuidance(pendingToolRun.selectedParams, syntaxExecution.result);
       pendingToolRun.pythonSyntaxExitCode = syntaxExecution.result?.details?.exitCode;
@@ -10116,6 +10283,11 @@ export function createToolLoopGuard({
         state.successfulWriteContentByPath.set(completedEditPath, editedContent);
       }
     }
+
+    // Recovery notes for this exact receipt (edit misses and escaped line
+    // breaks in a written Python file); see the helpers above.
+    observeEditOutcome(state, runId, toolName, toolCallId, event, pendingToolRun);
+    observePythonWrite(state, runId, toolName, toolCallId, successfulMutation, pendingToolRun, completedWritePath);
     const completedRead =
       toolName === "read" && event?.result && typeof event.result === "object"
         ? event
@@ -10603,7 +10775,7 @@ export function createToolLoopGuard({
         verificationFingerprintIsPythonUnittest(verificationFingerprint) &&
         execEvent?.result?.details?.status === "completed" &&
         Number.isInteger(execEvent.result.details.exitCode)) {
-      const summary = compactFailedUnittestText(execEvent.result);
+      const summary = compactFailedUnittestText(execEvent.result, {boundDiagnosis: pendingToolRun.escapedLineBreakBound === true});
       if (summary) pendingToolRun.nativeUnittestFailure = summary;
     }
     // OpenClaw conservatively classifies its deferred `tool_call` wrapper as a
@@ -11164,8 +11336,18 @@ export function createToolLoopGuard({
     const failedToolResult = message.isError === true || Boolean(compactNativeVerification) ||
       compactCoreResult?.details?.result?.isError === true ||
       validatedToolSearchEnvelope(message.details, WORKSPACE_PREVIEW_TOOL, "pixel-ods")?.result?.isError === true;
+    // Edit and Python-write recovery notes, bound to this exact receipt. A
+    // written file that still needs its escaped line breaks repaired gets that
+    // one step, not the ordinary next-file or publication coaching.
+    const fileRecoveryNote = typeof pending?.fileRecoveryNote === "string" &&
+      message.role === "toolResult" && message.toolName === pending.transport &&
+      (!message.toolCallId || message.toolCallId === toolCallId) &&
+      (!event?.toolCallId || event.toolCallId === toolCallId) &&
+      (!context?.runId || context.runId === pending.runId) &&
+      (!event?.runId || event.runId === pending.runId) ? pending.fileRecoveryNote : undefined;
+    const repairBeforeCoaching = Boolean(fileRecoveryNote && pending.pythonRepairNote);
     const workspaceStageInstruction = (() => {
-      if (failedToolResult) return undefined;
+      if (failedToolResult || repairBeforeCoaching) return undefined;
       if (!compactCoreResult || !state?.workspaceTaskDirectory || state.progressBudget.laneExhausted('workspace')) return undefined;
       const nextFile = state.workspaceMutationRequested
         ? state.workspaceRequestedFiles.find((file) =>
@@ -11211,7 +11393,7 @@ export function createToolLoopGuard({
       // Preserve a blocked tool's prerequisite or repair instruction as the
       // next action. Publication coaching resumes after a successful result;
       // appending it to a rejection can send the model straight to preview.
-      if (failedToolResult) return undefined;
+      if (failedToolResult || repairBeforeCoaching) return undefined;
       if (state?.progressBudget.laneExhausted('workspace')) return undefined;
       const prerequisite = state?.workspacePreviewRequired && !state.workspacePreviewForbidden &&
         !state.operationsRequired && !state.exactDownloadRequested && visualContinuationPrerequisite(state);
@@ -11319,6 +11501,7 @@ export function createToolLoopGuard({
     // and details, which can exhaust small local models before the required
     // continuation tool call closes.
     if (
+      !fileRecoveryNote &&
       !continuation &&
       !hostEvidence &&
       !compactVerification &&
@@ -11333,7 +11516,10 @@ export function createToolLoopGuard({
     ) {
       return undefined;
     }
-    const compactMessage = compactNativeVerification ?? compactVerification ?? compactCoreResult ?? compactWebResult ?? compactNativeWebResult ?? nativeFetchGuidance ?? message;
+    const projectedMessage = compactNativeVerification ?? compactVerification ?? compactCoreResult ?? compactWebResult ?? compactNativeWebResult ?? nativeFetchGuidance ?? message;
+    // The closest-text note replaces OpenClaw's 800-character file head.
+    const compactMessage = fileRecoveryNote && pending.stripMismatchHead
+      ? withoutMismatchHead(projectedMessage) : projectedMessage;
     const content = hostEvidence
       ? [{
         type: "text",
@@ -11372,14 +11558,18 @@ export function createToolLoopGuard({
       content.push({type:'text',text:executionGuidance});
     if (redirectOrderNote && !content.some(block => block?.type === 'text' && block.text === redirectOrderNote))
       content.push({type:'text',text:redirectOrderNote});
+    if (fileRecoveryNote && !content.some(block => block?.type === 'text' && block.text === fileRecoveryNote))
+      content.push({type:'text',text:fileRecoveryNote});
     if (workspaceStageInstruction && coachingDue('workspace', workspaceStageInstruction)) {
       content.push({ type: "text", text: workspaceStageInstruction });
     }
     if (sandboxPathCorrection) content.push({type:'text',text:sandboxPathCorrection});
     if (researchBudgetGuidance) content.push({type:'text',text:researchBudgetGuidance});
     if (staleDateGuidance) content.push({type:'text',text:staleDateGuidance});
+    // A bound escaped-line-break diagnosis is never suppressed by other notes.
     if (pending?.pythonSyntaxGuidance && executionGuidance && !content.some(block => block?.type === 'text' &&
-        /\[ODS Pixel (?:repair|Python syntax|execution)\]/.test(block.text)))
+        (pending.escapedLineBreakBound ? block.text === executionGuidance
+          : /\[ODS Pixel (?:repair|Python syntax|execution)\]/.test(block.text))))
       content.push({type:'text',text:executionGuidance});
     if (previewStageInstruction && coachingDue('preview', previewStageInstruction)) {
       content.push({ type: "text", text: previewStageInstruction });

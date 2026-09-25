@@ -1,0 +1,196 @@
+{
+ "evidence": "windows-laptop-wsl-beta round 081, Qwen3.5-9B, website_create (transcript e65768f1): the first failed inspection (request and capsule receipt), verbatim",
+ "args": {
+  "siteId": "site-9255b84385a3a450ec3c6e29",
+  "sha256": "9255b84385a3a450ec3c6e29cdf451f4c0195e8c37ff52b1ca7ef7a6087fbb1e",
+  "viewport": {
+   "width": 375,
+   "height": 812
+  },
+  "steps": [
+   {
+    "action": "assert-visible",
+    "locator": {
+     "selector": "h1"
+    }
+   },
+   {
+    "action": "assert-visible",
+    "locator": {
+     "selector": ".reveal-button"
+    }
+   },
+   {
+    "action": "assert-hidden",
+    "locator": {
+     "selector": ".event-card.hidden"
+    }
+   },
+   {
+    "action": "click",
+    "locator": {
+     "selector": ".reveal-button"
+    }
+   },
+   {
+    "action": "assert-visible",
+    "locator": {
+     "selector": ".event-card.hidden"
+    }
+   }
+  ]
+ },
+ "receipt": {
+  "blockedRequests": [],
+  "diagnostics": {
+   "hiddenUntilFoundCount": 0,
+   "renderedHiddenAttributeCount": 0
+  },
+  "kind": "ods-pixel-preview-inspection",
+  "planSha256": "5a0c5fcec949a4aaacdca43c85f49e98f7fdd4df5051cbe569e7f7025009fa71",
+  "renderedColors": {
+   "colors": [
+    {
+     "hex": "#1a1a24",
+     "name": "black",
+     "percent": 93
+    },
+    {
+     "hex": "#1f1f29",
+     "name": "dark gray",
+     "percent": 4
+    },
+    {
+     "hex": "#a88cfa",
+     "name": "purple",
+     "percent": 1
+    },
+    {
+     "hex": "#4e3885",
+     "name": "purple",
+     "percent": 1
+    },
+    {
+     "hex": "#5b6373",
+     "name": "gray",
+     "percent": 1
+    }
+   ],
+   "viewport": {
+    "height": 720,
+    "width": 1280
+   }
+  },
+  "schemaVersion": 1,
+  "scope": "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.",
+  "sha256": "9255b84385a3a450ec3c6e29cdf451f4c0195e8c37ff52b1ca7ef7a6087fbb1e",
+  "siteId": "site-9255b84385a3a450ec3c6e29",
+  "status": "failed",
+  "steps": [
+   {
+    "action": "assert-visible",
+    "before": {
+     "count": 1,
+     "display": "block",
+     "hidden": false,
+     "hiddenUntilFound": false,
+     "opacity": "1",
+     "rectCount": 1,
+     "visibility": "visible",
+     "visible": true
+    },
+    "index": 0,
+    "locator": {
+     "selector": "h1"
+    },
+    "stable": true,
+    "status": "passed"
+   },
+   {
+    "action": "assert-visible",
+    "before": {
+     "count": 1,
+     "display": "inline-flex",
+     "hidden": false,
+     "hiddenUntilFound": false,
+     "opacity": "1",
+     "rectCount": 1,
+     "visibility": "visible",
+     "visible": true
+    },
+    "index": 1,
+    "locator": {
+     "selector": ".reveal-button"
+    },
+    "stable": true,
+    "status": "passed"
+   },
+   {
+    "action": "assert-hidden",
+    "before": {
+     "count": 1,
+     "display": "none",
+     "hidden": false,
+     "hiddenUntilFound": false,
+     "opacity": "1",
+     "rectCount": 0,
+     "visibility": "visible",
+     "visible": false
+    },
+    "index": 2,
+    "locator": {
+     "selector": ".event-card.hidden"
+    },
+    "stable": true,
+    "status": "passed"
+   },
+   {
+    "action": "click",
+    "after": {
+     "count": 1,
+     "display": "inline-flex",
+     "hidden": false,
+     "hiddenUntilFound": false,
+     "opacity": "1",
+     "rectCount": 1,
+     "visibility": "visible",
+     "visible": true
+    },
+    "before": {
+     "count": 1,
+     "display": "inline-flex",
+     "hidden": false,
+     "hiddenUntilFound": false,
+     "opacity": "1",
+     "rectCount": 1,
+     "visibility": "visible",
+     "visible": true
+    },
+    "index": 3,
+    "locator": {
+     "selector": ".reveal-button"
+    },
+    "stable": true,
+    "status": "passed"
+   },
+   {
+    "action": "assert-visible",
+    "before": {
+     "count": 0
+    },
+    "errorCode": "no_match",
+    "index": 4,
+    "locator": {
+     "selector": ".event-card.hidden"
+    },
+    "stable": true,
+    "status": "failed"
+   }
+  ],
+  "viewport": {
+   "height": 812,
+   "width": 375
+  }
+ },
+ "persistedText": "Preview inspection failed. Step 5 (assert-visible) matched no element, so nothing was measured and later steps did not run. Copy the exact role and accessible name (case, spacing, punctuation) or a CSS selector such as an id from your source, and retry the inspection on the same published snapshot. Do not change the site only to satisfy a locator. Requested behavior remains unverified. Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality. Rendered colors (by area, desktop 1280x720 as loaded): black 93%, dark gray 4%, purple #a88cfa 1%, purple #4e3885 1%, gray 1%. Colors under 1% of the view and hover/focus-only styles are not listed. Evidence: {\"blockedRequests\":[],\"diagnostics\":{\"hiddenUntilFoundCount\":0,\"renderedHiddenAttributeCount\":0},\"kind\":\"ods-pixel-preview-inspection\",\"planSha256\":\"5a0c5fcec949a4aaacdca43c85f49e98f7fdd4df5051cbe569e7f7025009fa71\",\"schemaVersion\":1,\"scope\":\"Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.\",\"sha256\":\"9255b84385a3a450ec3c6e29cdf451f4c0195e8c37ff52b1ca7ef7a6087fbb1e\",\"siteId\":\"site-9255b84385a3a450ec3c6e29\",\"status\":\"failed\",\"steps\":[{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":0,\"locator\":{\"selector\":\"h1\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"inline-flex\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":1,\"locator\":{\"selector\":\".reveal-button\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-hidden\",\"before\":{\"count\":1,\"display\":\"none\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":0,\"visibility\":\"visible\",\"visible\":false},\"index\":2,\"locator\":{\"selector\":\".event-card.hidden\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"click\",\"after\":{\"count\":1,\"display\":\"inline-flex\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"before\":{\"count\":1,\"display\":\"inline-flex\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":3,\"locator\":{\"selector\":\".reveal-button\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":0},\"errorCode\":\"no_match\",\"index\":4,\"locator\":{\"selector\":\".event-card.hidden\"},\"stable\":true,\"status\":\"failed\"}],\"viewport\":{\"height\":812,\"width\":375}}"
+}
