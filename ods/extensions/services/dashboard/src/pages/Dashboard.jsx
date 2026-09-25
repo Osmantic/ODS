@@ -607,7 +607,7 @@ function buildChartPoints(values, maxValue) {
   })
 }
 
-export default function Dashboard({ status, loading, compact = false }) {
+export default function Dashboard({ status, loading, statusError, compact = false }) {
   const [featuresData, setFeaturesData] = useState(null)
   const [serviceResources, setServiceResources] = useState(null)
 
@@ -830,6 +830,12 @@ export default function Dashboard({ status, loading, compact = false }) {
           {status?.version && <span>v{status.version}</span>}
         </div>
       </div>
+
+      {statusError && (
+        <div role="alert" className="mb-6 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          Showing the last successful system status snapshot. Live status refresh failed: {statusError}
+        </div>
+      )}
 
       {/* Feature Cards */}
       <div className="liquid-metal-sequence-grid liquid-metal-sequence-grid--features grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2.5 mb-10">
