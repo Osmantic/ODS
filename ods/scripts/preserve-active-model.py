@@ -79,7 +79,7 @@ def parse_dotenv(path: Path) -> dict[str, str]:
             raw_value = raw_value.split(" #", 1)[0].rstrip()
         try:
             parsed = shlex.split(raw_value, comments=False, posix=True)
-        except ValueError:
+        except (ValueError, TypeError):
             continue
         if len(parsed) <= 1:
             values[key] = parsed[0] if parsed else ""
