@@ -276,13 +276,12 @@ if "qwen" in model_label:
     template_kwargs["enable_thinking"] = model_reasoning
     # Keep earlier assistant turns byte-identical to how they were generated
     # (see pixel-host-install.sh); other chat templates ignore the switch.
-    # Only this host's own server gets it: the gateway can route to a shared
-    # ODS host, whose inference API rejects any template key but
-    # enable_thinking before this change (HTTP 400 on every request).
-    if provider_id == "ods-local":
-        template_kwargs["preserve_thinking"] = True
-    else:
-        template_kwargs.pop("preserve_thinking", None)
+    # Sent on both routes. It never leaves the host: the Pixel model relay
+    # removes it in cloud mode, the only mode whose route can, and the Pixel
+    # provider gateway removes it for shared-host and cloud providers. A
+    # shared ODS host on an earlier release rejects every template key but
+    # enable_thinking.
+    template_kwargs["preserve_thinking"] = True
 else:
     template_kwargs = updated_agent_params.get("chat_template_kwargs")
     if isinstance(template_kwargs, dict):

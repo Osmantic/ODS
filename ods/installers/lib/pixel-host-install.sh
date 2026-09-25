@@ -1568,12 +1568,12 @@ if "qwen" in model_label:
     # generated with. Qwen3.6 templates and ODS's llama.cpp Qwen3.5 template
     # honor it; without it every owner turn rewrites the previous run and a
     # local server re-reads all of it. Other templates ignore unknown kwargs.
-    # Only the local route sends it: the gateway can reach a shared ODS host
-    # whose inference API accepts no template key but enable_thinking.
-    if provider == "ods-local":
-        template_kwargs["preserve_thinking"] = True
-    else:
-        template_kwargs.pop("preserve_thinking", None)
+    # Sent on both routes. It never leaves the host: the Pixel model relay
+    # removes it in cloud mode, the only mode whose route can, and the Pixel
+    # provider gateway removes it for shared-host and cloud providers. A
+    # shared ODS host on an earlier release accepts no template key but
+    # enable_thinking.
+    template_kwargs["preserve_thinking"] = True
 else:
     template_kwargs = normalized_agent_params.get("chat_template_kwargs")
     if isinstance(template_kwargs, dict):

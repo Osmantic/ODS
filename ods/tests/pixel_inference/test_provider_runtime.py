@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'bin'))
 from pixel_provider.config import default_config
-from pixel_provider.runtime_gateway import RuntimeErrorCode, create_app, validate_request
+from pixel_provider.runtime_gateway import RuntimeErrorCode, create_app, provider_request, validate_request
 
 
 def configuration():
@@ -259,3 +259,24 @@ def test_chat_template_switches_are_booleans_only():
                    {'preserve_thinking':'yes'},{'enable_thinking':0},[('enable_thinking',False)]):
         with pytest.raises(RuntimeErrorCode):
             validate_request({**payload(),'chat_template_kwargs':kwargs})
+
+
+@pytest.mark.parametrize('kind,model,kept',[('local','primary',True),('ods-peer','ods/shared',False),
+    ('cloud','primary',False),('local','ods/shared',False)])
+def test_preserve_thinking_reaches_only_local_providers(kind,model,kept):
+    # A shared ODS host on an earlier release answers HTTP 400 to any template
+    # key but enable_thinking; enable_thinking itself is always forwarded.
+    config = configuration()
+    config['providers'][0].update(kind=kind,model=model,credentialRef='primary-ref' if kind=='cloud' else None)
+    config['policy']['allowCloud'] = kind == 'cloud'
+    calls = []
+    def handler(request):
+        calls.append(json.loads(request.content))
+        return answer(request)
+    body = {**payload(),'chat_template_kwargs':{'enable_thinking':False,'preserve_thinking':True}}
+    assert asyncio.run(request_to(make_app(handler,config),body)).status_code == 200
+    expected = {'enable_thinking':False,'preserve_thinking':True} if kept else {'enable_thinking':False}
+    assert calls[0]['chat_template_kwargs'] == expected and calls[0]['model'] == model
+    only = provider_request({**payload(),'chat_template_kwargs':{'preserve_thinking':True}},config['providers'][0])
+    assert only.get('chat_template_kwargs') == ({'preserve_thinking':True} if kept else None)
+    assert body['chat_template_kwargs'] == {'enable_thinking':False,'preserve_thinking':True}
