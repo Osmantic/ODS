@@ -32,6 +32,7 @@ import { assistantMessageText, composeProgressFinalization, composeReadPages, cr
   PROGRESS_FINALIZATION_INSTRUCTION } from "./progress-finalization.mjs";
 import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisRequest } from "./stop-synthesis.mjs";
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
+import { OUTPUT_LIMIT_INSTRUCTION, OUTPUT_LIMIT_REASON, OUTPUT_LIMIT_UNRECOVERED_TEXT, outputLimitReply } from "./output-limit-recovery.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
@@ -11717,11 +11718,13 @@ export function createToolLoopGuard({
       if (agent !== undefined && agent !== agentId) return undefined;
       const message = event?.message;
       if (message?.role !== 'assistant' || !Array.isArray(message.content)) return undefined;
-      const calls = message.content.filter(block => block?.type === 'toolCall').map(block => block.id);
-      if (!calls.length) return undefined;
       const active = activeSessionRun(context?.sessionKey ?? event?.sessionKey);
       if (!active) return undefined;
       const {runId, state} = active;
+      // The latest assistant reply decides; a later complete reply clears it.
+      state.outputLimitStop = outputLimitReply(message);
+      const calls = message.content.filter(block => block?.type === 'toolCall').map(block => block.id);
+      if (!calls.length) return undefined;
       if (!state.progressBudget.exhausted || state.clientCancelled || state.recursiveDeleteDenied || state.webLoopAborted) return undefined;
       const finalization = state.progressFinalization;
       if (finalization.phase !== 'turn' && finalization.phase !== 'failed') return undefined;
@@ -11777,6 +11780,15 @@ export function createToolLoopGuard({
       });
     }
     if (state?.recursiveDeleteDenied || state?.progressBudget.exhausted || state?.clientCancelled || state?.webLoopAborted) return undefined;
+    // A reply cut at the output limit never ran its unfinished tool call.
+    // OpenClaw 2026.6.33 skips this hook when such a reply is the whole turn
+    // (incompleteTerminalAssistant); when it does run, grant one pass.
+    if (state?.outputLimitStop && !state.outputLimitRetried && state.ownerIntentObserved &&
+        !state.managedTeamWorker && ownerInteractiveTurn(context, agentId)) {
+      state.outputLimitRetried = true;
+      return {action: 'revise', reason: OUTPUT_LIMIT_REASON, retry: {
+        instruction: OUTPUT_LIMIT_INSTRUCTION, idempotencyKey: 'ods-output-limit-recovery', maxAttempts: 1}};
+    }
     // A silent sentinel is never an answer to an owner-authored chat message.
     // One revision pass; the harness still refuses it after side effects.
     if (state?.ownerIntentObserved && !state.managedTeamWorker && !state.silentOwnerReplyRetried &&
@@ -11813,7 +11825,13 @@ export function createToolLoopGuard({
   }
 
   function verificationForRun(runId) {
-    const verification = mixedTaskVerificationForRun(runId);
+    let verification = mixedTaskVerificationForRun(runId);
+    // Delivery reports a final reply cut at the output limit whether or not
+    // before_agent_finalize ran, instead of a generic "try again".
+    if (runs.get(runId)?.outputLimitStop) {
+      verification = {...verification, status:'failed',
+        text:[OUTPUT_LIMIT_UNRECOVERED_TEXT, verification.text].filter(Boolean).join('\n\n')};
+    }
     const stopped = runs.get(runId)?.progressBudget.exhaustedLanes ?? [];
     if (!stopped.length) return verification;
     return {...verification,status:'failed',
