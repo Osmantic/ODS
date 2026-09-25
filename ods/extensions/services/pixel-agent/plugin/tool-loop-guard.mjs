@@ -6047,7 +6047,10 @@ function workspacePreviewMissingEntryReason(state, directory) {
   // project, and malformed requests retain the ordinary rejection.
   if (directories.length !== 1 || typeof directory !== "string" ||
       directory.length > 512 || !directory.split("/").every(part => WORKSPACE_PATH_COMPONENT.test(part)) ||
-      directories[0] === directory) return WORKSPACE_PREVIEW_REQUIRES_FILES_REASON;
+      directories[0] === directory ||
+      // Never steer back to a directory the host has already rejected.
+      (state?.workspacePreviewFailureCode !== undefined && directories[0] === state.workspacePreviewDirectory))
+    return WORKSPACE_PREVIEW_REQUIRES_FILES_REASON;
   return `${WORKSPACE_PREVIEW_REQUIRES_FILES_REASON} This turn successfully wrote index.html in workspace-relative directory "${directories[0]}", not "${directory}". If that is the intended artifact, use its exact directory for the preview request. Preserve the existing files; no directory was changed or published by this rejection.`;
 }
 
@@ -10474,8 +10477,12 @@ export function createToolLoopGuard({
     const compactCoreResult = compactVerification
       ? undefined
       : compactWorkspaceCoreResult(message, pending, state);
+    // A Tool Search dispatch persists the selected tool's failure inside an
+    // envelope whose outer result is not an error. afterToolCall already
+    // charges that failure to the run budget; never coach it as a success.
     const failedToolResult = message.isError === true || Boolean(compactNativeVerification) ||
-      compactCoreResult?.details?.result?.isError === true;
+      compactCoreResult?.details?.result?.isError === true ||
+      validatedToolSearchEnvelope(message.details, WORKSPACE_PREVIEW_TOOL, "pixel-ods")?.result?.isError === true;
     const workspaceStageInstruction = (() => {
       if (failedToolResult) return undefined;
       if (!compactCoreResult || !state?.workspaceTaskDirectory || state.progressBudget.laneExhausted('workspace')) return undefined;
@@ -10541,9 +10548,12 @@ export function createToolLoopGuard({
         const directory = workspacePreviewDirectoryFromState(state);
         const historicalReadback = !directory && historicalWorkspaceEntryReadback(state);
         if (historicalReadback) return `[ODS Pixel next step] ${historicalReadback.instruction}`;
+        // The host rejected this exact directory; do not prescribe it again.
+        const hostRejected = state.workspacePreviewFailureCode !== undefined &&
+          directory === state.workspacePreviewDirectory;
         return "[ODS Pixel next step] This visual project must be delivered in Workbench. " +
           "Finish all requested files, edits and checks first, then publish BEFORE your final answer. " +
-          (directory ? `Call tool_call with id ${WORKSPACE_PREVIEW_TOOL} and args ${JSON.stringify({relativeDirectory:directory})}. ` :
+          (directory && !hostRejected ? `Call tool_call with id ${WORKSPACE_PREVIEW_TOOL} and args ${JSON.stringify({relativeDirectory:directory})}. ` :
             "Prepare a browser-ready directory with index.html and local assets, preserve the source files, then call pixel_ods_workspace_preview with that relativeDirectory. ") +
           "A sandbox server, saved file or previous snapshot is not a verified current preview.";
       }

@@ -66,6 +66,11 @@ VC_METADATA_NAMES = frozenset(
         ".gitignore", ".gitattributes", ".gitmodules",
     }
 )
+# Bytecode and test-runner caches appear whenever project code or its tests run
+# in the directory. They are never site content, so prune them by exact
+# directory name like VC metadata: never entered, read, copied or published.
+# Files with these names are still validated normally.
+GENERATED_CACHE_DIRECTORY_NAMES = frozenset({"__pycache__", ".pytest_cache"})
 
 BOUNDARY = (
     "Create-only static-site snapshot from the configured Pixel workspace to a "
@@ -234,7 +239,8 @@ def _source_files(
         ):
             raise PreviewError("unsafe preview directory")
         # Exclude metadata by its own name; ordinary symlinks stay rejected.
-        pruned = [d for d in directories if d not in VC_METADATA_NAMES]
+        pruned = [d for d in directories
+                  if d not in VC_METADATA_NAMES and d not in GENERATED_CACHE_DIRECTORY_NAMES]
         for directory in pruned:
             info = (root_path / directory).lstat()
             if (
