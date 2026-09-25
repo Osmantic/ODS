@@ -4397,6 +4397,8 @@ export function canonicalGitHubSourceMatches(source, repository) {
 
 function canonicalWebFetchSucceeded(event) {
   if (toolCallFailed(event)) return false;
+  // Undecoded PDF or binary bytes are not a source read (document-body.mjs).
+  if (binaryFetchReceipt(event?.result)) return false;
   const statuses = [];
   const details = event?.result?.details;
   if (details && typeof details === "object" && !Array.isArray(details)) {

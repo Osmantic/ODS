@@ -390,3 +390,21 @@ test('a native web_fetch PDF result bound to its call is persisted as the receip
   assert.ok(!persisted.content[0].text.includes('%PDF') && !persisted.content[0].text.includes(REPLACEMENT));
   assert.deepEqual(persisted.details, message.details);
 });
+
+test('a binary file from the requested GitHub repository is not a repository source read', () => {
+  const guard = createToolLoopGuard();
+  const context = {agentId: 'pixel', runId: 'run-1', sessionId: 'session-1'};
+  guard.observeRun(context, 'pixel', {prompt: 'Research the official Osmantic/ODS GitHub repository.'});
+  const fetch = (id, url, result) => {
+    const event = {toolName: 'web_fetch', toolCallId: id, runId: 'run-1', params: {url}};
+    const ctx = {...context, toolName: 'web_fetch', toolCallId: id};
+    assert.notEqual(guard.beforeToolCall(event, ctx, 'pixel')?.block, true);
+    guard.afterToolCall({...event, result}, ctx, 'pixel');
+  };
+  const guide = 'https://raw.githubusercontent.com/Osmantic/ODS/HEAD/docs/guide.pdf';
+  fetch('pdf', guide, fetchReceipt({url: guide}));
+  assert.equal(guard.verificationForRun('run-1').status, 'failed', 'the PDF bytes are not a source read');
+  const readme = 'https://raw.githubusercontent.com/Osmantic/ODS/HEAD/README.md';
+  fetch('readme', readme, fetchReceipt({url: readme, contentType: 'text/plain', body: '# ODS\nLocal AI stack.'}));
+  assert.equal(guard.verificationForRun('run-1').status, 'none');
+});
