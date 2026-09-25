@@ -8696,7 +8696,10 @@ export function createToolLoopGuard({
         const wrappedFingerprint = execFingerprint(params);
         const pendingExec = pendingToolRuns.get(context?.toolCallId ?? event?.toolCallId);
         if (pendingExec?.runId === runId && pendingExec.selectedToolName === 'exec')
-          pendingExec.executedParams = structuredClone(params);
+          // The pinned SDK merges direct before-hook params into the original
+          // arguments. An omitted normalized workdir therefore remains present.
+          pendingExec.executedParams = structuredClone(toolName === 'exec'
+            ? { ...event.params, ...params } : params);
         if (originalFingerprint && wrappedFingerprint) {
           state.execOriginalByWrapped.set(wrappedFingerprint, originalFingerprint);
         }
@@ -9308,7 +9311,10 @@ export function createToolLoopGuard({
         (!context?.sessionKey || context.sessionKey === state.currentSessionKey) &&
         (!event?.runId || event.runId === runId) &&
         (!event?.toolCallId || event.toolCallId === toolCallId) &&
-        (!event?.toolName || event.toolName === toolName) && !event.error &&
+        (!event?.toolName || event.toolName === toolName) &&
+        (!event.error || (syntaxExecution.result?.details?.status === 'completed' &&
+          Number.isSafeInteger(syntaxExecution.result.details.exitCode) &&
+          syntaxExecution.result.details.exitCode > 0 && syntaxExecution.result.details.exitCode <= 255)) &&
         isDeepStrictEqual(syntaxExecution.params, pendingToolRun.executedParams)) {
       pendingToolRun.pythonSyntaxGuidance = pythonSyntaxGuidance(pendingToolRun.selectedParams, syntaxExecution.result);
       pendingToolRun.pythonSyntaxExitCode = syntaxExecution.result?.details?.exitCode;

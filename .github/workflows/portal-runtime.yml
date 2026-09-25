@@ -47,6 +47,7 @@ jobs:
           node-version: '24'
       - run: node --test ods/extensions/services/pixel-agent/tests/compaction_lock.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/read_range.test.mjs
+      - run: node --test ods/extensions/services/pixel-agent/tests/persisted_tool_model_projection.test.mjs ods/extensions/services/pixel-agent/tests/exec_completion_feedback.test.mjs
       - name: Verify bounded preview delivery across platforms
         run: |
           node --test ods/extensions/services/pixel-agent/tests/preview_delivery_recovery.test.mjs
@@ -75,6 +76,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_preview_delivery.integration.mjs
+      - name: Verify tool feedback reaches the next real provider request
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs
   runtime:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
