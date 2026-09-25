@@ -327,6 +327,16 @@ def profile_is_eligible(profile_record: dict[str, Any], args: argparse.Namespace
     return True
 
 
+def catalog_chat_template(model: dict[str, Any], backend: str, catalog: Path) -> str:
+    """Re-derive the model's llama.cpp chat template (see select-model.py)."""
+    name = model.get("llama_chat_template")
+    if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.jinja", name)
+            or normalize_key(backend) not in {"nvidia", "jetson", "cpu", "apple"}
+            or not (catalog.resolve().parent / "llama-server" / "templates" / name).is_file()):
+        return ""
+    return f"/config/llama-server/templates/{name}"
+
+
 def valid_runtime_value(key: str, value: str) -> bool:
     if key == "LLAMA_PARALLEL":
         number = positive_int(value)
@@ -568,6 +578,10 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
         "LLAMA_SERVER_IMAGE": image,
         **runtime_values,
     }
+    # Never carried over from .env: a template belongs to the preserved model.
+    chat_template = catalog_chat_template(model, args.backend, args.catalog)
+    if chat_template:
+        contract["LLAMA_ARG_CHAT_TEMPLATE_FILE"] = chat_template
     if active_store_id != "default":
         contract["ODS_ACTIVE_MODEL_STORE"] = active_store_id
     return contract

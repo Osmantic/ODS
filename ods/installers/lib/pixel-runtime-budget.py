@@ -274,10 +274,19 @@ if "qwen" in model_label:
     if not isinstance(template_kwargs, dict):
         raise SystemExit("OpenClaw Pixel chat-template parameters must be an object")
     template_kwargs["enable_thinking"] = model_reasoning
+    # Keep earlier assistant turns byte-identical to how they were generated
+    # (see pixel-host-install.sh); other chat templates ignore the switch.
+    # Sent on both routes. It never leaves the host: the Pixel model relay
+    # removes it in cloud mode, the only mode whose route can, and the Pixel
+    # provider gateway removes it for shared-host and cloud providers. A
+    # shared ODS host on an earlier release rejects every template key but
+    # enable_thinking.
+    template_kwargs["preserve_thinking"] = True
 else:
     template_kwargs = updated_agent_params.get("chat_template_kwargs")
     if isinstance(template_kwargs, dict):
         template_kwargs.pop("enable_thinking", None)
+        template_kwargs.pop("preserve_thinking", None)
         if not template_kwargs:
             updated_agent_params.pop("chat_template_kwargs", None)
     if not updated_agent_params:

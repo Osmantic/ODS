@@ -5,6 +5,10 @@ on:
     paths:
       - 'ods/extensions/services/pixel-agent/plugin/**'
       - 'ods/extensions/services/pixel-agent/tests/tool*grammar*'
+      - 'ods/extensions/services/pixel-agent/tests/chat_template_prefix.integration.mjs'
+      - 'ods/extensions/services/pixel-agent/tests/prompt-prefix-replay.mjs'
+      - 'ods/extensions/services/pixel-agent/tests/qwen-chat-render.mjs'
+      - 'ods/config/llama-server/templates/**'
       - 'ods/extensions/services/pixel-agent/tests/extension_proposal.test.mjs'
       - 'ods/extensions/services/pixel-agent/tests/runtime_tool_surface.integration.mjs'
       - 'ods/extensions/services/pixel-agent/tests/runtime_image_envelope.integration.mjs'
@@ -12,6 +16,8 @@ on:
       - 'ods/extensions/services/pixel-agent/host/openclaw-image-envelope.json'
       - 'ods/extensions/services/pixel-agent/host/openclaw_tool_recovery.py'
       - 'ods/docker-compose.base.yml'
+      - 'ods/docker-compose.nvidia.yml'
+      - 'ods/docker-compose.cpu.yml'
       - '.github/workflows/test-pixel-tool-grammar.yml'
   workflow_dispatch:
 
@@ -86,5 +92,6 @@ jobs:
             ods/extensions/services/pixel-agent/tests/tool_grammar_surface.integration.mjs \
             ods/extensions/services/pixel-agent/tests/extension_proposal.test.mjs \
             ods/extensions/services/pixel-agent/tests/runtime_tool_surface.integration.mjs \
-            ods/extensions/services/pixel-agent/tests/runtime_image_envelope.integration.mjs
+            ods/extensions/services/pixel-agent/tests/runtime_image_envelope.integration.mjs \
+            ods/extensions/services/pixel-agent/tests/chat_template_prefix.integration.mjs
           python -m pytest -q ods/extensions/services/pixel-agent/tests/test_openclaw_tool_recovery.py

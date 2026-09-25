@@ -71,6 +71,8 @@ ENV_NAMES_BY_BUILD = {
         "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V",
         "LLAMA_ARG_SPLIT_MODE",
         "LLAMA_ARG_TENSOR_SPLIT",
+        # --chat-template-file (common/arg.cpp:3128-3138 in b9014).
+        "LLAMA_ARG_CHAT_TEMPLATE_FILE",
         # --cache-prompt/--no-cache-prompt is negatable, so common_arg::
         # get_value_from_env also reads LLAMA_ARG_NO_CACHE_PROMPT. Any value,
         # including 0 or empty, disables prompt caching.

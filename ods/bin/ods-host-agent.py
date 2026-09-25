@@ -12918,6 +12918,11 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "LLAMA_ARG_CACHE_TYPE_K": "f16",
                         "LLAMA_ARG_CACHE_TYPE_V": "f16",
                     })
+                # A chat template belongs to one model family: set it for this
+                # model or remove it, never keep the previous model's.
+                chat_template = _llama_chat_template_env(model, env_pre)
+                if chat_template:
+                    updates["LLAMA_ARG_CHAT_TEMPLATE_FILE"] = chat_template
                 remove_keys = {
                     "LLAMA_ARG_N_CPU_MOE",
                     "LLAMA_ARG_NO_CACHE_PROMPT",
@@ -12926,6 +12931,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS",
                     "LLAMA_ARG_SPEC_TYPE",
                     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
+                    "LLAMA_ARG_CHAT_TEMPLATE_FILE",
                 }
                 if gpu_assignment_plan:
                     remove_keys.update(gpu_assignment_plan.get("env_removals") or [])
@@ -17861,6 +17867,10 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         value = env.get(env_key, "").strip()
         if value:
             args.extend([flag, value])
+    # A registered runtime profile owns its arguments (as in the macOS
+    # launchers); the catalog model's chat template applies otherwise.
+    if profile is None:
+        args.extend(_native_llama_chat_template_arguments(env))
     args.extend(_native_llama_tuning_arguments(
         env,
         llama_bin,
@@ -18174,6 +18184,43 @@ def _append_network_settings(
 # b9014 image and default LLAMA_ARG_SPEC_TYPE there.
 _LLAMA_SPEC_DEFAULT_BACKENDS = frozenset({"nvidia", "jetson", "cpu"})
 
+# ODS chat templates for llama.cpp (config/llama-server/templates). The .env
+# value is the path inside the NVIDIA/CPU llama-server containers; native
+# launchers map it to the same file in the install directory.
+_LLAMA_CHAT_TEMPLATE_DIR = "/config/llama-server/templates"
+_LLAMA_CHAT_TEMPLATE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.jinja")
+# Backends whose llama.cpp server reads LLAMA_ARG_CHAT_TEMPLATE_FILE: the
+# NVIDIA/CPU Compose overlays and the native macOS/Windows launchers.
+_LLAMA_CHAT_TEMPLATE_BACKENDS = frozenset({"nvidia", "jetson", "cpu", "apple"})
+
+
+def _llama_chat_template_env(model: dict, env: dict) -> str:
+    """Return LLAMA_ARG_CHAT_TEMPLATE_FILE for a catalog model, or "".
+
+    Only catalog entries that name a shipped template get one (the Qwen3.5
+    GGUFs: their embedded template plus Qwen3.6's preserve_thinking switch).
+    Lemonade and other runtimes keep the GGUF's own template.
+    """
+    name = model.get("llama_chat_template") if isinstance(model, dict) else None
+    backend = str(env.get("GPU_BACKEND") or "").strip().lower()
+    if (not isinstance(name, str) or not _LLAMA_CHAT_TEMPLATE_NAME.fullmatch(name)
+            or backend not in _LLAMA_CHAT_TEMPLATE_BACKENDS or _uses_lemonade_runtime(env)
+            or not (INSTALL_DIR / "config" / "llama-server" / "templates" / name).is_file()):
+        return ""
+    return f"{_LLAMA_CHAT_TEMPLATE_DIR}/{name}"
+
+
+def _native_llama_chat_template_arguments(env: dict) -> list[str]:
+    """Map the .env chat template to --chat-template-file for a native server."""
+    value = str(env.get("LLAMA_ARG_CHAT_TEMPLATE_FILE") or "").strip()
+    name = value[len(_LLAMA_CHAT_TEMPLATE_DIR) + 1:] if value.startswith(_LLAMA_CHAT_TEMPLATE_DIR + "/") else ""
+    path = INSTALL_DIR / "config" / "llama-server" / "templates" / name
+    if not name or not _LLAMA_CHAT_TEMPLATE_NAME.fullmatch(name) or not path.is_file():
+        if value:
+            logger.warning("Ignoring unsupported LLAMA_ARG_CHAT_TEMPLATE_FILE; using the model's own template")
+        return []
+    return ["--chat-template-file", str(path)]
+
 
 def _llama_spec_type_default(env: dict) -> str:
     """Return the speculative type the NVIDIA/CPU Compose overlays would set.
@@ -18289,6 +18336,12 @@ def _llama_recreate_argv(
         ):
             if key in env:
                 replacement_env[key] = str(env.get(key) or "")
+    # A container created before the templates mount existed cannot read an
+    # ODS chat template; keep the model's own template until Compose recreates it.
+    mounted = {str(mount.get("Destination") or "") for mount in inspect_config.get("Mounts") or []}
+    mounted.update(str(binding).split(":")[1] for binding in binds if str(binding).count(":") >= 1)
+    if _LLAMA_CHAT_TEMPLATE_DIR not in mounted:
+        replacement_env.pop("LLAMA_ARG_CHAT_TEMPLATE_FILE", None)
     # Inspected LLAMA_ARG_* values that .env does not name are dropped below,
     # so re-derive the overlay's speculative default instead of losing it.
     if not str(replacement_env.get("LLAMA_ARG_SPEC_TYPE") or "").strip():

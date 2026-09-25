@@ -111,6 +111,24 @@ upstream default. Other agents and existing jobs are unaffected.
 - **Visible post-tool replies.** The plugin adds a Pixel-only system prompt
   contract requiring a visible final response after either projection tool.
   The status remains untrusted evidence and never becomes action authority.
+- **Cache-stable prompt layout.** Only configuration-derived contract text
+  enters system space, so it stays byte-identical for a session. Guidance
+  selected from the current owner message (workspace, extension, operations,
+  verification, goal, host date) is appended to that message as one block
+  between `[ODS Pixel guidance for this owner message]` and
+  `[End of ODS Pixel guidance]`, and the owner message is stored with exactly
+  that block (`before_message_write`), so later requests replay what the model
+  saw and extend the cached prefix instead of rewriting it. Plugin classifiers
+  remove only such closed blocks before reading earlier owner messages, so an
+  owner message OpenClaw queued behind an unanswered one stays visible.
+  Repository README evidence follows the block for its own run only and is
+  never stored: it is untrusted upstream text, and history and compaction
+  summaries must not present it as the owner's words. When an unanswered
+  owner message is sent again, it reuses its stored block byte-for-byte, so
+  OpenClaw sends and stores it once. When an attempt compacts and retries in
+  place after a context overflow, OpenClaw reloads the stored message and adds
+  the block again; a registered input text transform drops that second copy,
+  so the retry sees what the first call saw.
 - **Host-authoritative verification truth.** OpenClaw's OpenAI-compatible HTTP
   route does not dispatch channel delivery hooks. Before releasing a completion,
   the private ingress therefore asks the plugin for the exact run's bounded

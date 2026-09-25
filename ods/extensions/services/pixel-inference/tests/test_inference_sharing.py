@@ -83,6 +83,18 @@ def test_real_private_grant_json_and_header_isolation(connect):
         assert not {'authorization', 'cookie', 'x-api-key'} & set(forwarded.headers)
 
 
+def test_pixel_chat_template_switches_are_forwarded(connect):
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return backend(request)
+    kwargs = {'enable_thinking': False, 'preserve_thinking': True}
+    with connect(handler) as (client, auth):
+        response = client.post('/v1/chat/completions', json=body(chat_template_kwargs=kwargs), headers=auth)
+        assert response.status_code == 200
+        assert json.loads(requests[-1].content)['chat_template_kwargs'] == kwargs
+
+
 @pytest.mark.parametrize('method,path', [('GET','/v1/status'), ('POST','/v1/models'),
     ('POST','/v1/responses'), ('POST','/v1/chat/completions/'), ('GET','/docs'),
     ('POST','/api/pixel/providers/save'), ('DELETE','/v1/models')])
@@ -100,7 +112,8 @@ def test_auth_and_query_are_not_forwarded(connect):
 
 @pytest.mark.parametrize('change', [dict(model='other'), dict(max_tokens=65), dict(max_tokens=True),
     dict(max_tokens=1,max_completion_tokens=1), dict(n=2), dict(stream=1), dict(api_base='http://evil'),
-    dict(chat_template_kwargs={'arbitrary':True}), dict(tools=[{'type':'web_search'}]),
+    dict(chat_template_kwargs={'arbitrary':True}), dict(chat_template_kwargs={}),
+    dict(chat_template_kwargs={'enable_thinking':False,'preserve_thinking':'yes'}), dict(tools=[{'type':'web_search'}]),
     dict(messages=[{'role':'user','content':[{'type':'image_url','image_url':{'url':'http://169.254.169.254'}}]}])])
 def test_request_limits(connect, change):
     payload = body()
