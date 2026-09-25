@@ -9,11 +9,14 @@
 // distinctive title tokens plus the date (or, without a date, the numbers)
 // that the list item, section or sentence attributes to the URL. The anchors
 // never come from the URL itself, so a slug such as flyers-capitals-9-26-26 is
-// matched only by the page's own display title and date. In doubt, it fails.
+// matched only by the page's own display title and date. A page date shown
+// without its year counts only as an upcoming date the page does not
+// contradict (see "Page dates without a year"). In doubt, it fails.
 // A verified page is recorded as a distinct host-verification receipt, never
 // as a model read. This checks that the cited page supports the attributed
 // claim; it is not proof of every statement in the answer.
 import {citationKey, citationSpans} from './completion-assurance.mjs';
+import {ownerResearchDate} from './research-pacing.mjs';
 import {PUBLIC_PAGE_TEXT_TYPES} from './web-extract.mjs';
 
 export const HOST_CITATION_LIMITS = Object.freeze({
@@ -338,6 +341,158 @@ const NOT_FOUND = /\b(?:page not found|404 (?:error|not found)|error 404|not fou
 const CANCELLED = /\b(?:cancell?ed|postponed|called off|cancelad[oa]|adiad[oa])\b/;
 const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// ---------------------------------------------------------------------------
+// Page dates without a year
+// ---------------------------------------------------------------------------
+// Event pages often show "October 18 @ 1:00 pm" with no year. Such a date
+// supports a claim dated in a given year only as an upcoming date that the
+// page does not contradict:
+//  - the claimed day lies between the reference day (the owner's stated
+//    "today", else the host's date) and the end of the owner's requested
+//    window ("next 45 days"; defaultDays when none is stated, never more than
+//    maxDays), unless the page's schema.org Event data gives that exact date;
+//  - no schema.org Event on the page gives the same month and day in another
+//    year;
+//  - neither the cited nor the final URL names another year (/2025/, -2025);
+//  - no other year stands near the title and date (a "Fest 2025" heading, a
+//    "2025 season" label, an earlier year in a neighbouring row's date);
+//  - the page does not mark the event as past or archived.
+// A stale annual page (last year's "October 18" left online) fails one of
+// these; in doubt, it fails. An explicit year on the page must still match,
+// and a year-less claim is read as the date inside a requested window.
+export const YEARLESS_DATE_LIMITS = Object.freeze({
+  defaultDays: 120,    // window when the owner names none
+  maxDays: 183,        // beyond this a year-less date may as well be last year's
+  margin: 80,          // characters around the title and date checked for other years and markers
+  titleMargin: 40,     // characters around any other occurrence of the title checked for other years
+});
+
+const DAY_MS = 86_400_000;
+const dayNumber = (y, m, d) => {
+  const time = Date.UTC(y, m - 1, d);
+  const date = new Date(time);
+  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d ? time / DAY_MS : undefined;
+};
+
+const COUNT_WORDS = {a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, fifteen: 15, thirty: 30, um: 1, uma: 1, dois: 2, duas: 2, tres: 3, quatro: 4, cinco: 5, seis: 6,
+  sete: 7, oito: 8, nove: 9, dez: 10, doze: 12, quinze: 15, trinta: 30};
+const UNIT_DAYS = {day: 1, days: 1, week: 7, weeks: 7, month: 31, months: 31, dia: 1, dias: 1, semana: 7, semanas: 7, mes: 31, meses: 31};
+const COUNTED_WINDOW = /\b(?:next|coming|upcoming|following|within|proxim[oa]s?|dentro de)\s+(?:the\s+(?:next\s+)?)?(\d{1,3}|[a-z]+)\s+(days?|weeks?|months?|dias?|semanas?|mes(?:es)?)\b/g;
+const NAMED_WINDOW = /\b(?:(?:this|next|coming)\s+(week(?:end)?|month)|tonight|tomorrow|(?:esta|proxima)\s+semana|(?:este|proximo)\s+(mes|fim de semana)|amanha)\b/;
+
+// The forward window the owner asked about, in days; undefined when none.
+function requestedWindowDays(owner) {
+  const text = fold(owner);
+  for (const match of text.matchAll(COUNTED_WINDOW)) {
+    const count = /^\d+$/.test(match[1]) ? +match[1] : COUNT_WORDS[match[1]];
+    if (count > 0) return count * UNIT_DAYS[match[2]];
+  }
+  const named = NAMED_WINDOW.exec(text);
+  if (named) return named[1] === 'month' || named[2] === 'mes' ? 62 : 14;
+  return undefined;
+}
+
+// The day a year-less page date is read from, and how far ahead it may lie.
+export function citationDateReference(owner, now = Date.now()) {
+  const stated = ownerResearchDate(owner);
+  let today = stated ? dayNumber(stated.year, stated.month, stated.day) : undefined;
+  if (today === undefined) {
+    const clock = new Date(now);
+    today = dayNumber(clock.getFullYear(), clock.getMonth() + 1, clock.getDate());
+  }
+  const requested = requestedWindowDays(owner);
+  const days = Math.min(requested ?? YEARLESS_DATE_LIMITS.defaultDays, YEARLESS_DATE_LIMITS.maxDays);
+  return {today, days, ...(requested === undefined ? {} : {requested: true})};
+}
+
+// A year-less claim inside the owner's requested window means that window's
+// year; outside one (or without one) it stays year-less.
+function impliedYear(date, reference) {
+  if (!reference?.requested || reference.today === undefined) return undefined;
+  const year = new Date(reference.today * DAY_MS).getUTCFullYear();
+  for (const y of [year, year + 1]) {
+    const day = dayNumber(y, date.m, date.d);
+    if (day !== undefined && day >= reference.today && day <= reference.today + reference.days) return y;
+  }
+  return undefined;
+}
+
+// A year alone or a span ("2026-27", "2003-2026") as [first, last].
+const yearSpan = (first, last) => {
+  const start = +first;
+  if (!last) return [start, start];
+  const end = last.length === 2 ? Math.floor(start / 100) * 100 + +last : +last;
+  return end > start && end - start <= 100 ? [start, end] : [start, start];
+};
+const YEAR_MENTION = /(?<![\d.,$€£#])((?:19|20)\d{2})(?:\s*[-–—/]\s*((?:19|20)?\d{2})(?!\d))?(?!\d|[.,:]\d)/g;
+// A number before a street name or after a Portuguese street is an address.
+const STREET_AFTER = /^\s+(?:[nsew]\.?\s+)?(?:[a-z0-9]+\s+){0,2}(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|ln|lane|way|pl|place|pkwy|parkway|hwy|highway|pike|ct|court|sq|square)\b/;
+const STREET_BEFORE = /\b(?:rua|r\.|avenida|av\.?|travessa|largo|praca|alameda|estrada|rodovia)\s+[^\d,;\n]{1,40},?\s*(?:n[o.º]?\s*)?$/;
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+const URL_YEAR = /(?<!\d)((?:19|20)\d{2})(?:[-_]((?:19|20)?\d{2})(?!\d))?(?!\d)/g;
+
+function urlNamesOtherYear(href, year) {
+  let text;
+  try {
+    const url = new URL(href);
+    text = `${url.hostname} ${decodeURIComponent(url.pathname)} ${decodeURIComponent(url.search)}`;
+  } catch { return false; }
+  for (const match of text.replace(UUID, ' ').matchAll(URL_YEAR)) {
+    const [start, end] = yearSpan(match[1], match[2]);
+    if (year < start || year > end) return true;
+  }
+  return false;
+}
+
+// Another year between `from` and `to`: an explicit page date of an earlier
+// year (a later-year row, "Jan 3, 2027", is a listing's normal way of crossing
+// into the next year), or a year or season that does not include `year`.
+function otherYearNear(page, pageDates, from, to, year) {
+  for (const other of pageDates) {
+    if (other.y !== undefined && other.y < year && other.index < to && other.end > from) return true;
+  }
+  const window = page.slice(from, to);
+  for (const match of window.matchAll(YEAR_MENTION)) {
+    const index = from + match.index, end = index + match[0].length;
+    if (pageDates.some(date => index < date.end && date.index < end)) continue;
+    if (STREET_AFTER.test(page.slice(end, end + 48)) || STREET_BEFORE.test(page.slice(Math.max(0, index - 56), index))) continue;
+    const [start, last] = yearSpan(match[1], match[2]);
+    if (year < start || year > last) return true;
+  }
+  return false;
+}
+
+// Past or archived event: page-wide statements, and labels near the event.
+const PAST_EVENT_PAGE = /\b(?:this event (?:has )?(?:already )?(?:ended|passed|expired|concluded|finished|happened|occurred|taken place|took place)|(?:this|the) event is (?:over|in the past)|event (?:has )?(?:ended|passed)|past event|archived (?:events?|pages?|content|listings?)|(?:this|the) page (?:is|has been) archived|you are viewing an? (?:archived|past)|este evento (?:ja )?(?:aconteceu|terminou|foi encerrado|foi realizado)|evento (?:encerrado|finalizado|realizado|passado)|eventos? ja realizados?)\b/;
+const PAST_EVENT_NEAR = /\b(?:past events?|previous events?|archived?|archives|ended|concluded|took place|was held|last year|previous edition|eventos? passados?|encerrad[oa]s?|arquivo|arquivad[oa]s?|realizad[oa]s? em|edicao anterior|ano passado)\b/;
+
+// Whether the year-less page `date`, paired with the title at `offset`,
+// supports the claimed date in `year` (see above). `titles` are the spans of
+// every whole-title occurrence on the page: a year beside any of them (the
+// page heading "Fest 2025") dates the event too. The reason it holds, or
+// undefined.
+function undatedDateHolds(page, pageDates, date, offset, year, titles, context) {
+  const {today, days, eventDates = [], urls = []} = context;
+  if (today === undefined) return undefined;
+  // The same day with another year anywhere on the page (visible or in its
+  // Event data) is what the year-less mentions of it mean.
+  const sameDay = entry => entry.m === date.m && entry.d === date.d;
+  if (pageDates.some(other => other.y !== undefined && other.y !== year && sameDay(other))) return undefined;
+  const structured = eventDates.filter(sameDay);
+  if (structured.some(entry => entry.y !== year)) return undefined;
+  const day = dayNumber(year, date.m, date.d);
+  if (!structured.length && (day === undefined || day < today || day > today + days)) return undefined;
+  if (urls.some(href => urlNamesOtherYear(href, year))) return undefined;
+  const M = YEARLESS_DATE_LIMITS.margin;
+  const from = Math.max(0, Math.min(offset, date.index) - M), to = Math.max(offset, date.end) + M;
+  if (otherYearNear(page, pageDates, from, to, year)) return undefined;
+  const T = YEARLESS_DATE_LIMITS.titleMargin;
+  if (titles.some(([start, end]) => otherYearNear(page, pageDates, Math.max(0, start - T), end + T, year))) return undefined;
+  if (PAST_EVENT_PAGE.test(page) || PAST_EVENT_NEAR.test(page.slice(from, to))) return undefined;
+  return structured.length ? 'event-data' : 'window';
+}
+
 // Page text without anything URL-shaped, folded: a soft-404 that echoes the
 // requested path or host cannot supply the anchors.
 export function preparePageText(text) {
@@ -351,6 +506,23 @@ export function preparePageText(text) {
 // Offsets where the whole title occurs: every token within CLUSTER characters
 // of an occurrence of the first one.
 const CLUSTER = 120;
+// Each whole-title occurrence as [start, end]: from its first-token offset
+// out to the nearest occurrence of every other token.
+function titleSpans(page, patterns) {
+  return titleOffsets(page, patterns, 0, page.length).map(offset => {
+    let [start, end] = [offset, offset];
+    const base = Math.max(0, offset - CLUSTER);
+    for (const pattern of patterns) {
+      let nearest;
+      for (const match of page.slice(base, offset + CLUSTER).matchAll(new RegExp(pattern.source, 'g'))) {
+        const at = base + match.index;
+        if (!nearest || Math.abs(at - offset) < Math.abs(nearest[0] - offset)) nearest = [at, at + match[0].length];
+      }
+      if (nearest) [start, end] = [Math.min(start, nearest[0]), Math.max(end, nearest[1])];
+    }
+    return [start, end];
+  });
+}
 function titleOffsets(page, patterns, from, to) {
   const [first, ...rest] = patterns;
   const offsets = [];
@@ -363,7 +535,9 @@ function titleOffsets(page, patterns, from, to) {
   return offsets;
 }
 
-function occurrenceSupported(page, pageDates, pageTimes, claim) {
+// Whether the page supports one claim: false, true, or for a year-less page
+// date the reason its year was accepted ('window' or 'event-data').
+function occurrenceSupported(page, pageDates, pageTimes, claim, context = {}) {
   const W = HOST_CITATION_LIMITS.windowChars;
   const tokenPatterns = claim.tokens.map(token => new RegExp(`\\b${escape(token)}\\b`));
   const windowHolds = (from, to) => {
@@ -371,24 +545,35 @@ function occurrenceSupported(page, pageDates, pageTimes, claim) {
     return tokenPatterns.every(pattern => pattern.test(window)) && !CANCELLED.test(window);
   };
   if (claim.date) {
+    const year = claim.date.y ?? impliedYear(claim.date, context);
+    let titles;
     for (const date of pageDates) {
       if (date.m !== claim.date.m || date.d !== claim.date.d) continue;
-      if (claim.date.y !== undefined && date.y !== claim.date.y) continue;
+      if (year !== undefined && date.y !== undefined && date.y !== year) continue;
       // The title must sit near this date with no other date between them,
       // so a listing's neighbouring row cannot lend its title or date.
-      const paired = !tokenPatterns.length || titleOffsets(page, tokenPatterns, date.index - W, date.end + W).some(offset => {
-        const [from, to] = offset < date.index ? [offset, date.index] : [date.end, offset];
-        return !pageDates.some(other => other.index > from && other.index < to && (other.m !== date.m || other.d !== date.d)) &&
-          !CANCELLED.test(page.slice(Math.min(offset, date.index), Math.max(offset, date.end) + 80));
-      });
-      if (!paired) continue;
+      const offsets = !tokenPatterns.length ? [date.index]
+        : titleOffsets(page, tokenPatterns, date.index - W, date.end + W).filter(offset => {
+          const [from, to] = offset < date.index ? [offset, date.index] : [date.end, offset];
+          return !pageDates.some(other => other.index > from && other.index < to && (other.m !== date.m || other.d !== date.d)) &&
+            !CANCELLED.test(page.slice(Math.min(offset, date.index), Math.max(offset, date.end) + 80));
+        });
+      if (!offsets.length) continue;
+      // A dated claim and a page date without a year: only as an upcoming
+      // date the page does not contradict.
+      let undated;
+      if (year !== undefined && date.y === undefined) {
+        titles ??= tokenPatterns.length ? titleSpans(page, tokenPatterns) : [];
+        for (const offset of offsets) if ((undated = undatedDateHolds(page, pageDates, date, offset, year, titles, context))) break;
+        if (!undated) continue;
+      }
       if (claim.time !== undefined) {
         // A stated time must not contradict the page: times right next to the
         // date must include it. A page showing no time there leaves it unchecked.
         const nearby = pageTimes.filter(time => time.index >= date.index - 80 && time.index <= date.end + 80);
         if (nearby.length && !nearby.some(time => time.minutes.includes(claim.time))) continue;
       }
-      return true;
+      return undated ?? true;
     }
     return false;
   }
@@ -407,17 +592,30 @@ function occurrenceSupported(page, pageDates, pageTimes, claim) {
 }
 
 // Whether prepared page text supports every anchored claim for one URL. At
-// least one claim must carry a title and a date or number.
-export function pageSupportsClaims(pageText, claims) {
+// least one claim must carry a title and a date or number. `context` dates a
+// page date shown without a year: `today` and `days` (citationDateReference),
+// the page's schema.org Event start dates (`eventDates`, "YYYY-MM-DD") and the
+// cited and final URLs (`urls`). Without `today` such a date never supports a
+// dated claim. `yearless` names how a year-less page date was accepted.
+export function pageSupportsClaims(pageText, claims, context = {}) {
   if (!claims.some(claim => claim.full)) return {supported: false, reason: 'insufficient-anchors'};
   const page = preparePageText(pageText);
   if (NOT_FOUND.test(page)) return {supported: false, reason: 'not-found-page'};
   const pageDates = datesIn(page, {page: true});
   const pageTimes = timesIn(page, {page: true});
+  const eventDates = (Array.isArray(context.eventDates) ? context.eventDates : []).flatMap(value => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value));
+    return match ? [{y: +match[1], m: +match[2], d: +match[3]}] : [];
+  });
+  const urls = (Array.isArray(context.urls) ? context.urls : []).filter(url => typeof url === 'string');
+  const dated = {...context, eventDates, urls};
+  let yearless;
   for (const claim of claims) {
-    if (!occurrenceSupported(page, pageDates, pageTimes, claim)) return {supported: false, reason: 'anchors-not-found'};
+    const supported = occurrenceSupported(page, pageDates, pageTimes, claim, dated);
+    if (!supported) return {supported: false, reason: 'anchors-not-found'};
+    if (typeof supported === 'string') yearless ??= supported;
   }
-  return {supported: true};
+  return {supported: true, ...(yearless ? {yearless} : {})};
 }
 
 const sameSite = (a, b) => a.replace(/^www\./, '') === b.replace(/^www\./, '');
@@ -454,7 +652,7 @@ export function citationPageReadsAllowed(config, agentId = 'pixel') {
 }
 
 export function createHostCitationVerifier({readPage, allowed = () => true, limits = {},
-  now = () => performance.now(), setTimer = setTimeout, clearTimer = clearTimeout} = {}) {
+  now = () => performance.now(), clock = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout} = {}) {
   if (typeof readPage !== 'function') throw new TypeError('Pixel host citation verification needs the guarded page reader');
   const bounds = {...HOST_CITATION_LIMITS, ...limits};
   return {
@@ -462,8 +660,9 @@ export function createHostCitationVerifier({readPage, allowed = () => true, limi
     // Verifies every URL or reports why not. Never throws; never waits past
     // the time budget. `verified` lists only URLs whose page carried anchors.
     // An aborted `signal` (the owner cancelled the run) ends every read at
-    // once and verifies nothing.
-    async verify({answer, urls, portuguese = false, signal}) {
+    // once and verifies nothing. `owner` is the owner's request: its stated
+    // date and window date a page that shows an event's day without a year.
+    async verify({answer, urls, portuguese = false, signal, owner}) {
       const started = now();
       const result = (fields) => ({verified: [], results: [], fetched: 0, ...fields, elapsedMs: Math.round(now() - started)});
       if (signal?.aborted) return result({skipped: 'cancelled'});
@@ -493,6 +692,7 @@ export function createHostCitationVerifier({readPage, allowed = () => true, limi
       controller.abort();
       if (signal?.aborted) return result({skipped: 'cancelled', fetched: urls.length});
       const pages = urls.map((_, i) => settled[i] ??= {ok: false, reason: 'timeout'});
+      const reference = citationDateReference(owner, clock());
       const results = urls.map((url, i) => {
         const page = pages[i];
         const outcome = {url, ...(page.status ? {status: page.status} : {}), ...(page.finalUrl ? {finalUrl: page.finalUrl} : {})};
@@ -503,8 +703,10 @@ export function createHostCitationVerifier({readPage, allowed = () => true, limi
         if (!sameSite(cited.hostname, final.hostname) || (cited.pathname.length > 1 && final.pathname === '/')) {
           return {...outcome, verified: false, reason: 'redirected-elsewhere'};
         }
-        const check = pageSupportsClaims(page.text, claims.get(url));
-        return {...outcome, verified: check.supported, ...(check.supported ? {} : {reason: check.reason})};
+        const check = pageSupportsClaims(page.text, claims.get(url),
+          {...reference, eventDates: page.eventDates, urls: [url, page.finalUrl]});
+        return {...outcome, verified: check.supported, ...(check.supported ? {} : {reason: check.reason}),
+          ...(check.yearless ? {yearless: check.yearless} : {})};
       });
       return result({results, fetched: urls.length,
         verified: results.filter(entry => entry.verified).map(({url, finalUrl}) => ({url, finalUrl}))});

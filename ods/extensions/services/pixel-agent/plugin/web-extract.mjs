@@ -326,6 +326,64 @@ export function readableHtml(html) {
   return output + html.slice(cursor);
 }
 
+// schema.org Event start dates from a page's JSON-LD, as "YYYY-MM-DD": the
+// event's own calendar date, whatever its UTC offset. Event pages often show
+// a date without its year ("October 18 @ 1:00 pm") while their structured
+// data carries it; the host citation check (citation-verification.mjs) uses
+// these to confirm or refute the year of such a date, never as evidence on
+// their own. One forward pass over the script elements; the JSON parsed and
+// the nodes walked are bounded.
+export const STRUCTURED_EVENT_LIMITS = Object.freeze({ chars: 262_144, nodes: 5_000, depth: 16, dates: 64 });
+const LD_JSON_TYPE = /\btype\s*=\s*["']?\s*application\/ld\+json/i;
+const EVENT_TYPE = /(?:^|[/#:])(?:[A-Za-z]*Event|Festival|Hackathon)$/;
+const EVENT_START = /^\s*(\d{4})-(\d{2})-(\d{2})(?!\d)/;
+
+export function structuredEventDates(html) {
+  if (typeof html !== "string" || !/application\/ld\+json/i.test(html)) return [];
+  const limits = STRUCTURED_EVENT_LIMITS;
+  const dates = new Set();
+  const start = /<script(?=[\t\n\f\r />]|$)/gi;
+  const close = /<\/script(?=[\t\n\f\r />]|$)/gi;
+  let budget = limits.chars;
+  let nodes = 0;
+  for (let match; (match = start.exec(html));) {
+    const tag = tagEnd(html, match.index + match[0].length);
+    if (!tag) break;
+    // As in readableHtml, a self-closing script element has no content.
+    if (tag.selfClosing) { start.lastIndex = tag.end; continue; }
+    close.lastIndex = tag.end;
+    const closer = close.exec(html);
+    if (!closer) break;
+    start.lastIndex = closer.index + 1;
+    if (!LD_JSON_TYPE.test(html.slice(match.index, tag.end))) continue;
+    const body = html.slice(tag.end, closer.index);
+    if (body.length > budget) break;
+    budget -= body.length;
+    let data;
+    try { data = JSON.parse(body); } catch { continue; }
+    for (const stack = [[data, 0]]; stack.length;) {
+      if (++nodes > limits.nodes || dates.size >= limits.dates) return [...dates];
+      const [node, depth] = stack.pop();
+      if (!node || typeof node !== "object" || depth > limits.depth) continue;
+      if (!Array.isArray(node)) {
+        const types = Array.isArray(node["@type"]) ? node["@type"] : [node["@type"]];
+        const date = typeof node.startDate === "string" ? EVENT_START.exec(node.startDate) : null;
+        if (date && types.some(type => typeof type === "string" && EVENT_TYPE.test(type))) {
+          dates.add(`${date[1]}-${date[2]}-${date[3]}`);
+        }
+      }
+      for (const value of Object.values(node)) if (value && typeof value === "object") stack.push([value, depth + 1]);
+    }
+  }
+  return [...dates];
+}
+
+const structuredFields = (contentType, html) => {
+  if (contentType !== "text/html" && contentType !== "application/xhtml+xml") return {};
+  const eventDates = structuredEventDates(html);
+  return eventDates.length ? { eventDates } : {};
+};
+
 // Bot-verification interstitials are failures, never evidence. ODS does not
 // solve, wait out or work around them. Response headers are decisive; page
 // markers count only on an error status or a near-empty page, because normal
@@ -467,7 +525,7 @@ export function createPublicPageReader({
           }
         }
         return { ok: true, status: response.status, finalUrl, contentType, text, truncated: body.truncated,
-          requests: attempt };
+          requests: attempt, ...structuredFields(contentType, body.text) };
       }
     } catch {
       // Guard denials (private address, redirect policy), timeouts and aborts
