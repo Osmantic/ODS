@@ -19,7 +19,10 @@ function Reset-Scenario {
     $script:capturedRoot = ''
     $script:downloadCode = 0
     $script:userSetupCode = 0
+    $script:nvidiaDriver = $null
+    $script:releaseOverride = $null
 }
+function Get-ODSPortalWindowsNvidiaDriver { return $script:nvidiaDriver }
 function Test-ODSPortalAdministrator { return $script:scenario -eq 'admin' }
 function Test-ODSNativeWindowsInstall { return $script:scenario -eq 'native' }
 function Get-Command { if ($script:scenario -eq 'no-wsl') { return $null }; return [pscustomobject]@{ Name='wsl.exe' } }
@@ -51,19 +54,25 @@ function Invoke-ODSPortalWsl([string[]]$Arguments) {
         '^--install --distribution Ubuntu-24.04 --no-launch$' { $code=$script:downloadCode; break }
         '^--list --verbose$' { $output='* Ubuntu-24.04    Em Execucao   2'; if ($script:scenario -eq 'wsl1') { $output=$output -replace '2$', '1' }; if ($script:scenario -eq 'existing-ubuntu') { $output='* Ubuntu    Stopped    2' }; break }
         '^--distribution Ubuntu --exec id -u$' { $output='1000'; break }
+        '^--distribution Ubuntu --exec cat /etc/os-release$' { $output="NAME=`"Ubuntu`"`nID=ubuntu`nVERSION_ID=`"24.04`""; if ($script:releaseOverride) { $output=$script:releaseOverride }; break }
+        '^--distribution Ubuntu-24.04 --exec cat /etc/os-release$' { $output="NAME=`"Ubuntu`"`nID=ubuntu`nVERSION_ID=`"24.04`""; break }
         '^--distribution Ubuntu --exec ps -p 1 -o comm=$' { $output='systemd'; break }
         '^--distribution Ubuntu --exec docker (info|compose version)$' { break }
         '^--distribution Ubuntu-24.04 --exec id -u$' { $output='1000'; if ($script:scenario -in @('root','resume-user')) { $output='0' }; break }
         '^--distribution Ubuntu-24.04 --exec ps -p 1 -o comm=$' { $output='systemd'; if ($script:scenario -eq 'init') { $output='init' }; break }
         '^--distribution Ubuntu-24.04 --exec docker info$' { if ($script:scenario -eq 'docker') { $code=1 }; break }
         '^--distribution Ubuntu-24.04 --exec docker compose version$' { if ($script:scenario -eq 'compose') { $code=1 }; break }
+        '^--distribution Ubuntu-24.04 --exec /usr/lib/wsl/lib/nvidia-smi -L$' { $output='GPU 0: NVIDIA GeForce RTX 4060 (UUID: GPU-00000000)'; if ($script:scenario -eq 'gpu-hidden') { $code=1; $output='command not found' }; break }
+        '^--distribution Ubuntu-24.04 --exec docker info --format \{\{json \.Runtimes\}\}$' { $output='{"io.containerd.runc.v2":{"path":"runc"},"nvidia":{"path":"/usr/bin/nvidia-container-runtime"},"runc":{"path":"runc"}}'; if ($script:scenario -eq 'no-nvidia-runtime') { $output='{"io.containerd.runc.v2":{"path":"runc"},"runc":{"path":"runc"}}' }; break }
         default { throw "Unexpected native invocation: $key" }
     }
     return [pscustomobject]@{ Code=$code; Output=$output }
 }
 try {
     Check ((Resolve-ODSPortalDistro '' @('docker-desktop', 'Ubuntu')) -eq 'Ubuntu') 'reuses existing Ubuntu without creating another distro'
-    Check ((Resolve-ODSPortalDistro '' @('Ubuntu-22.04')) -eq 'Ubuntu-22.04') 'reuses a single versioned Ubuntu'
+    Check ((Resolve-ODSPortalDistro '' @('Ubuntu-26.04')) -eq 'Ubuntu-26.04') 'reuses a single Pixel-qualified versioned Ubuntu'
+    Check ((Resolve-ODSPortalDistro '' @('Ubuntu-22.04')) -eq 'Ubuntu-24.04') 'never auto-selects an unqualified Ubuntu release'
+    Check ((Resolve-ODSPortalDistro '' @('Ubuntu', 'Ubuntu-20.04')) -eq 'Ubuntu') 'unqualified versioned names do not make selection ambiguous'
     Check ((Resolve-ODSPortalDistro '' @('docker-desktop')) -eq 'Ubuntu-24.04') 'Docker internal distro is never selected'
     Check ((Resolve-ODSPortalDistro 'Ubuntu' @('Ubuntu', 'Ubuntu-24.04')) -eq 'Ubuntu') 'explicit distribution wins'
     $ambiguous = $false
@@ -74,6 +83,13 @@ try {
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'existing unversioned Ubuntu passes full orchestration'
     Check ($script:calls.Contains('install:Ubuntu')) 'delegate receives detected Ubuntu name'
     Check (-not $script:calls.Contains('confirm')) 'existing Ubuntu requires no download offer'
+    foreach ($release in @("ID=ubuntu`nVERSION_ID=`"22.04`"", "ID=ubuntu`nVERSION_ID=`"20.04`"", "ID=kali`nVERSION_ID=`"2026.1`"")) {
+        Reset-Scenario
+        $script:scenario='existing-ubuntu'; $script:releaseOverride=$release
+        $message=''
+        try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+        Check ($message -match '-Distro Ubuntu-24.04' -and -not $script:calls.Contains('install:Ubuntu')) "unqualified release under the Ubuntu name stops before ODS ($($release -replace '\s+', ' '))"
+    }
     Reset-Scenario
     Check ((Invoke-ODSPortalSetup @{DryRun=$true} 'unused') -eq 0) 'dry run succeeds'
     Check ($script:calls.Count -eq 0) 'dry run performs no native calls'
@@ -92,6 +108,26 @@ try {
         Check $rejected "$failure blocks installation"
         Check (-not $script:calls.Contains('install:Ubuntu-24.04')) "$failure never falls back or delegates"
     }
+    Reset-Scenario
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'host without an NVIDIA driver installs'
+    Check (-not ($script:calls -match 'nvidia-smi|Runtimes')) 'non-NVIDIA host performs no GPU probes'
+    Reset-Scenario
+    $script:nvidiaDriver = 576
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'NVIDIA host with WSL GPU and Docker Desktop runtime installs'
+    Check ($script:calls.Contains('--distribution Ubuntu-24.04 --exec /usr/lib/wsl/lib/nvidia-smi -L')) 'NVIDIA GPU visibility is checked inside Ubuntu'
+    foreach ($nvidiaFailure in @(@{name='old-driver'; driver=566; scenario='ready'}, @{name='gpu-hidden'; driver=576; scenario='gpu-hidden'}, @{name='no-nvidia-runtime'; driver=576; scenario='no-nvidia-runtime'})) {
+        Reset-Scenario
+        $script:nvidiaDriver = $nvidiaFailure.driver
+        $script:scenario = $nvidiaFailure.scenario
+        $message = ''
+        try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+        Check ($message -and -not $script:calls.Contains('install:Ubuntu-24.04')) "$($nvidiaFailure.name) stops before the Linux installer"
+        Check ($message -notmatch 'apt|nvidia-driver-') "$($nvidiaFailure.name) never suggests an in-distro driver or toolkit install"
+    }
+    Reset-Scenario
+    $script:nvidiaDriver = 566
+    Check ((Invoke-ODSPortalSetup @{Cloud=$true} 'unused') -eq 0) 'cloud mode does not require local NVIDIA readiness'
+    Check (-not ($script:calls -match 'nvidia-smi|Runtimes')) 'cloud mode performs no GPU probes'
     Reset-Scenario
     $script:scenario='missing'
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'new Ubuntu initializes then installs'
