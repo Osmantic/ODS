@@ -19,6 +19,8 @@ for(const mode of ['direct','deferred','sandbox','sandbox-deferred','unrelated',
  const deferred=mode.includes('deferred'),sandbox=mode.startsWith('sandbox'),agentId=mode==='unrelated'?'other':'pixel',truncated=mode.startsWith('truncated');
  const {preparePromptContextRuntime}=await import('./prompt_context_runtime_fixture.mjs');
  const root=mkdtempSync(join(tmpdir(),'ods-file-wire-')),workspace=join(root,'workspace');mkdirSync(workspace);
+ // Keep fixture-owned directories writable when the sandbox bind mount initializes skills.
+ if(sandbox)mkdirSync(join(workspace,'.openclaw','sandbox-skills'),{recursive:true});
  const containerPrefix='ods-file-wire-'+root.split('-').at(-1).toLowerCase()+'-';
  const pkg=preparePromptContextRuntime(installed,root),custody=[];
  for(const [name,module] of recipes){
