@@ -3260,6 +3260,74 @@ function compactCleanVerificationResult(message, pending) {
   };
 }
 
+// Every failing test of a multi-failure unittest run: the first FAIL/ERROR
+// block in full, then each other block's header, last workspace frame and
+// final exception line (header only, marked, when both repeat an earlier one).
+// Fleet (laptop, Qwen3.5-9B, round 081, coding_v1): keeping only the last
+// block showed "FAILED (failures=1, errors=1)" with the FAIL body alone, and
+// the model spent 19 single-test runs finding the hidden ERROR. Undefined for
+// a single failure or an unusual layout, which keep the one-block summary.
+const MULTI_FAILURE_SUMMARY_CHARS = 2400;
+const MAX_LISTED_FAILURES = 6;
+function multipleUnittestFailures(lines) {
+  const ranIndex = lines.findLastIndex((line) => /^Ran\s+[1-9][0-9]*\s+tests?\s+in\s+/.test(line));
+  const headers = lines.flatMap((line, index) => /^(?:FAIL|ERROR):\s+/.test(line) ? [index] : []);
+  if (headers.length < 2 || ranIndex < 0 || headers.at(-1) > ranIndex) return undefined;
+  const exception = /^(?:AssertionError|[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception))(?::|$)/;
+  const blocks = headers.map((start, position) => {
+    let end = position + 1 < headers.length ? headers[position + 1] : ranIndex;
+    while (end > start + 1 && /^(?:[=-]{20,}|\s*)$/.test(lines[end - 1])) end -= 1;
+    let errorIndex = -1, lastFrame = -1, workspaceFrame = -1;
+    for (let index = start + 1; index < end; index += 1) {
+      if (exception.test(lines[index])) errorIndex = index;
+    }
+    for (let index = start + 1; index < errorIndex; index += 1) {
+      if (!/^\s*File\s+"/.test(lines[index])) continue;
+      lastFrame = index;
+      if (lines[index].includes("/workspace/")) workspaceFrame = index;
+    }
+    // The primary block keeps today's detail window within its own bounds.
+    let frameIndex = -1;
+    for (let index = errorIndex - 1; index > start; index -= 1) {
+      if (/^\s*File\s+"/.test(lines[index])) {
+        frameIndex = index;
+        if (lines[index].includes("/workspace/")) break;
+      }
+    }
+    const detailStart = frameIndex >= 0 ? frameIndex : Math.max(start + 1, errorIndex - 3);
+    const detailEnd = errorIndex >= detailStart ? Math.min(end, errorIndex + 12) : Math.min(end, detailStart + 20);
+    const name = /^(?:FAIL|ERROR):\s+(\S+)/.exec(lines[start])?.[1] ?? lines[start];
+    return {header: lines[start], name, detail: lines.slice(detailStart, detailEnd),
+      frame: workspaceFrame >= 0 ? lines[workspaceFrame] : lastFrame >= 0 ? lines[lastFrame] : undefined,
+      error: errorIndex >= 0 ? lines[errorIndex] : undefined};
+  });
+  const [first, ...others] = blocks;
+  const tail = lines.slice(ranIndex);
+  const render = (withFrames, listed) => {
+    const seen = new Set([`${first.frame}\n${first.error}`]);
+    const out = [first.header, ...first.detail, `Also failing (${others.length}):`];
+    for (const block of others.slice(0, listed)) {
+      const key = `${block.frame}\n${block.error}`;
+      if (block.error && seen.has(key)) { out.push(`${block.header} [same error as above]`); continue; }
+      seen.add(key);
+      out.push(block.header, ...(withFrames && block.frame ? [block.frame] : []), ...(block.error ? [block.error] : []));
+    }
+    if (others.length > listed) {
+      const names = others.slice(listed).map((block) => block.name);
+      out.push(`+${names.length} more failing test${names.length === 1 ? "" : "s"}: ${names.slice(0, 12).join(", ")}${names.length > 12 ? ", …" : ""}`);
+    }
+    return [...out, ...tail].join("\n").trim();
+  };
+  let listed = Math.min(others.length, MAX_LISTED_FAILURES);
+  let summary = render(true, listed);
+  if (summary.length > MULTI_FAILURE_SUMMARY_CHARS) summary = render(false, listed);
+  while (summary.length > MULTI_FAILURE_SUMMARY_CHARS && listed > 0) summary = render(false, --listed);
+  if (summary.length > MULTI_FAILURE_SUMMARY_CHARS) {
+    summary = `${first.header}\n${summary.slice(-(MULTI_FAILURE_SUMMARY_CHARS - first.header.length - 1))}`;
+  }
+  return summary;
+}
+
 function compactFailedUnittestText(result) {
   if (
     !result ||
@@ -3277,6 +3345,7 @@ function compactFailedUnittestText(result) {
   const source = values.sort((left, right) => right.length - left.length)[0];
   if (typeof source !== "string" || source.length < 600) return undefined;
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const everyFailure = multipleUnittestFailures(lines);
   const failureIndex = lines.findLastIndex((line) => /^(?:FAIL|ERROR):\s+/.test(line));
   const ranIndex = lines.findLastIndex((line) => /^Ran\s+[1-9][0-9]*\s+tests?\s+in\s+/.test(line));
   const diagnosticEnd = ranIndex > failureIndex ? ranIndex : lines.length;
@@ -3303,8 +3372,8 @@ function compactFailedUnittestText(result) {
   if (failureIndex >= 0) summaryLines.push(lines[failureIndex]);
   summaryLines.push(...lines.slice(detailStart, detailEnd));
   if (ranIndex >= 0) summaryLines.push(...lines.slice(ranIndex));
-  let summary = summaryLines.join("\n").trim();
-  if (summary.length > 1400) {
+  let summary = everyFailure ?? summaryLines.join("\n").trim();
+  if (!everyFailure && summary.length > 1400) {
     summary = `${summaryLines[0]}\n${summary.slice(-1320)}`;
   }
   const escapedNewlineHint =
