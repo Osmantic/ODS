@@ -74,17 +74,15 @@ class Result:
     elapsed_ms: Optional[int] = None
 
     def to_json(self) -> str:
-        return json.dumps(
-            {
-                "ok": self.ok,
-                "target": self.target,
-                "kind": self.kind,
-                "detail": self.detail,
-                "status": self.status,
-                "elapsed_ms": self.elapsed_ms,
-            },
-            separators=(",", ":"),
-        )
+        payload = {
+            "ok": bool(self.ok),
+            "target": str(self.target),
+            "kind": str(self.kind),
+            "detail": str(self.detail),
+            "status": self.status,
+            "elapsed_ms": self.elapsed_ms,
+        }
+        return json.dumps(payload, separators=(",", ":"))
 
 
 # -----------------------------
