@@ -412,6 +412,13 @@ export default function ServiceMap({ compact = false }) {
         <div className="flex items-center gap-2 rounded-lg border border-theme-border bg-theme-card px-3 py-2 font-mono text-xs text-theme-text-muted"><RefreshCw size={12} className="text-theme-accent" />live · 10s</div>
       </div>
 
+      {error && nodes.length > 0 && (
+        <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          <span>Showing the last successful topology snapshot. Refresh failed: {error}</span>
+          <button type="button" onClick={fetchTopology} className="shrink-0 rounded-md border border-amber-300/30 px-2 py-1 font-semibold hover:bg-amber-500/15">Retry</button>
+        </div>
+      )}
+
       <div className="mb-4 flex flex-wrap gap-4 text-xs text-theme-text-muted">
         <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-green-400" />Healthy</span>
         <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-yellow-400" />Degraded</span>
