@@ -1,50 +1,8 @@
 # ODS Windows Quickstart
 
-## Recommended: Portal/Pixel in Ubuntu on WSL2
+## Start in Windows PowerShell
 
-For the Portal agent, use the WSL installer in the root [Get Started](../../README.md#get-started) section. It passes `--pixel --no-hermes` to the Linux installer. The root `install.ps1` instead installs the native Windows stack and does not provision the Linux Pixel host runtime. Enabling Docker Desktop's WSL2 backend alone does not select the Pixel installation path.
-
-1. Install Ubuntu with `wsl --install -d Ubuntu-24.04` from Administrator PowerShell if it is not installed. Restart if requested, then open Ubuntu and create a normal Linux user and password.
-2. Check `wsl -l -v` in PowerShell: Ubuntu must use version 2. Use your actual distribution name throughout the commands.
-3. In Ubuntu, `ps -p 1 -o comm=` must show `systemd`. If it does not, enable `systemd=true` under `[boot]` in `/etc/wsl.conf`, preserving other settings, then restart that distribution from PowerShell with `wsl --terminate Ubuntu-24.04` and reopen it.
-4. Start Docker Desktop; enable its WSL2 engine and **Settings > Resources > WSL Integration > Ubuntu-24.04**. In Ubuntu, verify both `docker info` and `docker compose version` succeed as your normal user.
-5. Run the PowerShell download block in the root README from a normal PowerShell window. Its final command, from the extracted repository root, is:
-
-```powershell
-.\ods\installers\windows.ps1 -Distro Ubuntu-24.04 -PassthroughArgs @("--pixel", "--no-hermes")
-```
-
-Supply the Ubuntu password when sudo requests it. Pixel uses the source bundled in the public Osmantic/ODS repository; no private Osmantic/Pixel checkout is required. The runtime normally lives at `~/ods` in Ubuntu, not `$env:USERPROFILE\ods` on Windows. Keep the extracted source folder while using its WSL lifecycle helper.
-
-### Model and GPU placement
-
-Pixel is the agent runtime, not the inference server. This WSL command does not provision a Windows GPU-to-WSL bridge. NVIDIA requires a supported Windows driver and GPU visibility in WSL/Docker. AMD acceleration in Windows (including Lemonade) does not imply ROCm support in WSL. Use a supported WSL backend or CPU; an existing Windows model endpoint requires explicit configuration and connectivity. Do not assume selecting that endpoint makes it managed by the WSL installer. See [WSL2 GPU guide](WINDOWS-WSL2-GPU-GUIDE.md).
-
-### Verify Portal/Pixel
-
-Wait for a successful installer result; fix any failed Pixel bootstrap rather than treating a running dashboard as completion. Open the printed dashboard URL, normally **http://localhost:3001**, check Portal availability, and send a short message. **http://localhost:3000** is the separate Open WebUI interface.
-
-From Ubuntu, inspect the installed stack:
-
-```bash
-cd ~/ods
-./ods status
-sudo systemctl status openclaw-gateway.service pixel-ingress.service --no-pager
-```
-
-If Portal says it is not enabled, confirm that you used the WSL command above, not the native Windows command below. If a service failed, inspect its journal (`sudo journalctl -u openclaw-gateway.service -u pixel-ingress.service -n 80 --no-pager`) and the installer log. An unavailable model endpoint is a separate failure from Pixel installation.
-
-To uninstall this WSL installation, run `cd ~/ods && ./ods-uninstall.sh --force` **inside Ubuntu**. The native `ods.ps1` commands below apply only to native Windows installs.
-
----
-
-## Native Windows alternative (does not provision Pixel)
-
-The native Windows installer is an alternative for the Windows model runtime and Docker applications; it does not install the Linux Pixel host runtime required by the recommended Portal path. The installer detects your GPU, selects the right model, downloads it, starts all Docker services, and creates a Desktop shortcut.
-
-**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend enabled. NVIDIA GPU or AMD Strix Halo recommended (CPU-only works with smaller models). 4GB+ RAM minimum, 16GB+ recommended.
-
-Open a normal **PowerShell** session and run:
+Use a normal, non-Administrator PowerShell window. The installer guides Ubuntu/WSL2 preparation and installs Pixel/Portal there. There is no native Windows or Hermes fallback.
 
 ```powershell
 $ProgressPreference = "SilentlyContinue"
@@ -58,222 +16,87 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
 ```
 
-The installer will:
-- Detect your GPU (NVIDIA or AMD) and pick the right model tier
-- Download the AI model for your hardware (~1.5GB bootstrap, full model in background)
-- Start all Docker services
-- Run health checks and create a Desktop shortcut
+Pixel uses source bundled in public Osmantic/ODS, not a private repository.
 
-### Source checkout vs runtime directory
+## Setup stages
 
-The downloaded source folder is only the installer/source checkout. The Windows
-runtime is created under `$env:USERPROFILE\ods` by default (or `$env:ODS_HOME`
-if you set it before installing). That runtime directory contains `.env`,
-generated secrets, model files, logs, data, and the compose state.
+1. If WSL is not ready, setup offers Windows feature preparation with administrator approval. It then stops: restart if requested and rerun the same command. No automatic reboot or resume task is created.
+2. If Ubuntu is absent, setup offers to download Ubuntu-24.04 under your Windows account. Complete Linux user/password creation in the Ubuntu window, then type `exit` to return. The default Linux user must not be root.
+3. Setup checks WSL2 and systemd. Missing prerequisites stop installation with instructions; existing distributions are not converted and `/etc/wsl.conf` is not overwritten automatically.
+4. Start Docker Desktop, enable its WSL2 engine and **Settings > Resources > WSL Integration** for Ubuntu. Both `docker info` and `docker compose version` must work inside Ubuntu. Setup checks them and stops with instructions if needed; it does not install another Docker engine.
+5. The Linux installer runs with `--pixel --no-hermes --no-openclaw`. Enter the Ubuntu sudo password when requested and complete model/service selections.
+6. After installation, the wrapper verifies Pixel gateway/ingress services, private ingress health and the dashboard HTTP endpoint. Send a message in Portal to verify model inference too.
 
-If your `C:` drive is tight, choose the runtime location explicitly. Running
-the installer from `G:\ODS` does not automatically install the runtime
-on `G:`. Pass any NTFS/ReFS path with enough space:
+Fix reported prerequisites and rerun the same command. Windows/UAC/restart and Ubuntu first-run setup may require interaction. Never send passwords through chat.
 
-```powershell
-$installDir = "D:\Apps\ods"
-.\install.ps1 -InstallDir $installDir
-```
+## Options and location
 
-Do not run raw `docker compose` commands from the cloned repository after
-installing; Compose will not find the generated `.env` there and relative
-volumes will point at the wrong data directory. Use `.\ods.ps1` from the
-runtime directory, or `cd $installDir` before running manual Compose commands.
-
-Do not run as Administrator for the normal install. The Windows preflight warns
-about this because user-level paths such as `.opencode`, `.env`, and `data/`
-can become admin-owned and awkward to manage afterward.
-
-**First-run time:** 10-30 minutes depending on download speed. Bootstrap mode starts chatting in under 2 minutes while the full model downloads in background.
-
----
-
-## Quick Commands
-
-Manage ODS using `ods.ps1` from your runtime directory:
+Use `wsl -l -v` to find distribution names. For an existing Ubuntu:
 
 ```powershell
-$installDir = "$env:USERPROFILE\ods"
-# If you installed with -InstallDir, use that same path instead:
-# $installDir = "D:\Apps\ods"
-cd $installDir
-
-.\ods.ps1 status              # Health checks + GPU status
-.\ods.ps1 start               # Start all services
-.\ods.ps1 stop                # Stop all services
-.\ods.ps1 restart             # Restart all services
-.\ods.ps1 logs llama-server   # Tail logs (any service name)
-.\ods.ps1 update              # Pull latest images and restart
-.\ods.ps1 report              # Generate diagnostics bundle
-.\ods.ps1 uninstall --force   # Remove ODS containers, volumes, and files
+.\install.ps1 -Distro Ubuntu
 ```
 
-For development installs where you intentionally want the runtime files inside
-your working tree, set `ODS_HOME` before running the installer:
+The runtime normally lives at `~/ods` inside Ubuntu. The ZIP is the source checkout; keep it while using its WSL lifecycle helper. A custom runtime path must be an absolute Linux path:
 
 ```powershell
-$env:ODS_HOME = "C:\path\to\ODS\ods"
-.\install.ps1
+.\install.ps1 -InstallDir /home/youruser/ods
 ```
 
-Only use this in-place mode if you want `.env`, `data\`, logs, and downloaded
-models to live inside that checkout.
+This does not move Ubuntu's virtual disk or Docker storage. Windows drive paths are rejected.
 
----
+- `-DryRun`: show the plan without changing prerequisites or services.
+- `-NonInteractive`: require prepared prerequisites; do not offer prerequisite installation.
+- `-Tier 1..4`, `-Cloud`: forward model selection.
+- `-Voice`, `-Workflows`, `-Rag`, `-Recommended`, `-NoRecommended`: service choices.
+- `-All`, `-Comfyui`, `-NoComfyui`, `-Langfuse`, `-NoLangfuse`: optional services; explicit disables override `-All`.
+- `-NoBootstrap`, `-Force`, `-Lan`: corresponding Linux options.
+- `-SummaryJsonPath <Linux path>`: Linux summary output location.
+- `-NoHermes`: accepted for compatibility; Hermes is always disabled. `-Hermes` and deprecated `-OpenClaw` are rejected, and `-All` cannot enable them.
 
-## Open the UI
+## Already inside Ubuntu?
 
-Visit **http://localhost:3000** — the chat interface is ready after the installer completes.
+With the same systemd/Docker prerequisites:
 
-The normal loopback-only install opens directly without an account. A
-network-bound or ODS proxy install keeps authentication enabled and prompts the
-first user to create the admin account.
-
----
-
-## Bootstrap Mode (Faster Start)
-
-The installer automatically uses bootstrap mode when applicable — a small model
-(~1.5 GB) downloads first so you can start chatting within 2 minutes, while the
-full model downloads in the background. Hermes-enabled installs run that
-bootstrap model at a 64K context floor, then keep the model selector's chosen
-full-model context after the swap. Large-context tiers still use 128K when they
-select it; constrained machines can stay lower. No extra flags needed.
-
----
-
-## Installer Flags
-
-| Flag | What It Does |
-|------|--------------|
-| `-Tier 2` | Force specific tier (1-4) |
-| `-Voice` | Enable Whisper + TTS |
-| `-Workflows` | Enable n8n automation |
-| `-Rag` | Enable Qdrant vector DB |
-| `-Recommended` | Enable LiteLLM + SearXNG + Token Spy support services |
-| `-NoRecommended` | Disable LiteLLM + SearXNG + Token Spy support services |
-| `-Hermes` | Enable Hermes Agent |
-| `-NoHermes` | Disable Hermes Agent |
-| `-NoBootstrap` | Wait for the full model before launching |
-| `-OpenClaw` | Enable deprecated OpenClaw legacy agent framework |
-| `-Comfyui` | Enable ComfyUI image generation |
-| `-Langfuse` | Enable Langfuse LLM observability |
-| `-All` | Full stack enabled, except deprecated OpenClaw unless `-OpenClaw` is also passed |
-| `-Cloud` | Use cloud LLM provider instead of local |
-| `-DryRun` | Simulate install without making changes |
-| `-InstallDir <path>` | Install runtime files on a specific drive/path |
-
----
-
-## Troubleshooting
-
-| Issue | Fix |
-|-------|-----|
-| "Docker not running" | Start Docker Desktop, wait for whale icon |
-| "WSL2 not found" | `wsl --install` then restart |
-| "nvidia-smi fails" | Update NVIDIA drivers; restart Docker Desktop |
-| "Port in use" | Edit `.env`, change `WEBUI_PORT=3001` |
-| Out of memory | Lower tier: `.\install.ps1 -Tier 1` |
-
-Full guide: [WINDOWS-INSTALL-WALKTHROUGH.md](WINDOWS-INSTALL-WALKTHROUGH.md)
-
----
-
-## System Requirements by Tier
-
-| Tier | VRAM | Model | Use Case |
-|------|------|-------|----------|
-| 1 | 8-12GB | 7B Qwen | Basic chat, coding help |
-| 2 | 12-20GB | 14B AWQ | Daily driver, good reasoning |
-| 3 | 20-40GB | 32B AWQ | Power user, complex tasks |
-| 4 | 40GB+ | 72B AWQ | Maximum capability |
-
----
-
-## Architecture
-
-```
-Windows Host
-  ├── Docker Desktop (WSL2 backend)
-  │     ├── llama-server container (GPU accelerated)
-  │     ├── Open WebUI (port 3000)
-  │     ├── SearXNG search
-  │     └── PostgreSQL + Qdrant
-  └── WSL2 Ubuntu (file system, networking)
-```
-
-NVIDIA GPU access: Windows driver → WSL2 → Docker Container Toolkit → llama-server
-
-AMD Strix Halo local inference runs through the Windows host accelerated path
-selected by the installer; Docker services reach it through
-`host.docker.internal`.
-
----
-
-## Files & Locations
-
-| What | Where |
-|------|-------|
-| Install directory | `$env:USERPROFILE\ods` by default; override with `-InstallDir` or `ODS_HOME` |
-| Config | `$installDir\.env` |
-| Models | `$installDir\data\models\` |
-| Logs | `.\ods.ps1 logs <service>` or `docker compose logs` after `cd $installDir` |
-| Data | Docker volumes (auto-managed) |
-
----
-
-## Updating
-
-```powershell
-$installDir = "$env:USERPROFILE\ods"
-# If you installed with -InstallDir, use that same path instead.
-cd $installDir
-.\ods.ps1 update
-```
-
----
-
-## Uninstalling
-
-Start Docker Desktop first so ODS can remove its containers and volumes, then run:
-
-```powershell
-$installDir = "$env:USERPROFILE\ods"
-# If you installed with -InstallDir, use that same path instead.
-cd $installDir
-.\ods.ps1 uninstall --force
-```
-
-To preserve local state:
-
-```powershell
-.\ods.ps1 uninstall --force --keep-data
-.\ods.ps1 uninstall --force --keep-models
-```
-
-If the runtime folder is partial and `.\ods.ps1` is missing, run the cleanup command from a source checkout:
-
-```powershell
+```bash
+git clone https://github.com/Osmantic/ODS.git
 cd ODS
-.\ods\installers\windows\ods.ps1 uninstall --force
+bash install.sh --pixel --no-hermes --no-openclaw
 ```
 
-That fallback removes Docker resources labelled as the ODS compose project before removing the runtime directory.
+Do not run the PowerShell block in Bash.
 
----
+## Verify Portal/Pixel
 
-## Need Help?
+Open the printed dashboard URL, normally **http://localhost:3001**, check availability and send a message. **http://localhost:3000** is separate Open WebUI. Inside Ubuntu:
 
-- Full walkthrough: [WINDOWS-INSTALL-WALKTHROUGH.md](WINDOWS-INSTALL-WALKTHROUGH.md)
-- GPU issues: [WSL2-GPU-TROUBLESHOOTING.md](WSL2-GPU-TROUBLESHOOTING.md)
-- Docker tuning: [DOCKER-DESKTOP-OPTIMIZATION.md](DOCKER-DESKTOP-OPTIMIZATION.md)
-- General FAQ: [FAQ.md](../FAQ.md)
+```bash
+cd ~/ods
+./ods status
+sudo systemctl status openclaw-gateway.service pixel-ingress.service --no-pager
+```
 
----
+For failures, inspect the installer log and `sudo journalctl -u openclaw-gateway.service -u pixel-ingress.service -n 80 --no-pager`. If systemd is missing, enable `systemd=true` under `[boot]` in `/etc/wsl.conf`, preserving other settings, then run `wsl --terminate Ubuntu-24.04` in PowerShell and reopen Ubuntu.
 
-*Last updated: 2026-05-20*
+## GPU placement
+
+Pixel is the agent, not the model server. This change does not add a Windows GPU bridge. NVIDIA needs a supported driver and GPU access in WSL/Docker. AMD/Lemonade on Windows does not imply ROCm support in WSL. Use a supported detected backend, CPU, or an explicitly configured reachable endpoint; external endpoints are not automatically managed. See [WSL2 GPU guide](WINDOWS-WSL2-GPU-GUIDE.md).
+
+## Existing native Windows installations
+
+Setup detects native runtimes at `ODS_HOME` or `%USERPROFILE%\ods` and stops to avoid competing stacks. Check any older custom location yourself. No data migration or deletion is automatic. Preserve needed data and migrate/remove the old deployment before switching; removal is destructive and your explicit choice.
+
+Manage existing native installations using their own `ods.ps1`. The native implementation remains at `ods/installers/windows/install-windows.ps1` for maintenance, not the recommended new-install path. Native commands do not manage the WSL runtime.
+
+## Uninstall WSL ODS
+
+Inside Ubuntu, use your chosen runtime directory:
+
+```bash
+cd ~/ods
+./ods-uninstall.sh --force
+```
+
+Do not unregister Ubuntu to remove only ODS.
+
+References: [Microsoft WSL commands](https://learn.microsoft.com/en-us/windows/wsl/basic-commands), [Docker WSL integration](https://docs.docker.com/desktop/features/wsl/).

@@ -1,7 +1,8 @@
 # ODS Root Installer (Windows)
-# Delegates to ods/installers/windows/install-windows.ps1
+# Recommended Portal installation: Ubuntu/WSL2 with Pixel, never a native/Hermes fallback.
 
 param(
+    [string]$Distro = "Ubuntu-24.04",
     [switch]$DryRun,
     [switch]$Force,
     [switch]$NonInteractive,
@@ -30,7 +31,7 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # Delegate to Windows installer
-$ODSInstaller = Join-Path (Join-Path (Join-Path $ScriptDir "ods") "installers") "windows" | Join-Path -ChildPath "install-windows.ps1"
+$ODSInstaller = Join-Path (Join-Path $ScriptDir "ods") "installers/windows-portal.ps1"
 if (-not (Test-Path $ODSInstaller)) {
     Write-Host "Error: Windows installer not found" -ForegroundColor Red
     Write-Host "Expected: $ODSInstaller" -ForegroundColor Red

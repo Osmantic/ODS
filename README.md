@@ -85,7 +85,7 @@ Choose your system, copy the block, run it in a normal terminal. ODS installs th
 curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
 
-**Windows — Portal/Pixel through WSL2 (recommended)**
+**Windows PowerShell** — guided Ubuntu/WSL2 setup with Pixel/Portal
 
 ```powershell
 $ProgressPreference = "SilentlyContinue"
@@ -96,12 +96,14 @@ Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" 
 Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
 cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\ods\installers\windows.ps1 -Distro Ubuntu-24.04 -PassthroughArgs @("--pixel", "--no-hermes")
+.\install.ps1
 ```
 
-Prerequisites: Docker must be installed and running. On Windows, install and initialize **Ubuntu 24.04 on WSL2**, enable systemd in Ubuntu, and enable Docker Desktop's **WSL2 engine and WSL integration for that distribution**. If Ubuntu is missing, run `wsl --install -d Ubuntu-24.04` in an Administrator PowerShell window, restart if requested, then open Ubuntu and create its Linux user/password. Run the installation block above in a normal, non-Administrator PowerShell window. Replace `Ubuntu-24.04` if your distribution has a different name (`wsl -l -v`).
+Prerequisites: Docker must be installed and running. Start in a **normal, non-Administrator PowerShell window**. The installer offers WSL feature preparation (Windows administrator approval) and Ubuntu-24.04 installation when needed. Restart if requested, then rerun the same command; there is no automatic reboot. Ubuntu first-run setup asks you to create a Linux user/password.
 
-This command runs the Linux installer inside Ubuntu and explicitly requires **Pixel for Portal**, with Hermes disabled. You may be prompted for your Ubuntu sudo password. Docker Desktop using WSL2 internally is not enough: the ODS installer itself must run in the Ubuntu distribution. The root `install.ps1` is a separate native Windows path; it does **not** provision the Linux Pixel host runtime.
+Before installing ODS, the script checks WSL2, a non-root Ubuntu user, systemd, and Docker/Compose inside Ubuntu. Enable Docker Desktop's WSL2 engine and **Settings > Resources > WSL Integration** for that distribution. Missing prerequisites stop setup with instructions. It then runs the Linux installer with **`--pixel --no-hermes --no-openclaw`**, never falling back to Hermes or the native Windows installer. Select an existing distribution with `.\install.ps1 -Distro Ubuntu` (names from `wsl -l -v`).
+
+Existing native Windows installations are not automatically migrated or deleted; see [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md#existing-native-windows-installations) before switching.
 
 The hosted Linux/macOS endpoint proxies the current bootstrap from repository `main`.
 Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
@@ -236,13 +238,13 @@ Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" 
 Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
 cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\ods\installers\windows.ps1 -Distro Ubuntu-24.04 -PassthroughArgs @("--pixel", "--no-hermes")
+.\install.ps1
 ```
 
 > The `Set-ExecutionPolicy` command allows the installer script to run in the current session. It does not change your system-wide policy.
 > Running as Administrator is not recommended for the installer because user-level paths such as `.opencode`, `data/`, and `.env` can be created with admin-owned permissions.
 
-This is the recommended WSL path for Portal/Pixel. Complete the Ubuntu/systemd and Docker WSL-integration prerequisites in [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md). The runtime is normally `~/ods` inside Ubuntu; manage it there with `./ods status`. Open the Portal dashboard at the URL printed by the installer (normally http://localhost:3001). Native Windows `ods.ps1` commands do not manage this Linux runtime.
+This command guides WSL/Ubuntu preparation and checks systemd and Docker integration before installing Pixel. See [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md). The runtime is normally `~/ods` inside Ubuntu; manage it there with `./ods status`. Open the Portal dashboard at the URL printed by the installer (normally http://localhost:3001). Native Windows `ods.ps1` commands do not manage this Linux runtime.
 
 </details>
 
