@@ -28,7 +28,11 @@ function Confirm-ODSPortalPreparation([string]$Message, [bool]$NonInteractive) {
     return (-not $NonInteractive -and $script:allowPreparation)
 }
 function Install-ODSPortalWslFeatures([switch]$MissingExecutable) { $script:calls.Add('features'); if ($MissingExecutable) { $script:calls.Add('enable-optional-features') }; return $script:featureCode }
-function Initialize-ODSPortalUbuntuUser([string]$Distro) { $script:calls.Add('user:' + $Distro); return $script:userSetupCode }
+function Initialize-ODSPortalUbuntuUser([string]$Distro) {
+    $script:calls.Add('user:' + $Distro)
+    if ($script:scenario -eq 'resume-user') { $script:scenario='ready' }
+    return $script:userSetupCode
+}
 function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro, [string[]]$LinuxArguments, [string]$InstallRoot) {
     $script:calls.Add('install:' + $Distro)
     $script:capturedArguments = $LinuxArguments
@@ -49,7 +53,7 @@ function Invoke-ODSPortalWsl([string[]]$Arguments) {
         '^--distribution Ubuntu --exec id -u$' { $output='1000'; break }
         '^--distribution Ubuntu --exec ps -p 1 -o comm=$' { $output='systemd'; break }
         '^--distribution Ubuntu --exec docker (info|compose version)$' { break }
-        '^--distribution Ubuntu-24.04 --exec id -u$' { $output='1000'; if ($script:scenario -eq 'root') { $output='0' }; break }
+        '^--distribution Ubuntu-24.04 --exec id -u$' { $output='1000'; if ($script:scenario -in @('root','resume-user')) { $output='0' }; break }
         '^--distribution Ubuntu-24.04 --exec ps -p 1 -o comm=$' { $output='systemd'; if ($script:scenario -eq 'init') { $output='init' }; break }
         '^--distribution Ubuntu-24.04 --exec docker info$' { if ($script:scenario -eq 'docker') { $code=1 }; break }
         '^--distribution Ubuntu-24.04 --exec docker compose version$' { if ($script:scenario -eq 'compose') { $code=1 }; break }
@@ -93,6 +97,16 @@ try {
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'new Ubuntu initializes then installs'
     Check ($script:calls.Contains('--install --distribution Ubuntu-24.04 --no-launch')) 'downloads selected Ubuntu only'
     Check ($script:calls.Contains('user:Ubuntu-24.04')) 'first-run user setup remains interactive'
+    Reset-Scenario
+    $script:scenario='resume-user'
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'resume completes Ubuntu account setup before ODS'
+    Check ($script:calls.Contains('user:Ubuntu-24.04') -and -not $script:calls.Contains('--install --distribution Ubuntu-24.04 --no-launch')) 'resume reuses downloaded Ubuntu'
+    Check (@($script:calls | Where-Object { $_ -eq '--distribution Ubuntu-24.04 --exec id -u' }).Count -eq 2) 'default user is rechecked after interactive setup'
+    Reset-Scenario
+    $script:scenario='root'
+    $rejected=$false
+    try { $null=Invoke-ODSPortalSetup @{NonInteractive=$true} 'unused' } catch { $rejected=$true }
+    Check ($rejected -and -not $script:calls.Contains('user:Ubuntu-24.04')) 'noninteractive root never opens user setup or installs ODS'
     Reset-Scenario
     $script:scenario='missing'; $script:downloadCode=3010
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 3010) 'Ubuntu requiring reboot preserves restart exit'
