@@ -63,7 +63,7 @@ const FEATURE_LAUNCH_FALLBACKS = {
   'hermes-sso': { type: 'internal', path: '/invites' },
   images: { type: 'service', service: 'comfyui' },
   workflows: { type: 'service', service: 'n8n' },
-  coding: { type: 'service', service: 'opencode' },
+  coding: { type: 'internal', path: '/apps/opencode' },
   observability: { type: 'service', service: 'langfuse' },
   'lan-web': { type: 'service', service: 'ods-proxy' },
   'remote-access': { type: 'none' },

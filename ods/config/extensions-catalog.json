@@ -7656,8 +7656,8 @@
           "setup_time": "Ready",
           "priority": 6,
           "launch": {
-            "type": "service",
-            "service": "opencode"
+            "type": "internal",
+            "path": "/apps/opencode"
           },
           "gpu_backends": [
             "all"

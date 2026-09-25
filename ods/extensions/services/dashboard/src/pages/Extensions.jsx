@@ -4,6 +4,7 @@ import {
   Box, Loader2, RefreshCw, RotateCcw, ChevronDown, ChevronUp, Package, Info, X, Download, Trash2, ExternalLink, Terminal, Copy, Check,
 } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { DependencyBadges, DependencyConfirmDialog, DisableDependentWarning } from '../components/DependencyBadges'
 import { TemplatePicker } from '../components/TemplatePicker'
 import { getTemplateStatus } from '../lib/templates'
@@ -931,7 +932,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><RotateCcw size={12} /> Rollback</>}
             </button>
           )}
-          {isUserExt && isStopped && (
+          {(isUserExt || ext.app_path) && isStopped && (
             <button
               disabled={actionDisabled}
               title={disabledTitle}
@@ -995,7 +996,18 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
         </div>
         <div className="flex items-center gap-2">
           <DependencyBadges dependsOn={ext.depends_on} dependencyStatus={ext.dependency_status} />
-          {status === 'enabled' && launchUrl ? (
+          {ext.app_path ? (
+            // Host applications (OpenCode) have their own page: open, start,
+            // set up, and how to use it, including from another device.
+            <Link
+              to={ext.app_path}
+              className="flex items-center gap-1 px-2 py-1.5 text-[10px] font-mono text-theme-text-secondary hover:text-theme-text hover:bg-theme-surface-hover/40 rounded-lg transition-colors"
+              title={`${ext.name}: status, how to use it, and troubleshooting`}
+            >
+              <ExternalLink size={11} />
+              {status === 'enabled' ? 'Open' : 'Manage'}
+            </Link>
+          ) : status === 'enabled' && launchUrl ? (
             HEADLESS_EXTENSIONS.has(ext.id) ? (
               <span className="px-2 py-1 text-[9px] font-mono uppercase tracking-[0.12em] text-theme-text-muted/45">
                 API service
