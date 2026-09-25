@@ -34,7 +34,7 @@ import {
   statusFileFromEnv,
   statusPayload,
 } from "./projection.mjs";
-import { promptContractForAgent } from "./prompt-contract.mjs";
+import { composePromptBuildResult, promptContractForAgent } from "./prompt-contract.mjs";
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import {
@@ -359,7 +359,15 @@ export default definePluginEntry({
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
       // Per-attempt, model-only context: not part of the cached system prompt.
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
-      return contract ? { ...contract, ...(cancelContext ? {prependContext:cancelContext} : {}), ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : undefined;
+      // Only configuration-derived text may enter system space; the goal,
+      // message-selected contracts and repository evidence ride on this turn.
+      const result = composePromptBuildResult(contract, {
+        activity: ACTIVITY_CONTRACT,
+        execution: executionContext(),
+        goal: goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : "",
+        repositoryEvidence,
+      });
+      return result && cancelContext ? {...result, prependContext: cancelContext} : result;
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
