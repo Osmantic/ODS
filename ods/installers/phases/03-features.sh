@@ -136,6 +136,15 @@ if [[ "$PIXEL_AGENT_MODE" == "pixel" ]]; then
 else
     log "Pixel is unavailable or disabled; existing ODS tools remain available"
 fi
+
+# Pixel's systemd unit and runtime group require privilege. Check immediately
+# after feature selection, before image pulls and model downloads.
+if [[ "$ENABLE_PIXEL_RUNTIME" == "true" ]] && ! $DRY_RUN && ! ods_sudo_available; then
+    ai_bad "Pixel requires privileged systemd and group setup on this host."
+    ai "Run as a regular user with working sudo, or re-run with --no-pixel."
+    return 1 2>/dev/null || exit 1
+fi
+
 export PIXEL_AGENT_MODE ENABLE_PIXEL_RUNTIME ENABLE_PIXEL
 
 if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]]; then

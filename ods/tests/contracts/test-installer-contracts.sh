@@ -473,6 +473,7 @@ run_phase03_rag_guard() {
     ODS_MODE=local
     ENABLE_RAG=true
     ENABLE_HERMES=false
+    ENABLE_PIXEL=false
     ENABLE_OPENCLAW=false
     ENABLE_COMFYUI=false
     ENABLE_WORKFLOWS=false
@@ -623,6 +624,9 @@ for svc in litellm; do
   grep -qE "_sync_extension_compose +\"\\\$_pixel_support_services\" +$svc\\b" "$features_phase" \
     || { echo "[FAIL] $svc compose is not gated by Pixel or Recommended services in $features_phase"; exit 1; }
 done
+
+echo "[contract] Pixel privilege preflight follows selected feature"
+bash tests/test-pixel-early-sudo-preflight.sh
 
 echo "[contract] SearXNG follows web search consumers, not only --recommended"
 bash tests/test-pixel-support-services.sh
