@@ -382,7 +382,9 @@ detect_cpu() {
             sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown"
             ;;
         *)
-            grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "Unknown"
+            local cpu
+            cpu=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || true)
+            [[ -n "$cpu" ]] && echo "$cpu" || echo "Unknown" 
             ;;
     esac
 }
