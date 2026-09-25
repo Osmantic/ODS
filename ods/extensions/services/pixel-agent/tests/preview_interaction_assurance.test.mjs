@@ -519,3 +519,102 @@ test('the tool result states page errors before any coverage claim',async()=>{
   assert.doesNotMatch(result.content[0].text,/tested opposite visibility states/);
   assert.equal(boundVisibilityInspection(params,result,preview),undefined);
 });
+
+// Tower2 round 092 website-create: after its last publication the model ran a
+// read-only grep, which leaves the preview out of currency until the host byte
+// comparison at finalization, then a passing transition inspection of that same
+// immutable snapshot. The comparison restored the snapshot, but the passing
+// receipt had bound to nothing, so delivery said the interaction was unverified.
+function awaitingByteCheck({verified=true}={}) {
+  let probes=0;
+  const {guard,preview}=setup({verifyWorkspacePreview:async()=>{probes++;return verified;}});
+  const persist=({event,ctx},result)=>guard.toolResultPersist({toolName:event.toolName,toolCallId:event.toolCallId,
+    message:{role:'toolResult',toolName:event.toolName,toolCallId:event.toolCallId,...result}},ctx);
+  persist({event:{toolName:'pixel_ods_workspace_preview',toolCallId:'publish'},ctx:{...context,toolName:'pixel_ods_workspace_preview',toolCallId:'publish'}},{details:preview});
+  const grepResult={content:[{type:'text',text:'256: <p id="details" hidden>'}],details:{status:'completed',exitCode:0}};
+  const grep=(id='grep')=>{const g=call(guard,'exec',{command:'cd /workspace && grep -n "details" site/index.html',workdir:'/workspace'},id,grepResult);persist(g,grepResult);};
+  const finish=(observed,{ctx=observed.ctx,result=observed.result}={})=>{guard.afterToolCall({...observed.event,result},ctx);persist(observed,result);};
+  const inspect=(params=plan(preview),options={})=>{const observed=inspection(guard,params,options);finish(observed);return observed;};
+  return {guard,preview,grep,inspect,finish,probes:()=>probes};
+}
+
+for (const wrapped of [false,true]) for (const order of ['grep-then-inspect','inspect-then-grep','inspect-across-grep'])
+test(`R092: a passing inspection of the snapshot awaiting its byte check counts once that snapshot is current: ${order}, wrapped=${wrapped}`,async()=>{
+  const r=awaitingByteCheck();
+  if (order==='grep-then-inspect') {r.grep();r.inspect(undefined,{wrapped});}
+  if (order==='inspect-then-grep') {r.inspect(undefined,{wrapped});r.grep();}
+  if (order==='inspect-across-grep') {const started=inspection(r.guard,plan(r.preview),{wrapped,id:'parallel'});r.grep();r.finish(started);}
+  const pending=r.guard.verificationForRun('run');
+  assert.notEqual(pending.status,'passed','a receipt alone never makes the snapshot current');
+  assert.match(pending.text,/not been verified again since later tool activity/);
+  assert.equal(await r.guard.revalidateWorkspacePreview({},context),true);
+  assert.equal(r.probes(),1);
+  const outcome=r.guard.verificationForRun('run');
+  assert.equal(outcome.preview.sha256,r.preview.sha256);
+  assert.equal(outcome.status,'passed',outcome.text);
+  assert.equal(r.guard.beforeAgentFinalize({},context),undefined);
+});
+
+for (const fault of ['host-bytes-changed','unpublished-snapshot','foreign-session','failed-receipt','static-plan'])
+test(`R092: grep-then-inspect leaves the interaction unverified when ${fault}`,async()=>{
+  const r=awaitingByteCheck({verified:fault!=='host-bytes-changed'});
+  r.grep();
+  const sha=fault==='unpublished-snapshot'?'c'.repeat(64):r.preview.sha256;
+  const target={...r.preview,sha256:sha,siteId:'site-'+sha.slice(0,24)};
+  const params=fault==='static-plan'?{...plan(target),steps:[{action:'assert-visible',locator:{selector:'button'}}]}:plan(target);
+  const observed=inspection(r.guard,params,{id:'inspect'});
+  const result=structuredClone(observed.result);
+  if (fault==='failed-receipt') {result.isError=true;result.details.status='failed';result.details.steps[2].status='failed';}
+  r.finish(observed,{result,ctx:fault==='foreign-session'?{...observed.ctx,sessionId:'foreign-session'}:observed.ctx});
+  assert.equal(await r.guard.revalidateWorkspacePreview({},context),fault!=='host-bytes-changed');
+  const outcome=r.guard.verificationForRun('run');
+  assert.equal(outcome.status,'failed');
+  assert.match(outcome.text,fault==='host-bytes-changed'?/not been verified again since later tool activity/:/show\/hide interaction has not passed browser inspection/);
+});
+
+test('R092: an earlier transition proof survives a static check of the snapshot awaiting its byte check, not a failed one',async()=>{
+  for (const failed of [false,true]) {
+    const r=awaitingByteCheck();
+    r.inspect(undefined,{id:'transition'});
+    r.grep();
+    const observed=inspection(r.guard,{...plan(r.preview),viewport:{width:1024,height:768},
+      steps:[{action:'assert-visible',locator:{selector:'button'}}]},{id:'static'});
+    const result=structuredClone(observed.result);
+    if (failed) {result.isError=true;result.details.status='failed';result.details.steps[0].status='failed';}
+    r.finish(observed,{result});
+    assert.equal(await r.guard.revalidateWorkspacePreview({},context),true);
+    assert.equal(r.guard.verificationForRun('run').status,failed?'failed':'passed');
+  }
+});
+
+test('R092: page errors recorded for the snapshot awaiting its byte check select the repair step',async()=>{
+  const r=awaitingByteCheck();
+  r.grep();
+  r.finish(erroredInspection(r.guard,plan(r.preview),{id:'errored'}));
+  assert.equal(await r.guard.revalidateWorkspacePreview({},context),true);
+  assert.equal(r.guard.verificationForRun('run').status,'failed');
+  assert.equal(r.guard.beforeAgentFinalize({},context)?.retry?.instruction,PAGE_ERROR_REPAIR_INSTRUCTION);
+});
+
+// Without a pending snapshot for this exact session and workspace a receipt
+// binds nothing, so even a republication of identical bytes is not verified.
+for (const drop of ['bundle-invalidated','ineligible-call','session-id','session-key','workspace-root'])
+test(`R092: a receipt binds nothing once the pending snapshot is dropped: ${drop}`,async()=>{
+  const r=awaitingByteCheck();
+  r.grep();
+  let runContext=context;
+  if (drop==='bundle-invalidated') assert.equal(r.guard.invalidateWorkspaceBundle(context),true);
+  if (drop==='ineligible-call') call(r.guard,'exec',{command:'sleep 1 &'},'detached',{content:[{type:'text',text:'(no output)'}],details:{status:'completed',exitCode:0}});
+  if (['session-id','session-key','workspace-root'].includes(drop)) {
+    runContext={...context,...drop==='session-id'?{sessionId:'other-session'}:drop==='session-key'?{sessionKey:'other-key'}:{}};
+    r.guard.observeRun(runContext,'pixel',{prompt:owner},drop==='workspace-root'?{workspaceRoot:'/other-root'}:undefined);
+  }
+  const observed=inspection(r.guard,plan(r.preview),{id:'inspect',runContext});
+  r.guard.afterToolCall({...observed.event,result:observed.result},observed.ctx);
+  assert.equal(await r.guard.revalidateWorkspacePreview({},runContext),false);
+  call(r.guard,'pixel_ods_workspace_preview',{relativeDirectory:r.preview.relativeDirectory},'republish',{details:r.preview},runContext);
+  const outcome=r.guard.verificationForRun('run');
+  assert.equal(outcome.preview?.sha256,r.preview.sha256);
+  assert.equal(outcome.status,'failed');
+  assert.match(outcome.text,/show\/hide interaction has not passed browser inspection/);
+});
