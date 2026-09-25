@@ -103,6 +103,7 @@ export default function Extensions({ compact = false }) {
   const [statusFilter, setStatusFilter] = useState('all')
   const [libraryView, setLibraryView] = useState('all')
   const [expanded, setExpanded] = useState(null)
+  const expandedTriggerRef = useRef(null)
   const [mutating, setMutating] = useState(null)
   const [confirm, setConfirm] = useState(null)
   const [toast, setToast] = useState(null)
@@ -509,7 +510,7 @@ export default function Extensions({ compact = false }) {
               ext={ext}
               gpuBackend={catalog?.gpu_backend}
               agentAvailable={catalog?.agent_available}
-              onDetails={() => setExpanded(ext.id)}
+              onDetails={(event) => { expandedTriggerRef.current = event.currentTarget; setExpanded(ext.id) }}
               onConsole={() => setConsoleExt(ext)}
               onAction={requestAction}
               mutating={mutating}
@@ -523,7 +524,7 @@ export default function Extensions({ compact = false }) {
 
       {/* Detail modal */}
       {expanded && (
-        <DetailModal ext={extensions.find(e => e.id === expanded)} gpuBackend={catalog?.gpu_backend} onClose={() => setExpanded(null)} />
+        <DetailModal ext={extensions.find(e => e.id === expanded)} gpuBackend={catalog?.gpu_backend} onClose={() => { setExpanded(null); expandedTriggerRef.current?.focus(); expandedTriggerRef.current = null }} />
       )}
 
       {/* Console modal */}
