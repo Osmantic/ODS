@@ -2954,7 +2954,7 @@ import re
 managed = re.findall(r"--state-dir \"\$home/\.openclaw/ods-runtime-patches/([a-z-]+)\"", installer)
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 9
+assert len(set(managed)) == len(managed) == 10
 assert installer.index("_ods_pixel_refresh_plugin_registry") < installer.index("_ods_pixel_mark_ready")
 assert "ods_linux_node_tools_available" in text
 assert "runtime_token_file=\"/run/ods-pixel/openclaw.json\"" in text

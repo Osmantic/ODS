@@ -284,6 +284,93 @@ OPENCLAW_PACKAGE=/path/to/openclaw node --test \
   ods/extensions/services/pixel-agent/tests/runtime_tool_result_delivery.integration.mjs
 ```
 
+## Owner-turn context overflow recovery
+
+Before an owner or revision prompt is submitted, OpenClaw 2026.6.33 estimates
+the prompt and compares it with `contextTokens - reserveTokens`. ODS sets
+`reserveTokens` to `(contextTokens + 4 * maxTokens + 4) // 5`, 19,661 on the
+64k hosts, so the budget is 45,875 estimated tokens: `(contextTokens -
+maxTokens) / 1.25`. The estimate counts prose at 4 characters per token, tool
+results at 2 and tool-call arguments at 3, adds per-message overheads,
+multiplies the sum by 1.2 and leaves out the tool schemas. Pixel's
+63.7k-character system prompt alone estimates about 19.1k. On 16 recorded
+fleet journeys the estimate read 1.33-1.52x the provider's count, so the check
+fired with 32.5-46.7k real tokens in context. A full 8,192-token reply only
+needs the prompt to stay under 57,344.
+
+The reserve is deliberately unchanged. It keeps the owner's first call clear
+of the openai-completions transport's own `max_tokens` clamp, which estimates
+the input at 1.25x characters/4 including the tool schemas. For a prose-only
+transcript that needs a reserve of at least about 16.2k, so the reserve could
+shrink by 3.4k at most. Replayed, that moves 3 of the 38 recorded summaries
+past their owner turn, and most come back at a tool-loop check a few calls
+later.
+
+When the check overflows, the runtime picks one of two recoveries. It can
+rewrite the session's tool results to fit `toolResultMaxChars` in total,
+oldest first (`truncate_tool_results_only`: a transcript rewrite with no model
+call; the retry starts 0.2-0.4 s later). Or it can summarize the history
+(`compact_then_truncate`: one summarizer call, or two for a split turn, then
+the same rewrite). The pinned route test converted the overflow to characters
+at the prose rate of 4 per token and required 1.5 times that. Tool-result text
+removes 0.6 estimated tokens per character, so the test asked for about three
+times the text that fits the budget, and chose the summary.
+
+Across the 16 journeys on tower1, tower3, strixy and the laptop (2026-09-25),
+38 owner-turn checks summarized the history, 33 of them in two summarizer
+calls. The retry waited 21-114 s each time (median 35 s). The runtime's own
+rewrite alone would have fitted the budget for 29 of the 38.
+
+`openclaw-precheck-route.json` repairs the exact
+`attempt.tool-run-context-yigSIkBW.js` bytes and changes only that threshold. It
+prices the overflow plus the existing 512-token route buffer at the estimator's
+own tool-result rate, `TOOL_RESULT_CHARS_PER_TOKEN / SAFETY_MARGIN` characters
+per token. The rewrite is chosen when it alone clears the budget by that
+buffer. Everything else is unchanged: whether and when the check fires, the
+budget, the rewrite, the summary path when the rewrite cannot fit, and the
+tool-loop and mid-turn checks. If a rewrite ever leaves the retry over budget,
+the retry's check compacts as before.
+
+- **Recorded journeys.** The pinned code reproduces all 44 recorded owner-turn
+  recoveries. With the repair, 24 of the 38 summaries become rewrites, and every
+  one fits after the rewrite. That includes 5 of 10 in the 4 later journeys that
+  were not used to choose the threshold. Of the other 14, 5 would fit by less
+  than the buffer and 9 cannot fit; they compact as before. The 6 existing
+  rewrites are unchanged.
+- **Cost of the rewrite.** The retry re-prefills from the first rewritten
+  result: 6.1-14.4k tokens (median 11.3k), about 2-5 s on an RTX 5090. The
+  summary path spends 21-36 s on that host before its own retry, which then
+  re-prefills the summary and the kept messages.
+- **Whole-journey simulation.** An approximate replay of all 16 journeys
+  (it produces 69 compactions where 85 were recorded) gives 69 -> 57
+  compactions and 25% fewer generated summary tokens. Owner-turn summaries
+  fall from 29 to 13, and mid-run tool-loop compactions rise from 32 to 38,
+  because the context after a rewrite stays larger than after a summary.
+- **What the model keeps.** A rewrite keeps every owner and assistant message
+  verbatim, including tool-call arguments, and the newest tool output up to
+  `toolResultMaxChars` in total. Older tool output becomes the runtime's
+  truncation notice. A summary replaces all of that history except the most
+  recent `keepRecentTokens`.
+
+Linux/Windows-WSL applies the repair with `--precheck-route`; native macOS
+composes the same recipe into its protected bundle. Restore uses the existing
+backup contract (`--precheck-route --restore`).
+
+The unit test replays the 44 recorded decisions (numbers only, no transcript
+content). The in-memory test compares the pinned and repaired checks on the
+runtime's own session manager, projection and rewrite. The gateway test runs a
+real gateway with a deterministic provider: an owner turn about 6k estimated
+tokens over budget is recovered with no summarization request (set
+`ODS_PRECHECK_ROUTE_RED=1` to see the pinned route summarize):
+
+```sh
+node --test ods/extensions/services/pixel-agent/tests/precheck_route.test.mjs
+OPENCLAW_PACKAGE_DIR=/path/to/openclaw node --test \
+  ods/extensions/services/pixel-agent/tests/runtime_precheck_route.integration.mjs
+OPENCLAW_PACKAGE=/path/to/openclaw node --test \
+  ods/extensions/services/pixel-agent/tests/runtime_precheck_route_gateway.integration.mjs
+```
+
 ## Runtime patches from another ODS build
 
 A different ODS build, such as a newer candidate or a downgrade source, can
