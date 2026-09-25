@@ -79,3 +79,19 @@ as cache-cold. Timed admission additionally requires actual fleet locks, current
 source/model/serving proof, native/backend idle, reviewed oracles, matching task
 checkpoints, explicit cache condition and no competing work. Frontend paint and
 usable-artifact timing are collected independently; no speedup is claimed here.
+
+The offline `scripts/pixel_probe_cleanup.py` helper accepts explicit filenames
+only and binds the manifest to exact settlement/disarm receipt hashes reviewed by
+the supervisor. Root approves the manifest digest before invoking cleanup; this
+is not another signing protocol. It validates all present file scopes, hashes,
+permissions and inode identities before unlinking. Interrupted cleanup can be
+repeated: missing names are recorded as `absent-unattributed`, never claimed as
+removed by this invocation. Both names of interrupted hard-link elections must
+be included. Completion proves only that listed names are absent, not that the
+entire directory is empty. Validation followed by unlink is not atomic against a
+same-UID external writer; retain the owned lane and private directory custody.
+
+`tests/probe_inactive_overhead.mjs` measures the no-active-lease wrapper with six
+counterbalanced CPU-only blocks and a deterministic no-network fetch. It is a
+separate microbenchmark, not a model/task speed measurement. Both live timing
+arms must retain the same measurement implementation and scope policy.
