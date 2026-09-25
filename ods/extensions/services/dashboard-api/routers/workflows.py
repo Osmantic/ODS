@@ -232,12 +232,20 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
             async with session.post(f"{N8N_URL}/api/v1/workflows", headers=headers, json=workflow_data) as resp:
                 if resp.status in (200, 201):
                     result = await resp.json()
-                    n8n_id = result.get("data", {}).get("id")
+                    n8n_id = result.get("id") if isinstance(result, dict) else None
                     activated = False
                     if n8n_id:
-                        async with session.patch(f"{N8N_URL}/api/v1/workflows/{n8n_id}", headers=headers, json={"active": True}) as activate_resp:
+                        async with session.post(
+                            f"{N8N_URL}/api/v1/workflows/{n8n_id}/activate",
+                            headers=headers,
+                        ) as activate_resp:
                             activated = activate_resp.status == 200
-                    return {"status": "success", "workflowId": workflow_id, "n8nId": n8n_id, "activated": activated, "message": f"{wf_info['name']} is now active!"}
+                    message = (
+                        f"{wf_info['name']} is now active!"
+                        if activated
+                        else f"{wf_info['name']} was imported but could not be activated."
+                    )
+                    return {"status": "success", "workflowId": workflow_id, "n8nId": n8n_id, "activated": activated, "message": message}
                 else:
                     error_text = await resp.text()
                     raise HTTPException(status_code=resp.status, detail=f"n8n API error: {error_text}")

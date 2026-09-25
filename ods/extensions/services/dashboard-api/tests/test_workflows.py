@@ -735,12 +735,12 @@ def test_workflow_enable_success(test_client, tmp_path, monkeypatch):
     (workflow_dir / "ok-wf.json").write_text(json.dumps({"name": "OK Workflow", "nodes": []}))
     monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
 
-    # Mock n8n POST (create) → 201 with id
+    # Mock n8n POST (create) → 200 with a top-level workflow object.
     create_resp = AsyncMock()
-    create_resp.status = 201
-    create_resp.json = AsyncMock(return_value={"data": {"id": "n8n-99"}})
+    create_resp.status = 200
+    create_resp.json = AsyncMock(return_value={"id": "n8n-99", "name": "OK Workflow"})
 
-    # Mock n8n PATCH (activate) → 200
+    # Mock n8n POST /{id}/activate → 200
     activate_resp = AsyncMock()
     activate_resp.status = 200
 
@@ -753,8 +753,7 @@ def test_workflow_enable_success(test_client, tmp_path, monkeypatch):
     activate_ctx.__aexit__ = AsyncMock(return_value=False)
 
     session_mock = AsyncMock()
-    session_mock.post = MagicMock(return_value=create_ctx)
-    session_mock.patch = MagicMock(return_value=activate_ctx)
+    session_mock.post = MagicMock(side_effect=[create_ctx, activate_ctx])
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
 
@@ -769,6 +768,73 @@ def test_workflow_enable_success(test_client, tmp_path, monkeypatch):
     assert data["status"] == "success"
     assert data["n8nId"] == "n8n-99"
     assert data["activated"] is True
+    assert data["message"] == "OK Workflow is now active!"
+    assert session_mock.post.call_args_list[1].args[0].endswith(
+        "/api/v1/workflows/n8n-99/activate"
+    )
+
+
+def test_workflow_enable_reports_activation_rejection(test_client, tmp_path, monkeypatch):
+    """A successful import must not claim a rejected activation succeeded."""
+    import routers.workflows as wf_mod
+
+    catalog = {
+        "workflows": [
+            {"id": "manual-wf", "name": "Manual Workflow", "description": "test",
+             "file": "manual-wf.json", "dependencies": []}
+        ],
+        "categories": {}
+    }
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps(catalog))
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
+
+    workflow_dir = tmp_path / "workflows"
+    workflow_dir.mkdir()
+    (workflow_dir / "manual-wf.json").write_text(json.dumps({
+        "name": "Manual Workflow",
+        "nodes": [
+            {"name": "Start", "type": "n8n-nodes-base.manualTrigger"},
+            {"name": "Do Work", "type": "n8n-nodes-base.set"},
+        ],
+        "connections": {
+            "Start": {"main": [[{"node": "Do Work", "type": "main", "index": 0}]]}
+        },
+    }))
+    monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
+
+    create_resp = AsyncMock()
+    create_resp.status = 201
+    create_resp.json = AsyncMock(return_value={"id": "n8n-manual"})
+
+    activate_resp = AsyncMock()
+    activate_resp.status = 400
+
+    create_ctx = AsyncMock()
+    create_ctx.__aenter__ = AsyncMock(return_value=create_resp)
+    create_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    activate_ctx = AsyncMock()
+    activate_ctx.__aenter__ = AsyncMock(return_value=activate_resp)
+    activate_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    session_mock = AsyncMock()
+    session_mock.post = MagicMock(side_effect=[create_ctx, activate_ctx])
+    session_mock.__aenter__ = AsyncMock(return_value=session_mock)
+    session_mock.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
+        resp = test_client.post(
+            "/api/workflows/manual-wf/enable",
+            headers=test_client.auth_headers,
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert data["n8nId"] == "n8n-manual"
+    assert data["activated"] is False
+    assert data["message"] == "Manual Workflow was imported but could not be activated."
 
 
 def test_workflow_enable_n8n_error(test_client, tmp_path, monkeypatch):
