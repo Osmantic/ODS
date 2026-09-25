@@ -27,6 +27,7 @@ import {
   workspacePreviewMode,
 } from "./tool-loop-guard.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "./agent-skills.mjs";
+import { outputBudgetContract } from "./output-limit-recovery.mjs";
 
 const PLAYGROUND_PROJECT_CONTRACT =
   "For a new project, choose one short descriptive folder under Playground, for example Playground/snake-game or Playground/weather-tool, and create every project file there. This is a real workspace folder, not a display label. Use the exact canonical paths returned by tools, including any collision suffix, for later reads, edits, exec workdir and preview relativeDirectory. Preserve explicitly requested paths and existing projects in their current locations; never move them into Playground. Keep shell commands relative to the chosen workdir; never invent host-specific paths.";
@@ -301,7 +302,7 @@ export function promptContractForAgent(
   context,
   agentId,
   event = undefined,
-  { verificationStatus, configuredContextWindow, configuredLeanPrompt, privateBrowserAccess, executionHost } = {}
+  { verificationStatus, configuredContextWindow, configuredLeanPrompt, privateBrowserAccess, executionHost, maxOutputTokens } = {}
 ) {
   if (!context || context.agentId !== agentId) return undefined;
   // Restore the September 16 selector, including conservative context fallback.
@@ -396,8 +397,10 @@ export function promptContractForAgent(
         : "";
   const project = !workspacePreview && workspaceToolsRequested
     ? ` ${PLAYGROUND_PROJECT_CONTRACT}` : "";
+  // Host-constant, so it sits before every per-request section.
+  const outputBudget = outputBudgetContract(maxOutputTokens);
   return {
     appendSystemContext:
-      `${extensionLifecycle ? `${extensionLifecycle} ` : ""}${conversationContract}${githubSource}${githubExtension}${extensionInventory}${extensionCatalog}${operationsContinuation}${operationsInventory}${operationsRequest}${exactDownload}${workspacePreview}${workspaceGuide}${project}${recovery}${verification}${privateUrl}`,
+      `${extensionLifecycle ? `${extensionLifecycle} ` : ""}${conversationContract}${outputBudget ? ` ${outputBudget}` : ""}${githubSource}${githubExtension}${extensionInventory}${extensionCatalog}${operationsContinuation}${operationsInventory}${operationsRequest}${exactDownload}${workspacePreview}${workspaceGuide}${project}${recovery}${verification}${privateUrl}`,
   };
 }

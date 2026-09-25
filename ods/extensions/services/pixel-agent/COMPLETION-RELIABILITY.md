@@ -383,6 +383,25 @@ real-harness fixtures `tests/runtime_progress_finalization.integration.mjs`,
 `tests/runtime_stop_synthesis.integration.mjs` and
 `tests/runtime_owner_visible_reply.integration.mjs` cover these paths.
 
+## Output limit
+
+A reply that reaches the model's output-token limit (`stopReason` `length`)
+ends the run, and OpenClaw never runs its unfinished tool call. On strixy
+(2026-09-25, Qwen3.6-35B-A3B, 8192 output tokens) the owner's forest-website
+request was one whole-page `write` cut after 220 s; nothing was saved.
+
+Prevention: the prompt contract states the running model's per-reply limit
+(`configuredMaxOutputTokens`, read from the host configuration the way
+OpenClaw 2026.6.33 applies it) and asks for several smaller files or writes,
+each well under half of it. The line depends only on the host's model, so it is
+byte-stable per host and sits before every per-request section. It limits one
+reply, not the size of the work.
+
+Delivery reports a final reply cut at the limit plainly, and a finalize
+revision asks for smaller steps when OpenClaw runs that hook.
+`tests/output_limit_prevention.test.mjs` and `tests/output_limit_recovery.test.mjs`
+cover these paths.
+
 ## Owner cancellation
 
 Every recovery decision is bound to the run that armed it. An acknowledged

@@ -26,3 +26,51 @@ export const OUTPUT_LIMIT_UNRECOVERED_TEXT =
 export function outputLimitReply(message) {
   return message?.role === 'assistant' && message.stopReason === 'length';
 }
+
+// Prevention: one prompt line with the active model's per-reply output limit,
+// so large content is planned as several smaller writes from the start. The
+// limit comes from host configuration, so the line is byte-stable per host.
+export function outputBudgetContract(maxOutputTokens) {
+  if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1) return '';
+  const part = Math.floor(maxOutputTokens / 2);
+  return `One reply, including its thinking and tool-call arguments, can hold at most about ${maxOutputTokens} output tokens; ` +
+    'a longer reply is cut off and its unfinished tool call does not run. This limits each reply, not the size of your work: ' +
+    'write large content as several files or several smaller writes (for a web page, separate index.html, styles.css and script.js), ' +
+    `each well under ${part} tokens (about ${part * 3} characters).`;
+}
+
+// Mirrors OpenClaw 2026.6.33 (model-max-tokens-params): the first alias set in
+// a params layer wins within it, and a later layer overrides an earlier one.
+const MAX_TOKEN_KEYS = ['maxTokens', 'max_completion_tokens', 'max_tokens'];
+const tokenCount = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+function paramsMaxTokens(params) {
+  if (!params || typeof params !== 'object') return undefined;
+  for (const key of MAX_TOKEN_KEYS) if (tokenCount(params[key]) !== undefined) return params[key];
+  return undefined;
+}
+
+// The output limit OpenClaw sends for this agent's model: a positive params
+// limit (defaults, the model's defaults entry, then the agent) clamped to the
+// model row's maxTokens, otherwise the row's own maxTokens. The hook context
+// names the model the run actually resolved. Undefined without that model's
+// configured row, whose limit would clamp (for example a dynamic provider).
+export function configuredMaxOutputTokens(config, agentId, context = undefined) {
+  const list = config?.agents?.list;
+  const agent = Array.isArray(list) ? list.find(entry => entry?.id === agentId) : undefined;
+  const defaults = config?.agents?.defaults;
+  const configured = agent?.model?.primary ?? agent?.model ?? defaults?.model?.primary ?? defaults?.model;
+  const selected = typeof context?.modelProviderId === 'string' && typeof context?.modelId === 'string'
+    ? `${context.modelProviderId}/${context.modelId}` : configured;
+  if (typeof selected !== 'string' || !selected.includes('/')) return undefined;
+  const cut = selected.indexOf('/');
+  const rows = config?.models?.providers?.[selected.slice(0, cut)]?.models;
+  const row = Array.isArray(rows) ? rows.find(entry => entry?.id === selected.slice(cut + 1)) : undefined;
+  if (!row) return undefined;
+  let requested;
+  for (const layer of [defaults?.params, defaults?.models?.[selected]?.params, agent?.params]) {
+    requested = paramsMaxTokens(layer) ?? requested;
+  }
+  const modelMax = tokenCount(row?.maxTokens) || undefined;
+  const limit = requested ? Math.min(requested, modelMax ?? requested) : modelMax;
+  return limit >= 1 ? Math.floor(limit) : undefined;
+}

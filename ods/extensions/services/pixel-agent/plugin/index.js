@@ -36,6 +36,7 @@ import {
   statusPayload,
 } from "./projection.mjs";
 import { promptContractForAgent } from "./prompt-contract.mjs";
+import { configuredMaxOutputTokens } from "./output-limit-recovery.mjs";
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import {
@@ -359,6 +360,7 @@ export default definePluginEntry({
         configuredLeanPrompt,
         privateBrowserAccess,
         executionHost,
+        maxOutputTokens: configuredMaxOutputTokens(api.runtime?.config?.current?.() ?? api.config, AGENT_ID, context),
       });
       const repositoryEvidence = contract ? await extensionRepositoryContext(event,
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
