@@ -14062,7 +14062,13 @@ def _positive_int(value: object) -> int | None:
 
 
 def _recommended_activation_context(model_id: str, model: dict, env: dict) -> int | None:
-    """Return installer-persisted context when activating that recommendation."""
+    """Return installer-persisted context when activating that recommendation.
+
+    The replay never exceeds the model's declared native maximum
+    (model_memory.declared_max_context): llama.cpp caps the slot at the GGUF
+    training context, so an older install's record above it (131072 for the
+    40960-token Qwen3-30B-A3B) could never pass the context proof.
+    """
     context = _positive_int(env.get("MODEL_RECOMMENDED_CONTEXT"))
     if context is None:
         return None
@@ -14080,6 +14086,13 @@ def _recommended_activation_context(model_id: str, model: dict, env: dict) -> in
             gguf_file=gguf_file,
             llm_model_name=llm_model_name,
         ):
+            native_max = _model_memory.declared_max_context(model)
+            if native_max and context > native_max:
+                logger.info(
+                    "Capping recorded MODEL_RECOMMENDED_CONTEXT %s for %s to its native maximum %s",
+                    context, model_id, native_max,
+                )
+                return native_max
             return context
     return None
 

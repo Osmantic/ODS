@@ -90,6 +90,33 @@ def memory_metadata(model: dict[str, Any]) -> dict[str, Any]:
     return {key: model[key] for key in MEMORY_METADATA_KEYS if key in model}
 
 
+def declared_max_context(model: dict[str, Any]) -> int:
+    """The catalog's declared native maximum context, or 0 when undeclared.
+
+    ``max_context_length`` is the model's native context: the GGUF
+    ``<arch>.context_length`` (``n_ctx_train``), above which llama.cpp caps
+    the slot, or a lower documented maximum
+    (tests/test_model_library_native_context.py keeps it at or below the
+    header). The dashboard's normalized entries
+    (performance_oracle.normalize_catalog_entry) fill ``max_context_length``
+    from ``context_length`` when the entry declares none and mark that with
+    ``native_context_declared: False``; such an entry has no known ceiling, so
+    an owner's larger context is not clamped to the catalog default.
+
+    Lives here, not in model_selection, so bin/ods-host-agent.py (which loads
+    only this file) applies the same ceiling; model_selection re-exports it.
+    """
+    if model.get("native_context_declared") is False:
+        return 0
+    value = model.get("max_context_length")
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(int(value or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _positive_number(value: Any) -> float:
     try:
         number = float(value)

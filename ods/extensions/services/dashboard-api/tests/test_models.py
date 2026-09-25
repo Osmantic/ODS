@@ -3274,3 +3274,102 @@ def test_listed_talk_verdict_reflects_the_served_context(test_client, monkeypatc
     candidate = models["qwen3.6-27b-ud-q4-k-xl"]
     assert candidate["contextLength"] == 65536
     assert candidate["appCompatibility"]["hermesTalk"].get("code") != "context_below_hermes_minimum"
+
+
+# ---------------------------------------------------------------------------
+# The declared native (GGUF training) context is a ceiling on every load
+# path: llama.cpp caps the slot there, so a larger context is never served.
+# ---------------------------------------------------------------------------
+
+def _capture_agent_calls(models_router, monkeypatch):
+    calls: list[dict] = []
+
+    def call_agent(path, body, timeout=30, **_kwargs):
+        calls.append(body)
+        return {"status": "activated"}
+
+    monkeypatch.setattr(models_router, "_call_agent_model", call_agent)
+    return calls
+
+
+@pytest.mark.parametrize(("model_id", "requested", "native"), [
+    ("qwen3-30b-a3b-q4", 131072, 40960),
+    ("gemma3-4b-it-q4", 262144, 131072),
+])
+def test_explicit_context_above_the_native_maximum_is_refused(
+    test_client, monkeypatch, tmp_path, model_id, requested, native,
+):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    (entry,) = _repo_catalog_entries(model_id)
+    _write_model_library(install_dir, [entry])
+    (data_dir / "models" / entry["gguf_file"]).write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model="qwen3.5-9b", gguf="Qwen3.5-9B-Q4_K_M.gguf", ctx=65536)
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: "Qwen3.5-9B-Q4_K_M.gguf")
+    calls = _capture_agent_calls(models_router, monkeypatch)
+
+    resp = test_client.post(
+        f"/api/models/{model_id}/load", headers=test_client.auth_headers, json={"context_length": requested},
+    )
+
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["code"] == "context_above_native_maximum"
+    assert detail["maxContextLength"] == native
+    assert detail["requestedContext"] == requested
+    assert f"{native:,}" in detail["message"]
+    assert calls == []
+
+    # The native maximum itself is served exactly as asked.
+    resp = test_client.post(
+        f"/api/models/{model_id}/load", headers=test_client.auth_headers, json={"context_length": native},
+    )
+    assert resp.status_code == 200
+    assert calls == [{"model_id": model_id, "context_length": native}]
+
+
+def test_explicit_context_without_a_declared_native_maximum_is_not_capped(test_client, monkeypatch, tmp_path):
+    # A manually copied GGUF declares no native maximum; the owner's context
+    # goes to the host agent unchanged.
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, _repo_catalog_entries("qwen3.5-27b-q4"))
+    (data_dir / "models" / "Custom-7B-Q4_K_M.gguf").write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model="qwen3.5-9b", gguf="Qwen3.5-9B-Q4_K_M.gguf", ctx=65536)
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: "Qwen3.5-9B-Q4_K_M.gguf")
+    calls = _capture_agent_calls(models_router, monkeypatch)
+
+    resp = test_client.post(
+        "/api/models/Custom-7B-Q4_K_M/load", headers=test_client.auth_headers, json={"context_length": 1048576},
+    )
+
+    assert resp.status_code == 200
+    assert calls == [{"model_id": "Custom-7B-Q4_K_M", "context_length": 1048576}]
+
+
+@pytest.mark.parametrize("gpu", [
+    # No GPU information: the switch plan is unavailable.
+    None,
+    # A 4 GB card: Qwen3-30B-A3B fits at no context, so there is no plan.
+    GPUInfo(
+        name="NVIDIA GeForce GTX 1650", memory_used_mb=256, memory_total_mb=4096,
+        memory_percent=6.0, utilization_percent=0, temperature_c=40, gpu_backend="nvidia",
+    ),
+])
+def test_stale_configured_context_is_capped_when_no_plan_is_available(test_client, monkeypatch, tmp_path, gpu):
+    """Without a plan the load path replays the configured CTX_SIZE for the
+    configured model. An older install's 131072 for the 40960-token
+    Qwen3-30B-A3B would load, fail its context proof and roll back; the
+    native maximum is served instead."""
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    (entry,) = _repo_catalog_entries("qwen3-30b-a3b-q4")
+    _write_model_library(install_dir, [entry])
+    (data_dir / "models" / entry["gguf_file"]).write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model=entry["llm_model_name"], gguf=entry["gguf_file"], ctx=131072)
+    monkeypatch.setattr(models_router, "get_gpu_info", lambda: gpu)
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: None)
+    assert models_router._policy_activation_context("qwen3-30b-a3b-q4", 131072) is None
+    calls = _capture_agent_calls(models_router, monkeypatch)
+
+    resp = test_client.post("/api/models/qwen3-30b-a3b-q4/load", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert calls == [{"model_id": "qwen3-30b-a3b-q4", "context_length": 40960}]

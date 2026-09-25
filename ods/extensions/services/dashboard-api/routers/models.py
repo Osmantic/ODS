@@ -58,9 +58,11 @@ from performance_oracle import (
     find_catalog_model,
     load_model_catalog,
     model_files_dir as model_files_dir,
+    normalize_catalog_entry,
     read_env_file_value,
     read_env_value,
 )
+from model_selection import declared_max_context
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -591,6 +593,17 @@ def _requested_activation_context(
             detail=f"context_length must be a safe integer of at least {_MIN_MODEL_CONTEXT}",
         )
     return value
+
+
+def _native_context_ceiling(model: dict) -> int:
+    """The declared native maximum context of an activation record, or 0.
+
+    Catalog entries and Hub imports with a known GGUF context declare one
+    (model_selection.declared_max_context); a manually copied local GGUF
+    does not, and is not capped here.
+    """
+    normalized = normalize_catalog_entry(model) if isinstance(model, dict) else None
+    return declared_max_context(normalized) if normalized else 0
 
 
 def _policy_activation_context(model_id: str, preferred_context: int | None = None) -> int | None:
@@ -2262,6 +2275,25 @@ def load_model(
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
 
     requested_context = _requested_activation_context(body)
+    # The declared native maximum is the most this model serves: llama.cpp
+    # caps the slot at the GGUF training context, so a larger request would
+    # load, fail its context proof and roll back. Refuse it up front, naming
+    # the maximum, rather than silently serving less than the owner asked for.
+    native_max = _native_context_ceiling(model)
+    if requested_context is not None and native_max and requested_context > native_max:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "context_above_native_maximum",
+                "message": (
+                    f"{model.get('name') or model_id} supports at most {native_max:,} tokens of "
+                    f"context; {requested_context:,} is above it. Choose {native_max:,} or less."
+                ),
+                "requestedModelId": model_id,
+                "requestedContext": requested_context,
+                "maxContextLength": native_max,
+            },
+        )
     already_active, loaded_model = _already_active_model(model_id, model)
     served_context = _verified_activation_context(loaded_model) if already_active else None
     # Without an explicit context, a switch serves what the installer would
@@ -2341,6 +2373,16 @@ def load_model(
             and _MIN_MODEL_CONTEXT <= configured_context <= _MAX_MODEL_CONTEXT
         ):
             activation_context = configured_context
+            # The policy plan (which clamps) was unavailable: no GPU
+            # information, or no context fits. A CTX_SIZE recorded above the
+            # native maximum (an old install's 131072 for a 40960-token
+            # model) is still never served, so carry the native maximum.
+            if native_max and activation_context > native_max:
+                logger.info(
+                    "Capping configured context %s for %s to its native maximum %s",
+                    activation_context, model_id, native_max,
+                )
+                activation_context = native_max
     if activation_context is not None:
         activation_body["context_length"] = activation_context
     try:

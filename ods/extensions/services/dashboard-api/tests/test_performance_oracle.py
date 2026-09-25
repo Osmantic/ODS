@@ -64,7 +64,9 @@ def test_phi4_dashboard_defaults_to_fitting_context(data_dir, tmp_path):
     assert recommended[0]["contextLength"] == 32768
     assert recommended[0]["fitsVram"] is True
     maximum = next(option for option in model["contextOptions"] if option["fullContext"])
-    assert maximum["contextLength"] == 128000
+    # The full-context option is the declared native context (GGUF
+    # phi3.context_length 131072), not the 128000 operating default.
+    assert maximum["contextLength"] == 131072
     assert maximum["fitsVram"] is False
 
 

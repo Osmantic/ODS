@@ -544,3 +544,22 @@ class TestArchitectureEstimator:
         assert sliding_window_kv_bytes_per_cell(ARCH["qwen3.5-9b"]) == 0
         assert sliding_window_cells(ARCH["qwen3.5-9b"], 65536) == 0
         assert estimate_model_memory(ARCH["qwen3.5-9b"], context_length=65536).swa_kv_gib == 0
+
+
+# ---------------------------------------------------------------------------
+# The native-context ceiling.
+# ---------------------------------------------------------------------------
+
+from model_memory import declared_max_context  # noqa: E402
+
+
+def test_declared_max_context():
+    assert declared_max_context({"max_context_length": 40960}) == 40960
+    assert declared_max_context({"context_length": 40960}) == 0
+    # The dashboard's normalized fallback (max := context) is not a ceiling.
+    assert declared_max_context({"max_context_length": 32768, "native_context_declared": False}) == 0
+    assert declared_max_context({"max_context_length": True}) == 0
+    assert declared_max_context({"max_context_length": "bad"}) == 0
+    import model_selection
+
+    assert model_selection.declared_max_context is declared_max_context
