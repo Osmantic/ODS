@@ -1,3 +1,4 @@
+import { retainedFileReceipt, observedCompleteFileContent } from './file-receipt-feedback.mjs';
 // Pixel per-run tool-loop guard.
 //
 // OpenClaw's built-in identical-call detector blocks a repeated tool call, but
@@ -3159,6 +3160,7 @@ function compactWorkspaceCoreResult(message, pending, state) {
     if (failedSummary) content = [{ type: "text", text: failedSummary }];
   }
   const details = result?.details;
+  const fileReceipt = retainedFileReceipt(result, toolName);
   const compactDetails = {
     ...(typeof details?.status === "string" ? { status: details.status } : {}),
     ...(Number.isInteger(details?.exitCode) ? { exitCode: details.exitCode } : {}),
@@ -3169,6 +3171,10 @@ function compactWorkspaceCoreResult(message, pending, state) {
       ? { durationMs: details.durationMs }
       : {}),
     ...(typeof details?.cwd === "string" && details.cwd ? { cwd: details.cwd } : {}),
+    // Native file receipts are generated at the confined operation boundary.
+    // Preserve their exact serialized custody; metadata alone never grants
+    // reuse (the SDK also checks the retained rendered body and fresh bytes).
+    ...(fileReceipt ? { fileReceipt } : {}),
   };
   if (content.length === 0) {
     const status = compactDetails.status ?? (result.isError === true ? "error" : "completed");
@@ -6577,6 +6583,7 @@ export function createToolLoopGuard({
   onWorkspaceMutation = () => {},
   verifyWorkspacePreview,
   workspacePreviewInspectionAvailable = false,
+  fileVersionAdmissionAvailable = false,
   publishWorkspacePreview,
   execMarkerCleanupDelayMs = 5000,
   limits,
@@ -7669,6 +7676,7 @@ export function createToolLoopGuard({
       }
       if (
         ["edit", "write"].includes(selectedToolName) &&
+        !fileVersionAdmissionAvailable &&
         !state.successfulReadPaths.has(selectedPath)
       ) {
         return {
@@ -9451,7 +9459,9 @@ export function createToolLoopGuard({
         }
       }
       state.successfulWritePaths.add(completedWritePath);
-      const writtenContent = successfulMutation.event?.params?.content;
+      const writtenContent = fileVersionAdmissionAvailable
+        ? observedCompleteFileContent(successfulMutation.event?.result, 'write', completedWritePath)
+        : successfulMutation.event?.params?.content;
       if (
         typeof writtenContent === "string" &&
         Buffer.byteLength(writtenContent, "utf8") <= MAX_TRACKED_WORKSPACE_FILE_BYTES
@@ -9500,7 +9510,9 @@ export function createToolLoopGuard({
       state.workspaceVisualContinuationEdited = true;
     }
     if (completedEditPath && state.successfulWritePaths.has(completedEditPath)) {
-      const editedContent = replayTrackedEdit(
+      const editedContent = fileVersionAdmissionAvailable
+        ? observedCompleteFileContent(successfulMutation.event?.result, 'edit', completedEditPath)
+        : replayTrackedEdit(
         state.successfulWriteContentByPath.get(completedEditPath),
         completedEditPairs
       );
@@ -10260,7 +10272,8 @@ export function createToolLoopGuard({
     const directory = state?.workspaceTaskDirectory;
     // Only recommend a path inside the already verified continuation project.
     // This is guidance for a real read, never an automatic read or permission
-    // to mutate; the existing per-file successfulReadPaths gate still applies.
+    // to mutate. Older runtimes retain their per-run read prerequisite; the
+    // repaired SDK checks current bytes and current model-visible content.
     const path = selectedPath ?? (typeof directory === "string" ? `${directory}/index.html` : undefined);
     if (typeof directory !== "string" || normalizeWorkspaceFilePath(directory) !== directory ||
         typeof path !== "string" || normalizeWorkspaceFilePath(path) !== path ||
@@ -10281,8 +10294,10 @@ export function createToolLoopGuard({
       path => path.startsWith(`${directory}/`)
     );
     return {
-      stage: hasRead ? "workspace-visual-continuation-edit" : "workspace-visual-continuation-read",
-      instruction: hasRead ? WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON
+      stage: hasRead || fileVersionAdmissionAvailable ? "workspace-visual-continuation-edit" : "workspace-visual-continuation-read",
+      instruction: fileVersionAdmissionAvailable
+        ? "Edit the existing project using its relevant content already visible in this context. Native file operations verify its current version before changing it. If the version or required content is unavailable, read the affected range first; a full replacement requires the complete file. Then verify the requested behavior and republish."
+        : hasRead ? WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON
         : visualContinuationReadInstruction(state),
     };
   }

@@ -1,7 +1,7 @@
 {
   "version": "2026.6.33",
   "sourceSha256": "b80c9ab91868acfa54a81472a3c235cbc6b67e94e9de0ac37ff8dd461fdf4730",
-  "patchedSha256": "dbe874156c04af142e69fa6bc63289fe5a4bfc4047acade27d451370b3f11a2f",
+  "patchedSha256": "799cfba31dc0943185f509828e46fe7dd51617ca733badfdc6781af772634ced",
   "replacements": [
     [
       "function emptyReadResult() {\n\treturn {\n\t\tcontent: [{\n\t\t\ttype: \"text\",\n\t\t\ttext: \"\"\n\t\t}],\n\t\tdetails: void 0\n\t};\n}",
@@ -14,7 +14,70 @@
     [
       "\t\tfirstResult ??= pageResult;\n\t\tconst rawText = getToolResultText(pageResult);",
       "\t\tfirstResult ??= pageResult;\n\t\tif (pageResult.details?.code === \"READ_OFFSET_BEYOND_EOF\") return aggregatedText ? withToolResultText(pageResult, `${aggregatedText}\\n\\n${getToolResultText(pageResult)}`) : pageResult;\n\t\tconst rawText = getToolResultText(pageResult);"
+    ],
+    [
+      "\t\tconst rawText = getToolResultText(pageResult);",
+      "\t\tif (pageResult.details?.fileReceipt) return pageResult;\n\t\tconst rawText = getToolResultText(pageResult);"
+    ],
+    [
+      "createReadTool(params.root, { operations: createSandboxReadOperations(params) })",
+      "createReadTool(params.root, { operations: createSandboxReadOperations(params), odsFileReceiptContext: params.odsFileReceiptContext })"
+    ],
+    [
+      "createWriteTool(params.root, { operations: createSandboxWriteOperations(params) })",
+      "createWriteTool(params.root, { operations: createSandboxWriteOperations(params), odsFileReceiptContext: params.odsFileReceiptContext })"
+    ],
+    [
+      "createEditTool(params.root, { operations: createSandboxEditOperations(params) })",
+      "createEditTool(params.root, { operations: createSandboxEditOperations(params), odsFileReceiptContext: params.odsFileReceiptContext })"
+    ],
+    [
+      "createWriteTool(root, { operations: createHostWriteOperations(root, options) })",
+      "createWriteTool(root, { operations: createHostWriteOperations(root, options), odsFileReceiptContext: options?.odsFileReceiptContext })"
+    ],
+    [
+      "createEditTool(root, { operations: createHostEditOperations(root, options) })",
+      "createEditTool(root, { operations: createHostEditOperations(root, options), odsFileReceiptContext: options?.odsFileReceiptContext })"
+    ],
+    [
+      "function createSandboxReadOperations(params) {\n\treturn {",
+      "function createSandboxReadOperations(params) {\n\treturn {\n\t\treceiptPath: absolutePath => params.bridge.resolvePath({filePath:absolutePath,cwd:params.root}).relativePath,"
+    ],
+    [
+      "function createSandboxWriteOperations(params) {\n\treturn {",
+      "function createSandboxWriteOperations(params) {\n\treturn {\n\t\treceiptPath: absolutePath => params.bridge.resolvePath({filePath:absolutePath,cwd:params.root}).relativePath,"
+    ],
+    [
+      "function createSandboxEditOperations(params) {\n\treturn {",
+      "function createSandboxEditOperations(params) {\n\treturn {\n\t\treceiptPath: absolutePath => params.bridge.resolvePath({filePath:absolutePath,cwd:params.root}).relativePath,"
+    ],
+    [
+      "async function writeWorkspaceFile(root, rootPromise, absolutePath, content) {",
+      "function odsOpenedFileBuffer(opened) {\n const identity = createHash(\"sha256\").update(JSON.stringify([String(opened.stat.dev),String(opened.stat.ino),opened.realPath])).digest(\"hex\");\n Object.defineProperty(opened.buffer,\"odsFileIdentity\",{value:identity});\n return opened.buffer;\n}\nexport function odsCreateHostWorkspaceReadTool(root, options) {\n const operations = createHostEditOperations(root, {...options,workspaceOnly:true});\n const guarded = createOpenClawReadTool(createReadTool(root, {operations:{...operations,\n  decodeText:({buffer})=>decodeWindowsTextFileBuffer({buffer}),\n  detectImageMimeType:async absolutePath=>{const mime=await detectMime({buffer:await operations.readFile(absolutePath),filePath:absolutePath});return mime&&mime.startsWith(\"image/\")?mime:void 0;}\n },odsFileReceiptContext:options?.odsFileReceiptContext}),options);\n const ordinary = createOpenClawReadTool(createReadTool(root),options);\n return {...guarded,execute:(id,args,...rest)=>{\n  try {toRelativeWorkspacePath(root,args.path?.startsWith(\"~\")?resolveHostPath(args.path):path.resolve(root,args.path));}\n  catch {return ordinary.execute(id,args,...rest);}\n  return guarded.execute(id,args,...rest);\n }};\n}\nasync function writeWorkspaceFile(root, rootPromise, absolutePath, content) {"
+    ],
+    [
+      "function createHostWriteOperations(root$1, options) {\n\tif (!(options?.workspaceOnly ?? false)) return {\n\t\tmkdir: async (dir) => {\n\t\t\tconst resolved = resolveHostPath(dir);\n\t\t\tawait fs$1.mkdir(resolved, { recursive: true });\n\t\t},\n\t\twriteFile: writeHostFile,\n\t\treadFile: async (absolutePath) => fs$1.readFile(path.resolve(expandTildeToOsHome(absolutePath))),\n\t\tstatFile: (absolutePath) => statHostFile(path.resolve(expandTildeToOsHome(absolutePath)))\n\t};\n\tconst rootPromise = root(root$1);\n\treturn {\n\t\tmkdir: async (dir) => {\n\t\t\tconst relative = toRelativeWorkspacePath(root$1, dir, { allowRoot: true });\n\t\t\tconst resolved = relative ? path.resolve(root$1, relative) : path.resolve(root$1);\n\t\t\tawait assertSandboxPath({\n\t\t\t\tfilePath: resolved,\n\t\t\t\tcwd: root$1,\n\t\t\t\troot: root$1\n\t\t\t});\n\t\t\tawait fs$1.mkdir(resolved, { recursive: true });\n\t\t},\n\t\twriteFile: (absolutePath, content) => writeWorkspaceFile(root$1, rootPromise, absolutePath, content),\n\t\treadFile: async (absolutePath) => {\n\t\t\tconst relative = toRelativeWorkspacePath(root$1, absolutePath);\n\t\t\treturn (await (await rootPromise).read(relative)).buffer;\n\t\t},\n\t\tstatFile: async (absolutePath) => {\n\t\t\tconst relative = toRelativeWorkspacePath(root$1, absolutePath);\n\t\t\treturn statHostFile(path.resolve(root$1, relative));\n\t\t}\n\t};\n}",
+      "function createHostWriteOperations(root$1, options) {\n\tif (!(options?.workspaceOnly ?? false) && !options?.odsFileReceiptContext) return {\n\t\tmkdir: async (dir) => {\n\t\t\tconst resolved = resolveHostPath(dir);\n\t\t\tawait fs$1.mkdir(resolved, { recursive: true });\n\t\t},\n\t\twriteFile: writeHostFile,\n\t\treadFile: async (absolutePath) => fs$1.readFile(path.resolve(expandTildeToOsHome(absolutePath))),\n\t\tstatFile: (absolutePath) => statHostFile(path.resolve(expandTildeToOsHome(absolutePath)))\n\t};\n\tconst rootPromise = root(root$1);\n\treturn {\n\t\tmkdir: async (dir) => {\n\t\t\tconst relative = toRelativeWorkspacePath(root$1, dir, { allowRoot: true });\n\t\t\tconst resolved = relative ? path.resolve(root$1, relative) : path.resolve(root$1);\n\t\t\tawait assertSandboxPath({\n\t\t\t\tfilePath: resolved,\n\t\t\t\tcwd: root$1,\n\t\t\t\troot: root$1\n\t\t\t});\n\t\t\tawait fs$1.mkdir(resolved, { recursive: true });\n\t\t},\n\t\twriteFile: (absolutePath, content) => writeWorkspaceFile(root$1, rootPromise, absolutePath, content),\n\t\treadFile: async (absolutePath) => {\n\t\t\tconst relative = toRelativeWorkspacePath(root$1, absolutePath);\n\t\t\treturn odsOpenedFileBuffer(await (await rootPromise).read(relative));\n\t\t},\n\t\tstatFile: async (absolutePath) => {\n\t\t\tconst relative = toRelativeWorkspacePath(root$1, absolutePath);\n\t\t\treturn statHostFile(path.resolve(root$1, relative));\n\t\t}\n\t};\n}"
+    ],
+    [
+      "function createHostEditOperations(root$2, options) {\n\tif (!(options?.workspaceOnly ?? false)) return {\n\t\treadFile: async (absolutePath) => {\n\t\t\treturn await fs$1.readFile(resolveHostPath(absolutePath));\n\t\t},\n\t\twriteFile: writeHostFile,\n\t\taccess: async (absolutePath) => {\n\t\t\tawait fs$1.access(resolveHostPath(absolutePath));\n\t\t}\n\t};\n\tconst rootPromise = root(root$2);\n\treturn {\n\t\treadFile: async (absolutePath) => {\n\t\t\tconst relative = toRelativeWorkspacePath(root$2, absolutePath);\n\t\t\treturn (await (await rootPromise).read(relative)).buffer;\n\t\t},\n\t\twriteFile: (absolutePath, content) => writeWorkspaceFile(root$2, rootPromise, absolutePath, content),\n\t\taccess: async (absolutePath) => {\n\t\t\tlet relative;\n\t\t\ttry {\n\t\t\t\trelative = toRelativeWorkspacePath(root$2, absolutePath);\n\t\t\t} catch {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\ttry {\n\t\t\t\tawait (await (await rootPromise).open(relative)).handle.close().catch(() => {});\n\t\t\t} catch (error) {\n\t\t\t\tif (error instanceof FsSafeError && error.code === \"not-found\") throw createFsAccessError(\"ENOENT\", absolutePath);\n\t\t\t\tif (error instanceof FsSafeError && error.code === \"outside-workspace\") return;\n\t\t\t\tthrow error;\n\t\t\t}\n\t\t}\n\t};\n}",
+      "function createHostEditOperations(root$2, options) {\n\tif (!(options?.workspaceOnly ?? false) && !options?.odsFileReceiptContext) return {\n\t\treadFile: async (absolutePath) => {\n\t\t\treturn await fs$1.readFile(resolveHostPath(absolutePath));\n\t\t},\n\t\twriteFile: writeHostFile,\n\t\taccess: async (absolutePath) => {\n\t\t\tawait fs$1.access(resolveHostPath(absolutePath));\n\t\t}\n\t};\n\tconst rootPromise = root(root$2);\n\treturn {\n\t\treadFile: async (absolutePath) => {\n\t\t\tconst relative = toRelativeWorkspacePath(root$2, absolutePath);\n\t\t\treturn odsOpenedFileBuffer(await (await rootPromise).read(relative));\n\t\t},\n\t\twriteFile: (absolutePath, content) => writeWorkspaceFile(root$2, rootPromise, absolutePath, content),\n\t\taccess: async (absolutePath) => {\n\t\t\tlet relative;\n\t\t\ttry {\n\t\t\t\trelative = toRelativeWorkspacePath(root$2, absolutePath);\n\t\t\t} catch {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\ttry {\n\t\t\t\tawait (await (await rootPromise).open(relative)).handle.close().catch(() => {});\n\t\t\t} catch (error) {\n\t\t\t\tif (error instanceof FsSafeError && error.code === \"not-found\") throw createFsAccessError(\"ENOENT\", absolutePath);\n\t\t\t\tif (error instanceof FsSafeError && error.code === \"outside-workspace\") return;\n\t\t\t\tthrow error;\n\t\t\t}\n\t\t}\n\t};\n}"
     ]
   ],
-  "previousReplacements": {}
+  "previousReplacements": {
+    "dbe874156c04af142e69fa6bc63289fe5a4bfc4047acade27d451370b3f11a2f": [
+      [
+        "function emptyReadResult() {\n\treturn {\n\t\tcontent: [{\n\t\t\ttype: \"text\",\n\t\t\ttext: \"\"\n\t\t}],\n\t\tdetails: void 0\n\t};\n}",
+        "function offsetBeyondEofReadResult(error) {\n\treturn {\n\t\tisError: true,\n\t\tcontent: [{\n\t\t\ttype: \"text\",\n\t\t\ttext: `${error.message}. Read offset is a 1-based line number. Choose a range within the file; increasing the offset will not return more text.`\n\t\t}],\n\t\tdetails: { status: \"error\", code: \"READ_OFFSET_BEYOND_EOF\" }\n\t};\n}"
+      ],
+      [
+        "if (isOffsetBeyondEof(error, params.args)) return emptyReadResult();",
+        "if (isOffsetBeyondEof(error, params.args)) return offsetBeyondEofReadResult(error);"
+      ],
+      [
+        "\t\tfirstResult ??= pageResult;\n\t\tconst rawText = getToolResultText(pageResult);",
+        "\t\tfirstResult ??= pageResult;\n\t\tif (pageResult.details?.code === \"READ_OFFSET_BEYOND_EOF\") return aggregatedText ? withToolResultText(pageResult, `${aggregatedText}\\n\\n${getToolResultText(pageResult)}`) : pageResult;\n\t\tconst rawText = getToolResultText(pageResult);"
+      ]
+    ]
+  }
 }

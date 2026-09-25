@@ -30,6 +30,8 @@ SANDBOX_CUSTODY_MODULES = {
     "runtime": "bash-tools.exec-runtime-BWSnOoQS.js",
     "tool": "bash-tools-tcXDNfAR.js",
 }
+FILE_OPERATIONS_MODULE = "agent-tools-D1DOpg6D.js"
+FILE_IDENTITY_MODULE = "sandbox-Y3MbG9Od.js"
 VERSION = "2026.6.33"
 
 
@@ -84,7 +86,7 @@ def verify_dependencies(runtime_root, manifest, module_name):
 
 def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
            module_name=MODULE):
-    if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE, COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE, *SANDBOX_CUSTODY_MODULES.values()}:
+    if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE, COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE, FILE_OPERATIONS_MODULE, FILE_IDENTITY_MODULE, *SANDBOX_CUSTODY_MODULES.values()}:
         raise ValueError("unsupported runtime repair module")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     package = json.loads((runtime_root / "package.json").read_text(encoding="utf-8"))
@@ -175,6 +177,8 @@ def main():
     selection.add_argument("--compaction-budget", action="store_true")
     selection.add_argument("--read-range", action="store_true")
     selection.add_argument("--sandbox-custody", choices=tuple(SANDBOX_CUSTODY_MODULES))
+    selection.add_argument("--file-operations", action="store_true")
+    selection.add_argument("--file-identity", action="store_true")
     args = parser.parse_args()
     runtime_root = args.openclaw_bin.resolve(strict=True).parent
     options = {}
@@ -193,6 +197,12 @@ def main():
     elif args.compaction_budget:
         options = {"module_name": COMPACTION_BUDGET_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-compaction-budget.json")}
+    elif args.file_identity:
+        options = {"module_name": FILE_IDENTITY_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-file-identity.json")}
+    elif args.file_operations:
+        options = {"module_name": FILE_OPERATIONS_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-file-operations.json")}
     elif args.read_range:
         options = {"module_name": READ_RANGE_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-read-range.json")}
