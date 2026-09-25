@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-awk '/_phase06_step "prepare-service-permissions"/{copy=1} /_phase06_step "generate-env"/{copy=0} copy' \
+awk '/_phase06_step "prepare-(dashboard|service)-permissions"/{copy=1} /_phase06_step "generate-env"/{copy=0} copy' \
     "$ROOT_DIR/installers/phases/06-directories.sh" > "$work/phase.sh"
 
 run_case() (
@@ -35,12 +35,15 @@ run_case() (
             chmod)
                 [[ "$QA_SCENARIO" != denied_mode ]] || return 1
                 command chmod "$2" "$3" ;;
+            chown) return 1 ;;
             *) return 91 ;;
         esac
     }
     stat() {
         if [[ "$1" == -c && "$2" == '%g:%a' ]]; then
             printf '%s:%s\n' "$QA_GROUP" "$(command stat -c '%a' "$3")"
+        elif [[ "$1" == -c && "$2" == '%u:%g' && "$QA_SCENARIO" == chat_denied ]]; then
+            printf '1001:2001\n'
         elif [[ "$1" == -c && "$2" == %g ]]; then
             printf '%s\n' "$QA_GROUP"
         else
@@ -54,7 +57,7 @@ run_case() (
         [[ "$QA_SCENARIO" != rootless_denied ]] || return 1
         [[ "$*" == *'--network none'* && "$*" == *'--user 0:0'* ]] || return 1
         [[ "$*" == *"src=$INSTALL_DIR/data,dst=/data"* ]] || return 1
-        [[ "$*" != *'-R '* ]] || return 1
+        [[ "$*" != *'chown -R '* ]] || return 1
         # Run the exact namespace command against this fixture's data root.
         local command_text="${!#}"
         command_text="${command_text//\/data/\"$INSTALL_DIR\/data\"}"
@@ -65,10 +68,12 @@ run_case() (
         mv "$INSTALL_DIR/data" "$INSTALL_DIR/elsewhere"
         ln -s elsewhere "$INSTALL_DIR/data"
     fi
+    [[ "$scenario" != chat_symlink ]] || ln -s private "$INSTALL_DIR/data/pixel-chat-results"
+    [[ "$scenario" != chat_denied ]] || mkdir "$INSTALL_DIR/data/pixel-chat-results"
     local result=0
     source "$work/phase.sh" || result=$?
     case "$scenario" in
-        denied_group|denied_mode|symlink|bad_readback|rootless_denied|rootless_image_denied)
+        denied_group|denied_mode|symlink|chat_symlink|chat_denied|bad_readback|rootless_denied|rootless_image_denied)
             [[ "$result" != 0 ]] || { echo "FAIL: $scenario did not stop phase 06"; exit 1; }
             [[ "$scenario" != symlink || ! -s "$QA_CALLS" ]] ;;
         *)
@@ -81,6 +86,6 @@ run_case() (
     [[ "$scenario" != current || ! -s "$QA_CALLS" ]]
     echo "PASS: $scenario"
 )
-for scenario in owner current rootless denied_group denied_mode bad_readback rootless_denied rootless_image_denied symlink; do
+for scenario in owner current rootless denied_group denied_mode bad_readback rootless_denied rootless_image_denied symlink chat_symlink chat_denied; do
     run_case "$scenario"
 done

@@ -268,10 +268,12 @@ create `data/pixel-chat-results`. The shipped API runs as UID/GID 1000 and
 needs write/search access to the shared `data` parent.
 
 Rerun the corrected Linux installer against the existing installation. Phase
-06 preserves the parent's owner and all child ownership/modes, assigns the
+06 preserves the parent's owner, assigns the
 parent to runtime group 1000, and grants that group read/write/search access.
-It does not recursively change service data or make the directory world
-writable. Rootless Docker applies the group inside the Docker namespace;
+It also excludes private `pixel-chat-results` from the generic host-owner
+repair and restores that tree to API UID/GID 1000 if an older reinstall
+changed it. File contents/modes and unrelated service data are preserved.
+It does not add world-write permission. Rootless Docker applies ownership inside the Docker namespace;
 do not substitute a host-side numeric chown for that mapping. A denied repair
 stops installation before a healthy API can be mistaken for writable storage.
 
