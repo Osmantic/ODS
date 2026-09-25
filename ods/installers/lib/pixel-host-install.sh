@@ -1441,6 +1441,12 @@ normalized_tools["toolSearch"] = {
     "searchDefaultLimit": 5,
     "maxSearchLimit": 10,
 }
+normalized_exec = normalized_agent_tools.setdefault("exec", {})
+global_exec = normalized_tools.get("exec", {})
+if not isinstance(normalized_exec, dict) or not isinstance(global_exec, dict):
+    raise SystemExit("live Pixel execution policy is outside the ODS contract")
+for name, default in (("backgroundMs", 60000), ("notifyOnExit", True), ("notifyOnExitEmptySuccess", True)):
+    normalized_exec.setdefault(name, global_exec.get(name, default))
 exec_control_bind = "{}:/run/pixel-ods-control:ro".format(
     pathlib.Path.home() / ".openclaw" / ".ods-exec-control"
 )

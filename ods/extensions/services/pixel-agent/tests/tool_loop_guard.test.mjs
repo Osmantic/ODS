@@ -1998,9 +1998,6 @@ test("keeps compact-model workspace files, commands, and repair evidence in the 
   assert.deepEqual(compactPythonRunner.params.args, {
     command: "python3 -m unittest -v test_normalize_name.py",
     workdir: "/workspace/project",
-    pty: false,
-    background: false,
-    yieldMs: 30_000,
   });
   const compactPythonForkRunner = call(guard, "tool_call", {
     event: {
@@ -2105,9 +2102,9 @@ test("keeps compact-model workspace files, commands, and repair evidence in the 
     "python3 -m unittest -v test_normalize_name.py"
   );
   assert.equal(verification.params.args.workdir, "/workspace/project");
-  assert.equal(verification.params.args.pty, false);
-  assert.equal(verification.params.args.background, false);
-  assert.equal(verification.params.args.yieldMs, 30_000);
+  assert.equal(verification.params.args.pty, undefined);
+  assert.equal(verification.params.args.background, undefined);
+  assert.equal(verification.params.args.yieldMs, undefined, 'use the configured execution policy');
   const failedResult = wrappedCoreResult("exec", {
     content: [{ type: "text", text: "FAIL: test_whitespace\nAssertionError" }],
     details: {

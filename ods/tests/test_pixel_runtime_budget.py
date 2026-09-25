@@ -32,6 +32,30 @@ def invoke(path, home, explicit_home=None):
                           capture_output=True, text=True, timeout=10)
 
 
+@pytest.mark.parametrize('global_policy,agent_policy,expected', [
+    ({}, {}, {'backgroundMs': 60000, 'notifyOnExit': True, 'notifyOnExitEmptySuccess': True}),
+    ({'backgroundMs': 25000, 'notifyOnExit': False}, {},
+     {'backgroundMs': 25000, 'notifyOnExit': False, 'notifyOnExitEmptySuccess': True}),
+    ({'backgroundMs': 25000}, {'backgroundMs': 15000, 'notifyOnExitEmptySuccess': False},
+     {'backgroundMs': 15000, 'notifyOnExit': True, 'notifyOnExitEmptySuccess': False}),
+])
+def test_interactive_exec_defaults_preserve_explicit_policy_and_other_agents(tmp_path, global_policy, agent_policy, expected):
+    value = configuration()
+    value['tools']['exec'] = global_policy
+    value['agents']['list'][0]['tools'] = {'exec': agent_policy}
+    other = {'id': 'other', 'tools': {'exec': {'backgroundMs': 1000}}}
+    value['agents']['list'].append(other)
+    path = tmp_path / 'openclaw.json'
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    result = invoke(path, tmp_path)
+    assert result.returncode == 0, result.stderr
+    updated = json.loads(Path(result.stdout.strip()).read_text())
+    assert updated['agents']['list'][0]['tools']['exec'] == expected
+    assert updated['agents']['list'][1] == other
+    assert updated['tools']['exec'] == global_policy
+
+
 @pytest.mark.parametrize('transport', [None, 'unix', 'native', 'unknown'])
 def test_inspection_allowlists_require_explicit_provisioned_transport(tmp_path, transport):
     tmp_path.chmod(0o700)

@@ -7486,25 +7486,6 @@ export function createToolLoopGuard({
         pendingParams = { ...pendingParams, args: canonicalUnittest };
       }
     }
-    if (
-      state?.workspaceTaskDirectory &&
-      toolName === "tool_call" &&
-      pendingParams?.id?.split(":").at(-1) === "exec" &&
-      pendingParams.args &&
-      typeof pendingParams.args === "object" &&
-      !Array.isArray(pendingParams.args) &&
-      verificationExecFingerprint(pendingParams.args)
-    ) {
-      pendingParams = {
-        ...pendingParams,
-        args: {
-          ...pendingParams.args,
-          pty: false,
-          background: false,
-          yieldMs: Math.max(30_000, Number(pendingParams.args.yieldMs) || 0),
-        },
-      };
-    }
     const pendingSelectedName =
       toolName === "tool_call" && typeof pendingParams?.id === "string"
         ? pendingParams.id.split(":").at(-1)

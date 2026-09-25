@@ -82,6 +82,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs
+      - name: Verify preview binding through actual direct and deferred SDK dispatch
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_preview_default.integration.mjs
       - name: Verify sandbox custody source repair and actual Docker lifecycle
         if: runner.os == 'Linux'
         shell: bash
@@ -96,6 +102,8 @@ jobs:
           for mode in probe-path-spoof forged-done forged-owner late-frame supervisor-killed startup-malformed startup-truncated startup-delay timeout background-timeout guard-marker background-marker normal disabled-normal pty wait-failure setsid doublefork parent-race normal-detached closed-streams late-fork abort abort-timeout-race concurrent pid-mismatch nonce-mismatch directory-rebound foreign-token live-pid-mismatch reused-token; do
             node "$tests/runtime_sandbox_custody.integration.mjs" "$RUNNER_TEMP/sandbox-custody/runtime" "$PWD/ods/extensions/services/pixel-agent/plugin" "$image" "$RUNNER_TEMP/sandbox-custody/$mode.json" "$mode"
           done
+          OPENCLAW_PACKAGE="$RUNNER_TEMP/sandbox-custody/runtime" OPENCLAW_TEST_SANDBOX_IMAGE="$image" \
+            node --test "$tests/runtime_interactive_exec.integration.mjs"
   runtime:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
