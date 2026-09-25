@@ -258,9 +258,14 @@ async def _remove_workflow(workflow_id: str):
     n8n_wf = None
     wf_name_lower = wf_info["name"].lower()
     for wf in n8n_workflows:
-        if wf_name_lower in wf.get("name", "").lower():
+        if wf.get("name", "").lower() == wf_name_lower:
             n8n_wf = wf
             break
+    if not n8n_wf:
+        for wf in n8n_workflows:
+            if wf_name_lower in wf.get("name", "").lower():
+                n8n_wf = wf
+                break
     if not n8n_wf:
         raise HTTPException(status_code=404, detail="Workflow not installed in n8n")
 
