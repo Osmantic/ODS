@@ -117,6 +117,24 @@ for (const transport of [SEARCH_READ_TOOL, 'tool_call']) {
     assert.notEqual(fetchPage(guard, 'single', 'https://docs.example.org/single')?.block, true);
   });
 
+  test(`${transport}: reserve refusals are free corrections, never a step toward the web-loop stop`, async () => {
+    const guard = guardFor(undefined, {search: 8, fetch: 10, total: 20});
+    for (let i = 0; i < 5; i++) assert.notEqual(fetchPage(guard, `f${i}`, `https://docs.example.org/${i}`)?.block, true);
+    assert.ok((await call(guard, transport, 'clamped', {query: 'RTX 5070 board power', maxPages: 5}, {rows: ROWS})).result);
+    // Four refusals in a row, each persisted as the runtime persists a
+    // refused call. Before, the third ended the response with 2 page reads,
+    // 7 searches and 11 web calls still available.
+    for (let i = 0; i < 4; i++) {
+      const refused = await call(guard, transport, `reserve-${i}`, {query: `RX 9070 board power ${'abcd'[i]}`}, {rows: ROWS});
+      assert.equal(refused.refusal, SEARCH_READ_RESERVE_REASON, `refusal ${i + 1}`);
+      guard.toolResultPersist({message: {role: 'toolResult', toolName: transport, toolCallId: `reserve-${i}`, isError: true,
+        content: [{type: 'text', text: refused.refusal}]}}, {...base, toolName: transport, toolCallId: `reserve-${i}`});
+    }
+    // Single-page reads and searches still run: nothing was exhausted.
+    assert.notEqual(fetchPage(guard, 'single', 'https://docs.example.org/single')?.block, true);
+    assert.ok(webSearch(guard, 'search-after', 'RX 9070 board power review', [ROWS[1]]).message);
+  });
+
   test(`${transport}: refused without charge when searches, reads or the total are spent`, async () => {
     const searchSpent = guardFor(undefined, {search: 1, fetch: 20, total: 30});
     assert.ok(webSearch(searchSpent, 's1', 'RTX 5070 price').message);
