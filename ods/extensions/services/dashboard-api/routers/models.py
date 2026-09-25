@@ -48,6 +48,7 @@ from host_agent_client import (
     request_json as request_agent_json,
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
+from model_placement import is_unproven_gpu_placement, runtime_placement
 from pixel_runtime_state import pixel_stream_active
 from context_policy import HERMES_MIN_CONTEXT
 from performance_oracle import (
@@ -177,6 +178,24 @@ def _annotate_model_lifecycle(payload: dict[str, Any], lifecycle: Optional[dict[
         if isinstance(model, dict) and current_model_matches(model, str(target), str(target)):
             model["modelOperation"] = lifecycle
             return
+
+
+def _visible_runtime_placement(
+    agent_status: Optional[dict],
+    payload: dict[str, Any],
+    gpu_info: Any,
+    loaded_model: Optional[str],
+) -> Optional[dict[str, Any]]:
+    """The running model's placement, when it describes what the page shows.
+
+    Placement describes the server that is running now; while a switch is in
+    flight it may still describe the previous model. Without a GPU there is
+    nothing to be resident on.
+    """
+    lifecycle = payload.get("modelLifecycle") or {}
+    if not gpu_info or not loaded_model or lifecycle.get("operation") == "model_activation":
+        return None
+    return runtime_placement(agent_status)
 
 
 def _configured_ods_mode() -> str:
@@ -572,6 +591,17 @@ def _already_active_model(model_id: str, model: dict) -> tuple[bool, str | None]
         ):
             return True, loaded_model
     return False, loaded_model
+
+
+def _requested_reload(body: dict[str, Any] | None) -> bool:
+    """``{"reload": true}`` activates the running model again at its context.
+
+    Otherwise that request is a no-op ("already_active"). The dashboard sends
+    it from "Reload on GPU" when the running model is partly on the CPU, so
+    the host agent fits the model to the GPU again; ods doctor gives the same
+    advice when llama.cpp's default fit margin caused the spill.
+    """
+    return isinstance(body, dict) and body.get("reload") is True
 
 
 def _requested_activation_context(
@@ -1456,10 +1486,17 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         _model_lifecycle_from_agent_status(agent_status),
     )
     loaded_entry = next((m for m in payload["models"] if m["status"] == "loaded"), None) or {}
+    placement = _visible_runtime_placement(agent_status, payload, gpu_info, loaded_model)
+    payload["runtime"] = {"placement": placement}
     sample_key = (loaded_model, metrics.get("throughput_sampled_at"))
+    # A speed measured while layers sit on the CPU, or while the log cannot
+    # say where they are, is not known to be this GPU's speed for the model;
+    # recording it would under-rate the model for every later recommendation
+    # on this hardware.
     if (gpu_info and loaded_model and live_tps > 0
             and sample_key[1] is not None and sample_key != _last_recorded_throughput_sample
-            and loaded_entry.get("metadata", {}).get("source") != "runtime"):
+            and loaded_entry.get("metadata", {}).get("source") != "runtime"
+            and not is_unproven_gpu_placement(placement)):
         _last_recorded_throughput_sample = sample_key
         signature = build_sample_signature(
             loaded_entry or {"id": loaded_model, "gguf": _read_active_model()},
@@ -2298,7 +2335,7 @@ def load_model(
     if already_active and not raise_below_floor and (
         requested_context is None
         or requested_context == served_context
-    ):
+    ) and not _requested_reload(body):
         response: dict[str, Any] = {
             "status": "already_active",
             "model_id": model_id,

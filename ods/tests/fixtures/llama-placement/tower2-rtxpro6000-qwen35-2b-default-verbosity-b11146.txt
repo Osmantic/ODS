@@ -1,0 +1,9 @@
+0.00.000.906 I srv  llama_server: initializing ...
+warn: LLAMA_ARG_HOST environment variable is set, but will be overwritten by command line argument --host
+0.00.132.169 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.133.905 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.137.642 I srv    load_model: loading model '/models/Qwen3.5-2B-Q4_K_M.gguf'
+0.01.175.755 I cmn          init: llama threadpool init, n_threads = 4
+0.01.260.429 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 65536, kv_unified = 'false'
+0.01.266.413 I srv  llama_server: model loaded
+0.01.266.420 I srv  llama_server: listening on http://0.0.0.0:8080
