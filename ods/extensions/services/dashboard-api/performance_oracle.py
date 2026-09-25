@@ -723,6 +723,7 @@ def collect_runtime_flags(install_dir: str | Path) -> dict[str, str]:
         "LLAMA_CACHE_TYPE_V": "cache_type_v",
         "LLAMA_ARG_FLASH_ATTN": "flash_attn",
         "LLAMA_FLASH_ATTN": "flash_attn",
+        "LLAMA_ARG_CHECKPOINT_EVERY_NT": "checkpoint_every_n_tokens",
         "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS": "checkpoint_every_n_tokens",
         "LLAMA_CHECKPOINT_EVERY_N_TOKENS": "checkpoint_every_n_tokens",
         "LLAMA_ARG_NO_CACHE_PROMPT": "no_cache_prompt",

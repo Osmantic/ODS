@@ -1142,6 +1142,8 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     N_GPU_LAYERS_VALUE=$(_env_get N_GPU_LAYERS "${N_GPU_LAYERS:-auto}")
     N_GPU_LAYERS_VALUE="$(printf '%s' "$N_GPU_LAYERS_VALUE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     N_GPU_LAYERS_VALUE="${N_GPU_LAYERS_VALUE:-auto}"
+    # Owner opt-out for the overlay default; empty keeps ngram-mod implicit.
+    LLAMA_SPEC_TYPE_VALUE=$(_env_get LLAMA_SPEC_TYPE "${LLAMA_SPEC_TYPE:-}")
 
     _phase06_lemonade_uses_host_9000() {
         [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]] && return 0
@@ -1284,9 +1286,12 @@ LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
 $(if [[ -n "${LLAMA_ARG_N_CPU_MOE:-}" ]]; then echo "LLAMA_ARG_N_CPU_MOE=${LLAMA_ARG_N_CPU_MOE}"; fi)
 $(if [[ -n "${LLAMA_ARG_NO_CACHE_PROMPT:-}" ]]; then echo "LLAMA_ARG_NO_CACHE_PROMPT=${LLAMA_ARG_NO_CACHE_PROMPT}"; fi)
-$(if [[ -n "${LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS:-}" ]]; then echo "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=${LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS}"; fi)
+$(if [[ -n "${LLAMA_ARG_CHECKPOINT_EVERY_NT:-}" ]]; then echo "LLAMA_ARG_CHECKPOINT_EVERY_NT=${LLAMA_ARG_CHECKPOINT_EVERY_NT}"; fi)
 LLAMA_PARALLEL=${LLAMA_PARALLEL:-1}
-# Optional MTP speculative decoding only. Requires an MTP-capable GGUF and llama.cpp build.
+# NVIDIA/CPU llama.cpp images default to lossless n-gram speculation (ngram-mod).
+# LLAMA_SPEC_TYPE=none turns it off; unset keeps the default.
+$(if [[ -n "$LLAMA_SPEC_TYPE_VALUE" ]]; then echo "LLAMA_SPEC_TYPE=$(dotenv_value "$LLAMA_SPEC_TYPE_VALUE")"; fi)
+# Optional per-model MTP speculative decoding. Requires an MTP-capable GGUF and llama.cpp build.
 # LLAMA_ARG_SPEC_TYPE=draft-mtp
 # LLAMA_ARG_SPEC_DRAFT_N_MAX=3
 $(if [[ -n "${LLAMA_ARG_SPEC_TYPE:-}" ]]; then echo "LLAMA_ARG_SPEC_TYPE=${LLAMA_ARG_SPEC_TYPE}"; fi)

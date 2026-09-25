@@ -12622,7 +12622,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "LLAMA_ARG_CACHE_TYPE_V",
                     "LLAMA_ARG_N_CPU_MOE",
                     "LLAMA_ARG_NO_CACHE_PROMPT",
-                    "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS",
+                    "LLAMA_ARG_CHECKPOINT_EVERY_NT",
                     "LLAMA_ARG_SPEC_TYPE",
                     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
                 }
@@ -12640,6 +12640,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 remove_keys = {
                     "LLAMA_ARG_N_CPU_MOE",
                     "LLAMA_ARG_NO_CACHE_PROMPT",
+                    "LLAMA_ARG_CHECKPOINT_EVERY_NT",
+                    # Former name; no llama.cpp build reads it. Drop stale lines.
                     "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS",
                     "LLAMA_ARG_SPEC_TYPE",
                     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
@@ -17125,12 +17127,14 @@ def _stop_macos_native_llama_server(pid_file: Path) -> None:
 def _native_llama_tuning_arguments(env: dict, llama_bin: Path) -> list[str]:
     """Qualify optional tuning before disrupting an existing listener."""
     tuning = INSTALL_DIR / "installers/macos/lib/native-checkpoint-args.py"
+    # Same .env keys as installers/macos/lib/native-model.sh, which are also
+    # llama.cpp's own env names for these flags.
     tuning_keys = (
-        ("LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS", "--interval"),
+        ("LLAMA_ARG_CHECKPOINT_EVERY_NT", "--interval"),
         ("LLAMA_ARG_CTX_CHECKPOINTS", "--checkpoints"),
         ("LLAMA_ARG_CACHE_RAM", "--cache-mib"),
         ("LLAMA_ARG_SLEEP_IDLE_SECONDS", "--idle-seconds"),
-        ("LLAMA_ARG_CHECKPOINT_MIN_STEP", "--min-spacing"),
+        ("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT", "--min-spacing"),
     )
     if platform.system() == "Darwin" and any(env.get(key, "").strip() for key, _ in tuning_keys):
         if not tuning.is_file():
@@ -17473,6 +17477,25 @@ def _append_network_settings(
         argv.extend(["--network-alias", str(alias)])
 
 
+# GPU_BACKEND values that scripts/resolve-compose-stack.sh serves with
+# docker-compose.nvidia.yml or docker-compose.cpu.yml. Both pin a llama.cpp
+# b9014 image and default LLAMA_ARG_SPEC_TYPE there.
+_LLAMA_SPEC_DEFAULT_BACKENDS = frozenset({"nvidia", "jetson", "cpu"})
+
+
+def _llama_spec_type_default(env: dict) -> str:
+    """Return the speculative type the NVIDIA/CPU Compose overlays would set.
+
+    Mirrors ``LLAMA_ARG_SPEC_TYPE=${LLAMA_ARG_SPEC_TYPE:-${LLAMA_SPEC_TYPE:-ngram-mod}}``
+    so a recreate from inspected state serves the same way as ``docker compose
+    up``. Lemonade, Intel/Arc and Apple backends get no default.
+    """
+    backend = str(env.get("GPU_BACKEND") or "").strip().lower()
+    if backend not in _LLAMA_SPEC_DEFAULT_BACKENDS or _uses_lemonade_runtime(env):
+        return ""
+    return str(env.get("LLAMA_SPEC_TYPE") or "").strip() or "ngram-mod"
+
+
 def _llama_recreate_argv(
     inspect_config: dict,
     env: dict,
@@ -17574,6 +17597,12 @@ def _llama_recreate_argv(
         ):
             if key in env:
                 replacement_env[key] = str(env.get(key) or "")
+    # Inspected LLAMA_ARG_* values that .env does not name are dropped below,
+    # so re-derive the overlay's speculative default instead of losing it.
+    if not str(replacement_env.get("LLAMA_ARG_SPEC_TYPE") or "").strip():
+        spec_type = _llama_spec_type_default(env)
+        if spec_type:
+            replacement_env["LLAMA_ARG_SPEC_TYPE"] = spec_type
     seen_env_keys = set()
     for entry in container_config.get("Env") or []:
         key = str(entry).split("=", 1)[0]

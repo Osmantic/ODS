@@ -26,6 +26,11 @@ services:
       - --parallel
       - "${LLAMA_PARALLEL:-1}"
       - --metrics
+    environment:
+      # n-gram speculative decoding; same contract as docker-compose.nvidia.yml.
+      # The pinned b9014 image has the b8955+ ngram-mod implementation. Set
+      # LLAMA_SPEC_TYPE=none in .env to turn it off.
+      - LLAMA_ARG_SPEC_TYPE=${LLAMA_ARG_SPEC_TYPE:-${LLAMA_SPEC_TYPE:-ngram-mod}}
     deploy:
       resources:
         limits:

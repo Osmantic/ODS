@@ -991,6 +991,8 @@ function New-ODSEnv {
     if ([string]::IsNullOrWhiteSpace($nGpuLayersDefault)) { $nGpuLayersDefault = "auto" }
     $nGpuLayers = (Get-EnvOrNew "N_GPU_LAYERS" $nGpuLayersDefault).Trim()
     if ([string]::IsNullOrWhiteSpace($nGpuLayers)) { $nGpuLayers = "auto" }
+    # Owner opt-out for the NVIDIA/CPU overlay default; empty keeps ngram-mod implicit.
+    $llamaSpecType = (Get-EnvOrNew "LLAMA_SPEC_TYPE" "").Trim()
 
     # Build .env content (matches Phase 06 format)
     $recommendationSource = ConvertTo-ODSDotenvValue $(if ($TierConfig.RecommendationSource) { $TierConfig.RecommendationSource } else { "installer_tier_map" })
@@ -1075,8 +1077,11 @@ LLAMA_ARG_CACHE_TYPE_V=$(Get-EnvOrNew "LLAMA_ARG_CACHE_TYPE_V" "$(if ($TierConfi
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
 $(if ($TierConfig.LLAMA_ARG_N_CPU_MOE) { "LLAMA_ARG_N_CPU_MOE=$($TierConfig.LLAMA_ARG_N_CPU_MOE)" })
 $(if ($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT) { "LLAMA_ARG_NO_CACHE_PROMPT=$($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT)" })
-$(if ($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS) { "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=$($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS)" })
-# Optional MTP speculative decoding only. Requires an MTP-capable GGUF and llama.cpp build.
+$(if ($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_NT) { "LLAMA_ARG_CHECKPOINT_EVERY_NT=$($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_NT)" })
+# NVIDIA/CPU llama.cpp images default to lossless n-gram speculation (ngram-mod).
+# LLAMA_SPEC_TYPE=none turns it off; unset keeps the default.
+$(if ($llamaSpecType) { "LLAMA_SPEC_TYPE=$llamaSpecType" })
+# Optional per-model MTP speculative decoding. Requires an MTP-capable GGUF and llama.cpp build.
 # LLAMA_ARG_SPEC_TYPE=draft-mtp
 # LLAMA_ARG_SPEC_DRAFT_N_MAX=3
 LLAMA_CPU_LIMIT=$llamaCpuLimit

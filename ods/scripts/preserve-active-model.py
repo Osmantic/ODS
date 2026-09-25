@@ -30,7 +30,7 @@ RUNTIME_KEYS = (
     "LLAMA_ARG_CACHE_TYPE_V",
     "LLAMA_ARG_N_CPU_MOE",
     "LLAMA_ARG_NO_CACHE_PROMPT",
-    "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS",
+    "LLAMA_ARG_CHECKPOINT_EVERY_NT",
     "LLAMA_ARG_SPEC_TYPE",
     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
     "LLAMA_ARG_SPEC_DRAFT_TYPE_K",
@@ -316,7 +316,7 @@ def valid_runtime_value(key: str, value: str) -> bool:
         return value.isdigit() and int(value) <= 4096
     if key == "LLAMA_ARG_NO_CACHE_PROMPT":
         return value.lower() in {"", "on", "off", "true", "false", "0", "1"}
-    if key == "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS":
+    if key == "LLAMA_ARG_CHECKPOINT_EVERY_NT":
         return bool(re.fullmatch(r"-?[0-9]{1,10}", value))
     if key == "LLAMA_ARG_SPEC_TYPE":
         return bool(re.fullmatch(r"[A-Za-z0-9_,.-]{1,64}", value))

@@ -6,6 +6,7 @@ from helpers import record_model_performance
 from models import GPUInfo, ModelLibraryResponse
 from performance_oracle import (
     build_models_payload,
+    collect_runtime_flags,
     current_model_matches,
     evaluate_performance,
     load_evidence,
@@ -79,6 +80,17 @@ def test_performance_env_readers_share_matching_quote_contract(monkeypatch, tmp_
     assert read_env_file_value("UNMATCHED", tmp_path) == "catalog-v2'"
     assert read_env_value("PROCESS_ONLY", tmp_path) == "runtime-v2"
     assert read_persisted_env_value("UNMATCHED", tmp_path) == "catalog-v2'"
+
+
+def test_runtime_flags_read_the_llama_cpp_checkpoint_env_name(tmp_path, monkeypatch):
+    for key in ("LLAMA_ARG_CHECKPOINT_EVERY_NT", "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS",
+                "LLAMA_CHECKPOINT_EVERY_N_TOKENS"):
+        monkeypatch.delenv(key, raising=False)
+    (tmp_path / ".env").write_text("LLAMA_ARG_CHECKPOINT_EVERY_NT=-1\n", encoding="utf-8")
+    assert collect_runtime_flags(tmp_path)["checkpoint_every_n_tokens"] == "-1"
+    # Evidence recorded under the former key name still matches.
+    (tmp_path / ".env").write_text("LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=-1\n", encoding="utf-8")
+    assert collect_runtime_flags(tmp_path)["checkpoint_every_n_tokens"] == "-1"
 
 
 def _official_model_catalog():

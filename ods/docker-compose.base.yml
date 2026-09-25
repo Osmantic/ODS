@@ -57,11 +57,15 @@ services:
       # llama.cpp parses this as an integer and exits if it is blank.
       - LLAMA_ARG_N_CPU_MOE
       # Optional long-context runtime flags. Leave unset unless a model
-      # profile explicitly requires them.
+      # profile explicitly requires them. llama.cpp reads
+      # LLAMA_ARG_NO_CACHE_PROMPT through its negated-flag compatibility path:
+      # any value, even 0 or empty, disables prompt caching.
       - LLAMA_ARG_NO_CACHE_PROMPT
-      - LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS
-      # Optional speculative decoding for GGUFs with llama.cpp MTP support.
-      # Leave unset unless the selected model/runtime explicitly supports it.
+      - LLAMA_ARG_CHECKPOINT_EVERY_NT
+      # Per-model speculative decoding (e.g. draft-mtp from a runtime
+      # profile). Passed through only when set; the NVIDIA and CPU overlays
+      # default it to ${LLAMA_SPEC_TYPE:-ngram-mod}. The AMD (Lemonade), Intel,
+      # Arc and Apple overlays add no default.
       - LLAMA_ARG_SPEC_TYPE
       - LLAMA_ARG_SPEC_DRAFT_N_MAX
     security_opt:

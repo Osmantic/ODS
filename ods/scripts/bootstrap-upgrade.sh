@@ -1581,7 +1581,7 @@ restart_windows_native_llama_server_with_full_model() {
     ODS_WIN_CACHE_TYPE_V="$(read_env_value LLAMA_ARG_CACHE_TYPE_V)" \
     ODS_WIN_N_CPU_MOE="$(read_env_value LLAMA_ARG_N_CPU_MOE)" \
     ODS_WIN_PARALLEL="$(read_env_value LLAMA_PARALLEL)" \
-    ODS_WIN_CHECKPOINT_EVERY_N_TOKENS="$(read_env_value LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS)" \
+    ODS_WIN_CHECKPOINT_EVERY_N_TOKENS="$(read_env_value LLAMA_ARG_CHECKPOINT_EVERY_NT)" \
     ODS_WIN_NO_CACHE_PROMPT="$(read_env_value LLAMA_ARG_NO_CACHE_PROMPT)" \
     ODS_WIN_SPEC_TYPE="$(read_env_value LLAMA_ARG_SPEC_TYPE)" \
     ODS_WIN_SPEC_DRAFT_N_MAX="$(read_env_value LLAMA_ARG_SPEC_DRAFT_N_MAX)" \
