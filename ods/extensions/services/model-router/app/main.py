@@ -1458,6 +1458,39 @@ async def health() -> dict[str, Any]:
     }
 
 
+@app.get("/metrics")
+async def metrics() -> dict[str, Any]:
+    """Expose router metrics and upstream connection pool state for monitoring."""
+    async with _inflight_lock:
+        _expire_swap_gate_locked()
+        active = _inflight
+        queued = _waiting
+        gate = _swap_gate is not None
+        
+    client = getattr(app.state, "http", None)
+    pool_stats = {}
+    if client and hasattr(client, "_transport"):
+        transport = client._transport
+        if hasattr(transport, "_pool"):
+            pool = transport._pool
+            connections = getattr(pool, "connections", [])
+            reqs = getattr(pool, "_requests", [])
+            pool_stats = {
+                "active_connections": len(connections) if isinstance(connections, list) else 0,
+                "queued_requests": len(reqs) if isinstance(reqs, list) else 0,
+                "max_connections": getattr(pool, "_max_connections", None),
+                "max_keepalive": getattr(pool, "_max_keepalive_connections", None)
+            }
+
+    return {
+        "status": "ok",
+        "active_requests": active,
+        "queued_requests": queued,
+        "swap_gate_active": gate,
+        "pool_stats": pool_stats
+    }
+
+
 @app.get("/v1/models")
 async def list_models() -> dict[str, Any]:
     data = [{"id": alias, "object": "model", "owned_by": "ods"}
