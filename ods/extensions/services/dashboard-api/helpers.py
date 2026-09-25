@@ -12,6 +12,7 @@ import shutil
 import socket
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -850,6 +851,7 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
 # lookups (Docker Desktop) never block API responses.
 
 _services_cache: Optional[list] = None  # list[ServiceStatus], set by poll loop
+_services_checked_at: Optional[str] = None  # UTC ISO time the cached poll finished
 
 
 def _normalize_cached_service_status(status: ServiceStatus) -> ServiceStatus:
@@ -873,13 +875,19 @@ def _normalize_cached_service_status(status: ServiceStatus) -> ServiceStatus:
 
 def set_services_cache(statuses: list) -> None:
     """Store latest health check results (called by background poll)."""
-    global _services_cache
+    global _services_cache, _services_checked_at
     _services_cache = [_normalize_cached_service_status(status) for status in statuses]
+    _services_checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def get_cached_services() -> Optional[list]:
     """Read cached health check results. Returns None if no poll has completed yet."""
     return _services_cache
+
+
+def get_services_checked_at() -> Optional[str]:
+    """When the cached health results were taken, or None before the first poll."""
+    return _services_checked_at
 
 
 # --- Service Health ---

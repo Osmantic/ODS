@@ -110,6 +110,14 @@ describe('App', () => {
     expect(screen.getByLabelText('Portal draft')).toBe(input)
     expect(input).toHaveValue('Keep this message')
   })
+  test('opens Integrations as its own workspace panel instead of redirecting into Settings', async () => {
+    getInternalRoutes.mockReturnValue([{id:'integrations',path:'/extensions/integrations',label:'Integrations',component:() => <p>Integrations panel</p>}])
+    rtlRender(<MemoryRouter initialEntries={['/extensions/integrations']}><ThemeProvider><App /></ThemeProvider></MemoryRouter>)
+    expect(await screen.findByText('Integrations panel')).toBeVisible()
+    const panel = screen.getByRole('complementary', {name:'Workspace panel'})
+    expect(panel).toHaveTextContent('Integrations')
+    expect(screen.queryByLabelText('Settings draft')).toBeNull()
+  })
   beforeEach(() => {
     useVersion.mockReturnValue({ version:{current:'2.6.0',update_available:false}, showUpdate:false, dismissUpdate:vi.fn() })
     getInternalRoutes.mockReturnValue([])

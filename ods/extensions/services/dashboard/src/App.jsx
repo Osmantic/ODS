@@ -158,9 +158,8 @@ function App() {
           <Routes location={panelLocation}>
             <Route path="/settings" element={<SettingsModal />} />
             <Route path="/pixel/settings" element={<PixelSettings />} />
-            <Route path="/extensions/integrations" element={<Navigate to="/settings?section=integrations" replace />} />
             <Route path="/remote-provider" element={<Navigate to="/settings?section=remote" replace />} />
-            {routes.filter(route => !['/', '/pixel', '/pixel/settings', '/settings', '/extensions/integrations', '/remote-provider'].includes(route.path)).map(route => {
+            {routes.filter(route => !['/', '/pixel', '/pixel/settings', '/settings', '/remote-provider'].includes(route.path)).map(route => {
               const Component = route.component
               const props = typeof route.getProps === 'function' ? route.getProps({ status, loading }) : {}
               return (

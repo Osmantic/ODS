@@ -18,7 +18,7 @@ const Extensions = lazy(() => import('../pages/Extensions'))
 const GPUMonitor = lazy(() => import('../pages/GPUMonitor'))
 const Models = lazy(() => import('../pages/Models'))
 const RemoteProvider = lazy(() => import('../pages/RemoteProvider'))
-const ServiceMap = lazy(() => import('../pages/ServiceMap'))
+const Integrations = lazy(() => import('../pages/Integrations'))
 const Invites = lazy(() => import('../pages/Invites'))
 const Usage = lazy(() => import('../pages/Usage'))
 const Pixel = lazy(() => import('../pages/Pixel'))
@@ -58,14 +58,17 @@ export const coreRoutes = [
     sidebar: true,
     order: 2,
   },
+  // Integrations was a top-level page in 2.x. The 3.0 workspace moved it into
+  // Settings as "Service map", where owners who watch external systems (data
+  // engines, decision APIs) could no longer find it. Keep it in the sidebar.
   {
     id: 'integrations',
     path: '/extensions/integrations',
     label: 'Integrations',
     icon: Network,
-    component: ServiceMap,
+    component: Integrations,
     getProps: () => ({}),
-    sidebar: false,
+    sidebar: true,
     order: 2.1,
   },
   {

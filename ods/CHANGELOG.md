@@ -32,6 +32,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tier-map, installer, host-agent and catalog copies. The dependency pin check
   rejects a llama.cpp image without a digest.
 
+### Added
+- Integrations is a sidebar page again, below Extensions. ODS 3.0 had moved it
+  into Settings as "Service map", where owners who watch external systems could
+  no longer find it; Settings keeps it under its old name, Integrations. The
+  page shows each ODS service with the time of its last health check, plus a new
+  **Your integrations** list for systems ODS does not run, such as a hosted
+  decision API or a data engine on the LAN. Add one by name and health URL, and
+  remove it the same way. ODS sends one plain GET at most once a minute while
+  the page is open and shows the status, HTTP code, latency and check time. It
+  sends no credentials, follows no redirects and never reads the response body.
+  URLs that carry credentials or query strings, and link-local or cloud
+  metadata addresses, are refused. The list is kept in
+  `data/integrations/custom.json`.
+
 ### Changed
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog

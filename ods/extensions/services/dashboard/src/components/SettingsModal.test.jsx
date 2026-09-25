@@ -3,7 +3,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, afterEach, expect, it, vi } from 'vitest'
 import SettingsModal from './SettingsModal'
 const render = ui => renderBase(<MemoryRouter>{ui}</MemoryRouter>)
-vi.mock('../pages/ServiceMap', () => ({ default: () => <p>Integration details</p> }))
+vi.mock('../pages/Integrations', () => ({ default: ({embedded}) => <p>{embedded ? 'Embedded integrations' : 'Integrations page'}</p> }))
 vi.mock('../pages/RemoteProvider', () => ({ default: () => <input aria-label="Remote draft" /> }))
 
 vi.mock('../pages/Settings', () => ({ default: ({activeSection}) => <div><p>{activeSection} content</p><input aria-label="Draft" /></div> }))
@@ -60,8 +60,8 @@ it('offers integrations and remote GPU inside settings without losing remote dra
   fireEvent.click(screen.getByRole('button', {name:'Remote GPU',exact:true}))
   const draft = await screen.findByLabelText('Remote draft')
   fireEvent.change(draft, {target:{value:'Unsaved remote'}})
-  fireEvent.click(screen.getByRole('button', {name:'Service map',exact:true}))
-  expect(await screen.findByText('Integration details')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', {name:'Integrations',exact:true}))
+  expect(await screen.findByText('Embedded integrations')).toBeVisible()
   expect(draft).not.toBeVisible()
   fireEvent.click(screen.getByRole('button', {name:'Remote GPU',exact:true}))
   expect(draft).toBeVisible()
