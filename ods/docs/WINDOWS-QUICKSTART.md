@@ -1,8 +1,46 @@
 # ODS Windows Quickstart
 
-## Getting Started
+## Recommended: Portal/Pixel in Ubuntu on WSL2
 
-ODS is fully supported on Windows 10 2004+ and Windows 11 (NVIDIA and AMD). The installer detects your GPU, selects the right model, downloads it, starts all Docker services, and creates a Desktop shortcut.
+For the Portal agent, use the WSL installer in the root [Get Started](../../README.md#get-started) section. It passes `--pixel --no-hermes` to the Linux installer. The root `install.ps1` instead installs the native Windows stack and does not provision the Linux Pixel host runtime. Enabling Docker Desktop's WSL2 backend alone does not select the Pixel installation path.
+
+1. Install Ubuntu with `wsl --install -d Ubuntu-24.04` from Administrator PowerShell if it is not installed. Restart if requested, then open Ubuntu and create a normal Linux user and password.
+2. Check `wsl -l -v` in PowerShell: Ubuntu must use version 2. Use your actual distribution name throughout the commands.
+3. In Ubuntu, `ps -p 1 -o comm=` must show `systemd`. If it does not, enable `systemd=true` under `[boot]` in `/etc/wsl.conf`, preserving other settings, then restart that distribution from PowerShell with `wsl --terminate Ubuntu-24.04` and reopen it.
+4. Start Docker Desktop; enable its WSL2 engine and **Settings > Resources > WSL Integration > Ubuntu-24.04**. In Ubuntu, verify both `docker info` and `docker compose version` succeed as your normal user.
+5. Run the PowerShell download block in the root README from a normal PowerShell window. Its final command, from the extracted repository root, is:
+
+```powershell
+.\ods\installers\windows.ps1 -Distro Ubuntu-24.04 -PassthroughArgs @("--pixel", "--no-hermes")
+```
+
+Supply the Ubuntu password when sudo requests it. Pixel uses the source bundled in the public Osmantic/ODS repository; no private Osmantic/Pixel checkout is required. The runtime normally lives at `~/ods` in Ubuntu, not `$env:USERPROFILE\ods` on Windows. Keep the extracted source folder while using its WSL lifecycle helper.
+
+### Model and GPU placement
+
+Pixel is the agent runtime, not the inference server. This WSL command does not provision a Windows GPU-to-WSL bridge. NVIDIA requires a supported Windows driver and GPU visibility in WSL/Docker. AMD acceleration in Windows (including Lemonade) does not imply ROCm support in WSL. Use a supported WSL backend or CPU; an existing Windows model endpoint requires explicit configuration and connectivity. Do not assume selecting that endpoint makes it managed by the WSL installer. See [WSL2 GPU guide](WINDOWS-WSL2-GPU-GUIDE.md).
+
+### Verify Portal/Pixel
+
+Wait for a successful installer result; fix any failed Pixel bootstrap rather than treating a running dashboard as completion. Open the printed dashboard URL, normally **http://localhost:3001**, check Portal availability, and send a short message. **http://localhost:3000** is the separate Open WebUI interface.
+
+From Ubuntu, inspect the installed stack:
+
+```bash
+cd ~/ods
+./ods status
+sudo systemctl status openclaw-gateway.service pixel-ingress.service --no-pager
+```
+
+If Portal says it is not enabled, confirm that you used the WSL command above, not the native Windows command below. If a service failed, inspect its journal (`sudo journalctl -u openclaw-gateway.service -u pixel-ingress.service -n 80 --no-pager`) and the installer log. An unavailable model endpoint is a separate failure from Pixel installation.
+
+To uninstall this WSL installation, run `cd ~/ods && ./ods-uninstall.sh --force` **inside Ubuntu**. The native `ods.ps1` commands below apply only to native Windows installs.
+
+---
+
+## Native Windows alternative (does not provision Pixel)
+
+The native Windows installer is an alternative for the Windows model runtime and Docker applications; it does not install the Linux Pixel host runtime required by the recommended Portal path. The installer detects your GPU, selects the right model, downloads it, starts all Docker services, and creates a Desktop shortcut.
 
 **Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend enabled. NVIDIA GPU or AMD Strix Halo recommended (CPU-only works with smaller models). 4GB+ RAM minimum, 16GB+ recommended.
 

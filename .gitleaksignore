@@ -131,3 +131,16 @@ dd97e51445ea4d01fd6f291ce384e46988d1d584:resources/dev/extensions-library/servic
 e31fc3e4ccaedb327ce52c34b0a8eb8815b6d5a0:ods/extensions/services/dashboard-api/routers/extension_planning.py:generic-api-key:40
 # Synthetic probe fixture in separately fetched history: literal UUID plus repeated a/b characters.
 150dde5caf44cc7b85f79413757dfc466521cc10:ods/extensions/services/pixel-model-relay/tests/test_relay.py:generic-api-key:38
+# Reviewed synthetic redaction fixtures: patterned dummy keys, public example JWT, and truncated nonfunctional PEM; exact historical fingerprints only.
+26a4fdaa3f3c46a6fb34eee624f8e1552490683a:ods/extensions/services/dashboard-api/tests/test_host_agent_output_redaction.py:gcp-api-key:63
+26a4fdaa3f3c46a6fb34eee624f8e1552490683a:ods/extensions/services/dashboard-api/tests/test_host_agent_output_redaction.py:jwt:24
+26a4fdaa3f3c46a6fb34eee624f8e1552490683a:ods/extensions/services/dashboard-api/tests/test_host_agent_output_redaction.py:private-key:64
+26a4fdaa3f3c46a6fb34eee624f8e1552490683a:ods/extensions/services/dashboard-api/tests/test_host_agent_output_redaction.py:generic-api-key:31
+26a4fdaa3f3c46a6fb34eee624f8e1552490683a:ods/extensions/services/dashboard-api/tests/test_host_agent_output_redaction.py:generic-api-key:41
+26a4fdaa3f3c46a6fb34eee624f8e1552490683a:ods/extensions/services/dashboard-api/tests/test_host_agent_output_redaction.py:generic-api-key:42
+26a4fdaa3f3c46a6fb34eee624f8e1552490683a:ods/extensions/services/dashboard-api/tests/test_host_agent_output_redaction.py:generic-api-key:59
+26a4fdaa3f3c46a6fb34eee624f8e1552490683a:ods/extensions/services/dashboard-api/tests/test_host_agent_output_redaction.py:generic-api-key:127
+26a4fdaa3f3c46a6fb34eee624f8e1552490683a:ods/extensions/services/dashboard-api/tests/test_host_agent_output_redaction.py:generic-api-key:144
+26a4fdaa3f3c46a6fb34eee624f8e1552490683a:ods/extensions/services/dashboard-api/tests/test_host_agent_output_redaction.py:generic-api-key:162
+26a4fdaa3f3c46a6fb34eee624f8e1552490683a:ods/extensions/services/dashboard-api/tests/test_host_agent_output_redaction.py:generic-api-key:198
+26a4fdaa3f3c46a6fb34eee624f8e1552490683a:ods/extensions/services/dashboard-api/tests/test_host_agent_output_redaction.py:generic-api-key:208
