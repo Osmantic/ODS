@@ -402,6 +402,7 @@ export default function RemoteProvider({ compact = false }) {
   const updateForm = (key, value) => {
     formEdit.current.dirty = true
     formEdit.current.revision += 1
+    setPlanResult(null)
     setForm(current => ({ ...current, [key]: value }))
   }
 
