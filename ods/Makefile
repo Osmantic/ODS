@@ -208,6 +208,9 @@ test: ## Run unit and contract tests
 	@echo "=== token-spy session manager active-id extraction ==="
 	@bash tests/test-token-spy-session-manager.sh
 	@echo ""
+	@echo "=== SSH tunnel health disclosure ==="
+	@python3 tests/contracts/test-ssh-tunnel-health-disclosure.py
+	@echo ""
 	@echo "=== fleet-multi-distro keep-going on docker pull failure ==="
 	@bash tests/test-fleet-multi-distro-keep-going.sh
 	@echo ""

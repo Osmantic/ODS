@@ -444,6 +444,36 @@ def health_payload(supervisor: SshProcessSupervisor | None = None) -> dict[str, 
     return _health_from_plan(_supervisor_plan())
 
 
+def public_health_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Reduce a health payload to what a caller on the network needs.
+
+    The status server binds 0.0.0.0 and is unauthenticated — the container
+    healthcheck has no credential to present — so whatever it returns is
+    readable by every peer on the network it sits on. The full payload carries
+    the resolved route plan: the remote endpoint and port, and the local
+    forward definitions. None of that is needed by any consumer.
+
+    remote-provider-egress reads only ready/status/reason and the process
+    status and pid (see _safe_tunnel_summary there), and the compose
+    healthcheck reads only the status code. So serve exactly that, and keep
+    the plan for the in-process callers and the contract tests that assert on
+    it via health_payload() directly.
+    """
+    process = payload.get("process")
+    if not isinstance(process, Mapping):
+        process = {}
+    return {
+        "schema": payload.get("schema"),
+        "ready": bool(payload.get("ready")),
+        "status": payload.get("status"),
+        "reason": payload.get("reason"),
+        "process": {
+            "status": process.get("status"),
+            "pid": process.get("pid"),
+        },
+    }
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     server_version = "ODSRemoteProviderSSHTunnel/1"
     sys_version = ""
@@ -453,7 +483,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self._write_json({"error": "not_found"}, status=404)
             return
         supervisor = getattr(self.server, "supervisor", None)
-        self._write_json(health_payload(supervisor))
+        self._write_json(public_health_payload(health_payload(supervisor)))
 
     def log_message(self, fmt: str, *args: Any) -> None:
         LOGGER.info("%s - %s", self.address_string(), fmt % args)
