@@ -5,6 +5,8 @@ import hmac
 import json
 import re
 import time
+import base64
+from .probe_response import response_metrics
 
 
 class ProbeAttempts:
@@ -43,7 +45,7 @@ class ProbeAttempts:
         key = hmac.new(signing_key.encode(), b"ods.probe-attempt.v1\0" + probe_id.encode(),
                        hashlib.sha256).digest()
         self.scopes[probe_id] = {"expires": now + ttl, "limit": limit, "records": [],
-            "key": key, "keyFingerprint": hashlib.sha256(signing_key.encode()).digest()}
+            "key": key, "keyFingerprint": hashlib.sha256(signing_key.encode()).digest(), "headerCalls": set()}
         while len(self.scopes) > self.MAX_SCOPES:
             self.scopes.popitem(last=False)
         return {"schemaVersion": 1, "probeId": probe_id, "ttlSeconds": ttl,
@@ -106,6 +108,59 @@ class ProbeAttempts:
             row["capturePrepareMs"] = max(0, (ready - row["startedMonotonic"]) * 1000)
             row["startedMonotonic"] = ready
         return probe_id, scope, row
+
+    def accept_header(self, value, signing_key, raw_body):
+        """Single-use header bound to exact incoming bytes and an active lease.
+
+        No header signature is reusable for another body. Invalid diagnostics do
+        not reject or modify ordinary inference. The SDK issuer must bind its
+        short-lived lease to the actual owned native session/request.
+        """
+        if not isinstance(value, str) or len(value) > 160 or type(raw_body) is not bytes:
+            return None
+        match = re.fullmatch(r"([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\.([a-f0-9]{32})\.([A-Za-z0-9_-]{43})", value)
+        if not match:
+            return None
+        probe, call, signature = match.groups()
+        scope = self._scope(probe, signing_key)
+        if scope is None or call in scope["headerCalls"] or len(scope["headerCalls"]) >= scope["limit"]:
+            return None
+        message = b"ods.probe-header.v1\0" + probe.encode() + b"\0" + call.encode() + b"\0" + hashlib.sha256(raw_body).digest()
+        expected = base64.urlsafe_b64encode(hmac.new(signing_key.encode(), message, hashlib.sha256).digest()).rstrip(b"=").decode()
+        if not hmac.compare_digest(signature, expected):
+            return None
+        scope["headerCalls"].add(call)
+        return probe, call
+
+    def annotate(self, handle, **fields):
+        if handle is None:
+            return
+        probe, scope, row = handle
+        if self._scope(probe) is not scope or row not in scope["records"]:
+            return
+        allowed = {"correlationId", "binding", "routerAdmissionMs", "routeReadyWaitMs", "repairReason"}
+        row.update({key: value for key, value in fields.items() if key in allowed})
+
+    def response(self, handle, payload, streaming=False):
+        if handle is None:
+            return
+        probe, scope, row = handle
+        if self._scope(probe) is not scope or row not in scope["records"]:
+            return
+        metrics = response_metrics(payload)
+        row.setdefault("responseMetrics", {}).update(metrics)
+        if streaming and type(payload) is dict:
+            elapsed = max(0, (self.clock() - row["startedMonotonic"]) * 1000)
+            choices = payload.get("choices")
+            for choice in choices if type(choices) is list else []:
+                delta = choice.get("delta") if type(choice) is dict else None
+                if type(delta) is not dict:
+                    continue
+                for field, name in (("content", "firstContentDeltaMs"), ("reasoning_content", "firstReasoningDeltaMs")):
+                    if isinstance(delta.get(field), str) and delta[field]:
+                        row.setdefault(name, elapsed)
+                if type(delta.get("tool_calls")) is list and delta["tool_calls"]:
+                    row.setdefault("firstToolDeltaMs", elapsed)
 
     def finish(self, handle, status, http_status=None):
         if handle is None:

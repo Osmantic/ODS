@@ -18,6 +18,7 @@ import os from "node:os";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { parseTaskActivity } from "./task_activity_schema.mjs";
+import { createProbeIngressHeader } from "./probe_admission.mjs";
 import { parseQuestions } from "./questions_schema.mjs";
 import {createChatHistoryLedger,HistoryError} from './chat_history_ledger.mjs';
 import {handleAccessMode, handleModelControl, readAccessOwnerKey} from './access_mode_relay.mjs';
@@ -1220,12 +1221,14 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     await hooks.beforeRequest?.(controller.signal);
     if(controller.signal.aborted) throw new HistoryError('history-preparation-interrupted',503);
     hooks.onSubmitted?.();
+    const gatewayBody = JSON.stringify(gatewayOutgoing);
+    const probeHeaders = hooks.probeRequest ? createProbeIngressHeader({...hooks.probeRequest, gatewayBody}) : {};
     const upstream = await deps.fetch(
       `http://127.0.0.1:${gatewayPort}/v1/chat/completions`,
       {
         method: "POST",
-        headers: upstreamHeaders(false, token),
-        body: JSON.stringify(gatewayOutgoing),
+        headers: {...upstreamHeaders(false, token), ...probeHeaders},
+        body: gatewayBody,
         redirect: "error",
         signal: controller.signal,
       }
@@ -1843,6 +1846,7 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     // snapshot is data only; it cannot introduce system/developer instructions.
     outgoing.messages=[...(outgoing.messages || []).filter(message=>message.role==='system'),...prepared.delta.slice(0,-1),latest];
     await forwardChat(res,outgoing,token,gatewayPort,deps,{
+      probeRequest:{incoming:parsed,user,requestId:parsed.request_id},
       onController:controller=>historyAborters?.set(user,{requestId:parsed.request_id,controller}),
       beforeRequest:async signal=>{
         if(!prepared.hydrate) return;

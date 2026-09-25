@@ -26,6 +26,39 @@ async def start(app):
 
 
 class RelayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_probe_header_requires_relay_auth_and_managed_route(self):
+        seen = []
+        async def capture(request):
+            seen.append({k.lower(): v for k, v in request.headers.items() if k.lower().startswith('x-ods-probe')})
+            return web.json_response({'choices': []})
+        app = web.Application(); app.router.add_post('/v1/chat/completions', capture)
+        runner, upstream = await start(app)
+        prior = relay.UPSTREAM, relay.UPSTREAM_REQUIRES_KEY, relay.LITELLM_KEY
+        relay.UPSTREAM, relay.UPSTREAM_REQUIRES_KEY, relay.LITELLM_KEY = upstream, False, 'test-key'
+        token = '12345678-1234-1234-1234-123456789abc.' + 'a'*32 + '.' + 'b'*43
+        body = {'model': 'ods/current', 'messages': []}
+        try:
+            async with ClientSession() as client:
+                async with client.post(self.url+'/v1/chat/completions', json=body, headers={'X-ODS-Probe': token}) as response:
+                    self.assertEqual(response.status, 401)
+                self.assertEqual(seen, [])
+                headers = {'Authorization': 'Bearer test-only-pixel-relay-key', 'X-ODS-Probe': token, 'X-ODS-Probe-Secret': 'never-forward'}
+                async with client.post(self.url+'/v1/chat/completions', json=body, headers=headers) as response:
+                    self.assertEqual(response.status, 200); await response.read()
+                self.assertEqual(seen[-1], {'x-ods-probe': token})
+                relay.UPSTREAM_REQUIRES_KEY = True
+                async with client.post(self.url+'/v1/chat/completions', json=body, headers=headers) as response:
+                    self.assertEqual(response.status, 200); await response.read()
+                self.assertEqual(seen[-1], {})
+                relay.UPSTREAM_REQUIRES_KEY = False
+                headers = [('Authorization', 'Bearer test-only-pixel-relay-key'), ('X-ODS-Probe', token), ('X-ODS-Probe', token)]
+                async with client.post(self.url+'/v1/chat/completions', json=body, headers=headers) as response:
+                    self.assertEqual(response.status, 200); await response.read()
+                self.assertEqual(seen[-1], {})
+        finally:
+            relay.UPSTREAM, relay.UPSTREAM_REQUIRES_KEY, relay.LITELLM_KEY = prior
+            await runner.cleanup()
+
     def test_generation_summary_allowlists_only_safe_scalars(self):
         payload = {"model": "ods/current", "stream": True, "max_tokens": 4096, "max_completion_tokens": 2048,
                    "chat_template_kwargs": {"enable_thinking": False, "secret": "private"},

@@ -1,0 +1,25 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "3518e7a4cbcd178eaca8c8f1f3a1d552602a2a05349249f150520871aadea3d6",
+  "patchedSha256": "f96417559983aa5f4595cc051a00ab08921b1e6a6f8a2eb4c285fecd6b1ef41a",
+  "replacements": [
+    [
+      "function createOpenAICompletionsClient(model, context, apiKey, optionHeaders) {",
+      "function createOpenAICompletionsClient(model, context, apiKey, optionHeaders, ownedProbeFetch) {"
+    ],
+    [
+      "\tconst clientConfig = buildOpenAICompletionsClientConfig(model, context, optionHeaders);",
+      "\tconst clientConfig = buildOpenAICompletionsClientConfig(model, context, optionHeaders);\n\tfor (const name of Object.keys(clientConfig.defaultHeaders)) if (name.toLowerCase().startsWith(\"x-ods-probe\")) delete clientConfig.defaultHeaders[name];\n\tconst guardedFetch = buildGuardedModelFetch(model);"
+    ],
+    [
+      "\t\tdefaultQuery: clientConfig.defaultQuery,\n\t\tfetch: buildGuardedModelFetch(model),",
+      "\t\tdefaultQuery: clientConfig.defaultQuery,\n\t\tfetch: typeof ownedProbeFetch === \"function\" ? ownedProbeFetch(guardedFetch) : guardedFetch,"
+    ],
+    [
+      "createOpenAICompletionsClient(model, context, options?.apiKey || getEnvApiKey(model.provider) || \"\", options?.headers);",
+      "createOpenAICompletionsClient(model, context, options?.apiKey || getEnvApiKey(model.provider) || \"\", options?.headers, options?.[Symbol.for(\"ods.pixel.ownedProbeFetch.v1\")]);"
+    ]
+  ],
+  "previousReplacements": {},
+  "reason": "Owner-private exact-request diagnostic correlation outside model-visible content; no global capture."
+}

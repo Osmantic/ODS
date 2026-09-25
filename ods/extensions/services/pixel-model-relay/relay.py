@@ -12,6 +12,7 @@ import logging
 import os
 import time
 import uuid
+import re
 from contextlib import suppress
 
 from aiohttp import ClientSession, ClientTimeout, web
@@ -48,6 +49,19 @@ def _generation_summary(payload):
         "max_completion_tokens": completion_budget if type(completion_budget) is int and 0 <= completion_budget <= 10**9 else None,
         "tool_count": len(tools) if isinstance(tools, list) else 0,
     }
+
+
+def _probe_header(request):
+    """Transport only after relay authentication; router verifies the signature.
+
+    Never send diagnostic credentials to a cloud/external provider or copy any
+    other caller header. The signed value is bound to one exact body and call.
+    """
+    values = request.headers.getall("X-ODS-Probe", [])
+    if (not UPSTREAM_REQUIRES_KEY and request.method == "POST" and len(values) == 1
+            and re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.[a-f0-9]{32}\.[A-Za-z0-9_-]{43}", values[0])):
+        return {"X-ODS-Probe": values[0]}
+    return {}
 
 
 async def _disconnect(request):
@@ -91,6 +105,7 @@ async def _inference(request):
     byte_count = 0
     async with ClientSession(timeout=ClientTimeout(total=None)) as client:
         upstream_headers = {"Content-Type": "application/json"}
+        upstream_headers.update(_probe_header(request))
         if UPSTREAM_REQUIRES_KEY:
             upstream_headers["Authorization"] = "Bearer " + LITELLM_KEY
         upstream_task = asyncio.create_task(client.request(

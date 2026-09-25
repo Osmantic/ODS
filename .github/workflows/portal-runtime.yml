@@ -70,6 +70,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node ods/extensions/services/pixel-agent/tests/runtime_bootstrap_capabilities.integration.mjs
+      - name: Verify owned measurement admission and actual provider fetch
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_probe_fetch.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_probe_admission.integration.mjs
       - name: Verify premature completion with real Pixel runtime
         if: runner.os != 'Windows'
         shell: bash

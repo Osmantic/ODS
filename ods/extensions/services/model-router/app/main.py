@@ -44,6 +44,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from .probe_attempts import ProbeAttempts
+from .probe_response import ProbeStream
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ods-model-router")
@@ -315,6 +316,26 @@ def _begin_probe_attempt(probe_id, request_id, attempt, body, route):
 def _finish_probe_attempt(handle, status, http_status=None):
     try:
         _probe_attempts.finish(handle, status, http_status)
+    except Exception:
+        pass
+
+
+def _probe_response(handle, value, streaming=False):
+    if handle is None:
+        return
+    try:
+        if isinstance(value, httpx.Response):
+            if len(value.content) > ProbeStream.MAX_BYTES:
+                return
+            value = value.json()
+        _probe_attempts.response(handle, value, streaming)
+    except Exception:
+        pass  # Optional diagnostics never change, retry or delay admission.
+
+
+def _probe_annotation(handle, **fields):
+    try:
+        _probe_attempts.annotate(handle, **fields)
     except Exception:
         pass
 
@@ -872,7 +893,8 @@ def _sanitize_headers(request: Request) -> dict[str, str]:
         for token in value.split(",")
     }
     for name, value in request.headers.items():
-        if name.lower() in _HOP_BY_HOP or name.lower() in connection_fields:
+        if (name.lower() in _HOP_BY_HOP or name.lower() in connection_fields
+                or name.lower().startswith("x-ods-probe")):
             continue
         headers[name] = value
     headers["content-type"] = "application/json"
@@ -1623,6 +1645,7 @@ async def forward(full_path: str, request: Request) -> Response:
 
 
 async def _forward_admitted(request, path, payload, requested_alias, body):
+    admission_started = time.monotonic()
     admitted, reason = await _admit_request()
     if not admitted:
         if reason == "queue_full":
@@ -1639,7 +1662,8 @@ async def _forward_admitted(request, path, payload, requested_alias, body):
     stream_owns_admission = False
     try:
         response, stream_owns_admission = await _forward_inner(
-            request, path, payload, requested_alias, body
+            request, path, payload, requested_alias, body,
+            admission_ms=max(0, (time.monotonic() - admission_started) * 1000),
         )
         return response
     finally:
@@ -1649,7 +1673,8 @@ async def _forward_admitted(request, path, payload, requested_alias, body):
 
 async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                          requested_alias: str,
-                         raw_body: bytes) -> tuple[Response, bool]:
+                         raw_body: bytes, admission_ms=None) -> tuple[Response, bool]:
+    route_wait_started = time.monotonic()
     deadline = time.monotonic() + QUEUE_WAIT_SECONDS
     while True:
         try:
@@ -1690,7 +1715,18 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
 
     payload["model"] = route["runtimeModelId"]
     request_id = str(uuid.uuid4())
-    probe_id = _verify_probe_marker(raw_body.decode("utf-8", "replace"))
+    probe_headers = request.headers.getlist("x-ods-probe")
+    header_binding = None
+    if len(probe_headers) == 1:
+        try:
+            header_binding = _probe_attempts.accept_header(probe_headers[0], _current_probe_key(), raw_body)
+        except Exception:
+            pass
+    probe_id = (header_binding[0] if header_binding else None) if probe_headers else _verify_probe_marker(raw_body.decode("utf-8", "replace"))
+    probe_fields = {"binding": "signed-http-header" if header_binding else "legacy-model-marker",
+                    "correlationId": header_binding[1] if header_binding else None,
+                    "routerAdmissionMs": admission_ms,
+                    "routeReadyWaitMs": max(0, (time.monotonic() - route_wait_started) * 1000)}
     is_stream = bool(payload.get("stream"))
     completed_tool_stream = (
         is_stream
@@ -1739,6 +1775,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     try:
         forwarded_body = json.dumps(payload).encode("utf-8")
         attempt_handle = _begin_probe_attempt(probe_id, request_id, 1, forwarded_body, route)
+        _probe_annotation(attempt_handle, **probe_fields)
         if is_stream and not completed_tool_stream:
             upstream_request = client.build_request(
                 "POST", url, content=forwarded_body,
@@ -1759,10 +1796,16 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
 
             async def stream_body() -> AsyncIterator[bytes]:
                 rewriter = _SSERewriter(requested_alias, route["runtimeModelId"])
+                observer = ProbeStream(lambda value: _probe_response(attempt_handle, value, True)) if attempt_handle else None
                 completed = False
                 disconnected = False
                 try:
                     async for chunk in upstream.aiter_bytes():
+                        if observer is not None:
+                            try:
+                                observer.feed(chunk)
+                            except Exception:
+                                observer = None
                         events = rewriter.feed(chunk)
                         if pinned_route and not rewriter.identity_matches:
                             raise RouterError(502, 'response_identity_mismatch', 'Backend response identity changed')
@@ -1832,6 +1875,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             url, content=forwarded_body, headers=headers,
             timeout=UPSTREAM_TIMEOUT_SECONDS,
         )
+        _probe_response(attempt_handle, upstream)
         _finish_probe_attempt(attempt_handle, "complete", upstream.status_code)
     except asyncio.CancelledError:
         _finish_probe_attempt(attempt_handle, "cancelled")
@@ -1887,10 +1931,12 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                 try:
                     repair_body = json.dumps(repair_payload).encode("utf-8")
                     repair_handle = _begin_probe_attempt(probe_id, request_id, 2, repair_body, route)
+                    _probe_annotation(repair_handle, **probe_fields, repairReason="native-tool-protocol-repair")
                     upstream = await client.post(
                         url, content=repair_body,
                         headers=headers, timeout=remaining,
                     )
+                    _probe_response(repair_handle, upstream)
                     _finish_probe_attempt(repair_handle, "complete", upstream.status_code)
                 except asyncio.CancelledError:
                     _finish_probe_attempt(repair_handle, "cancelled")

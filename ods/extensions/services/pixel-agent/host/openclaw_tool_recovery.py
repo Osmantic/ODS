@@ -35,6 +35,10 @@ FILE_IDENTITY_MODULE = "sandbox-Y3MbG9Od.js"
 PROMPT_CONTEXT_HOOK_MODULE = "hook-runner-global-mWFYlTIy.js"
 PROMPT_CONTEXT_FORWARD_MODULE = "attempt.prompt-helpers-Cjcf83Hq.js"
 PROMPT_CONTEXT_RUNTIME_MODULE = "system-prompt-config-CK1eJh37.js"
+PROBE_CONTEXT_MODULE = "attempt.model-diagnostic-events-DqqiPQPY.js"
+PROBE_PROVIDER_MODULE = "openai-completions-DTj6G8AI.js"
+PROBE_ADMISSION_MODULE = "openai-http-DkesJHcp.js"
+PROBE_TRANSPORT_MODULE = "openai-transport-stream-P3cLoEh2.js"
 VERSION = "2026.6.33"
 
 
@@ -89,7 +93,7 @@ def verify_dependencies(runtime_root, manifest, module_name):
 
 def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
            module_name=MODULE):
-    if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE, COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE, PROMPT_CONTEXT_HOOK_MODULE, PROMPT_CONTEXT_FORWARD_MODULE, PROMPT_CONTEXT_RUNTIME_MODULE, FILE_OPERATIONS_MODULE, FILE_IDENTITY_MODULE, *SANDBOX_CUSTODY_MODULES.values()}:
+    if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE, COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE, PROBE_CONTEXT_MODULE, PROBE_PROVIDER_MODULE, PROBE_ADMISSION_MODULE, PROBE_TRANSPORT_MODULE, PROMPT_CONTEXT_HOOK_MODULE, PROMPT_CONTEXT_FORWARD_MODULE, PROMPT_CONTEXT_RUNTIME_MODULE, FILE_OPERATIONS_MODULE, FILE_IDENTITY_MODULE, *SANDBOX_CUSTODY_MODULES.values()}:
         raise ValueError("unsupported runtime repair module")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     package = json.loads((runtime_root / "package.json").read_text(encoding="utf-8"))
@@ -187,6 +191,10 @@ def main():
     selection.add_argument("--prompt-context-hook", action="store_true")
     selection.add_argument("--prompt-context-forward", action="store_true")
     selection.add_argument("--prompt-context-runtime", action="store_true")
+    selection.add_argument("--probe-context", action="store_true")
+    selection.add_argument("--probe-provider", action="store_true")
+    selection.add_argument("--probe-admission", action="store_true")
+    selection.add_argument("--probe-transport", action="store_true")
     args = parser.parse_args()
     runtime_root = args.openclaw_bin.resolve(strict=True).parent
     options = {}
@@ -220,6 +228,18 @@ def main():
     elif args.file_operations:
         options = {"module_name": FILE_OPERATIONS_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-file-operations.json")}
+    elif args.probe_context:
+        options = {"module_name": PROBE_CONTEXT_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-probe-context.json")}
+    elif args.probe_provider:
+        options = {"module_name": PROBE_PROVIDER_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-probe-provider.json")}
+    elif args.probe_admission:
+        options = {"module_name": PROBE_ADMISSION_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-probe-admission.json")}
+    elif args.probe_transport:
+        options = {"module_name": PROBE_TRANSPORT_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-probe-transport.json")}
     elif args.read_range:
         options = {"module_name": READ_RANGE_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-read-range.json")}
