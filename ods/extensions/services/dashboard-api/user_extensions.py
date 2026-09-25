@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 import yaml
 from config import _read_env_value
+from extension_guide import host_port, ui_path, usage_kind
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,9 @@ def scan_user_extension_services(
             port_int = _manifest_port(port)
             # Zero is the manifest's valid sentinel for no published host port.
             ext_port = _manifest_port(svc.get("external_port_default", port_int), allow_zero=True)
+            # The owner may move the published port with the extension's own
+            # port setting (for example KROKI_PORT); links must follow it.
+            ext_port = host_port(service_id, svc, _read_env_value) or ext_port
             name = str(svc.get("name") or service_id)
             public_url = _public_url(service_id, svc)
 
@@ -147,6 +151,9 @@ def scan_user_extension_services(
                 "external_port": ext_port,
                 "health": health,
                 "name": name,
+                # How the owner opens it: a web page, an API or neither.
+                "kind": usage_kind(svc, manifest.get("features")),
+                "ui_path": ui_path(svc),
                 **({"public_url": public_url} if public_url else {}),
                 **({"health_auth_env": health_auth_env} if health_auth_env is not None else {}),
                 # Optional: extensions whose health endpoint lives on a
@@ -215,7 +222,7 @@ def get_user_services_cached(
     Re-scans as soon as the extension directories change (see
     ``_scan_signature``), and otherwise when *ttl* seconds have elapsed since
     the last scan for the given directory. The TTL still bounds values the
-    scan reads from outside those directories (``public_url`` settings).
+    scan reads from outside those directories (``public_url`` and port settings).
 
     Without the signature a scan taken just before an install hid the new
     extension from the catalog health probe for the rest of the TTL, so every

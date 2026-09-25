@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-25T17:56:01Z",
+  "generated_at": "2026-09-25T19:42:30Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -46,9 +46,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 120,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/actualbudget/actual"
     },
     {
       "id": "aider",
@@ -101,6 +103,7 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": false,
       "configuration_scope": "declared-environment-keys"
     },
@@ -233,9 +236,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/apache/answer"
     },
     {
       "id": "ape",
@@ -275,6 +280,7 @@
           ]
         }
       ],
+      "ui_path": "/",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -322,9 +328,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 120,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/advplyr/audiobookshelf"
     },
     {
       "id": "audiocraft",
@@ -440,9 +448,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/pkalogiros/AudioMass"
     },
     {
       "id": "backrest",
@@ -489,9 +499,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/garethgeorge/backrest"
     },
     {
       "id": "bark",
@@ -741,9 +753,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/alam00000/bentopdf"
     },
     {
       "id": "blockbench",
@@ -791,9 +805,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/JannisX11/blockbench"
     },
     {
       "id": "bookstack",
@@ -865,9 +881,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 300,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/BookStackApp/BookStack"
     },
     {
       "id": "brave-search",
@@ -996,9 +1014,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/dgtlmoon/changedetection.io"
     },
     {
       "id": "chartdb",
@@ -1044,9 +1064,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/chartdb/chartdb"
     },
     {
       "id": "chromadb",
@@ -1137,9 +1159,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/ClickHouse/ClickHouse"
     },
     {
       "id": "cloudbeaver",
@@ -1185,9 +1209,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/dbeaver/cloudbeaver"
     },
     {
       "id": "code-server",
@@ -1240,9 +1266,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/coder/code-server"
     },
     {
       "id": "comfyui",
@@ -1288,6 +1316,7 @@
           ]
         }
       ],
+      "ui_path": "/",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -1391,9 +1420,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/C4illin/ConvertX"
     },
     {
       "id": "couchdb",
@@ -1446,9 +1477,11 @@
           }
         }
       ],
+      "ui_path": "/_utils/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/apache/couchdb"
     },
     {
       "id": "crawl4ai",
@@ -1494,9 +1527,11 @@
           }
         }
       ],
+      "ui_path": "/playground",
       "startup_check": true,
       "startup_timeout": 120,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/unclecode/crawl4ai"
     },
     {
       "id": "crewai",
@@ -1658,9 +1693,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/gchq/CyberChef"
     },
     {
       "id": "dashboard",
@@ -1681,6 +1718,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -1701,6 +1739,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -1749,9 +1788,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/simonw/datasette"
     },
     {
       "id": "distribution",
@@ -1814,9 +1855,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": false,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/distribution/distribution"
     },
     {
       "id": "docling-serve",
@@ -1862,9 +1905,11 @@
           }
         }
       ],
+      "ui_path": "/ui",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/docling-project/docling-serve"
     },
     {
       "id": "docuseal",
@@ -1918,9 +1963,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/docusealco/docuseal"
     },
     {
       "id": "dokuwiki",
@@ -1966,9 +2013,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/dokuwiki/dokuwiki"
     },
     {
       "id": "drawio",
@@ -2014,9 +2063,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 120,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/jgraph/drawio"
     },
     {
       "id": "dufs",
@@ -2072,9 +2123,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/sigoden/dufs"
     },
     {
       "id": "embeddings",
@@ -2092,6 +2145,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/info",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -2180,9 +2234,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/ether/etherpad"
     },
     {
       "id": "evidently",
@@ -2237,9 +2293,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/evidentlyai/evidently"
     },
     {
       "id": "excalidraw",
@@ -2285,9 +2343,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/excalidraw/excalidraw"
     },
     {
       "id": "filebrowser-quantum",
@@ -2349,9 +2409,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/gtsteffaniak/filebrowser"
     },
     {
       "id": "flarum",
@@ -2406,9 +2468,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 240,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/flarum/framework"
     },
     {
       "id": "flowise",
@@ -2539,10 +2603,12 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 600,
       "catalog_source": "builtin",
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/lllyasviel/Fooocus"
     },
     {
       "id": "forge",
@@ -2710,9 +2776,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/FreshRSS/FreshRSS"
     },
     {
       "id": "frigate",
@@ -2912,6 +2980,7 @@
           ]
         }
       ],
+      "ui_path": "/",
       "startup_timeout": 300,
       "configuration_scope": "declared-environment-keys"
     },
@@ -2966,9 +3035,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": false,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://git.deuxfleurs.fr/Deuxfleurs/garage"
     },
     {
       "id": "gatus",
@@ -3023,9 +3094,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/TwiN/gatus"
     },
     {
       "id": "gitea",
@@ -3109,9 +3182,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/mccutchen/go-httpbin"
     },
     {
       "id": "gotenberg",
@@ -3155,9 +3230,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/gotenberg/gotenberg"
     },
     {
       "id": "gotify",
@@ -3211,9 +3288,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/gotify/server"
     },
     {
       "id": "grafana",
@@ -3278,9 +3357,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/grafana/grafana"
     },
     {
       "id": "grist",
@@ -3340,9 +3421,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/gristlabs/grist-core"
     },
     {
       "id": "grobid",
@@ -3388,9 +3471,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/grobidOrg/grobid"
     },
     {
       "id": "grocy",
@@ -3444,9 +3529,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/grocy/grocy"
     },
     {
       "id": "healthchecks",
@@ -3511,9 +3598,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/healthchecks/healthchecks"
     },
     {
       "id": "hedgedoc",
@@ -3585,9 +3674,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/hedgedoc/hedgedoc"
     },
     {
       "id": "hermes",
@@ -3673,6 +3764,7 @@
           "auth": "cookie:dream-session"
         }
       },
+      "ui_path": "/",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -3751,6 +3843,7 @@
           ]
         }
       ],
+      "ui_path": "/auth/ods",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -3813,9 +3906,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/sysadminsmedia/homebox"
     },
     {
       "id": "homepage",
@@ -3893,9 +3988,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 120,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/gethomepage/homepage"
     },
     {
       "id": "hoppscotch",
@@ -3956,9 +4053,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 240,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/hoppscotch/hoppscotch"
     },
     {
       "id": "huginn",
@@ -4052,9 +4151,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/huginn/huginn"
     },
     {
       "id": "immich",
@@ -4170,9 +4271,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 240,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/influxdata/influxdb"
     },
     {
       "id": "invoiceshelf",
@@ -4227,9 +4330,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/InvoiceShelf/InvoiceShelf"
     },
     {
       "id": "invokeai",
@@ -4370,9 +4475,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/CorentinTh/it-tools"
     },
     {
       "id": "jaeger",
@@ -4432,9 +4539,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/jaegertracing/jaeger"
     },
     {
       "id": "jscad",
@@ -4480,9 +4589,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/jscad/OpenJSCAD.org"
     },
     {
       "id": "jsoncrack",
@@ -4529,9 +4640,11 @@
           }
         }
       ],
+      "ui_path": "/editor",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/AykutSarac/jsoncrack.com"
     },
     {
       "id": "jupyter",
@@ -4634,9 +4747,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/kanboard/kanboard"
     },
     {
       "id": "karakeep",
@@ -4723,9 +4838,11 @@
           "auth": "env:LITELLM_KEY"
         }
       },
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/karakeep-app/karakeep"
     },
     {
       "id": "kestra",
@@ -4806,9 +4923,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 240,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/kestra-io/kestra"
     },
     {
       "id": "keycloak",
@@ -4873,9 +4992,11 @@
           }
         }
       ],
+      "ui_path": "/admin/",
       "startup_check": true,
       "startup_timeout": 300,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/keycloak/keycloak"
     },
     {
       "id": "kiwix",
@@ -4922,9 +5043,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/kiwix/kiwix-tools"
     },
     {
       "id": "komga",
@@ -4970,9 +5093,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/gotson/komga"
     },
     {
       "id": "kroki",
@@ -5016,9 +5141,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/yuzutech/kroki"
     },
     {
       "id": "label-studio",
@@ -5182,6 +5309,7 @@
           ]
         }
       ],
+      "ui_path": "/",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -5227,9 +5355,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/languagetool-org/languagetool"
     },
     {
       "id": "librechat",
@@ -5412,9 +5542,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 600,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/LibreTranslate/LibreTranslate"
     },
     {
       "id": "lightrag",
@@ -5502,9 +5634,11 @@
           "auth": "env:LITELLM_KEY"
         }
       },
+      "ui_path": "/webui",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/HKUDS/LightRAG"
     },
     {
       "id": "limesurvey",
@@ -5575,9 +5709,11 @@
           }
         }
       ],
+      "ui_path": "/index.php/admin",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/LimeSurvey/LimeSurvey"
     },
     {
       "id": "linkwarden",
@@ -5672,9 +5808,11 @@
           "auth": "env:LITELLM_KEY"
         }
       },
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/linkwarden/linkwarden"
     },
     {
       "id": "listmonk",
@@ -5739,9 +5877,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/knadh/listmonk"
     },
     {
       "id": "litellm",
@@ -5781,6 +5921,8 @@
           "auth": "env:LITELLM_KEY"
         }
       },
+      "ui_path": "/ui/",
+      "external_link": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -5861,6 +6003,7 @@
           ]
         }
       ],
+      "ui_path": "/",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -5937,9 +6080,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/lldap/lldap"
     },
     {
       "id": "localai",
@@ -6105,9 +6250,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/mudler/LocalRecall"
     },
     {
       "id": "m3e-canvas",
@@ -6154,9 +6301,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/lnkiai/m3e-canvas"
     },
     {
       "id": "mailpit",
@@ -6223,9 +6372,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/axllent/mailpit"
     },
     {
       "id": "mapshaper",
@@ -6272,9 +6423,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/mbloch/mapshaper"
     },
     {
       "id": "marimo",
@@ -6329,9 +6482,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/marimo-team/marimo"
     },
     {
       "id": "meilisearch",
@@ -6385,9 +6540,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/meilisearch/meilisearch"
     },
     {
       "id": "memos",
@@ -6433,9 +6590,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/usememos/memos"
     },
     {
       "id": "mermaid-live-editor",
@@ -6481,9 +6640,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/mermaid-js/mermaid-live-editor"
     },
     {
       "id": "metabase",
@@ -6549,9 +6710,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 240,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/metabase/metabase"
     },
     {
       "id": "microbin",
@@ -6610,9 +6773,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/szabodanika/microbin"
     },
     {
       "id": "milvus",
@@ -6699,6 +6864,7 @@
           }
         }
       ],
+      "ui_path": "/",
       "configuration_scope": "declared-environment-keys"
     },
     {
@@ -6746,9 +6912,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/viliusle/miniPaint"
     },
     {
       "id": "mlflow",
@@ -6794,9 +6962,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/mlflow/mlflow"
     },
     {
       "id": "model-router",
@@ -6814,6 +6984,8 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
+      "external_link": false,
       "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -6868,9 +7040,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": false,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/eclipse-mosquitto/mosquitto"
     },
     {
       "id": "mumble",
@@ -6932,9 +7106,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": false,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/mumble-voip/mumble"
     },
     {
       "id": "n8n",
@@ -7001,6 +7177,7 @@
           ]
         }
       ],
+      "ui_path": "/",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -7054,9 +7231,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": false,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/nats-io/nats-server"
     },
     {
       "id": "navidrome",
@@ -7102,9 +7281,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 120,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/navidrome/navidrome"
     },
     {
       "id": "neo4j",
@@ -7165,9 +7346,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 240,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/neo4j/neo4j"
     },
     {
       "id": "nifi",
@@ -7241,9 +7424,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": false,
       "startup_timeout": 600,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/apache/nifi"
     },
     {
       "id": "node-red",
@@ -7306,9 +7491,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/node-red/node-red"
     },
     {
       "id": "ntfy",
@@ -7364,6 +7551,7 @@
           }
         }
       ],
+      "ui_path": "/",
       "configuration_scope": "declared-environment-keys"
     },
     {
@@ -7428,6 +7616,7 @@
           ]
         }
       ],
+      "ui_path": "/",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -7577,6 +7766,7 @@
           "auth": "webui-session"
         }
       },
+      "ui_path": "/",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -7619,6 +7809,7 @@
           "auth": "env:OPENCLAW_TOKEN"
         }
       },
+      "ui_path": "/",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -7721,9 +7912,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/OpenRefine/OpenRefine"
     },
     {
       "id": "openspeedtest",
@@ -7769,9 +7962,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/openspeedtest/Speed-Test"
     },
     {
       "id": "openwebui-pipelines",
@@ -7824,9 +8019,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/open-webui/pipelines"
     },
     {
       "id": "optuna-dashboard",
@@ -7872,9 +8069,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/optuna/optuna-dashboard"
     },
     {
       "id": "orthanc",
@@ -7931,9 +8130,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": false,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://orthanc.uclouvain.be/hg/orthanc/"
     },
     {
       "id": "owncast",
@@ -7998,9 +8199,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/owncast/owncast"
     },
     {
       "id": "pairdrop",
@@ -8046,9 +8249,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/schlagmichdoch/PairDrop"
     },
     {
       "id": "paperless-gpt",
@@ -8116,9 +8321,11 @@
           "auth": "env:LITELLM_KEY"
         }
       },
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/icereed/paperless-gpt"
     },
     {
       "id": "paperless-ngx",
@@ -8276,9 +8483,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://codeberg.org/mrmn/PdfDing"
     },
     {
       "id": "penpot",
@@ -8350,9 +8559,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 240,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/penpot/penpot"
     },
     {
       "id": "perplexica",
@@ -8391,6 +8602,7 @@
           "auth": "none"
         }
       },
+      "ui_path": "/",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -8455,9 +8667,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": false,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/pgvector/pgvector"
     },
     {
       "id": "piper-audio",
@@ -8504,6 +8718,7 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": false,
       "configuration_scope": "declared-environment-keys"
     },
@@ -8669,6 +8884,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "external_link": false,
       "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -8700,6 +8916,7 @@
       ],
       "tags": [],
       "features": [],
+      "external_link": false,
       "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -8748,9 +8965,11 @@
           }
         }
       ],
+      "ui_path": "/_/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/pocketbase/pocketbase"
     },
     {
       "id": "presenton",
@@ -8808,9 +9027,11 @@
           "auth": "env:LITELLM_KEY"
         }
       },
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/presenton/presenton"
     },
     {
       "id": "presidio",
@@ -8855,9 +9076,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/microsoft/presidio"
     },
     {
       "id": "prometheus",
@@ -8904,9 +9127,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/prometheus/prometheus"
     },
     {
       "id": "promptfoo",
@@ -8964,9 +9189,11 @@
           "auth": "env:LITELLM_KEY"
         }
       },
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/promptfoo/promptfoo"
     },
     {
       "id": "qdrant",
@@ -8984,6 +9211,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/dashboard",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -9056,9 +9284,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/rabbitmq/rabbitmq-server"
     },
     {
       "id": "radicale",
@@ -9114,9 +9344,11 @@
           }
         }
       ],
+      "ui_path": "/.web/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/Kozea/Radicale"
     },
     {
       "id": "reactive-resume",
@@ -9184,9 +9416,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 240,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/AmruthPillai/Reactive-Resume"
     },
     {
       "id": "redoc",
@@ -9232,9 +9466,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/Redocly/redoc"
     },
     {
       "id": "rembg",
@@ -9280,9 +9516,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/danielgatis/rembg"
     },
     {
       "id": "remote-provider-egress",
@@ -9326,6 +9564,8 @@
       ],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
+      "external_link": false,
       "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -9382,6 +9622,8 @@
       ],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
+      "external_link": false,
       "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -9439,9 +9681,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": false,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/restic/rest-server"
     },
     {
       "id": "rss-bridge",
@@ -9488,9 +9732,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/RSS-Bridge/rss-bridge"
     },
     {
       "id": "rvc",
@@ -9556,6 +9802,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -9618,9 +9865,11 @@
           }
         }
       ],
+      "ui_path": "/web/admin",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/drakkan/sftpgo"
     },
     {
       "id": "shiori",
@@ -9682,9 +9931,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/go-shiori/shiori"
     },
     {
       "id": "shlink",
@@ -9747,9 +9998,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/shlinkio/shlink"
     },
     {
       "id": "sillytavern",
@@ -9834,9 +10087,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/silverbulletmd/silverbullet"
     },
     {
       "id": "solr",
@@ -9893,9 +10148,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": false,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/apache/solr"
     },
     {
       "id": "speaches",
@@ -9939,9 +10196,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/speaches-ai/speaches"
     },
     {
       "id": "sqlpage",
@@ -9988,9 +10247,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/sqlpage/SQLPage"
     },
     {
       "id": "squoosh",
@@ -10037,9 +10298,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/GoogleChromeLabs/squoosh"
     },
     {
       "id": "svgedit",
@@ -10086,9 +10349,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/SVG-Edit/svgedit"
     },
     {
       "id": "swagger-editor",
@@ -10135,9 +10400,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/swagger-api/swagger-editor"
     },
     {
       "id": "swagger-ui",
@@ -10183,9 +10450,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/swagger-api/swagger-ui"
     },
     {
       "id": "syncthing",
@@ -10245,9 +10514,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/syncthing/syncthing"
     },
     {
       "id": "tailscale",
@@ -10361,9 +10632,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/temporalio/cli"
     },
     {
       "id": "text-generation-webui",
@@ -10504,9 +10777,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/MengTo/threeui"
     },
     {
       "id": "tika",
@@ -10550,9 +10825,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/apache/tika"
     },
     {
       "id": "token-spy",
@@ -10583,6 +10860,7 @@
           "auth": "env:TOKEN_SPY_API_KEY"
         }
       },
+      "ui_path": "/dashboard",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -10645,9 +10923,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/traccar/traccar"
     },
     {
       "id": "trilium",
@@ -10693,9 +10973,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/TriliumNext/Trilium"
     },
     {
       "id": "tts",
@@ -10713,6 +10995,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/docs",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -10765,9 +11048,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/typesense/typesense"
     },
     {
       "id": "umami",
@@ -10842,9 +11127,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/umami-software/umami"
     },
     {
       "id": "uptime-kuma",
@@ -10890,9 +11177,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/louislam/uptime-kuma"
     },
     {
       "id": "valkey",
@@ -10945,9 +11234,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": false,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/valkey-io/valkey"
     },
     {
       "id": "vaultwarden",
@@ -11002,9 +11293,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/dani-garcia/vaultwarden"
     },
     {
       "id": "verdaccio",
@@ -11059,9 +11352,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/verdaccio/verdaccio"
     },
     {
       "id": "vikunja",
@@ -11127,9 +11422,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/go-vikunja/vikunja"
     },
     {
       "id": "wakapi",
@@ -11189,9 +11486,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/muety/wakapi"
     },
     {
       "id": "wallabag",
@@ -11258,9 +11557,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 180,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/wallabag/wallabag"
     },
     {
       "id": "wallos",
@@ -11314,9 +11615,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/ellite/Wallos"
     },
     {
       "id": "weaviate",
@@ -11473,9 +11776,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 600,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/WeblateOrg/weblate"
     },
     {
       "id": "whisper",
@@ -11521,6 +11826,7 @@
           ]
         }
       ],
+      "ui_path": "/",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -11577,9 +11883,11 @@
           }
         }
       ],
+      "ui_path": "/",
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/requarks/wiki"
     },
     {
       "id": "wiremock",
@@ -11624,9 +11932,11 @@
           }
         }
       ],
+      "external_link": false,
       "startup_check": true,
       "startup_timeout": 90,
-      "configuration_scope": "declared-environment-keys"
+      "configuration_scope": "declared-environment-keys",
+      "docs_url": "https://github.com/wiremock/wiremock"
     },
     {
       "id": "xtts",
