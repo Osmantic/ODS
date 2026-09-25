@@ -7,6 +7,9 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
   backup-space:
     runs-on: ${{ matrix.os }}

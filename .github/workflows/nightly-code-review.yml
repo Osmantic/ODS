@@ -22,11 +22,17 @@ concurrency:
   group: nightly-code-review
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   preflight:
     name: Pre-flight Checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       has_changes: ${{ steps.detect.outputs.has_changes }}
       skip: ${{ steps.dedup.outputs.skip }}
