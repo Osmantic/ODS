@@ -168,7 +168,7 @@ test('search-and-read is directly offered with its static schema and public-only
     readPage: async (url) => {
       reads.push(url);
       return {ok: true, status: 200, finalUrl: url, contentType: 'text/plain',
-        text: ['Navigation', 'Board power 250 W', ''].join('\n'), truncated: false};
+        text: ['Navigation', 'Reference board power 250 W, 12 GB GDDR7 memory', ''].join('\n'), truncated: false};
     },
   });
   const direct = run([searchRead]).tools.find(t => t.name === searchRead.name);
@@ -177,7 +177,7 @@ test('search-and-read is directly offered with its static schema and public-only
   const result = await direct.execute('search-read', {query: 'board power'});
   assert.deepEqual(reads, ['https://docs.example.org/specs']);
   assert.equal(result.details.receipts, 1);
-  assert.match(result.content[0].text, /Board power 250 W/);
+  assert.match(result.content[0].text, /Reference board power 250 W/);
   assert.equal((await direct.execute('private', {urls: ['http://127.0.0.1/specs']})).isError, true);
   assert.deepEqual(reads, ['https://docs.example.org/specs'], 'native exposure cannot bypass public URL validation');
   const filtered = filterByPolicy([searchRead, tool('web_fetch')], {deny: ['pixel_ods_search_read']});
