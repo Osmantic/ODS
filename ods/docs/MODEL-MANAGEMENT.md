@@ -135,6 +135,29 @@ revalidates its ownership and can restore/requalify the gateway contract.
 Configuration changes during proof, missing evidence, or a crash halfway
 through inference changes leave recovery pending and require explicit repair.
 
+If a late failure's rollback cannot read native status because the relay's
+docker CLI calls time out on an overloaded host, the host still restores its
+own previous files and runtime, proves the previous model, and then asks the
+coordinator to finish the rollback. Status reads (never mutations) are retried
+briefly. If the coordinator still cannot be reached, the journal keeps a
+`rolling-back` receipt with the restored configuration hashes, so **Recover
+model switch** can finish it later. Recovery can also commit an applied target
+when the native hold, host configuration, and live inference all prove that
+target.
+
+When recovery cannot prove either outcome, for example when an interrupted
+switch left the new model loaded while the coordinator still holds the previous
+contract, the model menu offers **Restore <previous model>**. That owner action
+(`POST /api/models/recovery/restore` with only the pending `transactionId`)
+first runs normal recovery. If that does not resolve the switch, it confirms
+that the same transaction still owns the native hold. It then reloads the
+journal's own previous model and context through the normal activation path,
+without starting a new transaction, and finishes the hold as a rollback only
+after the previous model, context, and every consumer are proved. The caller
+cannot choose the model or context. A failure leaves the switch pending, and the
+owner can retry. Remote-route contracts and previous models that are no longer
+installed are not offered a restore.
+
 An ODS-managed Pixel route supports OpenClaw's 4096-token minimum. Below 16K it
 uses a deliberately constrained adaptive prompt, so complex-task reliability
 still depends on the selected model and available context, but the route is not

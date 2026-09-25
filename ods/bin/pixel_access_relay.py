@@ -132,6 +132,16 @@ def request_runtime_access(operation, request=None, *, config):
                                        path='/v1/access-mode', timeout=310 if operation == 'change' else 22)
 
 
+# Resolving the Edge container is a read-only docker CLI call made before any
+# request is dispatched. Access-mode polls keep a short deadline. A model
+# lifecycle call (status, begin, apply, finish) is rare and decides whether a
+# rollback can prove its hold, so its single inspect gets the same 60-second
+# budget as the host's other read-only docker calls on the activation path:
+# at load ~198 a 5-second inspect timed out although Edge was healthy.
+_EDGE_INSPECT_TIMEOUT_SECONDS = 5
+_MODEL_CONTROL_EDGE_INSPECT_TIMEOUT_SECONDS = 60
+
+
 def _request_runtime_controller(request, *, config, path, timeout):
     key = config.get('DASHBOARD_API_KEY', '')
     if (not isinstance(key, str) or not re.fullmatch(r'[!-~]{32,4096}', key)
@@ -140,10 +150,12 @@ def _request_runtime_controller(request, *, config, path, timeout):
     options = {'stdout': subprocess.PIPE, 'stderr': subprocess.DEVNULL, 'check': True}
     if platform.system() == 'Windows':
         options['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    inspect_timeout = (_MODEL_CONTROL_EDGE_INSPECT_TIMEOUT_SECONDS if path == '/v1/model-control'
+                       else _EDGE_INSPECT_TIMEOUT_SECONDS)
     try:
         inspected = subprocess.run(['docker', 'inspect', 'ods-pixel-edge', '--format',
             '{{.Id}} {{.State.Running}} {{index .Config.Labels "com.docker.compose.service"}}'],
-            timeout=5, **options).stdout.decode().strip().split()
+            timeout=inspect_timeout, **options).stdout.decode().strip().split()
         if (len(inspected) != 3 or not re.fullmatch('[a-f0-9]{64}', inspected[0])
                 or inspected[1:] != ['true', 'pixel-edge']):
             raise AccessRelayError('agent-access-runtime-unavailable')

@@ -2109,15 +2109,31 @@ def _model_recovery_projection(value):
     result = {'pending': value['pending'], 'phase': value['phase'], 'transactionId': transaction}
     if value.get('outcome') in ('commit', 'rollback') and value['phase'] == 'completed':
         result['outcome'] = value['outcome']
-    if value.get('reason') in ('model-recovery-proof-required', 'model-recovery-unavailable'):
+    if value.get('reason') in ('model-recovery-proof-required', 'model-recovery-unavailable',
+                               'model-restore-unavailable', 'model-restore-failed'):
         result['reason'] = value['reason']
+    restore = value.get('restore')
+    # The owner-visible restore names only the journal's own previous model
+    # identity and context; anything else is not projected.
+    if (value['pending'] and transaction is not None and type(restore) is dict
+            and set(restore) == {'model', 'contextLength'}
+            and type(restore['model']) is str
+            and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}', restore['model'])
+            and type(restore['contextLength']) is int and 4096 <= restore['contextLength'] <= 10000000):
+        result['restore'] = {'model': restore['model'], 'contextLength': restore['contextLength']}
+    detail = value.get('detail')
+    if value.get('reason') == 'model-restore-failed' and type(detail) is str:
+        result['detail'] = ' '.join(detail.split())[:300]
     return result
 
 
-def _model_recovery_request(method):
+def _model_recovery_request(method, path=None, payload=None, timeout=None):
+    if path is None:
+        path = '/v1/model/recovery' if method == 'GET' else '/v1/model/recover'
+        payload = None if method == 'GET' else {}
+        timeout = 5 if method == 'GET' else 400
     try:
-        value = request_agent_json(method, '/v1/model/recovery' if method == 'GET' else '/v1/model/recover',
-                                   payload=None if method == 'GET' else {}, timeout=5 if method == 'GET' else 400)
+        value = request_agent_json(method, path, payload=payload, timeout=timeout)
         return _model_recovery_projection(value)
     except AgentHTTPError as exc:
         if exc.status_code in (409, 503):
@@ -2142,6 +2158,26 @@ def recover_model_switch(body: dict | None = Body(default=None), api_key: str = 
     if body != {}:
         raise HTTPException(status_code=400, detail='Recovery accepts an empty request only.')
     value = _model_recovery_request('POST')
+    return value if isinstance(value, JSONResponse) else JSONResponse(value, headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/api/models/recovery/restore')
+def restore_previous_model(body: dict | None = Body(default=None), api_key: str = Depends(verify_api_key)):
+    """Reload the pending switch's own previous model, then release the switch.
+
+    The body names only the pending transaction the owner saw. The host picks
+    the model and context from that transaction's journal, proves it still
+    owns the native hold, and leaves the switch pending on any failure.
+    """
+    if (type(body) is not dict or set(body) != {'transactionId'} or type(body['transactionId']) is not str
+            or re.fullmatch('[a-f0-9]{64}', body['transactionId']) is None):
+        raise HTTPException(status_code=400, detail='Restore accepts only the pending transaction ID.')
+    try:
+        value = _model_recovery_request('POST', '/v1/model/recover/restore-previous',
+                                        {'transactionId': body['transactionId']}, 2700)
+    finally:
+        # The restore reloads inference; drop any status cached while it ran.
+        _invalidate_agent_model_status_cache()
     return value if isinstance(value, JSONResponse) else JSONResponse(value, headers={'Cache-Control': 'no-store'})
 
 

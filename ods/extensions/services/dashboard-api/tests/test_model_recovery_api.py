@@ -70,3 +70,47 @@ def test_timeout_is_unconfirmed_not_retried(client,monkeypatch):
     result=client.post('/api/models/recovery',headers={'Authorization':'Bearer test-key-12345'},json={})
     assert result.status_code==503 and 'private detail' not in result.text
     assert call.call_count==1
+
+
+RESTORE={'model':'qwen3-coder-next-Q4_K_M.gguf','contextLength':131072}
+
+
+def test_restore_offer_is_projected_only_when_exact_and_pending(client,monkeypatch):
+    headers={'Authorization':'Bearer test-key-12345'}
+    monkeypatch.setattr(models,'request_agent_json',Mock(return_value={**PENDING,'restore':{**RESTORE}}))
+    assert client.get('/api/models/recovery',headers=headers).json()=={**PENDING,'restore':RESTORE}
+    for restore in ({**RESTORE,'path':'/models/x'},{**RESTORE,'model':'x\n'},{**RESTORE,'contextLength':True},
+                    {**RESTORE,'contextLength':2048},'qwen'):
+        monkeypatch.setattr(models,'request_agent_json',Mock(return_value={**PENDING,'restore':restore}))
+        assert client.get('/api/models/recovery',headers=headers).json()==PENDING
+    monkeypatch.setattr(models,'request_agent_json',Mock(return_value={**DONE,'restore':RESTORE}))
+    assert client.get('/api/models/recovery',headers=headers).json()==DONE
+
+
+def test_restore_requires_owner_auth_and_only_the_pending_transaction(client,monkeypatch):
+    call=Mock(return_value={**DONE,'outcome':'rollback'})
+    monkeypatch.setattr(models,'request_agent_json',call)
+    assert client.post('/api/models/recovery/restore',json={'transactionId':'a'*64}).status_code==401
+    headers={'Authorization':'Bearer test-key-12345'}
+    for body in ({},{'transactionId':'A'*64},{'transactionId':'a'*64,'model':'other'},
+                 {'model_id':'qwen'},{'transactionId':'a'*64,'contextLength':4096},None):
+        assert client.post('/api/models/recovery/restore',headers=headers,json=body).status_code==400,body
+    call.assert_not_called()
+    result=client.post('/api/models/recovery/restore',headers=headers,json={'transactionId':'a'*64})
+    assert result.status_code==200 and result.json()=={**DONE,'outcome':'rollback'}
+    call.assert_called_once_with('POST','/v1/model/recover/restore-previous',
+                                 payload={'transactionId':'a'*64},timeout=2700)
+
+
+def test_failed_restore_stays_pending_with_bounded_detail_and_retry_offer(client,monkeypatch):
+    payload={**PENDING,'reason':'model-restore-failed','detail':'Model activation failed:\n'+'x'*400,
+             'restore':RESTORE,'private':'hidden'}
+    call=Mock(side_effect=AgentHTTPError(409,'restore failed',json.dumps(payload)))
+    monkeypatch.setattr(models,'request_agent_json',call)
+    result=client.post('/api/models/recovery/restore',headers={'Authorization':'Bearer test-key-12345'},
+                       json={'transactionId':'a'*64})
+    assert result.status_code==409
+    body=result.json()
+    assert body['reason']=='model-restore-failed' and body['restore']==RESTORE and 'private' not in body
+    assert len(body['detail'])==300 and '\n' not in body['detail']
+    assert call.call_count==1
