@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
+import {createPreviewDocumentLeases} from '../plugin/preview-document-leases.mjs';
 
 // Exercise the actual registration callbacks without importing the installed
 // OpenClaw SDK. This is a source composition fixture, not gateway qualification.
@@ -34,6 +35,7 @@ function hooks(guardResult, managedRuntime = false) {
       finish: () => activity.push('finish'),
     },
     goalProgress: {before() {}, update() {}, finish() {}},
+    previewDocumentLeases: createPreviewDocumentLeases(),
     bundleAdmission, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, AGENT_ID: 'pixel',
   });
   return {callbacks, calls, runtime, activity, bundleAdmission};
@@ -90,15 +92,15 @@ test('result observations and internal proof behavior remain composed', async ()
 });
 
 for (const managed of [false, true]) {
-  test(`agent activity ends without duplicate managed admission/cleanup (managed=${managed})`, () => {
+  test(`agent activity ends without duplicate managed admission/cleanup (managed=${managed})`, async () => {
     const {callbacks, calls, activity} = hooks(undefined, managed);
     assert.equal(typeof callbacks.before_agent_run, managed ? 'undefined' : 'function');
     callbacks.before_agent_run?.(event, context);
-    callbacks.agent_end(event, context);
+    await callbacks.agent_end(event, context);
     assert.deepEqual(calls, managed ? [] : ['run-admit', 'run-finish']);
     assert.deepEqual(activity, ['finish']);
     activity.length = 0;
-    callbacks.agent_end(event, {...context, runId: 'private-proof'});
+    await callbacks.agent_end(event, {...context, runId: 'private-proof'});
     assert.deepEqual(activity, [], 'private proofs must not create workbench activity');
   });
 }

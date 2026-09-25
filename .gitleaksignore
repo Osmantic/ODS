@@ -129,3 +129,5 @@ dd97e51445ea4d01fd6f291ce384e46988d1d584:resources/dev/extensions-library/servic
 8419eeb051615046f7129013e95551763a3c01b2:ods/vendor/pixel/tests/test_ops_broker.py:curl-auth-header:177
 8419eeb051615046f7129013e95551763a3c01b2:ods/vendor/pixel/tests/test_source_audit.py:generic-api-key:178
 e31fc3e4ccaedb327ce52c34b0a8eb8815b6d5a0:ods/extensions/services/dashboard-api/routers/extension_planning.py:generic-api-key:40
+# Synthetic probe fixture: literal UUID plus repeated a/b characters, never a credential.
+150dde5caf44cc7b85f79413757dfc466521cc10:ods/extensions/services/pixel-model-relay/tests/test_relay.py:generic-api-key:38
