@@ -22,6 +22,8 @@ import { createCompletionAssurance } from "./completion-assurance.mjs";
 import { createExtensionCompletionGate } from "./extension-completion-gate.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
 import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLaneStopReason, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
+import { composeProgressFinalization, createProgressFinalization, PROGRESS_FINALIZATION_INSTRUCTION } from "./progress-finalization.mjs";
+import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
@@ -6792,6 +6794,7 @@ export function createToolLoopGuard({
         extensionReadOnlyRecovery: {statusCalls:0, completedStatusCalls:0, otherToolSeen:false},
         extensionDecisionRecovery: {prepareCalls:0, unsafeToolSeen:false, gateRevisionRequested:false},
         progressBudget: createRunProgressBudget(),
+        progressFinalization: createProgressFinalization(),
         progressAbortAttempted: false,
         search: 0,
         fetch: 0,
@@ -6982,15 +6985,42 @@ export function createToolLoopGuard({
     }
   }
 
+  // After the budget stops a response, ordinary research, coding and visual
+  // work gets one tool-free answer turn (progress-finalization.mjs). Receipt-
+  // based work (Operations, exact downloads, managed extension requests, team
+  // coordination) keeps the strict stop text: a model summary must not stand
+  // in for those host receipts.
+  function progressFinalization(state) {
+    const finalization = state.progressFinalization;
+    if (state.progressBudget.exhausted) {
+      finalization.arm(!state.clientCancelled && !state.recursiveDeleteDenied &&
+        !state.unrequestedOperationsAborted && !state.webLoopAborted && !state.ownerQuestions &&
+        !state.operationsRequired && !state.exactDownloadRequested && !state.extensionCompletionGate?.active &&
+        !state.extensionPendingHandoff && !state.managedTeamCoordinator);
+    }
+    return finalization;
+  }
+
+  // Session history can contain an unrelated publication. Preserve it for
+  // current preview work, but do not attach it to a later research failure.
+  function progressStopPreview(state) {
+    return state.workspacePreview ?? (state.workspacePreviewRequired &&
+      !state.workspacePreviewForbidden ? state.workspaceLastVerifiedPreview : undefined);
+  }
+
   function stopExhaustedRun(state, runId) {
     if (!state?.progressBudget.exhausted || state.progressAbortAttempted) return;
     const sessionId = state.currentSessionId;
     if (!sessionId || sessionRuns.get(sessionId) !== runId) return;
     try { execControl?.signal?.(runId); }
     catch (error) { warn(`Pixel progress-limit execution signal failed: ${String(error)}`); }
+    // Tools stay blocked while the single finalization answer turn is pending;
+    // its tool boundary or the next model end performs this abort instead.
+    if (progressFinalization(state).abortDeferred) return;
     // Do not clear the session or its history. Abort only its active harness
     // run; deliveryVerificationForRun retains the host-authoritative artifacts.
-    // Only called at model_call_ended. Aborting from model-start/stream
+    // Called at model_call_ended, or at a finalization-turn tool boundary after
+    // that provider stream completed. Aborting from model-start/stream
     // construction can strand the provider prompt and its session write lock.
     // Tool hooks enforce the terminal budget while this boundary is pending.
     let observed = false;
@@ -7050,6 +7080,17 @@ export function createToolLoopGuard({
       if (!workspaceRevalidationCandidate(selected?.name, selected?.params)) {
         state.previewRevalidationCandidate = undefined;
       }
+    }
+    // Every tool stays blocked after the budget stops the response. Until the
+    // model has seen the finalization instruction, the refusal carries it; a
+    // tool call during the answer turn forfeits that turn and ends the run at
+    // this boundary (the provider stream has already completed).
+    if (state?.progressBudget.exhausted && progressFinalization(state).phase !== 'unavailable') {
+      if (state.progressFinalization.toolBoundary() === 'instruct') {
+        return {block:true, blockReason:PROGRESS_FINALIZATION_INSTRUCTION};
+      }
+      stopExhaustedRun(state, runId);
+      return {block:true, blockReason:RUN_PROGRESS_STOP_REASON};
     }
     const malformedPath = malformedRelativeWorkspacePath(toolName, normalizedParams ?? event?.params,
       state?.configuredWorkspaceRoot, state?.playgroundOwnerIntent);
@@ -9174,6 +9215,7 @@ export function createToolLoopGuard({
     }
     state.operationsPromptRound += 1;
     state.progressBudget.beginModelRound();
+    if (state.progressBudget.exhausted) progressFinalization(state).modelCallStarted();
   }
 
   function observeModelEnd(_event, context, agentId = "pixel") {
@@ -10516,6 +10558,9 @@ export function createToolLoopGuard({
       state.progressBudget.observeResult({callId: toolCallId, tool: message.toolName,
         failed: true, lane:progressLane});
     }
+    // Transcript copy only: OpenClaw applies tool_result_persist to the saved
+    // session, not to the live context of this run. The finalization
+    // instruction therefore travels as a before_tool_call refusal.
     if (state?.progressBudget.exhausted) {
       return {message: {...message, content: [{type: 'text', text: RUN_PROGRESS_STOP_REASON}]}};
     }
@@ -10911,7 +10956,24 @@ export function createToolLoopGuard({
       state.ownerQuestions=choiceQuestionFromText(event?.lastAssistantMessage);
     }
     if (state?.ownerQuestions) return {action:'finalize', reason:'Waiting for the owner clarification answer.'};
+    if (state?.progressBudget.exhausted && !state.clientCancelled && !state.recursiveDeleteDenied && !state.webLoopAborted) {
+      // The answer turn's final text is captured once and never revised here:
+      // no further model pass is requested after the budget stopped the run.
+      const preview = progressStopPreview(state);
+      progressFinalization(state).accept(event?.lastAssistantMessage, {
+        localUrlsForbidden: Boolean(state.workspacePreviewRequired || state.workspacePreviewAttempted),
+        allowedUrls: preview?.url ? [preview.url] : [],
+      });
+    }
     if (state?.recursiveDeleteDenied || state?.progressBudget.exhausted || state?.clientCancelled || state?.webLoopAborted) return undefined;
+    // A silent sentinel is never an answer to an owner-authored chat message.
+    // One revision pass; the harness still refuses it after side effects.
+    if (state?.ownerIntentObserved && !state.managedTeamWorker && !state.silentOwnerReplyRetried &&
+        ownerInteractiveTurn(context, agentId) && silentReplyText(event?.lastAssistantMessage)) {
+      state.silentOwnerReplyRetried = true;
+      return {action: 'revise', reason: OWNER_VISIBLE_REPLY_REASON, retry: {
+        instruction: OWNER_VISIBLE_REPLY_INSTRUCTION, idempotencyKey: 'ods-owner-visible-reply', maxAttempts: 1}};
+    }
     const extensionStopped = state?.progressBudget.laneExhausted('extension');
     const workspaceStopped = state?.progressBudget.laneExhausted('workspace');
     const continuation =
@@ -11292,13 +11354,21 @@ export function createToolLoopGuard({
       return {status:state.completionAssurance.terminalStatus, text:state.completionAssurance.terminal};
     }
     if (state?.progressBudget.exhausted) {
-      // Session history can contain an unrelated publication. Preserve it for
-      // current preview work, but do not attach it to a later research failure.
-      const preview = state.workspacePreview ?? (state.workspacePreviewRequired &&
-        !state.workspacePreviewForbidden ? state.workspaceLastVerifiedPreview : undefined);
+      const preview = progressStopPreview(state);
+      const receipt = preview ? {preview: {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', ...preview}} : {};
+      // The request is still incomplete ('failed'); only the finalization
+      // turn's validated answer replaces the canned stop text, followed by
+      // host facts that the model cannot alter.
+      const answer = !state.clientCancelled ? state.progressFinalization.answer : undefined;
+      if (answer) {
+        return {status: 'failed', text: composeProgressFinalization(answer, {preview,
+          previewExpected: Boolean(state.workspacePreviewRequired && !state.workspacePreviewForbidden),
+          verificationStatus: state.latestVerificationStatus,
+          unverifiedLinks: state.completionAssurance.unverifiedCitations(answer)}), ...receipt};
+      }
       return {status: 'failed', text: RUN_PROGRESS_STOP_REASON + (preview
         ? `\n\n[Open last published preview](${preview.url})\n\nThis is the last verified publication, not proof that all requested work completed.` : ''),
-        ...(preview ? {preview: {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', ...preview}} : {})};
+        ...receipt};
     }
     // An acknowledged harness abort can end the model without a final token.
     // Preserve existing artifact/evidence delivery; for an otherwise empty
