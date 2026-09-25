@@ -65,5 +65,35 @@ else
     fail "ods-cli config validate should run validate-manifests.sh through active Bash"
 fi
 
+extract_function() {
+    sed -n "/^${1}() {/,/^}/p" "$ROOT_DIR/installers/macos/install-macos.sh"
+}
+
+eval "$(extract_function _ods_bash_matches_host_arch)"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+cat > "$TMP_DIR/bash-arm64" <<'EOF'
+#!/bin/sh
+printf 'arm64\n'
+EOF
+cat > "$TMP_DIR/bash-x86_64" <<'EOF'
+#!/bin/sh
+printf 'x86_64\n'
+EOF
+chmod +x "$TMP_DIR/bash-arm64" "$TMP_DIR/bash-x86_64"
+
+if _ods_bash_matches_host_arch "$TMP_DIR/bash-arm64" arm64 \
+    && ! _ods_bash_matches_host_arch "$TMP_DIR/bash-x86_64" arm64; then
+    pass "macOS bootstrap rejects a Rosetta Bash on an arm64 host"
+else
+    fail "macOS bootstrap must compare candidate and host architectures"
+fi
+
+if grep -q 'if _ods_bash_is_compatible "$candidate"' "$ROOT_DIR/installers/macos/install-macos.sh"; then
+    pass "macOS bootstrap gates candidate re-exec on architecture compatibility"
+else
+    fail "macOS bootstrap candidate loop bypasses architecture compatibility"
+fi
+
 echo "Result: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

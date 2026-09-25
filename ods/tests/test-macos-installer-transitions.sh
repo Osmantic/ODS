@@ -382,8 +382,8 @@ bootstrap_dry_line="$(grep -n '\[ "\$_ods_bootstrap_dry_run" = true \]' "$INSTAL
 brew_install_line="$(grep -n '^  brew install bash' "$INSTALLER" | head -1 | cut -d: -f1)"
 [[ -n "$bootstrap_dry_line" && -n "$brew_install_line" && "$bootstrap_dry_line" -lt "$brew_install_line" ]] \
     || fail "Bash bootstrap can mutate the host before honoring --dry-run"
-[[ "$(grep -Fc 'if _ods_bash_is_modern "$candidate"; then' "$INSTALLER")" -eq 2 ]] \
-    || fail "Bash bootstrap can hand off to an unsupported shell and recurse"
+[[ "$(grep -Fc 'if _ods_bash_is_compatible "$candidate"; then' "$INSTALLER")" -eq 2 ]] \
+    || fail "Bash bootstrap can hand off to an unsupported or translated shell"
 pass "cloud health fails closed and dry-run skips host-agent mutation"
 
 echo "[OK] macOS installer transition contracts hold"

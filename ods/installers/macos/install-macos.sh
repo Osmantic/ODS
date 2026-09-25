@@ -34,6 +34,18 @@ _ods_bash_is_modern() {
   "$1" -c '[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]' >/dev/null 2>&1
 }
 
+_ods_bash_matches_host_arch() {
+  local host_arch candidate_arch
+  [ -x "$1" ] || return 1
+  host_arch="${2:-$(uname -m)}"
+  candidate_arch="$("$1" -c 'uname -m' 2>/dev/null)" || return 1
+  [ "$candidate_arch" = "$host_arch" ]
+}
+
+_ods_bash_is_compatible() {
+  _ods_bash_is_modern "$1" && _ods_bash_matches_host_arch "$1"
+}
+
 # Guard: macOS ships Bash 3.2 (GPL). ods-cli and our libs need Bash 4+.
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
   # Default candidate paths cover standard Apple Silicon and Intel Homebrew
@@ -45,7 +57,7 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     [ -n "$brew_prefix" ] && candidates=("$brew_prefix/bin/bash" "${candidates[@]}")
   fi
   for candidate in "${candidates[@]}"; do
-    if _ods_bash_is_modern "$candidate"; then
+    if _ods_bash_is_compatible "$candidate"; then
       exec "$candidate" "$0" "$@"
     fi
   done
@@ -75,11 +87,11 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
   echo "Installing Bash 4+ via Homebrew (one-time setup)..."
   brew install bash || { echo "brew install bash failed" >&2; exit 1; }
   brew_prefix="$(brew --prefix 2>/dev/null)"
-  if [ -n "$brew_prefix" ] && _ods_bash_is_modern "$brew_prefix/bin/bash"; then
+  if [ -n "$brew_prefix" ] && _ods_bash_is_compatible "$brew_prefix/bin/bash"; then
     exec "$brew_prefix/bin/bash" "$0" "$@"
   fi
   for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
-    if _ods_bash_is_modern "$candidate"; then
+    if _ods_bash_is_compatible "$candidate"; then
       exec "$candidate" "$0" "$@"
     fi
   done
