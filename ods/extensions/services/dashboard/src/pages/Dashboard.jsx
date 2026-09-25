@@ -610,7 +610,6 @@ function buildChartPoints(values, maxValue) {
 export default function Dashboard({ status, loading, compact = false }) {
   const [featuresData, setFeaturesData] = useState(null)
   const [serviceResources, setServiceResources] = useState(null)
-
   useEffect(() => {
     let mounted = true
 
@@ -1279,6 +1278,13 @@ const MetricCard = memo(function MetricCard({ icon: Icon, label, value, subvalue
 })
 
 const ServicesPanel = memo(function ServicesPanel({ services }) {
+  const mountedRef = useRef(true)
+  const restartTimersRef = useRef(new Set())
+  useEffect(() => () => {
+    mountedRef.current = false
+    restartTimersRef.current.forEach(timer => window.clearTimeout(timer))
+    restartTimersRef.current.clear()
+  }, [])
   const [activeTab, setActiveTab] = useState('all')
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState(false)
@@ -1404,20 +1410,26 @@ const ServicesPanel = memo(function ServicesPanel({ services }) {
                 onToggleMenu={() => setOpenMenuId(current => current === service.id ? null : service.id)}
                 onRestart={async () => {
                   setOpenMenuId(null)
+                  if (!mountedRef.current) return
                   setActionState(current => ({ ...current, [service.id]: { type: 'loading', text: 'Restarting...' } }))
                   try {
                     const res = await fetch(`/api/services/${encodeURIComponent(service.id)}/restart`, { method: 'POST' })
                     const data = await res.json().catch(() => ({}))
                     if (!res.ok) throw new Error(data.detail || data.error || 'Restart failed')
+                    if (!mountedRef.current) return
                     setActionState(current => ({ ...current, [service.id]: { type: 'success', text: 'Restarted' } }))
-                    window.setTimeout(() => {
+                    const timer = window.setTimeout(() => {
+                      restartTimersRef.current.delete(timer)
+                      if (!mountedRef.current) return
                       setActionState(current => {
                         const next = { ...current }
                         delete next[service.id]
                         return next
                       })
                     }, 3500)
+                    restartTimersRef.current.add(timer)
                   } catch (error) {
+                    if (!mountedRef.current) return
                     setActionState(current => ({
                       ...current,
                       [service.id]: { type: 'error', text: error?.message || 'Restart failed' },
