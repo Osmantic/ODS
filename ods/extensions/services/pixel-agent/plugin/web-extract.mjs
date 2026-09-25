@@ -4,6 +4,7 @@
 // untrusted-content boundary around the returned evidence.
 
 import { randomBytes } from "node:crypto";
+import { structuredDataBlock, withStructuredData } from "./structured-data.mjs";
 import { isIP } from "node:net";
 
 const MAX_QUERY_CHARS = 200;
@@ -465,6 +466,9 @@ export function createPublicPageReader({
           if (botChallenge({ headers: response.headers, status: response.status, html: body.text, text })) {
             return { ok: false, reason: "challenge", status: response.status, finalUrl, requests: attempt };
           }
+          // Schema.org event and offer data from the markup, before the
+          // visible text and after the challenge check (structured-data.mjs).
+          text = withStructuredData(text, structuredDataBlock(body.text, { baseUrl: finalUrl }));
         }
         return { ok: true, status: response.status, finalUrl, contentType, text, truncated: body.truncated,
           requests: attempt };
