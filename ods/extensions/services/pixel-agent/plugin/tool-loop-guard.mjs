@@ -25,6 +25,8 @@ import { SEARCH_PACING_STREAK, SEARCH_PACING_REASON, searchTerms, nearDuplicateS
 import { createCompletionAssurance } from "./completion-assurance.mjs";
 import { researchRequestProblem } from "./perplexica-research.mjs";
 import { HOST_CITATION_LIMITS } from './citation-verification.mjs';
+import { SEARCH_READ_TOOL, SEARCH_READ_BOUNDARY, SEARCH_READ_SCHEMA_HINT, validateSearchReadParams,
+  searchReadCost } from './search-read.mjs';
 import { createExtensionCompletionGate } from "./extension-completion-gate.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
 import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLaneStopReason, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
@@ -74,7 +76,7 @@ const MAX_DERIVED_JSON_DEPTH = 4;
 // validated no-work rejection; no generic exec or workspace mutation qualifies.
 const EXTENSION_DECISION_READ_TOOLS = new Set([
   'pixel_ods_extension_request_status', 'web_fetch', 'web_search',
-  'pixel_ods_web_extract', 'pixel_ods_research', 'read', 'memory_search', 'memory_get',
+  'pixel_ods_web_extract', 'pixel_ods_search_read', 'pixel_ods_research', 'read', 'memory_search', 'memory_get',
 ]);
 const EXTENSION_REQUEST_TOOLS = new Set([
   'pixel_ods_extensions', 'pixel_ods_extension_request_status',
@@ -93,10 +95,16 @@ export const WEB_BUDGET_EXHAUSTED_REASON =
   "Pixel's web-research budget is exhausted for this response. Do not call web tools again. Finish using the evidence already collected and any otherwise-authorized tools, including saving the requested report. Preserve existing evidence and clearly state any missing external information.";
 
 export const WEB_SEARCH_BUDGET_EXHAUSTED_REASON =
-  "Pixel's search-call allowance is exhausted for this response. Do not repeat web_search or pixel_ods_research. Use web_fetch or targeted extraction for already identified public sources within the remaining page-reading and total allowances, or finish using collected evidence and otherwise-authorized tools, including saving the requested report.";
+  "Pixel's search-call allowance is exhausted for this response. Do not repeat web_search or pixel_ods_research, or pixel_ods_search_read with a query. Use web_fetch, targeted extraction or pixel_ods_search_read with urls for already identified public sources within the remaining page-reading and total allowances, or finish using collected evidence and otherwise-authorized tools, including saving the requested report.";
 
 export const WEB_FETCH_BUDGET_EXHAUSTED_REASON =
-  "Pixel's page-reading allowance is exhausted for this response. Do not repeat web_fetch, pixel_ods_web_extract or pixel_ods_research. Search may continue within its remaining search and total allowances. Finish using collected evidence and otherwise-authorized tools, including saving the requested report; do not claim unread pages were verified.";
+  "Pixel's page-reading allowance is exhausted for this response. Do not repeat web_fetch, pixel_ods_web_extract, pixel_ods_search_read or pixel_ods_research. Search may continue within its remaining search and total allowances. Finish using collected evidence and otherwise-authorized tools, including saving the requested report; do not claim unread pages were verified.";
+
+// pixel_ods_search_read leaves a few page reads for the host's check of cited
+// pages at finalization (citation-verification.mjs), which reads nothing when
+// fewer reads remain than it has candidates.
+export const SEARCH_READ_RESERVE_REASON =
+  "Pixel kept this response's last page reads for single pages: pixel_ods_search_read did not run and used no allowance. Read a specific page you still need with web_fetch or pixel_ods_web_extract, or finish with the evidence collected; do not claim unread pages were verified.";
 
 // Perplexica runs its own searches and model calls on the owner's host, and
 // its answer is orientation only (perplexica-research.mjs). One call per
@@ -428,7 +436,7 @@ export const OPERATIONS_EXTENSION_INVENTORY_EVIDENCE_PREFIX =
 export const OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX =
   "Pixel verified this ODS extension lifecycle result through structurally matched Operations Broker receipts:";
 
-const WEB_TOOLS = new Set(["web_search", "web_fetch", "pixel_ods_web_extract", "pixel_ods_research"]);
+const WEB_TOOLS = new Set(["web_search", "web_fetch", "pixel_ods_web_extract", "pixel_ods_search_read", "pixel_ods_research"]);
 const CODING_TOOLS = new Set(["exec", "write", "edit", "apply_patch"]);
 const WORKSPACE_MUTATION_TOOLS = new Set(["write", "edit", "apply_patch"]);
 const FILE_PATH_TOOLS = new Set(["read", "write", "edit"]);
@@ -5866,7 +5874,7 @@ function workspacePreviewRestrictionReason(state, tool, params) {
   if ((scopedMutation && !scopedExistingFileMutationAllowed(state, tool, params)) ||
       (restriction.mutation && ['write', 'edit', 'apply_patch', WORKSPACE_BUNDLE_TOOL].includes(tool)) ||
       (restriction.exec && ['exec', 'process', WORKSPACE_BUNDLE_TOOL].includes(tool)) ||
-      (restriction.web && ['web_search', 'web_fetch', 'pixel_ods_research', 'pixel_ods_web_extract', 'browser'].includes(tool))) {
+      (restriction.web && ['web_search', 'web_fetch', 'pixel_ods_research', 'pixel_ods_web_extract', SEARCH_READ_TOOL, 'browser'].includes(tool))) {
     return restriction.existingFile
       ? `The owner restricted this repair to the existing file ${restriction.existingFile}. Read that exact file successfully in this turn, then edit it or use an Update File-only patch. Do not create, rename, move, delete, or change other files, and do not use shell commands or excluded web tools to bypass this boundary.`
       : 'The owner requested publication of existing files and explicitly excluded this action. Use the preview tool for the requested directory, then report its actual result; do not create a replacement or substitute another capability.';
@@ -6726,6 +6734,20 @@ function fetchTargetsNonPublicAddress(event) {
   return urlTargetsNonPublicAddress(event?.params?.url);
 }
 
+// pixel_ods_search_read with urls (or a URL placed in query) is a model-chosen
+// page read, held to the same public-only rule as web_fetch.
+function searchReadTargetsNonPublicAddress(params) {
+  const urls = typeof params?.urls === 'string' ? [params.urls] : Array.isArray(params?.urls) ? params.urls : [];
+  const query = typeof params?.query === 'string' && /^https?:\/\/\S+$/i.test(params.query.trim()) ? [params.query.trim()] : [];
+  return [...urls, ...query].some(url => typeof url === 'string' && urlTargetsNonPublicAddress(url));
+}
+
+function withoutMaxPages(params) {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return params;
+  const {maxPages: _maxPages, ...rest} = params;
+  return rest;
+}
+
 function canonicalFetchUrl(event) {
   const raw = event?.params?.url;
   if (typeof raw !== "string" || !raw) return undefined;
@@ -7009,17 +7031,46 @@ export function createToolLoopGuard({
     });
   }
 
+  // Page reads pixel_ods_search_read leaves for the host citation check: its
+  // four-URL maximum, or a quarter of a smaller configured allowance.
+  function searchReadReserve() {
+    return Math.min(HOST_CITATION_LIMITS.maxUrls, Math.floor(effective.fetch / 4));
+  }
+
+  // Pages one pixel_ods_search_read call may open: its requested count, lowered
+  // to the page reads left after its search and the host-check reserve.
+  function searchReadGrant(state, cost) {
+    const reserve = searchReadReserve();
+    const reads = Math.min(effective.fetch - state.fetch - reserve,
+      effective.total - state.total - cost.search - reserve);
+    return Math.max(0, Math.min(cost.fetch, reads));
+  }
+
   // Allowance units one executed web call uses. Perplexica runs its own
   // searches and returns search results, so it uses a search and a page-read
   // unit, although it never reads a page for Pixel (no read receipt).
+  // pixel_ods_search_read is charged by its grant instead (searchReadCost,
+  // searchReadGrant), never through this table.
   function webCost(toolName) {
     if (toolName === "web_search") return { search: 1, fetch: 0 };
     if (toolName === "pixel_ods_research") return { search: 1, fetch: 1 };
     return { search: 0, fetch: 1 };
   }
 
-  function exhaustedWebBudget(state, toolName) {
+  function exhaustedWebBudget(state, toolName, params) {
     if (!WEB_TOOLS.has(toolName)) return null;
+    if (state.total >= effective.total) return "total";
+    if (toolName === SEARCH_READ_TOOL) {
+      // 1 search (none with urls) plus its page reads. Invalid arguments are
+      // refused separately and cost nothing.
+      const cost = searchReadCost(params);
+      if (!cost) return null;
+      if (cost.search && state.search >= effective.search) return "search";
+      if (state.fetch >= effective.fetch) return "fetch";
+      if (state.total + cost.search >= effective.total) return "total";
+      // Not an exhausted budget: the reserve refusal is a free correction.
+      return searchReadGrant(state, cost) < 1 ? "search-read" : null;
+    }
     const cost = webCost(toolName);
     if (state.total + cost.search + cost.fetch > effective.total) return "total";
     if (cost.search && state.search + cost.search > effective.search) return "search";
@@ -7031,6 +7082,30 @@ export function createToolLoopGuard({
     if (budget === "search") return WEB_SEARCH_BUDGET_EXHAUSTED_REASON;
     if (budget === "fetch") return WEB_FETCH_BUDGET_EXHAUSTED_REASON;
     return WEB_BUDGET_EXHAUSTED_REASON;
+  }
+
+  // Settles one pixel_ods_search_read grant from its bound result: reads the
+  // tool never attempted go back to the page-reading and total allowances,
+  // exactly once, direct or through Tool Search. Binding does not compare the
+  // guard-lowered maxPages; the result must report a grant within the one
+  // charged and no more attempted reads than granted. An unbound or malformed
+  // result keeps the whole charge.
+  function settleSearchRead(state, grantId, params, result) {
+    const grant = state.searchReadGrants.get(grantId);
+    if (!grant || grant.settled || !isDeepStrictEqual(withoutMaxPages(params), withoutMaxPages(grant.params))) return;
+    const details = result?.details;
+    if (details?.boundary !== SEARCH_READ_BOUNDARY || !Number.isInteger(details.grantedPages) ||
+        details.grantedPages < 0 || details.grantedPages > grant.granted || !Number.isInteger(details.readsAttempted) ||
+        details.readsAttempted < 0 || details.readsAttempted > details.grantedPages) return;
+    grant.settled = true;
+    const refund = grant.granted - details.readsAttempted;
+    state.fetch = Math.max(0, state.fetch - refund);
+    state.total = Math.max(0, state.total - refund);
+    grant.attempted = details.readsAttempted;
+    grant.readsSucceeded = Number.isInteger(details.readsSucceeded) ? details.readsSucceeded : 0;
+    grant.results = searchLeadUrls(details.results);
+    grant.readUrls = searchLeadUrls((Array.isArray(details.pages) ? details.pages : [])
+      .filter(page => page?.receipt === true).map(page => ({url: page.finalUrl})));
   }
 
   function stateFor(runId) {
@@ -7077,6 +7152,9 @@ export function createToolLoopGuard({
         searchLedger: [],
         unreadSearchStreak: 0,
         searchPacingPaused: false,
+        // pixel_ods_search_read charges by charging call ID: {params, granted,
+        // requested, search, settled}. Bounded by the run's web allowance.
+        searchReadGrants: new Map(),
         ownerResearchDate: undefined,
         githubCanonicalUrl: undefined,
         githubCanonicalSatisfied: false,
@@ -7413,7 +7491,7 @@ export function createToolLoopGuard({
     if (state?.managedTeamWorker && ['task','hub','sessions_spawn','sessions_send','subagents'].includes(delegatedName)) {
       return {block:true,blockReason:'This team is already managed by the owner. Do your assigned work in this session; creating or steering more agents is disabled for team workers.'};
     }
-    if (state?.managedTeamReadOnly && !['tool_search','read','web_search','web_fetch','pixel_ods_research','pixel_ods_web_extract','pixel_ods_ask_user','pixel_ods_goal','pixel_ods_activity','pixel_ods_history','pixel_ods_skill','session_status','memory_search','memory_get'].includes(delegatedName)) {
+    if (state?.managedTeamReadOnly && !['tool_search','read','web_search','web_fetch','pixel_ods_research','pixel_ods_web_extract','pixel_ods_search_read','pixel_ods_ask_user','pixel_ods_goal','pixel_ods_activity','pixel_ods_history','pixel_ods_skill','session_status','memory_search','memory_get'].includes(delegatedName)) {
       return {block:true,blockReason:'Your team role is read-only. Do not create, edit, execute commands, publish, or operate services. Review the supplied evidence using read/search tools if needed, then return your findings as text. The Builder owns implementation and test execution.'};
     }
     if (state?.ownerQuestions) return {block:true, blockReason:'Waiting for the owner to answer the clarification questions. End this turn without further tools; never choose answers for the owner.'};
@@ -8886,6 +8964,7 @@ export function createToolLoopGuard({
       (selectedToolName === "exec" && execTargetsNonPublicAddress(selectedEvent)) ||
       ((selectedToolName === "web_fetch" || selectedToolName === "pixel_ods_web_extract") &&
         fetchTargetsNonPublicAddress(selectedEvent)) ||
+      (selectedToolName === SEARCH_READ_TOOL && searchReadTargetsNonPublicAddress(selectedParams)) ||
       (selectedToolName === "browser" &&
         (urlTargetsNonPublicAddress(selectedParams?.url) ||
           urlTargetsNonPublicAddress(selectedParams?.targetUrl)));
@@ -8911,8 +8990,9 @@ export function createToolLoopGuard({
     }
 
     if (
-      (selectedToolName === "web_fetch" || selectedToolName === "pixel_ods_web_extract") &&
-      fetchTargetsNonPublicAddress(selectedEvent)
+      ((selectedToolName === "web_fetch" || selectedToolName === "pixel_ods_web_extract") &&
+        fetchTargetsNonPublicAddress(selectedEvent)) ||
+      (selectedToolName === SEARCH_READ_TOOL && searchReadTargetsNonPublicAddress(selectedParams))
     ) {
       if (state?.privateBrowserAccess && !state.privateBrowserRedirected) {
         state.privateBrowserRedirected = true;
@@ -8961,6 +9041,16 @@ export function createToolLoopGuard({
         : undefined;
     }
 
+    // pixel_ods_search_read arguments are checked before anything is charged:
+    // an invalid call runs nothing and costs nothing (bounded as a free
+    // correction, then as an ordinary refused call).
+    const searchRead = selectedToolName === SEARCH_READ_TOOL && state
+      ? validateSearchReadParams(selectedParams) : undefined;
+    if (searchRead && !searchRead.ok) {
+      recordFreeCorrection(state, "search-read-arguments", context?.toolCallId ?? event?.toolCallId, toolName);
+      return { block: true, blockReason: SEARCH_READ_SCHEMA_HINT };
+    }
+
     // Research pacing. Both refusals run nothing and are recorded as free
     // corrections, so they consume neither the search allowance nor the
     // failure budget. Beyond that bound the search proceeds unchanged: pacing
@@ -8968,22 +9058,28 @@ export function createToolLoopGuard({
     // share this point; an allowed outer call leaves its nested call allowed.
     // The recall precedes the allowance check: after compaction a repeated
     // search is how lost leads show up, including once searches are spent.
-    if (selectedToolName === "web_search" && state) {
+    // pixel_ods_search_read reads pages itself, so the unread-leads pause
+    // never applies to it, and it is recalled only against an earlier
+    // pixel_ods_search_read with the same site preference: repeating a plain
+    // web_search with it reads pages the earlier search only listed, and a
+    // new site preference opens other pages.
+    if ((selectedToolName === "web_search" || searchRead?.mode === "search") && state) {
       const searchCallId = context?.toolCallId ?? event?.toolCallId;
       const freeLeft = (kind) => (state.freeCorrections.get(kind) ?? 0) < FREE_CORRECTIONS_PER_KIND;
       // Recalled or paused leads are useful only while a page can be read.
       const readsLeft = Math.min(effective.fetch - state.fetch, effective.total - state.total) > 0;
       const searchesLeft = Math.min(effective.search - state.search, effective.total - state.total) > 0;
-      const terms = searchTerms(selectedParams?.query);
+      const terms = searchTerms(searchRead ? searchRead.query : selectedParams?.query);
       const earlier = state.searchLedger.find((entry) => !entry.recalled &&
+        (!searchRead || (entry.tool === SEARCH_READ_TOOL && (entry.site ?? '') === (searchRead.site ?? ''))) &&
         nearDuplicateSearch(terms, entry.terms));
       if (earlier && readsLeft && freeLeft("search-duplicate")) {
         // Recall once per earlier search. A deliberate repeat then proceeds.
         earlier.recalled = true;
         recordFreeCorrection(state, "search-duplicate", searchCallId, toolName);
-        return { block: true, blockReason: duplicateSearchReason(earlier.query, earlier.urls) };
+        return { block: true, blockReason: duplicateSearchReason(earlier.query, earlier.urls, earlier.readUrls) };
       }
-      if (state.unreadSearchStreak >= SEARCH_PACING_STREAK && !state.searchPacingPaused &&
+      if (!searchRead && state.unreadSearchStreak >= SEARCH_PACING_STREAK && !state.searchPacingPaused &&
           readsLeft && searchesLeft && freeLeft("search-pacing")) {
         // Pause once per streak; a model that finds no fitting lead may
         // search again immediately.
@@ -8997,7 +9093,16 @@ export function createToolLoopGuard({
     // retry state survive compaction; progress through another permitted tool
     // neither consumes that denial allowance nor resets it. Total exhaustion
     // still applies to every web tool, including resolved Tool Search calls.
-    const exhaustedBudget = exhaustedWebBudget(state, effectiveToolName);
+    const exhaustedBudget = exhaustedWebBudget(state, effectiveToolName, selectedParams);
+    // The search_read reserve is not an exhausted budget: page reads, searches
+    // and the total are all still available to web_fetch,
+    // pixel_ods_web_extract and web_search. Its refusal ran nothing, so it is
+    // a free correction (then an ordinary refused call), never a step toward
+    // the web-loop stop.
+    if (exhaustedBudget === "search-read") {
+      recordFreeCorrection(state, "search-read-reserve", context?.toolCallId ?? event?.toolCallId, toolName);
+      return { block: true, blockReason: SEARCH_READ_RESERVE_REASON };
+    }
     if (exhaustedBudget) {
       const reason = webBudgetReason(exhaustedBudget);
       let terminal = state.webTerminals.get(exhaustedBudget);
@@ -9245,6 +9350,25 @@ export function createToolLoopGuard({
         : undefined;
     }
 
+    if (toolName === SEARCH_READ_TOOL) {
+      // 1 search (none with urls) plus the granted page reads, charged before
+      // the call; maxPages is lowered to the grant. Unattempted reads are
+      // refunded when the bound result arrives (settleSearchRead).
+      const params = normalizedParams ?? event?.params;
+      const cost = searchReadCost(params);
+      const granted = searchReadGrant(state, cost);
+      state.search += cost.search;
+      state.fetch += granted;
+      state.total += cost.search + granted;
+      const grantId = context?.toolCallId ?? event?.toolCallId;
+      if (typeof grantId === "string" && grantId) {
+        state.searchReadGrants.delete(grantId);
+        while (state.searchReadGrants.size >= 64) state.searchReadGrants.delete(state.searchReadGrants.keys().next().value);
+        state.searchReadGrants.set(grantId, {params: structuredClone(params), granted, requested: cost.fetch,
+          search: cost.search, settled: false, persisted: false});
+      }
+      return { params: { ...params, maxPages: granted } };
+    }
     const cost = webCost(toolName);
     state.search += cost.search;
     state.fetch += cost.fetch;
@@ -9842,6 +9966,31 @@ export function createToolLoopGuard({
           result: envelope.result,
         };
         pendingToolRun.capturedToolSearchFailed = Boolean(event.error || event.result?.isError);
+      }
+    }
+    // pixel_ods_search_read: settle its grant from the bound result, direct or
+    // nested (the Tool Search child reports first; its outer receipt then
+    // finds the grant settled). The outer envelope is observed for receipt
+    // parity with the direct form; maxPages is excluded from the binding.
+    if (toolName === SEARCH_READ_TOOL && pendingToolRun?.runId === runId &&
+        pendingToolRun.selectedToolName === SEARCH_READ_TOOL &&
+        (!event?.runId || event.runId === runId) &&
+        (!context?.sessionId || context.sessionId === state.currentSessionId)) {
+      settleSearchRead(state, toolCallId, event?.params, event?.result);
+    }
+    if (toolName === 'tool_call' && pendingToolRun?.selectedToolName === SEARCH_READ_TOOL &&
+        pendingToolRun.runId === runId && typeof toolCallId === 'string' &&
+        (!event?.runId || event.runId === runId) &&
+        (!context?.sessionId || context.sessionId === state.currentSessionId)) {
+      const envelope = toolSearchEventEnvelope(event, SEARCH_READ_TOOL, 'pixel-ods');
+      if (envelope && isDeepStrictEqual(withoutMaxPages(envelope.params), withoutMaxPages(pendingToolRun.selectedParams))) {
+        state.completionAssurance.observe(SEARCH_READ_TOOL, {params: envelope.params, result: envelope.result});
+        const prefix = `${toolSearchChildPrefix(toolCallId)}${SEARCH_READ_TOOL}:`;
+        for (const [grantId] of state.searchReadGrants) {
+          if (grantId.startsWith(prefix) && /^[1-9][0-9]*$/.test(grantId.slice(prefix.length))) {
+            settleSearchRead(state, grantId, envelope.params, envelope.result);
+          }
+        }
       }
     }
     // pixel_ods_research is bound for parity with its direct form: it marks
@@ -11081,9 +11230,19 @@ export function createToolLoopGuard({
       (!context?.runId || context.runId === pending.runId) &&
       (!event?.runId || event.runId === pending.runId)
       ? projectNativeFetchGuidance(message, pending.successfulTruncatedNativeFetch) : undefined;
+    // pixel_ods_search_read: the settled grant of this exact call (direct, or
+    // the Tool Search child of this outer call).
+    const searchReadGrant = boundWebCall && state && pending?.selectedToolName === SEARCH_READ_TOOL &&
+      [SEARCH_READ_TOOL, 'tool_call'].includes(pending.transport) && message.isError !== true &&
+      (!context?.runId || context.runId === pending.runId) && (!event?.runId || event.runId === pending.runId)
+      ? (pending.transport === SEARCH_READ_TOOL ? [state.searchReadGrants.get(toolCallId)]
+        : [...state.searchReadGrants].filter(([grantId]) => typeof toolCallId === 'string' &&
+          grantId.startsWith(`${toolSearchChildPrefix(toolCallId)}${SEARCH_READ_TOOL}:`)).map(([, grant]) => grant))
+        .find(grant => grant?.settled && !grant.persisted)
+      : undefined;
     // Give discovery feedback before the search lane is exhausted. This is
     // exact-call-bound metadata, not source evidence or an additional allowance.
-    const researchBudgetGuidance = pending?.selectedToolName === 'web_search' &&
+    let researchBudgetGuidance = pending?.selectedToolName === 'web_search' &&
       (compactNativeWebResult || compactWebResult) && message.isError !== true &&
       (compactNativeWebResult ?? compactWebResult)?.isError !== true &&
       pending.capturedToolSearchFailed !== true && state
@@ -11093,7 +11252,7 @@ export function createToolLoopGuard({
         const read = Math.min(total, Math.max(0, effective.fetch - state.fetch));
         return `ODS research budget (not source evidence): Remaining this response: ${search} search calls, ${read} page-reading calls, ${total} web calls total. ` +
           (read > 0
-            ? 'If these leads match the request, read their actual URLs with web_fetch or pixel_ods_web_extract. ' +
+            ? 'If these leads match the request, read their actual URLs with web_fetch or pixel_ods_web_extract, or up to five at once with pixel_ods_search_read (urls). ' +
               (search > 0
                 ? 'Search again only for a specific unresolved evidence gap; do not invent source URLs.'
                 : 'Do not call web_search again in this response; its allowance is exhausted. Do not invent source URLs.')
@@ -11115,6 +11274,38 @@ export function createToolLoopGuard({
       if (urls.length > 0) state.unreadSearchStreak += 1;
       const named = staleSearchDate(query, state.ownerResearchDate);
       if (named) staleDateGuidance = staleSearchDateGuidance(named, state.ownerResearchDate);
+    }
+    if (searchReadGrant) {
+      searchReadGrant.persisted = true;
+      const total = Math.max(0, effective.total - state.total);
+      const search = Math.min(total, Math.max(0, effective.search - state.search));
+      const read = Math.min(total, Math.max(0, effective.fetch - state.fetch));
+      const clamped = searchReadGrant.granted < searchReadGrant.requested
+        ? `pixel_ods_search_read opened at most ${searchReadGrant.granted} of the ${searchReadGrant.requested} requested pages because of the page-reading allowance. ` : '';
+      researchBudgetGuidance = `ODS research budget (not source evidence): Remaining this response: ${search} search calls, ${read} page-reading calls, ${total} web calls total. ` +
+        clamped + (read > 0
+          ? 'Cite a page only for facts in its [R#] excerpt; read a lead or [L#] link before citing it. ' +
+            (search > 0 ? 'Search again only for a specific unresolved evidence gap; do not invent source URLs.'
+              : 'Do not search again in this response; its search allowance is exhausted. Do not invent source URLs.')
+          : 'Finish with collected evidence or otherwise-authorized tools; do not claim unread sources were verified.');
+      const query = pending.selectedParams?.query;
+      const searched = searchReadGrant.search > 0 && typeof query === 'string' && query.trim();
+      if (searched) {
+        const site = validateSearchReadParams(pending.selectedParams).site;
+        state.searchLedger.push({query, terms: searchTerms(query), urls: searchReadGrant.results ?? [],
+          readUrls: searchReadGrant.readUrls ?? [], tool: SEARCH_READ_TOOL, ...(site ? {site} : {}), recalled: false});
+        if (state.searchLedger.length > 32) state.searchLedger.shift();
+        const named = staleSearchDate(query, state.ownerResearchDate);
+        if (named) staleDateGuidance = staleSearchDateGuidance(named, state.ownerResearchDate);
+      }
+      // A page read ends the unread-leads streak; a search that read no page
+      // left only leads, like web_search.
+      if (searchReadGrant.readsSucceeded > 0) {
+        state.unreadSearchStreak = 0;
+        state.searchPacingPaused = false;
+      } else if (searched && searchReadGrant.results?.length) {
+        state.unreadSearchStreak += 1;
+      }
     }
     const nativeFailure = pending?.nativeUnittestFailure;
     const compactNativeVerification = nativeFailure && pending.transport === "exec" &&
@@ -11329,7 +11520,8 @@ export function createToolLoopGuard({
       !nativeFetchGuidance &&
       !previewStageInstruction &&
       !sandboxPathCorrection &&
-      !executionGuidance
+      !executionGuidance &&
+      !searchReadGrant
     ) {
       return undefined;
     }

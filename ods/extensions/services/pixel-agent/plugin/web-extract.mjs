@@ -5,6 +5,7 @@
 
 import { randomBytes } from "node:crypto";
 import { isIP } from "node:net";
+import { boundedHtml, HTML_EXTRACTION_TIMEOUT } from "./html-extraction.mjs";
 
 const MAX_QUERY_CHARS = 200;
 const MAX_URL_CHARS = 1024;
@@ -219,6 +220,8 @@ export const LEGACY_PAGE_REQUEST_HEADERS = Object.freeze({
   "Accept-Language": "en-US,en;q=0.9",
 });
 const PLAIN_REFUSALS = new Set([403, 406]);
+// The plain fallback is not worth starting with less time than this left.
+export const PLAIN_RETRY_MIN_SECONDS = 2;
 const CHROME_ANCHOR = Object.freeze({major: 151, at: Date.UTC(2026, 8, 1)});
 const CHROME_CADENCE_MS = 28 * 24 * 60 * 60 * 1000;
 const CHROME_MAX_ADVANCE = 26;
@@ -386,14 +389,30 @@ export const PUBLIC_PAGE_TEXT_TYPES = new Set([
 // browser-compatible GET (publicPageRequestHeaders) with its single plain
 // fallback after a plain 403/406, a 1 MB response bound, raw-text removal and
 // bounded HTML-to-text extraction, and bot-challenge detection.
-// pixel_ods_web_extract and the host citation check (citation-verification.mjs)
-// both use it, so neither can read a page the other could not. Every guarded
-// response is released.
+// pixel_ods_web_extract, pixel_ods_search_read and the host citation check
+// (citation-verification.mjs) all use one instance of it, so none can read a
+// page another could not. Every guarded response is released.
+//
+// `timeoutSeconds` bounds the whole read, both requests included: the plain
+// fallback gets only the time the first request left, and is skipped when
+// less than PLAIN_RETRY_MIN_SECONDS remain. Callers with their own deadline
+// (pixel_ods_search_read: 12 s per read inside 15 s per call; the host check:
+// 4 s) therefore never wait for a second full timeout.
+//
+// `extractHtml` (html-extraction.mjs) runs the extraction off the gateway
+// thread under a deadline; without it the extraction runs in-process on a
+// bounded prefix of the HTML. `extractMode: "markdown"` keeps the page's links
+// as [label](href) for callers that list them; the default is plain text.
+// A successful read also returns the page title when the extractor found one.
+// Every `ok: false` result means "not read"; callers must treat an unknown
+// `reason` the same way.
 export function createPublicPageReader({
   guardedFetch,
   readResponseText,
   extractBasicHtmlContent,
   now = Date.now,
+  monotonic = () => performance.now(),
+  extractHtml,
 } = {}) {
   if (
     typeof guardedFetch !== "function" ||
@@ -402,7 +421,15 @@ export function createPublicPageReader({
   ) {
     throw new TypeError("Pixel public web extraction dependencies are unavailable");
   }
-  return async function readPublicPage(rawUrl, { signal, timeoutSeconds = 20, types = EXTRACTION_TYPES } = {}) {
+  const extract = typeof extractHtml === "function"
+    ? extractHtml
+    : ({ html, url, extractMode }) => extractBasicHtmlContent({ html: boundedHtml(html), url, extractMode });
+  return async function readPublicPage(rawUrl, {
+    signal,
+    timeoutSeconds = 20,
+    types = EXTRACTION_TYPES,
+    extractMode = "text",
+  } = {}) {
     let url;
     try {
       url = normalizedPublicUrl(rawUrl);
@@ -412,11 +439,13 @@ export function createPublicPageReader({
     const requests = [publicPageRequestHeaders(now()), LEGACY_PAGE_REQUEST_HEADERS];
     let guarded;
     try {
+      const started = monotonic();
+      let attemptSeconds = timeoutSeconds;
       for (let attempt = 1; ; attempt += 1) {
         guarded = await guardedFetch({
           url,
           maxRedirects: 3,
-          timeoutSeconds,
+          timeoutSeconds: attemptSeconds,
           signal,
           useEnvProxy: false,
           init: { headers: { ...requests[attempt - 1] } },
@@ -437,10 +466,14 @@ export function createPublicPageReader({
               challenge = botChallenge({ headers: response.headers, status: response.status, html: refusal.text });
             } catch { /* An unreadable refusal is still just a refusal. */ }
           }
-          if (!challenge && attempt < requests.length && PLAIN_REFUSALS.has(response.status) && !signal?.aborted) {
+          // The fallback runs only inside what is left of this read's time.
+          const leftSeconds = Math.floor(timeoutSeconds - (monotonic() - started) / 1000);
+          if (!challenge && attempt < requests.length && PLAIN_REFUSALS.has(response.status) && !signal?.aborted &&
+              leftSeconds >= PLAIN_RETRY_MIN_SECONDS) {
             const refused = guarded;
             guarded = undefined;
             try { await refused.release?.(); } catch { /* Released or already closed. */ }
+            attemptSeconds = leftSeconds;
             continue;
           }
           return { ok: false, reason: "http-status", status: response.status, finalUrl, requests: attempt,
@@ -455,23 +488,28 @@ export function createPublicPageReader({
         }
         const body = await readResponseText(response, { maxBytes: MAX_RESPONSE_BYTES });
         let text = body.text;
+        let title;
         if (contentType === "text/html" || contentType === "application/xhtml+xml") {
-          const extracted = await extractBasicHtmlContent({
+          const extracted = await extract({
             html: readableHtml(body.text),
             url: finalUrl,
-            extractMode: "text",
+            extractMode: extractMode === "markdown" ? "markdown" : "text",
+            signal,
           });
           text = extracted?.text ?? "";
+          if (typeof extracted?.title === "string" && extracted.title.trim()) title = extracted.title;
           if (botChallenge({ headers: response.headers, status: response.status, html: body.text, text })) {
             return { ok: false, reason: "challenge", status: response.status, finalUrl, requests: attempt };
           }
         }
         return { ok: true, status: response.status, finalUrl, contentType, text, truncated: body.truncated,
-          requests: attempt };
+          requests: attempt, ...(title ? { title } : {}) };
       }
-    } catch {
-      // Guard denials (private address, redirect policy), timeouts and aborts
+    } catch (error) {
+      // An extraction that ran past its deadline is a timed-out read. Guard
+      // denials (private address, redirect policy), other timeouts and aborts
       // all mean "not read"; their details never reach the caller.
+      if (error?.code === HTML_EXTRACTION_TIMEOUT) return { ok: false, reason: "timeout" };
       return { ok: false, reason: "blocked" };
     } finally {
       guarded?.release?.();
@@ -484,9 +522,12 @@ export function createPublicWebExtractTool({
   readResponseText,
   extractBasicHtmlContent,
   now,
+  readPage: sharedReadPage,
 }) {
-  const readPage = createPublicPageReader({ guardedFetch, readResponseText, extractBasicHtmlContent,
-    ...(now ? { now } : {}) });
+  // index.js passes its one shared reader; tests may build their own.
+  const readPage = typeof sharedReadPage === "function"
+    ? sharedReadPage
+    : createPublicPageReader({ guardedFetch, readResponseText, extractBasicHtmlContent, ...(now ? { now } : {}) });
 
   return {
     name: "pixel_ods_web_extract",

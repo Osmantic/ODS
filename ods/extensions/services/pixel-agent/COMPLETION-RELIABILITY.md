@@ -443,6 +443,94 @@ searches proceed unchanged. The fixed evidence and projection notes on search
 results are repeated only at the normal coaching interval; the per-call
 research budget line stays on every result.
 
+## Search and read
+
+Fleet research turns were slow because of model turns and context compaction,
+not page fetching: on tower2 (round 054) seven searches and four page reads put
+about 94 KB of tool output into the context, one read took 0.13-0.22 s, and a
+compaction took 11-17 s. OpenCode answers the event journey in three calls
+because its search returns page text. `pixel_ods_search_read`
+(`plugin/search-read.mjs`) does the same without any model call:
+
+- One search through OpenClaw's configured `web_search` provider (called
+  in-process, so the tool hooks are not re-entered), then the top results read
+  in parallel through the one shared guarded reader that `pixel_ods_web_extract`
+  and the host citation check use: at most two reads per host, a 12-second read
+  timeout and one 15-second deadline for all reads. The reader's one plain
+  retry after a 403/406 runs inside that read's timeout, with the time the
+  first request left, and is skipped when under 2 seconds remain; the same rule
+  keeps `pixel_ods_web_extract` at 20 seconds and the host check at 4 seconds
+  per read, retry included. With `urls` instead of
+  `query` it reads up to five given pages (such as detail links from a
+  listing) in one call, without a search.
+- Candidates keep the provider's order, drop non-public URLs and duplicates,
+  list binaries and social sites as leads, prefer a requested `site`, open
+  content pages before a site root or search/tag index, and take one page per
+  host before a second.
+- Each read page yields a short excerpt: line-aligned windows ranked by query
+  terms and by the facts the request names (dates, times, prices, board power,
+  memory, frame rates). Terms that appear on most of a page's windows
+  (navigation, footers) count less, and words that name a fact ("events",
+  "price") are matched by that fact's pattern rather than as terms. Inside
+  a window only lines with a distinctive term, a requested fact or a date
+  are kept, with their neighbours. Same-site links on those lines, never
+  the site root, are listed as `[L#]` leads, dated or term-bearing links
+  first.
+- The output is at most 5,000 characters and never more than the live
+  `contextLimits.toolResultMaxChars` minus 800. Leads are dropped first, then
+  links, then excerpt length; an excerpt that still does not fit is omitted.
+
+Receipts come only from the tool's `details`. A page counts as read for the
+cited-page check when it was read with a 2xx text document from a citable
+public final URL, a relevant window was emitted, its excerpt was delivered,
+and that excerpt carries evidence. Evidence is page text other than the title
+and script or style residue, at least 40 characters of it (80 for a `urls`
+overview). In search mode it must also name a query term and, when the
+request names facts (dates for events; prices, board power or memory for
+components), show one of them. So a title with a line of JavaScript, a site's
+own bot check, city navigation without a dated event, or a lone "$35" or
+"24/7" is listed as opened but not citable, and the host citation check still
+reads the page when it is cited. On the 2026-09-25 tower2 measurement, 24 of 73
+receipts at the first PR head and 8 of 72 over the #6699 reader were such
+pages. A final URL that cannot be cited (a trailing-dot host, an IDN top-level
+domain) makes the page not read: its text is not shown and the requested URL
+is never receipted for it. The requested URL counts only when it is the same
+document as the final URL (scheme, `www.` and one trailing slash normalised);
+after any other redirect only the final URL counts. Search results and `[L#]`
+links are leads; citing one still requires a read, or the host citation check.
+Each page's host line carries only its tag, URL and status and precedes its
+own untrusted-content boundary; the page title is printed inside it. Page
+lines are indented, and marker-like text, `[R#]`/`[L#]` tags and
+chat-template tokens in page text are neutralised, so a page cannot forge a
+receipt line. Through Tool Search's `tool_call` the model also sees
+`details`, so it carries no page-supplied text outside a boundary: search
+results keep only their URLs, and a receipted page's title stays in its own
+untrusted-content envelope, which the host unwraps for its read-page list.
+
+A call costs one search (none with `urls`) and its page reads. The guard
+charges them before the call and lowers `maxPages` to the reads left after a
+reserve for the host citation check (four reads, or a quarter of a smaller
+page-reading allowance); reads the tool never attempted are refunded from its
+bound result, exactly once, direct or through Tool Search. A call refused only
+because of that reserve ran nothing: it is a free correction, like a paused
+search, and never counts toward the web-loop stop, since single-page reads and
+searches remain available. A search_read that
+repeats an earlier search_read with the same site preference is recalled once
+with the pages that search already read; it is never paused for unread leads.
+The tool is offered only where the runtime search API exists and the
+operator's configuration permits both the search and page reads (page reads not
+disabled or denied, `web_search` enabled and not denied, no trusted
+environment proxy for web fetches).
+
+HTML extraction for every guarded read runs in a short-lived worker thread
+(`plugin/html-extraction.mjs`) that loads the SDK's own extractor, verified by
+its source text, and is terminated after 5 seconds or when the caller aborts.
+OpenClaw's extractor uses lazy element regexes whose cost is quadratic on
+markup without closing tags (1 MB of unclosed `<li>`: 10.2 s on tower2), and
+it would otherwise block every Pixel session on the gateway thread. Without a
+usable worker the extraction runs in-process on the first 256 KB of HTML.
+`tests/search_read_replay.test.mjs` replays the event and component journeys.
+
 ## Interactive clarification
 
 `pixel_ods_ask_user` presents one to three questions, each with two to four
