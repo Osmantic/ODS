@@ -1,0 +1,29 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "a7873cb7e586fba2b3f02289c3802d192b4f2dc8ecd026729d5e8e6d45f2124e",
+  "patchedSha256": "c389ac577f9c9c7d89515e3505639681d0f9477732af82ba443394df0d0fea2e",
+  "replacements": [
+    [
+      "createClient(model, context, apiKey, options?.headers, cacheSessionId, compat);",
+      "createClient(model, context, apiKey, options?.headers, cacheSessionId, compat, options?.[Symbol.for(\"ods.pixel.ownedProbeFetch.v1\")]);"
+    ],
+    [
+      "function createClient(model, context, apiKey, optionsHeaders, sessionId, compat = getCompat(model)) {",
+      "function createClient(model, context, apiKey, optionsHeaders, sessionId, compat = getCompat(model), ownedProbeFetch) {"
+    ],
+    [
+      "\tif (optionsHeaders) Object.assign(headers, optionsHeaders);",
+      "\tif (optionsHeaders) Object.assign(headers, optionsHeaders);\n\tfor (const name of Object.keys(headers)) if (name.toLowerCase().startsWith(\"x-ods-probe\")) delete headers[name];"
+    ],
+    [
+      "\t\tdangerouslyAllowBrowser: true,\n\t\tdefaultHeaders",
+      "\t\tdangerouslyAllowBrowser: true,\n\t\tfetch: typeof ownedProbeFetch === \"function\" ? ownedProbeFetch(globalThis.fetch) : void 0,\n\t\tdefaultHeaders"
+    ],
+    [
+      "\t\t...base,\n\t\treasoningEffort,",
+      "\t\t...base,\n\t\t[Symbol.for(\"ods.pixel.ownedProbeFetch.v1\")]: options?.[Symbol.for(\"ods.pixel.ownedProbeFetch.v1\")],\n\t\treasoningEffort,"
+    ]
+  ],
+  "previousReplacements": {},
+  "reason": "Owner-private exact-request diagnostic correlation outside model-visible content; no global capture."
+}

@@ -1666,6 +1666,19 @@ class TestSSE(BaseEdgeTest):
 # ---------------------------------------------------------------------------
 
 class TestSanitizedErrors(BaseEdgeTest):
+    async def test_upstream_status_diagnostic_has_no_private_body(self):
+        logs = io.StringIO()
+        with patch('sys.stderr', logs):
+            async with self.client.post(
+                "http://localhost/v1/chat/completions", headers=self.auth(),
+                json={"model": "pixel/default", "messages": [], "trigger_error": True},
+            ) as response:
+                self.assertEqual(response.status, 502)
+                await response.read()
+        self.assertIn("stage=upstream-response status=500", logs.getvalue())
+        self.assertNotIn("upstream-secret", logs.getvalue())
+        self.assertNotIn("private/token", logs.getvalue())
+
     async def test_upstream_error_body_is_not_forwarded(self):
         async with self.client.post(
             "http://localhost/v1/chat/completions",

@@ -1,6 +1,7 @@
 """Installer identity/custody tests; no Docker daemon or installed files needed."""
 
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -302,10 +303,13 @@ def test_publisher_stays_without_docker_and_broker_is_narrow():
         "cache-hardlink",
         "cache-writable",
         "cache-directory-symlink",
+        "missing-source-helper",
+        "unexpected-lease",
     ],
 )
+@pytest.mark.parametrize("generation", ["current", "pre-lease"])
 def test_linux_uninstall_validates_all_artifacts_before_deleting_any(
-    tmp_path, monkeypatch, fault
+    tmp_path, monkeypatch, fault, generation
 ):
     source = tmp_path / "source"
     source.mkdir()
@@ -339,10 +343,34 @@ def test_linux_uninstall_validates_all_artifacts_before_deleting_any(
         return path.read_bytes()
 
     monkeypatch.setattr(module, "protected_file", protected)
-    for name in (*module.RUNTIME_FILES, unit.name):
-        (source / name).write_bytes(b"# reviewed " + name.encode() + b"\nVALUE = 1\n")
-        (source / name).chmod(0o644)
-    module.install_linux(source=source, config=config())
+    runtime_files = module.RUNTIME_FILES
+    if generation == "pre-lease":
+        fixture = json.loads((Path(__file__).parent / "fixtures/preview-inspection-pre-lease.json").read_text())
+        runtime_files = tuple(name for name in runtime_files if name != "preview_inspection_leases.py")
+        for name in (*runtime_files, unit.name):
+            if name in fixture["changedSources"]:
+                body = fixture["changedSources"][name].encode()
+            else:
+                body = (ROOT / "extensions/services/pixel-agent/host" / name).read_bytes().replace(b"\r\n", b"\n")
+            assert hashlib.sha256(body).hexdigest() == fixture["sha256"][name]
+            (source / name).write_bytes(body)
+            (source / name).chmod(0o644)
+        # Reproduce the previous installer's fixed four-file layout. Candidate
+        # cleanup still runs with its current, unmodified runtime contract.
+        with monkeypatch.context() as old_install:
+            old_install.setattr(module, "RUNTIME_FILES", runtime_files)
+            module.install_linux(source=source, config=config())
+    else:
+        for name in (*runtime_files, unit.name):
+            (source / name).write_bytes(b"# reviewed " + name.encode() + b"\nVALUE = 1\n")
+            (source / name).chmod(0o644)
+        module.install_linux(source=source, config=config())
+    if fault == "missing-source-helper":
+        name = "preview_inspection_leases.py" if generation == "current" else "preview_inspection_protocol.py"
+        (source / name).unlink()
+    if fault == "unexpected-lease":
+        (program / "preview_inspection_leases.py").write_bytes(b"# not bound to installed source\n")
+        (program / "preview_inspection_leases.py").chmod(0o644)
     if fault == "foreign-file":
         (program / "operator-file").write_bytes(b"not ours")
     if fault == "changed-source":
@@ -401,7 +429,8 @@ def test_linux_uninstall_validates_all_artifacts_before_deleting_any(
 
     monkeypatch.setattr(module.subprocess, "run", run)
     if fault not in (None, "cache", "empty-cache"):
-        with pytest.raises(ValueError):
+        expected_error = (ValueError, FileNotFoundError) if fault == "missing-source-helper" else ValueError
+        with pytest.raises(expected_error):
             module.linux_cleanup(source=source, owner_uid=1000, remove=True)
         after = {
             str(path): path.read_bytes()

@@ -70,6 +70,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node ods/extensions/services/pixel-agent/tests/runtime_bootstrap_capabilities.integration.mjs
+      - name: Verify owned measurement admission and actual provider fetch
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_probe_fetch.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_probe_admission.integration.mjs
       - name: Verify premature completion with real Pixel runtime
         if: runner.os != 'Windows'
         shell: bash
@@ -82,6 +88,46 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs
+      - name: Verify preview binding through actual direct and deferred SDK dispatch
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_preview_default.integration.mjs
+      - name: Verify exact-run document lease admission through native tools
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_preview_leases.integration.mjs
+      - name: Verify sandbox custody source repair and actual Docker lifecycle
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: |
+          tests=ods/extensions/services/pixel-agent/tests
+          python3 "$tests/runtime_sandbox_custody_repair.integration.py"
+          python3 "$tests/prepare_sandbox_custody_runtime.py" "$OPENCLAW_PACKAGE_DIR" "$RUNNER_TEMP/sandbox-custody"
+          image=python@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
+          docker pull "$image"
+          for mode in probe-path-spoof forged-done forged-owner late-frame supervisor-killed startup-malformed startup-truncated startup-delay startup-abort timeout background-timeout guard-marker background-marker normal disabled-normal pty wait-failure setsid doublefork parent-race normal-detached closed-streams late-fork abort abort-timeout-race concurrent pid-mismatch nonce-mismatch directory-rebound foreign-token live-pid-mismatch reused-token; do
+            node "$tests/runtime_sandbox_custody.integration.mjs" "$RUNNER_TEMP/sandbox-custody/runtime" "$PWD/ods/extensions/services/pixel-agent/plugin" "$image" "$RUNNER_TEMP/sandbox-custody/$mode.json" "$mode"
+          done
+          OPENCLAW_PACKAGE="$RUNNER_TEMP/sandbox-custody/runtime" OPENCLAW_TEST_SANDBOX_IMAGE="$image" \
+            node --test "$tests/runtime_interactive_exec.integration.mjs"
+          OPENCLAW_PACKAGE="$RUNNER_TEMP/sandbox-custody/runtime" OPENCLAW_TEST_SANDBOX_IMAGE="$image" \
+            node --test "$tests/runtime_file_receipts.integration.mjs"
+      - name: Verify durable Pixel context at the real provider boundary
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: |
+          node --test ods/extensions/services/pixel-agent/tests/runtime_prompt_context.integration.mjs
+          ODS_CONTEXT_BUDGET_BLOCK=1 node --test ods/extensions/services/pixel-agent/tests/runtime_prompt_context.integration.mjs
+          ODS_CONTEXT_PROVIDER_RETRY=1 node --test ods/extensions/services/pixel-agent/tests/runtime_prompt_context.integration.mjs
+          ODS_CONTEXT_UNREPAIRED=1 node --test ods/extensions/services/pixel-agent/tests/runtime_prompt_context.integration.mjs
   runtime:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

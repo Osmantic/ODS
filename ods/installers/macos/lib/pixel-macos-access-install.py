@@ -999,12 +999,21 @@ def _upgrade_file_snapshots(plan, source):
     return existing, additions
 
 
-def _managed_inspection_required(selection):
-    """Choose the capability only from the approved complete service snapshot."""
+def _managed_inspection_paths(selection):
+    """Bind the existing generation to its independently verified service bytes."""
     config = _native_services.helper('config')
     snapshots = config.verified_services(selection['bundle'], expected_digest=selection['expected_digest'],
         expected_ref=selection['expected_ref'], expected_config_digest=selection['expected_config_digest'])
-    return 'helpers/preview-inspection.json' in snapshots
+    root = Path('/usr/local/libexec/ods-pixel-services')
+    selected = {str(root / name) for name in snapshots} & _upgrade.INSPECTION_ADDITIONS
+    if selected not in (set(), _upgrade.LEGACY_INSPECTION_ADDITIONS, _upgrade.INSPECTION_ADDITIONS):
+        raise InstallError('native-service-inspection-file-set-incomplete')
+    return selected
+
+
+def _managed_inspection_required(selection):
+    """Choose the capability only from the approved complete service snapshot."""
+    return bool(_managed_inspection_paths(selection))
 
 
 def _managed_service_contract(selected=None):
@@ -1022,10 +1031,10 @@ def _managed_service_contract(selected=None):
     result[str(_launchd.ACCESS_STATE / 'service-installation.json')] = (0o600, 0)
     if selected is not None:
         additions = set(selected) & _upgrade.INSPECTION_ADDITIONS
-        if additions and additions != _upgrade.INSPECTION_ADDITIONS:
+        if additions not in (set(), _upgrade.LEGACY_INSPECTION_ADDITIONS, _upgrade.INSPECTION_ADDITIONS):
             raise InstallError('native-service-inspection-file-set-incomplete')
-        if not additions:
-            result = {path: value for path, value in result.items() if path not in _upgrade.INSPECTION_ADDITIONS}
+        result = {path: value for path, value in result.items()
+                  if path not in _upgrade.INSPECTION_ADDITIONS or path in additions}
     return result
 
 
@@ -1083,9 +1092,9 @@ def _managed_service_snapshots(plan):
             raise InstallError('native-service-recovery-journal-changed')
         snapshots.append(dict(path=str(path), before=old, after=after, mode=mode, gid=gid))
     absent = {item['path'] for item in snapshots if item['before'] is None}
-    if absent and absent != _upgrade.INSPECTION_ADDITIONS:
-        raise InstallError('native-service-inspection-file-set-incomplete')
-    if bool(absent) == _managed_inspection_required(record['selection']):
+    previous_inspection = _managed_inspection_paths(record['selection'])
+    expected_absent = _upgrade.INSPECTION_ADDITIONS - previous_inspection
+    if absent != expected_absent:
         raise InstallError('native-service-inspection-selection-mismatch')
     return snapshots
 

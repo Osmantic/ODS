@@ -492,6 +492,7 @@ catalog_payload = read_private_regular(catalog_path, "extension catalog")
 helper_payloads = []
 inspection_sources = tuple(preview_path.with_name(name) for name in (
     'preview_inspection.py', 'preview_inspection_protocol.py', 'preview_inspection_capsule.py',
+    'preview_inspection_document.py', 'preview_inspection_lease.py', 'preview_inspection_leases.py',
     'Dockerfile.inspection', 'preview-inspection.requirements.lock', 'pixel-preview-inspection.service'))
 if not any(source.exists() or source.is_symlink() for source in inspection_sources):
     inspection_sources = ()  # Older complete deployments remain removable.
@@ -1441,6 +1442,12 @@ normalized_tools["toolSearch"] = {
     "searchDefaultLimit": 5,
     "maxSearchLimit": 10,
 }
+normalized_exec = normalized_agent_tools.setdefault("exec", {})
+global_exec = normalized_tools.get("exec", {})
+if not isinstance(normalized_exec, dict) or not isinstance(global_exec, dict):
+    raise SystemExit("live Pixel execution policy is outside the ODS contract")
+for name, default in (("backgroundMs", 60000), ("notifyOnExit", True), ("notifyOnExitEmptySuccess", True)):
+    normalized_exec.setdefault(name, global_exec.get(name, default))
 exec_control_bind = "{}:/run/pixel-ods-control:ro".format(
     pathlib.Path.home() / ".openclaw" / ".ods-exec-control"
 )
@@ -1449,6 +1456,12 @@ if existing_binds not in ([], [exec_control_bind]):
     raise SystemExit("live Pixel sandbox binds are outside the ODS contract")
 normalized_sandbox_docker["binds"] = [exec_control_bind]
 normalized_sandbox_docker["dangerouslyAllowExternalBindSources"] = True
+# Only ODS's Python-capable Docker profile opts into per-execution child custody.
+# Other native/OpenClaw backends retain their ordinary execution implementation.
+normalized_sandbox_env = normalized_sandbox_docker.setdefault("env", {})
+if not isinstance(normalized_sandbox_env, dict):
+    raise SystemExit("live Pixel sandbox environment is invalid")
+normalized_sandbox_env["ODS_EXEC_CUSTODY"] = "1"
 # Docker's nproc ulimit is accounted against the host UID, not only this
 # container. On a busy inference host it can therefore prevent even the fixed
 # sandbox proof from forking while the independent per-container pidsLimit is
@@ -4212,6 +4225,7 @@ EOF
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/chat_history_ledger.mjs" /usr/local/libexec/chat_history_ledger.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/access_mode_relay.mjs" /usr/local/libexec/access_mode_relay.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/task_activity_schema.mjs" /usr/local/libexec/task_activity_schema.mjs
+    ods_sudo install -o root -g root -m 0644 "$plugin_root/host/probe_admission.mjs" /usr/local/libexec/probe_admission.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/questions_schema.mjs" /usr/local/libexec/questions_schema.mjs
     ods_sudo install -o root -g ods-pixel -m 0640 "$stage/pixel-agent.env" /etc/ods/pixel-agent.env
     ods_sudo install -o root -g root -m 0644 "$stage/pixel-ingress.service" /etc/systemd/system/pixel-ingress.service
@@ -4477,6 +4491,7 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/chat_history_ledger.mjs" \
         && -f "$plugin_root/host/access_mode_relay.mjs" \
         && -f "$plugin_root/host/task_activity_schema.mjs" \
+        && -f "$plugin_root/host/probe_admission.mjs" \
         && -f "$plugin_root/host/questions_schema.mjs" \
         && -f "$plugin_root/host/extension_search.py" \
         && -f "$plugin_root/host/extension_manager.py" \
@@ -4501,6 +4516,16 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-compaction-idle.json" \
         && -f "$plugin_root/host/openclaw-compaction-resume.json" \
         && -f "$plugin_root/host/openclaw-read-range.json" \
+        && -f "$plugin_root/host/openclaw-file-identity.json" \
+        && -f "$plugin_root/host/openclaw-file-operations.json" \
+        && -f "$plugin_root/host/openclaw-sandbox-custody-stream.json" \
+        && -f "$plugin_root/host/openclaw-sandbox-custody-backend.json" \
+        && -f "$plugin_root/host/openclaw-sandbox-custody-runtime.json" \
+        && -f "$plugin_root/host/openclaw-sandbox-custody-tool.json" \
+        && -f "$plugin_root/host/openclaw-probe-context.json" \
+        && -f "$plugin_root/host/openclaw-probe-provider.json" \
+        && -f "$plugin_root/host/openclaw-probe-admission.json" \
+        && -f "$plugin_root/host/openclaw-probe-transport.json" \
         && -f "$plugin_root/host/openclaw-image-envelope.json" \
         && -f "$plugin_root/host/pixel-ops-broker-ods.conf" \
         && -f "$plugin_root/host/cancellable-exec.sh" \
@@ -4863,6 +4888,78 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/read-range" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's file read range repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Version admission uses the original confined read FD and file adapters.
+    local file_receipt_layer
+    for file_receipt_layer in file-identity file-operations; do
+        if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+            "$plugin_root/host/openclaw_tool_recovery.py" \
+            --openclaw-bin "$openclaw_bin" "--$file_receipt_layer" \
+            --state-dir "$home/.openclaw/ods-runtime-patches/$file_receipt_layer" \
+            >>"$pixel_log" 2>&1; then
+            ai_bad "Pixel's file receipt repair could not verify its package bytes. See $pixel_log."
+            return 1
+        fi
+    done
+    # Docker client termination must settle its exact sandbox descendants before
+    # the SDK reports a terminal process result. Native backends are unchanged.
+    local custody_layer
+    for custody_layer in stream backend runtime tool; do
+        if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+            "$plugin_root/host/openclaw_tool_recovery.py" \
+            --openclaw-bin "$openclaw_bin" --sandbox-custody "$custody_layer" \
+            --state-dir "$home/.openclaw/ods-runtime-patches/sandbox-custody-$custody_layer" \
+            >>"$pixel_log" 2>&1; then
+            ai_bad "Pixel's sandbox execution custody repair could not verify its package bytes. See $pixel_log."
+            return 1
+        fi
+    done
+    # Typed host context must be supported before the plugin can admit a turn.
+    # These exact-source repairs preserve ordinary plugins and real runtime IDs.
+    local prompt_context_repair
+    for prompt_context_repair in hook forward runtime; do
+        if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+            "$plugin_root/host/openclaw_tool_recovery.py" \
+            --openclaw-bin "$openclaw_bin" "--prompt-context-$prompt_context_repair" \
+            --state-dir "$home/.openclaw/ods-runtime-patches/prompt-context-$prompt_context_repair" \
+            >>"$pixel_log" 2>&1; then
+            ai_bad "Pixel's durable prompt context repair could not verify its package bytes. See $pixel_log."
+            return 1
+        fi
+    done
+    # Exact-byte, opt-in measurement support; inactive without an owner lease.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --probe-context \
+        --state-dir "$home/.openclaw/ods-runtime-patches/probe-context" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel measurement repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Exact-byte, opt-in measurement support; inactive without an owner lease.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --probe-provider \
+        --state-dir "$home/.openclaw/ods-runtime-patches/probe-provider" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel measurement repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --probe-admission \
+        --state-dir "$home/.openclaw/ods-runtime-patches/probe-admission" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel measurement admission repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --probe-transport \
+        --state-dir "$home/.openclaw/ods-runtime-patches/probe-transport" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel measurement transport repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     # Honor the configured compaction budget on slow local providers.

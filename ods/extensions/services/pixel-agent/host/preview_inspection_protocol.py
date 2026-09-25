@@ -102,7 +102,10 @@ def validate_request(value):
         locator = step["locator"]
         if not isinstance(locator, dict):
             raise Invalid("invalid locator")
-        if set(locator) == {"selector"}:
+        if set(locator) == {"ref", "documentGeneration"}:
+            if any(not isinstance(v, str) or not re.fullmatch(r"[a-f0-9]{32}", v) for v in locator.values()):
+                raise Invalid("invalid document reference")
+        elif set(locator) == {"selector"}:
             selector = locator["selector"]
             if (
                 not printable(selector, 256, 1024)

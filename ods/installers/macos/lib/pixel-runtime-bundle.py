@@ -40,11 +40,13 @@ ODS_SERVICE_SOURCES = {
     'helpers/system_observe.py': 'extensions/services/pixel-agent/host/system_observe.py',
     'helpers/preview_inspection.py': 'extensions/services/pixel-agent/host/preview_inspection.py',
     'helpers/preview_inspection_protocol.py': 'extensions/services/pixel-agent/host/preview_inspection_protocol.py',
+    'helpers/preview_inspection_leases.py': 'extensions/services/pixel-agent/host/preview_inspection_leases.py',
     'helpers/workspace_preview.py': 'extensions/services/pixel-agent/host/workspace_preview.py',
     'helpers/unix_peer.py': 'extensions/services/pixel-agent/host/unix_peer.py',
 }
 GENERATED_SERVICE_ARTIFACTS = {'operations/policy.json', 'helpers/extension-catalog.json', 'helpers/preview-inspection.json'}
 INSPECTION_SERVICE_ARTIFACTS = {'helpers/preview_inspection.py', 'helpers/preview_inspection_protocol.py',
+    'helpers/preview_inspection_leases.py',
     'helpers/workspace_preview.py', 'helpers/unix_peer.py', 'helpers/preview-inspection.json'}
 MAX_ENTRIES = 200000
 MAX_MANIFEST = 32 * 1024 * 1024
@@ -60,7 +62,20 @@ SHARED_REPAIRS = (
     ('openclaw-compaction-idle.json', 'sessions-KE_Xmzwf.js'),
     ('openclaw-compaction-resume.json', 'sessions-CZbwb3_c.js'),
     ('openclaw-read-range.json', 'openclaw-tools-iHHy99PD.js'),
+    ('openclaw-file-identity.json', 'sandbox-Y3MbG9Od.js'),
+    ('openclaw-file-operations.json', 'agent-tools-D1DOpg6D.js'),
+    ('openclaw-sandbox-custody-stream.json', 'supervisor-DzTnKyyV.js'),
+    ('openclaw-sandbox-custody-backend.json', 'browser-bridges-D-At-KLc.js'),
+    ('openclaw-sandbox-custody-runtime.json', 'bash-tools.exec-runtime-BWSnOoQS.js'),
+    ('openclaw-sandbox-custody-tool.json', 'bash-tools-tcXDNfAR.js'),
+    ('openclaw-probe-context.json', 'attempt.model-diagnostic-events-DqqiPQPY.js'),
+    ('openclaw-probe-provider.json', 'openai-completions-DTj6G8AI.js'),
+    ('openclaw-probe-admission.json', 'openai-http-DkesJHcp.js'),
+    ('openclaw-probe-transport.json', 'openai-transport-stream-P3cLoEh2.js'),
     ('openclaw-compaction-budget.json', 'selection-BEwSQKM-.js'),
+    ('openclaw-prompt-context-hook.json', 'hook-runner-global-mWFYlTIy.js'),
+    ('openclaw-prompt-context-forward.json', 'attempt.prompt-helpers-Cjcf83Hq.js'),
+    ('openclaw-prompt-context-runtime.json', 'system-prompt-config-CK1eJh37.js'),
 )
 
 
@@ -135,9 +150,11 @@ def validate_service_manifest_provenance(manifest):
     # Existing approved bundles remain readable for migration, rollback and
     # uninstall. New staging always emits the complete inspection capability;
     # partial inspection bundles are never an accepted legacy contract.
-    if isinstance(manifest, dict) and isinstance(manifest.get('files'), dict) \
-            and set(manifest['files']) == names - INSPECTION_SERVICE_ARTIFACTS:
-        names -= INSPECTION_SERVICE_ARTIFACTS
+    if isinstance(manifest, dict) and isinstance(manifest.get('files'), dict):
+        for additions in (INSPECTION_SERVICE_ARTIFACTS, {'helpers/preview_inspection_leases.py'}):
+            if set(manifest['files']) == names - additions:
+                names -= additions
+                break
     generated = GENERATED_SERVICE_ARTIFACTS & names
     mapped = set(ODS_SERVICE_SOURCES) & names
     if (type(manifest) is not dict or set(manifest) not in (keys, keys | {'sourceProvenance'})
@@ -599,7 +616,8 @@ def _patch_stream_progress(runtime, *, budget_receipt=None):
         original = handle.read()
     source_sha256 = STREAM_PROGRESS_SOURCE_SHA256
     if budget_receipt is not None:
-        contract = _shared_repair_contract(*SHARED_REPAIRS[-1])
+        contract = _shared_repair_contract(*next(
+            item for item in SHARED_REPAIRS if item[1] == 'selection-BEwSQKM-.js'))
         if (budget_receipt != contract or contract['sourceSha256'] != STREAM_PROGRESS_SOURCE_SHA256
                 or 'dist/' + contract['module'] != STREAM_PROGRESS_FILE):
             raise BundleError('stream-progress-unqualified-budget-receipt')
@@ -757,7 +775,8 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
             (staged / 'ods-runtime-repairs.json').chmod(0o644)
         if stream_progress_fix:
             receipt = _patch_stream_progress(staged / 'runtime',
-                                             budget_receipt=repairs[-1] if repairs else None)
+                                             budget_receipt=next(item for item in repairs
+                                                 if item['module'] == 'selection-BEwSQKM-.js') if repairs else None)
             (staged / 'ods-runtime-patches.json').write_bytes(_encode([receipt]))
             (staged / 'ods-runtime-patches.json').chmod(0o644)
         (staged / 'plugins').mkdir(mode=0o755)

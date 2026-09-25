@@ -1,0 +1,12 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "828c889d0541f12b8e4d69ec26cd67babc33984233262f4e4c8e8917625359fa",
+  "patchedSha256": "bc7b8a6b038bee479cf0a44ac814000782ed25d3902f042ca067d5b4541b3a96",
+  "replacements": [
+    [
+      "\t\t\treturn fs.readFileSync(opened.fd);",
+      "\t\t\tconst buffer = fs.readFileSync(opened.fd);\n\t\t\tconst stat = fs.fstatSync(opened.fd);\n\t\t\tconst identity = crypto.createHash(\"sha256\").update(JSON.stringify([String(stat.dev),String(stat.ino),opened.path])).digest(\"hex\");\n\t\t\tObject.defineProperty(buffer,\"odsFileIdentity\",{value:identity});\n\t\t\treturn buffer;"
+    ]
+  ],
+  "previousReplacements": {}
+}

@@ -1807,6 +1807,7 @@ assert value["agents"]["defaults"]["sandbox"]["docker"]["binds"] == [
     )
 ]
 assert value["agents"]["defaults"]["sandbox"]["docker"]["dangerouslyAllowExternalBindSources"] is True
+assert value["agents"]["defaults"]["sandbox"]["docker"]["env"]["ODS_EXEC_CUSTODY"] == "1"
 PY
 SH
 chmod 0755 "$runtime_validator"
@@ -1828,6 +1829,7 @@ with open(path, encoding="utf-8") as source:
     value = json.load(source)
 docker = value["agents"]["defaults"]["sandbox"]["docker"]
 docker["pidsLimit"] = 77
+docker["env"] = {"OWNER_CUSTOM_SETTING": "preserved"}
 docker["ulimits"] = {
     "nofile": {"soft": 4096, "hard": 4096},
     "nproc": {"soft": 1024, "hard": 1024},
@@ -1838,6 +1840,7 @@ with open(path, "w", encoding="utf-8") as target:
 PY
 check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_nproc_config" "$runtime_validator")" = changed
 check python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["agents"]["defaults"]["sandbox"]["docker"]; assert d["pidsLimit"] == 1024 and d["ulimits"] == {"nofile":{"soft":4096,"hard":4096}}' "$runtime_nproc_config"
+check python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["agents"]["defaults"]["sandbox"]["docker"]["env"] == {"OWNER_CUSTOM_SETTING":"preserved","ODS_EXEC_CUSTODY":"1"}' "$runtime_nproc_config"
 runtime_nproc_sha256="$(sha256sum "$runtime_nproc_config" | awk '{print $1}')"
 check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_nproc_config" "$runtime_validator")" = unchanged
 check test "$(sha256sum "$runtime_nproc_config" | awk '{print $1}')" = "$runtime_nproc_sha256"

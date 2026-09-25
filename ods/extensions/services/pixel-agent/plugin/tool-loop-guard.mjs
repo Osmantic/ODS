@@ -1,3 +1,4 @@
+import { retainedFileReceipt, observedCompleteFileContent, compactFileReceipt } from './file-receipt-feedback.mjs';
 // Pixel per-run tool-loop guard.
 //
 // OpenClaw's built-in identical-call detector blocks a repeated tool call, but
@@ -26,6 +27,7 @@ import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, 
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
+import {bindDefaultPreviewInspection} from './preview-default-binding.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
   visibilityInspectionMatches, visibilityInspectionInstruction } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, completedPreviewInspection, boundedPreviewVerification } from "./preview-revalidation.mjs";
@@ -3134,10 +3136,7 @@ function compactFailedUnittestText(result) {
 
 function compactWorkspaceCoreResult(message, pending, state) {
   const toolName = pending?.selectedToolName;
-  if (
-    !state?.workspaceTaskRequested ||
-    !["read", "write", "edit", "apply_patch", "exec", "process"].includes(toolName)
-  ) {
+  if (!["read", "write", "edit", "apply_patch", "exec", "process"].includes(toolName)) {
     return undefined;
   }
   const envelope = persistedToolSearchEnvelope(
@@ -3148,6 +3147,10 @@ function compactWorkspaceCoreResult(message, pending, state) {
   );
   if (!envelope) return undefined;
   const result = envelope.result;
+  const fileReceipt = retainedFileReceipt(result, toolName);
+  // Receipt-backed file feedback is generic: serializing its hidden metadata
+  // into a second model-facing JSON body defeats the bounded native excerpt.
+  if (!state?.workspaceTaskRequested && !fileReceipt) return undefined;
   let content = Array.isArray(result.content)
     ? result.content.filter(
         (item) => item && typeof item === "object" && typeof item.type === "string"
@@ -3168,6 +3171,10 @@ function compactWorkspaceCoreResult(message, pending, state) {
       ? { durationMs: details.durationMs }
       : {}),
     ...(typeof details?.cwd === "string" && details.cwd ? { cwd: details.cwd } : {}),
+    // Native file receipts are generated at the confined operation boundary.
+    // Preserve bounded provenance without duplicate text; metadata never grants
+    // reuse (the SDK also checks the retained rendered body and fresh bytes).
+    ...(fileReceipt ? { fileReceipt: compactFileReceipt(fileReceipt) } : {}),
   };
   if (content.length === 0) {
     const status = compactDetails.status ?? (result.isError === true ? "error" : "completed");
@@ -3185,7 +3192,7 @@ function compactWorkspaceCoreResult(message, pending, state) {
       tool: envelope.tool,
       result: {
         ...(result.isError === true ? { isError: true } : {}),
-        content,
+        ...(fileReceipt ? {} : { content }),
         ...(Object.keys(compactDetails).length > 0 ? { details: compactDetails } : {}),
       },
     },
@@ -6576,6 +6583,7 @@ export function createToolLoopGuard({
   onWorkspaceMutation = () => {},
   verifyWorkspacePreview,
   workspacePreviewInspectionAvailable = false,
+  fileVersionAdmissionAvailable = false,
   publishWorkspacePreview,
   execMarkerCleanupDelayMs = 5000,
   limits,
@@ -6628,6 +6636,18 @@ export function createToolLoopGuard({
 
   function rememberSessionPreview(sessionId, preview, state) {
     if (typeof sessionId !== "string" || !sessionId || !preview) return;
+    if (state && !state.implicitPreviewSuperseded &&
+        typeof state.currentSessionKey === 'string' && state.currentSessionKey) {
+      state.implicitPreviewDirectories ??= new Set();
+      // Two distinct directories permanently make the default ambiguous for
+      // this run. No need to retain an unbounded publication history.
+      if (state.implicitPreviewDirectories.size < 2) {
+        state.implicitPreviewDirectories.add(preview.relativeDirectory);
+      }
+      state.implicitPreviewBinding = Object.freeze({sessionId,
+        sessionKey:state.currentSessionKey, siteId:preview.siteId,
+        sha256:preview.sha256, relativeDirectory:preview.relativeDirectory});
+    }
     if (sessionPreviews.has(sessionId)) sessionPreviews.delete(sessionId);
     while (sessionPreviews.size >= MAX_TRACKED_RUNS) {
       const oldest = sessionPreviews.keys().next().value;
@@ -6950,6 +6970,26 @@ export function createToolLoopGuard({
     // policy and deterministic routing active from runId alone; operations
     // that truly need a session still fail closed on the optional sessionId.
     const state = runId ? stateFor(runId) : undefined;
+    // Resolve convenience arguments before normal policy/budget checks and
+    // pending-call capture, so the executed plan and its receipt stay identical.
+    const previewBinding = state?.implicitPreviewBinding;
+    const input = normalizedParams ?? event?.params;
+    const isInspection = toolName === PREVIEW_INSPECTION_TOOL ||
+      (toolName === 'tool_call' && [PREVIEW_INSPECTION_TOOL,
+        `openclaw:pixel-ods:${PREVIEW_INSPECTION_TOOL}`].includes(input?.id));
+    if (isInspection && previewBinding && state.implicitPreviewDirectories?.size === 1 &&
+        state.currentSessionId === previewBinding.sessionId &&
+        state.currentSessionKey === previewBinding.sessionKey &&
+        sessionRuns.get(previewBinding.sessionId) === runId &&
+        (!context.sessionId || context.sessionId === previewBinding.sessionId) &&
+        (!context.sessionKey || context.sessionKey === previewBinding.sessionKey) &&
+        !state.clientCancelled && !state.workspacePreviewForbidden &&
+        state.workspacePreview?.sha256 === previewBinding.sha256 &&
+        state.workspacePreview?.relativeDirectory === previewBinding.relativeDirectory) {
+      const bound = bindDefaultPreviewInspection(toolName === 'tool_call' ? input.args : input,
+        previewBinding);
+      if (bound) normalizedParams = toolName === 'tool_call' ? {...input, args:bound} : bound;
+    }
     if (state) {
       state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
       const selected = toolName === 'tool_call'
@@ -7453,25 +7493,6 @@ export function createToolLoopGuard({
         pendingParams = { ...pendingParams, args: canonicalUnittest };
       }
     }
-    if (
-      state?.workspaceTaskDirectory &&
-      toolName === "tool_call" &&
-      pendingParams?.id?.split(":").at(-1) === "exec" &&
-      pendingParams.args &&
-      typeof pendingParams.args === "object" &&
-      !Array.isArray(pendingParams.args) &&
-      verificationExecFingerprint(pendingParams.args)
-    ) {
-      pendingParams = {
-        ...pendingParams,
-        args: {
-          ...pendingParams.args,
-          pty: false,
-          background: false,
-          yieldMs: Math.max(30_000, Number(pendingParams.args.yieldMs) || 0),
-        },
-      };
-    }
     const pendingSelectedName =
       toolName === "tool_call" && typeof pendingParams?.id === "string"
         ? pendingParams.id.split(":").at(-1)
@@ -7655,6 +7676,7 @@ export function createToolLoopGuard({
       }
       if (
         ["edit", "write"].includes(selectedToolName) &&
+        !fileVersionAdmissionAvailable &&
         !state.successfulReadPaths.has(selectedPath)
       ) {
         return {
@@ -8780,6 +8802,16 @@ export function createToolLoopGuard({
           userMessageRequestsPrivateUrl(event?.messages, event?.prompt);
       }
       if (typeof sessionId === "string" && sessionId) {
+        // A new owner turn retires the previous run's convenience binding.
+        // Late tool hooks may refresh sessionRuns, but cannot revive it.
+        const priorRunId = sessionRuns.get(sessionId);
+        if (ownerIntent && priorRunId && priorRunId !== runId) {
+          const priorState = runs.get(priorRunId);
+          if (priorState) {
+            priorState.implicitPreviewSuperseded = true;
+            priorState.implicitPreviewBinding = undefined;
+          }
+        }
         state.currentSessionId = sessionId;
         sessionRuns.delete(sessionId);
         while (sessionRuns.size >= MAX_TRACKED_RUNS) sessionRuns.delete(sessionRuns.keys().next().value);
@@ -9427,7 +9459,9 @@ export function createToolLoopGuard({
         }
       }
       state.successfulWritePaths.add(completedWritePath);
-      const writtenContent = successfulMutation.event?.params?.content;
+      const writtenContent = fileVersionAdmissionAvailable
+        ? observedCompleteFileContent(successfulMutation.event?.result, 'write', completedWritePath)
+        : successfulMutation.event?.params?.content;
       if (
         typeof writtenContent === "string" &&
         Buffer.byteLength(writtenContent, "utf8") <= MAX_TRACKED_WORKSPACE_FILE_BYTES
@@ -9476,7 +9510,9 @@ export function createToolLoopGuard({
       state.workspaceVisualContinuationEdited = true;
     }
     if (completedEditPath && state.successfulWritePaths.has(completedEditPath)) {
-      const editedContent = replayTrackedEdit(
+      const editedContent = fileVersionAdmissionAvailable
+        ? observedCompleteFileContent(successfulMutation.event?.result, 'edit', completedEditPath)
+        : replayTrackedEdit(
         state.successfulWriteContentByPath.get(completedEditPath),
         completedEditPairs
       );
@@ -10236,7 +10272,8 @@ export function createToolLoopGuard({
     const directory = state?.workspaceTaskDirectory;
     // Only recommend a path inside the already verified continuation project.
     // This is guidance for a real read, never an automatic read or permission
-    // to mutate; the existing per-file successfulReadPaths gate still applies.
+    // to mutate. Older runtimes retain their per-run read prerequisite; the
+    // repaired SDK checks current bytes and current model-visible content.
     const path = selectedPath ?? (typeof directory === "string" ? `${directory}/index.html` : undefined);
     if (typeof directory !== "string" || normalizeWorkspaceFilePath(directory) !== directory ||
         typeof path !== "string" || normalizeWorkspaceFilePath(path) !== path ||
@@ -10257,8 +10294,10 @@ export function createToolLoopGuard({
       path => path.startsWith(`${directory}/`)
     );
     return {
-      stage: hasRead ? "workspace-visual-continuation-edit" : "workspace-visual-continuation-read",
-      instruction: hasRead ? WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON
+      stage: hasRead || fileVersionAdmissionAvailable ? "workspace-visual-continuation-edit" : "workspace-visual-continuation-read",
+      instruction: fileVersionAdmissionAvailable
+        ? "Edit the existing project using its relevant content already visible in this context. Native file operations verify its current version before changing it. If the version or required content is unavailable, read the affected range first; a full replacement requires the complete file. Then verify the requested behavior and republish."
+        : hasRead ? WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON
         : visualContinuationReadInstruction(state),
     };
   }

@@ -82,10 +82,22 @@ function sourceUrls(result) {
   return urls;
 }
 
-export function executionContext(now = new Date()) {
-  return 'For exact file contents, prefer write and verify the bytes with read. If shell writing is required, use portable printf with a literal format, not echo -n or echo escape handling, which differs between shells. Do not claim a match when readback differs. ' +
-    `Current time from the host clock: ${now.toISOString()} (UTC). This is the actual date, not your training cutoff. Honor the owner's explicit date and timezone. For current news, verify publication dates in sources; do not label older results as today's news. ` +
+export function executionPolicy() {
+  return 'For normal commands, use the configured foreground wait; request background execution only for genuinely long-lived work. Avoid repeated polling and use the owned completion notification when available. A timeout, abort, or completed parent shell does not prove all child work has settled; report only the lifecycle state supported by the receipt. ' +
+    'For exact file contents, use a matching native verified readback receipt when it proves the current complete bytes; do not reread solely to repeat that evidence. Read fresh bytes when the receipt is missing, truncated, stale, or does not cover the content needed for the next edit. A byte receipt does not replace requested behavior checks. If shell writing is required, use portable printf with a literal format, not echo -n or echo escape handling, which differs between shells. Do not claim a match when readback differs. ' +
     'An action request requires execution, not a final promise. Short follow-ups such as "ok, consulte" continue the preceding owner task. Tool Search discovers capabilities, not news or files: use tool names in its query, then invoke the returned exact ID and schema. Empty search results do not prove that an event did not occur or that a date is future. Try a relevant public source directly or state what remains unverified. When a material preference is missing, discover pixel_ods_ask_user to present 1–3 questions with choices, then wait. Its exact arguments look like {"questions":[{"id":"style","question":"Which style?","options":["Minimal","Colorful"]}]}; translate the question and options into the owner language. Do not ask about routine steps or use choices as permission for unrelated actions.';
+}
+
+export function executionClock(startedAt) {
+  const date = new Date(startedAt);
+  if (!Number.isFinite(date.getTime())) throw new Error('Host turn clock is unavailable');
+  return `Host clock captured when this turn was admitted: ${date.toISOString()} (UTC). This is a historical turn timestamp, not a live clock or authorization. Honor the owner's explicit date and timezone. For current news, verify publication dates in sources; do not label older results as today's news.`;
+}
+
+// Legacy callers retain a clock-bearing context; production separates policy
+// from the SDK-admitted immutable turn fact.
+export function executionContext(now = new Date()) {
+  return `${executionPolicy()} ${executionClock(now)}`;
 }
 
 export function researchRequested(text) {

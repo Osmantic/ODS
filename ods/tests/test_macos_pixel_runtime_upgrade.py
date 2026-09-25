@@ -17,6 +17,17 @@ SPEC.loader.exec_module(upgrade)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
 
 
+@pytest.mark.parametrize('additions', [upgrade.LEGACY_INSPECTION_ADDITIONS,
+    upgrade.DOCUMENT_LEASE_ADDITIONS, upgrade.INSPECTION_ADDITIONS])
+def test_each_complete_inspection_migration_generation_round_trips(additions):
+    records = [dict(path=path, before=None, after=b'candidate', mode=0o644, gid=0)
+               for path in sorted(additions)]
+    options = dict(current_digest='a' * 64, candidate_digest='b' * 64,
+                   allowed_paths=set(additions))
+    value = upgrade.encode_recovery(records, **options)
+    assert upgrade.decode_recovery(value, **options) == records
+
+
 @pytest.mark.parametrize('fault', [None, 'partial', 'foreign', 'after-absent', 'mode', 'gid', 'v1-null', 'digest'])
 def test_inspection_additions_have_explicit_bounded_recovery_schema(fault):
     records = [dict(path=path, before=None, after=b'candidate', mode=0o644, gid=0)

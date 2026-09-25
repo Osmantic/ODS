@@ -120,6 +120,14 @@ if (not isinstance(updated_tools, dict)
     raise SystemExit("OpenClaw tool policy is outside the ODS Pixel runtime contract")
 if not isinstance(updated_web, dict) or not isinstance(updated_fetch, dict):
     raise SystemExit("OpenClaw web tool policy is outside the ODS Pixel runtime contract")
+# Interactive commands can finish without a polling model turn. Preserve both
+# agent-specific settings and explicitly configured global execution defaults.
+updated_exec = updated_agent_tools.setdefault("exec", {})
+global_exec = updated_tools.get("exec", {})
+if not isinstance(updated_exec, dict) or not isinstance(global_exec, dict):
+    raise SystemExit("OpenClaw execution policy is outside the ODS Pixel runtime contract")
+for name, default in (("backgroundMs", 60000), ("notifyOnExit", True), ("notifyOnExitEmptySuccess", True)):
+    updated_exec.setdefault(name, global_exec.get(name, default))
 openclaw_home = pathlib.Path(sys.argv[4]) if len(sys.argv) > 4 else pathlib.Path.home() / ".openclaw"
 if not openclaw_home.is_absolute() or ".." in openclaw_home.parts:
     raise SystemExit("absolute ODS OpenClaw home required")
@@ -132,6 +140,11 @@ if existing_binds not in ([], [exec_control_bind]):
 # the host tree owner/mode, and exposes it read-only inside the sandbox.
 updated_sandbox_docker["binds"] = [exec_control_bind]
 updated_sandbox_docker["dangerouslyAllowExternalBindSources"] = True
+# ODS's managed sandbox includes Python and supports exact per-exec custody.
+updated_sandbox_env = updated_sandbox_docker.setdefault("env", {})
+if not isinstance(updated_sandbox_env, dict):
+    raise SystemExit("Pixel sandbox environment is invalid")
+updated_sandbox_env["ODS_EXEC_CUSTODY"] = "1"
 # RLIMIT_NPROC follows the real host UID across containers and host services.
 # The sandbox already has a per-container pidsLimit, so retaining the OpenClaw
 # default nproc=1024 can starve exec on large local-inference installations.

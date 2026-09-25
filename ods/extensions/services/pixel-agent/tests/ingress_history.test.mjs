@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import crypto from 'node:crypto';
+import {odsAdmissionCanonical,odsAdmissionMac,odsAdmissionSha} from '../host/probe_admission.mjs';
 import {createIngressServer,computeSessionUser} from '../host/pixel_ingress.mjs';
 import {createChatHistoryLedger} from '../host/chat_history_ledger.mjs';
 const u=content=>({role:'user',content}),a=content=>({role:'assistant',content});
@@ -17,7 +19,7 @@ async function fixture(t) {
   const gateway=http.createServer(async(req,res)=>{
     if(req.url==='/health') {res.setHeader('content-type','application/json');return res.end('{"ok":true}');}
     let raw='';for await(const part of req) raw+=part;
-    const body=JSON.parse(raw||'{}');calls.push({path:req.url,body});res.setHeader('content-type','application/json');
+    const body=JSON.parse(raw||'{}');calls.push({path:req.url,body,raw,headers:req.headers});res.setHeader('content-type','application/json');
     if(req.url==='/pixel-ods/context') return res.end(JSON.stringify(native));
     if(req.url==='/pixel-ods/abort') return res.end(JSON.stringify({aborted:true}));
     if(req.url==='/pixel-ods/history') return res.end(JSON.stringify({schemaVersion:1,hydrated:true}));
@@ -29,9 +31,9 @@ async function fixture(t) {
   const port=await listen(gateway),ingress=createIngressServer({token:'test-token',gatewayPort:port,historyLedger:ledger});
   const ingressPort=await listen(ingress);
   t.after(async()=>{await Promise.all([new Promise(r=>ingress.close(r)),new Promise(r=>gateway.close(r))]);fs.rmSync(dir,{recursive:true,force:true})});
-  async function post(route,body) {const response=await fetch(`http://127.0.0.1:${ingressPort}${route}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});return {status:response.status,value:await response.json()}}
+  async function post(route,body,headers={}) {const response=await fetch(`http://127.0.0.1:${ingressPort}${route}`,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify(body)});return {status:response.status,value:await response.json()}}
   const chat=(request_id,messages)=>post('/v1/chat/completions',{user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages:[{role:'system',content:'Trusted identity'},...messages.slice(-3,-1),u(messages.at(-1).content+'\nDelivery contract')],stream:false});
-  return {ledger,calls,native,post,chat,setFailure:(value=true)=>{chatFailure=value},setAnswer:value=>{answer=value}};
+  return {dir,ledger,calls,native,post,chat,setFailure:(value=true)=>{chatFailure=value},setAnswer:value=>{answer=value}};
 }
 test('ingress delivers a delta with the edge contract, persists full snapshot and replays without rerunning',async t=>{
   const f=await fixture(t);
@@ -82,3 +84,45 @@ test('Stop confirms an unknown outcome as interrupted so the next turn sends onl
   assert.equal((await f.chat('next',[u('old task'),u('different task')])).status,200);
   assert.deepEqual(f.calls.filter(c=>c.path==='/v1/chat/completions').at(-1).body.messages,[{role:'system',content:'Trusted identity'},u('different task\nDelivery contract')]);
 });
+
+
+test('ordinary ingress socket binds owned history request to exact gateway bytes without trusting public probe headers',async t=>{
+  const f=await fixture(t),old=process.env.ODS_PIXEL_PROBE_ROOT;
+  const root=path.join(f.dir,'probe');fs.mkdirSync(root,{mode:0o700});process.env.ODS_PIXEL_PROBE_ROOT=root;
+  t.after(()=>{if(old===undefined)delete process.env.ODS_PIXEL_PROBE_ROOT;else process.env.ODS_PIXEL_PROBE_ROOT=old});
+  const incoming={user:rawUser,request_id:'owned-probe',history_snapshot:{schemaVersion:1,messages:[u('six times seven')]},messages:[{role:'system',content:'Trusted identity'},u('six times seven\nDelivery contract')],stream:false};
+  const auth={schemaVersion:1,agentId:'pixel',ownerUid:process.getuid(),scopeId:crypto.randomUUID(),signingKey:crypto.randomBytes(32).toString('hex'),expiresAtMs:Date.now()+60000,maxAttempts:16,user,requestId:incoming.request_id,sessionId:'existing-session',sessionKey:'agent:pixel:owned',provider:'local',modelId:'test',baseUrl:'http://127.0.0.1:1234/v1'};
+  auth.incomingHmac=odsAdmissionMac(auth.signingKey,odsAdmissionCanonical(incoming));
+  const authFile=path.join(root,'authorize-'+odsAdmissionSha(user+'\0'+incoming.request_id)+'.json');fs.writeFileSync(authFile,JSON.stringify(auth),{mode:0o600});
+  assert.equal((await f.post('/v1/chat/completions',incoming,{'X-ODS-Probe-Admission':'forged-public','X-ODS-Probe':'forged-public'})).status,200);
+  const chat=f.calls.find(c=>c.path==='/v1/chat/completions'),header=chat.headers['x-ods-probe-admission'];assert.match(header,/^[a-f0-9]{32}\.[a-f0-9]{64}$/);assert(!chat.headers['x-ods-probe']);
+  const transfer=JSON.parse(fs.readFileSync(path.join(root,'transfer-'+header.split('.')[0]+'.json')));
+  assert.equal(transfer.gatewayBodySha256,odsAdmissionSha(chat.raw));assert(!chat.raw.includes(auth.scopeId));assert(!fs.existsSync(authFile));
+  assert.equal((await f.post('/v1/chat/completions',incoming)).status,200);assert.equal(f.calls.filter(c=>c.path==='/v1/chat/completions').length,1,'ordinary history replay never resubmits');
+});
+
+for (const mode of ['deadline','http','body','schema','transport']) {
+  test(`native context ${mode} diagnostic preserves admission and hides private data`,async t=>{
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ods-context-diagnostic-'));fs.chmodSync(dir,0o700);
+    const ledger=createChatHistoryLedger(dir), logs=[], calls=[];
+    const original=console.warn; console.warn=value=>logs.push(value);
+    t.after(()=>{console.warn=original;fs.rmSync(dir,{recursive:true,force:true});});
+    const deps={setTimeout:(callback,ms)=>mode==='deadline'?setTimeout(callback,0):setTimeout(callback,ms),clearTimeout,
+      fetch:async(url,options)=>{
+        calls.push(url);
+        if(mode==='deadline') return new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new Error('private-token owner-body')),{once:true}));
+        if(mode==='transport') throw new Error('private-token owner-body');
+        if(mode==='http') return new Response('private-token owner-body',{status:503,headers:{'content-type':'application/json'}});
+        return new Response(mode==='body'?'private-token owner-body':'{}',{headers:{'content-type':'application/json'}});
+      }};
+    const ingress=createIngressServer({token:'private-token',gatewayPort:18789,historyLedger:ledger,deps});
+    const port=await listen(ingress);
+    t.after(()=>new Promise(resolve=>ingress.close(resolve)));
+    const response=await fetch(`http://127.0.0.1:${port}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({user:rawUser,request_id:'not-admitted',messages:[u('owner-body')],history_snapshot:{schemaVersion:1,messages:[u('owner-body')]}})});
+    assert.equal(response.status,503);assert.match(await response.text(),/context-unavailable/);
+    assert.equal(ledger.read(user),null);assert.equal(calls.length,1);assert.ok(calls[0].endsWith('/pixel-ods/context'));
+    assert.equal(logs.length,2);assert.equal(logs[1],"pixel-ingress chat failed stage=native-context status=503 submitted=false");
+    const expected={deadline:'stage=headers status=0 reason=deadline',http:'stage=response status=503 reason=response',body:'stage=body status=200 reason=body',schema:'stage=schema status=200 reason=schema',transport:'stage=headers status=0 reason=transport'}[mode];
+    assert.ok(logs[0].includes(expected));assert.match(logs[0],/elapsedMs=\d+$/);assert.doesNotMatch(logs[0],/private-token|owner-body|not-admitted|history-canary/);
+  });
+}

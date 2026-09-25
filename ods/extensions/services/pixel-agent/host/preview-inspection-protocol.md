@@ -5,6 +5,40 @@ requirements must be enabled only when the protected inspector is installed.
 Publishing remains static, create-only byte publication; it gains no Docker
 socket or browser authority.
 
+## Explicit document leases
+
+Ordinary calls still open and close a fresh browser context. `mode: "snapshot"`
+with a publication binding and viewport opens one bounded live document and
+returns opaque `leaseId`, `documentGeneration`, and element `ref` values. Page
+descriptions are bounded untrusted data, not instructions or a behavior verdict.
+`mode: "continue"` adds that leaseId to an ordinary plan. A locator can use
+`{ref, documentGeneration}` instead of CSS/role; it refers to the retained DOM
+object, never a fuzzy selector. `mode: "close"` releases the lease. Continue and
+close retain the publication binding and viewport. Omitted publication handles
+use the same existing single-current-publication admission rule.
+
+Each plugin runtime permits one active lease. Actual before-tool hooks bind it
+to the admitted run/session and a private runtime nonce; factory or model text
+alone cannot admit it. Container ID and scope remain private. The protected
+broker verifies the exact immutable container/image, labels and confinement
+before a fixed control request. Mac uses its existing protected helper transport.
+Author JavaScript cannot access the isolated-world element map. A replaced node,
+navigation, wrong owner/run/publication, expiry or missing container rejects the
+reference without reconstructing a page. CSS remains available.
+
+Limits are 128 described elements, 24KB element data, 12 steps per call, eight
+calls including open, 45 idle seconds and 120 seconds absolute. Existing per-call
+deadlines and capsule resources remain. Explicit close, parent cancellation and
+agent end request exact owned cleanup; uncertain cleanup is never reported as
+quiescence. An independent capsule watchdog bounds abandoned leases.
+
+Only a completed inspection plan can produce the existing schemaVersion1
+behavior receipt. Snapshot and close responses use schemaVersion2 and cannot
+satisfy behavior verification. Ref plans use the same exact plan hash and
+before/click/after requirements as CSS plans. Browser-process reuse for separate
+fresh contexts is an opt-in internal primitive, not an enabled ordinary-call
+default; paired performance evidence is reviewed separately.
+
 ## Request
 
 The plugin sends one JSON object with `schemaVersion: 1`, `action: "inspect"`,

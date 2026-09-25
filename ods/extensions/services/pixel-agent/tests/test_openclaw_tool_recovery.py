@@ -42,7 +42,8 @@ def run(installation, **kwargs):
 
 
 @pytest.mark.parametrize("module_name", [repair_module.COMPLETION_MODULE, repair_module.IMAGE_MODULE,
-                                         repair_module.COMPACTION_IDLE_MODULE, repair_module.COMPACTION_BUDGET_MODULE])
+                                         repair_module.COMPACTION_IDLE_MODULE, repair_module.COMPACTION_BUDGET_MODULE,
+                                         repair_module.FILE_OPERATIONS_MODULE, repair_module.FILE_IDENTITY_MODULE])
 def test_additional_module_has_separate_exact_byte_custody(installation, module_name):
     runtime, state, manifest, module, original, patched = installation
     completion = module.with_name(module_name)
@@ -275,7 +276,16 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
     ('OPENCLAW_TOOL_SEARCH_MODULE', 'openclaw-image-envelope.json', repair_module.IMAGE_MODULE),
     ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE),
     ('OPENCLAW_READ_MODULE', 'openclaw-read-range.json', repair_module.READ_RANGE_MODULE),
+    ('OPENCLAW_FILE_OPERATIONS_MODULE', 'openclaw-file-operations.json', repair_module.FILE_OPERATIONS_MODULE),
+    ('OPENCLAW_FILE_IDENTITY_MODULE', 'openclaw-file-identity.json', repair_module.FILE_IDENTITY_MODULE),
+    ('OPENCLAW_PROBE_CONTEXT_MODULE', 'openclaw-probe-context.json', repair_module.PROBE_CONTEXT_MODULE),
+    ('OPENCLAW_PROBE_PROVIDER_MODULE', 'openclaw-probe-provider.json', repair_module.PROBE_PROVIDER_MODULE),
+    ('OPENCLAW_PROBE_ADMISSION_MODULE', 'openclaw-probe-admission.json', repair_module.PROBE_ADMISSION_MODULE),
+    ('OPENCLAW_PROBE_TRANSPORT_MODULE', 'openclaw-probe-transport.json', repair_module.PROBE_TRANSPORT_MODULE),
     ('OPENCLAW_COMPACTION_RESUME_MODULE', 'openclaw-compaction-resume.json', repair_module.COMPACTION_RESUME_MODULE),
+    ('OPENCLAW_PROMPT_CONTEXT_HOOK_MODULE', 'openclaw-prompt-context-hook.json', repair_module.PROMPT_CONTEXT_HOOK_MODULE),
+    ('OPENCLAW_PROMPT_CONTEXT_FORWARD_MODULE', 'openclaw-prompt-context-forward.json', repair_module.PROMPT_CONTEXT_FORWARD_MODULE),
+    ('OPENCLAW_PROMPT_CONTEXT_RUNTIME_MODULE', 'openclaw-prompt-context-runtime.json', repair_module.PROMPT_CONTEXT_RUNTIME_MODULE),
 ])
 def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_name, module_name):
     candidate_path = os.environ.get(environment)
@@ -304,7 +314,7 @@ def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_
         assert original.count(new) == 1
         original = original.replace(new, old)
     assert hashlib.sha256(original.encode()).hexdigest() == manifest["sourceSha256"]
-    versions = {manifest["sourceSha256"]: [], **manifest["previousReplacements"],
+    versions = {manifest["sourceSha256"]: [], **manifest.get("previousReplacements", {}),
                 manifest["patchedSha256"]: manifest["replacements"]}
     for expected, replacements in versions.items():
         runtime = tmp_path / expected

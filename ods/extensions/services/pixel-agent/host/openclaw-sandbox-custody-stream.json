@@ -1,0 +1,18 @@
+{
+  "sourceSha256": "ff5ce98c56f03650a454cedd2035d8e64dd7cdcf95fa469a52ef7706f8da7e4d",
+  "patchedSha256": "0368d88618fd21a026f400262325d7390a5d654a7d4d2c0b259dc84cfcdeee39",
+  "replacements": [
+    [
+      "\t\t\tconst text = stdoutDecoder.decode(chunk);",
+      "\t\t\tconst text = stdoutDecoder.decode(params.transformStdout ? params.transformStdout(chunk) : chunk);"
+    ],
+    [
+      "\t\t\t\tstdinMode: input.stdinMode\n",
+      "\t\t\t\tstdinMode: input.stdinMode,\n\t\t\t\ttransformStdout: input.transformStdout\n"
+    ],
+    [
+      "\t\tconst requestCancel = (reason) => {\n\t\t\tsetForcedReason(reason);",
+      "\t\tconst requestCancel = (reason) => {\n\t\t\tinput.onCancelRequested?.(reason);\n\t\t\tsetForcedReason(reason);"
+    ]
+  ]
+}

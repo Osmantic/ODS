@@ -436,10 +436,12 @@ test("restores the full September 16 operating core while retaining compact fall
   // SHA-256 of the evaluated full core at 44fb4335 and pre-merge 15eb56fa.
   assert.equal(createHash('sha256').update(ODS_SEPTEMBER16_CONVERSATION_CONTRACT).digest('hex'),
     '94d4a2c3cf7c7469219f0592a4a6f9e451dff0e92b8918bfb1adbbc1827c97de');
-  const oldCompact = ODS_COMPACT_CONVERSATION_CONTRACT.slice(0, -(PREVIEW_RUNTIME_CONTRACT.length + 1));
-  assert.equal(oldCompact.length, 3087);
-  assert.equal(createHash('sha256').update(oldCompact).digest('hex'),
-    '9223e1d30c01d44bf709012903027276dbbf8724e4fa53ec0766bd02e9a377f0');
+  // Compact core now directs visible calls without unnecessary discovery,
+  // while retaining the original total-size bound above.
+  const compactCore = ODS_COMPACT_CONVERSATION_CONTRACT.slice(0, -(PREVIEW_RUNTIME_CONTRACT.length + 1));
+  assert.equal(compactCore.length, 3082);
+  assert.equal(createHash('sha256').update(compactCore).digest('hex'),
+    '07ae0e91a7a43871f1ef6e097372c650ba7d76e895455832c13222e1e6766893');
   assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.endsWith(' ' + PREVIEW_RUNTIME_CONTRACT));
   assert.ok(ODS_CONVERSATION_CONTRACT.startsWith(ODS_SEPTEMBER16_CONVERSATION_CONTRACT + ' '));
   assert.ok(ODS_CONVERSATION_CONTRACT.length < 20000);

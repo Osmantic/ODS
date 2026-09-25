@@ -1,0 +1,10 @@
+{
+  "sourceSha256": "6ba890ea4a4a23b95b8dc05688480026eb2763b2d46b24ae163d5550d8da191e",
+  "patchedSha256": "57aa8f6cf6492f40b0b225d4f0b4ba9db3e94c107c86f409ff775137bd1ccbcc",
+  "replacements": [
+    [
+      "\t\t\t\t}).catch((err) => {\n\t\t\t\t\tcleanupToolRunListeners();\n\t\t\t\t\tif (yielded || run.session.backgrounded) return;",
+      "\t\t\t\t}).catch((err) => {\n\t\t\t\t\tcleanupToolRunListeners();\n\t\t\t\t\t// An uncertain cleanup retains a process handle but must reject its foreground caller.\n\t\t\t\t\tif (err?.code === \"ODS_SANDBOX_EXEC_UNSETTLED\" && !yielded) { reject(err); return; }\n\t\t\t\t\tif (yielded || run.session.backgrounded) return;"
+    ]
+  ]
+}

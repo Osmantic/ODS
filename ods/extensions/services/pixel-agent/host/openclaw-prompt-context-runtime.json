@@ -1,0 +1,19 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "554e9917a04988626e8d9901ff70371a8566893e04f3e0dd69602c9cb3d36184",
+  "replacements": [
+    [
+      "...buildActiveProcessSessionReferenceLines(runtimeInfo?.activeProcessSessions)",
+      "...runtimeInfo?.odsStablePromptContext ? [\"Use process list for current background sessions; a completed shell does not prove detached work stopped.\"] : buildActiveProcessSessionReferenceLines(runtimeInfo?.activeProcessSessions)"
+    ],
+    [
+      "runtimeInfo?.sessionKey ? `session=",
+      "!runtimeInfo?.odsStablePromptContext && runtimeInfo?.sessionKey ? `session="
+    ],
+    [
+      "runtimeInfo?.sessionId ? `sessionId=",
+      "!runtimeInfo?.odsStablePromptContext && runtimeInfo?.sessionId ? `sessionId="
+    ]
+  ],
+  "patchedSha256": "497d48552e04d239a1968b1df245fa4d35aed56efc42d72cdb4ab00272ab1c64"
+}
