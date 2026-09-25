@@ -234,3 +234,63 @@ test('pinned runtime recipe embeds the reviewed helper source exactly', () => {
   const manifest=JSON.parse(readFileSync(new URL('../host/openclaw-compaction-resume.json',import.meta.url)));
   assert.ok(manifest.replacements.some(([before,after])=>before==='function createEditTool(cwd, options) {' && after.startsWith(helper)));
 });
+
+
+test('contiguous retained ranges authorize full replacement without another read', async () => {
+  const f = fixture(Array.from({length: 1600}, (_, i) => `line-${i}-abcdefghij`).join('\n'));
+  const messages = []; let offset = 1, n = 0;
+  while (offset <= 1600) {
+    const id = `page-${++n}`, result = await f.read.execute(id, {path:'a.txt',offset});
+    const receipt = result.details.fileReceipt;
+    assert.equal(receipt.fullFile, false);
+    messages.push({role:'toolResult',toolName:'read',toolCallId:id,...result});
+    offset = receipt.end + 1;
+  }
+  assert(n > 1);
+  f.context.updateVisible(messages);
+  assert.equal(f.context.visible('a.txt').fullFile, true);
+  await f.mutation('write').execute('w',{path:'a.txt',content:'replaced'});
+  assert.equal(f.bytes.toString(),'replaced');
+});
+
+test('range union rejects gaps, provider truncation, and newer versions', async () => {
+  for (const kind of ['gap','truncated','new-version']) {
+    const f=fixture('one\ntwo\nthree');
+    const a=await f.read.execute('a',{path:'a.txt',offset:1,limit:1});
+    const b=await f.read.execute('b',{path:'a.txt',offset:2,limit:1});
+    if(kind==='new-version') f.set('ONE\ntwo\nthree');
+    const c=await f.read.execute('c',{path:'a.txt',offset:3,limit:1});
+    const messages=[{role:'toolResult',toolName:'read',toolCallId:'a',...a}];
+    if(kind!=='gap') messages.push({role:'toolResult',toolName:'read',toolCallId:'b',...b,
+      ...(kind==='truncated'?{content:[{type:'text',text:'[truncated]'}]}:{})});
+    messages.push({role:'toolResult',toolName:'read',toolCallId:'c',...c});
+    f.context.updateVisible(messages);
+    assert.equal(f.context.visible('a.txt').fullFile,false,kind);
+    await assert.rejects(f.mutation('write').execute('w',{path:'a.txt',content:'replacement'}),{code:'ODS_FILE_VERSION_REFRESH_REQUIRED'});
+    assert.equal(f.writes,0);
+  }
+});
+
+test('bounded coverage eviction cannot retain stale full-file union', async () => {
+  const f=fixture(Array.from({length:33},(_,i)=>`line-${i}`).join('\n')), messages=[];
+  for(let line=1;line<=33;line++) {
+    const id=`r${line}`, result=await f.read.execute(id,{path:'a.txt',offset:line,limit:1});
+    messages.push({role:'toolResult',toolName:'read',toolCallId:id,...result});
+  }
+  f.context.updateVisible(messages);
+  assert.equal(f.context.visible('a.txt').coverage.length,32);
+  assert.equal(f.context.visible('a.txt').fullFile,false);
+});
+
+test('oversized lines explicitly report unsupported visibility instead of impossible refresh', async () => {
+  for(const prefix of ['', 'short\n']) {
+    const f=fixture(prefix+'x'.repeat(13000));
+    const result=await f.read.execute('r',{path:'a.txt'});
+    assert.match(result.content[0].text,/Repeating the same read cannot grant/);
+    assert.doesNotMatch(result.content[0].text,/More content: read/);
+    assert(result.content[0].text.length < 12500);
+    f.show(result,'r');
+    assert.notEqual(f.context.visible('a.txt')?.fullFile,true);
+    await assert.rejects(f.mutation('write').execute('w',{path:'a.txt',content:'replacement'}),{code:'ODS_FILE_VERSION_REFRESH_REQUIRED'});
+  }
+});

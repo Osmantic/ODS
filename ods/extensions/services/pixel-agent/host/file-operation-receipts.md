@@ -60,3 +60,19 @@ must include both new exact recipes. Each uses existing private backup,
 apply/reapply, predecessor verification and refusal to overwrite changed bytes
 on restore. Deployment is incomplete until both installers and the selection
 callback are composed and the real provider-wire fixture passes.
+
+
+## Complete visibility from bounded reads
+
+A full-file replacement may reuse up to 32 retained, complete, provider-visible
+ranges whose union covers lines 1 through the current total line count. Every
+range must belong to the same byte hash and confined-open identity. Missing,
+truncated, evicted, or superseded ranges do not count. This is context visibility,
+not cached filesystem authority: mutation still rereads actual confined bytes.
+
+A single numbered line exceeding the 12,000-character body budget cannot obtain
+receipt visibility through this line-oriented read adapter. The result explicitly
+reports that limitation instead of suggesting an impossible repeat read. No
+full-file replacement authority is granted; existing confined tools remain
+available for bounded targeted operations under their ordinary checks. A future
+byte-range reader would require a separate schema and visibility contract.

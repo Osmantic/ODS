@@ -82,8 +82,15 @@ export function createFileReceiptContext({ agentId, sessionKey, workspace, enabl
           const range = { start: receipt.start, end: receipt.end, excerpt: receipt.excerpt };
           if (!coverage.some(item => item.start === range.start && item.end === range.end)) coverage.push(range);
           while (coverage.length > 32) coverage.shift();
+          // Full replacement may use several retained ranges, but never a gap,
+          // a truncated body, or coverage evicted by the bounded history cap.
+          let coveredThrough = 0;
+          for (const item of [...coverage].sort((a, b) => a.start - b.start)) {
+            if (item.start > coveredThrough + 1) break;
+            coveredThrough = Math.max(coveredThrough, item.end);
+          }
           visible.set(receipt.path, { ...receipt, coverage,
-            fullFile: receipt.fullFile === true || prior?.fullFile === true });
+            fullFile: Number.isSafeInteger(receipt.totalLines) && receipt.totalLines > 0 && coveredThrough >= receipt.totalLines });
         }
       }
     },
@@ -107,14 +114,17 @@ function rangeBody(buffer, args, operation) {
   const requested = operation === 'read' && Number.isSafeInteger(args.limit) && args.limit > 0 ? args.limit : lines.length;
   const end = Math.min(lines.length, start + requested - 1);
   if (start > end) return undefined;
-  let body = '', last = start - 1;
+  let body = '', last = start - 1, oversizedLine;
   for (let line = start; line <= end; line++) {
     const next = `${line}|${lines[line - 1]}\n`;
-    if (body.length + next.length > MAX_BODY) break;
+    if (body.length + next.length > MAX_BODY) {
+      if (next.length > MAX_BODY) oversizedLine = line;
+      break;
+    }
     body += next;
     last = line;
   }
-  return { body, start, end: last, totalLines: lines.length,
+  return { body, start, end: last, totalLines: lines.length, oversizedLine,
     bodyComplete: last >= start, requestedRangeComplete: last === end,
     fullFile: start === 1 && last === lines.length,
     excerpt: lines.slice(start - 1, last).join('\n') };
@@ -237,12 +247,16 @@ export function createFileReceiptAdapter({ root, operation, operations, context 
       const range = operation === 'edit' && Number.isSafeInteger(changedLine) && changedLine > 0
         ? rangeBody(state.observed, { offset: Math.max(1, changedLine - 3), limit: 12 }, 'read')
         : rangeBody(state.observed, args, operation);
-      if (!range || !range.body) return result;
+      if (!range) return result;
+      const limitation = range.oversizedLine ? `[File receipt unavailable for line ${range.oversizedLine}: this line exceeds the ${MAX_BODY}-character numbered-line budget. Repeating the same read cannot grant complete-file replacement evidence. Use a bounded targeted operation through the existing confined tools; no full-file visibility is claimed.]` : '';
+      if (!range.body) return limitation ? { ...result, content: operation === 'read'
+        ? [{ type: 'text', text: limitation }]
+        : [...(result.content ?? []), { type: 'text', text: limitation }] } : result;
       const receipt = { schemaVersion: 1, id: randomUUID(), scope: context.scope, toolCallId,
         operation, path: state.path, version: digest(state.observed), identity: state.identity, bytes: state.observed.length,
         status: 'completed', observed: true, ...range };
       const header = `[File ${operation}: ${receipt.path}; sha256=${receipt.version}; bytes=${receipt.bytes}; lines=${range.start}-${range.end}/${range.totalLines}]`;
-      const omitted = range.end < range.totalLines ? `\n[More content: read path=${JSON.stringify(receipt.path)} offset=${range.end + 1}.]` : '';
+      const omitted = limitation ? `\n${limitation}` : range.end < range.totalLines ? `\n[More content: read path=${JSON.stringify(receipt.path)} offset=${range.end + 1}.]` : '';
       const rendered = `${header}\n${range.body}${omitted}`;
       receipt.rendered = rendered;
       receipt.renderedSha256 = digest(rendered);
