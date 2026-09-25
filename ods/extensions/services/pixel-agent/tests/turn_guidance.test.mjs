@@ -242,7 +242,8 @@ test("the plugin entry stores owner messages through before_message_write", asyn
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../plugin/index.js", import.meta.url), "utf8");
   assert.match(source, /api\.on\("before_message_write", \(event, context\) =>\s+turnGuidance\.beforeMessageWrite\(event, context\)\s+\);/);
-  assert.match(source, /resentGuidance: retryGuidance\(rawEvent\?\.messages, rawEvent\?\.prompt\),/);
+  assert.match(source, /const resent = retryGuidance\(rawEvent\?\.messages, rawEvent\?\.prompt\);/);
+  assert.match(source, /resentGuidance: resent && \(!hostDate \|\| resent\.includes\(hostDate\)\) \? resent : undefined,/);
   assert.match(source, /turnGuidance\.remember\(context, rawEvent\?\.prompt, storedGuidance\);/);
   assert.match(source, /withoutPersistedTurnGuidance\(rawEvent\?\.messages\)/);
   assert.match(source, /api\.on\("agent_end", \(_event, context\) => turnGuidance\.forget\(context\)\);/);

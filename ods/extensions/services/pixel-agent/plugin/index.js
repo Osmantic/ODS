@@ -368,13 +368,17 @@ export default definePluginEntry({
       // Only configuration-derived text may enter system space. The host date,
       // goal and message-selected contracts ride on this owner message and are
       // stored with it; repository evidence rides on it for this run only.
+      const hostDate = turnHostDate(rawEvent?.messages);
+      // A resent owner message reuses its stored guidance unless the day has
+      // changed since: a current date statement wins over cache reuse.
+      const resent = retryGuidance(rawEvent?.messages, rawEvent?.prompt);
       const composed = composePromptBuildResult(contract, {
         activity: ACTIVITY_CONTRACT,
         execution: executionContext(),
-        hostDate: turnHostDate(rawEvent?.messages),
+        hostDate,
         goal: goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : "",
         repositoryEvidence,
-        resentGuidance: retryGuidance(rawEvent?.messages, rawEvent?.prompt),
+        resentGuidance: resent && (!hostDate || resent.includes(hostDate)) ? resent : undefined,
       });
       const {turnGuidance: storedGuidance, ...result} = composed ?? {};
       turnGuidance.remember(context, rawEvent?.prompt, storedGuidance);
