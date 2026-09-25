@@ -38,6 +38,16 @@ describe('FirstBoot', () => {
     globalThis.localStorage.removeItem('ods-firstboot-progress')
   })
 
+  test('announces the current setup step to assistive technology', () => {
+    render(<FirstBoot />)
+    const progress = screen.getByRole('progressbar', { name: 'Setup progress' })
+    expect(progress).toHaveAttribute('aria-valuetext', 'Step 1 of 4')
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+    fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: 'sam' } })
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+    expect(screen.getByRole('progressbar', { name: 'Setup progress' })).toHaveAttribute('aria-valuetext', 'Step 3 of 4')
+  })
+
   afterEach(() => {
     vi.restoreAllMocks()
     globalThis.localStorage.removeItem('ods-firstboot-progress')
