@@ -1716,6 +1716,8 @@ if $ENABLE_HERMES && ! $CLOUD_MODE; then
                         unset LLAMA_ARG_N_CPU_MOE LLAMA_ARG_NO_CACHE_PROMPT LLAMA_ARG_CHECKPOINT_EVERY_NT
                         unset LLAMA_ARG_SPEC_TYPE LLAMA_ARG_SPEC_DRAFT_N_MAX
                         unset LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_RAM
+                        # A chat template belongs to the selected model only.
+                        unset LLAMA_ARG_CHAT_TEMPLATE_FILE
                         load_model_selector_env_from_output <<< "$_hermes_env"
                         ai_warn "Hermes needs 64K context: ${_hermes_previous} cannot serve 64K here, so ${LLM_MODEL} was selected at ${MAX_CONTEXT}."
                         _hermes_floor_action="reselected"

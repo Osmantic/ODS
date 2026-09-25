@@ -214,6 +214,8 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
                 unset LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
                 unset LLAMA_ARG_N_CPU_MOE LLAMA_ARG_NO_CACHE_PROMPT LLAMA_ARG_CHECKPOINT_EVERY_NT
                 unset LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_RAM
+                # A chat template belongs to the selected model only.
+                unset LLAMA_ARG_CHAT_TEMPLATE_FILE
                 load_model_selector_env_from_output <<< "$_hermes_env"
                 ai_warn "Hermes needs 64K context: ${_hermes_previous_model} (at ${_hermes_previous_context}) cannot serve 64K here, so ${LLM_MODEL} was selected at ${MAX_CONTEXT}."
                 log "Hermes floor: re-selected ${LLM_MODEL} at ${MAX_CONTEXT} (was ${_hermes_previous_model} at ${_hermes_previous_context})"
