@@ -754,6 +754,25 @@ start_native_llama() {
             ai_ok "Native llama-server healthy"
             return
         fi
+        # A crash (e.g. "unknown model architecture" for a GGUF newer than
+        # the installed llama.cpp build supports — see LLAMA_CPP_RELEASE_TAG)
+        # exits almost immediately, not gradually. Polling /health alone
+        # can't tell "still loading" apart from "already dead", so the old
+        # code waited out the full 60s and reported a misleading "may still
+        # be loading" even when the process was long gone. Check liveness
+        # too and surface the real failure right away.
+        if ! kill -0 "$pid" 2>/dev/null; then
+            ai_err "Native llama-server exited before becoming healthy (PID ${pid})"
+            if [[ -f "$LLAMA_SERVER_LOG" ]]; then
+                ai "Last log lines (${LLAMA_SERVER_LOG}):"
+                tail -n 20 "$LLAMA_SERVER_LOG"
+            fi
+            ai "If the log mentions an unknown/unsupported model architecture, "
+            ai "the installed llama.cpp build (LLAMA_CPP_RELEASE_TAG) is too old "
+            ai "for this GGUF — re-run the installer for this model's profile, "
+            ai "or set LLAMA_CPP_RELEASE_TAG_OVERRIDE to a build that supports it."
+            return
+        fi
     done
     ai_warn "llama-server may still be loading model..."
 }
