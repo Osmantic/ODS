@@ -233,6 +233,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== NVIDIA multi-GPU visibility contract ==="
 	@bash tests/test-multigpu-nvidia-visibility.sh
+	@bash tests/test-gpu-validate-one-gpu-placement.sh
 	@echo ""
 	@echo "=== CLI user-extension dependency resolution ==="
 	@bash tests/test-cli-user-extension-deps.sh
