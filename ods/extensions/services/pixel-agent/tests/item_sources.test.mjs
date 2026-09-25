@@ -14,7 +14,10 @@ import {entryOwnLink, listingProfile, siteOf, urlNamesEntry} from '../plugin/sou
 import {itemSourceFindings} from '../plugin/item-sources.mjs';
 import {t as extractFixture} from './fixtures/html-extraction/extractor.mjs';
 import {PER_ITEM_PROMPT, PLAIN_PROMPT, GUIDE, AGGREGATOR, DESIGN, HALLOWEEN, RODEO, R091_SEARCH, R091_ANSWER,
-  GUIDE_PAGE, AGGREGATOR_PAGE, OWN_PAGES} from './fixtures/search-read-listings.mjs';
+  GUIDE_PAGE, AGGREGATOR_PAGE, OWN_PAGES, MONTH_GUIDE, RIVER_FEST, OKTOBERFEST, R092_T2_ANSWER,
+  MONTH_GUIDE_FETCH_TEXT} from './fixtures/search-read-listings.mjs';
+
+const KIMMEL = 'https://www.ensembleartsphilly.org/rent-our-spaces/special-events-and-performances/the-first-at-250';
 
 const PAGES = {[GUIDE]: GUIDE_PAGE, [GUIDE.replace(/\/$/, '')]: GUIDE_PAGE, [AGGREGATOR]: AGGREGATOR_PAGE, ...OWN_PAGES};
 
@@ -227,6 +230,49 @@ test('no regression: without a per-item request, or with own pages cited, nothin
   await refs.searchRead(FIRST);
   await refs.searchRead({urls: [DESIGN, HALLOWEEN], focus: 'dates venue'});
   assert.equal(await refs.finalize(`${answer}\n\nSources consulted:\n- ${GUIDE}\n- ${AGGREGATOR}`), undefined);
+});
+
+test('main without search_read (tower2 round 092): a guide read with web_fetch is a listing, and its own links count', async () => {
+  const run = 'r092-web-fetch';
+  const context = {agentId: 'pixel', runId: run, sessionId: `${run}-s`, sessionKey: `agent:pixel:${run}`};
+  const guard = createToolLoopGuard();
+  guard.observeRun(context, 'pixel', {prompt: PER_ITEM_PROMPT});
+  let id = 0;
+  const fetch = (url, text) => {
+    const ctx = {...context, toolName: 'web_fetch', toolCallId: `f${++id}`};
+    const details = {url, finalUrl: url, status: 200, contentType: 'text/html', extractMode: 'markdown', text};
+    guard.beforeToolCall({toolName: 'web_fetch', params: {url}}, ctx);
+    guard.afterToolCall({toolName: 'web_fetch', params: {url},
+      result: {content: [{type: 'text', text: JSON.stringify(details)}], details}}, ctx);
+  };
+  fetch(MONTH_GUIDE, MONTH_GUIDE_FETCH_TEXT);
+  fetch(KIMMEL, '<<<EXTERNAL_UNTRUSTED_CONTENT id="k">>>\nSource: Web Fetch\n---\n# The First at 250\n\nWednesday, ' +
+    'September 9, 2026, 6:30 p.m. at the Kimmel Center.\n<<<END_EXTERNAL_UNTRUSTED_CONTENT id="k">>>');
+  const decision = guard.beforeAgentFinalize({lastAssistantMessage: R092_T2_ANSWER}, context);
+  assert.equal(decision?.retry?.idempotencyKey, 'ods-item-own-sources');
+  const instruction = decision.retry.instruction;
+  assert.match(instruction, new RegExp(`"Delaware River Festival" cites \\S+ a listing of 6 dated entries\\. Its own page, linked from a listing you read: ${RIVER_FEST}`));
+  assert.match(instruction, new RegExp(`"18th Annual South Street Oktoberfest" cites \\S+ a listing of 6 dated entries\\. Its own page, linked from a listing you read: ${OKTOBERFEST}`));
+  assert.doesNotMatch(instruction, /delawareriverwaterfront|The First at 250/, 'the neighbouring festival and the own page are not named');
+  assert.deepEqual(JSON.parse(instruction.match(/urls (\[[^\]]*\])/)[1]), [RIVER_FEST, OKTOBERFEST]);
+
+  // A listing read only as targeted text (pixel_ods_web_extract, no links):
+  // flagged, with no own page to offer.
+  const run2 = 'r092-extract';
+  const context2 = {agentId: 'pixel', runId: run2, sessionId: `${run2}-s`, sessionKey: `agent:pixel:${run2}`};
+  const guard2 = createToolLoopGuard();
+  guard2.observeRun(context2, 'pixel', {prompt: PER_ITEM_PROMPT});
+  const text = MONTH_GUIDE_FETCH_TEXT.replace(/\]\([^)]*\)/g, '').replace(/[[#]/g, '');
+  const ctx = {...context2, toolName: 'pixel_ods_web_extract', toolCallId: 'x1'};
+  const params = {url: MONTH_GUIDE, query: 'Delaware River Festival'};
+  guard2.beforeToolCall({toolName: 'pixel_ods_web_extract', params}, ctx);
+  guard2.afterToolCall({toolName: 'pixel_ods_web_extract', params, result: {content: [{type: 'text', text}],
+    details: {boundary: 'public-web-read-only', matched: true, source_url: MONTH_GUIDE}}}, ctx);
+  guard2.afterToolCall({toolName: 'web_fetch', params: {url: KIMMEL}, result: {content: [{type: 'text', text: 'x'}],
+    details: {url: KIMMEL, finalUrl: KIMMEL, status: 200, text: 'The First at 250, September 9, 2026'}}},
+  {...context2, toolName: 'web_fetch', toolCallId: 'x2'});
+  const extracted = guard2.beforeAgentFinalize({lastAssistantMessage: R092_T2_ANSWER}, context2);
+  assert.match(extracted?.retry?.instruction ?? '', /"Delaware River Festival" cites \S+ a listing of 6 dated entries\. No own page for it was seen yet\./);
 });
 
 test('no continuation when no page read is left to fix it', async () => {

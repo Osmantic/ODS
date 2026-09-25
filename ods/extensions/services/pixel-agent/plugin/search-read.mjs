@@ -50,7 +50,7 @@ import {citationKey, pageTitle, publicSourceUrl, sameDocument} from './completio
 import {searchTerms} from './research-pacing.mjs';
 import {PUBLIC_PAGE_TEXT_TYPES} from './web-extract.mjs';
 import {citationPageReadsAllowed} from './citation-verification.mjs';
-import {entryOwnLink, listingProfile, siteOf, SOURCE_KIND_LIMITS} from './source-kind.mjs';
+import {BINARY_PATH, listingProfile, markdownPage, SOURCE_KIND_LIMITS} from './source-kind.mjs';
 
 export const SEARCH_READ_TOOL = 'pixel_ods_search_read';
 export const SEARCH_READ_BOUNDARY = 'public-web-search-read';
@@ -236,7 +236,6 @@ export function searchReadOutputChars(config, agentId = 'pixel') {
 // ---------------------------------------------------------------------------
 // Candidate selection
 
-const BINARY_PATH = /\.(?:pdf|jpe?g|png|gif|webp|avif|svg|ico|zip|gz|tgz|bz2|xz|rar|7z|mp3|mp4|m4a|m4v|mov|avi|mkv|webm|wav|docx?|xlsx?|pptx?|odt|ods|exe|msi|dmg|iso|apk|bin)$/i;
 // Hosts whose pages carry no readable text for a non-browser client.
 const SOCIAL_HOSTS = ['youtube.com', 'youtu.be', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com',
   'tiktok.com', 'linkedin.com'];
@@ -303,57 +302,11 @@ export function selectCandidates(results, {site, maxPages = SEARCH_READ_LIMITS.d
 // ---------------------------------------------------------------------------
 // Page text: links, relevance windows and neutralisation
 
-// The pinned extractor writes some hrefs with raw spaces, e.g. UL Benchmarks'
-// "(/hardware/gpu/NVIDIA GeForce RTX 5070+review)". Such a link is still one
-// link: left unparsed, its markup filled the excerpt and pushed the page's
-// board power line out of it.
-const LINK = /(!?)\[([^[\]\n]{0,300})\]\(\s*<?([^\s()<>]{1,2048}(?: [^\s()<>"]{1,2048}){0,40})>?(?:\s+"[^"\n]{0,200}")?\s*\)|(https?:\/\/[^\s<>"'`[\]()]{4,2048})/g;
-
-// Plain text of the extracted markdown, with each link's span in it.
+// Plain text of the extracted markdown, with each link's span in it and the
+// off-site links that give one dated entry its own page (source-kind.mjs).
 export function parsePageText(text, baseUrl) {
-  const source = String(text ?? '').slice(0, SEARCH_READ_LIMITS.maxScanChars);
-  let plain = '', cursor = 0;
-  const links = [];
-  for (const match of source.matchAll(LINK)) {
-    plain += source.slice(cursor, match.index);
-    cursor = match.index + match[0].length;
-    if (match[4]) {
-      links.push({start: plain.length, end: plain.length, href: match[4], label: ''});
-      continue;
-    }
-    if (match[1]) continue; // images carry no text
-    const label = match[2].replace(/\s+/g, ' ').trim();
-    const start = plain.length;
-    plain += label;
-    links.push({start, end: plain.length, href: match[3], label});
-  }
-  plain += source.slice(cursor);
-  // Markdown headings keep their words, not their hashes.
-  plain = plain.replace(/^#{1,6}[ \t]+/gm, (hashes) => ' '.repeat(hashes.length));
-  const base = publicSourceUrl(baseUrl);
-  for (const link of links) {
-    try { link.url = base ? publicSourceUrl(new URL(link.href, base).href) : undefined; }
-    catch { link.url = undefined; }
-  }
-  // Off-site links that give one entry's own page (source-kind.mjs); other
-  // off-site links are never listed.
-  const pageSite = base ? siteOf(hostOf(base)) : undefined;
-  const ownLinks = [], ownKeys = new Set();
-  const near = SOURCE_KIND_LIMITS.entryDateChars;
-  for (const link of links) {
-    if (!link.url || !pageSite || link.url.length > SEARCH_READ_LIMITS.maxLinkChars ||
-        siteOf(hostOf(link.url)) === pageSite || BINARY_PATH.test(new URL(link.url).pathname)) continue;
-    const from = plain.lastIndexOf('\n', Math.max(0, link.start - 1)) + 1;
-    const to = plain.indexOf('\n', link.end);
-    link.own = entryOwnLink({label: link.label, line: plain.slice(from, to < 0 ? plain.length : to), url: link.url,
-      around: plain.slice(Math.max(0, link.start - near), link.end + near)});
-    const key = link.own && citationKey(link.url);
-    if (key && !ownKeys.has(key)) {
-      ownKeys.add(key);
-      ownLinks.push(link.url);
-    }
-  }
-  return {plain, links, ownLinks};
+  return markdownPage(text, baseUrl, {publicUrl: publicSourceUrl, key: citationKey,
+    maxChars: SEARCH_READ_LIMITS.maxScanChars, maxLinkChars: SEARCH_READ_LIMITS.maxLinkChars});
 }
 
 const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';

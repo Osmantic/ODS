@@ -1,7 +1,7 @@
 // A bounded completion check, not an executor. All recovered calls still go
 // through the normal tool policy, cancellation, permission and loop guards.
 import { externalContentBody, pageExcerpt, requestTerms } from './page-excerpt.mjs';
-import { listingProfile, SOURCE_KIND_LIMITS } from './source-kind.mjs';
+import { listingProfile, markdownPage, SOURCE_KIND_LIMITS } from './source-kind.mjs';
 const normalize = value => String(value ?? '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
 const WEB = new Set(['web_search', 'web_fetch', 'pixel_ods_web_extract', 'pixel_ods_search_read', 'pixel_ods_research', 'browser']);
 const DISCOVERY = new Set(['tool_search', 'tool_describe']);
@@ -92,7 +92,10 @@ function openedSourceUrls(tool, result) {
 // Read pages that are listings (source-kind.mjs): many dated entries, so a
 // lead for each entry rather than any entry's own page. pixel_ods_search_read
 // marks them from the whole page text and keeps the entries' own-page links;
-// a web_fetch or targeted extraction is judged by the text it returned.
+// a web_fetch (markdown, with its links) or a targeted extraction (text) is
+// judged by the text it returned. tower2 round 092 on main (no search_read)
+// cited one Visit Philadelphia month guide, read with web_fetch, for two of
+// its three events.
 function listingPages(tool, result) {
   const details = result?.details;
   const listing = (urls, items, ownLinks = []) => {
@@ -110,9 +113,13 @@ function listingPages(tool, result) {
   }
   const urls = openedSourceUrls(tool, result);
   if (!urls.length) return [];
-  const text = tool === 'web_fetch' ? details?.text
-    : externalContentBody((result?.content ?? []).filter(block => block?.type === 'text' && typeof block.text === 'string')
-      .map(block => block.text).join('\n'));
+  if (tool === 'web_fetch') {
+    const page = markdownPage(externalContentBody(details?.text), publicSourceUrl(details?.finalUrl) ?? urls[0],
+      {publicUrl: publicSourceUrl, key: citationKey});
+    return listing(urls, listingProfile(page.plain).items, page.ownLinks);
+  }
+  const text = externalContentBody((result?.content ?? []).filter(block => block?.type === 'text' &&
+    typeof block.text === 'string').map(block => block.text).join('\n'));
   return listing(urls, listingProfile(text).items);
 }
 

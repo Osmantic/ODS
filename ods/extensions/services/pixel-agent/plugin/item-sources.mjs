@@ -69,6 +69,17 @@ function ownPage(href, words) {
     words.filter(word => pathWords.has(word)).length >= 2;
 }
 
+// How well a listing's own-page link names an item: the item words it
+// carries, weighted by the share of its path words that are the item's.
+const PATH_FILLER = new Set(['event', 'events', 'page', 'pages', 'www', 'html', 'htm', 'php', 'aspx', 'index', 'detail',
+  'details', 'view']);
+function candidateScore(url, words) {
+  const matched = urlNamesEntry(url, words);
+  if (!matched.length) return 0;
+  const other = urlWords(url).path.filter(word => !words.includes(word) && !PATH_FILLER.has(word)).length;
+  return matched.length * matched.length / (matched.length + other);
+}
+
 // Items whose only cited source is a listing page. `listings` maps citation
 // keys to {url, items, ownLinks}; `requestText` is the owner's request, whose
 // own words (the city, "events") never identify an item.
@@ -96,12 +107,13 @@ export function itemSourceFindings(answer, {listings, requestText = ''} = {}) {
     if (seen.has(id)) continue;
     seen.add(id);
     // The own page the listings link for this item: the link named after
-    // most of its words.
+    // most of its words, and after little else (delawareriverfest.org, not
+    // a neighbouring festival's page on delawareriverwaterfront.com).
     let candidate, best = 0;
     for (const page of listings.values()) {
       for (const link of page.ownLinks) {
         if (citationKey(link) === item.key) continue;
-        const score = urlNamesEntry(link, words).length;
+        const score = candidateScore(link, words);
         if (score > best) { best = score; candidate = link; }
       }
     }

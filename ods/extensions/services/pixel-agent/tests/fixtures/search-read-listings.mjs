@@ -97,6 +97,65 @@ export const AGGREGATOR_PAGE = '<html><head><title>Live Music in Philadelphia | 
     `${name} is happening on ${date} from 7:00 PM onwards at ${venue}, Philadelphia</li>`).join('') +
   '</ul><p><a href="https://support.allevents.in/">AllEvents support</a></p></body></html>';
 
+// tower2 round 092 on main 04f0a835 (no search_read, 29 calls): the same
+// failure with web_fetch. The delivered answer (verbatim) cites one Visit
+// Philadelphia month guide for two events. The session was not collected, so
+// the guide's web_fetch result is synthetic: markdown in OpenClaw's
+// untrusted-content wrapper, entry titles linking to their own sites, and a
+// neighbouring festival on a related host.
+export const MONTH_GUIDE = 'https://www.visitphilly.com/articles/philadelphia/top-things-to-do-in-philadelphia-in-september/';
+export const RIVER_FEST = 'https://www.delawareriverfest.org/';
+export const OKTOBERFEST = 'https://southstreet.com/events/oktoberfest-2026/';
+// Verbatim, including its Markdown hard breaks (two trailing spaces).
+export const R092_T2_ANSWER = [
+  "Based on the verified live web sources, here are three public events in Philadelphia happening within the next 45 days (September 25 - October 30, 2026):",
+  "",
+  "---",
+  "",
+  "**Event 1: Delaware River Festival**  ",
+  "- **Date**: Saturday, September 26, 2026 | 10 a.m. - 4 p.m.  ",
+  "- **Venue**: Penn's Landing, 301 S. Christopher Columbus Boulevard, Philadelphia, PA  ",
+  "- **Official Source**: [https://www.visitphilly.com/articles/philadelphia/top-things-to-do-in-philadelphia-in-september/](https://www.visitphilly.com/articles/philadelphia/top-things-to-do-in-philadelphia-in-september/)  ",
+  "",
+  "A free, family-friendly event celebrating the Delaware River with face painting, pedal boating, crafting, scavenger hunting, and entry to Independence Seaport Museum and the RiverLink Ferry.",
+  "",
+  "---",
+  "",
+  "**Event 2: The First at 250**  ",
+  "- **Date**: Wednesday, September 9, 2026 | 6:30 p.m.  ",
+  "- **Venue**: Kimmel Center, 300 S. Broad Street, Philadelphia, PA  ",
+  "- **Official Source**: [https://www.ensembleartsphilly.org/rent-our-spaces/special-events-and-performances/the-first-at-250](https://www.ensembleartsphilly.org/rent-our-spaces/special-events-and-performances/the-first-at-250)  ",
+  "",
+  "A landmark fireside chat featuring Governors Spencer Cox (R-UT) and Josh Shapiro (D-PA), moderated by Lulu Garcia-Navarro of The New York Times, discussing free expression and the First Amendment in celebration of America's 250th birthday.",
+  "",
+  "---",
+  "",
+  "**Event 3: 18th Annual South Street Oktoberfest**  ",
+  "- **Date**: Saturday, September 26, 2026 | Noon - 8 p.m.  ",
+  "- **Venue**: Brauhaus Schmitz, 718 South Street, Philadelphia, PA  ",
+  "- **Official Source**: [https://www.visitphilly.com/articles/philadelphia/top-things-to-do-in-philadelphia-in-september/](https://www.visitphilly.com/articles/philadelphia/top-things-to-do-in-philadelphia-in-september/)  ",
+  "",
+  "Philly's early-semester Oktoberfest featuring German drafts, traditional bites, Hungarian dancers, food trucks, and festive activities in an open-air biergarten setting.",
+  "",
+  "---",
+  "",
+  "All dates, venues, and source URLs have been extracted directly from official Philadelphia tourism and event organization sites. The search focused on verified events with specific dates; events without明确 dates or from unverified third-party aggregators were excluded per the requirements.",
+].join('\n');
+const MONTH_ENTRIES = [
+  ['Mexican Independence Day Festival at Penn’s Landing', 'https://www.delawareriverwaterfront.com/what-to-do/mexican-independence-day-festival-2026', 'Sunday, September 13, 2026'],
+  ['Philly Black Wine Fest', 'https://www.phillyblackwinefest.com/experience', 'Saturday, September 19, 2026'],
+  ['Delaware River Festival at Penn’s Landing and Wiggins Park', RIVER_FEST, 'Saturday, September 26, 2026 | 10 a.m. - 4 p.m.'],
+  ['18th Annual South Street Oktoberfest', OKTOBERFEST, 'Saturday, September 26, 2026 | Noon - 8 p.m.'],
+  ['Philadelphia Fringe Festival', 'https://phillyfringe.org/', 'September 3 - 27, 2026'],
+  ['STRFKR at Franklin Music Hall', 'https://www.franklinmusichall.com/events/strfkr-2026', 'Tuesday, September 29, 2026'],
+];
+export const MONTH_GUIDE_FETCH_TEXT = 'SECURITY NOTICE: The following content is from an EXTERNAL, UNTRUSTED source.\n\n' +
+  '<<<EXTERNAL_UNTRUSTED_CONTENT id="f00d">>>\nSource: Web Fetch\n---\n# Top Things to Do in Philadelphia in September\n\n' +
+  MONTH_ENTRIES.map(([title, url, date]) => `## [${title}](${url})\n\n— Photo courtesy of the organizer\n\n${date}\n\n` +
+    'What to expect, who it suits and how to plan the visit. Where: [Philadelphia, PA](https://maps.google.com/?q=phl)\n\n' +
+    `[read more](${url})\n`).join('\n') +
+  '\n<<<END_EXTERNAL_UNTRUSTED_CONTENT id="f00d">>>';
+
 // The entries' own pages.
 export const OWN_PAGES = {
   [DESIGN]: '<html><head><title>Festival | DesignPhiladelphia</title></head><body><h1>Our Annual Festival</h1>' +

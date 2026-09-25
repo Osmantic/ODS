@@ -143,6 +143,63 @@ export function ownPageHost(value) {
   }
 }
 
+export const BINARY_PATH = /\.(?:pdf|jpe?g|png|gif|webp|avif|svg|ico|zip|gz|tgz|bz2|xz|rar|7z|mp3|mp4|m4a|m4v|mov|avi|mkv|webm|wav|docx?|xlsx?|pptx?|odt|ods|exe|msi|dmg|iso|apk|bin)$/i;
+const hostOf = url => new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+
+// The pinned extractor writes some hrefs with raw spaces, e.g. UL Benchmarks'
+// "(/hardware/gpu/NVIDIA GeForce RTX 5070+review)". Such a link is still one
+// link: left unparsed, its markup filled the excerpt and pushed the page's
+// board power line out of it.
+const LINK = /(!?)\[([^[\]\n]{0,300})\]\(\s*<?([^\s()<>]{1,2048}(?: [^\s()<>"]{1,2048}){0,40})>?(?:\s+"[^"\n]{0,200}")?\s*\)|(https?:\/\/[^\s<>"'`[\]()]{4,2048})/g;
+
+// Plain text of extracted markdown (pixel_ods_search_read's reads, a
+// web_fetch in markdown mode), with each link's span in it and the off-site
+// links that give one dated entry its own page (entryOwnLink). `publicUrl`
+// resolves a link to a citable public URL or undefined; `key` deduplicates.
+export function markdownPage(text, baseUrl, {publicUrl, key = url => url, maxChars = 400_000, maxLinkChars = 160} = {}) {
+  const source = String(text ?? '').slice(0, maxChars);
+  let plain = '', cursor = 0;
+  const links = [];
+  for (const match of source.matchAll(LINK)) {
+    plain += source.slice(cursor, match.index);
+    cursor = match.index + match[0].length;
+    if (match[4]) {
+      links.push({start: plain.length, end: plain.length, href: match[4], label: ''});
+      continue;
+    }
+    if (match[1]) continue; // images carry no text
+    const label = match[2].replace(/\s+/g, ' ').trim();
+    const start = plain.length;
+    plain += label;
+    links.push({start, end: plain.length, href: match[3], label});
+  }
+  plain += source.slice(cursor);
+  // Markdown headings keep their words, not their hashes.
+  plain = plain.replace(/^#{1,6}[ \t]+/gm, (hashes) => ' '.repeat(hashes.length));
+  const base = typeof publicUrl === 'function' ? publicUrl(baseUrl) : undefined;
+  for (const link of links) {
+    try { link.url = base ? publicUrl(new URL(link.href, base).href) : undefined; }
+    catch { link.url = undefined; }
+  }
+  const pageSite = base ? siteOf(hostOf(base)) : undefined;
+  const ownLinks = [], ownKeys = new Set();
+  const near = SOURCE_KIND_LIMITS.entryDateChars;
+  for (const link of links) {
+    if (!link.url || !pageSite || link.url.length > maxLinkChars || siteOf(hostOf(link.url)) === pageSite ||
+        BINARY_PATH.test(new URL(link.url).pathname)) continue;
+    const from = plain.lastIndexOf('\n', Math.max(0, link.start - 1)) + 1;
+    const to = plain.indexOf('\n', link.end);
+    link.own = entryOwnLink({label: link.label, line: plain.slice(from, to < 0 ? plain.length : to), url: link.url,
+      around: plain.slice(Math.max(0, link.start - near), link.end + near)});
+    const id = link.own && key(link.url);
+    if (id && !ownKeys.has(id)) {
+      ownKeys.add(id);
+      ownLinks.push(link.url);
+    }
+  }
+  return {plain, links, ownLinks};
+}
+
 // An off-site link on a listing that points at one entry's own page: it sits
 // by a dated entry (`around` is the page text on either side of it), its
 // label is not an action ("Buy tickets"), and it is either an "official site"
