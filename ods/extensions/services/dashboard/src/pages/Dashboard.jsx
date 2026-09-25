@@ -640,15 +640,28 @@ export default function Dashboard({ status, loading, compact = false }) {
 
   useEffect(() => {
     let mounted = true
+    let inFlight = false
+    let generation = 0
+    let activeController = null
 
     const fetchServiceResources = async () => {
+      if (!mounted || inFlight) return
+      inFlight = true
+      const requestGeneration = ++generation
+      const controller = new AbortController()
+      activeController = controller
+      const timeout = setTimeout(() => controller.abort(), 8000)
       try {
-        const res = await fetch('/api/services/resources')
+        const res = await fetch('/api/services/resources', { signal: controller.signal })
         if (!res.ok) return
         const data = await res.json()
-        if (mounted) setServiceResources(data)
+        if (mounted && requestGeneration === generation) setServiceResources(data)
       } catch {
         // Service rows keep rendering status data when per-container metrics are unavailable.
+      } finally {
+        clearTimeout(timeout)
+        if (activeController === controller) activeController = null
+        inFlight = false
       }
     }
 
@@ -662,6 +675,9 @@ export default function Dashboard({ status, loading, compact = false }) {
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
       mounted = false
+      generation += 1
+      inFlight = false
+      activeController?.abort()
       clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
