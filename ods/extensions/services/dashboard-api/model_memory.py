@@ -90,6 +90,23 @@ def memory_metadata(model: dict[str, Any]) -> dict[str, Any]:
     return {key: model[key] for key in MEMORY_METADATA_KEYS if key in model}
 
 
+def with_file_metadata(model: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+    """``model`` with a GGUF header's values (gguf_inspector) layered on top.
+
+    The header fills in what the catalog does not declare. A reviewed catalog
+    layout (:func:`architecture_metadata_complete`) stays authoritative for
+    the estimator's inputs: a GGUF header does not describe sliding-window or
+    shared-KV layers the way the estimator reads them (a Gemma 3 header names
+    no sliding layers at all; a Gemma 4 header lists KV heads for every layer,
+    sliding ones included), so letting it override the reviewed keys charges
+    full-attention KV on every layer and a model that fits looks too large.
+    """
+    merged = {**model, **metadata}
+    if architecture_metadata_complete(model):
+        merged.update(memory_metadata(model))
+    return merged
+
+
 def declared_max_context(model: dict[str, Any]) -> int:
     """The catalog's declared native maximum context, or 0 when undeclared.
 

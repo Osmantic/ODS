@@ -8,6 +8,7 @@ from performance_oracle import (
     build_models_payload,
     collect_runtime_flags,
     current_model_matches,
+    dialog_switch_context,
     evaluate_performance,
     load_evidence,
     model_compatibility_runtime_context,
@@ -2385,3 +2386,173 @@ def test_model_list_plans_every_context_with_the_install_policy(data_dir, tmp_pa
     small_27b = next(model for model in small["models"] if model["id"] == "qwen3.5-27b-q4")
     assert small_27b["contextLength"] < 65536
     assert small_27b["appCompatibility"]["hermesTalk"]["code"] == "context_below_hermes_minimum"
+
+
+# ---------------------------------------------------------------------------
+# The Models row estimates what the switch plan estimates, and judges ODS
+# Talk at the context a switch from Models would send.
+# ---------------------------------------------------------------------------
+
+# windows-laptop: RTX 5070 Laptop GPU, 8151 MiB, 31 GB RAM.
+_WINDOWS_LAPTOP_VRAM_MB = 8151
+
+# gemma-3-4b-it-Q4_K_M.gguf header as gguf_inspector reports it
+# (convert_hf_to_gguf.py Gemma3Model: head_count_kv is one scalar, and no
+# field says which layers are sliding-window).
+_GEMMA3_4B_GGUF_HEADER = {
+    "exists": True,
+    "readable": True,
+    "architecture": "gemma3",
+    "quantization": "Q4_K_M",
+    "context_length": 131072,
+    "block_count": 34,
+    "embedding_length": 2560,
+    "attention_head_count": 8,
+    "attention_head_count_kv": 4,
+    "attention_key_length": 256,
+    "attention_value_length": 256,
+    "full_attention_interval": None,
+    "size_bytes": 2489757856,
+}
+
+
+def _laptop_install(tmp_path):
+    install_dir = tmp_path / "ods"
+    (install_dir / "data" / "models").mkdir(parents=True)
+    (install_dir / ".env").write_text(
+        "LLM_MODEL=qwen3.5-9b\n"
+        "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n"
+        "SYSTEM_RAM_GB=31\n",
+        encoding="utf-8",
+    )
+    return install_dir
+
+
+def _downloaded(install_dir, raw_entries):
+    files = {}
+    for raw in raw_entries:
+        path = install_dir / "data" / "models" / raw["gguf_file"]
+        path.write_bytes(b"GGUF")
+        files[raw["gguf_file"]] = path
+    return files
+
+
+def test_gemma3_4b_is_listed_and_switched_at_128k_on_an_8gb_laptop(data_dir, tmp_path, monkeypatch):
+    """windows-laptop regression: a switch to Gemma 3 4B landed at 32768.
+
+    The row merged the GGUF header over a catalog entry with no layout and
+    charged full-attention KV on all 34 layers (19.4 GiB at 128K), so the
+    dialog sent the 32K option and Talk was blocked. With the sliding-window
+    layout, 5 global layers carry the context and 29 hold a 1024-token
+    window: about 5.4 GiB at 128K, the context the switch plan picks too.
+    """
+    import performance_oracle
+
+    install_dir = _laptop_install(tmp_path)
+    catalog = [raw for raw in _official_model_catalog() if raw["id"] == "gemma3-4b-it-q4"]
+    monkeypatch.setattr(performance_oracle, "inspect_gguf", lambda _path: dict(_GEMMA3_4B_GGUF_HEADER))
+    gpu = _gpu("NVIDIA GeForce RTX 5070 Laptop GPU", _WINDOWS_LAPTOP_VRAM_MB)
+
+    payload = build_models_payload(
+        gpu, None, 0, install_dir, data_dir, catalog=catalog, evidence=[],
+        downloaded_files_override=_downloaded(install_dir, catalog),
+    )
+
+    row = payload["models"][0]
+    assert row["contextLength"] == 131072
+    assert row["fitsVram"] is True
+    assert 5.0 < row["estimatedRequired"] < 5.6
+    by_context = {option["contextLength"]: option for option in row["contextOptions"]}
+    assert by_context[65536]["fitsVram"] is True
+    assert by_context[131072]["fitsVram"] is True
+    assert row["appCompatibility"]["hermesTalk"].get("code") != "context_below_hermes_minimum"
+    # The dialog and the Portal quick switch send the listed context...
+    assert dialog_switch_context(row["contextLength"], row["fitsVram"], row["recommended"], row["contextOptions"]) == 131072
+    # ...which is what the switch plan (routers/models.py) serves.
+    plan = planned_model_context(normalize_catalog_entry(catalog[0]), gpu, 31)
+    assert plan["fits"] is True and plan["context_length"] == 131072
+    assert plan["estimate_source"] == "architecture"
+
+
+def test_a_reviewed_layout_is_not_overridden_by_a_gguf_per_layer_kv_array(data_dir, tmp_path, monkeypatch):
+    """Gemma 4 GGUF headers list KV heads for every layer, sliding ones too.
+
+    Read over the catalog's reviewed layout, that array charges full-context
+    KV on all 42 layers of Gemma 4 E4B. The catalog layout stays in charge.
+    """
+    import performance_oracle
+    from model_memory import estimate_model_memory
+
+    install_dir = _laptop_install(tmp_path)
+    raw = next(raw for raw in _official_model_catalog() if raw["id"] == "gemma4-e4b-q4")
+    header = {
+        "exists": True, "readable": True, "architecture": "gemma4", "quantization": "Q4_K_M",
+        "context_length": 131072, "block_count": 42, "attention_head_count_kv": [2] * 42,
+        "attention_key_length": 512, "attention_value_length": 512, "size_bytes": raw["size_bytes"],
+    }
+    monkeypatch.setattr(performance_oracle, "inspect_gguf", lambda _path: dict(header))
+
+    payload = build_models_payload(
+        _gpu("NVIDIA GeForce RTX 5070 Laptop GPU", _WINDOWS_LAPTOP_VRAM_MB), None, 0, install_dir, data_dir,
+        catalog=[raw], evidence=[], downloaded_files_override=_downloaded(install_dir, [raw]),
+    )
+
+    row = payload["models"][0]
+    expected = estimate_model_memory(raw, context_length=row["contextLength"]).device_gib
+    assert row["estimatedRequired"] == expected
+    assert row["fitsVram"] is True
+    # A plain merge (the header over the catalog) charged every layer's KV.
+    assert estimate_model_memory({**raw, **header}, context_length=65536).device_gib > expected + 4
+
+
+def test_row_talk_verdict_judges_the_context_a_switch_sends(data_dir, tmp_path, monkeypatch):
+    """A row that does not fit at its listed context is switched at a shorter
+    one (the dialog's and the Portal quick switch's default). When that is
+    below the 64K Hermes floor, the row says Talk will be unavailable before
+    the owner switches, not after."""
+    import performance_oracle
+
+    install_dir = _laptop_install(tmp_path)
+    # A library entry without a reviewed layout: the plan's legacy estimate
+    # says it fits at 128K, the GGUF header (full attention on every layer)
+    # says only 32K does.
+    raw = {
+        "id": "legacy-4b-q4", "name": "Legacy 4B", "family": "legacy",
+        "gguf_file": "legacy-4b-Q4_K_M.gguf", "size_mb": 2490, "vram_required_gb": 4,
+        "context_length": 131072, "max_context_length": 131072, "quantization": "Q4_K_M",
+        "app_compatibility": {"hermes_talk": {"status": "verified"}},
+        # Never auto-selected, so it is not the recommended row (which the
+        # dialog sends at its listed context whatever the fit).
+        "selection": {"discrete": 0, "unified": 0, "cpu": 0},
+    }
+    monkeypatch.setattr(performance_oracle, "inspect_gguf", lambda _path: dict(_GEMMA3_4B_GGUF_HEADER))
+
+    payload = build_models_payload(
+        _gpu("NVIDIA GeForce RTX 5070 Laptop GPU", _WINDOWS_LAPTOP_VRAM_MB), None, 0, install_dir, data_dir,
+        catalog=[raw], evidence=[], downloaded_files_override=_downloaded(install_dir, [raw]),
+    )
+
+    row = payload["models"][0]
+    assert row["contextLength"] == 131072 and row["fitsVram"] is False and row["recommended"] is False
+    sent = dialog_switch_context(row["contextLength"], row["fitsVram"], row["recommended"], row["contextOptions"])
+    assert sent == 32768
+    talk = row["appCompatibility"]["hermesTalk"]
+    assert talk["status"] == "unsupported"
+    assert talk["code"] == "context_below_hermes_minimum"
+    assert "32K" in talk["userMessage"]
+
+
+def test_dialog_switch_context_mirrors_the_models_dialog():
+    options = [
+        {"contextLength": 8192, "fitsVram": True},
+        {"contextLength": 16384, "fitsVram": True},
+        {"contextLength": 32768, "fitsVram": True},
+        {"contextLength": 65536, "fitsVram": False},
+    ]
+    assert dialog_switch_context(65536, True, False, options) == 65536
+    # The installer's pick is sent at its listed context, like the dialog does.
+    assert dialog_switch_context(65536, False, True, options) == 65536
+    assert dialog_switch_context(65536, False, False, options) == 32768
+    # Nothing that fits reaches the Pixel minimum: the dialog keeps the listed context.
+    assert dialog_switch_context(65536, False, False, options[:1]) == 65536
+    assert dialog_switch_context(None, False, False, []) is None
