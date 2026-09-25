@@ -1,7 +1,7 @@
 {
   "version": "2026.6.33",
   "sourceSha256": "ae83457af1947f3eaf3e08f8fbde869a1c023a80acfbf0f27d3db887af1d36d3",
-  "patchedSha256": "ece02c1ffc2a74f174091db3cfdfe307d22434d14106439de255c1740caa35b6",
+  "patchedSha256": "0439891d0b7e7528af4c5d6a81be609ade3cae08f5f75347c94478462512d4bd",
   "replacements": [
     [
       "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = 6e4;",
@@ -21,7 +21,7 @@
     ],
     [
       "\t\t\tsessionManager = guardSessionManager(SessionManager.open(params.sessionFile), {",
-      "\t\t\tconst persistedToolResultModelProjection = createPersistedToolResultModelProjection();\n\t\t\tsessionManager = guardSessionManager(SessionManager.open(params.sessionFile), {"
+      "\t\t\tconst persistedToolResultModelProjection = createPersistedToolResultModelProjection({agentId: sessionAgentId, config: params.config});\n\t\t\tsessionManager = guardSessionManager(SessionManager.open(params.sessionFile), {"
     ],
     [
       "\t\t\t\tonMessagePersisted: () => {\n\t\t\t\t\tsessionLockController.refreshAfterOwnedSessionWrite();",
@@ -29,7 +29,7 @@
     ],
     [
       "function normalizeMessagesForLlmBoundary(messages, options) {",
-      "// Per-attempt projection of already-persisted tool feedback. Hooks run once.\nfunction createPersistedToolResultModelProjection() {\n\tconst projected = new Map();\n\tconst keyFor = (message) => message?.role === \"toolResult\" &&\n\t\ttypeof message.toolCallId === \"string\" && message.toolCallId.length > 0 &&\n\t\ttypeof message.toolName === \"string\" && message.toolName.length > 0 &&\n\t\tNumber.isSafeInteger(message.timestamp) && message.timestamp > 0\n\t\t? JSON.stringify([message.toolCallId, message.toolName, message.timestamp]) : void 0;\n\treturn {\n\t\tcapture(message) {\n\t\t\tconst key = keyFor(message);\n\t\t\tif (!key) return;\n\t\t\t// Reused identities are ambiguous, even within one attempt.\n\t\t\tif (projected.has(key)) { projected.set(key, null); return; }\n\t\t\tif (projected.size >= 512) return;\n\t\t\tprojected.set(key, structuredClone(message));\n\t\t},\n\t\tapply(messages) {\n\t\t\tconst counts = new Map();\n\t\t\tfor (const message of messages) { const key = keyFor(message); if (key) counts.set(key, (counts.get(key) ?? 0) + 1); }\n\t\t\tlet changed = false;\n\t\t\tconst result = messages.map(message => {\n\t\t\t\tconst key = keyFor(message), replacement = projected.get(key);\n\t\t\t\tif (!replacement || counts.get(key) !== 1) return message;\n\t\t\t\tchanged = true;\n\t\t\t\treturn structuredClone(replacement);\n\t\t\t});\n\t\t\treturn changed ? result : messages;\n\t\t}\n\t};\n}\nfunction normalizeMessagesForLlmBoundary(messages, options) {"
+      "// Per-attempt projection of already-persisted tool feedback. Hooks run once.\nfunction createPersistedToolResultModelProjection({agentId, config} = {}) {\n\t// Persistence hooks on other agents/plugins keep their storage-only contract.\n\tconst enabled = agentId === \"pixel\" && config?.plugins?.enabled !== false &&\n\t\tconfig?.plugins?.entries?.[\"pixel-ods\"]?.enabled === true &&\n\t\t(!Array.isArray(config.plugins.allow) || config.plugins.allow.includes(\"pixel-ods\")) &&\n\t\t(!Array.isArray(config.plugins.deny) || !config.plugins.deny.includes(\"pixel-ods\"));\n\tconst projected = new Map();\n\tconst keyFor = (message) => message?.role === \"toolResult\" &&\n\t\ttypeof message.toolCallId === \"string\" && message.toolCallId.length > 0 &&\n\t\ttypeof message.toolName === \"string\" && message.toolName.length > 0 &&\n\t\tNumber.isSafeInteger(message.timestamp) && message.timestamp > 0\n\t\t? JSON.stringify([message.toolCallId, message.toolName, message.timestamp]) : void 0;\n\treturn {\n\t\tcapture(message) {\n\t\t\tif (!enabled) return;\n\t\t\tconst key = keyFor(message);\n\t\t\tif (!key) return;\n\t\t\t// Reused identities are ambiguous, even within one attempt.\n\t\t\tif (projected.has(key)) { projected.set(key, null); return; }\n\t\t\tif (projected.size >= 512) return;\n\t\t\tprojected.set(key, structuredClone(message));\n\t\t},\n\t\tapply(messages) {\n\t\t\tif (!enabled) return messages;\n\t\t\tconst counts = new Map();\n\t\t\tfor (const message of messages) { const key = keyFor(message); if (key) counts.set(key, (counts.get(key) ?? 0) + 1); }\n\t\t\tlet changed = false;\n\t\t\tconst result = messages.map(message => {\n\t\t\t\tconst key = keyFor(message), replacement = projected.get(key);\n\t\t\t\tif (!replacement || counts.get(key) !== 1) return message;\n\t\t\t\tchanged = true;\n\t\t\t\treturn structuredClone(replacement);\n\t\t\t});\n\t\t\treturn changed ? result : messages;\n\t\t}\n\t};\n}\nfunction normalizeMessagesForLlmBoundary(messages, options) {"
     ],
     [
       "const providerPromptHistoryTruncation = truncateOversizedToolResultsInMessages(messages, contextTokenBudget,",

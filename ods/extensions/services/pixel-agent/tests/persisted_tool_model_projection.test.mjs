@@ -5,7 +5,9 @@ import vm from 'node:vm';
 const manifest=JSON.parse(readFileSync(new URL('../host/openclaw-compaction-budget.json',import.meta.url)));
 const source=manifest.replacements.find(([before])=>before==='function normalizeMessagesForLlmBoundary(messages, options) {')[1];
 const helper=source.slice(0,source.lastIndexOf('function normalizeMessagesForLlmBoundary'));
-const create=vm.runInNewContext(helper+'\ncreatePersistedToolResultModelProjection',{structuredClone,Map,JSON,Number});
+const factory=vm.runInNewContext(helper+'\ncreatePersistedToolResultModelProjection',{structuredClone,Map,JSON,Number});
+const scope={agentId:'pixel',config:{plugins:{enabled:true,allow:['pixel-ods'],entries:{'pixel-ods':{enabled:true}}}}};
+const create=()=>factory(scope);
 const receipt=(extra={})=>({role:'toolResult',toolName:'exec',toolCallId:'one',timestamp:123,isError:true,content:[{type:'text',text:'failure\nuse the real output'}],details:{status:'completed',exitCode:1},...extra});
 
 test('projects final persisted feedback without changing stored evidence or rerunning hooks',()=>{
@@ -22,6 +24,13 @@ test('current attempt only: another run or session cannot inherit the projection
  const a=create(),b=create(), rows=[receipt({content:[]})];a.capture(receipt());
  assert.equal(b.apply(rows),rows);assert.notEqual(a.apply(rows),rows);
 });
+for(const [name,changed] of [
+ ['another agent',{...scope,agentId:'other'}],['no explicit capability',{agentId:'pixel'}],
+ ['plugins disabled',{agentId:'pixel',config:{plugins:{...scope.config.plugins,enabled:false}}}],
+ ['ODS plugin disabled',{agentId:'pixel',config:{plugins:{entries:{'pixel-ods':{enabled:false}}}}}],
+ ['ODS plugin not allowed',{agentId:'pixel',config:{plugins:{...scope.config.plugins,allow:['other']}}}],
+ ['ODS plugin denied',{agentId:'pixel',config:{plugins:{...scope.config.plugins,deny:['pixel-ods']}}}],
+])test(`storage-only behavior preserved: ${name}`,()=>{const state=factory(changed),rows=[receipt({content:[]})];state.capture(receipt());assert.equal(state.apply(rows),rows);});
 for(const [name,change] of [['call',{toolCallId:'other'}],['tool',{toolName:'read'}],['timestamp',{timestamp:124}],['role',{role:'assistant'}],['missing timestamp',{timestamp:undefined}]])test(`projection rejects different ${name}`,()=>{
  const state=create();state.capture(receipt());const rows=[receipt(change)];assert.equal(state.apply(rows),rows);
 });
