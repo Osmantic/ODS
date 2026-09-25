@@ -100,3 +100,29 @@ test('ordinary ingress socket binds owned history request to exact gateway bytes
   assert.equal(transfer.gatewayBodySha256,odsAdmissionSha(chat.raw));assert(!chat.raw.includes(auth.scopeId));assert(!fs.existsSync(authFile));
   assert.equal((await f.post('/v1/chat/completions',incoming)).status,200);assert.equal(f.calls.filter(c=>c.path==='/v1/chat/completions').length,1,'ordinary history replay never resubmits');
 });
+
+for (const mode of ['deadline','http','body','schema','transport']) {
+  test(`native context ${mode} diagnostic preserves admission and hides private data`,async t=>{
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ods-context-diagnostic-'));fs.chmodSync(dir,0o700);
+    const ledger=createChatHistoryLedger(dir), logs=[], calls=[];
+    const original=console.warn; console.warn=value=>logs.push(value);
+    t.after(()=>{console.warn=original;fs.rmSync(dir,{recursive:true,force:true});});
+    const deps={setTimeout:(callback,ms)=>mode==='deadline'?setTimeout(callback,0):setTimeout(callback,ms),clearTimeout,
+      fetch:async(url,options)=>{
+        calls.push(url);
+        if(mode==='deadline') return new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new Error('private-token owner-body')),{once:true}));
+        if(mode==='transport') throw new Error('private-token owner-body');
+        if(mode==='http') return new Response('private-token owner-body',{status:503,headers:{'content-type':'application/json'}});
+        return new Response(mode==='body'?'private-token owner-body':'{}',{headers:{'content-type':'application/json'}});
+      }};
+    const ingress=createIngressServer({token:'private-token',gatewayPort:18789,historyLedger:ledger,deps});
+    const port=await listen(ingress);
+    t.after(()=>new Promise(resolve=>ingress.close(resolve)));
+    const response=await fetch(`http://127.0.0.1:${port}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({user:rawUser,request_id:'not-admitted',messages:[u('owner-body')],history_snapshot:{schemaVersion:1,messages:[u('owner-body')]}})});
+    assert.equal(response.status,503);assert.match(await response.text(),/context-unavailable/);
+    assert.equal(ledger.read(user),null);assert.equal(calls.length,1);assert.ok(calls[0].endsWith('/pixel-ods/context'));
+    assert.equal(logs.length,2);assert.equal(logs[1],"pixel-ingress chat failed stage=native-context status=503 submitted=false");
+    const expected={deadline:'stage=headers status=0 reason=deadline',http:'stage=response status=503 reason=response',body:'stage=body status=200 reason=body',schema:'stage=schema status=200 reason=schema',transport:'stage=headers status=0 reason=transport'}[mode];
+    assert.ok(logs[0].includes(expected));assert.match(logs[0],/elapsedMs=\d+$/);assert.doesNotMatch(logs[0],/private-token|owner-body|not-admitted|history-canary/);
+  });
+}

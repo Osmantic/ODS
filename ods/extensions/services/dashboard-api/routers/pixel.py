@@ -885,21 +885,27 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
     failed = False
     stopped = False
     rejected = False
+    diagnostic_stage = "extension-context"
+    upstream_status = 0
     try:
         extension_context = None
         if owner is not None and body.messages and body.messages[-1].role == 'user':
             from routers.extensions import chat_extension_request_context
             extension_context = await chat_extension_request_context(
                 owner, body.chat_id, body.request_id, body.messages[-1].content, include_evidence=True)
+        diagnostic_stage = "edge-connect"
         timeout = httpx.Timeout(connect=5.0, read=_CHAT_STREAM_TIMEOUT_SECONDS, write=30.0, pool=5.0)
         async with async_timeout(_CHAT_STREAM_TIMEOUT_SECONDS):
             async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
                 async with client.stream("POST", f"{edge_url}/v1/chat/completions",
                         json=_edge_chat_body(body, messages, extension_context=extension_context),
                         headers=_edge_headers(key, accept="text/event-stream")) as upstream:
+                    diagnostic_stage = "edge-response"
+                    upstream_status = upstream.status_code
                     rejected = 400 <= upstream.status_code < 500
                     if upstream.status_code != 200 or not upstream.headers.get("content-type", "").lower().startswith("text/event-stream"):
                         raise ValueError("Invalid upstream stream")
+                    diagnostic_stage = "edge-stream"
                     buffered = bytearray()
                     async for chunk in upstream.aiter_bytes():
                         buffered.extend(chunk)
@@ -965,7 +971,7 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
         failed = not cancelled
     except Exception as exc:
         failed = True
-        logger.warning("Pixel retained stream failed (%s)", type(exc).__name__)
+        logger.warning("Pixel retained stream failed (%s); stage=%s status=%s", type(exc).__name__, diagnostic_stage, upstream_status)
     finally:
         # Keep this conversation reserved until cancellation has finished. A late
         # native cancellation must never target the next attempt in this chat.

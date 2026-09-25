@@ -1158,6 +1158,7 @@ async def handle_chat_completions(request: web.Request):
                 ctype = resp.headers.get("Content-Type", "").lower()
 
                 if resp.status >= 400:
+                    print(f"pixel-edge chat admission failed stage=upstream-response status={resp.status}", file=sys.stderr)
                     status = 400 if 400 <= resp.status < 500 else 502
                     return web.json_response({"error": "Portal request rejected"}, status=status)
 
@@ -1182,9 +1183,12 @@ async def handle_chat_completions(request: web.Request):
                 activity["terminal"] = True
                 return web.Response(status=resp.status, body=rewritten,
                                     content_type="application/json")
-    except (ConnectionError, OSError, asyncio.TimeoutError):
+    except (ConnectionError, OSError, asyncio.TimeoutError) as exc:
+        reason = "timeout" if isinstance(exc, asyncio.TimeoutError) else "transport"
+        print(f"pixel-edge chat admission failed stage=upstream-transport reason={reason}", file=sys.stderr)
         return web.json_response({"error": "service unavailable"}, status=502)
     except Exception:
+        print("pixel-edge chat admission failed stage=upstream reason=exception", file=sys.stderr)
         return web.json_response({"error": "bad gateway"}, status=502)
     finally:
         await request.app[_TRANSITION_GATE_KEY].finish(request_token)

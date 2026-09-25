@@ -445,3 +445,17 @@ def test_cancel_handles_evicted_or_missing_attempt_without_typeerror(store, monk
         )
         assert result == {'aborted': False}
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("status,content_type", [(502, "application/json"), (200, "text/plain")])
+def test_retained_admission_diagnostic_preserves_safe_status(store, monkeypatch, caplog, status, content_type):
+    async def run():
+        monkeypatch.setattr(pixel.httpx, 'AsyncClient', lambda **kw: FakeClient(FakeResponse(status=status, content_type=content_type, chunks=[b'private-token owner-body'])))
+        async def cancel(*args): return False
+        monkeypatch.setattr(pixel, '_cancel_edge_run', cancel)
+        store.reserve(IDENTITY, 'hash')
+        await pixel._produce_retained_result(store, IDENTITY, body(text='owner-body'), ('http://pixel-edge:9595', 'private-token'), [{'role':'user','content':'owner-body'}])
+        assert store.get(IDENTITY)['state'] == 'unresolved'
+    asyncio.run(run())
+    assert f'stage=edge-response status={status}' in caplog.text
+    assert 'private-token' not in caplog.text and 'owner-body' not in caplog.text
