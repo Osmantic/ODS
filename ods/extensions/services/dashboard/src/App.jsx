@@ -68,7 +68,7 @@ function App() {
   // was per-browser and gave the wrong answer on re-imaged devices or fresh
   // browsers. The hook returns firstRun=false while it's loading or if the
   // API call fails, so the normal app shell is the safe default.
-  const { firstRun, refresh: refreshFirstRun } = useFirstRun()
+  const { firstRun, loading: firstRunLoading, error: firstRunError, refresh: refreshFirstRun } = useFirstRun()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     return getStorageValue('localStorage', 'ods-sidebar-collapsed') === 'true'
   })
@@ -98,6 +98,17 @@ function App() {
         </Suspense>
       </div>
     )
+  }
+
+  if (firstRunLoading) {
+    return <div className="min-h-screen flex items-center justify-center bg-theme-bg text-theme-text-muted" role="status">Checking setup status…</div>
+  }
+
+  if (firstRunError) {
+    return <div className="min-h-screen flex flex-col items-center justify-center gap-3 bg-theme-bg text-theme-text px-6" role="alert">
+      <p>Setup status could not be verified: {firstRunError}</p>
+      <button className="rounded bg-theme-accent px-4 py-2 text-white" onClick={refreshFirstRun}>Retry</button>
+    </div>
   }
 
   // First-boot path: render the FirstBoot SPA fullscreen and lock out the
