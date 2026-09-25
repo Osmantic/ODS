@@ -167,9 +167,8 @@ test('search-and-read is directly offered with its static schema and public-only
     search: async () => ({provider: 'fixture', result: {results: [{url: 'https://docs.example.org/specs', title: 'Specs'}]}}),
     readPage: async (url) => {
       reads.push(url);
-      return {ok: true, status: 200, finalUrl: url, contentType: 'text/plain', text: 'Navigation
-Board power 250 W
-', truncated: false};
+      return {ok: true, status: 200, finalUrl: url, contentType: 'text/plain',
+        text: ['Navigation', 'Board power 250 W', ''].join('\n'), truncated: false};
     },
   });
   const direct = run([searchRead]).tools.find(t => t.name === searchRead.name);
