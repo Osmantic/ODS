@@ -150,12 +150,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     the rerun takes the current recommendation. If that is the 31B again, the
     installer finds a SHA256 mismatch, deletes the file and downloads 18.3 GB.
   - A 32 GB NVIDIA GPU with `MODEL_PROFILE=gemma4` or `auto` on the Pixel
-    default route now gets Gemma 4 31B at 128K context instead of 26B-A4B. The
-    corrected file size puts its estimate at 31.07 GB of 31.8 GB; that fit is
-    estimated, not measured.
+    default route now gets Gemma 4 31B at 128K context instead of 26B-A4B. Its
+    estimate is 28.84 GiB of 31.8 GiB (see the sliding-window fix below); that
+    fit is estimated, not measured.
   - Before this release these Gemma reruns already failed for most installs
     (stale checksum, then a 404 on re-download), so this mostly replaces
     reruns that were failing.
+- A downloaded Gemma 4 model is no longer marked too large for its GPU. The
+  Models list read the GGUF header as full attention on every layer at the
+  global head size, so once Gemma 4 31B was downloaded it showed about 227 GB
+  at 128K and Run was disabled on a 32 GB RTX 5090 (the file is 17 GB). The
+  header's sliding-window layout (`sliding_window_pattern`, `key_length_swa`,
+  `shared_kv_layers`) is now read as such, and the Gemma 4 31B catalog entry
+  declares it: 10 of 60 layers hold the full context and 50 a 1024-token
+  window, 11.2 GiB of KV at 128K. The Models list, the switch plan and the host
+  agent now all estimate 28.84 GiB, and its listed requirement moves from 24 to
+  30 GB. The default `qwen` profile picks nothing new. With
+  `MODEL_PROFILE=gemma4`, a 48 GB Mac now gets Gemma 4 31B at 64K (23.8 of its
+  26.4 GiB model budget) instead of 26B-A4B; that fit is estimated, not
+  measured.
 - Native macOS launches no longer pass `--spec-draft-n-max` to a llama-server
   that does not know it. Setting `LLAMA_ARG_SPEC_DRAFT_N_MAX` stopped the b8210
   Metal server from starting (its flag is `--draft-max`). Draft flags are now

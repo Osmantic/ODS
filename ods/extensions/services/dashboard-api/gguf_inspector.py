@@ -203,6 +203,57 @@ def _first_value(metadata: dict[str, Any], suffixes: tuple[str, ...]) -> Any:
     return None
 
 
+def _sliding_window_layout(metadata: dict[str, Any], header: dict[str, Any]) -> dict[str, Any]:
+    """model_memory's sliding-window keys for a header that marks its SWA layers.
+
+    Gemma 4 GGUFs declare ``<arch>.attention.sliding_window_pattern`` (one
+    bool per layer, true = sliding window), the window, the sliding layers'
+    own ``key_length_swa``/``value_length_swa`` and ``shared_kv_layers``: the
+    last N layers reuse an earlier layer's cache and hold none (llama.cpp
+    b9014 allocates KV for 15 of Gemma 4 E2B's 35 layers). The plain keys
+    describe the full-attention layers (``key_length``) while
+    ``head_count_kv`` lists every layer, so read as a dense layout the header
+    charges full-context KV at the global head size on all layers: Gemma 4
+    31B at 131072 came to ~210 GiB of KV instead of ~11 GiB. The returned
+    keys replace that reading: ``attention_*`` for the full-attention layers
+    alone, ``sliding_window_*`` for the rest (model_memory's layout).
+
+    Returns {} (the header keeps its dense reading) unless the pattern covers
+    every layer and each kind of cached layer has a single KV head count.
+    """
+    window = _first_int(metadata, (".attention.sliding_window",))
+    pattern = _first_value(metadata, (".attention.sliding_window_pattern",))
+    block_count = header.get("block_count")
+    heads = header.get("attention_head_count_kv")
+    if not window or not block_count or not isinstance(pattern, list):
+        return {}
+    if len(pattern) != block_count or not all(isinstance(flag, bool) for flag in pattern):
+        return {}
+    if isinstance(heads, int):
+        heads = [heads] * block_count
+    if not isinstance(heads, list) or len(heads) != block_count:
+        return {}
+    shared = _first_int(metadata, (".attention.shared_kv_layers",)) or 0
+    if not 0 <= shared < block_count:
+        return {}
+    cached = range(block_count - shared)
+    full_heads = {heads[layer] for layer in cached if not pattern[layer]}
+    sliding_heads = {heads[layer] for layer in cached if pattern[layer]}
+    key_length = _first_int(metadata, (".attention.key_length_swa",)) or header.get("attention_key_length")
+    value_length = _first_int(metadata, (".attention.value_length_swa",)) or header.get("attention_value_length")
+    if len(full_heads) != 1 or len(sliding_heads) != 1 or not key_length or not value_length:
+        return {}
+    return {
+        "attention_layer_count": sum(1 for layer in cached if not pattern[layer]),
+        "attention_head_count_kv": full_heads.pop(),
+        "sliding_window": window,
+        "sliding_window_layer_count": sum(1 for layer in cached if pattern[layer]),
+        "sliding_window_head_count_kv": sliding_heads.pop(),
+        "sliding_window_key_length": key_length,
+        "sliding_window_value_length": value_length,
+    }
+
+
 def inspect_gguf(path: Path | str, max_metadata_bytes: int = 32 * 1024 * 1024) -> dict[str, Any]:
     """Return normalized GGUF metadata, degrading to ``unknown`` on failure."""
     p = Path(path)
@@ -273,6 +324,7 @@ def inspect_gguf(path: Path | str, max_metadata_bytes: int = 32 * 1024 * 1024) -
             "model_name": _first_value(metadata, ("general.name",)),
             "metadata": metadata,
         })
+        result.update(_sliding_window_layout(metadata, result))
     except (OSError, UnicodeDecodeError, ValueError, struct.error) as exc:
         logger.debug("Failed to inspect GGUF %s: %s", p, exc)
         result["error"] = str(exc)
