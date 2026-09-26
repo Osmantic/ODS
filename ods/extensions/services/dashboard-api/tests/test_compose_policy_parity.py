@@ -71,7 +71,8 @@ BUILTIN_ENABLE_SCAN_PASSES = [
 
 
 @pytest.mark.parametrize("relative", BUILTIN_ENABLE_SCAN_PASSES)
-def test_builtin_extension_still_passes_the_enable_scan(relative):
+def test_builtin_extension_still_passes_the_enable_scan(relative, monkeypatch):
+    monkeypatch.setattr(extensions, "EXTENSIONS_DIR", ODS / "extensions/services")
     extensions._scan_compose_content(
         ODS / "extensions/services" / relative,
         skip_name_collision=True, skip_gpu_passthrough_check=True,

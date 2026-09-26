@@ -1082,8 +1082,11 @@ def _scan_compose_content(
                 if svc_name not in {entry['service'] for entry in source_builds(candidate)}:
                     raise ValueError('Source service is not reviewed')
             except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError):
-                raise HTTPException(status_code=400,
-                    detail=f"Service '{svc_name}' uses a local build without a verified source recipe") from None
+                from builtin_source_recipes import verify_builtin_source_build
+                if not (builtin and verify_builtin_source_build(
+                        compose_path, str(svc_name), svc_def, EXTENSIONS_DIR)):
+                    raise HTTPException(status_code=400,
+                        detail=f"Service '{svc_name}' uses a local build without a verified source recipe") from None
         extra_hosts = svc_def.get("extra_hosts")
         if extra_hosts and not trusted:
             raise HTTPException(
