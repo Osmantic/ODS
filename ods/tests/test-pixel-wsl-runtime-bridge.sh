@@ -15,8 +15,11 @@ bridge, unit, phase, installer, uninstall = (Path(value).read_text(encoding='utf
 assert 'bridge /run/ods-pixel "$base/ingress"' in bridge
 assert 'bridge /run/ods-pixel-preview "$base/preview"' in bridge
 assert 'mountpoint -q -- "$target"' in bridge
-assert '[[ "$source_inode" == "$target_inode" ]]' in bridge
-assert '[[ "$(findmnt -n -o PROPAGATION -T "$target")" == shared ]]' in bridge
+assert '[[ "$target_inode" == "$source_inode" ]]' in bridge
+# Docker Desktop's WSL proxy binds each bind source onto itself; the bridge
+# stacks on that bind (same /mnt/wsl device) and reads only the top mount.
+assert '[[ "${target_inode%%:*}" == "$wsl_device" ]]' in bridge
+assert '[[ "$(findmnt -n -o PROPAGATION -T "$target" | tail -n 1)" == shared ]]' in bridge
 assert 'ConditionVirtualization=wsl' in unit
 assert 'BindsTo=pixel-ingress.service pixel-workspace-preview.service' in unit
 assert 'ExecStart=/usr/local/libexec/ods-pixel-wsl-runtime-bridge ensure' in unit
