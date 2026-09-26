@@ -630,3 +630,6 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
         fi
     fi
 fi
+
+# Clean up local temporary variables
+unset _docker_ver _docker_2921 DOCKER_NEEDS_SUDO target_user
