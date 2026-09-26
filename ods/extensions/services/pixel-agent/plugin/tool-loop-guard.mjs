@@ -302,6 +302,19 @@ export const OWNER_CANCELLED_REQUEST_CONTEXT =
   "That request is withdrawn. Do not answer, continue or resume it, and do not use tools or cite evidence for it, " +
   "unless the owner's current message below explicitly asks you to. Respond only to the current message.]";
 
+// Model-only context for an attempt that resends the owner's message while a
+// before_agent_finalize revision of the same run is unanswered; the revision
+// text follows it. OpenClaw sends a revision as the next attempt's prompt.
+// When that attempt stops at the pre-prompt context check, the recovery
+// (compaction or tool-result truncation) retries with the owner's original
+// message, so the revision never reached the model (fleet event search: the
+// same unread citations were delivered again, and the one source revision
+// was spent).
+export const RESUBMITTED_REVISION_CONTEXT =
+  "[ODS Portal note, not owner text: the owner's message below was sent again after an internal retry. " +
+  "You already answered it in this response, and that final answer was not accepted. Give the revised final answer " +
+  "that this revision request asks for; do not restart the task or repeat completed work unless the request requires it.]";
+
 export const EXACT_DOWNLOAD_REQUIRES_BROKER_REASON =
   "Pixel cannot turn web_fetch or another transformed page view into an exact-byte download. Call pixel_ops_download_stage now; ODS will bind it to the owner's exact HTTPS URL, destination basename, and expected digest. Wait for that exact job with pixel_ops_job_wait, then publish only its verified receipt with pixel_ods_download_promote. Do not create a substitute file.";
 
@@ -9390,6 +9403,10 @@ export function createToolLoopGuard({
         state.currentSessionKey = context.sessionKey;
         rememberBySessionKey(sessionKeyRuns, context.sessionKey, runId);
       }
+      // A later attempt that sends the owner's message again, alone or with a
+      // retry note OpenClaw appends: see RESUBMITTED_REVISION_CONTEXT.
+      state.attemptResendsOwnerMessage = typeof state.ownerRequestText === "string" && typeof ownerIntent === "string" &&
+        (ownerIntent === state.ownerRequestText || ownerIntent.startsWith(`${state.ownerRequestText}\n\n`));
       // The first attempt carries the owner's message; a later attempt of the
       // same run carries a harness retry prompt instead.
       if (ownerIntent) state.ownerRequestText ??= ownerIntent;
@@ -11848,14 +11865,18 @@ export function createToolLoopGuard({
   // Model-only prompt context for one attempt (before_prompt_build
   // prependContext); never persisted as owner text. A cancelled run's own
   // retry attempt is told to stop, and the first owner turn after a cancel is
-  // told the earlier request is withdrawn.
+  // told the earlier request is withdrawn. An attempt that sends the owner's
+  // message again while a revision is unanswered carries that revision.
   function promptContextForRun(runId) {
     const state = typeof runId === "string" ? runs.get(runId) : undefined;
     if (state?.clientCancelled) return CLIENT_CANCELLED_REASON;
-    return state?.withdrawnOwnerRequest ? OWNER_CANCELLED_REQUEST_CONTEXT : undefined;
+    const revision = state?.attemptResendsOwnerMessage && state.unansweredRevision
+      ? `${RESUBMITTED_REVISION_CONTEXT}\n\n${state.unansweredRevision}` : undefined;
+    return [state?.withdrawnOwnerRequest ? OWNER_CANCELLED_REQUEST_CONTEXT : undefined, revision]
+      .filter(Boolean).join("\n\n") || undefined;
   }
 
-  function beforeAgentFinalize(event, context, agentId = "pixel") {
+  function finalizeDecision(event, context, agentId = "pixel") {
     if (context?.agentId !== agentId) return undefined;
     const runId = context?.runId ?? event?.runId;
     if (typeof runId !== "string" || !runId) return undefined;
@@ -11907,6 +11928,22 @@ export function createToolLoopGuard({
         maxAttempts: 1,
       },
     };
+  }
+
+  // Each judged final answer answers the revision requested before it. A new
+  // revision stays unanswered until the next final answer is judged; its text
+  // is what OpenClaw puts after its own revision prefix.
+  function beforeAgentFinalize(event, context, agentId = "pixel") {
+    const decision = finalizeDecision(event, context, agentId);
+    const state = context?.agentId === agentId ? runs.get(context?.runId ?? event?.runId) : undefined;
+    if (state) {
+      const reason = typeof decision?.reason === "string" ? decision.reason.trim() : "";
+      const instruction = typeof decision?.retry?.instruction === "string" ? decision.retry.instruction.trim() : "";
+      state.unansweredRevision = decision?.action === "revise"
+        ? [reason, reason.includes(instruction) ? "" : instruction].filter(Boolean).join("\n\n") || undefined
+        : undefined;
+    }
+    return decision;
   }
 
   function verificationForRun(runId) {

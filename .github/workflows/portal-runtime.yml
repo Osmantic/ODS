@@ -88,6 +88,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs
+      - name: Verify a revision survives the real runtime's retry after a pre-prompt context overflow
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_revision_prompt_retry.integration.mjs
       - name: Verify every Pixel chat reaches the real provider with one system prompt
         if: runner.os != 'Windows'
         shell: bash
