@@ -266,22 +266,37 @@ function New-ODSPortalLinuxAccount([string]$Distro, $Account) {
     # The password travels only on chpasswd's stdin, never in arguments or logs.
     $password = Invoke-ODSPortalWslInput $Distro @('chpasswd') ($Account.Name + ':' + $Account.Password)
     if ($password.Code -ne 0) { throw "Could not set the Ubuntu password for $($Account.Name). Open $Distro, run: sudo passwd $($Account.Name), then rerun this command." }
+    $written = Set-ODSPortalWslConf $Distro @('user', 'default', $Account.Name, 'boot', 'systemd', 'true')
+    if ($written.Code -ne 0) { throw "Could not make $($Account.Name) the default Ubuntu user: $($written.Output)" }
+    $null = Invoke-ODSPortalWsl -Arguments @('--terminate', $Distro)
+}
+
+function Set-ODSPortalWslConf([string]$Distro, [string[]]$Settings) {
+    # $Settings is section, key, value triples. Other /etc/wsl.conf settings
+    # are kept; WSL reads the file only when the distro starts again.
     $config = @'
 import configparser, sys
 path = '/etc/wsl.conf'
 parser = configparser.ConfigParser(interpolation=None)
 parser.optionxform = str
 parser.read(path)
-for section, key, value in (('user', 'default', sys.argv[1]), ('boot', 'systemd', 'true')):
+values = sys.argv[1:]
+for index in range(0, len(values), 3):
+    section, key, value = values[index:index + 3]
     if not parser.has_section(section):
         parser.add_section(section)
     parser.set(section, key, value)
 with open(path, 'w') as handle:
     parser.write(handle)
 '@
-    $written = Invoke-ODSPortalWslInput $Distro @('python3', '-', $Account.Name) $config
-    if ($written.Code -ne 0) { throw "Could not make $($Account.Name) the default Ubuntu user: $($written.Output)" }
-    $null = Invoke-ODSPortalWsl -Arguments @('--terminate', $Distro)
+    return (Invoke-ODSPortalWslInput $Distro (@('python3', '-') + $Settings) $config)
+}
+
+function Enable-ODSPortalSystemd([string]$Distro) {
+    $written = Set-ODSPortalWslConf $Distro @('boot', 'systemd', 'true')
+    if ($written.Code -ne 0) { throw "Could not turn on systemd in $Distro ($($written.Output)). Add systemd=true under [boot] in /etc/wsl.conf inside Ubuntu, run wsl --terminate $Distro, then rerun this command." }
+    $stopped = Invoke-ODSPortalWsl -Arguments @('--terminate', $Distro)
+    if ($stopped.Code -ne 0) { throw "Could not restart $Distro after turning on systemd: $($stopped.Output)" }
 }
 
 # ------------------------------------------------------ continue after restart

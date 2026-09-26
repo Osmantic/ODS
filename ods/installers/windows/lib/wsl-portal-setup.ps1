@@ -284,6 +284,11 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
         throw "Initialize a normal Linux user and make it the default in $distro. Open Ubuntu to finish account setup, then rerun this command; do not install ODS as root."
     }
     $init = Invoke-ODSPortalWsl -Arguments @('--distribution', $distro, '--exec', 'ps', '-p', '1', '-o', 'comm=')
+    if ($init.Code -eq 0 -and $init.Output.Trim() -ne 'systemd' -and
+        (Confirm-ODSPortalPreparation "Pixel needs systemd, which is off in $distro. Turn it on now? This restarts $distro, so save work in any open Ubuntu window first." $nonInteractive)) {
+        Enable-ODSPortalSystemd $distro
+        $init = Invoke-ODSPortalWsl -Arguments @('--distribution', $distro, '--exec', 'ps', '-p', '1', '-o', 'comm=')
+    }
     if ($init.Code -ne 0 -or $init.Output.Trim() -ne 'systemd') {
         throw "Enable systemd=true under [boot] in /etc/wsl.conf inside Ubuntu (preserve other settings). Then run wsl --terminate $distro from PowerShell, reopen Ubuntu and rerun this command."
     }
