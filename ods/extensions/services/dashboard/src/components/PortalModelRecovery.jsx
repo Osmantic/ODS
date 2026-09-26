@@ -38,9 +38,12 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
     mounted.current=true
     return ()=>{mounted.current=false;request.current?.abort();callbacks.current.onBusyChange?.(false)}
   },[])
+  // A resolved restore's notice stays until the owner closes the menu. The
+  // catalog refresh after the restore, or reopening a menu that was closed
+  // while it ran, must not erase it unseen.
+  useEffect(()=>{if(!active)setNotice('')},[active])
   useEffect(()=>{
     if(!active || locked.current)return
-    setNotice('')
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),6000)
     void fetch('/api/models/recovery',{signal:controller.signal}).then(async response=>{
       // The API also projects validated pending receipts on 409/503. Other
@@ -107,7 +110,7 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
     {error && <p role="alert">{error}</p>}
     {offerRestore && (offer
       ? <>
-          <p>Repair could not prove that the switch finished or was undone. Restoring reloads {offer.model} at {context(offer.contextLength)} context, the model that was active before the switch, and then releases it.</p>
+          <p>Repair could not prove that the switch finished or was undone. Restoring reloads {offer.model} at {context(offer.contextLength)} context, the model that was active before the switch, and then clears the interrupted switch.</p>
           <button type="button" disabled={Boolean(busy)} onClick={restore}>{busy==='restore'?'Restoring…':`Restore ${offer.model}`}</button>
         </>
       : state.phase!=='unavailable'

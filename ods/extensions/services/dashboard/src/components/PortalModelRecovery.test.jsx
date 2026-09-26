@@ -181,6 +181,31 @@ it('a restore that ended by keeping the new model says so instead of reporting a
   expect(screen.queryByRole('button')).toBeNull()
 })
 
+it('the kept-model notice survives catalog refreshes and a menu closed while the restore ran',async()=>{
+  const kept={pending:false,phase:'completed',transactionId:held.transactionId,outcome:'commit',reason:'model-restore-target-kept'}
+  let resolveRestore,state=held
+  vi.stubGlobal('fetch',vi.fn(async(url,options)=>{
+    if(url==='/api/models/recovery/restore')return await new Promise(resolve=>{resolveRestore=resolve})
+    return options?.method==='POST'?{...reply(proofRequired,false),status:409}:reply(state)
+  }))
+  const view=render(<PortalModelRecovery active refreshKey="false:false"/>)
+  fireEvent.click(await screen.findByRole('button',{name:'Recover model switch'}))
+  fireEvent.click(await screen.findByRole('button',{name:`Restore ${restore.model}`}))
+  // The owner closes the menu, and a catalog poll observes the restore's model activation.
+  view.rerender(<PortalModelRecovery active={false} refreshKey="false:true"/>)
+  state={pending:false,phase:'completed',transactionId:held.transactionId}
+  await act(async()=>resolveRestore(reply(kept)))
+  // Reopening refreshes the catalog, which no longer reports the activation.
+  view.rerender(<PortalModelRecovery active refreshKey="false:false"/>)
+  await act(async()=>{})
+  expect(screen.getByRole('alert')).toHaveTextContent('the new model was kept')
+  // Once seen, closing the menu dismisses it.
+  view.rerender(<PortalModelRecovery active={false} refreshKey="false:false"/>)
+  view.rerender(<PortalModelRecovery active refreshKey="false:false"/>)
+  await act(async()=>{})
+  expect(screen.queryByRole('alert')).toBeNull()
+})
+
 it('an unconfirmed restore says the state is unknown, not that no restore exists',async()=>{
   const unknown={pending:true,phase:'unavailable',transactionId:null,reason:'model-recovery-unavailable'}
   vi.stubGlobal('fetch',vi.fn(async(url,options)=>{
