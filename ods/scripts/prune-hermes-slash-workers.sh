@@ -22,6 +22,15 @@ FORCE=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --max-count|--max-age-seconds|--container)
+            if [[ $# -lt 2 || -z "${2:-}" || "$2" == -* ]]; then
+                echo "[FAIL] $1 requires an argument" >&2
+                usage >&2
+                exit 1
+            fi
+            ;;
+    esac
+    case "$1" in
         --force)
             FORCE=1
             shift

@@ -411,6 +411,7 @@ jobs:
         run: |
           bash tests/test-hermes-slash-worker-prune.sh
           python3 tests/contracts/test-hermes-worker-guardrails.py
+          python3 tests/test_prune_hermes_slash_workers_options.py
 
       - name: Installer Contract Checks
         run: |
