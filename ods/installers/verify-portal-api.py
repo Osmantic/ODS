@@ -1,4 +1,5 @@
 """Check the same authenticated availability projection used by Portal."""
+import http.client
 import json
 from pathlib import Path
 import re
@@ -29,7 +30,11 @@ def _safe(value, limit):
 
 def read_settings(root):
     values = {}
-    for line in (Path(root) / '.env').read_text(encoding='utf-8').splitlines():
+    try:
+        text = (Path(root) / '.env').read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError):
+        raise PortalCheckFailed('cannot read the installed .env') from None
+    for line in text.splitlines():
         name, separator, value = line.partition('=')
         if separator and name in ('DASHBOARD_API_PORT', 'DASHBOARD_API_KEY'):
             values[name] = value.strip().strip('\"\x27')
@@ -60,6 +65,9 @@ def fetch_status(port, key):
         raise PortalCheckFailed(f'dashboard-api is not reachable on 127.0.0.1:{port}') from None
     except TimeoutError:
         raise PortalCheckFailed('dashboard-api did not answer within 15 seconds') from None
+    except (ConnectionError, http.client.HTTPException):
+        # Accepted, then closed or cut short: dashboard-api is (re)starting.
+        raise PortalCheckFailed('dashboard-api closed the connection before answering') from None
     if len(payload) > 65536:
         raise PortalCheckFailed('Portal status response exceeds limit')
     try:
@@ -91,8 +99,5 @@ if __name__ == '__main__':
         # request, API key, raw response body or environment.
         print(f'Portal API verification failed: {error}.', file=sys.stderr)
         print('Check dashboard-api, Pixel configuration and model readiness; do not share API keys.', file=sys.stderr)
-        raise SystemExit(1)
-    except (OSError, UnicodeDecodeError):
-        print('Portal API verification failed: cannot read the installed .env. Do not share API keys.', file=sys.stderr)
         raise SystemExit(1)
     print('Portal API confirms the owner agent is available. A chat test is still required to verify generation.')
