@@ -313,6 +313,9 @@ run_phase06_env_cycle() (
     source "$install_dir/installers/lib/detection.sh"
     # shellcheck source=../installers/lib/progress.sh
     source "$install_dir/installers/lib/progress.sh"
+    # Match install-core's privilege helpers; sudo itself is stubbed below.
+    # shellcheck source=../installers/lib/sudo.sh
+    source "$install_dir/installers/lib/sudo.sh"
 
     ods_progress() { :; }
     ai() { :; }
@@ -323,6 +326,15 @@ run_phase06_env_cycle() (
     signal() { :; }
     show_phase() { :; }
     sudo() { return 0; }
+    ods_sudo() {
+        # Permission setup now verifies its result. chmod is owner-safe;
+        # CI's non-1000 runner needs real sudo for the fixture's group change.
+        case "$1" in
+            chmod) "$@" ;;
+            chgrp) command sudo -n "$@" ;;
+            *) return 0 ;;
+        esac
+    }
     docker() {
         if [[ "${1:-}" == "info" && "${2:-}" == "--format" ]]; then
             printf '4\n'
@@ -418,6 +430,7 @@ run_phase06_amd_external() (
     source "$install_dir/installers/lib/ui.sh"
     source "$install_dir/installers/lib/detection.sh"
     source "$install_dir/installers/lib/progress.sh"
+    source "$install_dir/installers/lib/sudo.sh"
 
     ods_progress() { :; }
     ai() { :; }
@@ -428,6 +441,13 @@ run_phase06_amd_external() (
     signal() { :; }
     show_phase() { :; }
     sudo() { return 0; }
+    ods_sudo() {
+        case "$1" in
+            chmod) "$@" ;;
+            chgrp) command sudo -n "$@" ;;
+            *) return 0 ;;
+        esac
+    }
     docker() {
         if [[ "${1:-}" == "info" && "${2:-}" == "--format" ]]; then
             printf '4\n'

@@ -883,6 +883,8 @@ bash tests/test-linux-installer-model-lifecycle-lock.sh
 
 echo "[contract] Podman and no-sudo rootless lifecycle"
 bash tests/test-podman-rootless-contracts.sh
+echo "[contract] Token Spy rootful install ownership"
+bash tests/test-token-spy-install-owner.sh
 bash tests/test-installer-noninteractive-sudo.sh
 
 echo "[PASS] installer contracts"

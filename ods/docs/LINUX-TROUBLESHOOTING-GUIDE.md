@@ -162,6 +162,29 @@ docker run --rm hello-world
 
 ---
 
+## Token Spy cannot store usage with rootful Docker
+
+Token Spy runs as container UID 1000. On Linux (including WSL2 with a Linux
+Docker daemon), an installation owned by another UID needs privileged access
+to prepare `data/token-spy`. Otherwise the service can report a healthy HTTP
+endpoint while logging `Database unavailable` and rejecting routed telemetry
+with HTTP 503.
+
+The installer uses its prepared sudo access for this ownership step and stops
+if an enabled Token Spy cannot be prepared. For an existing rootful installation,
+stop the affected service, repair its data ownership, and start it again:
+
+```bash
+cd ~/ods
+./ods-cli stop token-spy
+sudo chown -R 1000:1000 data/token-spy
+./ods-cli start token-spy
+```
+
+This preserves the database; it cannot recover telemetry rejected before the
+repair. Reinstalling from a source containing the fix also prepares ownership.
+For rootless Docker, use the namespace-aware repair below instead.
+
 ## Rootless Docker bind-mount ownership
 
 **Symptoms:** An ODS container repeatedly exits with `Permission denied` while
@@ -259,6 +282,27 @@ Rare compose failures can be policy-related. Check audit logs; temporarily testi
 Corporate proxies may require `HTTP_PROXY` / `HTTPS_PROXY` in Docker’s systemd drop-in or `~/.docker/config.json` for image pulls.
 
 ---
+
+## Dashboard password or Portal result storage is unavailable
+
+On a Linux install owned by a user other than UID 1000, the Dashboard API
+can report healthy while password setup returns HTTP 503 or Portal cannot
+create `data/pixel-chat-results`. The shipped API runs as UID/GID 1000 and
+needs write/search access to the shared `data` parent.
+
+Rerun the corrected Linux installer against the existing installation. Phase
+06 preserves the parent's owner, assigns the
+parent to runtime group 1000, and grants that group read/write/search access.
+It also excludes private `pixel-chat-results` from the generic host-owner
+repair and restores that tree to API UID/GID 1000 if an older reinstall
+changed it. File contents/modes and unrelated service data are preserved.
+It does not add world-write permission. Rootless Docker applies ownership inside the Docker namespace;
+do not substitute a host-side numeric chown for that mapping. A denied repair
+stops installation before a healthy API can be mistaken for writable storage.
+
+Existing passwords and chat receipts remain in place. Rolling back source
+does not undo the parent metadata repair. Restoring its previous group/mode
+can make Dashboard persistence unavailable again.
 
 ## Getting help
 
