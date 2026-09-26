@@ -63,6 +63,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Linux on WSL: an NVIDIA driver older than 570 stops with Windows update
   instructions instead of installing `nvidia-driver-*` inside the distro,
   which breaks WSL GPU passthrough.
+- Linux on WSL with Docker Desktop: Pixel Edge now binds the runtime bridge
+  as `/mnt/wsl/ods-portal-runtime/*`, the distro path Docker Desktop's WSL
+  proxy translates, and the installer creates those empty targets before Pixel
+  Edge starts. The daemon-side `/mnt/host/wsl/...` path stopped every fresh
+  install with "is mounted on / but it is not a shared mount".
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
   file. The 48 other re-pinned models download the same bytes: each sha256 was
