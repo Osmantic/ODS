@@ -6231,6 +6231,76 @@ function workspacePreviewDirectoryFromState(state) {
   return state?.workspacePreviewDirectory;
 }
 
+// The relativeDirectory rule of the publication check in decideToolCall.
+// Guidance names only a directory that this rule accepts.
+function publishableWorkspaceDirectory(directory) {
+  return typeof directory === "string" && directory.length > 0 &&
+    directory.length <= 512 && directory.split("/").length <= 12 &&
+    directory.split("/").every((part) => WORKSPACE_PATH_COMPONENT.test(part));
+}
+
+// Next step when the site's only observed directory fails that rule. On
+// mac-mini round 106 the model wrote ".fleet-qualification-934ec2f819d5/
+// index.html"; the next step named that hidden directory and the publication
+// check then refused it. Fixed text; it never repeats the rejected name.
+export const UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP =
+  "Hidden directories such as .site, and directory names with characters other than letters, digits, dots, underscores or hyphens, cannot be published. " +
+  "Move the existing files (for example with one mv command) into the owner's requested visible directory, read its index.html, then call pixel_ods_workspace_preview with that relativeDirectory. ";
+
+// OpenClaw's Tool Search control tools (TOOL_SEARCH_CONTROL_TOOL_NAMES in
+// OpenClaw 2026.6.33 tool-search). OpenClaw keeps them out of the catalog that
+// tool_call resolves ids from, so tool_call with one of these ids always fails
+// with an unrelated "Unknown tool id" suggestion list.
+const TOOL_SEARCH_CONTROL_TOOLS = new Set(["tool_search", "tool_describe", "tool_call", "tool_search_code"]);
+// Tools that the ODS envelope keeps directly visible to agent pixel
+// (odsNativeNames in host/openclaw-image-envelope.json; the installer always
+// sets Tool Search mode "tools"), which the answer below may name as direct.
+// The inspection tool is named only when it is registered, that is when
+// inspection is available.
+const DIRECT_WORKSPACE_TOOLS = new Set(["read", "write", "edit", "apply_patch", "exec", "process", WORKSPACE_PREVIEW_TOOL]);
+const ECHOABLE_TOOL_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+
+// Answer for a tool_call whose id is itself a control tool. On strixy round
+// 107 the model sent tool_call {id:"tool_describe", args:{id:
+// "pixel_ods_workspace_preview_inspect"}} twice and each failure counted
+// toward the stop. Fixed text apart from the model's own tool id and, in the
+// examples, this run's bound publication identifiers or publishable directory.
+function wrappedControlToolReason(state, control, args, inspectionAvailable) {
+  const intro = `${control} is its own tool, not a tool_call id. `;
+  const id = typeof args?.id === "string" ? args.id.trim() : undefined;
+  const name = id?.split(":").at(-1);
+  const direct = name && `${name} is directly available in your tool list; call ${name} itself`;
+  if (name === PREVIEW_INSPECTION_TOOL && inspectionAvailable) {
+    const preview = state?.workspacePreview;
+    const bound = typeof preview?.sha256 === "string" && /^[a-f0-9]{64}$/.test(preview.sha256) &&
+      preview.siteId === `site-${preview.sha256.slice(0, 24)}`;
+    const example = {
+      siteId: bound ? preview.siteId : "SITE_ID", sha256: bound ? preview.sha256 : "SHA256",
+      viewport: {width: 375, height: 667},
+      steps: [
+        {action: "assert-hidden", locator: {selector: "#affected-element-id"}},
+        {action: "click", locator: {role: "button", name: "Exact control name", exact: true}},
+        {action: "assert-visible", locator: {selector: "#affected-element-id"}},
+      ],
+    };
+    return intro + `${direct}. Each step is {action, locator}; a locator is {selector} or {role, name, exact:true}. ` +
+      `Example of the exact shape: ${JSON.stringify(example)}. Replace the locators with the requested control and affected element from your source` +
+      (bound ? "." : ", and SITE_ID and SHA256 with the identifiers from the publication receipt.");
+  }
+  if (name === WORKSPACE_PREVIEW_TOOL) {
+    // The same directory the publication next step would name, if any.
+    const directory = workspacePreviewDirectoryFromState(state);
+    const known = state?.workspacePreviewRequired && !state.workspacePreviewForbidden &&
+      publishableWorkspaceDirectory(directory) &&
+      !(state.workspacePreviewFailureCode !== undefined && directory === state.workspacePreviewDirectory);
+    return intro + direct + (known ? ` with args ${JSON.stringify({relativeDirectory: directory})}` : "") + ".";
+  }
+  if (DIRECT_WORKSPACE_TOOLS.has(name)) return `${intro}${direct}.`;
+  if (control === "tool_call") return `${intro}Call tool_call directly with the inner id and args.`;
+  if (ECHOABLE_TOOL_ID.test(id ?? "")) return `${intro}Call ${control} directly with ${JSON.stringify({id})}.`;
+  return `${intro}Call ${control} directly with the same args.`;
+}
+
 function workspacePreviewMissingEntryReason(state, directory) {
   const directories = [...(state?.boundPreviewWriteDirectories ?? [])];
   // A hint is not selection or authority. Ambiguous writes must not choose a
@@ -7964,9 +8034,7 @@ export function createToolLoopGuard({
       if (state.workspaceVisualContinuationRequested && directory !== state.workspaceTaskDirectory) {
         return {block:true, blockReason:WORKSPACE_VISUAL_CONTINUATION_SCOPE_REASON};
       }
-      const validDirectory = typeof directory === "string" && directory.length > 0 &&
-        directory.length <= 512 && directory.split("/").length <= 12 &&
-        directory.split("/").every((part) => WORKSPACE_PATH_COMPONENT.test(part));
+      const validDirectory = publishableWorkspaceDirectory(directory);
       if (!validDirectory) {
         return {block:true, blockReason:
           "Invalid preview relativeDirectory. Use a workspace-relative directory with at most 12 components and 512 characters total. Each component must start with a letter or digit and contain only letters, digits, dots, underscores or hyphens (128 characters maximum). Hidden directories such as .site cannot be published. Re-reading or rewriting index.html will not repair an invalid directory name. Preserve existing files; select a valid directory only within the owner's requested scope."};
@@ -8035,6 +8103,20 @@ export function createToolLoopGuard({
     // outer name must not become an excluded exec or a different file later.
     const selectedRestriction = workspacePreviewRestrictionReason(state, selectedToolName, selectedParams);
     if (selectedRestriction) return {block:true, blockReason:selectedRestriction};
+    // A control tool named as a tool_call id. OpenClaw would fail it with an
+    // unrelated "Unknown tool id" error that counts as a tool failure; answer
+    // with the direct call instead. Every refusal above keeps precedence, and
+    // a redundant tool_call around a core tool was already unwrapped by
+    // normalizeWorkspaceParams. Like the phantom-process answer, it runs
+    // nothing and is free at most FREE_CORRECTIONS_PER_KIND times per run;
+    // beyond that the same answer is charged as an ordinary blocked result.
+    if (toolName === "tool_call" && selectedToolTarget === selectedToolName &&
+        TOOL_SEARCH_CONTROL_TOOLS.has(selectedToolName)) {
+      const controlCallId = context?.toolCallId ?? event?.toolCallId;
+      recordFreeCorrection(state, "wrapped-control-tool", controlCallId, toolName);
+      return {block:true, blockReason:wrappedControlToolReason(state, selectedToolName,
+        selectedParams === pendingParams ? undefined : selectedParams, workspacePreviewInspectionAvailable)};
+    }
     if (
       state?.workspacePreviewMode === "new-static" &&
       ![...state.successfulWritePaths].some((value) =>
@@ -11288,9 +11370,14 @@ export function createToolLoopGuard({
         // The host rejected this exact directory; do not prescribe it again.
         const hostRejected = state.workspacePreviewFailureCode !== undefined &&
           directory === state.workspacePreviewDirectory;
+        // Name the directly visible tool with its own schema, never the
+        // unshaped tool_call route, and only a directory the publication
+        // check accepts.
+        const publishable = publishableWorkspaceDirectory(directory);
         return "[ODS Pixel next step] This visual project must be delivered in Workbench. " +
           "Finish all requested files, edits and checks first, then publish BEFORE your final answer. " +
-          (directory && !hostRejected ? `Call tool_call with id ${WORKSPACE_PREVIEW_TOOL} and args ${JSON.stringify({relativeDirectory:directory})}. ` :
+          (publishable && !hostRejected ? `Call ${WORKSPACE_PREVIEW_TOOL} with args ${JSON.stringify({relativeDirectory:directory})}. ` :
+            directory && !publishable ? UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP :
             "Prepare a browser-ready directory with index.html and local assets, preserve the source files, then call pixel_ods_workspace_preview with that relativeDirectory. ") +
           "A sandbox server, saved file or previous snapshot is not a verified current preview.";
       }
@@ -11298,8 +11385,8 @@ export function createToolLoopGuard({
           state.workspacePreviewRequired && !state.workspacePreviewForbidden &&
           !state.operationsRequired && !state.exactDownloadRequested) {
         return "[ODS Pixel next step] Files or checks changed after the earlier publication. " +
-          "Finish any remaining requested edits and checks, then call tool_call with id " +
-          WORKSPACE_PREVIEW_TOOL + " and args " +
+          "Finish any remaining requested edits and checks, then call " +
+          WORKSPACE_PREVIEW_TOOL + " with args " +
           JSON.stringify({ relativeDirectory: state.workspacePreviewVerifiedDirectory }) +
           ". Publish last, after documentation too. Do not claim the earlier snapshot is current.";
       }

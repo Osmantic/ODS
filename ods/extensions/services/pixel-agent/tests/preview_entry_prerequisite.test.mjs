@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
+import {readFileSync} from 'node:fs';
+import {createToolLoopGuard, UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP} from '../plugin/tool-loop-guard.mjs';
 
 function fixture() {
   const guard=createToolLoopGuard();
@@ -28,7 +29,7 @@ test('a shell-generated entry receives read guidance until an exact read succeed
   const first=invoke('exec',{command:'test -f expense-coding/public/index.html && echo EXISTS || echo MISSING'},success('EXISTS'));
   assert.notEqual(first.prepared?.block,true);
   assert.match(first.text,guidance);
-  assert.doesNotMatch(first.text,/Call tool_call with id pixel_ods_workspace_preview/);
+  assert.doesNotMatch(first.text,/Call (?:tool_call with id )?pixel_ods_workspace_preview/);
   assert.match(first.text,/project's real build within the owner's requested scope/);
   assert.match(first.text,/do not delete the directory or handwrite generated build outputs/);
   // Identical coaching is delivered once, not appended to every later result.
@@ -36,7 +37,7 @@ test('a shell-generated entry receives read guidance until an exact read succeed
   assert.notEqual(repeat.prepared?.block,true);
   assert.doesNotMatch(repeat.text,guidance);
   const failedRead=invoke('read',{path:'expense-coding/public/index.html'},{isError:true,content:[{type:'text',text:'read unavailable'}]});
-  assert.doesNotMatch(failedRead.text??'',/Call tool_call with id pixel_ods_workspace_preview/);
+  assert.doesNotMatch(failedRead.text??'',/Call (?:tool_call with id )?pixel_ods_workspace_preview/);
   assert.doesNotMatch(invoke('read',{path:'expense-coding/other/index.html'},success('<!doctype html><h1>Other</h1>')).text,guidance);
   // The prerequisite itself still holds, and the guidance returns after a bounded number of results.
   assert.equal(invoke('pixel_ods_workspace_preview',{relativeDirectory:'expense-coding/public'},success('unused')).prepared?.block,true);
@@ -54,7 +55,8 @@ test('a newly bound authored entry takes priority over a rejected directory hint
   assert.equal(invoke('pixel_ods_workspace_preview',{relativeDirectory:'old/public'},success('unused')).prepared?.block,true);
   const result=invoke('write',{path:'expense-coding/public/index.html',content:'<!doctype html><h1>Report</h1>'},success('written'));
   assert.doesNotMatch(result.text,/Read old\/public\/index\.html/);
-  assert.match(result.text,/Call tool_call with id pixel_ods_workspace_preview/);
+  assert.match(result.text,/Call pixel_ods_workspace_preview with args \{"relativeDirectory":"expense-coding\/public"\}/);
+  assert.doesNotMatch(result.text,/tool_call with id pixel_ods_workspace_preview/);
 });
 
 test('malformed preview targets never enter prerequisite coaching',()=>{
@@ -81,4 +83,54 @@ test('a new owner turn does not inherit the previous missing-entry prerequisite'
   const text=(persisted?.message?.content??[]).map(part=>part.text??'').join('\n');
   assert.ok(!text.includes('old/public'));
   assert.doesNotMatch(text,/with the workspace read tool before requesting/);
+});
+
+// mac-mini round 106 (main b060c6ae): the model wrote the site under a hidden
+// directory, and the next step named that directory, which the publication
+// check always refuses (the first failure). After mv, publishing before a
+// read of the moved entry was refused too (the second failure).
+const MAC=JSON.parse(readFileSync(new URL('./hidden-directory-mac-mini-round106.json',import.meta.url),'utf8'));
+test('mac-mini round 106: a hidden site directory is never prescribed for publication',()=>{
+  const [turn]=MAC.turns;
+  const [write,hiddenPublish,move,unreadPublish,read,publish]=turn.calls;
+  const guard=createToolLoopGuard();
+  const context={agentId:'pixel',runId:turn.runId,sessionId:MAC.sessionId,sessionKey:MAC.sessionKey};
+  guard.observeRun(context,'pixel',{prompt:turn.prompt});
+  // Every recorded call runs the full hook sequence; a refused call gets the
+  // SDK's standard veto result, as OpenClaw reports it.
+  const invoke=(call,executed)=>{
+    const ctx={...context,toolName:call.tool,toolCallId:call.id};
+    const prepared=guard.beforeToolCall({toolName:call.tool,params:call.arguments,toolCallId:call.id},ctx);
+    const result=prepared?.block?{isError:true,content:[{type:'text',text:prepared.blockReason}],
+      details:{status:'blocked',deniedReason:'plugin-before-tool-call',reason:prepared.blockReason}}:executed;
+    guard.afterToolCall({toolName:call.tool,params:prepared?.params??call.arguments,toolCallId:call.id,result,
+      ...(prepared?.block?{error:prepared.blockReason}:{})},ctx);
+    const persisted=guard.toolResultPersist({toolName:call.tool,toolCallId:call.id,message:{role:'toolResult',toolName:call.tool,toolCallId:call.id,...result}},ctx);
+    return {prepared,text:(persisted?.message?.content??[]).map(part=>part.text??'').join('\n')};
+  };
+  assert.equal(write.arguments.path,'.fleet-qualification-934ec2f819d5/index.html');
+  assert.match(write.seen,/Call tool_call with id pixel_ods_workspace_preview and args \{"relativeDirectory":"\.fleet-qualification-934ec2f819d5"\}/);
+  const written=invoke(write,success(`Successfully wrote ${Buffer.byteLength(write.arguments.content)} bytes to ${write.arguments.path}`));
+  assert.ok(written.text.includes(UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP),written.text);
+  assert.ok(!written.text.includes('"relativeDirectory":".fleet-qualification-934ec2f819d5"'),written.text);
+  assert.doesNotMatch(written.text,/tool_call/);
+  // The next step no longer invites it; the publication check is unchanged.
+  assert.deepEqual(invoke(hiddenPublish).prepared,{block:true,blockReason:hiddenPublish.seen});
+  invoke(move,{content:[{type:'text',text:'(no output)'}],details:move.details});
+  // The step said to read the moved entry first; publishing without that read is still refused.
+  assert.deepEqual(invoke(unreadPublish).prepared,{block:true,blockReason:unreadPublish.seen});
+  const readback=invoke(read,success(write.arguments.content));
+  assert.ok(readback.text.includes('Call pixel_ods_workspace_preview with args {"relativeDirectory":"fleet-qualification-934ec2f819d5"}. '),readback.text);
+  assert.notEqual(invoke(publish,{content:[{type:'text',text:'published'}],details:publish.details}).prepared?.block,true);
+});
+
+test('no next step prescribes a directory that the publication check refuses',()=>{
+  for(const [file,shown] of [['.site/index.html',false],['site/.draft/index.html',false],['my site/index.html',false],['site-2/index.html',true]]) {
+    const {invoke}=fixture();
+    const result=invoke('write',{path:file,content:'<!doctype html><h1>Site</h1>'},success('written'));
+    const directory=file.slice(0,-'/index.html'.length);
+    assert.equal(result.text.includes(`Call pixel_ods_workspace_preview with args ${JSON.stringify({relativeDirectory:directory})}`),shown,result.text);
+    assert.equal(result.text.includes(UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP),!shown,result.text);
+    assert.equal(invoke('pixel_ods_workspace_preview',{relativeDirectory:directory},success('unused')).prepared?.block===true,!shown,file);
+  }
 });
