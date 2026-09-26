@@ -153,7 +153,8 @@ main() {
             || fail "uninstall must remove ${label}.plist"
     done
     pass "macOS uninstall boots out loaded agents and removes all ODS plists (incl. legacy)"
-    [[ "$(head -n 1 "$TMP_DIR/out1.log.commands")" == native-retire ]] \
+    # `docker info` only proves the daemon is reachable before any mutation.
+    [[ "$(grep -vx 'docker info' "$TMP_DIR/out1.log.commands" | head -n 1)" == native-retire ]] \
         || fail "native retirement must precede Docker cleanup"
 
     # ── Scenario 2: nothing installed — tolerated, no bootout, no warnings ──
@@ -218,7 +219,7 @@ main() {
     [[ -d "$install6" && -f "$home6/Library/LaunchAgents/com.ods.host-agent.plist" ]] \
         || fail "rejected retirement must retain the installation and recovery agent"
     [[ ! -s "$TMP_DIR/launchctl6.log" ]] || fail "rejected retirement stopped recovery services"
-    if grep -q '^docker ' "$TMP_DIR/out6.log.commands"; then
+    if grep -vx 'docker info' "$TMP_DIR/out6.log.commands" | grep -q '^docker '; then
         fail "rejected retirement must not mutate Docker resources"
     fi
     pass "native retirement failure retains the install, agents and Docker resources"
