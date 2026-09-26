@@ -85,7 +85,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scheduled task (`ODSLemonadeRuntime`), loads the model, and passes the route
   to the Linux installer. `install-core.sh` gains `--lemonade-model`,
   `--lemonade-gpu-name` and `--lemonade-gpu-vram-mb`; the hardware scan shows
-  that GPU instead of "None".
+  that GPU instead of "None". An existing Lemonade (including 10.7+) is reused,
+  and Lemonade moves to the next free port when another program holds 8080.
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
   file. The 48 other re-pinned models download the same bytes: each sha256 was
