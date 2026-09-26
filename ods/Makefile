@@ -119,6 +119,7 @@ test: ## Run unit and contract tests
 	@echo "=== restore refuses empty backup config ==="
 	@bash tests/test-restore-empty-config.sh
 	@bash tests/test-lifecycle-prompts-noninteractive.sh
+	@bash tests/test-restore-safety-ux.sh
 	@echo ""
 	@echo "=== atomic .env writes ==="
 	@bash tests/test-atomic-env-writes.sh
@@ -168,6 +169,9 @@ test: ## Run unit and contract tests
 	@echo "=== bootstrap OpenClaw compose-guard regression ==="
 	@bash tests/test-bootstrap-openclaw-compose-guard.sh
 	@echo ""
+	@echo "=== installer temp file cleanup contract ==="
+	@bash tests/test-tmpfile-cleanup.sh
+	@echo ""
 	@echo "=== ods-update.sh backup command ==="
 	@bash tests/test-update-backup-retention-labels.sh
 	@bash tests/test-update-script-backup.sh
@@ -180,6 +184,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-backup-integrity.sh
 	@bash tests/test-backup-restore-roundtrip.sh
 	@bash tests/test-backup-macos-appledouble.sh
+	@bash tests/test-disk-space-preflight.sh
 	@python3 tests/test-rsync-transfer-failures.py
 	@echo ""
 	@echo "=== ods-update.sh rollback picks the newest backup ==="
