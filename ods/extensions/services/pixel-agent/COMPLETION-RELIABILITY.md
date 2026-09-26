@@ -20,6 +20,25 @@ If execution never occurred, delivery reports incompleteness instead of another
 promise. Existing Operations, publication and permission checks take precedence.
 Recovery does not replay side effects or grant additional permissions.
 
+## Revision and continuation prompts
+
+A run answers one owner message, and its first attempt carries it. A later
+attempt of the same run carries text OpenClaw writes instead: a
+`before_agent_finalize` revision ("Before accepting the previous final answer,
+apply this revision request...") or the continuation after a mid-turn context
+compaction. The guard keeps what the first attempt established about the
+owner's request (research date, preview and workspace obligations, requested
+checks, Operations scope, private-URL access) and never re-derives it from that
+text. Before this, the source revision's "...or remove that URL..." read as a
+visual edit of the chat's last published preview: in a chat that had published
+one, the revision's page reads were refused as outside that artifact, or Pixel
+was sent to edit and republish that project in a research turn that said "Do
+not create files". The same re-derivation dropped a requested test run from the
+verification contract after a continuation prompt. A resubmission of the
+owner's own text (OpenClaw's retry after a pre-prompt overflow) is classified
+as before. `tests/tool_loop_guard.test.mjs` replays the fleet case and the
+continuation.
+
 ## Cited pages that were not read
 
 When the owner asks for sources to be opened, every cited public URL needs a
