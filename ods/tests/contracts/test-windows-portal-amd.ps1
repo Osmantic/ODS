@@ -112,16 +112,21 @@ $script:healthy = $true
 function Install-ODSPortalLemonade([string]$SourceRoot, [bool]$NonInteractive) { return $script:installResult }
 function Get-ODSPortalLemonadeModel($Plan) { $script:calls.Add('model'); return 'C:\models' }
 function Get-ODSLemonadeLaunchContract { param($ExecutablePath, $Port, $ModelsDir, $ContextSize) return [pscustomobject]@{ Modern=$script:modern; Version=[Version]'10.0.0'; Port=$Port; ContextSize=$ContextSize } }
-function Register-ODSPortalLemonadeTask($Contract) { $script:calls.Add('task:' + $Contract.Port) }
+function Register-ODSPortalLemonadeTask($Contract, [string]$GgufFile) { $script:calls.Add('task:' + $Contract.Port) }
 function Stop-ODSPortalLemonade([string]$ExecutablePath) { $script:calls.Add('stop') }
 function Set-ODSLemonadeModernRuntimeConfig { param($Port, $ModelsDir, $AdminApiKey, $ContextSize) $script:calls.Add("modern:${Port}:${ModelsDir}:${ContextSize}") }
 function Wait-ODSPortalLemonadeHealth([int]$Port, [int]$Seconds) { $script:calls.Add('health'); return $script:healthy }
 function Resolve-ODSLemonadeModelId { param($Port, $GgufFile) return 'extra.' + $GgufFile }
 function Set-ODSLemonadeLoadedModel { param($Port, $ModelId, $ContextSize, $TimeoutSec) $script:calls.Add("load:${ModelId}:${ContextSize}:${TimeoutSec}") }
+function Wait-ODSPortalLemonadeReady($Registration) {
+    $script:calls.Add('await-ready')
+    if (-not $script:healthy) { throw 'Lemonade did not finish restoring its model.' }
+    return 'extra.' + $plan.GgufFile
+}
 $env:AMD_INFERENCE_PORT = ''
 $result = @(Initialize-ODSPortalAmdLemonade $plan $sourceRoot $false)
-Check (($result -join ' ') -eq "--lemonade-url http://localhost:8080 --lemonade-model extra.$($plan.GgufFile) --lemonade-gpu-name AMD Radeon RX 9070 XT --lemonade-gpu-vram-mb 16304") 'ready Lemonade returns the Linux route arguments'
-Check (($script:calls -join ',') -eq "model,stop,task:8080,health,load:extra.$($plan.GgufFile):$($plan.ContextSize):900") 'old Lemonade is released before the port is chosen; the model is served and loaded before Linux runs'
+Check (($result -join ' ') -eq "--lemonade-url http://localhost:8080 --lemonade-host-transport model-router --lemonade-model extra.$($plan.GgufFile) --lemonade-gpu-name AMD Radeon RX 9070 XT --lemonade-gpu-vram-mb 16304") 'ready Lemonade returns the Linux route and explicit host probe transport'
+Check (($script:calls -join ',') -eq 'model,stop,task:8080,await-ready') 'old Lemonade is released before choosing its port, then its durable task proves the loaded model before Linux runs'
 $script:calls.Clear()
 $script:busy = @{ 8080 = 'AgentService' }
 $result = @(Initialize-ODSPortalAmdLemonade $plan $sourceRoot $false)
@@ -133,11 +138,12 @@ $script:installResult = 'C:\lemonade\bin\lemonade-server.exe'
 $script:modern = $true
 $script:calls.Clear()
 $result = @(Initialize-ODSPortalAmdLemonade $plan $sourceRoot $false)
-Check ($result.Count -gt 0 -and ($script:calls -join ',') -eq "model,stop,task:8080,health,modern:8080:C:\models:$($plan.ContextSize),load:extra.$($plan.GgufFile):$($plan.ContextSize):900") 'Lemonade 10.7+ is reused and configured through its local API before loading'
+Check ($result.Count -gt 0 -and ($script:calls -join ',') -eq 'model,stop,task:8080,await-ready') 'Lemonade 10.7+ waits for its durable task to restore configuration and load without racing duplicate API calls'
 $script:modern = $false
 $script:healthy = $false
 $message = ''
 try { $null = Initialize-ODSPortalAmdLemonade $plan $sourceRoot $false } catch { $message = $_.Exception.Message }
-Check ($message -match 'did not answer') 'Lemonade that never becomes healthy stops setup'
+Check ($message -match 'did not finish restoring') 'Lemonade that never proves its loaded model stops setup'
 
 Out-Pass "Passed $script:checks Windows Portal AMD contracts."
+& (Join-Path $PSScriptRoot 'test-windows-portal-lemonade-restart.ps1')

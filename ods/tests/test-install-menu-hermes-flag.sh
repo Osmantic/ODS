@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The install menu presets must not override an explicit --hermes/--no-hermes.
+# The install menu must not override explicit Hermes or OpenClaw flags.
 # The Windows Pixel path passes --no-hermes; picking "Full Stack" used to turn
 # Hermes back on and download it next to Pixel.
 set -euo pipefail
@@ -15,22 +15,23 @@ fail=0
 # The colors and flags below are read by the eval'd show_install_menu.
 # shellcheck disable=SC2034
 expect() {
-    local label="$1" choice="$2" explicit="$3" initial="$4" want="$5" got
+    local label="$1" choice="$2" explicit="$3" initial="$4" want="$5" agent="${6:-HERMES}" got
     got="$(
         ai() { :; }; ai_warn() { :; }; warn() { :; }; log() { :; }; signal() { :; }
         BGRN='' AMB='' NC=''
         eval "$menu_source"
-        HERMES_EXPLICIT="$explicit"
-        ENABLE_HERMES="$initial"
+        printf -v "${agent}_EXPLICIT" '%s' "$explicit"
+        printf -v "ENABLE_${agent}" '%s' "$initial"
         TIER=3
         show_install_menu >/dev/null <<<"$choice"
-        printf '%s' "$ENABLE_HERMES"
+        selected_var="ENABLE_${agent}"
+        printf '%s' "${!selected_var}"
     )"
     if [[ "$got" == "$want" ]]; then
         echo "PASS: $label"
         pass=$((pass + 1))
     else
-        echo "FAIL: $label (ENABLE_HERMES=$got, expected $want)"
+        echo "FAIL: $label (ENABLE_${agent}=$got, expected $want)"
         fail=$((fail + 1))
     fi
 }
@@ -41,6 +42,13 @@ expect 'Invalid choice keeps explicit --no-hermes' x true false false
 expect 'Core Only keeps explicit --hermes' 2 true true true
 expect 'Full Stack still enables Hermes without a flag' 1 false false true
 expect 'Core Only still disables Hermes without a flag' 2 false true false
+
+for choice in 1 2 3 x ''; do
+    expect "Menu '$choice' keeps explicit --no-openclaw" "$choice" true false false OPENCLAW
+    expect "Menu '$choice' keeps explicit --openclaw" "$choice" true true true OPENCLAW
+done
+expect 'Full Stack still disables OpenClaw without a flag' 1 false true false OPENCLAW
+expect 'Core Only still disables OpenClaw without a flag' 2 false true false OPENCLAW
 
 echo "Results: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

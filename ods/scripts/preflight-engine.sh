@@ -100,6 +100,7 @@ esac
 
 "$PYTHON_CMD" - "$REPORT_FILE" "$TIER" "$RAM_GB" "$DISK_GB" "$GPU_BACKEND" "$GPU_VRAM_MB" "$GPU_NAME" "$PLATFORM_ID" "$COMPOSE_OVERLAYS" "$SCRIPT_DIR" "$ENV_MODE" "$STRICT" "$HOST_ARCH" "$DISK_POLICY" <<'PY'
 import json
+import os
 import pathlib
 import sys
 from datetime import datetime, timezone
@@ -316,6 +317,26 @@ else:
 
 # GPU checks
 gpu_backend = (gpu_backend or "").lower()
+# WSL may expose no local GPU while the selected model runs through Lemonade
+# on Windows. Require the complete external GPU evidence; an external URL or
+# a stale GPU name alone must not hide the CPU fallback warning.
+lemonade_gpu_name = os.environ.get("LEMONADE_GPU_NAME", "").strip()
+lemonade_gpu_vram = os.environ.get("LEMONADE_GPU_VRAM_MB", "0")
+external_gpu = None
+if (
+    os.environ.get("LEMONADE_EXTERNAL", "false").lower() == "true"
+    and os.environ.get("LEMONADE_BASE_URL", "").strip()
+    and lemonade_gpu_name.lower() not in {"", "none", "unknown", "none (cpu-only mode)"}
+    and lemonade_gpu_vram.isascii()
+    and lemonade_gpu_vram.isdecimal()
+    and int(lemonade_gpu_vram) > 0
+):
+    external_gpu = {
+        "provider": "lemonade",
+        "gpu_name": lemonade_gpu_name,
+        "gpu_vram_mb": int(lemonade_gpu_vram),
+    }
+
 if gpu_backend == "amd":
     add_check(
         "gpu-backend",
@@ -353,7 +374,14 @@ elif gpu_backend == "apple":
         "Use macOS installer preflight + doctor and run reduced profile set until Tier A parity is complete.",
     )
 elif gpu_backend == "cpu":
-    if platform_id in {"windows", "macos"}:
+    if external_gpu:
+        add_check(
+            "gpu-backend",
+            "pass",
+            f"External Lemonade GPU route configured ({lemonade_gpu_name}, {external_gpu['gpu_vram_mb']}MB VRAM); no local GPU is required for model inference.",
+            "",
+        )
+    elif platform_id in {"windows", "macos"}:
         add_check(
             "gpu-backend",
             "warn",
@@ -388,6 +416,7 @@ report = {
         "gpu_backend": gpu_backend,
         "gpu_vram_mb": gpu_vram_mb,
         "gpu_name": gpu_name,
+        "external_gpu": external_gpu,
         "platform_id": platform_id,
         "host_arch": host_arch,
         "compose_overlays": overlays,

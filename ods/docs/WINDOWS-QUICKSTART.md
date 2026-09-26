@@ -87,6 +87,14 @@ For failures, inspect the installer log and `sudo journalctl -u openclaw-gateway
 
 Pixel is the agent, not the model server. NVIDIA runs the model inside WSL (Docker Desktop's NVIDIA runtime). AMD runs it in Lemonade Server on Windows (see step 5); ROCm is not used in WSL. Without a usable GPU the model runs on the CPU. See [WSL2 GPU guide](WINDOWS-WSL2-GPU-GUIDE.md).
 
+For AMD, Windows setup automatically passes `--lemonade-host-transport model-router` to the Linux installer and saves `LEMONADE_HOST_TRANSPORT=model-router` in the runtime `.env`. Windows and Ubuntu can have different localhost listeners. The WSL host agent therefore checks the Windows model through this installation's running model-router container, using its configured `host.docker.internal` endpoint. Before sending a request, it checks the container's ODS labels, installation mounts and Lemonade endpoint. Missing or mismatched ownership keeps the route unverified; model identity, context and a successful completion are still required for readiness.
+
+Lemonade stays bound to Windows `127.0.0.1`; this transport does not enable LAN access or select cloud inference. The Linux setting `LEMONADE_EXTERNAL=true` means Lemonade is managed outside the Linux stack, on the same Windows computer. Other Lemonade installations use the default `--lemonade-host-transport direct`, which probes from the host agent's own network context.
+
+The `ODSLemonadeRuntime` task starts at Windows sign-in, restores the selected model and context, and verifies the loaded model before setup proceeds. Its launcher and configuration live in `%LOCALAPPDATA%\ODS\lemonade\portal-runtime`, so removing the temporary installer checkout does not break the next startup. Startup failures are recorded in `lemonade-launch.log` in that directory.
+
+After a Windows restart, sign in, let Docker Desktop connect to Ubuntu, then check Portal availability and send a message again. A registered task or a healthy Lemonade API alone does not prove that model generation resumed successfully.
+
 ## Existing native Windows installations
 
 Setup detects native runtimes at `ODS_HOME` or `%USERPROFILE%\ods` and stops to avoid competing stacks. Check any older custom location yourself. No data migration or deletion is automatic. Preserve needed data and migrate/remove the old deployment before switching; removal is destructive and your explicit choice.

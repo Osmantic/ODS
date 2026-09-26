@@ -87,6 +87,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--lemonade-gpu-name` and `--lemonade-gpu-vram-mb`; the hardware scan shows
   that GPU instead of "None". An existing Lemonade (including 10.7+) is reused,
   and Lemonade moves to the next free port when another program holds 8080.
+- Windows/WSL AMD setup now selects `--lemonade-host-transport model-router`.
+  The WSL host agent verifies the Windows Lemonade model through the running
+  model-router container belonging to this installation, where
+  `host.docker.internal` reaches Windows. This avoids probing WSL's own
+  localhost while keeping Lemonade bound to Windows loopback. Model identity,
+  context and completion checks still decide readiness; this transport does
+  not enable LAN access or cloud inference. Other Lemonade installs keep the
+  default `direct` transport.
+- On WSL, the host agent identifies Docker Desktop before choosing its bind
+  address. A leftover native `docker0` bridge could have the same gateway IP
+  as Docker Desktop and make the agent listen where ODS containers could not
+  reach it. Docker Desktop now selects WSL loopback regardless of that stale
+  bridge, for GPU and CPU installations alike.
+- The Windows AMD startup task restores and verifies the selected Lemonade
+  model and context at each sign-in, including Lemonade 10.0. A healthy API
+  without a loaded model no longer counts as completed setup. The task keeps
+  its launcher and configuration in the user's ODS directory instead of a
+  temporary installer checkout.
+- Re-running Windows AMD setup stops only the verified ODS task and its
+  process descendants, including cached llama.cpp workers. Other Lemonade
+  instances are preserved. Both the former direct task and the Lemonade
+  10.7 task launcher migrate to the durable launcher.
+- Portal reads the loaded Windows/WSL Lemonade model from the Linux host
+  agent's verified external-model observation instead of calling the
+  Windows-only model-status endpoint on that Linux agent.
+- Explicit Hermes and OpenClaw flags now take precedence in the Custom
+  feature menu as well as presets. The Windows Pixel path no longer asks to
+  enable agents that its command line explicitly disabled.
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
   file. The 48 other re-pinned models download the same bytes: each sha256 was

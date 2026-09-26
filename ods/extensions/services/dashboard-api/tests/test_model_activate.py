@@ -382,6 +382,30 @@ def test_external_lemonade_observation_endpoint_is_authenticated_and_redacted(mo
         thread.join(timeout=5)
 
 
+def test_external_observation_transport_timeout_is_redacted_503(monkeypatch):
+    monkeypatch.setattr(_mod, "AGENT_API_KEY", "observation-test-key")
+    monkeypatch.setattr(_mod, "load_env", lambda _path: {"LEMONADE_EXTERNAL": "true"})
+    def timed_out(_env):
+        raise subprocess.TimeoutExpired("private-runtime-command", 5)
+    monkeypatch.setattr(_mod, "_read_external_lemonade_observation", timed_out)
+    server = _mod.ThreadedHTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/v1/model/external-observation", headers={
+            "Authorization": "Bearer observation-test-key",
+        })
+        response = connection.getresponse()
+        assert response.status == 503
+        assert json.loads(response.read()) == {"error": "External Lemonade identity is unavailable"}
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_external_adoption_endpoint_requires_auth_and_preserves_pending_hold(monkeypatch):
     monkeypatch.setattr(_mod, "AGENT_API_KEY", "adoption-test-key")
     actions = []

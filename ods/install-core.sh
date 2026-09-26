@@ -141,6 +141,8 @@ ODS_MODE_EXPLICIT=false
 ODS_MODE="${ODS_MODE:-local}"
 LEMONADE_EXTERNAL="${LEMONADE_EXTERNAL:-false}"
 LEMONADE_BASE_URL="${LEMONADE_BASE_URL:-}"
+# Keep omission distinct from an explicit direct override until .env is read.
+LEMONADE_HOST_TRANSPORT="${LEMONADE_HOST_TRANSPORT:-}"
 LEMONADE_API_KEY="${LEMONADE_API_KEY:-}"
 LEMONADE_MODEL="${LEMONADE_MODEL:-}"
 # Display only: the GPU that runs an external Lemonade (e.g. Windows under WSL).
@@ -178,6 +180,9 @@ Options:
                       Use an already-running Lemonade SDK server as the AMD LLM runtime
     --lemonade-url U  Lemonade server URL for --use-existing-lemonade
                       (auto-detects localhost:13305, then localhost:8000 when omitted)
+    --lemonade-host-transport direct|model-router
+                      Host-agent verification network: direct (default), or this
+                      installation's model-router container for Windows/WSL Lemonade
     --lemonade-api-key K
                       API key LiteLLM should send to the existing Lemonade server
     --lemonade-model M
@@ -258,6 +263,9 @@ while [[ $# -gt 0 ]]; do
         --cloud) ODS_MODE="cloud"; ODS_MODE_EXPLICIT=true; shift ;;
         --use-existing-lemonade) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; shift ;;
         --lemonade-url) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; LEMONADE_BASE_URL="$2"; shift 2 ;;
+        --lemonade-host-transport)
+            case "${2:-}" in direct|model-router) LEMONADE_HOST_TRANSPORT="$2" ;; *) echo "--lemonade-host-transport requires direct or model-router" >&2; exit 1 ;; esac
+            shift 2 ;;
         --lemonade-api-key) LEMONADE_API_KEY="$2"; shift 2 ;;
         --lemonade-model) LEMONADE_MODEL="$2"; shift 2 ;;
         --lemonade-gpu-name) LEMONADE_GPU_NAME="$2"; shift 2 ;;
@@ -335,7 +343,7 @@ if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
     ODS_MODE="lemonade"
     ENABLE_RECOMMENDED=true
     # An empty LEMONADE_MODEL still lets phase 06 discover the model.
-    export LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_API_KEY LEMONADE_MODEL LEMONADE_GPU_NAME LEMONADE_GPU_VRAM_MB
+    export LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_HOST_TRANSPORT LEMONADE_API_KEY LEMONADE_MODEL LEMONADE_GPU_NAME LEMONADE_GPU_VRAM_MB
 fi
 
 export EXTERNAL_LLM_URL EXTERNAL_LLM_PROVIDER EXTERNAL_LLM_MODEL
