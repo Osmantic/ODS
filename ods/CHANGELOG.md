@@ -60,6 +60,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bind of its own empty runtime targets and checks the top mount's propagation.
   Bridge refusals now explain their cause, and the installer shows the service
   journal when startup or its active-state check fails.
+- Installer: Full Stack, Core Only and Custom preserve explicit `--hermes`,
+  `--no-hermes`, `--openclaw` and `--no-openclaw` choices. Custom skips agent
+  questions already answered by those flags, including the Windows Pixel path.
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
   file. The 48 other re-pinned models download the same bytes: each sha256 was
