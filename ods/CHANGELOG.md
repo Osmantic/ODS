@@ -56,6 +56,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   proxy translates, and the installer creates those empty targets before Pixel
   Edge starts. The daemon-side `/mnt/host/wsl/...` path stopped every fresh
   install with "is mounted on / but it is not a shared mount".
+- Linux on WSL with Docker Desktop: the Pixel runtime bridge accepts Docker's
+  bind of its own empty runtime targets and checks the top mount's propagation.
+  Bridge refusals now explain their cause, and the installer shows the service
+  journal when startup or its active-state check fails.
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
   file. The 48 other re-pinned models download the same bytes: each sha256 was

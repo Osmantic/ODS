@@ -4273,8 +4273,13 @@ PY
     ods_sudo systemctl restart pixel-ingress.service || return 1
     if "$wsl_bridge"; then
         ods_sudo systemctl enable ods-pixel-wsl-runtime-bridge.service || return 1
-        ods_sudo systemctl start ods-pixel-wsl-runtime-bridge.service || return 1
-        ods_sudo systemctl is-active --quiet ods-pixel-wsl-runtime-bridge.service || return 1
+        if ! ods_sudo systemctl start ods-pixel-wsl-runtime-bridge.service \
+            || ! ods_sudo systemctl is-active --quiet ods-pixel-wsl-runtime-bridge.service; then
+            ai_bad "The WSL runtime bridge for Pixel Edge did not start. Its journal:"
+            ods_sudo journalctl -u ods-pixel-wsl-runtime-bridge.service -n 20 --no-pager -o cat \
+                || ai_warn "journalctl could not read the bridge journal (non-fatal)"
+            return 1
+        fi
     fi
     ods_sudo systemctl is-active --quiet openclaw-gateway.service pixel-ingress.service \
         pixel-extension-manager.service pixel-artifact-promoter.service \
