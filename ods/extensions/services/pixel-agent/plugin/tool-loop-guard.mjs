@@ -1497,7 +1497,10 @@ function unittestRunnerSummaryHasNonCleanOutcome(values) {
 //   /dev/stdout && ...`, or any other setup segment);
 // - a test script (`python3 test_calc.py`), whose own code runs around
 //   unittest.main(): checks after unittest.main(exit=False), or a custom
-//   runner that prints a summary of its own.
+//   runner that prints a summary of its own;
+// - a second process started beside the runner with `&` (`python3 -m
+//   unittest test_calc & python3 check_calc.py`), which
+//   verificationCommandIsAuditable does not refuse.
 // The fingerprint is execFingerprint of the command as the model sent it.
 function execFingerprintRunsUnittestRunner(fingerprint) {
   if (typeof fingerprint !== "string" || !fingerprint) return false;
@@ -1510,6 +1513,7 @@ function execFingerprintRunsUnittestRunner(fingerprint) {
   if (typeof command !== "string") return false;
   const parsed = verificationCommand({ command });
   return Boolean(parsed) && verificationCommandIsAuditable({ command }) &&
+    !parsed.withoutStderrMerge.includes("&") &&
     /^python(?:3(?:\.\d+)?)?\s+-m\s+unittest\b/i.test(parsed.withoutStderrMerge);
 }
 
