@@ -50,10 +50,12 @@ process.on("SIGUSR1", () => server.close());  // the backend dies, the wrapper l
 process.on("SIGUSR2", () => process.exit(0));  // the wrapper exits by itself
 """
 
-pytestmark = pytest.mark.skipif(
+needs_linux_node = pytest.mark.skipif(
     sys.platform != "linux" or shutil.which("node") is None or shutil.which("bash") is None,
     reason="runs the recipe's Bash entrypoint and Node forwarder on Linux",
 )
+# Direct connections only: a proxy from the environment must not answer for GAIA.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _free_ports(count):
@@ -89,7 +91,7 @@ def _wait_for(predicate, what, timeout=15):
 
 
 def _get(url):
-    with urllib.request.urlopen(url, timeout=5) as response:
+    with _OPENER.open(url, timeout=5) as response:
         return response.status, response.read().decode()
 
 
@@ -172,6 +174,7 @@ def entrypoint(tmp_path):
         item.kill_all()
 
 
+@needs_linux_node
 def test_full_mode_serves_the_loopback_backend_on_a_non_loopback_address(entrypoint):
     ep = entrypoint()
     ep.wait_listening()
@@ -192,6 +195,7 @@ def test_full_mode_serves_the_loopback_backend_on_a_non_loopback_address(entrypo
     assert "received SIGTERM" in ep.log.read_text()
 
 
+@needs_linux_node
 def test_entrypoint_exits_non_zero_when_gaia_ui_exits(entrypoint):
     ep = entrypoint()
     ep.wait_listening()
@@ -201,6 +205,7 @@ def test_entrypoint_exits_non_zero_when_gaia_ui_exits(entrypoint):
     assert _refused("127.0.0.1", ep.port)
 
 
+@needs_linux_node
 def test_entrypoint_exits_non_zero_when_the_backend_dies_under_a_live_wrapper(entrypoint):
     ep = entrypoint()
     ep.wait_listening()
@@ -213,6 +218,7 @@ def test_entrypoint_exits_non_zero_when_the_backend_dies_under_a_live_wrapper(en
     assert (ep.state / "signal").read_text() == "SIGTERM"
 
 
+@needs_linux_node
 def test_forwarder_waits_while_the_first_start_installs_the_backend(entrypoint):
     ep = entrypoint(STUB_LISTEN_DELAY_MS="3000")
     _wait_for(lambda: _listen_address(ep.port) == "0.0.0.0", "the forwarder to listen")
@@ -223,6 +229,7 @@ def test_forwarder_waits_while_the_first_start_installs_the_backend(entrypoint):
     assert ep.proc.poll() is None
 
 
+@needs_linux_node
 def test_serve_only_mode_runs_gaia_ui_directly_on_the_service_port(entrypoint):
     ep = entrypoint(GAIA_UI_SERVE_ONLY="true")
     _wait_for(lambda: (ep.state / "listening").exists(), "the stub gaia-ui to listen")
@@ -233,6 +240,7 @@ def test_serve_only_mode_runs_gaia_ui_directly_on_the_service_port(entrypoint):
     assert _get(f"http://{host}:{ep.port}/") == (200, "stub gaia /")
 
 
+@needs_linux_node
 def test_refuses_to_start_when_ngrok_could_enable_the_tunnel(entrypoint, tmp_path):
     gaia_bin = tmp_path / "home/.gaia/bin"
     gaia_bin.mkdir(parents=True)

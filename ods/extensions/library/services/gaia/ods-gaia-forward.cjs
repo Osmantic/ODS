@@ -14,6 +14,7 @@
 // wrapper can outlive its Python child, and the entrypoint turns this exit
 // into a container exit so Docker's restart policy applies. Until the backend
 // first comes up (the first start installs it) the forwarder only waits.
+// ODS_GAIA_PROBE_INTERVAL_MS sets the probe interval (default 5000).
 
 "use strict";
 
