@@ -613,7 +613,6 @@ def _default_n8n_url() -> str:
     return f"http://{host}:{port}"
 
 N8N_URL = os.environ.get("N8N_URL", _default_n8n_url())
-N8N_API_KEY = os.environ.get("N8N_API_KEY", "")
 
 # --- Setup / Personas ---
 

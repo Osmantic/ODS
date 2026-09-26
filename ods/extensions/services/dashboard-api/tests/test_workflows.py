@@ -202,7 +202,7 @@ def test_get_n8n_workflows_auth_rejection_is_reported(test_client, monkeypatch, 
 
     import routers.workflows as wf_mod
 
-    monkeypatch.setattr(wf_mod, "N8N_API_KEY", "", raising=False)
+    monkeypatch.delenv("N8N_API_KEY", raising=False)
 
     resp_mock = AsyncMock()
     resp_mock.status = 401

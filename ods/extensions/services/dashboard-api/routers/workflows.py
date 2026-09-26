@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from config import (
     SERVICES, WORKFLOW_DIR, WORKFLOW_CATALOG_FILE,
-    DEFAULT_WORKFLOW_CATALOG, N8N_URL, N8N_API_KEY,
+    DEFAULT_WORKFLOW_CATALOG, N8N_URL, read_live_env_value,
 )
 from security import verify_api_key
 
@@ -24,6 +24,16 @@ _WORKFLOW_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 def _validate_workflow_id(workflow_id: str) -> None:
     if not _WORKFLOW_ID_RE.fullmatch(workflow_id):
         raise HTTPException(status_code=400, detail="Invalid workflow ID format")
+
+
+def _n8n_headers() -> dict[str, str]:
+    """n8n API auth headers from the mounted .env.
+
+    Compose does not pass N8N_API_KEY to dashboard-api, and the key is created
+    in n8n after install, so read it live rather than at process start.
+    """
+    api_key = read_live_env_value("N8N_API_KEY")
+    return {"X-N8N-API-KEY": api_key} if api_key else {}
 
 
 def load_workflow_catalog() -> dict:
@@ -51,9 +61,7 @@ def load_workflow_catalog() -> dict:
 async def get_n8n_workflows() -> list[dict]:
     """Get all workflows from n8n API."""
     try:
-        headers = {}
-        if N8N_API_KEY:
-            headers["X-N8N-API-KEY"] = N8N_API_KEY
+        headers = _n8n_headers()
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
             async with session.get(f"{N8N_URL}/api/v1/workflows", headers=headers) as resp:
                 if resp.status == 200:
@@ -71,7 +79,7 @@ async def get_n8n_workflows() -> list[dict]:
                         "(Settings > n8n API) and set N8N_API_KEY in .env.",
                         resp.status,
                         "N8N_API_KEY is not set"
-                        if not N8N_API_KEY
+                        if not headers
                         else "the configured N8N_API_KEY was refused",
                     )
                 else:
@@ -224,9 +232,7 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
         raise HTTPException(status_code=500, detail=f"Failed to read workflow: {e}")
 
     try:
-        headers = {"Content-Type": "application/json"}
-        if N8N_API_KEY:
-            headers["X-N8N-API-KEY"] = N8N_API_KEY
+        headers = {"Content-Type": "application/json", **_n8n_headers()}
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             async with session.post(f"{N8N_URL}/api/v1/workflows", headers=headers, json=workflow_data) as resp:
@@ -265,9 +271,7 @@ async def _remove_workflow(workflow_id: str):
         raise HTTPException(status_code=404, detail="Workflow not installed in n8n")
 
     try:
-        headers = {}
-        if N8N_API_KEY:
-            headers["X-N8N-API-KEY"] = N8N_API_KEY
+        headers = _n8n_headers()
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
             async with session.delete(f"{N8N_URL}/api/v1/workflows/{n8n_wf['id']}", headers=headers) as resp:
                 if resp.status in (200, 204):
@@ -315,9 +319,7 @@ async def workflow_executions(workflow_id: str, limit: int = 20, api_key: str = 
         return {"executions": [], "message": "Workflow not installed"}
 
     try:
-        headers = {}
-        if N8N_API_KEY:
-            headers["X-N8N-API-KEY"] = N8N_API_KEY
+        headers = _n8n_headers()
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
             async with session.get(f"{N8N_URL}/api/v1/executions", headers=headers, params={"workflowId": n8n_wf["id"], "limit": limit}) as resp:
                 if resp.status == 200:
