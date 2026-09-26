@@ -43,6 +43,7 @@ import PixelTurnNavigation from '../components/PixelTurnNavigation'
 import PixelSnapshotChanges from '../components/PixelSnapshotChanges'
 import PortalWorkspace from '../components/PortalWorkspace'
 import { parseTaskActivity, parseTaskActivityFrame } from '../lib/pixelTaskActivity'
+import { liveModelOutputTokens } from '../lib/portalLiveOutput'
 import MetalMetricIcon from '../components/MetalMetricIcon'
 import PanelResizeHandle from '../components/PanelResizeHandle.jsx'
 import PixelHandoffApproval from '../components/PixelHandoffApproval.jsx'
@@ -638,6 +639,7 @@ export default function Pixel({ systemStatus = null }) {
 
   const activeModel = agentRuntime?.model || (contextRuntime ? '' : systemStatus?.inference?.loadedModel || systemStatus?.model?.name || '')
   const activeContext = agentRuntime ? formatContext(agentRuntime.contextLength) : ''
+  const liveOutputTokens = liveModelOutputTokens(agentRuntime ?? contextRuntime, systemStatus)
   const currentPreview=preview ? latestProjectPublication(preview,messages) : null
   const previewAccess = resolvePreviewAccess(currentPreview)
   const restoredActive = interrupted && !sending && restoredActivity === 'active'
@@ -1570,7 +1572,7 @@ export default function Pixel({ systemStatus = null }) {
                 </div>
               )}
               {message.role === 'assistant' && <PortalGoalPlan task={message.task} active={message.status==='streaming'} disabled={isDisabled || sending || restoredActive || restoredChecking} onResume={index===messages.length-1 && !message.questions ? ()=>sendMessage(continueGoal(messages,index)) : undefined}/>}
-              {message.role === 'assistant' && <PortalAgentActivity task={message.task} active={message.status === 'streaming'} status={message.status}/> }
+              {message.role === 'assistant' && <PortalAgentActivity task={message.task} active={message.status === 'streaming'} status={message.status} liveOutputTokens={index === messages.length - 1 ? liveOutputTokens : null}/> }
               {message.role === 'assistant' && index === messages.length - 1 && messages[index - 1]?.role === 'user' &&
                 <PortalExtensionProgress key={`extension-progress/${chatIdRef.current}/${index}`}
                   command={githubExtensionInstallation?.command || messages[index - 1].content} active={message.status === 'streaming'}

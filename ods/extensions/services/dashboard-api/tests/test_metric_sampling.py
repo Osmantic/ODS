@@ -384,6 +384,32 @@ async def test_live_output_updates_while_completed_counters_stay_fixed(sampler, 
 
 
 @pytest.mark.asyncio
+async def test_live_output_count_is_reported_only_for_one_measured_generation(sampler):
+    client, clock = sampler
+    live_runtime(client, count=201)
+    assert (await helpers.get_llama_metrics("model-a"))["live_output_tokens"] == 201
+    clock[0] += 2
+    live_runtime(client, count=342)
+    assert (await helpers.get_llama_metrics("model-a"))["live_output_tokens"] == 342
+    clock[0] += 2
+    # Two concurrent generations have no single owner-visible count.
+    other = {"id": 1, "id_task": 12, "is_processing": True, "next_token": [{"n_decoded": 5}]}
+    live_runtime(client, count=400, additional_slots=[other])
+    assert (await helpers.get_llama_metrics("model-a"))["live_output_tokens"] is None
+    clock[0] += 2
+    live_runtime(client, active=False)
+    assert (await helpers.get_llama_metrics("model-a"))["live_output_tokens"] is None
+    clock[0] += 2
+    live_runtime(client, count=500, slots_failure=httpx.ReadTimeout("unavailable"))
+    assert (await helpers.get_llama_metrics("model-a"))["live_output_tokens"] is None
+    clock[0] += 2
+    rows = live_runtime(client, count=600)
+    rows[0]["next_token"] = []
+    assert (await helpers.get_llama_metrics("model-a"))["live_output_tokens"] is None
+    assert "private" not in repr(helpers._prev_tokens)
+
+
+@pytest.mark.asyncio
 async def test_live_task_change_and_counter_reset_start_new_intervals(sampler):
     client, clock = sampler
     live_runtime(client, count=100)

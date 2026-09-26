@@ -1469,7 +1469,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
                           "throughputState": "unavailable",
                           "throughputSampledAt": last_inference.get("throughput_sampled_at"),
                           "throughputModel": last_inference.get("throughput_model"),
-                          "inferenceActive": None,
+                          "inferenceActive": None, "liveOutputTokens": None,
                           "loadedModel": None, "contextSize": None},
             "manifest_errors": MANIFEST_ERRORS,
         }
@@ -1586,6 +1586,10 @@ async def _build_api_status() -> dict:
             "throughputSampledAt": llama_metrics_data.get("throughput_sampled_at"),
             "throughputModel": llama_metrics_data.get("throughput_model"),
             "inferenceActive": llama_metrics_data.get("inference_active"),
+            # Accepted output tokens of the runtime's sole active generation,
+            # measured in this sample; absent whenever it is idle or ambiguous.
+            "liveOutputTokens": (llama_metrics_data.get("live_output_tokens")
+                                 if llama_metrics_data.get("inference_active") is True else None),
             "loadedModel": loaded_model_name,
             "contextSize": context_size or (model_data["contextLength"] if model_data else None),
         },
