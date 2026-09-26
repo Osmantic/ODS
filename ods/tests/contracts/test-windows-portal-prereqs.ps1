@@ -44,9 +44,11 @@ $same = '{"IntegratedWslDistros":["Ubuntu-24.04"]}'
 Check ((Update-ODSPortalDockerSettings $same 'settings-store.json' 'Ubuntu-24.04') -eq $same) 'already integrated distro leaves the file unchanged'
 Check ($null -eq (Update-ODSPortalDockerSettings '{"WslEngineEnabled":false}' 'settings-store.json' 'Ubuntu')) 'Hyper-V engine is reported instead of edited'
 Check ($null -eq (Update-ODSPortalDockerSettings '{"wslEngineEnabled":false}' 'settings.json' 'Ubuntu')) 'legacy Hyper-V engine is reported instead of edited'
-$rejected = $false
-try { $null = Update-ODSPortalDockerSettings '[1,2]' 'settings-store.json' 'Ubuntu' } catch { $rejected = $true }
-Check $rejected 'non-object Docker settings are refused'
+foreach ($json in @('[1,2]', '[{"a":1}]', '1', '"x"')) {
+    $rejected = $false
+    try { $null = Update-ODSPortalDockerSettings $json 'settings-store.json' 'Ubuntu' } catch { $rejected = $true }
+    Check $rejected "non-object Docker settings are refused: $json"
+}
 
 # Capacity gate: disk first, then virtualization only when WSL is not ready.
 function Get-ODSPortalFreeSystemGB { return $script:free }
