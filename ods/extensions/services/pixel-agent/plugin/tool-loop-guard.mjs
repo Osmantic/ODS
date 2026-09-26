@@ -1406,6 +1406,52 @@ function verificationFingerprintIsPythonUnittest(fingerprint) {
   }
 }
 
+// unittest's TextTestRunner ends every run with its own summary: "Ran N
+// tests in X.XXXs", one blank line, then "OK", "OK (skipped=2)", "FAILED
+// (failures=1)" or "NO TESTS RAN". Fleet, open-prompt 07 photo-renamer on
+// d4a61f33 (tower3, Qwen3.5-27B): an exit-0 run ended "Ran 11 tests ... OK",
+// yet a passing negative-path test had printed "Error: Folder ... does not
+// exist." and that program output kept the verification failed. When such a
+// summary is present, only the runner's own markers count: a zero-test
+// summary or NO TESTS RAN, a summary not followed by OK, a FAILED ( line,
+// nonzero expected failures or unexpected successes (each also in its -v
+// form), or an exact "FAIL: test (module.Class...)" / "ERROR: ..." failure
+// header. Program output such as "Error:", "ERROR:root:..." logging, a -v
+// docstring or AssertionError text is not. Returns undefined when no summary
+// is present, so custom runners keep the text heuristics below.
+const UNITTEST_RUN_SUMMARY = /^Ran (\d+) tests? in \d+(?:\.\d+)?s\s*$/;
+const UNITTEST_CLEAN_RESULT = /^OK(?: \([^()]*\))?\s*$/;
+const UNITTEST_FAILURE_HEADER = /^(?:FAIL|ERROR): \S+ \([^()]+\)/;
+
+function unittestRunnerSummaryHasNonCleanOutcome(values) {
+  // Python 3.14 colors these markers when its output is a terminal (a pty
+  // exec), e.g. "\x1b[32mOK\x1b[0m (\x1b[33mskipped=1\x1b[0m)".
+  const texts = values.map((value) => value.replace(/\x1b\[[0-9;]*m/g, ""));
+  const outputs = texts.map((text) => text.split(/\r?\n/));
+  if (!outputs.some((lines) => lines.some((line) => UNITTEST_RUN_SUMMARY.test(line)))) {
+    return undefined;
+  }
+  for (const lines of outputs) {
+    for (const [index, line] of lines.entries()) {
+      const summary = line.match(UNITTEST_RUN_SUMMARY);
+      if (summary) {
+        if (Number(summary[1]) === 0) return true;
+        const outcome = /^\s*$/.test(lines[index + 1] ?? "") ? lines[index + 2] : lines[index + 1];
+        if (!UNITTEST_CLEAN_RESULT.test(outcome ?? "")) return true;
+      }
+      if (UNITTEST_FAILURE_HEADER.test(line) || /^\s*FAILED \(/.test(line)) return true;
+    }
+  }
+  return texts.some(
+    (text) =>
+      /\bexpected failures?\s*=\s*[1-9][0-9]*\b/i.test(text) ||
+      /\bunexpected successes?\s*=\s*[1-9][0-9]*\b/i.test(text) ||
+      /\.\.\.\s+expected failure\b/i.test(text) ||
+      /\.\.\.\s+unexpected success\b/i.test(text) ||
+      /\bNO\s+TESTS?\s+RAN\b/i.test(text)
+  );
+}
+
 function execResultHasNonCleanUnittestOutcome(event) {
   const result = event?.result;
   if (!result || typeof result !== "object" || Array.isArray(result)) return false;
@@ -1417,6 +1463,10 @@ function execResultHasNonCleanUnittestOutcome(event) {
       ? result.content.map((item) => item?.type === "text" ? item.text : undefined)
       : []),
   ];
+  const runnerVerdict = unittestRunnerSummaryHasNonCleanOutcome(
+    values.filter((value) => typeof value === "string")
+  );
+  if (runnerVerdict !== undefined) return runnerVerdict;
   return values.some(
     (value) =>
       typeof value === "string" &&
@@ -8904,11 +8954,18 @@ export function createToolLoopGuard({
           state.latestVerificationPassedGeneration === state.previewVerificationGeneration)) {
         state.latestVerificationStatus = "failed";
       }
-      // The refusal runs nothing; repeats (often with a variant redirect) are
-      // bounded by recordFreeCorrection instead of each draining the budget.
-      recordFreeCorrection(state, "verification-not-auditable",
-        context?.toolCallId ?? event?.toolCallId, toolName);
-      return { block: true, blockReason: VERIFICATION_COMMAND_NOT_AUDITABLE_REASON };
+      // After a coding stop, the stop's own terminal handling below answers
+      // every further exec (one terminal refusal, then abort). "Run it
+      // directly" would contradict its "Do not call another tool", and a
+      // model obeys the newer message (strixy, d4a61f33: `...; echo
+      // "EXIT:$?"` was coached, then rerun bare).
+      if (!state?.codingExhausted) {
+        // The refusal runs nothing; repeats (often with a variant redirect) are
+        // bounded by recordFreeCorrection instead of each draining the budget.
+        recordFreeCorrection(state, "verification-not-auditable",
+          context?.toolCallId ?? event?.toolCallId, toolName);
+        return { block: true, blockReason: VERIFICATION_COMMAND_NOT_AUDITABLE_REASON };
+      }
     }
 
     if (state?.privateNetworkPrompt) {
