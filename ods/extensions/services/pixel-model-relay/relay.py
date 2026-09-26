@@ -106,9 +106,15 @@ async def _inference(request):
                 return web.Response(status=499)
             upstream = await upstream_task
             async with upstream:
-                response = web.StreamResponse(status=upstream.status, headers={
+                response_headers = {
                     "Content-Type": upstream.headers.get("Content-Type", "application/json"),
-                    "Cache-Control": "no-store"})
+                    "Cache-Control": "no-store"}
+                # The model route's answer on whether a failed request is
+                # worth an automatic retry; OpenAI SDK clients obey it.
+                should_retry = upstream.headers.get("x-should-retry")
+                if should_retry in {"true", "false"}:
+                    response_headers["x-should-retry"] = should_retry
+                response = web.StreamResponse(status=upstream.status, headers=response_headers)
                 await response.prepare(request)
                 iterator = upstream.content.iter_chunked(4096)
                 while True:
