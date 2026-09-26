@@ -37,5 +37,9 @@ for text in (phase, installer):
 precreate = installer.index('/mnt/wsl/ods-portal-runtime/ingress /mnt/wsl/ods-portal-runtime/preview')
 prerequisites_up = installer.index('"${pixel_prerequisites[@]}" >>"$LOG_FILE"')
 assert precreate < prerequisites_up, 'WSL runtime targets must exist before Pixel Edge starts'
+# A failed bridge must say why in the journal, and the installer must show it.
+assert '|| exit 1' not in bridge and '|| return 1' not in bridge
+assert 'fail "$target is mounted from another directory than $source' in bridge
+assert 'journalctl -u ods-pixel-wsl-runtime-bridge.service -n 20' in installer
 PY
 echo "Pixel WSL shared runtime bridge checks passed"
