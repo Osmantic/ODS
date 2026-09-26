@@ -271,7 +271,10 @@ if [[ "${DOCKER_CMD:-}" == "" ]]; then
         warn "Docker installed, but group membership may not be active yet (re-login required)."
         if [[ "${INTERACTIVE:-true}" == "true" ]]; then
             echo ""
-            read -p "  Continue this installer using 'sudo docker' for now? [Y/n] " -r < /dev/tty
+            REPLY="y"
+            if [[ -r /dev/tty ]]; then
+                read -p "  Continue this installer using 'sudo docker' for now? [Y/n] " -r REPLY < /dev/tty
+            fi
             if [[ $REPLY =~ ^[Nn]$ ]]; then
                 log "Please re-run after logging out and back in (or after 'newgrp docker')."
                 exit 0
