@@ -38,6 +38,10 @@ chmod +x "$STUB_BIN/df"
 FAKE_ODS="$TMP/ods"
 mkdir -p "$FAKE_ODS/data/open-webui"
 mkdir -p "$FAKE_ODS/.backups"
+# ods-backup.sh and ods-restore.sh source these from the install they run
+# against; without them both scripts die before reaching the preflight.
+mkdir -p "$FAKE_ODS/lib"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$SCRIPT_DIR/../lib/backup-paths.sh" "$FAKE_ODS/lib/"
 echo test > "$FAKE_ODS/.version"
 echo hello > "$FAKE_ODS/data/open-webui/file.txt"
 

@@ -40,6 +40,21 @@ info() {
     echo -e "${BLUE}ℹ${NC} $1"
 }
 
+# Print the body of one cmd_preset case, from its `<label>)` line to the
+# terminating `;;`. Scoping the assertions below to the exact case block keeps
+# them from silently failing as the block grows: a fixed `grep -A<N>` window
+# rots the moment the case body gets longer than N (e.g. adding archive
+# staging pushed `cd "$PRESETS_DIR"` and `tar czf` past the old -A15/-A20
+# windows), and it can also leak into the next case if the body shrinks.
+ods_cli_case_body() {
+    local label="$1"  # e.g. 'export|e)'
+    awk -v label="$label" '
+        index($0, label) { capture = 1 }
+        capture { print }
+        capture && /;;[[:space:]]*$/ { exit }
+    ' "$ODS_CLI"
+}
+
 # Test 1: Verify ods-cli syntax
 test_syntax() {
     info "Test 1: Validating ods-cli syntax"
@@ -77,7 +92,7 @@ test_import_in_help() {
 # Test 4: Verify export case exists
 test_export_case() {
     info "Test 4: Checking if 'export' case exists in cmd_preset"
-    if grep -A2 "export|e)" "$ODS_CLI" 2>/dev/null | grep -q "preset export"; then
+    if ods_cli_case_body "export|e)" | grep -q "preset export"; then
         pass "'export' case exists in cmd_preset"
         return 0
     else
@@ -89,7 +104,7 @@ test_export_case() {
 # Test 5: Verify import case exists
 test_import_case() {
     info "Test 5: Checking if 'import' case exists in cmd_preset"
-    if grep -A2 "import|i)" "$ODS_CLI" 2>/dev/null | grep -q "preset import"; then
+    if ods_cli_case_body "import|i)" | grep -q "preset import"; then
         pass "'import' case exists in cmd_preset"
         return 0
     else
@@ -101,7 +116,7 @@ test_import_case() {
 # Test 6: Verify export uses tar
 test_export_uses_tar() {
     info "Test 6: Checking if export uses tar for archiving"
-    if grep -A20 "export|e)" "$ODS_CLI" 2>/dev/null | grep -q "tar czf"; then
+    if ods_cli_case_body "export|e)" | grep -q "tar czf"; then
         pass "Export uses tar for archiving"
         return 0
     else
@@ -113,7 +128,7 @@ test_export_uses_tar() {
 # Test 7: Verify import validates path traversal
 test_import_security() {
     info "Test 7: Checking if import validates against path traversal"
-    if grep -A30 "import|i)" "$ODS_CLI" 2>/dev/null | grep -q "path traversal"; then
+    if ods_cli_case_body "import|i)" | grep -q "path traversal"; then
         pass "Import checks for path traversal attacks"
         return 0
     else
@@ -125,7 +140,7 @@ test_import_security() {
 # Test 8: Verify export validates preset exists
 test_export_validation() {
     info "Test 8: Checking if export validates preset exists"
-    if grep -A10 "export|e)" "$ODS_CLI" 2>/dev/null | grep -q "Preset not found"; then
+    if ods_cli_case_body "export|e)" | grep -q "Preset not found"; then
         pass "Export validates preset existence"
         return 0
     else
@@ -137,7 +152,7 @@ test_export_validation() {
 # Test 9: Verify import validates archive structure
 test_import_validation() {
     info "Test 9: Checking if import validates archive structure"
-    if grep -A50 "import|i)" "$ODS_CLI" 2>/dev/null | grep -q "meta.txt"; then
+    if ods_cli_case_body "import|i)" | grep -q "meta.txt"; then
         pass "Import validates archive structure"
         return 0
     else
@@ -149,7 +164,7 @@ test_import_validation() {
 # Test 10: Verify export creates relative paths
 test_export_relative_paths() {
     info "Test 10: Checking if export avoids absolute paths"
-    if grep -A15 "export|e)" "$ODS_CLI" 2>/dev/null | grep -q "cd.*PRESETS_DIR"; then
+    if ods_cli_case_body "export|e)" | grep -q "cd.*PRESETS_DIR"; then
         pass "Export creates relative paths"
         return 0
     else
@@ -161,7 +176,7 @@ test_export_relative_paths() {
 # Test 11: Verify import handles overwrite confirmation
 test_import_overwrite() {
     info "Test 11: Checking if import handles existing presets"
-    if grep -A30 "import|i)" "$ODS_CLI" 2>/dev/null | grep -q "already exists"; then
+    if ods_cli_case_body "import|i)" | grep -q "already exists"; then
         pass "Import handles overwrite confirmation"
         return 0
     else
