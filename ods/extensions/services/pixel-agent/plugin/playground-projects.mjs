@@ -72,6 +72,264 @@ function relative(value, root) {
   if (text.startsWith('./')) text = text.slice(2);
   return parts(text) ? text : null;
 }
+// Models misspell the Playground convention as playground/<name>/... or a
+// rooted /playground/<name>/.... Read that first segment as the workspace
+// Playground folder only when <name> is a descriptive project folder and no
+// distinct entry with the model's spelling exists (a case-sensitive workspace
+// can hold both). The result is still workspace-relative and every routing
+// check applies to it as if the model had written it; it grants no location.
+function playgroundSpelling(value, root, minimum) {
+  if (typeof value !== 'string') return null;
+  const text = value.replaceAll('\\', '/');
+  const direct = relative(text,root);
+  const target = direct ?? (/^\/playground\//i.test(text) ? relative(text.slice(1),root) : null);
+  const segments = parts(target);
+  if (!segments || !/^playground$/i.test(segments[0]) || segments.length < minimum || GENERIC.test(segments[1])) return null;
+  const canonical = ['Playground',...segments.slice(1)].join('/');
+  if (canonical === direct) return null;
+  if (segments[0] !== 'Playground' && distinctSpelling(root,segments[0])) return null;
+  return canonical;
+}
+// How the workspace holds an entry with this spelling: 'missing', 'same' (the
+// Playground folder entry itself, as on a case-insensitive workspace) or
+// 'distinct' (a separate directory or link on a case-sensitive workspace).
+function workspaceEntry(root, name) {
+  const base = safeRoot(root);
+  const entry = value => { try { return fs.lstatSync(path.join(base,value)); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
+  const spelled = entry(name);
+  if (!spelled) return 'missing';
+  const folder = entry('Playground');
+  return folder && folder.dev === spelled.dev && folder.ino === spelled.ino ? 'same' : 'distinct';
+}
+function distinctSpelling(root, name) {
+  return workspaceEntry(root,name) === 'distinct';
+}
+// Drops trailing slashes but keeps a lone root slash. A loop, not a
+// trailing-slash regex, which backtracks quadratically on a long slash run.
+function trimSlashes(text) {
+  let end = text.length;
+  while (end > 1 && text[end - 1] === '/') end--;
+  return text.slice(0, end);
+}
+// True when an exec workdir names the workspace root itself.
+function workspaceCwd(workdir, root) {
+  if (workdir === undefined) return true;
+  if (typeof workdir !== 'string') return false;
+  const text = trimSlashes(workdir.replaceAll('\\','/'));
+  return text === '' || text === '.' || text === '/workspace' || text === trimSlashes(root.replaceAll('\\','/'));
+}
+
+// A small POSIX-style reader of exec text, used only to find the words a
+// command uses as file paths; the command itself is never rewritten. Quotes
+// are removed, $(...), ${...} and backquoted text stay literal inside their
+// word, and comments and heredoc bodies are skipped. A backslash before a
+// name character is kept so a Windows separator (playground\todo-app) stays.
+const SHELL_OPERATOR = /&>>?|<<<|<<-|<<|<>|<&|>>|>\||>&|<|>|&&|\|\||;;|\|&|[;&|()]/y;
+function shellTokens(command) {
+  const tokens = [], heredocs = [], n = command.length;
+  let i = 0, word = null;
+  const add = text => { word = (word ?? '') + text; };
+  const endWord = () => {
+    if (word === null) return;
+    const previous = tokens.at(-1);
+    if (previous?.type === 'redirect' && (previous.op === '<<' || previous.op === '<<-')) heredocs.push({delimiter:word.replaceAll('\\',''), strip:previous.op === '<<-'});
+    tokens.push({type:'word', text:word});
+    word = null;
+  };
+  // From an opening ( or { through its matching close, kept literally.
+  const enclosed = () => {
+    const open = command[i], close = open === '(' ? ')' : '}', start = i;
+    let depth = 0;
+    while (i < n) {
+      const c = command[i];
+      if (c === '\\') { i += 2; continue; }
+      if (c === "'") { const end = command.indexOf("'", i + 1); i = end < 0 ? n : end + 1; continue; }
+      if (c === open) depth++;
+      else if (c === close && --depth === 0) return command.slice(start, ++i);
+      i++;
+    }
+    return command.slice(start);
+  };
+  // Single-quoted text without its quotes, or backquoted text with them.
+  const through = close => {
+    const end = command.indexOf(close, i + 1);
+    const text = close === '`' ? command.slice(i, end < 0 ? n : end + 1) : command.slice(i + 1, end < 0 ? n : end);
+    i = end < 0 ? n : end + 1;
+    return text;
+  };
+  while (i < n) {
+    const c = command[i];
+    if (c === '\n') {
+      endWord();
+      tokens.push({type:'separator'});
+      i++;
+      for (const {delimiter, strip} of heredocs.splice(0)) {
+        while (i < n) {
+          const next = command.indexOf('\n', i);
+          const end = next < 0 ? n : next;
+          const line = command.slice(i, end).replace(/\r$/, '');
+          i = end + 1;
+          if ((strip ? line.replace(/^\t+/, '') : line) === delimiter) break;
+        }
+      }
+      continue;
+    }
+    if (c === ' ' || c === '\t' || c === '\r') { endWord(); i++; continue; }
+    if (c === '#' && word === null) { const end = command.indexOf('\n', i); i = end < 0 ? n : end; continue; }
+    if (c === "'") { add(through("'")); continue; }
+    if (c === '`') { add(through('`')); continue; }
+    if (c === '$' && (command[i + 1] === '(' || command[i + 1] === '{')) { i++; add('$' + enclosed()); continue; }
+    if (c === '"') {
+      i++;
+      let text = '';
+      while (i < n && command[i] !== '"') {
+        if (command[i] === '\\' && i + 1 < n && '"\\$`\n'.includes(command[i + 1])) { text += command[i + 1]; i += 2; }
+        else if (command[i] === '$' && (command[i + 1] === '(' || command[i + 1] === '{')) { i++; text += '$' + enclosed(); }
+        else if (command[i] === '`') text += through('`');
+        else text += command[i++];
+      }
+      i++;
+      add(text);
+      continue;
+    }
+    if (c === '\\') {
+      const next = command[i + 1];
+      if (next === '\n') { i += 2; continue; }
+      if (next !== undefined && /[A-Za-z0-9._-]/.test(next)) { add('\\'); i++; continue; }
+      add(next ?? '');
+      i += 2;
+      continue;
+    }
+    SHELL_OPERATOR.lastIndex = i;
+    const operator = SHELL_OPERATOR.exec(command)?.[0];
+    if (operator) {
+      const redirect = /[<>]/.test(operator);
+      // A number directly before a redirection is its file descriptor.
+      if (redirect && word !== null && /^\d+$/.test(word)) word = null;
+      endWord();
+      tokens.push(redirect ? {type:'redirect', op:operator} : {type:operator === '(' ? 'open' : operator === ')' ? 'close' : 'separator'});
+      i += operator.length;
+      continue;
+    }
+    add(c);
+    i++;
+  }
+  endWord();
+  return tokens;
+}
+
+// Programs whose arguments are text (messages, patterns), not paths. Their
+// redirections are still paths.
+const TEXT_PROGRAMS = /^(?:echo|printf|write-output|write-host|grep|egrep|fgrep|zgrep|rg|ag|ack|select-string|sls|findstr)$/;
+const TEXT_OPTIONS = /^(?:-m|-am|--message|--grep|--author|--committer|--format|--pretty|--title|--body)$/;
+const SHELLS = /^(?:bash|sh|zsh|dash|ksh)$/;
+const INTERPRETERS = /^(?:python[0-9.]*|py|node|nodejs|deno|bun|perl|ruby|php|pwsh|powershell|osascript)$/;
+const COMMAND_PREFIXES = /^(?:sudo|env|nohup|time|command|builtin|exec|nice|if|then|else|elif|while|until|do|!|\{|\}|\[\[)$/;
+const CHANGE_DIRECTORY = /^(?:cd|pushd|chdir|set-location|sl)$/;
+
+// The words an exec command uses as file paths, each marked with whether the
+// shell cwd is still the exec cwd (the workspace root) where it is used. A
+// path is an argument of a program that is not a text program, a long option
+// value (--dir=...), a redirection target, or a cd target. A message or
+// pattern argument, interpreter code and heredoc text are not paths. The
+// commands inside sh -c text are read the same way.
+function shellPathWords(command, root, rooted = true, depth = 0) {
+  const words = [], stack = [];
+  const start = () => ({program:null, subcommand:undefined, arguments:[], previous:'', skip:false, nested:false, ended:false});
+  let current = start(), redirect = null;
+  const finish = () => {
+    if (current.program && CHANGE_DIRECTORY.test(current.program)) {
+      const raw = current.arguments.find(value => !value.startsWith('-'));
+      const target = raw === undefined ? undefined : trimSlashes(raw.replaceAll('\\','/'));
+      if (!['.','$PWD','${PWD}','$(pwd)'].includes(target)) rooted = Boolean(target) && workspaceCwd(target,root);
+    }
+    current = start();
+  };
+  for (const token of shellTokens(command)) {
+    if (token.type === 'separator') { finish(); redirect = null; continue; }
+    if (token.type === 'open') { finish(); stack.push(rooted); continue; }
+    if (token.type === 'close') { finish(); if (stack.length) rooted = stack.pop(); continue; }
+    if (token.type === 'redirect') { redirect = token.op; continue; }
+    const text = token.text;
+    if (redirect) {
+      const operator = redirect;
+      redirect = null;
+      // Heredoc delimiters, here-strings and descriptor duplication name no file.
+      if (!operator.startsWith('<<') && !(operator.endsWith('&') && /^(?:\d+|-)$/.test(text))) words.push({text, rooted});
+      continue;
+    }
+    const state = current;
+    if (state.program === null) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(text) || COMMAND_PREFIXES.test(text) || text.startsWith('-')) continue;
+      state.program = text.replaceAll('\\','/').split('/').at(-1).toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/,'');
+      continue;
+    }
+    const previous = state.previous;
+    state.previous = text;
+    state.arguments.push(text);
+    if (TEXT_PROGRAMS.test(state.program) || state.subcommand === 'grep') continue;
+    if (state.skip) {
+      state.skip = false;
+      if (state.nested && depth < 2) words.push(...shellPathWords(text,root,rooted,depth + 1));
+      continue;
+    }
+    if (!state.ended && text === '--') { state.ended = true; continue; }
+    if (!state.ended && text.startsWith('-') && text.length > 1) {
+      const shellCode = SHELLS.test(state.program) && /^-[A-Za-z]*c$/.test(text);
+      if (TEXT_OPTIONS.test(text) || shellCode || (INTERPRETERS.test(state.program) && /^(?:-c|-e|--eval|-command)$/i.test(text))) {
+        state.skip = true;
+        state.nested = shellCode;
+        continue;
+      }
+      const equals = text.indexOf('=');
+      if (text.startsWith('--') && equals > 0 && !TEXT_OPTIONS.test(text.slice(0,equals))) words.push({text:text.slice(equals + 1), rooted});
+      continue;
+    }
+    if (state.program === 'git' && state.subcommand === undefined && !/^(?:-C|-c|--git-dir|--work-tree|--namespace)$/.test(previous)) {
+      state.subcommand = text;
+      continue;
+    }
+    words.push({text, rooted});
+  }
+  finish();
+  return words;
+}
+
+// Shell text is never rewritten. A command run from the workspace root that
+// uses this project's folder as a path with another Playground spelling gets
+// the exact folder instead of an inferred cwd. Returns {block} with that
+// correction, {literal} when the spelling resolves as written from the
+// workspace root (the owner's separate folder, or the same folder on a
+// case-insensitive workspace), or null. A rooted /playground/<name> is
+// outside the workspace on every filesystem. Text such as a commit message,
+// an echo or a grep pattern is not a path and keeps the ordinary rules.
+function projectOperand(command, directory, root) {
+  const name = directory.slice('Playground/'.length);
+  const configured = root.replaceAll('\\','/').replace(/\/+$/,'');
+  let literal = null;
+  for (const word of shellPathWords(command,root)) {
+    let value = word.text.replaceAll('\\','/');
+    let absolute = false;
+    if (value.startsWith(`${configured}/`)) value = value.slice(configured.length + 1);
+    else if (value.startsWith('/workspace/')) value = value.slice('/workspace/'.length);
+    else if (/^\/[^/]/.test(value)) { value = value.slice(1); absolute = true; }
+    else if (word.rooted) value = value.replace(/^(?:\$\(pwd\)|\$\{?PWD\}?)\//,'').replace(/^(?:\.\/)+/,'');
+    else continue;
+    const match = /^(playground)\/([^/]+)(?:\/|$)/i.exec(value);
+    if (!match || match[1] === 'Playground' || match[2] !== name) continue;
+    const text = `${match[1]}/${name}`;
+    if (absolute) return {block:`This project is in ${directory}. /${text} is an absolute path outside the workspace, not this project folder. Files already written for this project are saved in ${directory}. Set exec workdir to /workspace/${directory} and use filenames relative to that directory.`};
+    if (workspaceEntry(root,match[1]) !== 'missing') { literal ??= {literal:text}; continue; }
+    return {block:spellingReason(directory,text)};
+  }
+  return literal;
+}
+// Shown only when that spelling is missing while Playground exists, which
+// happens only on a case-sensitive workspace.
+function spellingReason(directory, text) {
+  return `This project is in ${directory}. Use that exact spelling: ${text} is a different path on a case-sensitive workspace. Files already written for this project are saved in ${directory}. Set exec workdir to /workspace/${directory} and use filenames relative to that directory.`;
+}
+const PATCH_HEADER = /^(\*\*\* (?:(?:Add|Update|Delete) File|Move to): )([^\r\n]+)$/gm;
 function safeDirectory(directory, create = false) {
   if (create) { try { fs.mkdirSync(directory, {mode:0o700}); } catch (error) { if (error.code !== 'EEXIST') throw error; } }
   const stat = fs.lstatSync(directory);
@@ -159,6 +417,32 @@ function simpleInspection(selected) {
     && /^(?:pwd|ls|dir|Get-ChildItem|Get-Location)(?:\s|$)/i.test(command);
 }
 
+// Routing is off for a preserved run. When its first write was a Playground
+// misspelling of an existing project the model had read, later misspellings
+// of that one project keep its canonical spelling, so a case-sensitive
+// workspace never gains a second lowercase copy. Nothing else is routed.
+function routeSpellingAlias(selected, alias, root) {
+  const args = selected.args;
+  const canonical = value => {
+    const spelled = playgroundSpelling(value,root,2);
+    return spelled && (spelled === alias || spelled.startsWith(`${alias}/`)) ? spelled : null;
+  };
+  if (selected.tool === 'apply_patch') {
+    if (typeof args.input !== 'string') return undefined;
+    const input = args.input.replace(PATCH_HEADER,(line,prefix,value)=>{ const mapped = canonical(value); return mapped ? prefix+mapped : line; });
+    return input === args.input ? undefined : {params:selected.wrap({...args,input})};
+  }
+  if (selected.tool === 'exec') {
+    const mapped = canonical(args.workdir);
+    if (mapped) return {params:selected.wrap({...args,workdir:`/workspace/${mapped}`})};
+    const operand = workspaceCwd(args.workdir,root) ? projectOperand(typeof args.command === 'string' ? args.command : '',alias,root) : null;
+    return operand?.block ? {block:true,blockReason:operand.block} : undefined;
+  }
+  const key = selected.tool === 'pixel_ods_workspace_preview' ? 'relativeDirectory' : 'path';
+  const mapped = canonical(args[key]);
+  return mapped ? {params:selected.wrap({...args,[key]:mapped})} : undefined;
+}
+
 // State is per run. Persistent records contain only hashed session identities
 // and safe relative paths, never prompts, credentials, or creative bytes.
 export function routePlaygroundTool({state,tool,params,root,session,intent,existingPaths=[],preserveExisting=false,continueProject=false}) {
@@ -179,7 +463,7 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
       if (preserveExisting || ['write','edit','apply_patch','pixel_ods_workspace_preview'].includes(selected.tool)) preserve();
       return undefined;
     }
-    if (state.preserved) return undefined;
+    if (state.preserved) return state.spellingAlias ? routeSpellingAlias(selected,state.spellingAlias,root) : undefined;
     if (!state.initialized) {
       state.fresh = !continueProject && requestsNewPlaygroundProject(intent);
       state.binding = state.fresh ? null : readBinding(root,identity);
@@ -187,7 +471,9 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
     }
     const args = selected.args;
     const key = selected.tool === 'exec' ? 'workdir' : selected.tool === 'pixel_ods_workspace_preview' ? 'relativeDirectory' : 'path';
-    const target = relative(args[key],root);
+    let target = relative(args[key],root);
+    const minimum = key === 'path' ? 3 : 2;
+    let spelled;
     if (!state.binding && state.fresh && ['exec','apply_patch'].includes(selected.tool)) {
       const command = typeof args.command === 'string' ? args.command.trim() : '';
       const inspection = selected.tool === 'exec' && !/[;&|><`\r\n]|\$\(/.test(command)
@@ -195,8 +481,26 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
       if (!inspection) return {block:true,blockReason:`Create the first project file with write in a descriptive Playground folder before running commands or patches. ${CORRECTION}`};
     }
     if (!state.binding && state.fresh && selected.tool === 'write') {
+      // A path the model already read with its own spelling keeps the
+      // unspelled handling below: it names that file exactly as it was read.
+      const readAsSpelled = existingPaths.includes(args[key]) || (target !== null && existingPaths.includes(target));
+      spelled = readAsSpelled ? null : playgroundSpelling(args[key],root,minimum);
+      if (spelled) target = spelled;
       if (!target) return {block:true,blockReason:CORRECTION};
-      if (existingPaths.includes(target)) { preserve(); return undefined; }
+      // Only a workspace-relative read is evidence for a workspace file: a
+      // rooted /playground/... read may have been a host path.
+      if (existingPaths.includes(target)
+        || (spelled && existingPaths.some(value => {
+          const read = relative(value,root);
+          return read !== null && (read === spelled || playgroundSpelling(read,root,minimum) === spelled);
+        }))) {
+        preserve();
+        if (!spelled) return undefined;
+        // The model read this existing project with another spelling. Keep
+        // the project's own spelling for this write and the rest of the run.
+        state.spellingAlias = spelled.split('/').slice(0,2).join('/');
+        return {params:selected.wrap({...args,[key]:spelled})};
+      }
       const segments = parts(target);
       const candidate = segments[0] === 'Playground' ? segments[1] : segments[0];
       if (segments.length < (segments[0] === 'Playground' ? 3 : 2) || !candidate || GENERIC.test(candidate)) return {block:true,blockReason:CORRECTION};
@@ -223,22 +527,33 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
     if (selected.tool === 'apply_patch') {
       if (typeof args.input !== 'string') return {block:true,blockReason:`Use apply_patch input with file paths inside ${directory}.`};
       let count = 0, invalid = false;
-      const input = args.input.replace(/^(\*\*\* (?:(?:Add|Update|Delete) File|Move to): )([^\r\n]+)$/gm,(_line,prefix,value)=>{
+      const input = args.input.replace(PATCH_HEADER,(_line,prefix,value)=>{
         count++;
-        const mapped = projectPath(relative(value,root),true);
+        const spelledValue = playgroundSpelling(value,root,3);
+        const mapped = projectPath(spelledValue && projectPath(spelledValue) ? spelledValue : relative(value,root),true);
         if (!mapped) {invalid=true;return _line;}
         return prefix+mapped;
       });
       if (!count || invalid) return {block:true,blockReason:`Use exact safe file paths inside ${directory} for this project patch.`};
       return input === args.input ? undefined : {params:selected.wrap({...args,input})};
     }
+    // A Playground misspelling of this bound project routes like its canonical
+    // path. Any other spelled name keeps the ordinary routing below.
+    spelled ??= playgroundSpelling(args[key],root,minimum);
+    if (spelled && projectPath(spelled)) target = spelled;
     let mapped = projectPath(target,['write','edit'].includes(selected.tool));
+    // A path operand misspelling this project from the workspace root cannot
+    // resolve there or from an inferred cwd; name the folder instead. One
+    // that resolves as written (the owner's separate folder, or the same
+    // folder on a case-insensitive workspace) runs from the workspace root.
+    const command = selected.tool === 'exec' && typeof args.command === 'string' ? args.command : '';
+    const operand = selected.tool === 'exec' && workspaceCwd(args.workdir,root) ? projectOperand(command,directory,root) : null;
+    if (operand?.block) return {block:true,blockReason:operand.block};
     // Keep unrelated reads/edits and explicitly located execs untouched. For
     // an unspecified exec cwd, use the project only when the command does not
     // name its workspace-root prefix; never rewrite shell program text.
     if (selected.tool === 'exec' && (args.workdir === undefined || args.workdir === '.' || args.workdir === '/workspace')) {
-      const command = typeof args.command === 'string' ? args.command : '';
-      if (command.includes(`${directory}/`) || command.includes('/workspace/')) mapped = null;
+      if (operand || command.includes(`${directory}/`) || command.includes('/workspace/')) mapped = null;
       else if (command.includes(`${source}/`)) {
         if (directory !== `Playground/${source}`) return {block:true,blockReason:`This project is in ${directory}. Set exec workdir to ${directory} and use filenames relative to that directory; the old ${source}/ prefix names a different project.`};
         if (!simpleInspection(selected)) return {block:true,blockReason:`This project is in ${directory}. Set exec workdir to /workspace/${directory} and use filenames relative to that directory. An automatic parent directory would make this command ambiguous and could move or modify the project folder itself.`};
