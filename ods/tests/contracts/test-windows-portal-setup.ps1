@@ -25,6 +25,7 @@ function Check([bool]$Condition, [string]$Message) {
 }
 function Reset-Scenario {
     $script:calls = [Collections.Generic.List[string]]::new()
+    $script:prompts = [Collections.Generic.List[string]]::new()
     $script:scenario = 'ready'
     $script:delegateCode = 0
     $script:featureCode = 0
@@ -65,6 +66,7 @@ function Test-ODSNativeWindowsInstall { return $script:scenario -eq 'native' }
 function Get-Command { if ($script:scenario -eq 'no-wsl') { return $null }; return [pscustomobject]@{ Name='wsl.exe' } }
 function Confirm-ODSPortalPreparation([string]$Message, [bool]$NonInteractive) {
     $script:calls.Add('confirm')
+    $script:prompts.Add($Message)
     return (-not $NonInteractive -and $script:allowPreparation)
 }
 function Install-ODSPortalWslFeatures([switch]$MissingExecutable) { $script:calls.Add('features'); if ($MissingExecutable) { $script:calls.Add('enable-optional-features') }; return $script:featureCode }
@@ -107,6 +109,11 @@ function Invoke-ODSPortalWsl([string[]]$Arguments) {
     return [pscustomobject]@{ Code=$code; Output=$output }
 }
 try {
+    foreach ($file in @('wsl-portal-setup.ps1', 'wsl-portal-prereqs.ps1')) {
+        $parsed = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot "../../installers/windows/lib/$file"), [ref]$null, [ref]$null)
+        $bad = $parsed.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.UserPath -ne '?' -and $n.VariablePath.UserPath.EndsWith('?') }, $true)
+        Check (@($bad).Count -eq 0) "$file never interpolates a variable followed by ? (PowerShell reads `$name? as one variable)"
+    }
     Check ((Resolve-ODSPortalDistro '' @('docker-desktop', 'Ubuntu')) -eq 'Ubuntu') 'reuses existing Ubuntu without creating another distro'
     Check ((Resolve-ODSPortalDistro '' @('Ubuntu-26.04')) -eq 'Ubuntu-26.04') 'reuses a single Pixel-qualified versioned Ubuntu'
     Check ((Resolve-ODSPortalDistro '' @('Ubuntu-22.04')) -eq 'Ubuntu-24.04') 'never auto-selects an unqualified Ubuntu release'
@@ -283,6 +290,7 @@ try {
     $script:integrated=$false
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'missing WSL integration is enabled automatically'
     Check ($script:calls.Contains('docker-integrate:Ubuntu-24.04')) 'integration targets the selected distro'
+    Check (@($script:prompts | Where-Object { $_ -match 'WSL integration for Ubuntu-24\.04\?' }).Count -eq 1) 'integration prompt names the distro'
     Reset-Scenario
     $script:integrated=$false; $script:allowPreparation=$false
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 1 -and -not $script:calls.Contains('docker-integrate:Ubuntu-24.04')) 'declining WSL integration changes nothing'
