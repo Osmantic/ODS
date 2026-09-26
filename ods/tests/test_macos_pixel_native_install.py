@@ -358,3 +358,17 @@ _retirement_spec = importlib.util.spec_from_file_location('native_retirement_con
 _retirement_tests = importlib.util.module_from_spec(_retirement_spec)
 _retirement_spec.loader.exec_module(_retirement_tests)
 RetirementSelection = _retirement_tests.RetirementSelection
+
+
+# Collect polling regressions in the existing macOS installer CI entrypoint.
+# The standalone file remains available for focused operator validation.
+_health_poll_spec = importlib.util.spec_from_file_location('native_health_poll_contracts',
+    ROOT / 'tests/test_macos_pixel_health_poll.py')
+_health_poll_contracts = importlib.util.module_from_spec(_health_poll_spec)
+_health_poll_spec.loader.exec_module(_health_poll_contracts)
+test_transient_timeout_then_healthy = _health_poll_contracts.test_transient_timeout_then_healthy
+test_persistent_timeout_stops_at_90 = _health_poll_contracts.test_persistent_timeout_stops_at_90
+test_late_healthy_response_rejected = _health_poll_contracts.test_late_healthy_response_rejected
+test_valid_ndjson = _health_poll_contracts.test_valid_ndjson
+test_rejected_outputs = _health_poll_contracts.test_rejected_outputs
+test_nonzero_returncode_rejected = _health_poll_contracts.test_nonzero_returncode_rejected

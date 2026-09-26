@@ -6,6 +6,7 @@ and private dashboard credential. No gateway is activated by this module.
 import json
 import re
 import secrets
+import subprocess
 import time
 
 
@@ -62,8 +63,20 @@ def start_infrastructure(run, *, dashboard_key, admission=None):
 def wait_ready(run, *, services=SERVICES):
     """Require all native Docker services healthy after protected activation."""
     deadline = time.monotonic() + 90
-    while time.monotonic() < deadline:
-        result = run('ps', '--format', 'json', *services, timeout=10)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            result = run('ps', '--format', 'json', *services, timeout=min(10, remaining))
+        except subprocess.TimeoutExpired:
+            now = time.monotonic()
+            if now < deadline:
+                time.sleep(min(1, max(0, deadline - now)))
+            continue
+        now = time.monotonic()
+        if now >= deadline:
+            break
         if result.returncode == 0:
             try:
                 if len(result.stdout) > 65536:
@@ -73,11 +86,12 @@ def wait_ready(run, *, services=SERVICES):
                 if (type(rows) is list and len(rows) == len(services)
                         and all(type(row) is dict for row in rows)
                         and {row.get('Service') for row in rows} == set(services)
-                        and all(row.get('State') == 'running' and row.get('Health') == 'healthy' for row in rows)):
+                        and all(row.get('State') == 'running' and row.get('Health') == 'healthy' for row in rows)
+                        and time.monotonic() < deadline):
                     return {'phase': 'docker-ready'}
             except (ValueError, TypeError):
                 pass
-        time.sleep(1)
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
     raise ValueError('native-compose-health-timeout')
 
 
