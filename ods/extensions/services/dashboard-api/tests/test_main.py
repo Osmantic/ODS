@@ -967,14 +967,14 @@ class TestApiStatusServiceSerialization:
             )
         ]
 
-        serialized = _serialize_services(services, uptime=42)
+        serialized = _serialize_services(services)
 
         assert serialized == [{
             "id": "llama-server",
             "name": "llama-server (LLM Inference)",
             "status": "healthy",
             "port": 11434,
-            "uptime": 42,
+            "uptime": None,
             "url": "http://127.0.0.1:11434/",
             "href": "http://127.0.0.1:11434/",
             "category": "core",
@@ -1000,7 +1000,7 @@ class TestApiStatusServiceSerialization:
             )
         ]
 
-        serialized = _serialize_services(services, uptime=42)
+        serialized = _serialize_services(services)
 
         assert serialized[0]["required"] is False
         assert serialized[0]["impact"] == "optional"
@@ -1029,7 +1029,7 @@ class TestApiStatusServiceSerialization:
             )
         ]
 
-        serialized = _serialize_services(services, uptime=42)
+        serialized = _serialize_services(services)
 
         assert serialized[0]["llm"] == llm_contract
 
@@ -1052,7 +1052,7 @@ class TestApiStatusServiceSerialization:
             )
         ]
 
-        serialized = _serialize_services(services, uptime=42)
+        serialized = _serialize_services(services)
 
         assert serialized[0]["public_url"] == "https://chat.example.test"
         assert serialized[0]["ui_path"] == "/"
@@ -1072,7 +1072,7 @@ class TestApiStatusServiceSerialization:
             )
         ]
 
-        serialized = _serialize_services(services, uptime=42)
+        serialized = _serialize_services(services)
 
         assert serialized[0]["state"] == "unknown"
         assert serialized[0]["severity"] == "unknown"

@@ -653,7 +653,7 @@ def _service_public_url(service_id: str, port: int | None) -> Optional[str]:
 
 
 
-def _serialize_services(service_statuses: list[ServiceStatus], uptime: int) -> list[dict]:
+def _serialize_services(service_statuses: list[ServiceStatus]) -> list[dict]:
     serialized = []
     for service in service_statuses:
         config = SERVICES.get(service.id, {})
@@ -663,7 +663,9 @@ def _serialize_services(service_statuses: list[ServiceStatus], uptime: int) -> l
             "name": service.name,
             "status": service.status,
             "port": service.external_port,
-            "uptime": uptime if service.status == "healthy" else None,
+            # Nothing here observes container start times; the host uptime is
+            # reported once, as the system uptime, not as every service's.
+            "uptime": None,
         }
         if url:
             item["url"] = url
@@ -1537,7 +1539,7 @@ async def _build_api_status() -> dict:
 
     gpu_data = _serialize_gpu(gpu_info)
 
-    services_data = _serialize_services(service_statuses, uptime)
+    services_data = _serialize_services(service_statuses)
 
     model_data = None
     if model_info:
@@ -1688,7 +1690,7 @@ async def api_settings_summary(api_key: str = Depends(verify_api_key)):
 
     cached_services = get_cached_services()
     services_data = (
-        _serialize_services(cached_services, uptime)
+        _serialize_services(cached_services)
         if cached_services is not None
         else _fallback_services()
     )
