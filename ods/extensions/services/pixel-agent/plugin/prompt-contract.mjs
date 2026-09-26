@@ -126,9 +126,21 @@ export const ODS_COMPACT_CONVERSATION_CONTRACT = [
   PREVIEW_RUNTIME_CONTRACT,
 ].join(" ");
 
+// What sandboxed exec actually has, so Pixel writes code for it instead of
+// spending tool calls probing for packages or trying pip. Every install builds
+// its sandbox from vendor/pixel/deploy/sandbox/Dockerfile (Linux, the Linux
+// installer inside WSL, native macOS) and runs it with the docker settings in
+// vendor/pixel/scripts/render-config.mjs; sandbox_runtime_contract.test.mjs
+// fails when either stops matching this text. It is static release text, so
+// the system prompt stays byte-identical across turns.
+export const ODS_SANDBOX_RUNTIME_CONTRACT =
+  "The exec sandbox is Debian 12 (bookworm) with Python 3.11. Python packages beyond the standard library: Pillow (import PIL) and python-docx (import docx). Besides the standard Debian base utilities it provides bash, git, jq, rg, rsync, file, unzip, pdftotext, pdfinfo, pdftoppm and the other poppler-utils, tesseract OCR with English language data, and catdoc/xls2csv. pip, pytest, Node.js and npm are not installed and the sandbox has no network, so nothing can be downloaded or installed: do not probe for or try to install other packages; use the standard library, python3 -m unittest and these commands. Write files in the workspace, which is writable and persists; /tmp is small temporary scratch space; the root filesystem, including the home directory, is read-only.";
+
 // The historical full core assumed a sandbox. Adapt only those environment
 // claims for native execution; tools, permissions and task routes are unchanged.
+// Sandbox facts are added only when trusted configuration proves sandboxed exec.
 export function conversationContractForExecution(contract, executionHost) {
+  if (executionHost === 'sandbox') return `${contract} ${ODS_SANDBOX_RUNTIME_CONTRACT}`;
   if (executionHost !== 'gateway') return contract;
   return contract
     .replace(FILESYSTEM_DISCOVERY_CONTRACT, FILESYSTEM_DISCOVERY_CONTRACT
