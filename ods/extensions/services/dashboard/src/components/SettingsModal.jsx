@@ -8,7 +8,7 @@ import AssistantIdentitySettings from './settings/AssistantIdentitySettings'
 import PortalMascotSettings from './settings/PortalMascotSettings'
 import '../settings-refinement.css'
 import '../settings-workspace.css'
-const Integrations = lazy(() => import('../pages/ServiceMap'))
+const Integrations = lazy(() => import('../pages/Integrations'))
 const RemoteGPU = lazy(() => import('../pages/RemoteProvider'))
 const PixelDiagnostics = lazy(() => import('./settings/PixelDiagnostics'))
 
@@ -21,7 +21,7 @@ const sections = [
   ['pixel-diagnostics', 'Portal diagnostics', Activity],
   ['storage', 'Storage', HardDrive], ['updates', 'Updates', RefreshCw],
   ['advanced', 'Advanced', Terminal],
-  ['integrations', 'Service map', Network], ['remote', 'Remote GPU', Share2],
+  ['integrations', 'Integrations', Network], ['remote', 'Remote GPU', Share2],
 ]
 
 export default function SettingsModal() {
@@ -50,7 +50,7 @@ export default function SettingsModal() {
       {section === 'portal-mascot' && <PortalMascotSettings/>}
       <Suspense fallback={<p>Loading settings…</p>}>
         {section === 'pixel-diagnostics' && <PixelDiagnostics />}
-        {visited.has('integrations') && <div hidden={section !== 'integrations'}><Integrations compact /></div>}
+        {visited.has('integrations') && <div hidden={section !== 'integrations'}><Integrations embedded /></div>}
         {visited.has('remote') && <div hidden={section !== 'remote'}><RemoteGPU compact /></div>}
       </Suspense>
     </div>

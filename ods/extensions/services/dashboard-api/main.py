@@ -48,7 +48,7 @@ from models import (
 from security import verify_api_key
 from gpu import get_gpu_info
 from helpers import (
-    get_all_services, get_cached_services, set_services_cache,
+    get_all_services, get_cached_services, set_services_cache, get_services_checked_at,
     get_disk_usage, dir_size_gb, get_model_info, get_bootstrap_status,
     get_uptime, get_cpu_metrics, get_ram_metrics,
     get_llama_metrics, get_cached_llama_metrics, get_loaded_model, get_llama_context_size,
@@ -85,6 +85,7 @@ from routers import (
     pixel_scopes,
     pixel_advice_runtime,
     pixel_sharing,
+    integrations as integrations_router,
 )
 from settings import (
     _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text, _read_env_map_from_path,
@@ -1226,6 +1227,7 @@ app.include_router(pixel_handoff.router)
 app.include_router(pixel_scopes.router)
 app.include_router(pixel_advice_runtime.router)
 app.include_router(pixel_sharing.router)
+app.include_router(integrations_router.router)
 
 
 # ================================================================
@@ -1538,6 +1540,9 @@ async def _build_api_status() -> dict:
     gpu_data = _serialize_gpu(gpu_info)
 
     services_data = _serialize_services(service_statuses, uptime)
+    # The cached poll's own time; a cold start just checked live.
+    services_checked_at = get_services_checked_at() or datetime.now(timezone.utc).isoformat(
+        timespec="seconds").replace("+00:00", "Z")
 
     model_data = None
     if model_info:
@@ -1568,7 +1573,8 @@ async def _build_api_status() -> dict:
     configured_model_name = model_data["configuredModel"] if model_data else None
 
     result = {
-        "gpu": gpu_data, "services": services_data, "model": model_data,
+        "gpu": gpu_data, "services": services_data, "servicesCheckedAt": services_checked_at,
+        "model": model_data,
         "bootstrap": bootstrap_data, "uptime": uptime,
         "version": app.version, "tier": tier,
         "currentModel": loaded_model_name,
