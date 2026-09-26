@@ -1794,7 +1794,7 @@ litellm_settings:
         # `up -d`. llama-server runs natively on Windows (Lemonade or Vulkan
         # binary) so it is not built here. ComfyUI is only locally built on
         # NVIDIA; the Windows AMD stack uses a prebuilt image overlay.
-        $_buildServices = @("dashboard", "dashboard-api", "model-router", "remote-provider-egress", "remote-provider-ssh-tunnel", "pixel-inference")
+        $_buildServices = @("dashboard", "dashboard-api", "model-router", "remote-provider-egress", "remote-provider-ssh-tunnel", "pixel-inference", "langfuse-minio", "langfuse-minio-init")
         if (Test-ODSWindowsServiceEnabled -ServiceId "ape" -Plan $servicePlan) {
             $_buildServices += "ape"
         }
