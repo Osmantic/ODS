@@ -23,11 +23,23 @@ File size never outranks a curated priority.
 Every fit decision (ranking, :func:`plan_model_context` for a dashboard
 switch, :func:`check_fit` for the installers' Hermes re-check) goes through
 one gate, :func:`candidate_fits`, over one estimator,
-model_memory.estimate_model_memory. The discrete-GPU residency check of the
-GPU-residency change (model_memory.resident_configuration: llama.cpp's own
-device projection against total VRAM minus the platform reserve, the fit
-target and other processes) plugs in at that gate for discrete GPUs; unified
-memory and CPU keep the class rules here.
+model_memory.estimate_model_memory. On a discrete GPU the gate is full GPU
+residency (model_memory.resident_configuration, through
+:func:`discrete_residency`): llama.cpp's own device projection, built from
+the same KV formula, against total VRAM minus the platform reserve and the
+fit target, after the settings ladder (ubatch 256, fit target 512 MiB, q8_0
+KV; then ubatch 128 and q4_0 KV). The candidate carries the resulting
+llama.cpp settings. Residency decides only where its estimate is exact and
+the GPU is inside the calibrated range (model_memory.residency_is_decisive);
+there the estimate at the declared KV cache type must also stay within the
+GPU's memory (+0.25 GiB, #6706's capacity check), so the ladder keeps a
+context on the GPU but never raises it above what the declared settings
+allow. Elsewhere a discrete candidate keeps the capacity rule (estimate
+against total VRAM minus the platform reserve) and residency only tunes its
+settings. Unified memory and CPU keep the class rules here.
+
+The model is chosen for the idle GPU (``idleFits``): memory other
+processes hold at selection time shapes the settings, never the pick.
 """
 
 from __future__ import annotations
@@ -37,13 +49,17 @@ from typing import Any, Callable, Iterable
 
 from model_memory import (
     LEGACY_FIT_TOLERANCE_GIB,
+    RESIDENCY_CONTEXT_FLOOR,
     MemoryEstimate,
     authored_profile_estimate,
     context_candidates,
     estimate_for_runtime,
     estimate_model_memory,
     fit_margin_gib,
+    gpu_residency_fit,
     memory_fits,
+    resident_configuration,
+    residency_is_decisive,
 )
 
 
@@ -293,13 +309,16 @@ class Candidate:
         "model", "runtime_profile", "context_length", "required_gb", "estimate",
         "architecture_estimate", "authored_estimate", "meets_min_context",
         "memory_class", "capacity_gb", "fit_margin_gb", "priority", "evidence",
+        "residency", "gpu_platform", "gpu_count",
     )
 
     def __init__(self, *, model: dict[str, Any], runtime_profile: dict[str, Any] | None,
                  context_length: int, required_gb: float, estimate: MemoryEstimate,
                  architecture_estimate: bool, authored_estimate: bool,
                  meets_min_context: bool, memory_class: str, capacity_gb: float,
-                 fit_margin_gb: float, priority: int, evidence: int) -> None:
+                 fit_margin_gb: float, priority: int, evidence: int,
+                 residency: dict[str, Any] | None = None,
+                 gpu_platform: str | None = None, gpu_count: int = 1) -> None:
         self.model = model
         self.runtime_profile = runtime_profile
         self.context_length = context_length
@@ -313,6 +332,10 @@ class Candidate:
         self.fit_margin_gb = fit_margin_gb
         self.priority = priority
         self.evidence = evidence
+        # discrete_residency() of this candidate (discrete GPUs only).
+        self.residency = residency
+        self.gpu_platform = gpu_platform
+        self.gpu_count = max(int(gpu_count or 1), 1)
 
     @property
     def id(self) -> str:
@@ -330,6 +353,18 @@ class Candidate:
         else:
             planned.pop("_runtime_profile", None)
         planned["_selection"] = self.summary()
+        residency = self.residency
+        if residency is not None:
+            planned.update({
+                "_gpu_residency": residency["residency"],
+                "_residency_decisive": residency["decisive"],
+                "_residency_fits": residency["fits"],
+                "_residency_idle_fits": residency["idleFits"],
+                "_residency_best_effort": residency["bestEffort"],
+                "_residency_spills": residency["spills"],
+                "_residency_overrides": dict(residency["overrides"]),
+                "_residency_steps": list(residency["steps"]),
+            })
         return planned
 
     def summary(self) -> dict[str, Any]:
@@ -347,27 +382,127 @@ class Candidate:
                 else self.estimate.method
             ),
             "estimate": self.estimate.as_dict(),
+            "residency": residency_summary(self.residency),
         }
+
+
+def discrete_residency(model: dict[str, Any], *, runtime_profile: dict[str, Any] | None,
+                       context_length: int, vram_mb: Any, gpu_platform: str | None = None,
+                       gpu_count: int = 1, other_used_mib: float = 0.0,
+                       late_steps: bool = True) -> dict[str, Any]:
+    """Full GPU residency of one candidate at one context on a discrete GPU.
+
+    model_memory.resident_configuration without context trading (the
+    ranker walks contexts itself). ``idleFits`` is the identity decision:
+    the model stays on the GPU when nothing else holds memory (with
+    ``late_steps`` False, without ubatch 128 or a q4_0 KV cache). ``overrides``
+    are the llama.cpp settings to launch with: the resident configuration
+    beside ``other_used_mib``, or, when other processes hold what it needs,
+    the most memory-saving allowed one (``bestEffort``, reported after
+    load). A candidate that spills even on the idle GPU (``spills``) keeps
+    its declared settings.
+    """
+    kwargs: dict[str, Any] = {
+        "total_vram_mb": vram_mb,
+        "runtime_profile": runtime_profile,
+        "context_length": int(context_length),
+        "gpu_platform": gpu_platform,
+        "gpu_count": gpu_count,
+        "allow_context_reduction": False,
+    }
+    # The launch settings may use the whole ladder beside other processes.
+    config = resident_configuration(model, other_used_mib=other_used_mib, **kwargs)
+    idle_fits = bool(config["idleFits"])
+    if idle_fits and not late_steps:
+        # This pass of the ranker may not rely on ubatch 128 or q4_0 KV to
+        # keep the model on the idle GPU (see plan_candidate).
+        idle_fits = bool(resident_configuration(model, late_steps=False, **kwargs)["fits"])
+    chosen = config
+    best_effort = False
+    if not config["fits"] and idle_fits and config.get("bestEffort"):
+        chosen = config["bestEffort"]
+        best_effort = True
+    return {
+        "decisive": residency_is_decisive(model, vram_mb, gpu_count),
+        "fits": bool(config["fits"]),
+        "idleFits": idle_fits,
+        "bestEffort": best_effort,
+        "spills": not idle_fits,
+        "overrides": dict(chosen.get("overrides") or {}) if idle_fits else {},
+        "steps": list(chosen.get("steps") or []) if idle_fits else [],
+        "residency": chosen["residency"],
+    }
+
+
+def residency_summary(residency: dict[str, Any] | None) -> dict[str, Any] | None:
+    """JSON view of :func:`discrete_residency` for payloads and reasons."""
+    if residency is None:
+        return None
+    record = residency["residency"]
+    projection = record.get("projection") or {}
+    return {
+        "decisive": residency["decisive"],
+        "fits": residency["fits"],
+        "idleFits": residency["idleFits"],
+        "bestEffort": residency["bestEffort"],
+        "spills": residency["spills"],
+        "overrides": dict(residency["overrides"]),
+        "steps": list(residency["steps"]),
+        "projectedDeviceMiB": projection.get("totalMiB"),
+        "basis": projection.get("basis"),
+        "budgetMiB": record.get("budgetMiB"),
+        "reserveMiB": record.get("reserveMiB"),
+        "fitTargetMiB": record.get("fitTargetMiB"),
+        "otherUsedMiB": record.get("otherUsedMiB"),
+        "vramOversubscribedMiB": record.get("vramOversubscribedMiB"),
+        "requiredGb": record.get("requiredGb"),
+        "platform": record.get("platform"),
+    }
 
 
 def candidate_fits(candidate: Candidate) -> bool:
     """The one fit gate for a planned candidate (see the module docstring).
 
-    Architecture estimates must leave ``fit_margin_gib`` free (discrete GPUs:
-    max(0.25 GiB, 3%); unified and CPU capacities are already bounded shares
-    of RAM). Legacy estimates and hand-measured runtime-profile budgets keep
-    the historical +0.25 GiB tolerance.
+    Discrete GPUs: where residency is decisive, the candidate must stay
+    fully on the idle GPU (``discrete_residency(...)["idleFits"]``) and its
+    estimate at the declared settings must stay within the GPU's memory plus
+    the historical 0.25 GiB tolerance (the bound on the context).
+    Otherwise the capacity rule: architecture estimates must leave
+    ``fit_margin_gib`` free (discrete GPUs: the platform reserve a fresh
+    llama.cpp process cannot use; unified and CPU capacities are already
+    bounded shares of RAM). Legacy estimates and hand-measured
+    runtime-profile budgets keep the historical +0.25 GiB tolerance.
     """
+    residency = candidate.residency
+    if candidate.memory_class == "discrete" and residency is not None and residency["decisive"]:
+        return bool(residency["idleFits"]) and (
+            candidate.required_gb <= candidate.capacity_gb + LEGACY_FIT_TOLERANCE_GIB
+        )
     return memory_fits(
         candidate.required_gb, candidate.capacity_gb, candidate.memory_class,
         architecture_estimate=candidate.architecture_estimate,
+        gpu_platform=candidate.gpu_platform, gpu_count=candidate.gpu_count,
     )
+
+
+def _fit_margin(architecture: bool, capacity_gb: float, mclass: str,
+                gpu_platform: str | None, gpu_count: int) -> float:
+    """The capacity rule's margin, for reasons (GiB; <0: tolerance).
+
+    Residency, where it decides, is described by ``residency`` instead.
+    """
+    if architecture:
+        return fit_margin_gib(capacity_gb, mclass, gpu_platform=gpu_platform, gpu_count=gpu_count)
+    return -LEGACY_FIT_TOLERANCE_GIB
 
 
 def plan_candidate(model: dict[str, Any], *, capacity_gb: float, mclass: str,
                    backend: Any, memory_type: Any, vram_mb: Any, ram_gb: Any,
                    host_arch: Any, min_context: int = 0,
-                   priority: int | None = None) -> Candidate | None:
+                   priority: int | None = None,
+                   gpu_platform: str | None = None, gpu_count: int = 1,
+                   other_used_mib: float = 0.0,
+                   residency_gate: bool = True) -> Candidate | None:
     """Fit ``model`` to this hardware, or return None when it cannot run here.
 
     A hardware-matching runtime profile is the model's safety contract here:
@@ -375,6 +510,14 @@ def plan_candidate(model: dict[str, Any], *, capacity_gb: float, mclass: str,
     Without one, contexts are tried from the catalog default down (see
     :func:`model_memory.context_candidates`), preferring those that meet
     ``min_context``.
+
+    On a discrete GPU every context is also planned for full residency
+    (:func:`discrete_residency`). Where residency decides, contexts at or
+    above the agent floor are tried with ubatch 256, fit target 512 MiB and
+    q8_0 KV first, then with ubatch 128 and q4_0 KV, then contexts below the
+    floor: the order of model_memory.plan_residency_fallback.
+    ``residency_gate`` False keeps the capacity rule for every discrete
+    candidate (the ranker's last resort when nothing stays on the GPU).
     """
     hardware_profiles = hardware_matching_profiles(
         model, backend, memory_type, vram_mb, host_arch, ram_gb
@@ -385,12 +528,25 @@ def plan_candidate(model: dict[str, Any], *, capacity_gb: float, mclass: str,
     if runtime_profile is None and hardware_profiles:
         return None
     include_host = mclass == "cpu"
-    margin = fit_margin_gib(capacity_gb, mclass)
+    discrete = mclass == "discrete"
+    gpu_count = max(int(gpu_count or 1), 1)
     base_priority = selection_priority(model, mclass) if priority is None else priority
     evidence = evidence_adjustment(model)
 
+    def _residency(context: int, late_steps: bool) -> dict[str, Any] | None:
+        if not discrete:
+            return None
+        residency = discrete_residency(
+            model, runtime_profile=runtime_profile, context_length=context,
+            vram_mb=vram_mb, gpu_platform=gpu_platform, gpu_count=gpu_count,
+            other_used_mib=other_used_mib, late_steps=late_steps,
+        )
+        if not residency_gate:
+            residency = {**residency, "decisive": False}
+        return residency
+
     def _candidate(context: int, estimate: MemoryEstimate, required: float,
-                   authored: bool) -> Candidate:
+                   authored: bool, residency: dict[str, Any] | None) -> Candidate:
         architecture = (not authored) and estimate.method == "architecture"
         return Candidate(
             model=model,
@@ -403,9 +559,12 @@ def plan_candidate(model: dict[str, Any], *, capacity_gb: float, mclass: str,
             meets_min_context=(not min_context) or int(context) >= int(min_context),
             memory_class=mclass,
             capacity_gb=float(capacity_gb),
-            fit_margin_gb=margin if architecture else -LEGACY_FIT_TOLERANCE_GIB,
+            fit_margin_gb=_fit_margin(architecture, capacity_gb, mclass, gpu_platform, gpu_count),
             priority=base_priority,
             evidence=evidence,
+            residency=residency,
+            gpu_platform=gpu_platform,
+            gpu_count=gpu_count,
         )
 
     if runtime_profile is not None:
@@ -416,7 +575,7 @@ def plan_candidate(model: dict[str, Any], *, capacity_gb: float, mclass: str,
         estimate = estimate_for_runtime(model, context_length=context, runtime_profile=runtime_profile)
         authored = authored_profile_estimate(runtime_profile)
         required = authored or (estimate.total_gib if include_host else estimate.device_gib)
-        candidate = _candidate(context, estimate, required, bool(authored))
+        candidate = _candidate(context, estimate, required, bool(authored), _residency(context, True))
         return candidate if candidate_fits(candidate) else None
 
     contexts = context_candidates(model, min_context=min_context)
@@ -424,19 +583,28 @@ def plan_candidate(model: dict[str, Any], *, capacity_gb: float, mclass: str,
         [context for context in contexts if context >= min_context]
         + [context for context in contexts if context < min_context]
     )
-    for context in ordered:
-        estimate = estimate_model_memory(model, context_length=context)
-        required = estimate.total_gib if include_host else estimate.device_gib
-        candidate = _candidate(context, estimate, required, False)
-        if candidate_fits(candidate):
-            return candidate
+    passes: list[tuple[list[int], bool]] = [(ordered, True)]
+    if discrete and residency_gate and residency_is_decisive(model, vram_mb, gpu_count):
+        floor = int(min_context or RESIDENCY_CONTEXT_FLOOR)
+        high = [context for context in ordered if context >= floor]
+        low = [context for context in ordered if context < floor]
+        passes = [(high, False), (high, True), (low, True)]
+    for pass_contexts, late_steps in passes:
+        for context in pass_contexts:
+            estimate = estimate_model_memory(model, context_length=context)
+            required = estimate.total_gib if include_host else estimate.device_gib
+            candidate = _candidate(context, estimate, required, False, _residency(context, late_steps))
+            if candidate_fits(candidate):
+                return candidate
     return None
 
 
 def plan_model_context(model: dict[str, Any], *, capacity_gb: float, backend: Any,
                        memory_type: Any, vram_mb: Any, ram_gb: Any, host_arch: Any,
                        min_context: int = 0,
-                       preferred_context: int | None = None) -> dict[str, Any]:
+                       preferred_context: int | None = None,
+                       gpu_platform: str | None = None,
+                       gpu_count: int = 1) -> dict[str, Any]:
     """The context to serve ``model`` at on this hardware.
 
     This is the install policy (:func:`plan_candidate`, the same code the
@@ -449,7 +617,9 @@ def plan_model_context(model: dict[str, Any], *, capacity_gb: float, backend: An
     runtime profile fixes the context.
 
     Returns ``fits: False`` with the unchanged context when no context fits
-    (the caller keeps today's behavior; the model may run partly offloaded).
+    (the caller keeps today's behavior; activation verifies and reports the
+    placement). On a discrete GPU ``residency`` summarizes the full-residency
+    plan at the chosen context (settings the host agent re-plans at load).
     """
     mclass = memory_class(backend, memory_type, vram_mb)
     default = _int_or_zero(model.get("context_length"))
@@ -472,6 +642,7 @@ def plan_model_context(model: dict[str, Any], *, capacity_gb: float, backend: An
         planned, capacity_gb=capacity_gb, mclass=mclass, backend=backend,
         memory_type=memory_type, vram_mb=vram_mb, ram_gb=ram_gb,
         host_arch=host_arch, min_context=floor,
+        gpu_platform=gpu_platform, gpu_count=gpu_count,
     )
     if candidate is None:
         context = preferred or default
@@ -486,6 +657,7 @@ def plan_model_context(model: dict[str, Any], *, capacity_gb: float, backend: An
             "required_gb": None,
             "runtime_profile": None,
             "estimate_source": None,
+            "residency": None,
         }
     summary = candidate.summary()
     return {
@@ -499,6 +671,7 @@ def plan_model_context(model: dict[str, Any], *, capacity_gb: float, backend: An
         "required_gb": candidate.required_gb,
         "runtime_profile": (candidate.runtime_profile or {}).get("id"),
         "estimate_source": summary["estimate_source"],
+        "residency": summary["residency"],
     }
 
 
@@ -558,20 +731,28 @@ def rank_catalog_models(
     require_min_context: bool = False,
     include_size_tiebreak: bool = True,
     installable: Callable[[dict[str, Any]], bool] | None = None,
+    gpu_platform: str | None = None,
+    gpu_count: int = 1,
+    other_used_mib: float = 0.0,
 ) -> list[Candidate]:
     """Rank every eligible catalog model that fits this hardware.
 
     Eligibility: installable (when asked), family allowed, curated priority
     above 0 for this memory class, capacity at least the entry's
     ``min_capacity_gib``, tier size ceiling, runtime-profile RAM gates, and a
-    context that fits. A size ceiling that excludes every fitting model is a
-    preference, not a hard limit: the ranking is retried without it.
+    context that fits (on a discrete GPU: stays fully on the idle GPU where
+    residency decides; ``other_used_mib`` only shapes the settings). A size
+    ceiling that excludes every fitting model is a preference, not a hard
+    limit: the ranking is retried without it. When no model stays on a
+    discrete GPU at all, the capacity rule ranks instead, as before residency
+    was enforced; those candidates carry ``residency["spills"]`` and their
+    placement is verified and reported after load.
     """
     models = list(catalog)
     mclass = memory_class(backend, memory_type, vram_mb)
     allowed = installable or install_recommendation_allowed
 
-    def _pool(enforce_ceiling: bool) -> list[Candidate]:
+    def _pool(enforce_ceiling: bool, residency_gate: bool = True) -> list[Candidate]:
         pool: list[Candidate] = []
         for model in models:
             if installable_only and not allowed(model):
@@ -591,6 +772,8 @@ def rank_catalog_models(
                 model, capacity_gb=capacity_gb, mclass=mclass, backend=backend,
                 memory_type=memory_type, vram_mb=vram_mb, ram_gb=ram_gb,
                 host_arch=host_arch, min_context=min_context, priority=priority,
+                gpu_platform=gpu_platform, gpu_count=gpu_count,
+                other_used_mib=other_used_mib, residency_gate=residency_gate,
             )
             if candidate is None:
                 continue
@@ -606,11 +789,17 @@ def rank_catalog_models(
     ranked = _pool(enforce_ceiling=True)
     if not ranked and max_size_mb and max_size_mb > 0:
         ranked = _pool(enforce_ceiling=False)
+    if not ranked and mclass == "discrete":
+        ranked = _pool(enforce_ceiling=True, residency_gate=False)
+        if not ranked and max_size_mb and max_size_mb > 0:
+            ranked = _pool(enforce_ceiling=False, residency_gate=False)
     return ranked
 
 
 def check_fit(model: dict[str, Any], *, context_length: int, capacity_gb: float,
-              mclass: str, runtime_profile: dict[str, Any] | None = None) -> dict[str, Any]:
+              mclass: str, runtime_profile: dict[str, Any] | None = None,
+              vram_mb: Any = None, gpu_platform: str | None = None,
+              gpu_count: int = 1, other_used_mib: float = 0.0) -> dict[str, Any]:
     """Would ``model`` fit at ``context_length``? Used by the Hermes re-check.
 
     A runtime profile's authored estimate applies only at the profile's own
@@ -618,6 +807,12 @@ def check_fit(model: dict[str, Any], *, context_length: int, capacity_gb: float,
     A context above the declared native maximum never fits (llama.cpp caps
     the slot there, so the raise could not be served), whatever the memory;
     ``above_native_max`` says so.
+
+    On a discrete GPU (``vram_mb``) where residency decides, the model must
+    stay fully on the idle GPU with its declared settings: the Hermes raise
+    changes only the context, so a fit that needs the ranker's ubatch, fit
+    target or KV-cache changes is not a fit here (``residency`` still shows
+    that plan; a re-selection or an activation applies it).
     """
     native_max = declared_max_context(model)
     above_native_max = bool(native_max) and int(context_length) > native_max
@@ -632,14 +827,33 @@ def check_fit(model: dict[str, Any], *, context_length: int, capacity_gb: float,
             authored = authored_profile_estimate(runtime_profile)
     required = authored or (estimate.total_gib if mclass == "cpu" else estimate.device_gib)
     architecture = (not authored) and estimate.method == "architecture"
-    margin = fit_margin_gib(capacity_gb, mclass) if architecture else -LEGACY_FIT_TOLERANCE_GIB
-    fits = candidate_fits(Candidate(
-        model=model, runtime_profile=runtime_profile, context_length=int(context_length),
-        required_gb=round(required, 2), estimate=estimate,
-        architecture_estimate=architecture, authored_estimate=bool(authored),
-        meets_min_context=True, memory_class=mclass, capacity_gb=float(capacity_gb),
-        fit_margin_gb=margin, priority=0, evidence=0,
-    ))
+    gpu_count = max(int(gpu_count or 1), 1)
+    residency = None
+    declared_resident = None
+    if mclass == "discrete" and vram_mb:
+        residency = discrete_residency(
+            model, runtime_profile=runtime_profile, context_length=int(context_length),
+            vram_mb=vram_mb, gpu_platform=gpu_platform, gpu_count=gpu_count,
+            other_used_mib=other_used_mib,
+        )
+        if residency["decisive"]:
+            declared_resident = bool(gpu_residency_fit(
+                model, total_vram_mb=vram_mb, runtime_profile=runtime_profile,
+                context_length=int(context_length), gpu_platform=gpu_platform,
+                gpu_count=gpu_count,
+            )["fits"]) and required <= float(capacity_gb) + LEGACY_FIT_TOLERANCE_GIB
+    margin = _fit_margin(architecture, capacity_gb, mclass, gpu_platform, gpu_count)
+    if declared_resident is not None:
+        fits = declared_resident
+    else:
+        fits = candidate_fits(Candidate(
+            model=model, runtime_profile=runtime_profile, context_length=int(context_length),
+            required_gb=round(required, 2), estimate=estimate,
+            architecture_estimate=architecture, authored_estimate=bool(authored),
+            meets_min_context=True, memory_class=mclass, capacity_gb=float(capacity_gb),
+            fit_margin_gb=margin, priority=0, evidence=0,
+            gpu_platform=gpu_platform, gpu_count=gpu_count,
+        ))
     return {
         "fits": bool(fits) and not above_native_max,
         "model_id": model.get("id"),
@@ -653,4 +867,6 @@ def check_fit(model: dict[str, Any], *, context_length: int, capacity_gb: float,
         "margin_gb": margin,
         "estimate_source": "runtime-profile" if authored else estimate.method,
         "estimate": estimate.as_dict(),
+        "residency": residency_summary(residency),
+        "resident_as_declared": declared_resident,
     }

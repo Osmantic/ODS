@@ -174,6 +174,9 @@ load_model_selector_env_from_output() {
         LLAMA_ARG_CACHE_TYPE_K \
         LLAMA_ARG_CACHE_TYPE_V \
         LLAMA_ARG_N_CPU_MOE \
+        LLAMA_ARG_UBATCH \
+        LLAMA_ARG_FIT_TARGET \
+        LLAMA_THREADS \
         LLAMA_ARG_NO_CACHE_PROMPT \
         LLAMA_ARG_CHECKPOINT_EVERY_NT \
         LLAMA_ARG_CTX_CHECKPOINTS \

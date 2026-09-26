@@ -799,6 +799,9 @@ if ($dryRun) {
                 if ($_llamaEnv["LLAMA_ARG_CACHE_TYPE_K"]) { $llamaArgs += @("--cache-type-k", $_llamaEnv["LLAMA_ARG_CACHE_TYPE_K"]) }
                 if ($_llamaEnv["LLAMA_ARG_CACHE_TYPE_V"]) { $llamaArgs += @("--cache-type-v", $_llamaEnv["LLAMA_ARG_CACHE_TYPE_V"]) }
                 if ($_llamaEnv["LLAMA_ARG_N_CPU_MOE"]) { $llamaArgs += @("--n-cpu-moe", $_llamaEnv["LLAMA_ARG_N_CPU_MOE"]) }
+                if ($_llamaEnv["LLAMA_ARG_UBATCH"]) { $llamaArgs += @("--ubatch-size", $_llamaEnv["LLAMA_ARG_UBATCH"]) }
+                if ($_llamaEnv["LLAMA_ARG_FIT_TARGET"]) { $llamaArgs += @("--fit-target", $_llamaEnv["LLAMA_ARG_FIT_TARGET"]) }
+                if ($_llamaEnv["LLAMA_THREADS"]) { $llamaArgs += @("--threads", $_llamaEnv["LLAMA_THREADS"]) }
                 if ($_llamaEnv["LLAMA_PARALLEL"]) { $llamaArgs += @("--parallel", $_llamaEnv["LLAMA_PARALLEL"]) }
                 # Only when this llama-server still has the flag (removed in
                 # llama.cpp b9310); an unknown flag stops llama-server.

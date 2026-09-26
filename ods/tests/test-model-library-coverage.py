@@ -376,17 +376,25 @@ def test_default_qwen_9b_has_live_proven_64k_and_compatible_32k_runtime_profiles
     assert profile["system_ram_min_gb"] == 15
     assert profile["context_length"] == HERMES_CONTEXT_FLOOR
     assert profile["estimated_required_gb"] == 7.2
+    # ubatch 256 and a 512 MiB llama.cpp margin keep all 33 layers on the GPU
+    # (the default ubatch 512 / 1024 MiB margin loaded 29/33 on the RTX 5070
+    # Laptop); see gpu_residency_evidence.
     assert profile["env"] == {
         "LLAMA_PARALLEL": "1",
         "LLAMA_ARG_FLASH_ATTN": "on",
         "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
         "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
         "LLAMA_SERVER_MEMORY_LIMIT": "12G",
+        "LLAMA_ARG_UBATCH": "256",
+        "LLAMA_ARG_FIT_TARGET": "512",
     }
+    assert "33/33 layers" in profile["gpu_residency_evidence"]
 
     fallback = profiles["nvidia-8gb-32k-q8-kv"]
     assert fallback["context_length"] == 32768
     assert fallback["estimated_required_gb"] == 6.8
+    assert fallback["env"]["LLAMA_ARG_UBATCH"] == "256"
+    assert fallback["env"]["LLAMA_ARG_FIT_TARGET"] == "512"
 
 
 def test_ministral_has_a_constrained_wsl_8gb_runtime_profile():

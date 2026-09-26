@@ -1029,12 +1029,18 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     if LC_ALL=C awk "BEGIN { exit !($LLAMA_CPU_RESERVATION > $LLAMA_CPU_LIMIT) }"; then
         LLAMA_CPU_RESERVATION="$LLAMA_CPU_LIMIT"
     fi
-    # CPU inference: llama.cpp's own default is one thread per physical core;
-    # the compose file's fixed 4 left most cores idle. Bound it by the
-    # container's CPU limit. An owner-set LLAMA_THREADS is kept. GPU backends
-    # keep the compose default (their threads only feed the GPU).
+    # llama.cpp threads. A runtime profile that declares MoE expert offload
+    # sets LLAMA_THREADS to the performance-core count (select-model.py), and
+    # a rerun carries the active model's value (preserve-active-model.py);
+    # either wins. Otherwise, CPU inference: llama.cpp's own default is one
+    # thread per physical core; the compose file's fixed 4 left most cores
+    # idle. Bound it by the container's CPU limit. An owner-set LLAMA_THREADS
+    # is kept. GPU backends keep the compose default (their threads only feed
+    # the GPU).
     LLAMA_THREADS_VALUE=""
-    if [[ "$_cpu_backend" == "cpu" && "${ODS_MODE:-local}" != "cloud" ]]; then
+    if [[ "${LLAMA_THREADS:-}" =~ ^[1-9][0-9]*$ ]]; then
+        LLAMA_THREADS_VALUE="$LLAMA_THREADS"
+    elif [[ "$_cpu_backend" == "cpu" && "${ODS_MODE:-local}" != "cloud" ]]; then
         LLAMA_THREADS_VALUE="$(_env_get LLAMA_THREADS \
             "$(ods_default_cpu_llama_threads "$(ods_physical_cpu_cores 2>/dev/null || true)" "$LLAMA_CPU_LIMIT")")"
         [[ "$LLAMA_THREADS_VALUE" =~ ^[1-9][0-9]*$ ]] || LLAMA_THREADS_VALUE=""
@@ -1303,6 +1309,9 @@ LLAMA_ARG_CACHE_TYPE_K=${LLAMA_ARG_CACHE_TYPE_K:-f16}
 LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
 $(if [[ -n "${LLAMA_ARG_N_CPU_MOE:-}" ]]; then echo "LLAMA_ARG_N_CPU_MOE=${LLAMA_ARG_N_CPU_MOE}"; fi)
+# Full GPU residency: set by the selected runtime profile or residency plan.
+$(if [[ -n "${LLAMA_ARG_UBATCH:-}" ]]; then echo "LLAMA_ARG_UBATCH=${LLAMA_ARG_UBATCH}"; fi)
+$(if [[ -n "${LLAMA_ARG_FIT_TARGET:-}" ]]; then echo "LLAMA_ARG_FIT_TARGET=${LLAMA_ARG_FIT_TARGET}"; fi)
 $(if [[ -n "${LLAMA_ARG_NO_CACHE_PROMPT:-}" ]]; then echo "LLAMA_ARG_NO_CACHE_PROMPT=${LLAMA_ARG_NO_CACHE_PROMPT}"; fi)
 $(if [[ -n "${LLAMA_ARG_CHECKPOINT_EVERY_NT:-}" ]]; then echo "LLAMA_ARG_CHECKPOINT_EVERY_NT=${LLAMA_ARG_CHECKPOINT_EVERY_NT}"; fi)
 $(if [[ -n "${LLAMA_ARG_CTX_CHECKPOINTS:-}" ]]; then echo "LLAMA_ARG_CTX_CHECKPOINTS=${LLAMA_ARG_CTX_CHECKPOINTS}"; fi)
