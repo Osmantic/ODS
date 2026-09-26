@@ -163,8 +163,8 @@ const INELIGIBLE_DECISION = {schemaVersion: 1, kind: 'ods-extension-unfinished-d
 
 // The gateway double backed by a real guard: `scripts` are the model runs in
 // submission order; each returns the text OpenClaw answers with.
-async function portal(t, scripts, {trigger = 'user', ...hooks} = {}) {
-  const guard = createToolLoopGuard({abortRun: () => true});
+async function portal(t, scripts, {trigger = 'user', abortRun = () => true, ...hooks} = {}) {
+  const guard = createToolLoopGuard({abortRun});
   const seen = {runs: [], prompts: [], grants: [], receipts: []};
   const chat = await ingressWith(t, async (url, body) => {
     switch (url) {
@@ -379,7 +379,8 @@ for (const [label, prompt, work] of [
 test('a Stop after the grant closes the continuation before it runs', {timeout: 10000}, async t => {
   let stop;
   const {seen, chat} = await portal(t, [cutTurn, run => { publishSplitPage(run); return READY; }], {
-    afterGrant: async () => { stop = await chat.cancel(); }});
+    // Each double run ends before its completion returns: nothing to abort.
+    abortRun: () => false, afterGrant: async () => { stop = await chat.cancel(); }});
   const result = await chat(SITE).catch(error => ({error}));
   assert.deepEqual(stop, {aborted: true});
   assert.equal(seen.grants[0].eligible, true);
