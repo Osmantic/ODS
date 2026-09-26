@@ -5,7 +5,9 @@
 # only by install-core.sh inside Ubuntu.
 
 $script:ODSPortalMinimumFreeGB = 40
-$script:ODSPortalDockerWaitSeconds = 240
+# Docker Desktop's first start after turning on WSL integration was measured
+# at over 4 minutes on a real Windows 11 host; wait long enough for that.
+$script:ODSPortalDockerWaitSeconds = 600
 $script:ODSPortalResumeValue = 'ODSPortalSetup'
 
 # ---------------------------------------------------------------- pure helpers
@@ -157,7 +159,7 @@ function Wait-ODSPortalDockerEngine($Desktop) {
         if (Test-ODSPortalDockerEngine $Desktop) { return }
         Start-Sleep -Seconds 5
     }
-    throw "Docker Desktop did not finish starting within $($script:ODSPortalDockerWaitSeconds / 60) minutes. Open Docker Desktop, accept any prompt it shows, wait until it says Engine running, then rerun this command."
+    throw "Docker Desktop is still not ready after $($script:ODSPortalDockerWaitSeconds / 60) minutes. Open Docker Desktop, accept any prompt it shows, wait until it says Engine running, then rerun this command."
 }
 
 function Start-ODSPortalDockerDesktop($Desktop) {

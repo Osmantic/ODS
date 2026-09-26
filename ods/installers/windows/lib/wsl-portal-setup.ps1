@@ -213,7 +213,7 @@ function Get-ODSPortalDistroNames {
 
 function Install-ODSPortalUbuntu([string]$Distro, [System.Collections.IDictionary]$Options, [string]$InstallerRoot, [bool]$NonInteractive) {
     # Returns $null once the distro exists with a default user, else an exit code.
-    if (-not (Confirm-ODSPortalPreparation "Download and install $Distro? It is installed under your Windows account; existing distributions are not changed." $NonInteractive)) { return 1 }
+    if (-not (Confirm-ODSPortalPreparation "Download and install ${Distro}? It is installed under your Windows account; existing distributions are not changed." $NonInteractive)) { return 1 }
     $installed = Invoke-ODSPortalWsl -Arguments @('--install', '--distribution', $Distro, '--no-launch')
     if ($installed.Code -eq 3010) { return (Request-ODSPortalRestart $InstallerRoot $Options 'Windows needs a restart to finish installing Ubuntu.') }
     if ($installed.Code -ne 0) { throw ('Ubuntu installation did not complete: ' + $installed.Output + ' ' + $installed.Error) }
@@ -234,7 +234,7 @@ function Initialize-ODSPortalDocker([string]$Distro, [System.Collections.IDictio
     if (-not (Test-ODSPortalDockerEngine $desktop)) { Start-ODSPortalDockerDesktop $desktop }
     $info = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--exec', 'docker', 'info')
     if ($info.Code -ne 0) {
-        if (-not (Confirm-ODSPortalPreparation "Docker Desktop is running but is not connected to $Distro yet. Turn on Docker's WSL integration for $Distro? Docker Desktop restarts, so containers it is running stop briefly." $NonInteractive)) { return 1 }
+        if (-not (Confirm-ODSPortalPreparation "Docker Desktop is running but is not connected to $Distro yet. Turn on Docker's WSL integration for ${Distro}? Docker Desktop restarts, so containers it is running stop briefly." $NonInteractive)) { return 1 }
         Enable-ODSPortalDockerWslIntegration $desktop $Distro
     }
     foreach ($arguments in @(@('docker','info'), @('docker','compose','version'))) {
