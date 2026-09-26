@@ -3,6 +3,7 @@ import copy
 import json as json
 import os
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 from pixel_agent_teams import TeamManager, TeamStore, TeamConflict, questions_valid, project_receipts_valid
 from routers import pixel_teams
 from security import verify_api_key
+import security
 
 OWNER = 'a' * 64
 
@@ -34,6 +36,135 @@ async def settle(manager):
 
 async def yes(*_):
     return True
+
+
+def team_client(manager, monkeypatch):
+    app = FastAPI()
+    app.include_router(pixel_teams.router)
+    monkeypatch.setattr(pixel_teams, '_manager', manager)
+    monkeypatch.setattr(pixel_teams.pixel, '_pixel_config', lambda: {})
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver',
+                            headers={'Authorization': f'Bearer {security.DASHBOARD_API_KEY}'})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('blocker_status', ['running', 'waiting', 'interrupted'])
+async def test_retry_cannot_resume_old_team_during_new_work_in_same_chat(tmp_path, monkeypatch, blocker_status):
+    release = asyncio.Event()
+    started = asyncio.Event()
+    calls = []
+
+    async def run(owner, agent):
+        calls.append((agent['chat_id'], agent['role'], agent['request_id']))
+        if agent['role'] == 'explorer' and agent['request_id'] == 'turn-0':
+            frames = finish('Research was not verified', 'failed')
+        else:
+            started.set()
+            if blocker_status == 'waiting' and agent['conversation'][0]['content'].startswith('Build a different result'):
+                frames = finish('Choose a style', 'pending', [
+                    {'id': 'style', 'question': 'Which style?', 'options': ['Clean', 'Colorful']}])
+            else:
+                await release.wait()
+                frames = finish()
+        for frame in frames:
+            yield frame
+
+    manager = TeamManager(TeamStore(tmp_path / 'teams'), run, yes)
+    owner = pixel_teams.owner_namespace(security.DASHBOARD_API_KEY)
+    async with team_client(manager, monkeypatch) as client:
+        first = await client.post('/api/pixel/agents/start', json={
+            'chat_id': 'chat', 'request_id': 'old', 'task': 'Research then build', 'count': 3})
+        assert first.status_code == 200
+        old_id = first.json()['id']
+        await settle(manager)
+        before = manager.store.get(owner, old_id)
+        assert [agent['status'] for agent in before['agents']] == ['failed', 'skipped', 'skipped']
+        second = await client.post('/api/pixel/agents/start', json={
+            'chat_id': 'chat', 'request_id': 'new', 'task': 'Build a different result', 'count': 1})
+        assert second.status_code == 200
+        await asyncio.wait_for(started.wait(), timeout=2)
+        if blocker_status == 'waiting':
+            await settle(manager)
+        elif blocker_status == 'interrupted':
+            task = manager.tasks[(owner, second.json()['id'])]
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.sleep(0)
+        assert manager.store.get(owner, second.json()['id'])['status'] == blocker_status
+        try:
+            response = await client.post('/api/pixel/agents/retry', json={'team_id': old_id, 'agent_id': '0'})
+            assert response.status_code == 409, response.text
+            assert manager.store.get(owner, old_id) == before
+            assert len(manager.tasks) == (1 if blocker_status == 'running' else 0)
+        finally:
+            release.set()
+            await settle(manager)
+            if blocker_status != 'running':
+                stopped = await client.post('/api/pixel/agents/stop', json={'team_id': second.json()['id']})
+                assert stopped.status_code == 200
+                assert stopped.json()['status'] == 'cancelled'
+        # Once the newer work is finished, the same explicit retry is admitted.
+        response = await client.post('/api/pixel/agents/retry', json={'team_id': old_id, 'agent_id': '0'})
+        assert response.status_code == 200, response.text
+        await settle(manager)
+        assert manager.store.get(owner, old_id)['status'] == 'completed'
+        assert [role for chat, role, attempt in calls if chat.startswith(f'team-{old_id}-')] == [
+            'explorer', 'explorer', 'builder', 'reviewer']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['team', 'goal'])
+async def test_answer_preserves_pending_question_when_queue_is_full(tmp_path, monkeypatch, mode):
+    release = asyncio.Event()
+    questions = [{'id': 'style', 'question': 'Which style?', 'options': ['Clean', 'Colorful']}]
+
+    async def run(owner, agent):
+        if agent['conversation'][0]['content'].startswith('Ask before building') and agent['turn'] == 0:
+            frames = finish('Which style?', 'pending', questions)
+        else:
+            await release.wait()
+            yield {'pixel_task': {'schemaVersion': 2, 'goal': {
+                'status': 'completed', 'summary': 'Done',
+                'steps': [{'id': 'work', 'title': 'Do work', 'status': 'completed'}]}}}
+            frames = finish()
+        for frame in frames:
+            yield frame
+
+    manager = TeamManager(TeamStore(tmp_path / 'teams'), run, yes)
+    owner = pixel_teams.owner_namespace(security.DASHBOARD_API_KEY)
+    async with team_client(manager, monkeypatch) as client:
+        response = await client.post('/api/pixel/agents/start', json={
+            'chat_id': 'waiting', 'request_id': 'first', 'task': 'Ask before building', 'count': 1, 'mode': mode})
+        assert response.status_code == 200
+        team_id = response.json()['id']
+        await settle(manager)
+        before = manager.store.get(owner, team_id)
+        assert before['status'] == 'waiting'
+        for index in range(4):
+            queued = await client.post('/api/pixel/agents/start', json={
+                'chat_id': f'other-{index}', 'request_id': 'first', 'task': 'Other work', 'count': 1})
+            assert queued.status_code == 200
+        assert len(manager.tasks) == 4
+        replay = await client.post('/api/pixel/agents/start', json={
+            'chat_id': 'other-0', 'request_id': 'first', 'task': 'Other work', 'count': 1})
+        assert replay.status_code == 200
+        assert len(manager.tasks) == 4
+        body = {'team_id': team_id, 'agent_id': '0', 'answers': {'style': 'Clean'}}
+        try:
+            response = await client.post('/api/pixel/agents/answer', json=body)
+            assert response.status_code == 409, response.text
+            assert len(manager.tasks) == 4
+            assert manager.store.get(owner, team_id) == before
+        finally:
+            release.set()
+            await settle(manager)
+        response = await client.post('/api/pixel/agents/answer', json=body)
+        assert response.status_code == 200, response.text
+        await settle(manager)
+        saved = manager.store.get(owner, team_id)
+        assert saved['status'] == 'completed'
+        assert saved['agents'][0]['turn'] == 1
+        assert saved['agents'][0]['conversation'][2] == {'role': 'user', 'content': 'Which style?\nClean'}
 
 
 @pytest.mark.asyncio
