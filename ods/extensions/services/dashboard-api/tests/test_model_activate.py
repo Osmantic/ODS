@@ -1815,7 +1815,7 @@ class TestRuntimeLogExcerpt:
         assert "\x1b[" not in excerpt
         assert "sk-live-secret-value" not in excerpt
         assert "abc.def.ghi" not in excerpt
-        assert excerpt.count("[redacted]") == 2
+        assert excerpt.count("[REDACTED]") == 2
         assert "tensor 12 loaded" not in excerpt
 
     def test_excerpt_falls_back_to_the_log_tail_without_signal_lines(self):
@@ -3766,7 +3766,7 @@ class TestRestartWindowsLemonade:
         assert "launch stdout" in message
         assert "stderr-secret" not in message
         assert "stdout-secret" not in message
-        assert "[redacted]" in message
+        assert "[REDACTED]" in message
         assert captured["capture_output"] is None
         assert captured["stdout"] is not None
         assert captured["stderr"] is not None
