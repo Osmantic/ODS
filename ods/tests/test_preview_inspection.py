@@ -1355,6 +1355,31 @@ def palette_share(result, name):
 TOWER1_PLAN = [step("assert-hidden", "#midnight-concert-card"), role_step("click", "button", "Show sold out"),
                step("assert-visible", "#midnight-concert-card")]
 
+# Fleet rounds 106 and 107 (ods-main-qualification-20260924-r049): the
+# model-authored bytes of recorded publications, from the replay fixtures of
+# the plugin tests, checked against each host snapshot digest.
+PIXEL_TESTS = Path(__file__).resolve().parents[1] / "extensions/services/pixel-agent/tests"
+MIDNIGHT_OWNER = ("heading", "Midnight sold-out concert")
+
+
+def recorded_site(fixture_name, publication):
+    fixture = json.loads((PIXEL_TESTS / fixture_name).read_text(encoding="utf-8"))
+    files, receipt = {}, None
+    for call in fixture["turns"][0]["calls"]:
+        if call["call"] == publication:
+            receipt = call["details"]
+            break
+        name = call["arguments"].get("path", "").split("/")[-1]
+        if call["tool"] == "write":
+            files[name] = call["arguments"]["content"]
+        elif call["tool"] == "edit":
+            for edit in call["arguments"]["edits"]:
+                files[name] = files[name].replace(edit["oldText"], edit["newText"], 1)
+    files = {name: content.encode() for name, content in files.items()}
+    assert bundle(None, None, files)["request"]["sha256"] == receipt["sha256"], fixture_name
+    return files, fixture
+
+
 @unittest.skipUnless(
     os.environ.get("ODS_PREVIEW_BROWSER_TESTS") == "1", "real Chromium opt in"
 )
@@ -2015,6 +2040,100 @@ class BrowserTests(unittest.TestCase):
         result = self.check(html, [step("assert-visible", "#item")])
         self.assertEqual(result["pageErrors"]["count"], 1, "the palette load is not recorded")
         self.assertIn("green", palette_names(result))
+
+    def test_strixy_round107_corrected_args_pass(self):
+        # The flattened call-8 steps, as the rejected request's ready args.
+        files, _ = recorded_site("inspection-recovery-strixy-round107.json", 7)
+        result = self.check(None, [step("assert-hidden", "#midnight-card"), step("click", name="Show sold out"),
+                                   step("assert-visible", "#midnight-card")], files)
+        self.assertEqual(result["status"], "passed", result)
+        self.assertEqual(result["steps"][0]["before"]["display"], "none")
+
+    def test_mac_round106_heading_plan_passes(self):
+        # Calls 9-12 failed on locators; the requirement-derived heading plan,
+        # with the model's .reveal-btn click or the owner's button, passes.
+        files, _ = recorded_site("inspection-recovery-mac-round106.json", 8)
+        for control in (step("click", ".reveal-btn"), step("click", name="Show sold out")):
+            with self.subTest(control=control):
+                result = self.check(None, [role_step("assert-hidden", *MIDNIGHT_OWNER), control,
+                                           role_step("assert-visible", *MIDNIGHT_OWNER)], files)
+                self.assertEqual(result["status"], "passed", result)
+
+    def test_laptop_round107_measured_failures_are_page_defects(self):
+        # site-ba3eb2f6 never hides the card; the corrected plan fails at step 1.
+        files, _ = recorded_site("inspection-recovery-laptop-round107.json", 3)
+        result = self.check(None, [step("assert-hidden", ".event-card.sold-out"), step("click", ".show-sold-out-btn"),
+                                   step("assert-visible", ".event-card.sold-out")], files)
+        self.assertEqual(result["steps"][0]["errorCode"], "visibility_mismatch", result)
+        self.assertTrue(result["steps"][0]["before"]["visible"])
+        # site-1f5f2cf8, call 26: scripts ran and the real click removed .hidden,
+        # while .sold-out-card {display:none} still hides the card.
+        files, fixture = recorded_site("inspection-recovery-laptop-round107.json", 23)
+        recorded = next(call for call in fixture["turns"][0]["calls"] if call["call"] == 26)
+        result = self.check(None, recorded["arguments"]["steps"], files)
+        self.assertEqual([s["status"] for s in result["steps"]], ["passed", "passed", "passed", "failed"], result)
+        self.assertEqual(result["steps"][3]["errorCode"], "visibility_mismatch")
+        self.assertEqual(result["steps"][3]["before"]["display"], "none")
+        self.assertEqual(recorded["details"]["steps"][3]["before"]["display"], "none")
+
+    def test_laptop_round107_uppercase_control_needs_its_css_locator(self):
+        # site-ba3eb2f6 repaired to start hidden: .show-sold-out-btn is
+        # text-transform: uppercase, so the exact role/name click matches
+        # nothing, and the published id offered in its place passes.
+        files, _ = recorded_site("inspection-recovery-laptop-round107.json", 3)
+        html = files["index.html"].decode()
+        repaired = html.replace('<article class="event-card sold-out">', '<article class="event-card sold-out hidden">', 1)
+        self.assertNotEqual(repaired, html)
+        files = {"index.html": repaired.encode()}
+        card = ".event-card.sold-out"
+        result = self.check(None, [step("assert-hidden", card), step("click", name="Show sold out"), step("assert-visible", card)], files)
+        self.assertEqual(result["steps"][1]["errorCode"], "no_match", result)
+        result = self.check(None, [step("assert-hidden", card), step("click", "#showSoldOutBtn"), step("assert-visible", card)], files)
+        self.assertEqual(result["status"], "passed", result)
+
+    def test_laptop_round107_item_target_measures_the_broken_toggle(self):
+        # site-c54d9d87 (call 13): the card has the hidden attribute and the
+        # handler removes a class. The CSS item target is measured after the
+        # click; the role/name heading was only a no_match.
+        files, _ = recorded_site("inspection-recovery-laptop-round107.json", 12)
+        item = "article.event-card.sold-out"
+        result = self.check(None, [step("assert-hidden", item), step("click", ".show-sold-out-btn"), step("assert-visible", item)], files)
+        self.assertEqual([s["status"] for s in result["steps"]], ["passed", "passed", "failed"], result)
+        self.assertEqual(result["steps"][2]["errorCode"], "visibility_mismatch")
+        self.assertEqual(result["steps"][2]["before"]["display"], "none")
+        heading = ("heading", "Midnight Sold-Out Concert")
+        result = self.check(None, [role_step("assert-hidden", *heading), step("click", ".show-sold-out-btn"), role_step("assert-visible", *heading)], files)
+        self.assertEqual(result["steps"][2]["errorCode"], "no_match", result)
+
+    def test_laptop_round107_call24_css_control_reaches_the_measurement(self):
+        # site-1f5f2cf8 (call 24): the recorded role/name click matched nothing;
+        # the offered #showSoldOutBtn plan clicks and measures .sold-out-card.
+        files, fixture = recorded_site("inspection-recovery-laptop-round107.json", 23)
+        recorded = next(call for call in fixture["turns"][0]["calls"] if call["call"] == 24)
+        result = self.check(None, recorded["arguments"]["steps"], files)
+        self.assertEqual(result["steps"][2]["errorCode"], "no_match", result)
+        card = ".sold-out-card"
+        result = self.check(None, [step("assert-hidden", card), step("click", "#showSoldOutBtn"), step("assert-visible", card)], files)
+        self.assertEqual([s["status"] for s in result["steps"]], ["passed", "passed", "failed"], result)
+        self.assertEqual(result["steps"][2]["before"]["display"], "none")
+
+    def test_mac_round107_repair_steps(self):
+        # The steps named for the new snapshot: the published heading around
+        # the model's .reveal-btn click. They fail on the recorded page and
+        # pass once the handler toggles the class the CSS hides.
+        files, _ = recorded_site("inspection-recovery-mac-round107.json", 2)
+        heading = ("heading", "Midnight Sold-out Concert")
+        plan = [role_step("assert-hidden", *heading), step("click", ".reveal-btn"), role_step("assert-visible", *heading)]
+        result = self.check(None, plan, files)
+        self.assertEqual(result["steps"][2]["errorCode"], "no_match", result)
+        html = files["index.html"].decode()
+        for old, new in (("const isHidden = hiddenCard.style.display === 'none';", "const isHidden = hiddenCard.classList.contains('hidden');"),
+                         ("hiddenCard.style.display = 'flex';", "hiddenCard.classList.remove('hidden');"),
+                         ("hiddenCard.style.display = 'none';", "hiddenCard.classList.add('hidden');")):
+            self.assertIn(old, html)
+            html = html.replace(old, new, 1)
+        result = self.check(None, plan, {"index.html": html.encode()})
+        self.assertEqual(result["status"], "passed", result)
 
     def control_pages(self):
         yield "tower2", tower2_r100_files()

@@ -38,7 +38,8 @@ import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
   boundInspectionPageErrors, boundInspectionControls, pageErrorRepairInstruction, visibilityInspectionMatches,
-  visibilityInspectionInstruction, requestedVisibilityTransition, inheritedVisibilityTransition } from './preview-interaction-assurance.mjs';
+  visibilityInspectionInstruction, requestedVisibilityTransition, inheritedVisibilityTransition,
+  statedVisibilityDirection } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
@@ -6971,8 +6972,20 @@ export function createToolLoopGuard({
         relativeDirectory:preview.relativeDirectory,
         // Owner wording only (affected element, control, direction); no proof.
         ...(state.workspaceTransitionIntent ? {transition:state.workspaceTransitionIntent} : {}),
+        ...(state.workspaceTransitionDirection ? {direction:state.workspaceTransitionDirection} : {}),
       }));
     }
+  }
+
+  // The pending runs of exactly this inspection call: direct, or a Tool
+  // Search child and its pending tool_call parent.
+  function pendingInspectionRuns(toolCallId, params) {
+    if (!workspacePreviewInspectionAvailable || typeof toolCallId !== 'string' || !toolCallId) return [];
+    const parent = toolCallId.startsWith('tool_search_code:')
+      ? [...pendingToolRuns].find(([id, run]) => !id.startsWith('tool_search_code:') && run.transport === 'tool_call' &&
+        toolCallId.startsWith(toolSearchChildPrefix(id)))?.[1] : undefined;
+    return [pendingToolRuns.get(toolCallId), parent].filter(run => run?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
+      isDeepStrictEqual(run.selectedParams, params));
   }
 
   // Tool-result-time requirement for pixel_ods_workspace_preview_inspect.
@@ -6982,12 +6995,7 @@ export function createToolLoopGuard({
   // or a Tool Search child of a pending tool_call) of the active run; a
   // passing transition of the same snapshot earlier in the run satisfies it.
   function previewInspectionTransition(toolCallId, params) {
-    if (!workspacePreviewInspectionAvailable || typeof toolCallId !== 'string' || !toolCallId) return undefined;
-    const parent = toolCallId.startsWith('tool_search_code:')
-      ? [...pendingToolRuns].find(([id, run]) => !id.startsWith('tool_search_code:') && run.transport === 'tool_call' &&
-        toolCallId.startsWith(toolSearchChildPrefix(id)))?.[1] : undefined;
-    const bound = [pendingToolRuns.get(toolCallId), parent].filter(run => run?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
-      isDeepStrictEqual(run.selectedParams, params));
+    const bound = pendingInspectionRuns(toolCallId, params);
     const runId = bound[0]?.runId, state = runs.get(runId);
     if (!state?.workspaceVisibilityInteractionRequired || bound.some(run => run.runId !== runId ||
         run.inspectionSessionId !== state.currentSessionId || run.inspectionSessionKey !== state.currentSessionKey) ||
@@ -6998,6 +7006,24 @@ export function createToolLoopGuard({
     const outline = target?.siteId === params.siteId && target.sha256 === params.sha256 ? target.outline : undefined;
     return Object.freeze({...(intent?.target ? {target: intent.target} : {}), ...(outline ? {outline} : {}),
       ...(intent?.control ? {control: intent.control} : {}), initiallyHidden: intent?.initiallyHidden !== false});
+  }
+
+  // Wording guidance for the result of exactly this pending inspection call;
+  // it grants and withholds nothing. direction: the state before the click
+  // that the owner's own wording stated (statedVisibilityDirection), only with
+  // a requirement for this call. finalFailure: one more failed call ends this
+  // response's tool use (the run progress budget or its lane), so a ready next
+  // call could not run.
+  function previewInspectionGuidance(toolCallId, params) {
+    const bound = pendingInspectionRuns(toolCallId, params);
+    const state = runs.get(bound[0]?.runId);
+    if (!state || bound.some(run => run.runId !== bound[0].runId)) return undefined;
+    const requirement = previewInspectionTransition(toolCallId, params);
+    const direction = requirement && state.workspaceTransitionDirection &&
+      (state.workspaceTransitionDirection === 'hidden') === requirement.initiallyHidden ? state.workspaceTransitionDirection : undefined;
+    const outer = bound.find(run => run.transport === 'tool_call');
+    const lane = toolProgressLane(state, PREVIEW_INSPECTION_TOOL, outer ? outer.selectedToolTarget : undefined);
+    return Object.freeze({...(direction ? {direction} : {}), ...(state.progressBudget.failureEnds(lane) ? {finalFailure: true} : {})});
   }
 
   function rememberToolRun(
@@ -9418,6 +9444,7 @@ export function createToolLoopGuard({
         if (preservesBoundBehavior) state.workspaceInheritedVisibilityObligation = Object.freeze({
           sessionId, sessionKey:state.currentSessionKey, ownerIntent,
           ...(visibilityObligation.transition ? {transition:visibilityObligation.transition} : {}),
+          ...(visibilityObligation.direction ? {direction:visibilityObligation.direction} : {}),
         });
         const inheritedVisibility = state.workspaceInheritedVisibilityObligation;
         const inheritsVisibility = Boolean(inheritedVisibility) && inheritedVisibility.sessionId === sessionId &&
@@ -9431,9 +9458,15 @@ export function createToolLoopGuard({
           ? extractRequestedControlNames(ownerIntent) : [];
         // Names the likely affected element and control for the inspection's
         // corrective steps; a preserved behavior keeps the earlier wording.
+        const requestedTransition = state.workspaceVisibilityInteractionRequired
+          ? requestedVisibilityTransition(ownerIntent, state.requestedLiterals) : undefined;
+        const inheritedTransition = inheritsVisibility ? inheritedVisibility.transition : undefined;
         state.workspaceTransitionIntent = state.workspaceVisibilityInteractionRequired
-          ? inheritedVisibilityTransition(requestedVisibilityTransition(ownerIntent, state.requestedLiterals),
-            inheritsVisibility ? inheritedVisibility.transition : undefined) : undefined;
+          ? inheritedVisibilityTransition(requestedTransition, inheritedTransition) : undefined;
+        // The stated direction follows the wording whose direction the intent kept.
+        state.workspaceTransitionDirection = !state.workspaceTransitionIntent ? undefined
+          : inheritedTransition && !requestedTransition?.target ? inheritedVisibility.direction
+            : statedVisibilityDirection(ownerIntent);
         state.workspacePreviewMode = state.workspacePreviewRequired
           ? (trustedSessionPreview ? "continuation" : workspacePreviewMode(event?.messages, event?.prompt))
           : undefined;
@@ -12363,6 +12396,7 @@ export function createToolLoopGuard({
     },
     afterToolCall,
     previewInspectionTransition,
+    previewInspectionGuidance,
     toolResultPersist,
     beforeAgentFinalize,
     recoverWorkspacePreview,
