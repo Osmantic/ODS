@@ -171,7 +171,9 @@ test('rooted host paths, system and generic names, Playground spellings and esca
 
 test('no entry that exists at the host filesystem root is read as a new workspace project', t => {
   const hostRoot = path.parse(workspace(t)).root;
-  const names = fs.readdirSync(hostRoot).filter(name => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name));
+  // /workspace/ is the sandbox alias and /playground/ a Playground spelling
+  // (#6746) on every host; neither is a rooted project reading.
+  const names = fs.readdirSync(hostRoot).filter(name => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name) && !/^(?:workspace|playground)$/i.test(name));
   assert.ok(names.length > 0, hostRoot);
   for (const name of names) {
     const {root, state, call} = fixture(t);
