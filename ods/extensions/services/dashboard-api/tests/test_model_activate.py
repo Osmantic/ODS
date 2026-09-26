@@ -5710,6 +5710,65 @@ class TestModelActivateRollback:
         assert persisted["CTX_SIZE"] == "524288"
         assert persisted["MAX_CONTEXT"] == "524288"
 
+    def test_apple_native_activation_leaves_the_slot_layout_to_the_launcher(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        # Native macOS picks one slot or the shared-slot layout per model when
+        # LLAMA_PARALLEL is unset; activation used to pin it to 1.
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path, gpu_backend="apple")
+        )
+        env_path.write_text(env_path.read_text(encoding="utf-8") + "LLAMA_PARALLEL=1\n", encoding="utf-8")
+        llama_bin = install_dir / "bin" / "llama-server"
+        llama_bin.parent.mkdir(parents=True)
+        llama_bin.write_text("", encoding="utf-8")
+        lib_dir = install_dir / "lib"
+        lib_dir.mkdir(parents=True)
+        (lib_dir / "constants.sh").write_text("# test fixture\n", encoding="utf-8")
+        (lib_dir / "bridge-manager.sh").write_text("# test fixture\n", encoding="utf-8")
+        launched_envs = []
+
+        def fake_launch(runtime_env_path, *_args):
+            launched_envs.append(_mod.load_env(runtime_env_path))
+
+        def fake_readiness(*_args, **kwargs):
+            if kwargs.get("return_proof"):
+                return {
+                    "identity": "new-model.gguf",
+                    "contextLength": 4096,
+                    "contextVerified": True,
+                    "verifiedAt": "2026-09-26T00:00:00+00:00",
+                }
+            if kwargs.get("return_identity"):
+                return "new-model.gguf"
+            return True
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_configure_macos_llm_bridge", lambda _env_path: None)
+        monkeypatch.setattr(_mod, "_launch_native_llama_server", fake_launch)
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", fake_readiness)
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        assert len(launched_envs) == 1
+        persisted = _mod.load_env(env_path)
+        for env in (launched_envs[0], persisted):
+            assert "LLAMA_PARALLEL" not in env
+            assert env["LLAMA_ARG_FLASH_ATTN"] == "auto"
+            assert env["LLAMA_ARG_CACHE_TYPE_K"] == env["LLAMA_ARG_CACHE_TYPE_V"] == "f16"
+
     def test_apple_missing_native_binary_fails_before_config_mutation(
         self,
         tmp_path,

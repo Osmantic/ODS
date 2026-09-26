@@ -2,14 +2,16 @@
 # Resolve one qualified native model without evaluating registry data as shell.
 # Both installers and everyday restarts validate before stopping a live model.
 macos_resolve_checkpoint_args() {
-    # Also resolves speculative-decoding flags and the macOS defaults
+    # Also resolves --parallel (LLAMA_PARALLEL, or the default slot layout for
+    # the model at $4), speculative-decoding flags and the macOS defaults
     # (--ctx-checkpoints 32, --spec-type ngram-mod) against the runtime's
-    # --help. LLAMA_ARG_SPEC_TYPE itself is passed by the caller unchanged.
+    # --help. LLAMA_ARG_SPEC_TYPE itself is passed by the caller unchanged,
+    # and the caller passes no --parallel.
     # $3 is the --reasoning-format the caller mapped from LLAMA_REASONING. When
     # given, the caller leaves reasoning to this function: --reasoning on
     # runtimes that have it (b9014), else that --reasoning-format.
-    local install_dir="$1" binary="$2" reasoning_format="${3:-}" interval checkpoints cache_mib idle_seconds min_spacing fields_file field
-    local spec_type spec_default draft_n_max draft_type_k draft_type_v reasoning helper
+    local install_dir="$1" binary="$2" reasoning_format="${3:-}" model_path="${4:-}" interval checkpoints cache_mib idle_seconds min_spacing fields_file field
+    local spec_type spec_default draft_n_max draft_type_k draft_type_v reasoning parallel helper
     local -a reasoning_args=()
     MACOS_NATIVE_CHECKPOINT_ARGS=()
     interval="$(read_env_value "${install_dir}/.env" LLAMA_ARG_CHECKPOINT_EVERY_NT)"
@@ -23,6 +25,7 @@ macos_resolve_checkpoint_args() {
     draft_type_k="$(read_env_value "${install_dir}/.env" LLAMA_ARG_SPEC_DRAFT_TYPE_K)"
     draft_type_v="$(read_env_value "${install_dir}/.env" LLAMA_ARG_SPEC_DRAFT_TYPE_V)"
     reasoning="$(read_env_value "${install_dir}/.env" LLAMA_REASONING)"
+    parallel="$(read_env_value "${install_dir}/.env" LLAMA_PARALLEL)"
     helper="${install_dir}/installers/macos/lib/native-checkpoint-args.py"
     if [[ ! -f "$helper" ]]; then
         # Defaults are best effort; explicit settings must be qualified.
@@ -30,7 +33,8 @@ macos_resolve_checkpoint_args() {
             echo "The native runtime tuning validator is missing. Repair the ODS installation." >&2
             return 1
         fi
-        [[ -z "$reasoning_format" ]] || MACOS_NATIVE_CHECKPOINT_ARGS=(--reasoning-format "$reasoning_format")
+        MACOS_NATIVE_CHECKPOINT_ARGS=(--parallel "${parallel:-1}")
+        [[ -z "$reasoning_format" ]] || MACOS_NATIVE_CHECKPOINT_ARGS+=(--reasoning-format "$reasoning_format")
         return 0
     fi
     [[ -z "$reasoning_format" ]] || reasoning_args=(--reasoning-mode="$reasoning" --reasoning-format-fallback="$reasoning_format")
@@ -38,6 +42,7 @@ macos_resolve_checkpoint_args() {
     if ! "${ODS_PYTHON_CMD:-python3}" "$helper" \
         --binary "$binary" --interval="$interval" --checkpoints="$checkpoints" --cache-mib="$cache_mib" \
         --idle-seconds="$idle_seconds" --min-spacing="$min_spacing" \
+        --parallel="$parallel" --model="$model_path" \
         --explicit-spec-type="$spec_type" --spec-default="$spec_default" --draft-n-max="$draft_n_max" \
         --draft-type-k="$draft_type_k" --draft-type-v="$draft_type_v" \
         ${reasoning_args[@]+"${reasoning_args[@]}"} --apply-defaults > "$fields_file"; then

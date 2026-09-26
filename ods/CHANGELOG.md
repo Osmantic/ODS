@@ -131,6 +131,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--reasoning` switch, `LLAMA_REASONING` (default `off`) is passed as
   `--reasoning`, as Docker does. Without it, b9014 turned Qwen3.5 thinking on
   and put `<think>` blocks in replies.
+- Native macOS runs two llama-server slots in one unified KV cache
+  (`--parallel 2 --kv-unified --ctx-checkpoints 64 --cache-ram 0`) for hybrid
+  catalog models such as Qwen3.5 on Macs with at most 16 GB, when
+  `LLAMA_PARALLEL`, `LLAMA_ARG_CTX_CHECKPOINTS` and `LLAMA_ARG_CACHE_RAM` are
+  unset and llama.cpp b9014 is installed. Another client's request no longer
+  evicts the conversation in progress, and a new chat reuses the shared system
+  prompt. On the Mac mini M4 with Qwen3.5-9B at 64K context, a 27-call
+  session with another client's request in the middle, followed by a new
+  chat, fell from 361.7 s to 274.0 s. For that model the checkpoints can
+  reach 6.4 GiB, below the 9.6 GiB the old default's checkpoints and 8 GiB
+  RAM prompt cache could reach. Other Macs and models keep one slot. The
+  macOS launchers now take `--parallel` from the same helper, so the bootstrap
+  full-model swap gets the same slots as the others instead of llama.cpp's
+  automatic four, and dashboard model switches on macOS no longer write
+  `LLAMA_PARALLEL=1`.
 
 ### Fixed
 - Gemma 4 26B-A4B (`gemma4-26b-a4b-q4`) and Gemma 4 31B (`gemma4-31b-q4`)

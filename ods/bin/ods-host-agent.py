@@ -13123,11 +13123,15 @@ class AgentHandler(BaseHTTPRequestHandler):
                             updates[key] = str(value)
                 else:
                     updates.update({
-                        "LLAMA_PARALLEL": "1",
                         "LLAMA_ARG_FLASH_ATTN": "auto",
                         "LLAMA_ARG_CACHE_TYPE_K": "f16",
                         "LLAMA_ARG_CACHE_TYPE_V": "f16",
                     })
+                    # Native macOS chooses the slot layout per model when
+                    # LLAMA_PARALLEL is unset (installers/macos/lib/
+                    # native-checkpoint-args.py); writing 1 would pin one slot.
+                    if gpu_backend != "apple":
+                        updates["LLAMA_PARALLEL"] = "1"
                 remove_keys = {
                     "LLAMA_ARG_N_CPU_MOE",
                     "LLAMA_ARG_NO_CACHE_PROMPT",
@@ -13137,6 +13141,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "LLAMA_ARG_SPEC_TYPE",
                     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
                 }
+                if not runtime_profile and gpu_backend == "apple":
+                    remove_keys.add("LLAMA_PARALLEL")
                 if gpu_assignment_plan:
                     remove_keys.update(gpu_assignment_plan.get("env_removals") or [])
                 remove_keys.difference_update(updates)
@@ -17921,14 +17927,17 @@ def _native_llama_tuning_arguments(
     *,
     defaults: bool = True,
     reasoning_format: str = "",
+    model_path: Path | None = None,
 ) -> list[str]:
     """Qualify optional tuning before disrupting an existing listener.
 
     On macOS this also spells the speculative draft flags for the selected
     runtime and, when ``defaults`` is true, adds the macOS defaults it
-    supports (``--ctx-checkpoints 32``; ``--spec-type ngram-mod`` unless
-    LLAMA_ARG_SPEC_TYPE is set or LLAMA_SPEC_TYPE=none). Registered model
-    profiles pass ``defaults=False`` and keep their own argument list.
+    supports (``--parallel`` from LLAMA_PARALLEL or the shared-slot layout
+    for ``model_path``; ``--ctx-checkpoints 32``; ``--spec-type ngram-mod``
+    unless LLAMA_ARG_SPEC_TYPE is set or LLAMA_SPEC_TYPE=none), and the
+    caller must not pass --parallel itself. Registered model profiles pass
+    ``defaults=False`` and keep their own argument list.
 
     With ``reasoning_format`` (the --reasoning-format mapped from
     LLAMA_REASONING) the result also carries the reasoning flags, and the
@@ -17949,7 +17958,10 @@ def _native_llama_tuning_arguments(
         ("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT", "--min-spacing"),
     ) + _MACOS_QUALIFIED_DRAFT_KEYS
     explicit = any(env.get(key, "").strip() for key, _ in tuning_keys)
-    fallback = ["--reasoning-format", reasoning_format] if defaults and reasoning_format else []
+    parallel = env.get("LLAMA_PARALLEL", "").strip()
+    fallback = ["--parallel", parallel or "1"] if defaults else []
+    if defaults and reasoning_format:
+        fallback += ["--reasoning-format", reasoning_format]
     if not explicit and not defaults:
         return []
     if not tuning.is_file():
@@ -17960,6 +17972,8 @@ def _native_llama_tuning_arguments(
     command.extend(option + "=" + env.get(key, "").strip() for key, option in tuning_keys)
     command.append("--explicit-spec-type=" + env.get("LLAMA_ARG_SPEC_TYPE", "").strip())
     if defaults:
+        command.append("--parallel=" + parallel)
+        command.append("--model=" + str(model_path or ""))
         command.append("--spec-default=" + env.get("LLAMA_SPEC_TYPE", "").strip())
         if reasoning_format:
             command.append("--reasoning-mode=" + env.get("LLAMA_REASONING", "").strip())
@@ -18064,15 +18078,17 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         "--alias", gguf_file,
         "--ctx-size", ctx_size,
         "--n-gpu-layers", gpu_layers,
-        "--parallel", env.get("LLAMA_PARALLEL", "1"),
     ]
-    # On macOS the default runtime gets its reasoning flags from the tuning
-    # helper below (--reasoning on b9014, where --reasoning-format none put an
-    # empty think block into every reply). Everything else passes the format.
-    helper_reasoning = platform.system() == "Darwin" and profile is None
-    if not helper_reasoning and platform.system() == "Windows" and profile is None:
+    # On macOS the default runtime gets --parallel (LLAMA_PARALLEL or the
+    # shared-slot layout for this model) and its reasoning flags from the
+    # tuning helper below (--reasoning on b9014, where --reasoning-format none
+    # put an empty think block into every reply). Everything else passes both.
+    helper_defaults = platform.system() == "Darwin" and profile is None
+    if not helper_defaults:
+        args.extend(["--parallel", env.get("LLAMA_PARALLEL", "1")])
+    if not helper_defaults and platform.system() == "Windows" and profile is None:
         args.extend(_windows_llama_reasoning_arguments(llama_bin, reasoning, reasoning_fmt))
-    elif not helper_reasoning:
+    elif not helper_defaults:
         args.extend(["--reasoning-format", reasoning_fmt])
     args.append("--metrics")
     optional_args = {
@@ -18097,7 +18113,8 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         env,
         llama_bin,
         defaults=profile is None,
-        reasoning_format=reasoning_fmt if helper_reasoning else "",
+        reasoning_format=reasoning_fmt if helper_defaults else "",
+        model_path=model_path,
     ))
     if _normalize_key(env.get("LLAMA_ARG_NO_CACHE_PROMPT")) not in {"", "0", "false", "off", "no"}:
         args.append("--no-cache-prompt")

@@ -5673,11 +5673,12 @@ class TestModelActivationModeAndMacosBridge:
             "4096",
             "--n-gpu-layers",
             "auto",
+            "--metrics",
+            # No tuning helper in this install: one slot and the reasoning
+            # format arrive through its fallback instead of the helper's
+            # slot layout and --reasoning (b9014).
             "--parallel",
             "1",
-            "--metrics",
-            # No tuning helper in this install: the reasoning format arrives
-            # through its fallback instead of --reasoning (b9014).
             "--reasoning-format",
             "none",
         ]

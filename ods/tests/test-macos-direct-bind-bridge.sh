@@ -572,7 +572,6 @@ FAKE_PYTHON
         ENV_ODS_MACOS_HOST_GATEWAY="$TEST_GATEWAY"
         ENV_ODS_MODE="local"
         ENV_LLAMA_REASONING="off"
-        ENV_LLAMA_PARALLEL="${TEST_PARALLEL:-}"
         unset ENV_LLAMA_ARG_FLASH_ATTN ENV_LLAMA_ARG_CACHE_TYPE_K \
             ENV_LLAMA_ARG_CACHE_TYPE_V ENV_LLAMA_ARG_N_CPU_MOE \
             ENV_LLAMA_ARG_SPEC_TYPE ENV_LLAMA_ARG_SPEC_DRAFT_N_MAX
@@ -585,6 +584,8 @@ FAKE_PYTHON
             ODS_MACOS_HOST_GATEWAY) printf '%s\n' "$TEST_GATEWAY" ;;
             ODS_MACOS_VM_IP) printf '192.168.106.2\n' ;;
             OLLAMA_PORT|ODS_NATIVE_LLAMA_PORT) printf '8080\n' ;;
+            # The launcher reads LLAMA_PARALLEL from .env like the other llama.cpp keys.
+            LLAMA_PARALLEL) printf '%s\n' "${TEST_PARALLEL:-}" ;;
             *) printf '\n' ;;
         esac
     }
