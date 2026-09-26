@@ -157,7 +157,11 @@ function Assert-ODSWslTask($Identity) {
     if (@($task.Actions).Count -ne 1 -or $task.Actions[0].Execute -ine $expectedExe -or
         $task.Actions[0].Arguments -cne (Get-ODSWslTaskArguments $Identity) -or @($task.Triggers | Where-Object { $null -ne $_ }).Count -ne 0 -or
         $principalSid -ine $Identity.ownerSid -or $task.Principal.RunLevel -ne 'Limited' -or
-        $task.Settings.ExecutionTimeLimit -ne 'PT0S' -or $task.Settings.RestartCount -ne 0) { throw 'WSL lifetime task identity changed' }
+        $task.Settings.ExecutionTimeLimit -ne 'PT0S' -or $task.Settings.RestartCount -ne 0) {
+        # Never adopt or replace a task this code did not register: say which
+        # one it is and how the owner removes it if nothing else uses it.
+        throw "WSL lifetime task identity changed: scheduled task $($Identity.taskName) does not match this ODS installation ($($Identity.distro), $($Identity.installRoot)); it was created by another ODS version or modified. If no other ODS installation uses it, remove it with: Unregister-ScheduledTask -TaskName '$($Identity.taskName)' -Confirm:`$false then rerun."
+    }
     $task
 }
 

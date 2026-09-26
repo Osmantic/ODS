@@ -49,6 +49,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 _SWITCHBOARD_BIN_DIR = str(Path(__file__).resolve().parent)
 if _SWITCHBOARD_BIN_DIR not in sys.path:
     sys.path.insert(0, _SWITCHBOARD_BIN_DIR)
+from model_switchboard.lemonade_transport import request as _container_lemonade_request
+
 try:
     from model_switchboard import state as _switchboard_state
 except Exception:  # pragma: no cover - import environment dependent
@@ -611,6 +613,8 @@ _SWITCHBOARD_ROUTE_ENV_KEYS = (
     "LLM_MODEL",
     "LEMONADE_MODEL",
     "LEMONADE_BASE_URL",
+    "LEMONADE_CONTAINER_BASE_URL",
+    "LEMONADE_HOST_TRANSPORT",
     "LEMONADE_API_BASE_PATH",
     "LEMONADE_EXTERNAL",
     "LLM_BACKEND",
@@ -5381,12 +5385,24 @@ def _resolve_agent_bind_addr(
         return "127.0.0.1"
 
     if _running_under_wsl(system_name):
+        # A leftover native docker0 can have the same address as Desktop's
+        # bridge. Bindability alone does not identify the active daemon.
+        try:
+            result = subprocess.run(
+                ["docker", "info", "--format", "{{.OperatingSystem}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("Cannot identify the WSL Docker daemon for the host-agent route") from exc
+        if result.returncode != 0 or not result.stdout.strip():
+            raise RuntimeError("Cannot identify the WSL Docker daemon for the host-agent route")
+        if result.stdout.strip() == "Docker Desktop":
+            return "127.0.0.1"
         # A native Docker daemon inside WSL owns its default bridge locally,
         # and Compose's host-gateway mapping resolves to that address. Bind
         # only that scoped bridge so dashboard-api can reach the agent without
-        # exposing it on WSL's LAN-facing interface. Docker Desktop reports a
-        # bridge gateway from a different network namespace; the bindability
-        # check preserves its existing loopback-forwarding path.
+        # exposing it on WSL's LAN-facing interface. Desktop was identified
+        # above, before a leftover local interface can impersonate its bridge.
         bridge_gateway = _detect_docker_bridge_gateway()
         if _local_bind_address_available(bridge_gateway):
             return bridge_gateway
@@ -11379,7 +11395,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 )
                 return
             observed = _read_external_lemonade_observation(env)
-        except (OSError, ValueError, RuntimeError, urllib_error.URLError):
+        except (OSError, ValueError, RuntimeError, urllib_error.URLError, subprocess.TimeoutExpired):
             # Neither the configured origin nor upstream response is safe to
             # reflect into an authenticated browser-visible error.
             json_response(
@@ -13960,6 +13976,26 @@ def _lemonade_runtime_base_url(env: dict) -> str:
     return f"http://127.0.0.1:{str(env.get('OLLAMA_PORT') or '8080')}"
 
 
+def _lemonade_uses_container_transport(env: dict) -> bool:
+    """Use the installer's explicit network context, never a probe fallback."""
+    return (
+        _external_lemonade_runtime(env)
+        and env.get("LEMONADE_HOST_TRANSPORT", "direct") == "model-router"
+    )
+
+
+def _lemonade_container_body(env: dict, path: str, *, payload=None, timeout=5) -> str:
+    # WSL localhost is not Windows localhost. Probe from the same owned
+    # container and endpoint that will serve inference, retaining Windows'
+    # loopback-only listener and the normal identity/completion proof.
+    return _container_lemonade_request(
+        INSTALL_DIR, _runtime_lemonade_api_base(env), path,
+        payload=payload,
+        api_key=str(env.get("LITELLM_LEMONADE_API_KEY") or env.get("LEMONADE_API_KEY") or ""),
+        timeout=timeout,
+    )
+
+
 def _lemonade_catalog_values(value: object):
     """Yield string leaves from Lemonade checkpoint metadata."""
     if isinstance(value, str):
@@ -14060,26 +14096,25 @@ def _resolve_lemonade_model_id(
         return f"extra.{filename}"
     for path, timeout in (("/api/v1/models", 5), ("/api/v1/health", 5)):
         try:
-            result = subprocess.run(
-                [
-                    "curl", "-sf", "--max-time", str(timeout),
-                    f"{base_url}{path}",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=timeout + 5,
-            )
+            if _lemonade_uses_container_transport(env):
+                body = _lemonade_container_body(env, path.removeprefix("/api/v1"), timeout=timeout)
+            else:
+                result = subprocess.run(
+                    ["curl", "-sf", "--max-time", str(timeout), f"{base_url}{path}"],
+                    capture_output=True, text=True, timeout=timeout + 5,
+                )
+                if result.returncode != 0:
+                    continue
+                body = result.stdout
         except (OSError, subprocess.TimeoutExpired):
             continue
-        if result.returncode != 0:
-            continue
         if path.endswith("/models"):
-            live_id = _lemonade_catalog_model_id(result.stdout, filename)
+            live_id = _lemonade_catalog_model_id(body, filename)
             if live_id:
                 return live_id
             continue
         try:
-            health = json.loads(result.stdout or "{}")
+            health = json.loads(body or "{}")
         except (json.JSONDecodeError, TypeError):
             continue
         if isinstance(health, dict):
@@ -14170,15 +14205,19 @@ def _live_runtime_has_model(env: dict, gguf_file: str) -> bool | None:
         else f"http://{host}:{port}/v1/models"
     )
     try:
-        result = subprocess.run(
-            ["curl", "-s", "--max-time", "5", url],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            return None
-        data = json.loads(result.stdout or "{}")
+        if is_lemonade and _lemonade_uses_container_transport(env):
+            body = _lemonade_container_body(env, "/health")
+        else:
+            result = subprocess.run(
+                ["curl", "-s", "--max-time", "5", url],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return None
+            body = result.stdout
+        data = json.loads(body or "{}")
     except (json.JSONDecodeError, OSError, subprocess.TimeoutExpired):
         return None
     body = json.dumps(data)
@@ -14441,6 +14480,9 @@ def _read_external_lemonade_observation(env: dict) -> dict:
     )
     payloads = []
     for path in ("/api/v1/health", "/api/v1/models", "/api/v1/health"):
+        if _lemonade_uses_container_transport(env):
+            payloads.append(json.loads(_lemonade_container_body(env, path.removeprefix("/api/v1"))))
+            continue
         request = urllib_request.Request(
             f"{base_url}{path}", headers={"Accept": "application/json"}
         )
@@ -14747,6 +14789,17 @@ def _query_lemonade_runtime_context_length(
     base_url = _lemonade_runtime_base_url(env)
     if not base_url:
         return None
+    if _lemonade_uses_container_transport(env):
+        try:
+            body = _lemonade_container_body(env, "/health")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning("Lemonade context probe unavailable (%s)", type(exc).__name__)
+            return None
+        return _lemonade_loaded_context_length(
+            body,
+            expected_gguf_file=expected_gguf_file,
+            expected_model_id=expected_model_id,
+        )
     try:
         result = subprocess.run(
             [
@@ -14917,6 +14970,7 @@ def _chat_completion_ready(
     base_url: str = "",
     disable_thinking: bool = False,
     require_visible_content: bool = False,
+    runtime_env: dict | None = None,
 ) -> bool:
     """Require a meaningful completion and, when requested, its model identity."""
     prefix = "/" + api_prefix.strip("/")
@@ -14950,16 +15004,21 @@ def _chat_completion_ready(
             command.extend(["-H", "@-"])
             header_input = f"Authorization: Bearer {api_key}\n"
         command.extend(["-d", payload])
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            input=header_input,
-            timeout=35,
-        )
-        if result.returncode != 0:
-            return False
-        response = json.loads(result.stdout or "{}")
+        if runtime_env and _lemonade_uses_container_transport(runtime_env):
+            body = _lemonade_container_body(
+                runtime_env, "/chat/completions", payload=payload_body, timeout=30)
+        else:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                input=header_input,
+                timeout=35,
+            )
+            if result.returncode != 0:
+                return False
+            body = result.stdout
+        response = json.loads(body or "{}")
         if not _meaningful_completion(
             response,
             include_reasoning=not require_visible_content,
@@ -15114,6 +15173,7 @@ def _send_lemonade_warmup(
     attempt: int,
     *,
     base_url: str = "",
+    runtime_env: dict | None = None,
 ) -> bool:
     """Send a warm-up chat completion to trigger Lemonade on-demand model load.
 
@@ -15130,6 +15190,9 @@ def _send_lemonade_warmup(
     })
     logger.info("Sending warm-up request for %s (attempt %d/60)", model_id, attempt + 1)
     try:
+        if runtime_env and _lemonade_uses_container_transport(runtime_env):
+            _lemonade_container_body(runtime_env, "/chat/completions", payload=json.loads(payload), timeout=30)
+            return True
         result = subprocess.run(
             ["curl", "-sf", "--max-time", "30", "-X", "POST", url,
              "-H", "Content-Type: application/json", "-d", payload],
@@ -15138,7 +15201,7 @@ def _send_lemonade_warmup(
         if result.returncode == 0:
             logger.info("Warm-up request accepted — model is loading")
             return True
-    except subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         pass
     return False
 
@@ -15296,7 +15359,9 @@ def _wait_for_model_readiness(
             return fast_result
         initial_delay = max(0.0, float(initial_delay) - (time.monotonic() - fast_started))
 
-    logger.info("Waiting for requested model identity %s at %s", gguf_file, identity_url)
+    probe_options = {"runtime_env": env} if is_lemonade and _lemonade_uses_container_transport(env) else {}
+    logger.info("Waiting for requested model identity %s via %s", gguf_file,
+                "the configured model-router transport" if probe_options else identity_url)
     warmup_sent = False
     if cancel_event is not None and cancel_event.is_set():
         logger.info("Model readiness cancelled before probing %s", gguf_file)
@@ -15322,13 +15387,16 @@ def _wait_for_model_readiness(
         runtime_context = 0
         runtime_checkpoint_identity = ""
         try:
-            result = subprocess.run(
-                ["curl", "-s", "--max-time", "5", identity_url],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            body = result.stdout.strip()
+            if is_lemonade and _lemonade_uses_container_transport(env):
+                body = _lemonade_container_body(env, "/health")
+            else:
+                result = subprocess.run(
+                    ["curl", "-s", "--max-time", "5", identity_url],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                body = result.stdout.strip()
             # The installer may select its bootstrap model during the HTTP
             # probe. Do not warm or complete the superseded native route.
             if env_still_current is not None and not env_still_current():
@@ -15363,6 +15431,7 @@ def _wait_for_model_readiness(
                         lemonade_model_id,
                         attempt,
                         base_url=runtime_base_url,
+                        **probe_options,
                     )
             else:
                 runtime_identity = _llama_loaded_model_identity(
@@ -15424,6 +15493,7 @@ def _wait_for_model_readiness(
                 base_url=runtime_base_url if is_lemonade else "",
                 disable_thinking=is_lemonade,
                 require_visible_content=is_lemonade,
+                **probe_options,
             ):
                 logger.info("Model %s ready after %d attempts", gguf_file, attempt + 1)
                 if return_proof:
@@ -15445,6 +15515,15 @@ def _wait_for_model_readiness(
                     bool(runtime_identity),
                     f": {diagnosis['reason']}" if diagnosis.get("reason") else "",
                 )
+        except ValueError:
+            diagnosis["reason"] = "The configured model proof transport is invalid"
+            diagnosis["final"] = True
+            logger.warning("Model proof transport configuration is invalid")
+            break
+        except OSError as error:
+            diagnosis["reason"] = str(error)
+            if attempt % 6 == 0:
+                logger.info("Model route probe unavailable: %s", error)
         except subprocess.TimeoutExpired:
             if attempt % 6 == 0:
                 logger.info("Model readiness attempt %d timed out", attempt + 1)
@@ -19023,7 +19102,7 @@ def main():
     # default. Native Linux prefers the ods-network gateway so dashboard-api
     # containers can reach the agent without exposing it to the LAN. Native
     # Docker inside WSL binds its locally owned default bridge; Docker Desktop
-    # keeps the loopback path because its reported bridge is not locally bindable.
+    # is identified before interface probing and uses WSL loopback forwarding.
     # The bridge gateway fallback keeps partial/older native-Linux installs
     # reachable until phase 11 can restart the service after ods-network exists.
     try:

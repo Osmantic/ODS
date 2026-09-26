@@ -48,6 +48,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   an explicitly configured endpoint. The Linux installer runs on the same
   console (download progress and UTF-8 output stay visible), and warnings WSL
   prints on stderr no longer turn a passing check into a failure.
+- Windows: setup now needs only the pasted PowerShell command. It checks disk
+  space and BIOS virtualization first. It installs Docker Desktop with winget
+  when missing (one restart shared with WSL) and continues by itself after
+  that restart through a one-time per-user `RunOnce` entry. For a new Ubuntu
+  it asks for the Linux username and password in PowerShell instead of the
+  Ubuntu window. It starts Docker Desktop and, when Docker is not connected to
+  the selected Ubuntu, shows the WSL integration setting to turn on and waits
+  for it; it never edits Docker's settings or restarts Docker. It finally opens
+  Portal and adds an
+  **ODS Portal** desktop shortcut. `-NonInteractive` still installs nothing.
+  A leftover `ODS-WSL-*` scheduled task from another ODS version is named in
+  the error together with the command that removes it.
 - Linux on WSL: an NVIDIA driver older than 570 stops with Windows update
   instructions instead of installing `nvidia-driver-*` inside the distro,
   which breaks WSL GPU passthrough.
@@ -56,13 +68,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   proxy translates, and the installer creates those empty targets before Pixel
   Edge starts. The daemon-side `/mnt/host/wsl/...` path stopped every fresh
   install with "is mounted on / but it is not a shared mount".
-- Linux on WSL with Docker Desktop: the Pixel runtime bridge accepts Docker's
-  bind of its own empty runtime targets and checks the top mount's propagation.
-  Bridge refusals now explain their cause, and the installer shows the service
-  journal when startup or its active-state check fails.
-- Installer: Full Stack, Core Only and Custom preserve explicit `--hermes`,
-  `--no-hermes`, `--openclaw` and `--no-openclaw` choices. Custom skips agent
-  questions already answered by those flags, including the Windows Pixel path.
+- The WSL runtime bridge now stacks on the bind Docker Desktop's WSL proxy
+  places on each Pixel Edge bind source; it refused that bind, so every fresh
+  WSL install stopped at "Could not install and start the private Pixel
+  ingress". It also drops its own stale bind after systemd recreates a runtime
+  directory, names the check that refused in its journal, and the installer
+  prints that journal when the bridge does not start.
+- The installer menu presets (Full Stack, Core Only) no longer override an
+  explicit `--hermes` or `--no-hermes`. The Windows Pixel path passes
+  `--no-hermes`; choosing Full Stack downloaded and enabled Hermes anyway.
+- Windows (`install.ps1`) with an AMD GPU now runs the model on the GPU through
+  Lemonade Server on Windows instead of on the CPU in WSL. Setup detects the
+  GPU and its memory in Windows, picks the model as the native installer does,
+  installs the pinned Lemonade for the user after asking, downloads the model
+  with checksum verification, runs Lemonade on 127.0.0.1 from a sign-in
+  scheduled task (`ODSLemonadeRuntime`), loads the model, and passes the route
+  to the Linux installer. `install-core.sh` gains `--lemonade-model`,
+  `--lemonade-gpu-name` and `--lemonade-gpu-vram-mb`; the hardware scan shows
+  that GPU instead of "None". An existing Lemonade (including 10.7+) is reused,
+  and Lemonade moves to the next free port when another program holds 8080.
+- Windows/WSL AMD setup now selects `--lemonade-host-transport model-router`.
+  The WSL host agent verifies the Windows Lemonade model through the running
+  model-router container belonging to this installation, where
+  `host.docker.internal` reaches Windows. This avoids probing WSL's own
+  localhost while keeping Lemonade bound to Windows loopback. Model identity,
+  context and completion checks still decide readiness; this transport does
+  not enable LAN access or cloud inference. Other Lemonade installs keep the
+  default `direct` transport.
+- On WSL, the host agent identifies Docker Desktop before choosing its bind
+  address. A leftover native `docker0` bridge could have the same gateway IP
+  as Docker Desktop and make the agent listen where ODS containers could not
+  reach it. Docker Desktop now selects WSL loopback regardless of that stale
+  bridge, for GPU and CPU installations alike.
+- The Windows AMD startup task restores and verifies the selected Lemonade
+  model and context at each sign-in, including Lemonade 10.0. A healthy API
+  without a loaded model no longer counts as completed setup. The task keeps
+  its launcher and configuration in the user's ODS directory instead of a
+  temporary installer checkout.
+- Re-running Windows AMD setup stops only the verified ODS task and its
+  process descendants, including cached llama.cpp workers. Other Lemonade
+  instances are preserved. Both the former direct task and the Lemonade
+  10.7 task launcher migrate to the durable launcher.
+- Portal reads the loaded Windows/WSL Lemonade model from the Linux host
+  agent's verified external-model observation instead of calling the
+  Windows-only model-status endpoint on that Linux agent.
+- Explicit Hermes and OpenClaw flags now take precedence in the Custom
+  feature menu as well as presets. The Windows Pixel path no longer asks to
+  enable agents that its command line explicitly disabled.
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
   file. The 48 other re-pinned models download the same bytes: each sha256 was

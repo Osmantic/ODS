@@ -646,6 +646,13 @@ class TestProgressWrites:
 
 class TestResolveAgentBindAddr:
 
+    @pytest.fixture(autouse=True)
+    def native_daemon_info(self, monkeypatch):
+        monkeypatch.setattr(
+            _mod.subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "Ubuntu 24.04 LTS\n", ""),
+        )
+
     def test_explicit_bind_wins(self):
         assert _resolve_agent_bind_addr({"ODS_AGENT_BIND": "0.0.0.0"}, "Linux") == "0.0.0.0"
         assert _resolve_agent_bind_addr({"ODS_AGENT_BIND": "192.168.1.10"}, "Linux") == "192.168.1.10"
@@ -716,6 +723,35 @@ class TestResolveAgentBindAddr:
         monkeypatch.setattr(_mod, "_local_bind_address_available", lambda _address: False)
 
         assert _resolve_agent_bind_addr({}, "Linux") == "127.0.0.1"
+
+    def test_wsl_desktop_ignores_leftover_bindable_native_bridge(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args: True)
+        monkeypatch.setattr(_mod, "_detect_docker_bridge_gateway", lambda: "172.17.0.1")
+        monkeypatch.setattr(_mod, "_local_bind_address_available", lambda _address: True)
+        monkeypatch.setattr(
+            _mod.subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "Docker Desktop\n", ""),
+        )
+        assert _resolve_agent_bind_addr({}, "Linux", require_ods_network=True) == "127.0.0.1"
+
+    @pytest.mark.parametrize("returncode,output", [(1, ""), (0, "")])
+    def test_wsl_refuses_unknown_daemon_route(self, monkeypatch, returncode, output):
+        monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args: True)
+        monkeypatch.setattr(
+            _mod.subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], returncode, output, ""),
+        )
+        with pytest.raises(RuntimeError, match="Cannot identify the WSL Docker daemon"):
+            _resolve_agent_bind_addr({}, "Linux", require_ods_network=True)
+
+    @pytest.mark.parametrize("error", [OSError("missing docker"), subprocess.TimeoutExpired("docker", 10)])
+    def test_wsl_daemon_io_failure_is_actionable(self, monkeypatch, error):
+        monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args: True)
+        def fail(*args, **kwargs):
+            raise error
+        monkeypatch.setattr(_mod.subprocess, "run", fail)
+        with pytest.raises(RuntimeError, match="Cannot identify the WSL Docker daemon"):
+            _resolve_agent_bind_addr({}, "Linux", require_ods_network=True)
 
     def test_linux_falls_back_to_bridge_gateway(self, monkeypatch):
         monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args, **_kwargs: False)

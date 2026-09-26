@@ -99,9 +99,18 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
 ```
 
-Prerequisites: Docker must be installed and running. Start in a **normal, non-Administrator PowerShell window**. The installer offers WSL feature preparation (Windows administrator approval) and Ubuntu-24.04 installation when needed. Restart if requested, then rerun the same command; there is no automatic reboot. Ubuntu first-run setup asks you to create a Linux user/password.
+Linux and macOS: Docker must be installed and running.
 
-Before installing ODS, the script checks WSL2, a non-root Ubuntu user, systemd, and Docker/Compose inside Ubuntu. Enable Docker Desktop's WSL2 engine and **Settings > Resources > WSL Integration** for that distribution. Missing prerequisites stop setup with instructions. It then runs the Linux installer with **`--pixel --no-hermes --no-openclaw`**, never falling back to Hermes or the native Windows installer. Select an existing distribution with `.\install.ps1 -Distro Ubuntu` (names from `wsl -l -v`).
+Windows: open a **normal PowerShell window** (not "Run as administrator"), paste the block, and answer the prompts. Nothing else needs to be installed first. The installer:
+
+1. Checks free disk space (40 GB) and that hardware virtualization is on.
+2. Offers to enable WSL2 and install Docker Desktop with winget. Windows asks for administrator permission, then **one restart**; setup continues by itself after you sign in again.
+3. Offers to download Ubuntu 24.04 and asks you, in PowerShell, for a new Ubuntu username and password.
+4. Starts Docker Desktop and checks that it is connected to Ubuntu. If not, it shows the one setting to turn on in Docker Desktop and continues as soon as it works.
+5. Installs ODS inside Ubuntu with **`--pixel --no-hermes --no-openclaw`**. When Ubuntu asks for your `[sudo] password`, type the Ubuntu password; nothing appears while you type.
+6. Verifies Pixel and Portal, then opens Portal in your browser and adds an **ODS Portal** shortcut to your desktop.
+
+Each step asks before changing anything and stops with instructions if it cannot finish; rerun the same command after fixing it. There is no fallback to Hermes or the native Windows installer. On NVIDIA machines, update the Windows driver to 570 or newer first. To use an existing distribution, add `-Distro <name>` (names from `wsl -l -v`).
 
 Existing native Windows installations are not automatically migrated or deleted; see [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md#existing-native-windows-installations) before switching.
 
@@ -112,7 +121,7 @@ a stable release or audited commit manually.
 
 Windows users should not run the `curl ... | bash` command from PowerShell. The PowerShell block above downloads the public ODS source ZIP and delegates installation to Ubuntu/WSL2. For more detail, see the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md).
 
-After the installer completes successfully, open **http://localhost:3001** for the **Portal dashboard** (or the dashboard URL printed by the installer). **http://localhost:3000** is Open WebUI, a separate interface. Verify that Portal is available and send a message; a loaded dashboard alone does not prove Pixel is ready. If installation fails or Portal is degraded, follow the [Windows Quickstart checks](ods/docs/WINDOWS-QUICKSTART.md#verify-portalpixel) before proceeding.
+After the installer completes successfully, Portal opens at **http://localhost:3001/pixel** (the Windows installer opens it for you and prints the exact URL). **http://localhost:3000** is Open WebUI, a separate interface. Verify that Portal is available and send a message; a loaded dashboard alone does not prove Pixel is ready. If installation fails or Portal is degraded, follow the [Windows Quickstart checks](ods/docs/WINDOWS-QUICKSTART.md#verify-portalpixel) before proceeding.
 
 WSL GPU access must be checked separately. NVIDIA needs a supported Windows driver and GPU access inside WSL/Docker. A working AMD/Lemonade server on Windows does not automatically become an ODS-managed WSL backend. Use a supported backend detected inside WSL, CPU, or an explicitly configured reachable model endpoint; see the [WSL2 GPU guide](ods/docs/WINDOWS-WSL2-GPU-GUIDE.md).
 
@@ -224,10 +233,9 @@ cd ODS/ods
 <details>
 <summary><b>Windows (PowerShell)</b></summary>
 
-Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend enabled.
-**Install Docker Desktop first and make sure it is running before you start.**
+The installer prepares WSL2, Ubuntu and [Docker Desktop](https://www.docker.com/products/docker-desktop/) when they are missing; nothing needs to be installed first.
 
-Open a normal **PowerShell** session and run:
+Open a normal **PowerShell** session (not "Run as administrator") and run:
 
 ```powershell
 $ProgressPreference = "SilentlyContinue"

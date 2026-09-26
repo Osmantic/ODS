@@ -806,6 +806,94 @@ class TestGetLlamaMetrics:
 class TestGetLoadedModel:
 
     @pytest.mark.asyncio
+    async def test_wsl_lemonade_uses_live_transport_marker_and_verified_observation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("config.INSTALL_DIR", str(tmp_path))
+        monkeypatch.setenv("LEMONADE_HOST_TRANSPORT", "direct")
+        (tmp_path / ".env").write_text(
+            "AMD_INFERENCE_LOCATION=host\nLEMONADE_HOST_TRANSPORT=model-router\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("helpers.LLM_BACKEND", "lemonade")
+        monkeypatch.setattr("helpers.SERVICES", {})
+        agent = AsyncMock(return_value={
+            "status": "verified", "modelId": " extra.Qwen3.5-9B-Q4_K_M.gguf ",
+            "contextLength": 65536, "backend": "vulkan",
+        })
+        monkeypatch.setattr("helpers.request_agent_json", agent)
+        client = AsyncMock(side_effect=AssertionError("No direct or catalog fallback"))
+        monkeypatch.setattr("helpers._get_httpx_client", client)
+
+        assert await get_loaded_model() == "extra.Qwen3.5-9B-Q4_K_M.gguf"
+        agent.assert_awaited_once_with("GET", "/v1/model/external-observation", timeout=6)
+        client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("observation", [
+        None, [], "verified", {},
+        {"status": "ok", "modelId": "stale-model"},
+        {"status": "pending", "modelId": "stale-model"},
+        {"modelId": "stale-model"},
+        {"status": "verified"},
+        {"status": "verified", "modelId": None},
+        {"status": "verified", "modelId": ""},
+        {"status": "verified", "modelId": " \t\n "},
+        {"status": "verified", "modelId": 123},
+        {"status": "verified", "modelId": ["stale-model"]},
+    ])
+    async def test_wsl_lemonade_rejects_unverified_or_invalid_identity(self, monkeypatch, observation):
+        monkeypatch.setattr("helpers.LLM_BACKEND", "lemonade")
+        monkeypatch.setattr("helpers.read_live_env_value", lambda key: {
+            "AMD_INFERENCE_LOCATION": "host", "LEMONADE_HOST_TRANSPORT": "model-router",
+        }.get(key, ""))
+        agent = AsyncMock(return_value=observation)
+        monkeypatch.setattr("helpers.request_agent_json", agent)
+        client = AsyncMock(side_effect=AssertionError("No direct or catalog fallback"))
+        monkeypatch.setattr("helpers._get_httpx_client", client)
+
+        assert await get_loaded_model() is None
+        agent.assert_awaited_once_with("GET", "/v1/model/external-observation", timeout=6)
+        client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["timeout", "unavailable", "http-error"])
+    async def test_wsl_lemonade_never_reuses_identity_after_failed_observation(self, monkeypatch, failure):
+        from host_agent_client import AgentHTTPError, AgentTimeout, AgentUnavailable
+
+        errors = {
+            "timeout": AgentTimeout("fixture timeout"),
+            "unavailable": AgentUnavailable("fixture unavailable"),
+            "http-error": AgentHTTPError(503, "fixture unavailable"),
+        }
+        monkeypatch.setattr("helpers.LLM_BACKEND", "lemonade")
+        monkeypatch.setattr("helpers.read_live_env_value", lambda key: {
+            "AMD_INFERENCE_LOCATION": "host", "LEMONADE_HOST_TRANSPORT": "model-router",
+        }.get(key, ""))
+        agent = AsyncMock(side_effect=[
+            {"status": "verified", "modelId": "previous-model"}, errors[failure],
+        ])
+        monkeypatch.setattr("helpers.request_agent_json", agent)
+        client = AsyncMock(side_effect=AssertionError("No direct or catalog fallback"))
+        monkeypatch.setattr("helpers._get_httpx_client", client)
+
+        assert await get_loaded_model() == "previous-model"
+        assert await get_loaded_model() is None
+        assert agent.await_count == 2
+        client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("transport", ["", "direct"])
+    async def test_native_host_lemonade_keeps_legacy_status_route(self, monkeypatch, transport):
+        monkeypatch.setattr("helpers.LLM_BACKEND", "lemonade")
+        monkeypatch.setattr("helpers.read_live_env_value", lambda key: {
+            "AMD_INFERENCE_LOCATION": "host", "LEMONADE_HOST_TRANSPORT": transport,
+        }.get(key, ""))
+        agent = AsyncMock(return_value={"health": {"status": "ok", "model_loaded": "native-model"}})
+        monkeypatch.setattr("helpers.request_agent_json", agent)
+
+        assert await get_loaded_model() == "native-model"
+        agent.assert_awaited_once_with("GET", "/v1/llm/status", timeout=6)
+
+    @pytest.mark.asyncio
     async def test_generic_external_lemonade_uses_loaded_health_not_first_available(self, monkeypatch):
         monkeypatch.setattr("helpers.SERVICES", {
             "llama-server": {"host": "host.docker.internal", "port": 8000},

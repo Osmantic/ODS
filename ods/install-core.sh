@@ -141,7 +141,13 @@ ODS_MODE_EXPLICIT=false
 ODS_MODE="${ODS_MODE:-local}"
 LEMONADE_EXTERNAL="${LEMONADE_EXTERNAL:-false}"
 LEMONADE_BASE_URL="${LEMONADE_BASE_URL:-}"
+# Keep omission distinct from an explicit direct override until .env is read.
+LEMONADE_HOST_TRANSPORT="${LEMONADE_HOST_TRANSPORT:-}"
 LEMONADE_API_KEY="${LEMONADE_API_KEY:-}"
+LEMONADE_MODEL="${LEMONADE_MODEL:-}"
+# Display only: the GPU that runs an external Lemonade (e.g. Windows under WSL).
+LEMONADE_GPU_NAME="${LEMONADE_GPU_NAME:-}"
+LEMONADE_GPU_VRAM_MB="${LEMONADE_GPU_VRAM_MB:-}"
 OFFLINE_MODE=false   # M1 integration: fully air-gapped operation
 NO_BOOTSTRAP=false  # Skip bootstrap fast-start, download full model in foreground
 BIND_ADDRESS_EXPLICIT=false
@@ -174,8 +180,15 @@ Options:
                       Use an already-running Lemonade SDK server as the AMD LLM runtime
     --lemonade-url U  Lemonade server URL for --use-existing-lemonade
                       (auto-detects localhost:13305, then localhost:8000 when omitted)
+    --lemonade-host-transport direct|model-router
+                      Host-agent verification network: direct (default), or this
+                      installation's model-router container for Windows/WSL Lemonade
     --lemonade-api-key K
                       API key LiteLLM should send to the existing Lemonade server
+    --lemonade-model M
+                      Exact model id the existing Lemonade server serves
+    --lemonade-gpu-name N, --lemonade-gpu-vram-mb MB
+                      GPU that runs the existing Lemonade, shown in the hardware scan
     --external-llm-url U
                       Reuse an OpenAI-compatible local or LAN endpoint
     --external-llm-provider P
@@ -250,7 +263,15 @@ while [[ $# -gt 0 ]]; do
         --cloud) ODS_MODE="cloud"; ODS_MODE_EXPLICIT=true; shift ;;
         --use-existing-lemonade) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; shift ;;
         --lemonade-url) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; LEMONADE_BASE_URL="$2"; shift 2 ;;
+        --lemonade-host-transport)
+            case "${2:-}" in direct|model-router) LEMONADE_HOST_TRANSPORT="$2" ;; *) echo "--lemonade-host-transport requires direct or model-router" >&2; exit 1 ;; esac
+            shift 2 ;;
         --lemonade-api-key) LEMONADE_API_KEY="$2"; shift 2 ;;
+        --lemonade-model) LEMONADE_MODEL="$2"; shift 2 ;;
+        --lemonade-gpu-name) LEMONADE_GPU_NAME="$2"; shift 2 ;;
+        --lemonade-gpu-vram-mb)
+            [[ "$2" =~ ^[0-9]+$ ]] || { echo "--lemonade-gpu-vram-mb needs a number of megabytes" >&2; exit 1; }
+            LEMONADE_GPU_VRAM_MB="$2"; shift 2 ;;
         --external-llm-url) EXTERNAL_LLM_URL="$2"; shift 2 ;;
         --external-llm-provider) EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
         --external-llm-model) EXTERNAL_LLM_MODEL="$2"; shift 2 ;;
@@ -321,7 +342,8 @@ unset _requested_ods_mode
 if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
     ODS_MODE="lemonade"
     ENABLE_RECOMMENDED=true
-    export LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_API_KEY
+    # An empty LEMONADE_MODEL still lets phase 06 discover the model.
+    export LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_HOST_TRANSPORT LEMONADE_API_KEY LEMONADE_MODEL LEMONADE_GPU_NAME LEMONADE_GPU_VRAM_MB
 fi
 
 export EXTERNAL_LLM_URL EXTERNAL_LLM_PROVIDER EXTERNAL_LLM_MODEL

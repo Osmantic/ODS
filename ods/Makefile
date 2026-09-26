@@ -30,6 +30,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-hermes-context-floor.sh
 	@bash tests/test-install-menu-hermes-flag.sh
 	@bash tests/test-custom-menu-agent-flags.sh
+	@bash tests/test-lemonade-external-gpu.sh
+	@bash tests/test-preflight-external-gpu.sh
 	@echo ""
 	@echo "=== Hermes slash worker prune ==="
 	@bash tests/test-hermes-slash-worker-prune.sh
@@ -77,6 +79,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== AMD/Lemonade contracts ==="
 	@bash tests/contracts/test-amd-lemonade-contracts.sh
+	@bash tests/test-lemonade-host-transport.sh
+	@python3 tests/test-lemonade-container-transport.py
+	@python3 tests/test-wsl-lemonade-proof.py
 	@bash tests/test-litellm-amd-auth-enforced.sh
 	@bash tests/contracts/test-windows-strix-tier-map.sh
 	@bash tests/contracts/test-windows-llm-model-readiness.sh
