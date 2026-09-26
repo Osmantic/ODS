@@ -42,18 +42,50 @@ export function createRunProgressBudget() {
   const successes = new Map();
   const laneFailures = new Map();
   const exhaustedLanes = new Set();
+  // The kind of the correctable refusal whose charge tripped the global
+  // consecutive fuse, while the first tool call after it may still be that
+  // refusal's remedy (see correctFuse). correctedKinds holds every kind ever
+  // granted, so a kind trips the fuse with a corrected attempt once per run.
+  let correction;
+  const correctedKinds = new Set();
   return {
     get exhausted() { return terminal; },
     // Another guard (the research web-loop terminal) stopped the response.
     // Sticky, like exhaustion; it grants nothing and changes no limit.
-    stop() { terminal = true; },
+    stop() { terminal = true; correction = undefined; },
     get exhaustedLanes() { return [...exhaustedLanes]; },
     laneExhausted(lane) { return exhaustedLanes.has(lane); },
+    get pendingCorrection() { return terminal ? correction : undefined; },
+    // Called with the first tool call after a correctable refusal tripped the
+    // fuse; remedy is true only when the caller established that this call is
+    // the remedy the refusal named. Either way the pending correction is
+    // spent, so only that first call can be admitted. Admitting re-opens the
+    // response for it with every counter as it was: the tripped consecutive
+    // count stays at the fuse, so this call's failure (or any other) stops the
+    // response again at once, and only a success resets it, as always. The
+    // total and round caps were not reached, or no correction would pend.
+    // Returns whether the call was admitted.
+    correctFuse(remedy) {
+      if (!terminal || correction === undefined) return false;
+      correction = undefined;
+      if (remedy !== true) return false;
+      terminal = false;
+      return true;
+    },
     beginModelRound() {
-      if (++rounds > RUN_PROGRESS_LIMITS.roundsWithoutProgress) terminal = true;
+      if (++rounds > RUN_PROGRESS_LIMITS.roundsWithoutProgress) {
+        terminal = true;
+        correction = undefined;
+      }
       return terminal;
     },
-    observeResult({ callId, tool, params, failed, pending = false, discovery = false, lane }) {
+    // correctableRefusal: the kind of a refusal that ran nothing and whose
+    // text names its own remedy, as the caller established (for example the
+    // Playground router's first-write gate). It is charged like any failure.
+    // Only when that charge trips the global consecutive fuse, and neither
+    // the total cap nor both lanes are reached, does the refusal leave one
+    // corrected attempt pending (correctFuse), at most once per kind per run.
+    observeResult({ callId, tool, params, failed, pending = false, discovery = false, lane, correctableRefusal }) {
       if (terminal || typeof callId !== 'string' || !callId || seenCalls.has(callId)) return;
       seenCalls.add(callId);
       if (seenCalls.size > 256) seenCalls.delete(seenCalls.values().next().value);
@@ -71,6 +103,12 @@ export function createRunProgressBudget() {
         terminal = exhaustedLanes.size === PROGRESS_LANES.size ||
           consecutiveFailures >= RUN_PROGRESS_LIMITS.consecutiveFailures ||
           failures >= RUN_PROGRESS_LIMITS.totalFailures;
+        if (terminal && !classifiedLane && typeof correctableRefusal === 'string' && correctableRefusal &&
+            !correctedKinds.has(correctableRefusal) && failures < RUN_PROGRESS_LIMITS.totalFailures &&
+            exhaustedLanes.size < PROGRESS_LANES.size) {
+          correctedKinds.add(correctableRefusal);
+          correction = correctableRefusal;
+        }
         return;
       }
       // Discovery changes the available schemas, not the task's outcome. A

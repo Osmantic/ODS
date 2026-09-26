@@ -517,6 +517,24 @@ function routeSpellingAlias(selected, alias, root) {
   return mapped ? {params:selected.wrap({...args,[key]:mapped})} : undefined;
 }
 
+// Whether routePlaygroundTool, given this run state, would reserve and bind a
+// new project for this call: a write before the first project file whose path
+// already has the form the correctable refusals ask for, Playground/<name>/...
+// with a non-generic <name> (optionally under /workspace/ or the configured
+// root), and names no file read in this run (which the router preserves
+// instead). It inspects nothing on disk and changes nothing. The run budget
+// uses it to recognize the remedy those refusals name.
+export function bindsNewProject({state,tool,params,root,existingPaths=[]}) {
+  const selected = selectTool(tool,params);
+  if (selected?.tool !== 'write' || !selected.args || typeof root !== 'string' || !path.isAbsolute(root)
+    || !state?.initialized || !state.fresh || state.binding || state.preserved || state.failed) return false;
+  const value = selected.args.path;
+  const target = relative(value,root);
+  const segments = parts(target);
+  return Boolean(segments) && segments.length >= 3 && segments[0] === 'Playground' && !GENERIC.test(segments[1])
+    && !existingPaths.includes(value) && !existingPaths.includes(target);
+}
+
 // State is per run. Persistent records contain only hashed session identities
 // and safe relative paths, never prompts, credentials, or creative bytes.
 export function routePlaygroundTool({state,tool,params,root,session,intent,existingPaths=[],preserveExisting=false,continueProject=false}) {
@@ -561,18 +579,21 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
           state.suggestedFolder = named;
           state.suggestedPath = undefined;
         }
-        return {block:true,blockReason:`${NOT_RUN}${next ? ` Call write now with path ${next} and its content.` : ''} Create the first project file with write in a descriptive Playground folder before running commands or patches. ${CORRECTION}`};
+        return {block:true,correctable:'playground-first-write',blockReason:`${NOT_RUN}${next ? ` Call write now with path ${next} and its content.` : ''} Create the first project file with write in a descriptive Playground folder before running commands or patches. ${CORRECTION}`};
       }
     }
     if (!state.binding && state.fresh && selected.tool === 'write') {
       // Refusals stay charged failures; only their text names the next path.
+      // Both refusals before the first project file are correctable: they run
+      // nothing and name their remedy, a write that binds the project
+      // (bindsNewProject), which the run budget admits once after its fuse.
       const refuse = () => {
         const suggestion = suggestedProjectPath(args[key],root,state);
         if (suggestion) {
           state.suggestedFolder = suggestion.split('/')[1];
           state.suggestedPath = suggestion;
         }
-        return {block:true,blockReason:suggestion
+        return {block:true,correctable:'playground-project-path',blockReason:suggestion
           ? `Not written: project files go in a descriptive Playground folder. Call write again now with path ${suggestion} and the same content, then use that folder for every project file and as exec workdir. ${CORRECTION}`
           : CORRECTION};
       };
