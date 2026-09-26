@@ -319,6 +319,9 @@ jobs:
       - name: Windows Report Command Tests
         run: bash tests/test-windows-report-command.sh
 
+      - name: Network Security Posture Tests
+        run: bash tests/test-network-security.sh
+
       - name: Compose Failure Report Tests
         run: bash tests/test-compose-failure-report.sh
 

@@ -53,6 +53,75 @@ header() {
     echo -e "${CYAN}$(printf '%.0s─' {1..70})${NC}"
 }
 
+# ----------------------------------------------------------------------------
+# Compose binding helpers
+#
+# Every published port in this repo is written as `${VAR:-default}`:
+#
+#     - "${BIND_ADDRESS:-127.0.0.1}:${QDRANT_PORT:-6333}:6333"
+#     - "${ODS_PROXY_BIND:-0.0.0.0}:${ODS_PROXY_PORT:-80}:80"
+#
+# so matching a literal `127.0.0.1:` or `0.0.0.0:` finds nothing — the text is
+# `127.0.0.1}:`. Resolve the defaults first, and strip comments before doing it,
+# because ods-proxy's compose comment mentions BIND_ADDRESS=127.0.0.1 and would
+# otherwise be read as a binding.
+# ----------------------------------------------------------------------------
+
+resolve_compose_defaults() {
+    sed -e 's/#.*$//' -e 's/[$][{][A-Za-z_][A-Za-z0-9_]*:-\([^}]*\)[}]/\1/g' "$1"
+}
+
+# Emit the host bind address of every published port, one per line. Scoped to
+# `ports:` blocks so volume entries, which look the same, are not counted. A
+# mapping with no address ("5432:5432") emits "unspecified".
+published_bind_addresses() {
+    resolve_compose_defaults "$1" | awk '
+        /^[[:space:]]*ports:[[:space:]]*$/ { in_ports = 1; next }
+        in_ports && /^[[:space:]]*-/ {
+            line = $0
+            sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+            gsub(/"/, "", line)
+            sub(/[[:space:]]*$/, "", line)
+            if (line == "") next
+            n = split(line, part, ":")
+            if (n >= 3)      print part[1]
+            else if (n == 2) print "unspecified"
+            next
+        }
+        in_ports && /^[[:space:]]*[^[:space:]-]/ { in_ports = 0 }
+    '
+}
+
+# Name a compose file's service. Root-level stack files live in the repo root,
+# where basename(dirname(...)) is "." — name those after the file instead.
+compose_service_name() {
+    local dir
+    dir="$(basename "$(dirname "$1")")"
+    case "$dir" in
+        .|ods) basename "$1" ;;
+        *)     printf '%s' "$dir" ;;
+    esac
+}
+
+# A service whose manifest declares host_network: true has opted out of port
+# mapping deliberately (tailscale). The extension audit uses the same signal.
+declares_host_network() {
+    local manifest
+    manifest="$(dirname "$1")/manifest.yaml"
+    [[ -f "$manifest" ]] && grep -qE '^[[:space:]]*host_network:[[:space:]]*true' "$manifest"
+}
+
+# network-exposure-policy.json is the source of truth for which services are
+# meant to face the LAN. Keep this list aligned with its lan_exposure values.
+is_intentionally_exposed() {
+    case "$1" in
+        dashboard|dashboard-api|open-webui) return 0 ;;  # operator UI / API
+        ods-proxy)                          return 0 ;;  # the LAN-facing proxy itself
+        tailscale)                          return 0 ;;  # host networking, by design
+        *)                                  return 1 ;;
+    esac
+}
+
 # ============================================
 # TEST 1: Port Binding Security
 # ============================================
@@ -64,27 +133,36 @@ insecure_bindings=()
 secure_bindings=0
 
 for compose_file in "${compose_files[@]}"; do
-    if [[ -f "$compose_file" ]]; then
-        service_name=$(basename "$(dirname "$compose_file")" | sed 's/compose//')
+    [[ -f "$compose_file" ]] || continue
+    file_label="$(basename "$compose_file")"
 
-        # Check for 0.0.0.0 bindings (insecure)
-        if grep -q "0\.0\.0\.0:" "$compose_file"; then
-            insecure_bindings+=("$compose_file")
-            fail "Insecure port binding in $compose_file" "Uses 0.0.0.0 (exposes to all interfaces)"
-        fi
+    mapfile -t binds < <(published_bind_addresses "$compose_file")
+    [[ ${#binds[@]} -gt 0 ]] || continue
 
-        # Check for 127.0.0.1 bindings (secure)
-        if grep -q "127\.0\.0\.1:" "$compose_file"; then
-            secure_bindings=$((secure_bindings + 1))
-            pass "Secure port binding in $(basename "$compose_file")"
-        fi
-
-        # Check for port mappings without explicit IP (potentially insecure)
-        if grep -E "^\s*-\s*[\"']?[0-9]+:[0-9]+" "$compose_file" | grep -v "127.0.0.1\|0.0.0.0"; then
-            skip "Port binding without explicit IP in $(basename "$compose_file")" "Consider using 127.0.0.1"
-        fi
-    fi
+    for bind in "${binds[@]}"; do
+        case "$bind" in
+            127.0.0.1|localhost|::1|"[::1]")
+                secure_bindings=$((secure_bindings + 1))
+                ;;
+            0.0.0.0|::|"[::]")
+                svc="$(compose_service_name "$compose_file")"
+                if is_intentionally_exposed "$svc"; then
+                    skip "$file_label binds $bind" "Intentional: $svc is a LAN-facing surface"
+                else
+                    insecure_bindings+=("$compose_file")
+                    fail "Insecure port binding in $file_label" "Binds $bind (all interfaces)"
+                fi
+                ;;
+            unspecified)
+                skip "Port mapping without an explicit address in $file_label" "Prefer a bound address"
+                ;;
+        esac
+    done
 done
+
+if [[ $secure_bindings -gt 0 ]]; then
+    pass "$secure_bindings loopback-bound port mapping(s)"
+fi
 
 echo ""
 echo -e "    ${BOLD}Summary:${NC} $secure_bindings secure bindings, ${#insecure_bindings[@]} insecure bindings"
@@ -99,28 +177,37 @@ external_services=()
 internal_services=0
 
 for compose_file in "${compose_files[@]}"; do
-    if [[ -f "$compose_file" ]]; then
-        service_name=$(basename "$(dirname "$compose_file")")
+    [[ -f "$compose_file" ]] || continue
+    service_name="$(compose_service_name "$compose_file")"
 
-        # Services with external port mappings
-        if grep -q "ports:" "$compose_file"; then
-            # Check if ports are bound to localhost only
-            if grep -A10 "ports:" "$compose_file" | grep -q "127\.0\.0\.1:"; then
-                internal_services=$((internal_services + 1))
-                pass "Service '$service_name' exposed only to localhost"
-            else
-                external_services+=("$service_name")
-                # Check if this is intentional (dashboard, API endpoints)
-                case "$service_name" in
-                    dashboard|dashboard-api|open-webui)
-                        skip "Service '$service_name' externally exposed (expected for UI/API)"
-                        ;;
-                    *)
-                        fail "Service '$service_name' may be externally exposed" "Review port binding configuration"
-                        ;;
-                esac
-            fi
+    mapfile -t binds < <(published_bind_addresses "$compose_file")
+
+    if [[ ${#binds[@]} -eq 0 ]]; then
+        if declares_host_network "$compose_file"; then
+            skip "Service '$service_name' uses host networking" "Declared host_network: true"
+        else
+            internal_services=$((internal_services + 1))
+            pass "Service '$service_name' publishes no host ports"
         fi
+        continue
+    fi
+
+    exposed=false
+    for bind in "${binds[@]}"; do
+        case "$bind" in
+            127.0.0.1|localhost|::1|"[::1]") ;;
+            *) exposed=true ;;
+        esac
+    done
+
+    if [[ "$exposed" == "false" ]]; then
+        internal_services=$((internal_services + 1))
+        pass "Service '$service_name' exposed only to localhost"
+    elif is_intentionally_exposed "$service_name"; then
+        skip "Service '$service_name' externally exposed" "Declared in network-exposure-policy.json"
+    else
+        external_services+=("$service_name")
+        fail "Service '$service_name' may be externally exposed" "Review port binding configuration"
     fi
 done
 
@@ -150,8 +237,15 @@ host_network_count=0
 for compose_file in "${compose_files[@]}"; do
     if [[ -f "$compose_file" ]]; then
         if grep -q "network_mode.*host" "$compose_file"; then
-            host_network_count=$((host_network_count + 1))
-            fail "Service uses host networking in $(basename "$compose_file")" "Breaks container isolation"
+            # Declared host networking is a design decision, not a defect:
+            # tailscale needs the host stack, says so in its manifest, and
+            # network-exposure-policy.json records it as intentional.
+            if declares_host_network "$compose_file"; then
+                skip "Service uses host networking in $(basename "$compose_file")" "Declared host_network: true"
+            else
+                host_network_count=$((host_network_count + 1))
+                fail "Service uses host networking in $(basename "$compose_file")" "Breaks container isolation"
+            fi
         fi
     fi
 done

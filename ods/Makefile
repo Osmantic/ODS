@@ -152,6 +152,9 @@ test: ## Run unit and contract tests
 	@echo "=== ods config show secret-mask matrix ==="
 	@bash tests/test-ods-config-secret-mask.sh
 	@echo ""
+	@echo "=== network security posture ==="
+	@bash tests/test-network-security.sh
+	@echo ""
 	@echo "=== Manifest schema source of truth ==="
 	@bash tests/test-validate-manifest-schema.sh
 	@echo "=== ComfyUI user directory is persisted ==="
