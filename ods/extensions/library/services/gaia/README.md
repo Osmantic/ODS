@@ -9,7 +9,9 @@ and Lemonade Server integration.
 This ODS entry is intentionally conservative:
 
 - It is optional and disabled by default.
-- It binds to loopback unless `BIND_ADDRESS` is changed by ODS.
+- Its host port binds to loopback unless `BIND_ADDRESS` is changed by ODS.
+  Inside Docker it is reachable on port 4200 of `ods-network`, like other ODS
+  services (see [Network and security](#network-and-security)).
 - It persists GAIA state under `./data/gaia`.
 - It skips GAIA's first-run model bootstrap by default so enabling the
   extension does not unexpectedly download models.
@@ -63,6 +65,13 @@ Default mode starts `gaia-ui` and allows the npm package to install the Python
 backend into `./data/gaia/venv` on first start. `GAIA_SKIP_GAIA_INIT=true`
 prevents the additional Lemonade/model initialization step.
 
+AMD's backend listens on `127.0.0.1` only. The entrypoint therefore runs it on
+the container-internal port 4201 and starts `ods-gaia-forward`, a small TCP
+forwarder that listens on `0.0.0.0:4200` and relays connections unchanged. The
+entrypoint supervises both: if `gaia-ui`, its backend or the forwarder stops,
+the container exits non-zero and Docker restarts it. `gaia-ui` logs mention port
+4201; open GAIA at the host URL above.
+
 For a lightweight container/UI smoke test only:
 
 ```env
@@ -70,12 +79,34 @@ GAIA_UI_SERVE_ONLY=true
 ```
 
 Serve-only mode is useful for validating the extension container and dashboard
-link, but it does not start the GAIA Python backend.
+link, but it does not start the GAIA Python backend. It serves on port 4200
+directly, without the forwarder.
+
+## Network and security
+
+GAIA's API has no authentication. AMD treats loopback as the trust boundary.
+In ODS:
+
+- The host port is published on `BIND_ADDRESS`, `127.0.0.1` by default, so
+  only the ODS machine reaches `http://localhost:7822`. In LAN mode
+  (`BIND_ADDRESS=0.0.0.0`) anyone on that network can use GAIA and its agents
+  without signing in, as with other ODS services that have no login of their
+  own. Do not enable GAIA on a LAN-mode install whose network you do not trust.
+- Any container on `ods-network` can reach `http://gaia:4200`, as with other
+  ODS services. The dashboard's health check uses this path.
+- Every connection reaches GAIA through the forwarder, so GAIA sees every
+  client as `127.0.0.1`. GAIA's ngrok "mobile access" tunnel is the only mode
+  with a login, and that login trusts loopback clients. The image contains no
+  ngrok, ODS passes no ngrok token, and the entrypoint refuses to start when an
+  `ngrok` binary is on the backend's `PATH` (including `data/gaia/bin`). Do not
+  add ngrok to this container.
 
 ## Known Limitations
 
-- First backend start can take several minutes while Python dependencies are
-  installed.
+- First backend start installs Python 3.12, `amd-gaia[ui]` and CPU PyTorch
+  (about 400 MB to download, 1.4 GB in `data/gaia/venv`). On a fast link this
+  takes seconds; on a slow link it can take several minutes. The dashboard
+  shows the extension as installing for up to 10 minutes (`startup_timeout`).
 - Full GAIA behavior is best with Lemonade Server. Generic OpenAI-compatible
   endpoints may support only part of the GAIA workflow surface.
 - The container recipe does not install host GPU/NPU drivers or Lemonade Server
