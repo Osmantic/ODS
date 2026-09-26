@@ -98,9 +98,17 @@ else
         fi
 
         # Ensure ~/.npm-global/bin is on PATH permanently
-        if [[ -d "$NPM_GLOBAL_DIR/bin" ]] && ! grep -q 'npm-global' "$HOME/.bashrc" 2>/dev/null; then
-            echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.bashrc"
-            ai "Added ~/.npm-global/bin to PATH in ~/.bashrc"
+        # Ensure ~/.npm-global/bin is on PATH permanently across user shells
+        if [[ -d "$NPM_GLOBAL_DIR/bin" ]]; then
+            local _target_rc="$HOME/.bashrc"
+            if [[ "${SHELL:-}" == *"/zsh"* ]] && [[ -f "$HOME/.zshrc" ]]; then
+                _target_rc="$HOME/.zshrc"
+            fi
+
+            if ! grep -q 'npm-global' "$_target_rc" 2>/dev/null; then
+                echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$_target_rc"
+                ai "Added ~/.npm-global/bin to PATH in $_target_rc"
+            fi
         fi
     else
         ai_warn "Linux Node.js 20+ and npm are not available — skipping Claude Code and Codex CLI install"
