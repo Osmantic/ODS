@@ -935,6 +935,8 @@ describe('Pixel', () => {
     const view = render(<Pixel />)
     await screen.findByText('Available')
     fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target: {value: 'continue'}})
+    // Availability can paint before the composer finishes its context probe.
+    await waitFor(() => expect(screen.getByTitle('Send')).toBeEnabled())
     fireEvent.click(screen.getByTitle('Send'))
     // Rendering sixty Markdown messages plus animated text can exceed the
     // default one-second DOM wait on Windows CI. Keep the same visible/persisted contract.
