@@ -31,8 +31,15 @@ function Invoke-Agent { param([string]$Action) }
 function Stop-ODSOpenCodeRuntime { }
 function Get-NativeInferenceBackend { return 'none' }
 function Stop-NativeInferenceServer { }
-function Stop-ScheduledTask { param($TaskName, $ErrorAction) }
-function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) }
+$script:ODS_AGENT_TASK_NAME = 'ODSHostAgent'; $script:ODS_MODEL_UPGRADE_TASK_NAME = 'ODSModelUpgrade'
+$script:LEMONADE_TASK_NAME = 'ODSLemonadeRuntime'; $script:OPENCODE_TASK_NAME = 'ODSOpenCodeWeb'; $script:NATIVE_LLAMA_TASK_NAME = 'ODSNativeLlamaRuntime'
+function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:tasks.ContainsKey($TaskName)) { return [pscustomobject]@{ TaskName = $TaskName; State = $script:tasks[$TaskName] } } }
+function Stop-ScheduledTask { param($TaskName, $ErrorAction) $script:tasks[$TaskName] = 'Ready' }
+function Unregister-ScheduledTask {
+    param($TaskName, $Confirm, $ErrorAction)
+    if ($TaskName -in $script:lockedTasks) { throw [Microsoft.Management.Infrastructure.CimException]::new('Access is denied.') }
+    $script:tasks.Remove($TaskName)
+}
 function Get-ComposeFlags { return @('-f', 'docker-compose.base.yml') }
 function Test-ODSComposeFlagsFilesAvailable { param([string[]]$ComposeFlags) return $true }
 function Remove-ODSInstallDirectory { param([switch]$KeepData, [switch]$KeepModels) $script:dirRemoved = $true }
@@ -77,6 +84,8 @@ function Reset-Docker([string[]]$ExtraVolumes, [string[]]$Busy = @(), [string[]]
     $script:busyVolumes = $Busy
     $script:busyContainers = $BusyContainers
     $script:dirRemoved = $false
+    $script:tasks = @{ ODSHostAgent = 'Ready'; ODSOpenCodeWeb = 'Running'; ODSNativeLlamaRuntime = 'Ready' }
+    $script:lockedTasks = @()
 }
 
 $script:InstallDir = Join-Path ([IO.Path]::GetTempPath()) 'ods-uninstall-contract'
@@ -86,6 +95,12 @@ try {
     Reset-Docker @()
     Invoke-Uninstall -UninstallArgs @('--force')
     Check $script:dirRemoved 'clean compose down removes the runtime'
+    Check ($script:tasks.Count -eq 0) 'uninstall removes the helper scheduled tasks, including the native llama runtime'
+
+    Reset-Docker @()
+    $script:lockedTasks = @('ODSOpenCodeWeb')
+    Invoke-Uninstall -UninstallArgs @('--force')
+    Check (@($script:output | Where-Object { $_ -match "Scheduled task ODSOpenCodeWeb could not be removed .*Unregister-ScheduledTask -TaskName 'ODSOpenCodeWeb'" }).Count -eq 1) 'a task that cannot be removed is reported with the command to remove it'
 
     Reset-Docker @('ods_open-webui-data')
     Invoke-Uninstall -UninstallArgs @('--force')
