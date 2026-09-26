@@ -302,6 +302,9 @@ jobs:
       - name: n8n Cookie Policy Tests
         run: bash tests/test-n8n-cookie-policy.sh
 
+      - name: Community Extension Port Bindings
+        run: bash tests/test-bind-address-sweep.sh
+
       - name: brave-search searxng Compat Tests
         run: bash tests/test-brave-search-searxng-compat.sh
 
