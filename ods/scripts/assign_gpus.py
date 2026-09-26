@@ -145,36 +145,118 @@ def compute_subset(gpus: list, rank_matrix: dict) -> Subset:
     )
 
 
-def enumerate_subsets(gpus: list, rank_matrix: dict) -> list:
-    """
-    Generate all non-empty subsets of GPUs, ordered by:
-      1. min_link_rank DESC  (topology quality)
-      2. subset size ASC     (prefer fewer GPUs, leave more for services)
-      3. total_vram DESC     (tiebreaker)
-    """
-    all_subsets = []
-    for size in range(1, len(gpus) + 1):
-        for combo in combinations(gpus, size):
-            all_subsets.append(compute_subset(list(combo), rank_matrix))
+def rank_tiers(rank_matrix: dict) -> list:
+    """Distinct multi-GPU link ranks, highest first (the rank-0 tier is implicit).
 
-    return sorted(
-        all_subsets,
-        key=lambda s: (s.min_link_rank, -len(s.gpus), s.total_vram_mb),
-        reverse=True,
+    A subset's min_link_rank is always one of these values or 0 (a missing link
+    or a lone GPU scores 0), so iterating these tiers descending — then the 0
+    tier — visits every achievable topology quality in priority order.
+    """
+    return sorted({r for r in rank_matrix.values() if r > 0}, reverse=True)
+
+
+def is_clique_at_rank(gpus: list, rank_matrix: dict, min_rank: int) -> bool:
+    """True when every GPU pair in the subset is linked at >= min_rank."""
+    return all(
+        get_rank(rank_matrix, a, b) >= min_rank
+        for a, b in combinations([g.index for g in gpus], 2)
     )
+
+
+def _max_vram_clique(gpus: list, rank_matrix: dict, min_rank: int, size: int,
+                     min_memory_per_gpu: float) -> Optional[list]:
+    """Highest-VRAM `size`-GPU clique at >= min_rank whose members each clear the
+    per-shard budget (memory_mb >= min_memory_per_gpu).
+
+    Returns the GPUs in topology/input order, or None. Filtering by the shard budget up
+    front means every surviving combination already covers the model (k shards of
+    at least the budget), so total-VRAM and equal-split re-checks are redundant.
+    Ties in total VRAM keep the earliest combination, matching the old stable sort.
+    """
+    eligible = [g for g in gpus if g.memory_mb >= min_memory_per_gpu]
+    if len(eligible) < size:
+        return None
+    best = None
+    best_vram = -1.0
+    for combo in combinations(eligible, size):
+        group = list(combo)
+        if min_rank > 0 and not is_clique_at_rank(group, rank_matrix, min_rank):
+            continue
+        total_vram = sum(g.memory_mb for g in group)
+        if total_vram > best_vram:
+            best_vram = total_vram
+            best = group
+    return best
 
 
 #  Phase 2: GPU Assignment
 
-def find_llama_subset(ordered_subsets: list, model_size_mb: float) -> Subset:
+def _best_fit_at_tier(gpus: list, rank_matrix: dict, model_size_mb: float, min_rank: int) -> Optional[Subset]:
+    """Best fitting linked subset at one positive topology tier, or None.
+
+    Walks sizes ascending (fewer GPUs preferred) and returns the highest-VRAM
+    clique at the first size that fits. Single GPUs score rank 0, so this
+    positive-tier search starts at size 2; the rank-0 case is handled
+    non-combinatorially by _best_fit_rank_zero.
     """
-    Pick the best-ranked subset whose total VRAM covers model_size_mb.
-    Returns the first match (best topology, smallest size, most VRAM).
-    """
-    for subset in ordered_subsets:
-        if subset.total_vram_mb >= model_size_mb and subset_can_host_equal_split(subset, model_size_mb):
-            return subset
+    for size in range(2, len(gpus) + 1):
+        group = _max_vram_clique(gpus, rank_matrix, min_rank, size, model_size_mb / size)
+        if group is not None:
+            return compute_subset(group, rank_matrix)
     return None
+
+
+def _best_fit_rank_zero(gpus: list, rank_matrix: dict, model_size_mb: float) -> Optional[Subset]:
+    """Best fitting subset when topology imposes no link constraint (rank 0).
+
+    With no clique requirement, the highest-VRAM subset that can host an equal
+    split at a given size is just the `size` largest GPUs that each clear the
+    per-shard budget — no combination search needed. Smallest fitting size wins.
+    A stable memory sort preserves original topology order for VRAM ties, and the
+    winners are emitted back in that order, matching the old code's
+    combinations(gpus, ...) enumeration.
+    """
+    by_memory = sorted(gpus, key=lambda g: g.memory_mb, reverse=True)
+    for size in range(1, len(gpus) + 1):
+        required_per_gpu = model_size_mb / size
+        eligible = [g for g in by_memory if g.memory_mb >= required_per_gpu]
+        if len(eligible) >= size:
+            winners = {g.index for g in eligible[:size]}
+            chosen = [g for g in gpus if g.index in winners]
+            return compute_subset(chosen, rank_matrix)
+    return None
+
+
+def find_llama_subset(gpus: list, rank_matrix: dict, model_size_mb: float) -> Optional[Subset]:
+    """Best-ranked subset whose VRAM covers the model and hosts an equal split.
+
+    Yields the same choice as ranking every subset by (min_link_rank DESC, size
+    ASC, total_vram DESC) and taking the first that fits — but searches tier by
+    tier and returns at the first fit, so it never materializes all 2^n subsets.
+    Returns None if nothing fits.
+    """
+    for tier in rank_tiers(rank_matrix):
+        subset = _best_fit_at_tier(gpus, rank_matrix, model_size_mb, tier)
+        if subset is not None:
+            return subset
+    return _best_fit_rank_zero(gpus, rank_matrix, model_size_mb)
+
+
+def best_ranked_subset(gpus: list, rank_matrix: dict) -> Subset:
+    """Top subset by (min_link_rank DESC, size ASC, total_vram DESC), fit aside.
+
+    The head of the old fully-sorted subset list: the smallest, highest-VRAM
+    group at the best available topology tier, or the single largest GPU when no
+    links exist.
+    """
+    if not gpus:
+        raise ValueError("No GPUs available")
+    for tier in rank_tiers(rank_matrix):
+        for size in range(2, len(gpus) + 1):
+            group = _max_vram_clique(gpus, rank_matrix, tier, size, 0.0)
+            if group is not None:
+                return compute_subset(group, rank_matrix)
+    return compute_subset([max(gpus, key=lambda g: g.memory_mb)], rank_matrix)
 
 
 def subset_can_host_equal_split(subset: Subset, model_size_mb: float) -> bool:
@@ -192,14 +274,14 @@ def subset_can_host_equal_split(subset: Subset, model_size_mb: float) -> bool:
     return all(g.memory_mb >= required_per_gpu for g in subset.gpus)
 
 
-def span_subsets(all_gpus: list, rank_matrix: dict, model_size_mb: float, ordered_subsets: list) -> Subset:
+def span_subsets(all_gpus: list, rank_matrix: dict, model_size_mb: float) -> Subset:
     """
     No single subset covers model_size_mb.
     Take the best subset, then greedily add GPUs from the remaining pool
     (ordered by memory_mb DESC) until VRAM is covered.
     Recomputes min_link_rank on the combined set.
     """
-    best = ordered_subsets[0]
+    best = best_ranked_subset(all_gpus, rank_matrix)
     accumulated = list(best.gpus)
     used = {g.index for g in accumulated}
 
@@ -508,13 +590,12 @@ def main():
     gpus        = parse_gpus(topology)
     links       = parse_links(topology)
     rank_matrix = build_rank_matrix(links)
-    ordered     = enumerate_subsets(gpus, rank_matrix)
 
     #  Phase 2: GPU assignment
     try:
-        llama_subset = find_llama_subset(ordered, model_size_mb)
+        llama_subset = find_llama_subset(gpus, rank_matrix, model_size_mb)
         if llama_subset is None:
-            llama_subset = span_subsets(gpus, rank_matrix, model_size_mb, ordered)
+            llama_subset = span_subsets(gpus, rank_matrix, model_size_mb)
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
