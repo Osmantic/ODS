@@ -26,6 +26,26 @@ if ! declare -F ui_status_line >/dev/null 2>&1; then
     }
 fi
 
+_phase11_refresh_litellm() {
+    local services
+    if ! services="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --services 2>>"$LOG_FILE")"; then
+        ai_bad "Could not resolve services before refreshing the model gateway."
+        return 1
+    fi
+    if ! grep -qx 'litellm' <<< "$services"; then
+        return 0
+    fi
+    # Phase 06 replaces rendered config files atomically. Compose cannot see
+    # changed bind-mounted bytes, and a running LiteLLM keeps the old inode
+    # and its startup configuration. Refresh before Pixel uses that route.
+    ai "Reloading the installed LiteLLM model route..."
+    if ! $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --no-deps \
+        --force-recreate --no-build --pull never litellm >>"$LOG_FILE" 2>&1; then
+        ai_bad "Could not reload the model gateway. See $LOG_FILE."
+        return 1
+    fi
+}
+
 _phase11_build_local_images() {
     local -a build_services=("$@")
     local -a failed_build_services=()
@@ -1243,6 +1263,9 @@ MODELS_INI_EOF
     # Up to 3 attempts with increasing wait between retries — on AMD/Lemonade,
     # the first boot builds a cached llama-server binary which can take 3-5 min.
     if ! _phase11_pre_pull_compose_images; then
+        exit 1
+    fi
+    if ! _phase11_refresh_litellm; then
         exit 1
     fi
     # Install and verify the host Pixel gateway/ingress before Open WebUI is
