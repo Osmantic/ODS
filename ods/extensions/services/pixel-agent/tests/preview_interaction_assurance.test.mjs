@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {createToolLoopGuard, WORKSPACE_PREVIEW_COMPLETE_REASON} from '../plugin/tool-loop-guard.mjs';
 import {PREVIEW_INSPECTION_TOOL, PAGE_ERROR_REPAIR_INSTRUCTION, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection,
-  boundStaticPreviewInspection} from '../plugin/preview-interaction-assurance.mjs';
+  preservesVisibilityInspection} from '../plugin/preview-interaction-assurance.mjs';
 import {INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash, normalizeWorkspacePreviewInspectionParams, createWorkspacePreviewInspectTool} from '../plugin/workspace-preview-inspect.mjs';
 
 const owner='Create and publish a website in a new workspace directory site. Add a button that toggles hidden details.';
@@ -376,10 +376,15 @@ test('bounded session preview eviction also evicts the associated obligation',()
   assert.doesNotMatch(guard.verificationForRun(next.ctx.runId).text,/show\/hide interaction/);
 });
 
+// A passing plan with a click but no transition observed nothing against the
+// proof (tower2 round 108), and one without a click did not test it; one that
+// saw the proved target unchanged by the proved control tested and failed it.
+const KEEPS_PROOF=new Set(['none','click-without-transition','target-visible-at-load','other-control-unchanged']);
 for (const wrapped of [false,true]) for (const fault of [
   'none','no-prior-proof','failed','unavailable','inner-error','outer-error','receipt-sha','receipt-plan',
-  'params','session','session-key','source','changed-bytes','incomplete-click',
-]) test(`static inspection preserves only existing bound interaction: wrapped=${wrapped}, fault=${fault}`,()=>{
+  'params','session','session-key','source','changed-bytes','click-without-transition','failed-click',
+  'target-unchanged-by-click','target-visible-at-load','other-control-unchanged',
+]) test(`a later passing inspection preserves only existing bound interaction: wrapped=${wrapped}, fault=${fault}`,()=>{
   const {guard,preview}=setup();
   if (fault!=='no-prior-proof') {
     const first=inspection(guard,plan(preview),{wrapped,id:'mobile-transition'});
@@ -391,11 +396,16 @@ for (const wrapped of [false,true]) for (const fault of [
     {action:'assert-visible',locator:{selector:'button'}},
     {action:'assert-hidden',locator:{selector:'#details'}},
   ]};
-  if (fault==='incomplete-click') params.steps.push({action:'click',locator:{role:'button',name:'Show details',exact:true}});
+  const control={action:'click',locator:{role:'button',name:'Show details',exact:true}};
+  if (['click-without-transition','failed-click'].includes(fault)) params.steps.push(control);
+  if (fault==='target-unchanged-by-click') params.steps.push(control,{action:'assert-hidden',locator:{selector:'#details'}});
+  if (fault==='target-visible-at-load') params.steps[1].action='assert-visible';
+  if (fault==='other-control-unchanged') params.steps.push({action:'click',locator:{selector:'#other'}},{action:'assert-hidden',locator:{selector:'#details'}});
   const next=inspection(guard,params,{wrapped,id:'desktop-static'});
   const result=structuredClone(next.result),event={...next.event},ctx={...next.ctx};
   const inner=wrapped?result.details.result:result;
   if (fault==='failed') {inner.details.status='failed';inner.details.steps[0].status='failed';}
+  if (fault==='failed-click') {inner.details.status='failed';inner.details.steps[2].status='failed';inner.details.steps[2].errorCode='click_failed';}
   if (fault==='unavailable') {inner.isError=true;inner.details={errorCode:'unavailable'};}
   if (fault==='inner-error') inner.isError=true;
   if (fault==='outer-error') result.isError=true;
@@ -406,8 +416,8 @@ for (const wrapped of [false,true]) for (const fault of [
   if (fault==='session-key') ctx.sessionKey='other';
   if (fault==='source') { if (wrapped) result.details.tool.sourceName='foreign'; else event.toolName='foreign'; }
   guard.afterToolCall({...event,result},ctx);
-  assert.equal(guard.verificationForRun('run').status,fault==='none'?'passed':'failed');
-  if (fault==='none') assert.equal(guard.beforeAgentFinalize({},context),undefined);
+  assert.equal(guard.verificationForRun('run').status,KEEPS_PROOF.has(fault)?'passed':'failed');
+  if (KEEPS_PROOF.has(fault)) assert.equal(guard.beforeAgentFinalize({},context),undefined);
 });
 
 for (const wrapped of [false,true]) test(`unfinished or stale static receipt cannot restore proof after a newer failure: wrapped=${wrapped}`,()=>{
@@ -487,7 +497,9 @@ test('a static inspection that records page errors cannot preserve earlier inter
   guard.afterToolCall({...first.event,result:first.result},first.ctx);
   assert.equal(guard.verificationForRun('run').status,'passed');
   const staticPlan={...plan(preview),viewport:{width:1024,height:768},steps:[{action:'assert-visible',locator:{selector:'button'}}]};
-  assert.equal(boundStaticPreviewInspection(staticPlan,{details:withPageErrors(staticPlan)},preview),undefined);
+  const proof=boundVisibilityInspection(plan(preview),{details:receipt(plan(preview))},preview);
+  assert.equal(preservesVisibilityInspection(proof,staticPlan,{details:receipt(staticPlan)},preview),true);
+  assert.equal(preservesVisibilityInspection(proof,staticPlan,{details:withPageErrors(staticPlan)},preview),false);
   const errored=erroredInspection(guard,staticPlan,{id:'static-errors'});
   guard.afterToolCall({...errored.event,result:errored.result},errored.ctx);
   assert.equal(guard.verificationForRun('run').status,'failed');

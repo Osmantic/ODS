@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   hasVisibilityTransitionPlan,
   inspectionControls,
@@ -99,8 +100,39 @@ function boundInspection(params, result, preview, acceptsPlan) {
     if (result?.isError) return undefined;
     const {request, receipt} = boundReceipt(params, result, preview) ?? {};
     if (receipt?.status !== 'passed' || inspectionPageErrors(receipt) || !acceptsPlan(request)) return undefined;
-    return Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256, planSha256: receipt.planSha256});
+    return Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256, planSha256: receipt.planSha256,
+      transitions: observedTransitions(request)});
   } catch { return undefined; }
+}
+
+// What a plan asserted at load (before any click) and after exactly one click,
+// with that click's locator. Assertions after a second click are not used.
+function oneClickAssertions(request) {
+  const seen = [];
+  let clicks = 0, control;
+  for (const step of request.steps) {
+    if (step.action === 'click') { clicks += 1; control = step.locator; }
+    else if (clicks <= 1) seen.push({locator: step.locator, action: step.action, control});
+  }
+  return seen;
+}
+
+// The changes a passing plan observed: a locator asserted at load and in the
+// other state after one click of a control, which produced that result.
+function observedTransitions(request) {
+  const seen = oneClickAssertions(request);
+  return Object.freeze(seen.filter(after => after.control && seen.some(before => !before.control &&
+    before.action !== after.action && isDeepStrictEqual(before.locator, after.locator)))
+    .map(after => Object.freeze({locator: structuredClone(after.locator), control: structuredClone(after.control),
+      result: after.action})));
+}
+
+// After one click of a proved control, the plan asserted its proved target in
+// the other state than the proved result: it tested that change and it failed.
+function failsObservedTransition(request, transitions) {
+  return oneClickAssertions(request).some(seen => seen.control && transitions.some(proved =>
+    isDeepStrictEqual(seen.locator, proved.locator) && isDeepStrictEqual(seen.control, proved.control) &&
+    seen.action !== proved.result));
 }
 
 // Identifies only that this snapshot's latest bound receipt recorded page
@@ -130,11 +162,18 @@ export function boundVisibilityInspection(params, result, preview) {
   return boundInspection(params, result, preview, hasVisibilityTransitionPlan);
 }
 
-// A read-only inspection may preserve existing interaction evidence. It cannot
-// establish that evidence, and a click plan without a transition is not static.
-export function boundStaticPreviewInspection(params, result, preview) {
-  return boundInspection(params, result, preview,
-    request => request.steps.every(step => step.action !== 'click'));
+// A later passing inspection of the proof's snapshot keeps that proof, with or
+// without a click: each inspection loads the unchanged snapshot afresh, so its
+// passing steps observed nothing against the earlier transition. Tower2 round
+// 108 passed assert-hidden(heading), click("#soldOutBtn"), assert-visible(heading),
+// then assert-visible("h1"), click("#soldOutBtn"), assert-visible(heading), and
+// the second pass dropped the first. It never establishes a proof. It keeps
+// none when, after one click of the proved control, it asserted the proved
+// target in the other state; a failed or incomplete receipt, another snapshot
+// or page errors keep none either.
+export function preservesVisibilityInspection(proof, params, result, preview) {
+  return visibilityInspectionMatches(proof, preview) && Boolean(boundInspection(params, result, preview,
+    request => !failsObservedTransition(request, proof.transitions ?? [])));
 }
 
 export function visibilityInspectionMatches(proof, preview) {
