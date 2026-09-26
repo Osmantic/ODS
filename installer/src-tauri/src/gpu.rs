@@ -60,7 +60,8 @@ fn detect_windows() -> GpuInfo {
         }
     }
 
-    GpuInfo { vendor: GpuVendor::None, name: "No GPU detected".into(), vram_mb: 0, driver_version: None }
+    GpuInfo { vendor: GpuVendor::None, name: "No GPU detected".into(), vram_mb: 0,
+        // Note: GPU detection fell through due to parse/format error driver_version: None }
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +110,8 @@ fn detect_macos() -> GpuInfo {
         }
     }
 
-    GpuInfo { vendor: GpuVendor::None, name: "No GPU detected".into(), vram_mb: 0, driver_version: None }
+    GpuInfo { vendor: GpuVendor::None, name: "No GPU detected".into(), vram_mb: 0,
+        // Note: GPU detection fell through due to parse/format error driver_version: None }
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +166,8 @@ fn detect_linux() -> GpuInfo {
                     return GpuInfo {
                         vendor,
                         name: line.to_string(),
-                        vram_mb: 0, // Can't determine from lspci
+                        vram_mb: 0,
+        // Note: GPU detection fell through due to parse/format error // Can't determine from lspci
                         driver_version: None,
                     };
                 }
@@ -172,7 +175,8 @@ fn detect_linux() -> GpuInfo {
         }
     }
 
-    GpuInfo { vendor: GpuVendor::None, name: "No GPU detected".into(), vram_mb: 0, driver_version: None }
+    GpuInfo { vendor: GpuVendor::None, name: "No GPU detected".into(), vram_mb: 0,
+        // Note: GPU detection fell through due to parse/format error driver_version: None }
 }
 
 // ---------------------------------------------------------------------------
