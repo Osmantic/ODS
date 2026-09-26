@@ -24,7 +24,10 @@ test('does not infer arbitrary plugins, recursive envelopes, or conflicting wrap
     nested('pixel_ops_run',{action:'arbitrary'}),
     {...nested('web_fetch',{url:'https://docs.example.org'}),headers:{Authorization:'untrusted'}},
     nested('tool_call',nested('web_fetch',{url:'https://docs.example.org'})),
-  ]) assert.equal(invoke(createToolLoopGuard(),'tool_call',params),undefined);
+  // tool_call is not a catalog id, so OpenClaw could only reject these. The
+  // guard answers each with the direct route and never rewrites it into a call.
+  ]) assert.deepEqual(invoke(createToolLoopGuard(),'tool_call',params),
+    {block:true, blockReason:'tool_call is its own tool, not a tool_call id. Call tool_call directly with the inner id and args.'});
 });
 
 test('normalized public reads retain private destination guards', () => {
