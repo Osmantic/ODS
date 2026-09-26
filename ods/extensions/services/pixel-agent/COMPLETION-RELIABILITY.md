@@ -29,6 +29,27 @@ after conservative normalization only: scheme and host case, default ports,
 the fragment and one trailing path slash. The query string is kept. A link the
 answer itself labels as unverified or not opened stays as written.
 
+`web_fetch` decodes any 2xx body as text, so a PDF or an image comes back as
+undecoded bytes (tower2 round 061 and tower1, 2026-09-25: the NVIDIA RTX 5070
+user guide PDF, listed as read). Such a result is not a read
+(`document-body.mjs`, by content type or by the bytes themselves): it counts
+for no citation, the host's list of pages read or the stop synthesis, and its
+persisted result is replaced by a receipt saying so which, for a PDF, points
+to `pixel_ods_web_extract`. The shared reader extracts a PDF's text
+(`pdf-text.mjs`: the first 10 pages of at most 8 MB) or returns a not-read
+receipt with the type, size and reason (too large, timeout, encrypted, no
+extractable text, unsupported, unavailable). Extraction runs in its own Node
+process (`pdf-text-worker.mjs`), at most two at a time, started with an empty
+environment and a 192 MB V8 heap and killed at a deadline of at most 5
+seconds and half the read's timeout. Running out of that heap ends only that
+process, and the PDF is reported as too large; the gateway keeps running. The
+process is not a sandbox (it has the gateway's file and network access; the
+extractor does not use them), so the bounds inside it still matter: decoded
+streams stop at 16 MB each and 48 MB per document, and font
+tables (ToUnicode maps and glyph widths) at 500,000 entries per document.
+Encrypted PDFs are not read, including the many vendor PDFs protected only by
+an owner password that other readers open without asking.
+
 Models often cite event detail links they saw on a listing page without
 opening them. Before judging the answer, the host reads those pages itself
 (`citation-verification.mjs`): at most four public URLs per answer, only for a
@@ -43,7 +64,7 @@ allowances. Nothing is read when the operator disabled or denied page reads,
 the owner excluded web access, a private-network request was denied, the run
 was cancelled, or the URL was already host-read in this run.
 
-A host read counts only when the page returns 2xx HTML or text on the cited
+A host read counts only when the page returns 2xx HTML, text or PDF text on the cited
 site (not its root) and carries the claim anchors the answer attaches to that
 citation: the words of the item's title (title field, heading, bold name, link
 text or leading proper nouns) together, and the attributed date (day, month

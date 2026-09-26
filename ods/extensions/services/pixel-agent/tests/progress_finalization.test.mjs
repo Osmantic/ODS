@@ -620,7 +620,10 @@ test('the compaction window stays bounded: a further non-summarization call stil
 // refused with the finalization instruction. The model spent its single answer
 // turn on another web_search (298), with no text, so the research stop text
 // applies. Titles are those the transcript kept (some details were truncated
-// when persisted); the overflow compaction at 265-266 is omitted.
+// when persisted); the overflow compaction at 265-266 is omitted. Row 276 was
+// the NVIDIA user guide PDF: web_fetch returned HTTP 200 with contentType
+// application/pdf and its bytes undecoded (extractor raw, 2,444 U+FFFD in
+// 15,994 characters), so it is not a page read.
 const R061 = {
   vcb2: 'https://www.videocardbenchmark.net/compare/5940vs5958/GeForce-RTX-5070-vs-Radeon-RX-9070',
   nvidia: 'https://www.nvidia.com/en-us/geforce/graphics-cards/50-series/rtx-5070-family',
@@ -661,6 +664,10 @@ function round061Replay({finalTurn}) {
   const wrapped = title => `\n<<<EXTERNAL_UNTRUSTED_CONTENT id="r61">>>\nSource: Web Fetch\n---\n${title}\n<<<END_EXTERNAL_UNTRUSTED_CONTENT id="r61">>>`;
   const page = (url, {title, finalUrl = url} = {}) => ({content: [{type: 'text', text: `Fetched ${url}`}],
     details: {status: 200, url, finalUrl, text: `Evidence from ${finalUrl}`, ...(title ? {title: wrapped(title)} : {})}});
+  // The recorded start of row 276's body; U+FFFD stands for the rest.
+  const pdfBytes = url => ({content: [{type: 'text', text: `Fetched ${url}`}], details: {status: 200, url, finalUrl: url,
+    contentType: 'application/pdf', extractor: 'raw',
+    text: wrapped(`%PDF-1.7\r%\ufffd\ufffd\ufffd\ufffd\r\n942 0 obj\r<</Linearized 1/L 5381674/O 94${'\ufffd'.repeat(400)}`)}});
   const extracted = url => ({content: [{type: 'text', text: `Targeted evidence from ${url}`}],
     details: {boundary: 'public-web-read-only', matched: true, source_url: url}});
   const fail = error => ({isError: true, content: [{type: 'text', text: JSON.stringify({status: 'error', tool: 'web_fetch', error})}],
@@ -683,7 +690,7 @@ function round061Replay({finalTurn}) {
   search('NVIDIA RTX 5070 vs AMD RX 9070 1440p benchmark comparison site:techpowerup.com');         // 270
   call('web_fetch', {url: R061.tpuSpecs}, page(R061.tpuSpecs, {title: R061_TITLES.tpuSpecs}));     // 272
   search('"GeForce RTX 5070" board power TDP watts official NVIDIA documentation');                 // 274
-  call('web_fetch', {url: R061.nvidiaGuide}, page(R061.nvidiaGuide));                               // 276
+  call('web_fetch', {url: R061.nvidiaGuide}, pdfBytes(R061.nvidiaGuide));                           // 276
   search('AMD Radeon RX 9070 official specifications TDP power consumption AMD website');           // 278
   call('web_fetch', {url: R061.techspot}, fail('Web fetch failed (403)'));                          // 280 repeated page: refused
   search('NVIDIA RTX 5070 vs AMD RX 9070 1440p benchmark comparison site:ign.com');                 // 282, the last search
@@ -714,8 +721,9 @@ test('round 061 replay: the research stop grants the answer turn, and a tool cal
   assert.deepEqual(stop, {block: true, blockReason: PROGRESS_FINALIZATION_INSTRUCTION}, 'the stop carries the instruction');
   assert.deepEqual(late, {block: true, blockReason: RUN_PROGRESS_STOP_REASON});
   assert.deepEqual(aborts, [[context.sessionId, context.sessionKey]]);
-  // What round 061 delivered, now followed by the host's list of the eight
-  // distinct pages read (repeated reads of one page count once).
+  // What round 061 delivered, now followed by the host's list of the seven
+  // distinct pages read (repeated reads of one page count once). The PDF whose
+  // bytes web_fetch returned undecoded is not among them.
   const plain = title => title.replace(/[[\]]/g, ' ').replace(/\s+/g, ' ');
   assert.equal(guard.deliveryVerificationForRun(context.runId).text, WEB_LOOP_DELIVERY_REASON +
     `\n\n${PROGRESS_READ_PAGES_HEADING}\n\n` + [
@@ -724,7 +732,6 @@ test('round 061 replay: the research stop grants the answer turn, and a tool cal
       `- <${R061.amd}>`,
       `- ${plain(R061_TITLES.vcb4)} — <${R061.vcb4}>`,
       `- ${R061_TITLES.tpuSpecs} — <${R061.tpuSpecs}>`,
-      `- <${R061.nvidiaGuide}>`,
       `- <${R061.ign}>`,
       `- ${R061_TITLES.tpuDriver} — <${R061.tpuDriver}>`,
     ].join('\n'));

@@ -1,6 +1,7 @@
 // A bounded completion check, not an executor. All recovered calls still go
 // through the normal tool policy, cancellation, permission and loop guards.
 import { pageExcerpt, requestTerms } from './page-excerpt.mjs';
+import { webFetchBinaryBody } from './document-body.mjs';
 const normalize = value => String(value ?? '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
 const WEB = new Set(['web_search', 'web_fetch', 'pixel_ods_web_extract', 'pixel_ods_research', 'browser']);
 const DISCOVERY = new Set(['tool_search', 'tool_describe']);
@@ -29,8 +30,9 @@ function sourceReadsRequested(text) {
 function openedSourceUrls(tool, result) {
   const details = result?.details;
   let candidates = [];
+  // web_fetch returns a PDF or image as undecoded bytes: not a page read.
   if (tool === 'web_fetch' && Number.isInteger(details?.status) && details.status >= 200 && details.status < 300 &&
-      typeof details.text === 'string' && details.text.trim()) {
+      typeof details.text === 'string' && details.text.trim() && !webFetchBinaryBody(details)) {
     candidates = [details.url, details.finalUrl];
   } else if (tool === 'pixel_ods_web_extract' && details?.boundary === 'public-web-read-only' &&
       (details.matched === true || details.mode === 'overview') &&
@@ -201,6 +203,8 @@ function sourceUrls(result) {
   }
   const urls = [];
   for (const document of documents) {
+    // A web_fetch receipt of undecoded binary bytes returned no source.
+    if (webFetchBinaryBody(document) && Number.isInteger(document?.status)) continue;
     const entries = [...(Array.isArray(document?.results) ? document.results : []),
       ...(Array.isArray(document?.sources) ? document.sources : []), ...(document?.url ? [document] : [])];
     for (const entry of entries.slice(0,40)) {
