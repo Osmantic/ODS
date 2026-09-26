@@ -36,6 +36,7 @@ function Install-ODSPortalDockerDesktop { $script:calls.Add('docker-install'); $
 function Test-ODSPortalDockerEngine($Desktop) { return $script:engineUp }
 function Start-ODSPortalDockerDesktop($Desktop) { $script:calls.Add('docker-start'); $script:engineUp = $true }
 function Enable-ODSPortalDockerWslIntegration($Desktop, [string]$Distro) { $script:calls.Add('docker-integrate:' + $Distro); if ($script:scenario -ne 'docker') { $script:integrated = $true } }
+function Enable-ODSPortalSystemd([string]$Distro) { $script:calls.Add('systemd:' + $Distro); if ($script:scenario -eq 'init') { $script:scenario = 'ready' } }
 function Register-ODSPortalResume([string]$InstallerRoot, [System.Collections.IDictionary]$Options) { $script:calls.Add('resume') }
 function Register-ODSPortalDistro([string]$Distro) { $script:calls.Add('register:' + $Distro); $script:registerNeeded = $false }
 function Read-ODSPortalLinuxAccount { $script:calls.Add('account-prompt'); return [pscustomobject]@{ Name='maria'; Password='not-logged' } }
@@ -82,7 +83,7 @@ function Invoke-ODSPortalWsl([string[]]$Arguments) {
         '^--distribution Ubuntu --exec ps -p 1 -o comm=$' { $output='systemd'; break }
         '^--distribution Ubuntu --exec docker (info|compose version)$' { break }
         '^--distribution Ubuntu-24.04 --exec id -u$' { $output='1000'; if ($script:scenario -in @('root','resume-user')) { $output='0' }; break }
-        '^--distribution Ubuntu-24.04 --exec ps -p 1 -o comm=$' { $output='systemd'; if ($script:scenario -eq 'init') { $output='init' }; break }
+        '^--distribution Ubuntu-24.04 --exec ps -p 1 -o comm=$' { $output='systemd'; if ($script:scenario -in @('init','init-stuck')) { $output='init' }; break }
         '^--distribution Ubuntu-24.04 --exec docker info$' { if ($script:scenario -eq 'docker' -or -not $script:integrated) { $code=1 }; break }
         '^--distribution Ubuntu-24.04 --exec docker compose version$' { if ($script:scenario -eq 'compose') { $code=1 }; break }
         '^--distribution Ubuntu-24.04 --exec /usr/lib/wsl/lib/nvidia-smi -L$' { $output='GPU 0: NVIDIA GeForce RTX 4060 (UUID: GPU-00000000)'; if ($script:scenario -eq 'gpu-hidden') { $code=1; $output='command not found' }; break }
@@ -123,7 +124,7 @@ try {
     Check (($script:capturedArguments -join ' ') -match '--all --no-langfuse') 'explicit disable follows all'
     Check ($script:capturedRoot -eq '/home/user/ODS data') 'Linux install path forwarded intact'
     Check ($script:calls.Contains('--distribution Ubuntu-24.04 --exec docker compose version')) 'checks Compose inside selected distro'
-    foreach ($failure in @('admin','native','wsl1','root','init','docker','compose','old-wsl','inbox-wsl')) {
+    foreach ($failure in @('admin','native','wsl1','root','init-stuck','docker','compose','old-wsl','inbox-wsl')) {
         Reset-Scenario
         $script:scenario = $failure
         $rejected = $false
@@ -131,6 +132,17 @@ try {
         Check $rejected "$failure blocks installation"
         Check (-not $script:calls.Contains('install:Ubuntu-24.04')) "$failure never falls back or delegates"
     }
+    Reset-Scenario
+    $script:scenario = 'init'
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'existing Ubuntu without systemd is fixed after consent'
+    $order = $script:calls.ToArray()
+    Check ([Array]::IndexOf($order, 'systemd:Ubuntu-24.04') -ge 0 -and [Array]::IndexOf($order, 'systemd:Ubuntu-24.04') -lt [Array]::IndexOf($order, 'install:Ubuntu-24.04')) 'systemd is turned on before ODS installs'
+    Check (@($script:calls | Where-Object { $_ -eq '--distribution Ubuntu-24.04 --exec ps -p 1 -o comm=' }).Count -eq 2) 'PID 1 is rechecked after turning on systemd'
+    Reset-Scenario
+    $script:scenario = 'init'; $script:allowPreparation = $false
+    $rejected = $false
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $rejected = $true }
+    Check ($rejected -and -not $script:calls.Contains('systemd:Ubuntu-24.04')) 'declined systemd change edits nothing and stops'
     Reset-Scenario
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'host without an NVIDIA driver installs'
     Check (-not ($script:calls -match 'nvidia-smi|Runtimes')) 'non-NVIDIA host performs no GPU probes'

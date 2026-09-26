@@ -80,6 +80,18 @@ if ($IsLinux) {
         Check ([Text.Encoding]::UTF8.GetString($bytes) -ceq "maria:Senha çã:1 `"x`"`n") 'password is sent as UTF-8 with a single LF'
         Check (-not ($bytes -contains 13)) 'password stdin contains no carriage return'
         Check ((Get-Content -LiteralPath (Join-Path $fake 'args') -Raw).Trim() -eq '--distribution Ubuntu-24.04 --user root --exec chpasswd') 'password never appears in arguments'
+
+        # Turning on systemd for an existing Ubuntu keeps its other wsl.conf settings.
+        $env:PATH = $fake + [IO.Path]::PathSeparator + $env:PATH
+        try { $null = Set-ODSPortalWslConf 'Ubuntu-24.04' @('boot', 'systemd', 'true') } finally { $env:PATH = $previousPath }
+        Check ((Get-Content -LiteralPath (Join-Path $fake 'args') -Raw).Trim() -eq '--distribution Ubuntu-24.04 --user root --exec python3 - boot systemd true') 'wsl.conf writer runs as root with fixed arguments'
+        $conf = Join-Path $fake 'wsl.conf'
+        Set-Content -LiteralPath $conf -Value "[user]`ndefault=maria`n`n[network]`nhostname=pc`n" -NoNewline
+        $writer = (Get-Content -LiteralPath (Join-Path $fake 'stdin') -Raw).Replace("'/etc/wsl.conf'", "'" + $conf + "'")
+        $writer | python3 - boot systemd true
+        Check ($LASTEXITCODE -eq 0) 'wsl.conf writer succeeds on an existing file'
+        $written = Get-Content -LiteralPath $conf -Raw
+        Check ($written -match '(?m)^default = maria$' -and $written -match '(?m)^hostname = pc$' -and $written -match '(?ms)^\[boot\]\s+systemd = true') 'wsl.conf writer adds systemd and keeps existing settings'
     } finally { Remove-Item -LiteralPath $fake -Recurse -Force }
 }
 
