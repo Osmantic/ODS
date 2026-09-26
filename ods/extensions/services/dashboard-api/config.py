@@ -869,3 +869,22 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: parse_semver_tuple ──────────────────────────
+def parse_semver_tuple(version: Any) -> tuple[int, int, int] | None:
+    """Parse a semver string ``'MAJOR.MINOR.PATCH'`` into an int tuple.
+
+    Accepts ``'v'``-prefixed versions (e.g. ``'v1.2.3'``).
+    Returns ``None`` for None, empty, or non-semver strings.
+    """
+    if not version:
+        return None
+    raw = str(version).strip().lstrip("vV")
+    parts = raw.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        return (int(parts[0]), int(parts[1]), int(parts[2]))
+    except ValueError:
+        return None
