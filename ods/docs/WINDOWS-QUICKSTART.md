@@ -28,6 +28,7 @@ Every stage asks before changing anything. Answer `y` to continue.
 4. **Checks.** Setup requires WSL 0.67.6 or newer, WSL2, a non-root default user and systemd, and stops with instructions otherwise. If an existing Ubuntu has systemd off, setup asks to turn it on (`[boot] systemd=true` in `/etc/wsl.conf`, other settings kept) and restarts that distribution.
 5. **Docker connection.** Setup starts Docker Desktop if needed and waits up to 10 minutes for its engine. It then waits up to a minute for `docker info` to work inside Ubuntu, because Docker Desktop connects to a distribution a few seconds after it starts. If it still does not, setup shows the exact steps (Docker Desktop > Settings > Resources > WSL integration > turn on the distribution > **Apply & restart**), brings Docker Desktop to the front and continues by itself as soon as Docker answers inside Ubuntu. Setup never edits Docker's settings or stops Docker Desktop. `docker compose version` must also work.
    With an NVIDIA GPU, update the Windows driver to 570 or newer first. Setup checks that Ubuntu sees the GPU and that Docker Desktop exposes its NVIDIA runtime, and stops before any Linux changes if not. Never install NVIDIA drivers or the container toolkit inside Ubuntu; see the [WSL2 GPU guide](WINDOWS-WSL2-GPU-GUIDE.md).
+   With an AMD GPU (and no NVIDIA driver), the model runs in Lemonade Server on Windows, because Docker Desktop passes only NVIDIA GPUs into WSL containers. Setup reads the GPU and its memory in Windows, picks the model the native Windows installer would (for example `qwen3.5-9b` with 64K context on a 16 GB card), asks to install the pinned Lemonade Server for your Windows user, downloads the model once to `%LOCALAPPDATA%\ODS\lemonade\models` (checksum verified), and runs Lemonade on `127.0.0.1` through the `ODSLemonadeRuntime` scheduled task, which starts at sign-in. It loads the model on the GPU before Ubuntu is touched, then passes `--lemonade-url`, `--lemonade-model` and the GPU tier to the Linux installer; containers reach Lemonade at `host.docker.internal`. An AMD GPU with under 4 GB, or declining Lemonade, keeps the CPU route. A Lemonade release newer than the pinned one stops setup with instructions.
 6. **ODS.** The Linux installer runs with `--pixel --no-hermes --no-openclaw`. When Ubuntu asks for your `[sudo] password`, type the Ubuntu password; nothing appears while you type.
 7. **Verification.** The wrapper verifies Pixel gateway/ingress services, private ingress health, the dashboard HTTP endpoint and the authenticated Portal availability API. A dashboard that opens while its agent is unavailable is a failed verification. On success it opens Portal and creates an **ODS Portal** desktop shortcut (not in `-NonInteractive` runs). Send a message in Portal to verify model generation too.
 
@@ -84,7 +85,7 @@ For failures, inspect the installer log and `sudo journalctl -u openclaw-gateway
 
 ## GPU placement
 
-Pixel is the agent, not the model server. This change does not add a Windows GPU bridge. NVIDIA needs a supported driver and GPU access in WSL/Docker. AMD/Lemonade on Windows does not imply ROCm support in WSL. Use a supported detected backend, CPU, or an explicitly configured reachable endpoint; external endpoints are not automatically managed. See [WSL2 GPU guide](WINDOWS-WSL2-GPU-GUIDE.md).
+Pixel is the agent, not the model server. NVIDIA runs the model inside WSL (Docker Desktop's NVIDIA runtime). AMD runs it in Lemonade Server on Windows (see step 5); ROCm is not used in WSL. Without a usable GPU the model runs on the CPU. See [WSL2 GPU guide](WINDOWS-WSL2-GPU-GUIDE.md).
 
 ## Existing native Windows installations
 
@@ -109,5 +110,7 @@ cd ~/ods
 ```
 
 Do not unregister Ubuntu to remove only ODS.
+
+On AMD machines, also remove the Windows side from PowerShell: `Unregister-ScheduledTask -TaskName ODSLemonadeRuntime -Confirm:$false`, uninstall **Lemonade Server** in Settings > Apps, and delete `%LOCALAPPDATA%\ODS\lemonade` (the downloaded model).
 
 References: [Microsoft WSL commands](https://learn.microsoft.com/en-us/windows/wsl/basic-commands), [Docker WSL integration](https://docs.docker.com/desktop/features/wsl/).
