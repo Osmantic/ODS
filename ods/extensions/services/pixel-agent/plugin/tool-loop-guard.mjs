@@ -38,7 +38,7 @@ import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
   boundInspectionPageErrors, pageErrorRepairInstruction, visibilityInspectionMatches, visibilityInspectionInstruction,
-  requestedVisibilityTransition, inheritedVisibilityTransition } from './preview-interaction-assurance.mjs';
+  requestedVisibilityTransition, inheritedVisibilityTransition, correctableInspectionFailure } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
@@ -9854,11 +9854,18 @@ export function createToolLoopGuard({
         state.pendingExecSessions.has(selected.params.sessionId);
       const effectiveProgressTool = toolName === 'tool_call'
         ? String(event.params?.id ?? '').split(':').at(-1) : toolName;
+      // A host-guided inspection failure (correctableInspectionFailure) may
+      // wait one result for its corrected attempt. tool_result_persist
+      // classifies the same receipt the same way, so hook order does not
+      // change the accounting (see there for a capped persisted copy).
       state.progressBudget.observeResult({callId: toolCallId, tool: toolName,
         params: event.params, failed: failedToolOutcome(event), pending: running,
         discovery:state.workspaceLaneRequested && (EXTENSION_METADATA_TOOLS.has(effectiveProgressTool) ||
           effectiveProgressTool === 'pixel_ops_inventory'),
-        lane:toolProgressLane(state, effectiveProgressTool,toolName === 'tool_call' ? event.params?.id : undefined)});
+        lane:toolProgressLane(state, effectiveProgressTool,toolName === 'tool_call' ? event.params?.id : undefined),
+        correctable: pendingToolRun?.selectedToolName === PREVIEW_INSPECTION_TOOL && pendingToolRun.runId === runId &&
+          correctableInspectionFailure((toolName === PREVIEW_INSPECTION_TOOL ? event
+            : toolSearchEventEnvelope(event, PREVIEW_INSPECTION_TOOL, 'pixel-ods'))?.result)});
     }
     if (
       toolName === "tool_call" &&
@@ -11100,9 +11107,18 @@ export function createToolLoopGuard({
       pending?.transport === 'tool_call' ? pending.selectedToolTarget : undefined);
     // Native loop blocks can bypass before/after_tool_call entirely. Count
     // their persisted error receipt too; call IDs prevent double accounting.
-    if (state && message.isError === true) {
+    // An inspection is classified here exactly as in after_tool_call, which
+    // no longer finds this pending run if persistence came first. A Tool
+    // Search inspection persists isError false with its failure inside the
+    // envelope, so that failure is counted here too. If OpenClaw capped the
+    // persisted details, the receipt is gone and it is charged as today.
+    const inspection = pending?.selectedToolName === PREVIEW_INSPECTION_TOOL && !toolCallId.startsWith('tool_search_code:')
+      ? message.toolName === PREVIEW_INSPECTION_TOOL ? message
+        : message.toolName === 'tool_call' ? persistedToolSearchEnvelope(message, PREVIEW_INSPECTION_TOOL, 'pixel-ods')?.result : undefined
+      : undefined;
+    if (state && (message.isError === true || failedToolOutcome({result: inspection}))) {
       state.progressBudget.observeResult({callId: toolCallId, tool: message.toolName,
-        failed: true, lane:progressLane});
+        failed: true, lane:progressLane, correctable: correctableInspectionFailure(inspection)});
     }
     // Transcript copy only: OpenClaw applies tool_result_persist to the saved
     // session, not to the live context of this run. The finalization
