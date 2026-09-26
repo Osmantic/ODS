@@ -626,8 +626,12 @@ test('tower2 round 108: a later passing check with a click keeps the transition 
 test('tower2 round 108: a later failed transition of the target, a republication or a new session still revokes that proof', async t => {
   {
     // A page on which the click leaves the card hidden at another width.
-    const unrevealed = {before: ROUND108_PAGE.before,
-      after: page([[{selector: 'h1'}, 'visible'], [SOLD_OUT, 'hidden'], [CARD, 'hidden'], [OWNER_HEADING, 'hidden']])};
+    const HEADING_CSS = {selector: '#midnightCard h3'}, BUTTON_CSS = {selector: 'button#soldOutBtn'};
+    const unrevealed = {
+      before: page([[{selector: 'h1'}, 'visible'], [SOLD_OUT, 'visible'], [BUTTON_CSS, 'visible'], [CARD, 'hidden'],
+        [OWNER_HEADING, 'hidden'], [HEADING_CSS, 'hidden']]),
+      after: page([[{selector: 'h1'}, 'visible'], [SOLD_OUT, 'hidden'], [BUTTON_CSS, 'hidden'], [CARD, 'hidden'],
+        [OWNER_HEADING, 'hidden'], [HEADING_CSS, 'hidden']])};
     const {r} = await replayRound108(t, undefined, unrevealed);
     assert.equal(r.verification().status, 'passed');
     const desktop = {...ROUND108_TRANSITION.arguments, viewport: {width: 1280, height: 720}};
@@ -649,6 +653,22 @@ test('tower2 round 108: a later failed transition of the target, a republication
       {action: 'click', locator: SOLD_OUT}, {action: 'assert-hidden', locator: OWNER_HEADING}]}, 'unchanged-target');
     assert.equal(unchanged.details.status, 'passed');
     assert.equal(r.verification().status, 'failed');
+    // The same failed change under other locators, which the model switches
+    // between plans (role/name, then "#soldOutBtn" here), at either width:
+    // the card that holds the heading, the heading by CSS, the button by
+    // another selector. Review of #6754.
+    const mobile = ROUND108_TRANSITION.arguments;
+    for (const [id, args, steps] of [
+      ['card', desktop, [{action: 'assert-hidden', locator: CARD}, {action: 'click', locator: SOLD_OUT}, {action: 'assert-hidden', locator: CARD}]],
+      ['heading-css', mobile, [{action: 'click', locator: SOLD_OUT}, {action: 'assert-hidden', locator: HEADING_CSS}]],
+      ['button-css', mobile, [{action: 'click', locator: BUTTON_CSS}, {action: 'assert-hidden', locator: OWNER_HEADING}]],
+    ]) {
+      await r.inspect(ROUND108_TRANSITION.arguments, `transition-before-${id}`);
+      assert.equal(r.verification().status, 'passed');
+      const aliased = await r.inspect({...args, steps}, `unchanged-${id}`);
+      assert.equal(aliased.details.status, 'passed', id);
+      assert.equal(r.verification().status, 'failed', id);
+    }
   }
   {
     const {r, create} = await replayRound108(t);

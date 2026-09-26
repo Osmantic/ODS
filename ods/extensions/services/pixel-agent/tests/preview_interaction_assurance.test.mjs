@@ -376,14 +376,16 @@ test('bounded session preview eviction also evicts the associated obligation',()
   assert.doesNotMatch(guard.verificationForRun(next.ctx.runId).text,/show\/hide interaction/);
 });
 
-// A passing plan with a click but no transition observed nothing against the
-// proof (tower2 round 108), and one without a click did not test it; one that
-// saw the proved target unchanged by the proved control tested and failed it.
-const KEEPS_PROOF=new Set(['none','click-without-transition','target-visible-at-load','other-control-unchanged']);
+// A passing plan with a click whose later assertions all show the proved
+// result (tower2 round 108) or none, or a plan without a click, cannot show the
+// proved change failing. A hidden element after any click can: it may be the
+// proved target under another locator or with another control.
+const KEEPS_PROOF=new Set(['none','click-without-transition','target-visible-at-load','other-control-proved-state']);
 for (const wrapped of [false,true]) for (const fault of [
   'none','no-prior-proof','failed','unavailable','inner-error','outer-error','receipt-sha','receipt-plan',
   'params','session','session-key','source','changed-bytes','click-without-transition','failed-click',
-  'target-unchanged-by-click','target-visible-at-load','other-control-unchanged',
+  'target-unchanged-by-click','target-visible-at-load','other-control-unchanged','other-control-proved-state',
+  'aliased-target-unchanged','aliased-control-unchanged',
 ]) test(`a later passing inspection preserves only existing bound interaction: wrapped=${wrapped}, fault=${fault}`,()=>{
   const {guard,preview}=setup();
   if (fault!=='no-prior-proof') {
@@ -401,6 +403,9 @@ for (const wrapped of [false,true]) for (const fault of [
   if (fault==='target-unchanged-by-click') params.steps.push(control,{action:'assert-hidden',locator:{selector:'#details'}});
   if (fault==='target-visible-at-load') params.steps[1].action='assert-visible';
   if (fault==='other-control-unchanged') params.steps.push({action:'click',locator:{selector:'#other'}},{action:'assert-hidden',locator:{selector:'#details'}});
+  if (fault==='other-control-proved-state') params.steps.push({action:'click',locator:{selector:'#other'}},{action:'assert-visible',locator:{selector:'button'}});
+  if (fault==='aliased-target-unchanged') params.steps.push(control,{action:'assert-hidden',locator:{selector:'p#details'}});
+  if (fault==='aliased-control-unchanged') params.steps.push({action:'click',locator:{selector:'#show'}},{action:'assert-hidden',locator:{selector:'#details'}});
   const next=inspection(guard,params,{wrapped,id:'desktop-static'});
   const result=structuredClone(next.result),event={...next.event},ctx={...next.ctx};
   const inner=wrapped?result.details.result:result;
@@ -419,6 +424,51 @@ for (const wrapped of [false,true]) for (const fault of [
   assert.equal(guard.verificationForRun('run').status,KEEPS_PROOF.has(fault)?'passed':'failed');
   if (KEEPS_PROOF.has(fault)) assert.equal(guard.beforeAgentFinalize({},context),undefined);
 });
+
+// Review of #6754: which proofs a later passing plan with a click keeps. A
+// change the proof saw only after a preparatory or second click names no
+// clicked control, so any later click can test it. A proof may prove several
+// changes; each later assertion after a click must be in the state all of
+// them produced, or be one proved target, exactly, in its proved state.
+{
+  const SHOW={role:'button',name:'Show details',exact:true},D={selector:'#details'},S={selector:'#summary'};
+  const step=(action,locator)=>({action,locator});
+  const PROOFS={
+    reveal:[step('assert-hidden',D),step('click',SHOW),step('assert-visible',D)],
+    conceal:[step('assert-visible',D),step('click',SHOW),step('assert-hidden',D)],
+    both:[step('assert-hidden',D),step('assert-visible',S),step('click',SHOW),step('assert-visible',D),step('assert-hidden',S)],
+    'second-click':[step('assert-hidden',D),step('click',{selector:'#menu'}),step('click',SHOW),step('assert-visible',D)],
+    'double-click':[step('assert-hidden',D),step('click',SHOW),step('click',SHOW),step('assert-visible',D)],
+    'preparatory-click':[step('click',{selector:'#accept'}),step('assert-hidden',D),step('click',SHOW),step('assert-visible',D)],
+  };
+  for (const [proof,later,keeps] of [
+    ['reveal',[step('assert-hidden',{selector:'p#details'}),step('click',SHOW),step('assert-hidden',{selector:'p#details'})],false],
+    ['reveal',[step('click',{selector:'button'}),step('assert-hidden',D)],false],
+    ['reveal',[step('assert-visible',{selector:'h1'}),step('click',{selector:'#show'}),step('assert-visible',{selector:'p#details'})],true],
+    ['reveal',[step('click',SHOW),step('assert-visible',D),step('click',SHOW),step('assert-hidden',{selector:'.toast'})],false],
+    ['conceal',[step('click',SHOW),step('assert-hidden',{selector:'p#details'})],true],
+    ['conceal',[step('click',SHOW),step('assert-visible',{selector:'p#details'})],false],
+    ['both',[step('click',SHOW),step('assert-visible',D),step('assert-hidden',S)],true],
+    ['both',[step('click',SHOW),step('assert-hidden',{selector:'p#details'})],false],
+    ['both',[step('click',SHOW),step('assert-visible',{selector:'p#summary'})],false],
+    ['second-click',[step('assert-hidden',D),step('click',SHOW),step('assert-hidden',D)],false],
+    ['second-click',[step('assert-visible',{selector:'h1'}),step('click',SHOW),step('assert-visible',D)],false],
+    ['second-click',[step('assert-visible',{selector:'h1'}),step('assert-hidden',D)],true],
+    ['double-click',[step('assert-hidden',D),step('click',SHOW),step('assert-hidden',D)],false],
+    ['preparatory-click',[step('click',SHOW)],false],
+    ['preparatory-click',[step('assert-visible',{selector:'button'})],true],
+  ]) for (const wrapped of [false,true]) for (const width of [800,1280]) {
+    test(`a later passing plan ${keeps?'keeps':'revokes'} a ${proof} proof: wrapped=${wrapped}, width=${width}, ${JSON.stringify(later)}`,()=>{
+      const {guard,preview}=setup();
+      const first=inspection(guard,{...plan(preview),steps:PROOFS[proof]},{wrapped,id:'proof'});
+      guard.afterToolCall({...first.event,result:first.result},first.ctx);
+      assert.equal(guard.verificationForRun('run').status,'passed');
+      const next=inspection(guard,{...plan(preview),viewport:{width,height:720},steps:later},{wrapped,id:'later'});
+      guard.afterToolCall({...next.event,result:next.result},next.ctx);
+      assert.equal(guard.verificationForRun('run').status,keeps?'passed':'failed');
+    });
+  }
+}
 
 for (const wrapped of [false,true]) test(`unfinished or stale static receipt cannot restore proof after a newer failure: wrapped=${wrapped}`,()=>{
   const {guard,preview}=setup();
