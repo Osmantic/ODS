@@ -869,3 +869,21 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: resolve_bool_env ────────────────────────────
+_TRUTHY  = frozenset({"1", "true", "yes", "on", "enabled"})
+_FALSY   = frozenset({"0", "false", "no", "off", "disabled"})
+
+def resolve_bool_env(key: str, default: bool = False) -> bool:
+    """Return the boolean value of an environment variable *key*.
+
+    Recognises common truthy/falsy strings (case-insensitive).
+    Returns *default* when the variable is absent or unrecognised.
+    """
+    raw = os.environ.get(key, "").strip().lower()
+    if raw in _TRUTHY:
+        return True
+    if raw in _FALSY:
+        return False
+    return default
