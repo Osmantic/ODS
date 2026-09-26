@@ -378,9 +378,12 @@ test('laptop round 107 call 24: a role/name click that matched no rendered contr
   const recorded = call(LAPTOP, 24), publish = call(LAPTOP, 23).details;
   assert.match(recorded.text, /For click, role\/name locators match only rendered elements, so a hidden element is not matched\./);
   const text = assertNotPassing(await r.through(24), recordedReceipt(recorded));
-  assert.ok(text.startsWith('Preview inspection failed. Step 3 (click) matched no rendered element with exactly that role and accessible name, ' +
-    'so nothing was clicked and later steps did not run. The accessible name comes from the rendered text, so CSS text-transform (such as uppercase) ' +
-    'changes it; a hidden control is not matched either. The published source has one button with that name ignoring case: "#showSoldOutBtn".'), text);
+  // The recorded receipt has no load-time names (an older capsule), so hiding is not the only cause named.
+  assert.equal(recorded.details.controls, undefined);
+  assert.ok(text.startsWith('Preview inspection failed. Step 3 (click) matched no element, so nothing was measured and later steps did not run. ' +
+    'For click, role/name locators match only rendered elements, so a hidden element is not matched. It may instead be rendered under another ' +
+    'name: the accessible name comes from the rendered text, so CSS text-transform (such as uppercase) changes it. The published source has ' +
+    'one button with that name ignoring case: "#showSoldOutBtn".'), text);
   assert.deepEqual(readyArgs(text), planOn(publish, {selector: '.sold-out-card'}, {selector: '#showSoldOutBtn'}));
 });
 
@@ -504,14 +507,14 @@ test('tower2 round 107 call 20: a failing extra check after a proven change gets
 });
 
 // Call 21 clicked the button by its old name after the first click renamed it.
-test('tower2 round 107 call 21: a renamed control is not called hidden', async () => {
+test('tower2 round 107 call 21: a control renamed by an earlier click gets that cause', async () => {
   const recorded = tower2Call(21), receipt = recordedReceipt(recorded);
   const text = assertNotPassing(await createWorkspacePreviewInspectTool({request: async () => structuredClone(receipt)})
     .execute('call-21', recorded.arguments), receipt);
-  assert.ok(text.startsWith('Preview inspection failed. Step 8 (click) matched no rendered element with exactly that role and accessible name, ' +
-    'so nothing was clicked and later steps did not run. The accessible name comes from the rendered text, so CSS text-transform (such as uppercase), ' +
-    'or an earlier click that changed its text, changes it; a hidden control is not matched either. Use a CSS selector such as the id of the control ' +
-    'from your source, and retry the inspection on the same published snapshot.'), text);
+  assert.ok(text.startsWith('Preview inspection failed. Step 8 (click) matched no element, so nothing was measured and later steps did not run. ' +
+    'For click, role/name locators match only rendered elements, so a hidden element is not matched. It may instead be rendered under another ' +
+    'name: the accessible name comes from the rendered text, so CSS text-transform (such as uppercase), or an earlier click that changed its text, ' +
+    'changes it. Copy the exact role and accessible name'), text);
 });
 
 // The owner's stated direction decides only where the owner's own wording
@@ -581,4 +584,36 @@ test('a hide-on-click owner whose page starts visible gets the owner-order plan 
   const args = readyArgs(text);
   assert.deepEqual(args.steps.map(step => step.action), ['assert-visible', 'click', 'assert-hidden']);
   assert.equal((await tool.execute('p4-next', args)).details.status, 'passed');
+});
+
+// With load-time control names (PR #6741's capsule), laptop round 107's
+// repaired page reports the rendered button named exactly "Show sold out"
+// while the role/name click matched nothing (text-transform: uppercase): the
+// same steps are offered with the button's published id. Names that differ
+// keep #6741's repair-or-rename feedback and get no ready call.
+test('laptop round 107: load-time names that show the requested name get the same steps with the published control', async () => {
+  const {files, receipt: publish} = published(LAPTOP, 3);
+  const html = files['index.html'].replace('<article class="event-card sold-out">', '<article class="event-card sold-out hidden">');
+  assert.notEqual(html, files['index.html']);
+  const sha256 = digest({'index.html': html}), preview = {relativeDirectory: publish.relativeDirectory, files: 1, sha256, bytes: Buffer.byteLength(html)};
+  const outline = publishedElementOutline('Midnight sold-out concert', preview,
+    {trackedContent: new Map([[`${publish.relativeDirectory}/index.html`, html]])});
+  const requirement = {target: 'Midnight sold-out concert', control: {role: 'button', name: 'Show sold out'}, initiallyHidden: true, outline};
+  const params = {siteId: `site-${sha256.slice(0, 24)}`, sha256, viewport: {width: 375, height: 667},
+    steps: [{action: 'assert-hidden', locator: LAPTOP_CARD}, {action: 'click', locator: BUTTON}, {action: 'assert-visible', locator: LAPTOP_CARD}]};
+  const request = normalizeWorkspacePreviewInspectionParams(structuredClone(params));
+  const failed = controls => ({schemaVersion: 1, kind: INSPECTION_KIND, status: 'failed', siteId: params.siteId, sha256, planSha256: inspectionPlanHash(request),
+    viewport: params.viewport, steps: [{index: 0, ...params.steps[0], before: shown(false), stable: true, status: 'passed'},
+      {index: 1, ...params.steps[1], before: {count: 0}, stable: true, status: 'failed', errorCode: 'no_match'}],
+    diagnostics: {renderedHiddenAttributeCount: 0, hiddenUntilFoundCount: 0}, blockedRequests: [], controls, scope: INSPECTION_SCOPE});
+  const run = async controls => (await createWorkspacePreviewInspectTool({request: async () => failed(controls),
+    transitionRequirement: () => requirement, guidance: () => ({direction: 'hidden'})}).execute('names', params)).content[0].text;
+  const present = await run({count: 1, items: [{role: 'button', name: 'Show sold out', visible: true, source: 'content'}]});
+  assert.ok(present.includes('a rendered button was named exactly "Show sold out", so that name is on the page;'), present);
+  const match = /with exactly these args: (\{.*?\}) These are your steps with button "Show sold out" replaced by "#showSoldOutBtn", the published CSS locator of that button\./.exec(present);
+  assert.ok(match, present);
+  assert.deepEqual(JSON.parse(match[1]), {...params, steps: [params.steps[0], {action: 'click', locator: {selector: '#showSoldOutBtn'}}, params.steps[2]]});
+  const renamed = await run({count: 1, items: [{role: 'button', name: 'Reveal the sold-out card', visible: true, source: 'aria-label', text: 'Show sold out'}]});
+  assert.match(renamed, /If the owner required that exact name, the page does not meet it:/);
+  assert.equal(READY.exec(renamed), null);
 });

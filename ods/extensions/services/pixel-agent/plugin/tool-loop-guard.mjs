@@ -37,12 +37,15 @@ import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
-  boundInspectionPageErrors, pageErrorRepairInstruction, visibilityInspectionMatches, visibilityInspectionInstruction,
-  requestedVisibilityTransition, inheritedVisibilityTransition, statedVisibilityDirection } from './preview-interaction-assurance.mjs';
+  boundInspectionPageErrors, boundInspectionControls, pageErrorRepairInstruction, visibilityInspectionMatches,
+  visibilityInspectionInstruction, requestedVisibilityTransition, inheritedVisibilityTransition,
+  statedVisibilityDirection } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
-  requestedTextDeliveryNote, publishedElementOutline } from './requested-literals.mjs';
+  requestedTextDeliveryNote, publishedElementOutline, extractRequestedControlNames, requestedControlSources,
+  requestedControlNameCheck, requestedControlNameInstruction, requestedControlNameRevisionInstruction,
+  requestedControlNameInspectionInstruction } from './requested-literals.mjs';
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -9450,6 +9453,9 @@ export function createToolLoopGuard({
           state.workspacePreviewRequired && (requestsVisibilityInteraction(ownerLaneText(ownerIntent)) || inheritsVisibility);
         // Checked only against a successful publication; never gates publishing.
         state.requestedLiterals = extractRequestedLiterals(ownerIntent);
+        // Checked only against a browser inspection's load-time names.
+        state.requestedControlNames = workspacePreviewInspectionAvailable
+          ? extractRequestedControlNames(ownerIntent) : [];
         // Names the likely affected element and control for the inspection's
         // corrective steps; a preserved behavior keeps the earlier wording.
         const requestedTransition = state.workspaceVisibilityInteractionRequired
@@ -9871,6 +9877,20 @@ export function createToolLoopGuard({
         // Selects the repair instruction only; bound to this exact snapshot.
         state.workspaceInspectionPageErrors = !event?.error
           ? boundInspectionPageErrors(inspected.params, inspected.result, state.workspacePreview) : undefined;
+        // Load-time names precede every step, so a failed step or an untested
+        // show/hide change (incomplete) keeps them. A receipt without them
+        // (older capsule, transport failure) changes no verdict, but this
+        // snapshot is not sent back for another inspection. Not gated on
+        // event.error: OpenClaw 2026.6.33 sets it for every error result of a
+        // direct call (tower2's transport), which failed and incomplete
+        // inspections are; a thrown call has no receipt to bind.
+        const controls = state.requestedControlNames?.length
+          ? boundInspectionControls(inspected.params, inspected.result, state.workspacePreview) : undefined;
+        if (controls) {
+          state.workspaceControlNamesInspected = controls.sha256;
+          if (controls.controls) state.workspaceControlNameCheck =
+            requestedControlNameCheck(state.requestedControlNames, state.workspacePreview, controls);
+        }
       }
     }
     const refusedCall = state.previewRevalidationRefusedCalls?.delete(toolCallId) === true && failedToolOutcome(event);
@@ -10283,6 +10303,10 @@ export function createToolLoopGuard({
         state.workspacePreview = preview;
         // Bound to this snapshot's bytes; checked before tracked content clears.
         state.workspaceRequestedTextCheck = requestedTextCheck(state.requestedLiterals, preview, {
+          receipt: previewEvent.result?.details, trackedContent: state.successfulWriteContentByPath,
+          workspaceRoot: state.configuredWorkspaceRoot});
+        // Repair-hint provenance only; the verdict needs an inspection.
+        state.workspaceControlNameSources = requestedControlSources(state.requestedControlNames, preview, {
           receipt: previewEvent.result?.details, trackedContent: state.successfulWriteContentByPath,
           workspaceRoot: state.configuredWorkspaceRoot});
         // An outline of these same bytes (ids, classes, the owner-named
@@ -11031,6 +11055,22 @@ export function createToolLoopGuard({
     return instruction;
   }
 
+  // The same single bounded revision for requested control names that the
+  // latest inspection of this snapshot showed missing. The repair step itself
+  // travels on that inspection's result; this is only the finalization pass.
+  function takeControlNameRevision(state) {
+    const instruction = requestedControlNameRevisionInstruction(state.workspacePreview, state.workspaceControlNameCheck);
+    if (!instruction || state.controlNameRevisionSpent || state.clientCancelled) return undefined;
+    state.controlNameRevisionSpent = true;
+    return instruction;
+  }
+
+  // Requested control names that no inspection of this snapshot answered yet.
+  function controlNamesUninspected(state) {
+    return Boolean(state.requestedControlNames?.length && state.workspacePreview &&
+      state.workspaceControlNamesInspected !== state.workspacePreview.sha256);
+  }
+
   function trustedWorkspacePreviewContinuation(state) {
     if (
       !state?.workspacePreviewRequired ||
@@ -11052,12 +11092,22 @@ export function createToolLoopGuard({
           : {stage: 'workspace-preview-requested-text',
             finalize: 'Owner-requested text is still missing after the bounded revision.'};
       }
+      if (requestedControlNameInstruction(state.workspacePreview, state.workspaceControlNameCheck)) {
+        const instruction = takeControlNameRevision(state);
+        return instruction ? {stage: 'workspace-preview-control-name', instruction}
+          : {stage: 'workspace-preview-control-name',
+            finalize: 'Owner-requested control names are still not met after the bounded revision.'};
+      }
       if (workspacePreviewReadbackComplete(state)) {
         if (state.workspaceVisibilityInteractionRequired &&
             !workspaceVisibilityInspectionPassed(state) &&
             !state.workspaceVisibilityInspectionUnavailable) return {
           stage: 'workspace-preview-interaction',
           instruction: visibilityInspectionInstruction(state.workspacePreview, state.workspaceInspectionPageErrors),
+        };
+        if (controlNamesUninspected(state) && !state.workspaceVisibilityInspectionUnavailable) return {
+          stage: 'workspace-preview-control-name-inspection',
+          instruction: requestedControlNameInspectionInstruction(state.workspacePreview, state.requestedControlNames),
         };
         return undefined;
       }
@@ -11356,12 +11406,22 @@ export function createToolLoopGuard({
         state.requestedTextNoted = state.workspacePreview.sha256;
         return `[ODS Pixel next step] ${requestedText}`;
       }
+      // An inspection showed a requested control name missing after the page
+      // scripts ran; that also needs a republish, so it precedes inspection.
+      const controlName = requestedControlNameInstruction(state.workspacePreview, state.workspaceControlNameCheck,
+        state.workspaceControlNameSources);
+      if (controlName) return `[ODS Pixel next step] ${controlName}`;
       if (workspacePreviewReadbackComplete(state)) {
         if (state.workspaceVisibilityInteractionRequired &&
             !workspaceVisibilityInspectionPassed(state)) {
           return '[ODS Pixel next step] ' + (state.workspaceVisibilityInspectionUnavailable
             ? 'Keep the published preview, but report the requested interaction as unverified because inspection is unavailable. Do not claim the interaction works.'
             : visibilityInspectionInstruction(state.workspacePreview, state.workspaceInspectionPageErrors));
+        }
+        // Any inspection of this snapshot reports its load-time names.
+        if (controlNamesUninspected(state) && !state.workspaceVisibilityInspectionUnavailable) {
+          return `[ODS Pixel next step] ${requestedControlNameInspectionInstruction(state.workspacePreview,
+            state.requestedControlNames)}`;
         }
         // Page errors never block delivery, but must not be followed by
         // "give the final result" coaching as a second, conflicting step.
@@ -11377,6 +11437,15 @@ export function createToolLoopGuard({
         )
         : `[ODS Pixel next step] ${WORKSPACE_PREVIEW_REQUIRES_READBACK_REASON}`;
     })();
+    // A failed inspection is never coached as success, but when its own
+    // load-time names show a requested control name missing, that repair is
+    // the next step (tower2 round 100: the exact-name click matched nothing
+    // because a script replaced the button's name on load).
+    const controlNameRepair = failedToolResult && state?.workspacePreview &&
+      (pending?.selectedToolName ?? message.toolName) === PREVIEW_INSPECTION_TOOL &&
+      !state.progressBudget.laneExhausted('workspace') && !state.operationsRequired && !state.exactDownloadRequested
+      ? requestedControlNameInstruction(state.workspacePreview, state.workspaceControlNameCheck,
+        state.workspaceControlNameSources) : undefined;
     const hostToolResult =
       pending?.selectedToolName === SYNCHRONOUS_HOST_OBSERVE_TOOL ||
       pending?.selectedToolName === SYNCHRONOUS_HOST_COMMAND_TOOL ||
@@ -11416,6 +11485,7 @@ export function createToolLoopGuard({
       !compactNativeWebResult &&
       !nativeFetchGuidance &&
       !previewStageInstruction &&
+      !controlNameRepair &&
       !sandboxPathCorrection &&
       !executionGuidance
     ) {
@@ -11471,6 +11541,9 @@ export function createToolLoopGuard({
       content.push({type:'text',text:executionGuidance});
     if (previewStageInstruction && coachingDue('preview', previewStageInstruction)) {
       content.push({ type: "text", text: previewStageInstruction });
+    }
+    if (controlNameRepair && coachingDue('control-name', `[ODS Pixel next step] ${controlNameRepair}`)) {
+      content.push({type: 'text', text: `[ODS Pixel next step] ${controlNameRepair}`});
     }
     if (hostEvidence && state.operationsHostResultCompactionsRemaining > 0) {
       state.operationsHostResultCompactionsRemaining -= 1;
@@ -11957,7 +12030,10 @@ export function createToolLoopGuard({
       const checkIncomplete = checkStatus === "failed" || checkStatus === "pending";
       const checkText = checkStatus === "failed" ? VERIFICATION_FAILED_DELIVERY_PREFIX
         : checkStatus === "pending" ? VERIFICATION_PENDING_DELIVERY_PREFIX : "";
-      const requestedTextMissing = requestedTextDeliveryNote(state.workspacePreview, state.workspaceRequestedTextCheck);
+      // Requested text or control names the snapshot or its latest inspection
+      // showed missing withhold certification, whatever else passed.
+      const requestedTextMissing = requestedTextDeliveryNote(state.workspacePreview, state.workspaceRequestedTextCheck,
+        state.workspaceControlNameCheck);
       return {
         status: checkIncomplete ? checkStatus : interactionUnverified || requestedTextMissing ? "failed" : "passed",
         text:
@@ -12220,7 +12296,8 @@ export function createToolLoopGuard({
           verificationStatus: state.latestVerificationStatus, researchLimit: state.researchStopped,
           unverifiedLinks: unverified,
           refusedToolCalls: state.progressFinalization.partial,
-          requestedTextMissing: requestedTextDeliveryNote(preview, state.workspaceRequestedTextCheck),
+          requestedTextMissing: requestedTextDeliveryNote(preview, state.workspaceRequestedTextCheck,
+            state.workspaceControlNameCheck),
           ...(modelAnswer ? {} : {synthesis: {note: STOP_SYNTHESIS_NOTE, pages: synthesized.pages}})}), ...receipt};
       }
       // Without an answer, the fixed stop text is followed by the host's list

@@ -779,6 +779,182 @@ class HiddenRoleLocatorTests(unittest.TestCase):
             self.assertNotIn(forbidden, source)
 
 
+# Fleet round 100 (tower2, Qwen3-Coder-Next): the owner asked for a button
+# named exactly "Show sold out"; script.js replaced its name on load. The
+# plugin replay (control-names-tower2-round100.json) carries the load-time
+# names this capsule reports for those bytes, and for three small pages.
+CONTROL_REPLAY = json.loads(
+    (Path(__file__).resolve().parents[1]
+     / "extensions/services/pixel-agent/tests/control-names-tower2-round100.json").read_text(encoding="utf-8")
+)
+TOWER2_R100 = Path(__file__).resolve().parent / "fixtures/preview-controls/tower2-r100"
+
+
+def tower2_r100_files(repaired=False, variant=None):
+    files = {path.name: path.read_bytes() for path in sorted(TOWER2_R100.iterdir())}
+    if repaired or variant:
+        line = CONTROL_REPLAY["repair"]["remove"].encode()
+        assert files["script.js"].count(line) == 1
+        files["script.js"] = files["script.js"].replace(line, b"")
+    if variant:
+        # The repaired page with only the requested button's markup changed:
+        # correct, accessible names that carry hidden decorations.
+        button = CONTROL_REPLAY["variants"]["button"].encode()
+        assert files["index.html"].count(button) == 1
+        files["index.html"] = files["index.html"].replace(
+            button, CONTROL_REPLAY["variants"]["markup"][variant].encode())
+    return files
+
+
+TOWER2_R100_CSS_PLAN = [step("assert-hidden", "#midnight-concert"), step("click", "#show-sold-out-btn"),
+                        step("assert-visible", "#midnight-concert")]
+
+
+def fixture_server(files):
+    """A Playwright route handler serving a fixture site's files by name."""
+    types = {"html": "text/html", "js": "application/javascript", "css": "text/css"}
+
+    def serve(route):
+        path = route.request.url.rsplit("/", 1)[1] or "index.html"
+        route.fulfill(body=files[path], content_type=types[path.rsplit(".", 1)[1]])
+
+    return serve
+
+
+class NamedBrowser(ScriptedBrowser):
+    """ScriptedBrowser whose isolated world answers CONTROL_NAMES."""
+
+    def __init__(self, names):
+        super().__init__()
+        self.names = names
+
+    def send(self, method, params=None):
+        function = (params or {}).get("functionDeclaration")
+        if function == capsule.CONTROL_NAMES:
+            self.calls.append("controls")
+            self.limit = params["arguments"][0]["value"]
+            return {"result": {"value": self.names}}
+        if function == capsule.OBSERVE_ELEMENT:
+            self.calls.append("observe")
+        return super().send(method, params)
+
+    def click(self, **kwargs):
+        self.calls.append("click")
+        super().click(**kwargs)
+
+
+def raw_control(name="Show sold out", **extra):
+    return {"role": "button", "name": name, "text": name, "source": "content", "visible": True, **extra}
+
+
+class ControlNamesTests(unittest.TestCase):
+    def run_named(self, names):
+        browser = NamedBrowser(names)
+        data = bundle("<p id=item hidden></p><button id=show>Show</button>", [
+            step("assert-hidden", "#item"), step("click", "#show"), step("assert-visible", "#item")])
+        browser.site = data["request"]["siteId"]
+        result = capsule.run_browser(data, playwright_factory=browser)
+        self.assertLessEqual(len(protocol.canonical(result)), protocol.MAX_RESULT)
+        return browser, data["request"], result
+
+    def test_load_time_names_are_captured_before_any_step_as_separate_evidence(self):
+        replaced = raw_control("Show the sold out midnight concert card", text="Show sold out", source="aria-label")
+        browser, request, result = self.run_named({"count": 1, "items": [replaced]})
+        self.assertEqual(result["status"], "passed", result)
+        self.assertEqual(result["controls"], {"count": 1, "items": [{
+            "role": "button", "name": "Show the sold out midnight concert card", "visible": True,
+            "source": "aria-label", "text": "Show sold out"}]})
+        self.assertEqual(browser.limit, capsule.MAX_CONTROLS)
+        self.assertLess(browser.calls.index("controls"), browser.calls.index("observe"))
+        self.assertLess(browser.calls.index("controls"), browser.calls.index("click"))
+        self.assertEqual(result["planSha256"], protocol.plan_hash(request))
+        without = self.run_named(None)[2]
+        self.assertNotIn("controls", without, "a failed capture is omitted, as by older capsules")
+        self.assertEqual({k: v for k, v in result.items() if k != "controls"}, without)
+
+    def test_names_are_inert_bounded_and_text_only_when_it_differs(self):
+        long_name = "‮Show​ sold\nout " + "x" * 400
+        controls = capsule.control_names({"count": 5, "items": [
+            raw_control(),
+            raw_control("", text="", source="other", visible=False),
+            raw_control(long_name, text="\x00Show   sold out "),
+            raw_control("Docs", role="link", text="Docs"),
+        ]})
+        self.assertEqual(controls["count"], 5, "the page total, not the listed count")
+        first, unnamed, bounded, link = controls["items"]
+        self.assertEqual(first, {"role": "button", "name": "Show sold out", "visible": True, "source": "content"})
+        self.assertEqual(unnamed, {"role": "button", "name": "", "visible": False, "source": "other"})
+        self.assertEqual(len(bounded["name"]), capsule.MAX_CONTROL_CHARS)
+        self.assertTrue(bounded["name"].startswith("Show sold out xxx"), bounded)
+        self.assertTrue(bounded["name"].endswith("…"))
+        self.assertEqual(bounded["text"], "Show sold out")
+        self.assertEqual(link["role"], "link")
+        for item in controls["items"]:
+            for key in ("name", "text"):
+                if item.get(key):
+                    self.assertTrue(protocol.printable(item[key], capsule.MAX_CONTROL_CHARS, 480), item)
+        saturated = capsule.control_names({"count": 10**6, "items": [raw_control()] * 100})
+        self.assertEqual(saturated["count"], capsule.MAX_CONTROL_COUNT)
+        self.assertEqual(len(saturated["items"]), capsule.MAX_CONTROLS)
+        # The encoded size bound cuts the list; every item stays whole.
+        wide = capsule.control_names({"count": 48, "items": [
+            raw_control("一" * 200, text="二" * 200)] * 48})
+        self.assertLess(len(wide["items"]), 48)
+        self.assertLessEqual(sum(len(protocol.canonical(item)) + 1 for item in wide["items"]),
+                             capsule.MAX_CONTROLS_BYTES)
+        self.assertEqual(wide["count"], 48)
+        for bad in (None, [], {"count": "1", "items": []}, {"count": 1}, {"count": 1, "items": [raw_control(role="tab")]},
+                    {"count": 1, "items": [raw_control(visible="yes")]}, {"count": 1, "items": [raw_control(source="title")]},
+                    {"count": 1, "items": ["button"]}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(protocol.Invalid):
+                    capsule.control_names(bad)
+
+    def test_an_invalid_capture_is_omitted_not_a_failed_receipt(self):
+        _, _, result = self.run_named({"count": 1, "items": [raw_control(role="menuitem")]})
+        self.assertEqual(result["status"], "passed")
+        self.assertNotIn("controls", result)
+
+    def test_names_never_push_a_receipt_past_its_limit(self):
+        _, _, kept = self.run_named({"count": 1, "items": [raw_control()]})
+        self.assertIn("controls", kept)
+        without = {k: v for k, v in kept.items() if k != "controls"}
+        limit = len(protocol.canonical(without)) + 16
+        self.assertGreater(len(protocol.canonical(kept)), limit)
+        with patch.object(capsule, "MAX_RESULT", limit):
+            _, _, result = self.run_named({"count": 1, "items": [raw_control()]})
+        self.assertEqual(result, without, "dropped whole; nothing else changes")
+
+    def test_names_share_the_matcher_rules_and_are_read_only(self):
+        self.assertIn(capsule.ACCESSIBLE_NAME_RULES, capsule.CONTROL_NAMES)
+        self.assertIn(capsule.ACCESSIBLE_NAME_RULES, capsule.ROLE_NAME_INCLUDING_HIDDEN)
+        self.assertTrue(capsule.CONTROL_NAMES.startswith("function(limit) {\n"))
+        self.assertTrue(capsule.ROLE_NAME_INCLUDING_HIDDEN.startswith("function(role, name, ...rendered) {\n"))
+        for forbidden in ("setAttribute", "removeAttribute", "innerHTML", "textContent =",
+                          ".style.", "click(", "dispatchEvent", "focus(", "fetch(", "eval(", "Function("):
+            self.assertNotIn(forbidden, capsule.CONTROL_NAMES)
+
+    def test_broker_relays_controls_unchanged(self):
+        data = bundle("hi")
+        request = data["request"]
+        receipt = {"schemaVersion": 1, "kind": protocol.KIND, "status": "passed",
+                   "siteId": request["siteId"], "sha256": request["sha256"],
+                   "planSha256": protocol.plan_hash(request), "viewport": request["viewport"],
+                   "steps": [], "diagnostics": {}, "blockedRequests": [],
+                   "controls": CONTROL_REPLAY["controls"]["tower2"], "scope": protocol.SCOPE}
+        config = {"docker": "/usr/bin/docker", "imageId": "sha256:" + "a" * 64,
+                  "ownerUid": os.getuid(), "transport": "local", "snapshotRoot": "/owned"}
+
+        def process(argv, *_args, **_kwargs):
+            return protocol.canonical(receipt) if "run" in argv else b""
+
+        with (
+            patch.object(broker, "snapshot_bundle", return_value=data),
+            patch.object(broker, "bounded_process", side_effect=process),
+        ):
+            self.assertEqual(broker.inspect_request(request, config), receipt)
+
+
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -1361,6 +1537,8 @@ class BrowserTests(unittest.TestCase):
             '<input type=radio aria-labelledby="lbl2" hidden><span id=lbl2 hidden>Seat <b>A</b></span>'
             '<div role="button" hidden><img alt="Star"> Favourite</div>'
             '<h5 hidden title="Tooltip heading"></h5><template><h2>Template</h2></template>'
+            '<button hidden><svg width="8" height="8"><title>Dismiss</title></svg></button>'
+            '<button hidden><span aria-hidden="true">✕</span> Close panel</button>'
         )
         queries = [
             ("heading", "Dawn Jazz"), ("heading", "Midnight Sold-Out Concert"), ("heading", "Late Show"),
@@ -1373,7 +1551,8 @@ class BrowserTests(unittest.TestCase):
             ("combobox", "City Bergen"), ("combobox", "City"), ("heading", "Tonight only"),
             ("heading", "Tonight"), ("radio", "Seat A"), ("button", "Star Favourite"),
             ("heading", "Tooltip heading"), ("heading", "Template"), ("heading", "midnight sold-out concert"),
-            ("heading", "Midnight  Sold-Out   Concert"),
+            ("heading", "Midnight  Sold-Out   Concert"), ("button", "Dismiss"), ("button", "✕ Close panel"),
+            ("button", "Close panel"),
         ]
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -1558,6 +1737,169 @@ class BrowserTests(unittest.TestCase):
         result = self.check(None, plan, {"index.html": html.encode()})
         self.assertEqual(result["status"], "passed", result)
 
+    def control_pages(self):
+        yield "tower2", tower2_r100_files()
+        yield "tower2-repaired", tower2_r100_files(repaired=True)
+        for variant in CONTROL_REPLAY["variants"]["markup"]:
+            yield variant, tower2_r100_files(variant=variant)
+        for name, html in CONTROL_REPLAY["pages"].items():
+            yield name, {"index.html": html.encode()}
+
+    def assert_playwright_names(self, page, controls):
+        # Each listed name is Playwright's own name for that element, in the
+        # engine that addresses it: the fleet's default getByRole(role,
+        # {name, exact: true}) for a control in the accessibility tree, and
+        # includeHidden for a hidden one. A different own text is not the name.
+        listed = collections.Counter()
+        for item in controls["items"]:
+            role = item["role"]
+            element = page.get_by_role(role, include_hidden=True).nth(listed[role])
+            listed[role] += 1
+            exposed = element.and_(page.get_by_role(role)).count() == 1
+            if item["visible"]:
+                self.assertTrue(exposed, item)
+            named = lambda name: element.and_(
+                page.get_by_role(role, name=name, exact=True, include_hidden=not exposed)).count()
+            self.assertEqual(named(item["name"]), 1, item)
+            if "text" in item:
+                self.assertEqual(named(item["text"]), 0, item)
+        self.assertEqual(controls["count"], len(controls["items"]))
+        for role in capsule.CONTROL_ROLES:
+            self.assertEqual(page.get_by_role(role, include_hidden=True).count(), listed[role], role)
+
+    def test_load_time_control_names_replay_fleet_round100(self):
+        # The recorded plugin replay is this capsule's real output: tower2's
+        # page reports the name its script set on load, not the button text.
+        for name, files in self.control_pages():
+            with self.subTest(page=name):
+                result = self.check(None, TOWER2_R100_CSS_PLAN, files)
+                self.assertEqual(result["status"], "passed", result)
+                self.assertEqual(result["controls"], CONTROL_REPLAY["controls"][name])
+        tower2 = self.check(None, TOWER2_R100_CSS_PLAN, tower2_r100_files())
+        self.assertEqual(tower2["sha256"], CONTROL_REPLAY["publicationReceipt"]["sha256"])
+        # The model's exact-name click on that snapshot matched nothing.
+        role = CONTROL_REPLAY["calls"][0]["arguments"]["steps"]
+        result = self.check(None, role, tower2_r100_files())
+        self.assertEqual(result["steps"][1]["errorCode"], "no_match", result)
+        self.assertEqual(result["controls"], CONTROL_REPLAY["controls"]["tower2"])
+        repaired = self.check(None, role, tower2_r100_files(repaired=True))
+        self.assertEqual(repaired["status"], "passed", repaired)
+        # On the variants the load-time names are the exact requested name,
+        # and the same exact-name click passes. The icon variant is the
+        # exception for the click only: Chromium's own accessibility tree keeps
+        # the space after the aria-hidden icon (" Show sold out") and role/name
+        # steps match Chromium's name verbatim, while getByRole normalizes
+        # whitespace and finds the button. Recorded so a change is noticed.
+        for variant in CONTROL_REPLAY["variants"]["markup"]:
+            with self.subTest(role_plan=variant):
+                result = self.check(None, role, tower2_r100_files(variant=variant))
+                self.assertEqual(result["controls"], CONTROL_REPLAY["controls"][variant])
+                if variant == "aria-hidden-icon":
+                    self.assertEqual(result["steps"][1]["errorCode"], "no_match", result)
+                else:
+                    self.assertEqual(result["status"], "passed", result)
+
+    def test_load_time_names_are_after_scripts_before_steps_and_include_hidden(self):
+        html = ('<a href="#top">Top</a><a>Not a link</a><div role="button" aria-labelledby="l">x</div>'
+                '<span id="l" hidden>Open menu</span><dialog><button>Close</button></dialog>'
+                '<button id="go" onclick="this.textContent=\'Clicked\'">Go</button>'
+                '<input type="submit" value="Send"><script>document.getElementById("go").title="later"</script>'
+                '<button id="late"></button><script>document.getElementById("late").textContent="Made by script"</script>'
+                '<style>@keyframes in{from{opacity:0}to{opacity:1}}.fade{animation:in 30s}</style>'
+                '<a class="fade" href="#t">Tickets</a><div aria-hidden="true"><button>Decor</button></div>')
+        result = self.check(html, [step("click", "#go")])
+        self.assertEqual(result["status"], "passed", result)
+        # An entrance fade does not hide a control; aria-hidden does.
+        self.assertEqual(result["controls"], {"count": 8, "items": [
+            {"role": "link", "name": "Top", "visible": True, "source": "content"},
+            {"role": "button", "name": "Open menu", "visible": True, "source": "aria-labelledby", "text": "x"},
+            {"role": "button", "name": "Close", "visible": False, "source": "content"},
+            {"role": "button", "name": "Go", "visible": True, "source": "content"},
+            {"role": "button", "name": "Send", "visible": True, "source": "other"},
+            {"role": "button", "name": "Made by script", "visible": True, "source": "content"},
+            {"role": "link", "name": "Tickets", "visible": True, "source": "content"},
+            {"role": "button", "name": "Decor", "visible": False, "source": "content"},
+        ]})
+
+    def test_load_time_names_agree_with_playwright_get_by_role(self):
+        # The fleet checks getByRole(role, {name, exact: true}); every name
+        # the capsule reports is that engine's name for that element, and a
+        # replaced text is not. The variants' hidden decorations (an
+        # aria-hidden icon or chevron, a hidden alternate label, a display:none
+        # badge, an aria-hidden arrow) are not part of any name.
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            try:
+                for name, files in self.control_pages():
+                    with self.subTest(page=name):
+                        page = browser.new_page()
+                        page.route("http://fixture.test/**", fixture_server(files))
+                        page.goto("http://fixture.test/")
+                        page.wait_for_timeout(100)
+                        controls = CONTROL_REPLAY["controls"][name]
+                        self.assert_playwright_names(page, controls)
+                        rendered = sum(item["role"] == "button" and item["visible"] and item["name"] == "Show sold out"
+                                       for item in controls["items"])
+                        self.assertEqual(page.get_by_role("button", name="Show sold out", exact=True).count(), rendered)
+                        page.close()
+            finally:
+                browser.close()
+
+    def test_rendered_control_names_leave_out_hidden_descendants(self):
+        # A control in the accessibility tree is named without its hidden
+        # descendants, as Chromium and a default getByRole name it; a hidden
+        # aria-labelledby target still contributes all of its text, and a
+        # control that is itself hidden keeps its hidden-inclusive name.
+        html = (
+            '<style>.badge{display:none}.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}</style>'
+            '<button><span aria-hidden="true">🎫</span> Show sold out</button>'
+            '<button>Show sold out<span aria-hidden="TRUE">▾</span></button>'
+            '<button><span>Show sold out</span> <span hidden>Hide sold out</span></button>'
+            '<button>Show sold out <span class="badge">(1)</span></button>'
+            '<button>Show sold out<span style="visibility:hidden"> now</span></button>'
+            '<a href="#events">All events <span aria-hidden="true">→</span></a>'
+            '<button><span style="display:contents"><span aria-hidden="true">🎫</span>Tickets</span></button>'
+            '<button><span aria-hidden="true">🎫</span><span class="sr">Buy tickets</span></button>'
+            '<button>Save<span aria-hidden="false"> draft</span></button>'
+            '<button><svg width="10" height="10"><title>Close</title><path d="M0 0h10"/></svg></button>'
+            '<span id="filter" hidden>Filter <span aria-hidden="true">⚙</span>events</span>'
+            '<button aria-labelledby="filter">x</button>'
+            '<span id="sort">Sort <span aria-hidden="true">↕</span>events</span><button aria-labelledby="sort">x</button>'
+            '<label for="share">Share <span hidden>this </span>page</label><button id="share">x</button>'
+            '<dialog><button><span aria-hidden="true">✕</span> Close dialog</button></dialog>'
+        )
+        result = self.check(html, [step("assert-visible", "#share")])
+        self.assertEqual(result["status"], "passed", result)
+        controls = result["controls"]
+        self.assertEqual(controls, {"count": 14, "items": [
+            {"role": "button", "name": "Show sold out", "visible": True, "source": "content"},
+            {"role": "button", "name": "Show sold out", "visible": True, "source": "content"},
+            {"role": "button", "name": "Show sold out", "visible": True, "source": "content"},
+            {"role": "button", "name": "Show sold out", "visible": True, "source": "content"},
+            {"role": "button", "name": "Show sold out", "visible": True, "source": "content"},
+            {"role": "link", "name": "All events", "visible": True, "source": "content"},
+            {"role": "button", "name": "Tickets", "visible": True, "source": "content"},
+            {"role": "button", "name": "Buy tickets", "visible": True, "source": "content"},
+            {"role": "button", "name": "Save draft", "visible": True, "source": "content"},
+            {"role": "button", "name": "Close", "visible": True, "source": "content"},
+            {"role": "button", "name": "Filter ⚙events", "visible": True, "source": "aria-labelledby", "text": "x"},
+            {"role": "button", "name": "Sort events", "visible": True, "source": "aria-labelledby", "text": "x"},
+            {"role": "button", "name": "Share page", "visible": True, "source": "other", "text": "x"},
+            {"role": "button", "name": "✕ Close dialog", "visible": False, "source": "content"},
+        ]})
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            try:
+                page = browser.new_page()
+                page.set_content("<!doctype html>" + html)
+                self.assert_playwright_names(page, controls)
+                self.assertEqual(page.get_by_role("button", name="Show sold out", exact=True).count(), 5)
+            finally:
+                browser.close()
 
 @unittest.skipUnless(
     os.environ.get("ODS_INSPECTION_TEST_IMAGE"), "isolated Docker image test opt in"

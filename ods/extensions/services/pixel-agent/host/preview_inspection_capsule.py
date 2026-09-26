@@ -66,9 +66,10 @@ SELECTOR_COUNT = r"""function(selector) {
 # (script, style, template and noscript text never contributes). It runs in the
 # isolated world, so page script cannot replace the DOM or style APIs it reads.
 # Chromium's own rendered matches are passed in and kept, so a rendered element
-# is matched exactly as before; the union is de-duplicated by identity.
-ROLE_NAME_INCLUDING_HIDDEN = r"""function(role, name, ...rendered) {
-  const VALID = new Set(('alert alertdialog application article banner blockquote button caption cell checkbox code ' +
+# is matched exactly as before; the union is de-duplicated by identity. The
+# role and name rules are shared with CONTROL_NAMES below, which alone also
+# uses their includeHidden:false mode (`rendered`).
+ACCESSIBLE_NAME_RULES = r"""  const VALID = new Set(('alert alertdialog application article banner blockquote button caption cell checkbox code ' +
     'columnheader combobox complementary contentinfo definition deletion dialog directory document emphasis feed figure ' +
     'form generic grid gridcell group heading img insertion link list listbox listitem log main mark marquee math meter ' +
     'menu menubar menuitem menuitemcheckbox menuitemradio navigation none note option paragraph presentation progressbar ' +
@@ -162,9 +163,48 @@ ROLE_NAME_INCLUDING_HIDDEN = r"""function(role, name, ...rendered) {
     const text = parts.map(t => t.text).join('');
     return pseudo && (s.display || 'inline') !== 'inline' ? ' ' + text + ' ' : text;
   };
+  // Playwright's isElementHiddenForAria: what the accessibility tree and a
+  // default getByRole leave out (script and style content, display:none or
+  // a non-visible visibility, content-visibility, aria-hidden="true" on the
+  // element or an ancestor, unslotted shadow-host children).
+  const parentOf = e => e.parentElement || (e.parentNode && e.parentNode.nodeType === 11 && e.parentNode.host) || null;
+  const outsideTree = new Map();
+  const excluded = e => {
+    if (!outsideTree.has(e)) {
+      const s = style(e), parent = parentOf(e);
+      outsideTree.set(e, Boolean(e.parentElement && e.parentElement.shadowRoot && !e.assignedSlot) || !s ||
+        s.display === 'none' || (e.getAttribute('aria-hidden') || '').toLowerCase() === 'true' || Boolean(parent && excluded(parent)));
+    }
+    return outsideTree.get(e);
+  };
+  const textShown = node => {
+    const range = node.ownerDocument.createRange();
+    range.selectNode(node);
+    const box = range.getBoundingClientRect();
+    return box.width > 0 && box.height > 0;
+  };
+  const hiddenForAria = e => {
+    const t = tag(e), s = style(e);
+    if (IGNORED.has(t)) return true;
+    if (s && s.display === 'contents' && t !== 'slot') {
+      for (let child = e.firstChild; child; child = child.nextSibling) {
+        if (child.nodeType === 1 && !hiddenForAria(child)) return false;
+        if (child.nodeType === 3 && textShown(child)) return false;
+      }
+      return true;
+    }
+    if (!(t === 'option' && e.closest('select')) && t !== 'slot' && s && (!e.checkVisibility() || s.visibility !== 'visible'))
+      return true;
+    return excluded(e);
+  };
+  // Options: `rendered` computes Playwright's includeHidden:false name, which
+  // skips hidden descendants unless they are reached through an aria-labelledby,
+  // <label> or SVG <title> reference that is itself hidden; without it (the
+  // hidden-inclusive matcher, a hidden control) nothing is skipped.
+  const reference = (o, e, kind) => o.rendered ? {rendered: true, [kind]: hiddenForAria(e)} : {};
   const labels = e => { try { return [...(e.labels || [])]; } catch { return []; } };
-  const fromLabels = (list, o) =>
-    list.map(label => alternative(label, {visited: o.visited, label: true})).filter(Boolean).join(' ');
+  const fromLabels = (list, o) => list.map(label =>
+    alternative(label, {visited: o.visited, label: true, ...reference(o, label, 'hiddenLabel')})).filter(Boolean).join(' ');
   const inner = (e, o) => {
     const out = [cssContent(e, '::before') || ''], own = cssContent(e);
     const visit = node => {
@@ -188,10 +228,12 @@ ROLE_NAME_INCLUDING_HIDDEN = r"""function(role, name, ...rendered) {
     const visited = o.visited, t = tag(e);
     if (visited.has(e)) return '';
     if (IGNORED.has(t)) { visited.add(e); return ''; }
+    if (o.rendered && !o.hiddenLabelledBy && !o.hiddenLabel && hiddenForAria(e)) { visited.add(e); return ''; }
     const child = {...o, target: o.target === 'self' ? 'descendant' : o.target};
     const labelledBy = e.hasAttribute('aria-labelledby') ? idRefs(e, 'aria-labelledby') : [];
     if (!o.labelledBy) {
-      const text = labelledBy.map(ref => alternative(ref, {visited, labelledBy: true})).join(' ');
+      const text = labelledBy.map(ref =>
+        alternative(ref, {visited, labelledBy: true, ...reference(o, ref, 'hiddenLabelledBy')})).join(' ');
       if (text) return text;
     }
     const r = roleOf(e) || '';
@@ -240,6 +282,13 @@ ROLE_NAME_INCLUDING_HIDDEN = r"""function(role, name, ...rendered) {
         const alt = e.getAttribute('alt') || '';
         return alt.trim() ? alt : e.getAttribute('title') || '';
       }
+      if (t === 'svg' || e.ownerSVGElement) {
+        visited.add(e);
+        for (let title = e.firstElementChild; title; title = title.nextElementSibling) {
+          if (tag(title) === 'title' && title.ownerSVGElement)
+            return alternative(title, {...child, labelledBy: true, ...reference(o, title, 'hiddenLabelledBy')});
+        }
+      }
     }
     if (CONTENT.has(r) || (o.target === 'descendant' && DESCENDANT.has(r)) || o.labelledBy || o.label ||
         (t === 'summary' && r !== 'presentation' && r !== 'none')) {
@@ -257,7 +306,8 @@ ROLE_NAME_INCLUDING_HIDDEN = r"""function(role, name, ...rendered) {
   const flat = s => s.split(' ').map(c => c.replace(/\r\n/g, '\n').replace(/[​­]/g, '')
     .replace(/\s\s*/g, ' ')).join(' ').trim();
   const normal = s => s.replace(/[​­]/g, '').trim().replace(/\s+/g, ' ');
-  const want = normal(name), out = [...new Set(rendered)];
+"""
+ROLE_NAME_INCLUDING_HIDDEN = "function(role, name, ...rendered) {\n" + ACCESSIBLE_NAME_RULES + r"""  const want = normal(name), out = [...new Set(rendered)];
   const walk = root => {
     for (const e of root.querySelectorAll('*')) {
       if (roleOf(e) === role && !out.includes(e) &&
@@ -271,6 +321,57 @@ ROLE_NAME_INCLUDING_HIDDEN = r"""function(role, name, ...rendered) {
 # Bounds Chromium matches carried into the hidden-inclusive union; more than
 # one match already fails uniqueness.
 MAX_RENDERED_MATCHES = 32
+
+# Load-time accessible names of every button and link, computed after the
+# page's scripts ran and before any step, hidden ones included, by the same
+# Playwright-compatible role and name rules as the matcher above. An owner may
+# require a control named exactly X, and a script may replace a correct name
+# (fleet round 100: setAttribute('aria-label', ...) on load), so the capsule
+# reports the computed name, whether the element is exposed, what supplied the
+# name, and the element's own content text when that differs from the name.
+# A control in the accessibility tree gets the name Chromium and a default
+# getByRole(role, {name, exact: true}) use: hidden descendants (an aria-hidden
+# icon, a hidden alternate label, a display:none badge) do not contribute. A
+# control that is itself hidden keeps the hidden-inclusive name that
+# getByRole(..., {includeHidden: true}) matches. Exposed means in the
+# accessibility tree and rendered with a box. Opacity is ignored: entrance
+# animations change it at load, and it hides nothing from assistive technology
+# or role locators. Read-only, in the isolated world; evidence only, never a
+# step or a status.
+CONTROL_NAMES = "function(limit) {\n" + ACCESSIBLE_NAME_RULES + r"""  const CONTROLS = new Set(['button', 'link']);
+  const boxed = e => e.checkVisibility({checkVisibilityCSS:true,contentVisibilityAuto:true}) &&
+    [...e.getClientRects()].some(r => r.width > 0 && r.height > 0);
+  const items = [];
+  let count = 0;
+  const walk = root => {
+    for (const e of root.querySelectorAll('*')) {
+      const role = roleOf(e);
+      if (CONTROLS.has(role) && count++ < limit) {
+        const rendered = !hiddenForAria(e);
+        const name = normal(flat(alternative(e, {visited: new Set(), target: 'self', rendered})));
+        const text = normal(flat(inner(e, {visited: new Set([e]), target: 'descendant', rendered})));
+        const labelledBy = e.hasAttribute('aria-labelledby') && idRefs(e, 'aria-labelledby').map(ref =>
+          alternative(ref, {visited: new Set(), labelledBy: true, ...reference({rendered}, ref, 'hiddenLabelledBy')})).join(' ');
+        const source = labelledBy ? 'aria-labelledby' : (e.getAttribute('aria-label') || '').trim() ? 'aria-label'
+          : name && name === text ? 'content' : 'other';
+        items.push({role, name, text, source, visible: rendered && boxed(e)});
+      }
+      if (e.shadowRoot) walk(e.shadowRoot);
+    }
+  };
+  walk(document);
+  return {count, items};
+}"""
+# Controls listed per receipt (document order), the saturating total count,
+# characters per name or text, and the listed items' encoded size. The size
+# bound keeps the receipt within MAX_RESULT with every other field at its own
+# maximum; a longer list is cut, never an invalid receipt.
+MAX_CONTROLS = 48
+MAX_CONTROL_COUNT = 1000
+MAX_CONTROL_CHARS = 120
+MAX_CONTROLS_BYTES = 6144
+CONTROL_ROLES = ("button", "link")
+CONTROL_SOURCES = ("aria-labelledby", "aria-label", "content", "other")
 
 
 class InvalidSelector(Invalid):
@@ -321,6 +422,60 @@ def page_error_text(value):
     if len(text) > MAX_PAGE_ERROR_CHARS:
         text = text[: MAX_PAGE_ERROR_CHARS - 1].rstrip() + "…"
     return text or "(no message)"
+
+
+def control_text(value):
+    """An inert, bounded control name or text; unlike page errors, empty stays empty."""
+    try:
+        text = str(value)[: 16 * MAX_CONTROL_CHARS]
+    except Exception:
+        text = ""
+    text = " ".join(
+        "".join(
+            " "
+            if unicodedata.category(c).startswith("C")
+            or unicodedata.category(c) in ("Zl", "Zp")
+            else c
+            for c in text
+        ).split()
+    )
+    if len(text) > MAX_CONTROL_CHARS:
+        text = text[: MAX_CONTROL_CHARS - 1].rstrip() + "…"
+    return text
+
+
+def control_names(value):
+    """Receipt `controls` from the isolated world's CONTROL_NAMES result."""
+    if (
+        not isinstance(value, dict)
+        or type(value.get("count")) is not int
+        or not isinstance(value.get("items"), list)
+    ):
+        raise Invalid("invalid control names")
+    items, size = [], 0
+    for raw in value["items"][:MAX_CONTROLS]:
+        if (
+            not isinstance(raw, dict)
+            or raw.get("role") not in CONTROL_ROLES
+            or type(raw.get("visible")) is not bool
+            or raw.get("source") not in CONTROL_SOURCES
+        ):
+            raise Invalid("invalid control names")
+        item = {
+            "role": raw["role"],
+            "name": control_text(raw.get("name", "")),
+            "visible": raw["visible"],
+            "source": raw["source"],
+        }
+        text = control_text(raw.get("text", ""))
+        if text and text != item["name"]:
+            item["text"] = text
+        size += len(canonical(item)) + 1
+        if size > MAX_CONTROLS_BYTES:
+            break
+        items.append(item)
+    count = max(len(items), min(value["count"], MAX_CONTROL_COUNT))
+    return {"count": count, "items": items}
 
 
 class PageErrors:
@@ -891,6 +1046,12 @@ def run_browser(bundle, playwright_factory=None):
 
             page.wait_for_timeout(100)
             diagnostics = evaluate(DIAGNOSTIC)
+            # At load, before any step can change a name. Separate evidence:
+            # omitted (as by older capsules) when it cannot be captured.
+            try:
+                controls = control_names(evaluate(CONTROL_NAMES, [MAX_CONTROLS]))
+            except Exception:
+                controls = None
             results = []
             for index, step in enumerate(request["steps"]):
                 try:
@@ -983,6 +1144,11 @@ def run_browser(bundle, playwright_factory=None):
                     pass
             if palette:
                 result["renderedColors"] = palette
+            # Bounded above; still never the reason a receipt exceeds its limit.
+            if controls is not None:
+                result["controls"] = controls
+                if len(canonical(result)) >= MAX_RESULT:
+                    del result["controls"]
             browser.close()
             return result
     finally:
