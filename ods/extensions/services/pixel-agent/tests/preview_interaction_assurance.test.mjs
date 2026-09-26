@@ -376,11 +376,12 @@ test('bounded session preview eviction also evicts the associated obligation',()
   assert.doesNotMatch(guard.verificationForRun(next.ctx.runId).text,/show\/hide interaction/);
 });
 
-// A passing plan with a click whose later assertions all show the proved
-// result (tower2 round 108) or none, or a plan without a click, cannot show the
-// proved change failing. A hidden element after any click can: it may be the
-// proved target under another locator or with another control.
-const KEEPS_PROOF=new Set(['none','click-without-transition','target-visible-at-load','other-control-proved-state']);
+// A plan without a click, or one click whose later assertions all name a
+// proved target exactly in its proved state (tower2 round 108) or none, cannot
+// show the proved change failing. Any other assertion after a click can: it may
+// be the proved target under another locator, or another element the change
+// was meant to reach, even in the proved state.
+const KEEPS_PROOF=new Set(['none','click-without-transition','target-visible-at-load']);
 for (const wrapped of [false,true]) for (const fault of [
   'none','no-prior-proof','failed','unavailable','inner-error','outer-error','receipt-sha','receipt-plan',
   'params','session','session-key','source','changed-bytes','click-without-transition','failed-click',
@@ -427,9 +428,12 @@ for (const wrapped of [false,true]) for (const fault of [
 
 // Review of #6754: which proofs a later passing plan with a click keeps. A
 // change the proof saw only after a preparatory or second click names no
-// clicked control, so any later click can test it. A proof may prove several
-// changes; each later assertion after a click must be in the state all of
-// them produced, or be one proved target, exactly, in its proved state.
+// clicked control, so any later click can test it. A later plan with two
+// clicks keeps nothing. With one click, each assertion must be one proved
+// target, exactly: before the click in its load state, after it in its proved
+// state. Another element in the proved state is not the proved target: it can
+// be one the requested change failed to reach (a card a self-hiding button
+// never revealed, a summary a reveal never hid, a panel a tab never replaced).
 {
   const SHOW={role:'button',name:'Show details',exact:true},D={selector:'#details'},S={selector:'#summary'};
   const step=(action,locator)=>({action,locator});
@@ -444,9 +448,17 @@ for (const wrapped of [false,true]) for (const fault of [
   for (const [proof,later,keeps] of [
     ['reveal',[step('assert-hidden',{selector:'p#details'}),step('click',SHOW),step('assert-hidden',{selector:'p#details'})],false],
     ['reveal',[step('click',{selector:'button'}),step('assert-hidden',D)],false],
-    ['reveal',[step('assert-visible',{selector:'h1'}),step('click',{selector:'#show'}),step('assert-visible',{selector:'p#details'})],true],
+    ['reveal',[step('assert-visible',{selector:'h1'}),step('click',{selector:'#show'}),step('assert-visible',{selector:'p#details'})],false],
+    ['reveal',[step('assert-visible',{selector:'h1'}),step('click',{selector:'#show'}),step('assert-visible',D)],true],
+    ['reveal',[step('assert-hidden',D),step('click',SHOW),step('assert-visible',D)],true],
+    ['reveal',[step('assert-visible',D),step('click',SHOW),step('assert-visible',D)],false],
+    ['reveal',[step('click',SHOW),step('assert-visible',S)],false],
+    ['reveal',[step('assert-visible',D),step('click',SHOW)],false],
+    ['reveal',[step('click',SHOW),step('click',SHOW),step('assert-visible',D)],false],
     ['reveal',[step('click',SHOW),step('assert-visible',D),step('click',SHOW),step('assert-hidden',{selector:'.toast'})],false],
-    ['conceal',[step('click',SHOW),step('assert-hidden',{selector:'p#details'})],true],
+    ['conceal',[step('click',SHOW),step('assert-hidden',{selector:'p#details'})],false],
+    ['conceal',[step('click',SHOW),step('assert-hidden',D)],true],
+    ['conceal',[step('assert-hidden',{selector:'h1'}),step('click',SHOW),step('assert-hidden',D)],true],
     ['conceal',[step('click',SHOW),step('assert-visible',{selector:'p#details'})],false],
     ['both',[step('click',SHOW),step('assert-visible',D),step('assert-hidden',S)],true],
     ['both',[step('click',SHOW),step('assert-hidden',{selector:'p#details'})],false],

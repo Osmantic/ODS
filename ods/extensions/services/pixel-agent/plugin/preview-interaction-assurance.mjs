@@ -111,27 +111,33 @@ function boundInspection(params, result, preview, acceptsPlan) {
 // preparatory or second click is not recorded.
 function oneClickTransitions(request) {
   const clicks = request.steps.flatMap((step, index) => step.action === 'click' ? [index] : []);
-  if (!clicks.length) return Object.freeze([]);
+  if (clicks.length !== 1) return Object.freeze([]);
   const atLoad = request.steps.slice(0, clicks[0]);
   return Object.freeze(request.steps.slice(clicks[0] + 1, clicks[1]).filter(after => atLoad.some(before =>
     before.action !== after.action && isDeepStrictEqual(before.locator, after.locator)))
     .map(after => Object.freeze({locator: structuredClone(after.locator), result: after.action})));
 }
 
-// Whether a later passing plan may have seen a proved change not happen. Its
-// locators can name the proved target and control differently (tower2 round
-// 108 named one button by role/name, then by id), and at another width a
-// change can fail that passed at the proof's width. So each assertion after
-// any click must assert the state every proved change produced, or name a
-// proved target exactly in the state its change produced: that locator is
-// that element, which the proof saw in that state. A proof without a
-// one-click change keeps nothing across a click.
+// Whether a later passing plan may have seen a proved change not happen. A
+// plan without a click cannot (#6626). A plan with more than one click can: a
+// toggle's second click or a preparatory click changes what the next
+// assertion means. With one click, each assertion must name a proved target
+// exactly: before the click in the state the proof saw at load, after it in
+// the state the proved change produced (tower2 round 108 re-asserted the
+// proved heading after clicking its button by id). Any other locator may be
+// the proved target under another name, or another element the requested
+// change was meant to reach, so it keeps nothing; the proof is then taken
+// again, as before retention existed. A proof without a one-click change
+// keeps nothing across a click.
 function mayContradictTransitions(request, transitions) {
+  const clicks = request.steps.filter(step => step.action === 'click').length;
+  if (!clicks) return false;
+  if (clicks > 1 || !transitions.length) return true;
   let clicked = false;
   return request.steps.some(step => {
-    if (step.action === 'click') { clicked = true; return !transitions.length; }
-    return clicked && transitions.some(proved => proved.result !== step.action) &&
-      !transitions.some(proved => proved.result === step.action && isDeepStrictEqual(proved.locator, step.locator));
+    if (step.action === 'click') { clicked = true; return false; }
+    const proved = transitions.find(change => isDeepStrictEqual(change.locator, step.locator));
+    return clicked ? proved?.result !== step.action : Boolean(proved) && proved.result === step.action;
   });
 }
 
