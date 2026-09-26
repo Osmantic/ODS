@@ -564,16 +564,17 @@ test('the registered inspection tool asks the run guard about exactly its own ca
   assert.deepEqual(nextArgs(result.content[0].text).steps, transition(TOWER2_TARGET));
 });
 
-// Tower2 round 108 (Qwen3-Coder-Next; main d4a61f33 + #6741 + #6747, whose
+// Fleet round 108 (Qwen3-Coder-Next; main d4a61f33 + #6741 + #6747, whose
 // proof retention is main's): assert-hidden(heading), click("#soldOutBtn"),
 // assert-visible(heading) passed on snapshot f120c3cf. The model then inspected
 // that snapshot again with assert-visible("h1"), click("#soldOutBtn"),
 // assert-visible(heading), which passed with a click but no transition. That
 // pass dropped the earlier proof, and the owner got "The requested show/hide
 // interaction has not passed browser inspection."
-const ROUND108 = load('transition-proof-tower2-round108.json');
-const ROUND108_SESSION = {sessionId: '66c4948b-fde8-4720-8066-7f39e195feb1',
-  sessionKey: 'agent:pixel:openai-user:ods-369d55efd865b50e8de53472cfa5e931a5f9108057ceb2d41937838d4ba04483'};
+const ROUND108 = load('transition-proof-round108.json');
+// Neutral session identity, in the shapes OpenClaw and the portal use.
+const ROUND108_SESSION = {sessionId: '00000000-0000-4000-8000-000000000108',
+  sessionKey: `agent:pixel:openai-user:ods-${'0'.repeat(64)}`};
 const [, , ROUND108_PUBLISH] = calls(ROUND108, 'pixel_ods_workspace_preview');
 const [ROUND108_VISIBLE, ROUND108_NO_MATCH, ROUND108_TRANSITION, ROUND108_LATER] = calls(ROUND108, PREVIEW_INSPECTION_TOOL);
 const SOLD_OUT = {selector: '#soldOutBtn'}, CARD = {selector: '#midnightCard'};
@@ -602,7 +603,7 @@ async function replayRound108(t, stop, model = ROUND108_PAGE) {
   return {r, create, results};
 }
 
-test('tower2 round 108: a later passing check with a click keeps the transition proof of the same snapshot', async t => {
+test('round 108: a later passing check with a click keeps the transition proof of the same snapshot', async t => {
   const {r, create, results} = await replayRound108(t, ROUND108_LATER);
   for (const recorded of [ROUND108_VISIBLE, ROUND108_NO_MATCH, ROUND108_TRANSITION]) {
     assert.equal(results.get(recorded).content[0].text, recorded.text, `byte-identical to the recorded ${recorded.details.status} result`);
@@ -623,7 +624,7 @@ test('tower2 round 108: a later passing check with a click keeps the transition 
   assert.equal(r.guard.beforeAgentFinalize({}, {agentId: 'pixel', ...ROUND108_SESSION, runId: create.runId}), undefined);
 });
 
-test('tower2 round 108: a later failed transition of the target, a republication or a new session still revokes that proof', async t => {
+test('round 108: a later failed transition of the target, a republication or a new session still revokes that proof', async t => {
   {
     // A page on which the click leaves the card hidden at another width.
     const HEADING_CSS = {selector: '#midnightCard h3'}, BUTTON_CSS = {selector: 'button#soldOutBtn'};
