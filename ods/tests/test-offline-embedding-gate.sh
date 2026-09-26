@@ -23,7 +23,11 @@ _sed_i() { :; }
 error() { echo "$1" >&2; exit 1; }
 source "$SCRIPT_DIR/phases/09-offline.sh"
 EOF
-sed -i "s#__ROOT__#$ROOT_DIR#g; s#__INSTALL__#$tmp/install#g" "$tmp/run-phase.sh"
+# BSD sed (macOS) requires an argument to -i; a bare -i swallows the script as
+# the backup suffix. `-i.bak` is accepted by both, so write a suffix and drop
+# the file. Same form already used by test-validate-env.sh.
+sed -i.bak "s#__ROOT__#$ROOT_DIR#g; s#__INSTALL__#$tmp/install#g" "$tmp/run-phase.sh"
+rm -f "$tmp/run-phase.sh.bak"
 chmod +x "$tmp/run-phase.sh"
 
 # HTTP/download failure must fail closed and must not advertise offline readiness.
