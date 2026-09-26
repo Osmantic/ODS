@@ -244,12 +244,15 @@ export function correctedInspectionArgs(params) {
 }
 // Next step after rejected arguments. This tool is directly visible to Pixel;
 // the former "retry through tool_call" advice preceded strixy round 107's
-// tool_call {id:"tool_describe"}, which OpenClaw cannot resolve.
-function invalidRequestNextStep(params) {
+// tool_call {id:"tool_describe"}, which OpenClaw cannot resolve. The corrected
+// plan is offered as ready only when its identifiers are those of the run's
+// current publication (the guard's, for this exact call); a plan for an
+// earlier snapshot gets the receipt caveat instead of its stale identifiers.
+function invalidRequestNextStep(params, publication) {
   const corrected=correctedInspectionArgs(params);
-  return corrected
-    ? 'Each step is {action, locator}, with the selector, or the role, name and exact:true, inside locator. Next step: call pixel_ods_workspace_preview_inspect directly with exactly these args, your own steps with each locator nested: ' + JSON.stringify(corrected) + '.'
-    : 'Next step: call pixel_ods_workspace_preview_inspect directly with the exact published siteId and full sha256, viewport {width,height}, and steps. Each step is {action, locator}; a locator is {"selector":"..."} or {"role":"...","name":"...","exact":true}. Use a CSS selector for elements whose role is not supported. Do not guess snapshot identifiers.';
+  return corrected && publication && corrected.siteId===publication.siteId && corrected.sha256===publication.sha256
+    ? 'Each step is {action, locator}, with the selector, or the role, name and exact:true, inside locator. Next step: call pixel_ods_workspace_preview_inspect directly with exactly these args, your own steps with each locator in that form: ' + JSON.stringify(corrected) + '.'
+    : 'Next step: call pixel_ods_workspace_preview_inspect directly with the exact published siteId and full sha256 from the latest publication receipt, viewport {width,height}, and steps. Each step is {action, locator}; a locator is {"selector":"..."} or {"role":"...","name":"...","exact":true}. Use a CSS selector for elements whose role is not supported. Do not guess snapshot identifiers.';
 }
 function stateValid(s) {
   if(exact(s,['count'])) return Number.isSafeInteger(s.count)&&s.count>=0&&s.count<=100000;
@@ -315,7 +318,10 @@ function nativeRequest(payload,{signal}={}) {
 // transitionRequirement(toolCallId, params) is supplied by the run guard. It
 // returns the owner's show/hide requirement for exactly this call, or
 // undefined; it can only withhold "passed", never grant it.
-export function createWorkspacePreviewInspectTool({request,transport='unix',transitionRequirement}={}) {
+// currentPublication(toolCallId, params), also the guard's, returns the
+// {siteId, sha256} of the run's current publication for exactly this call, or
+// undefined; it only decides whether rejected arguments get a ready plan.
+export function createWorkspacePreviewInspectTool({request,transport='unix',transitionRequirement,currentPublication}={}) {
   if(!['unix','native'].includes(transport))throw Error('invalid inspection transport');
   request??=transport==='unix'?unixRequest:nativeRequest;
   return {name:'pixel_ods_workspace_preview_inspect',
@@ -328,10 +334,16 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
       // path remains available, without invoking the broker on invalid input.
       if (!signal?.aborted) {
         try { normalized=normalizeWorkspacePreviewInspectionParams(params); }
-        catch (error) { return {
-          content:[{type:'text',text:'Preview inspection request rejected before execution: invalid arguments. ' + (INPUT_HINTS.get(error?.message) ?? 'Check the tool schema.') + ' The inspector was not contacted; this does not establish service unavailability. ' + invalidRequestNextStep(params) + ' Requested behavior remains unverified.'}],
-          details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'invalid_request',scope:INSPECTION_SCOPE},isError:true,
-        }; }
+        catch (error) {
+          let publication;
+          if (typeof currentPublication==='function') {
+            try { publication=currentPublication(toolCallId,params); } catch { publication=undefined; }
+          }
+          return {
+            content:[{type:'text',text:'Preview inspection request rejected before execution: invalid arguments. ' + (INPUT_HINTS.get(error?.message) ?? 'Check the tool schema.') + ' The inspector was not contacted; this does not establish service unavailability. ' + invalidRequestNextStep(params,publication) + ' Requested behavior remains unverified.'}],
+            details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'invalid_request',scope:INSPECTION_SCOPE},isError:true,
+          };
+        }
       }
       try {
         signal?.throwIfAborted();

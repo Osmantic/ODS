@@ -6242,33 +6242,78 @@ function publishableWorkspaceDirectory(directory) {
     directory.split("/").every((part) => WORKSPACE_PATH_COMPONENT.test(part));
 }
 
+// Digest of an index.html's bytes as this run last knew them (written, or
+// returned by a whole read); undefined when unknown or too large to track.
+// Trailing whitespace is ignored so a read's final newline cannot split
+// otherwise identical bytes.
+function workspaceEntryDigest(content) {
+  return typeof content === "string" && Buffer.byteLength(content, "utf8") <= MAX_TRACKED_WORKSPACE_FILE_BYTES
+    ? createHash("sha256").update(content.trimEnd(), "utf8").digest("hex") : undefined;
+}
+
+// Records one successful index.html observation of this run, in order.
+// kind: "write" (the write tool), "change" (edit or apply_patch; the bytes
+// are known only when replayed from this run's own write) or "read".
+// Kept: the latest entry in a directory the publication check refuses, and
+// for each publishable directory when this run last wrote its entry and the
+// digest of its last known bytes. guidedWorkspacePreviewDirectory uses them
+// to tell this run's copy of a refused entry from any other visible site.
+function observeWorkspaceEntry(state, file, kind, content) {
+  if (!state || typeof file !== "string" || !file.endsWith("/index.html")) return;
+  const directory = file.slice(0, -"/index.html".length);
+  if (!directory) return;
+  state.workspaceEntrySequence = (state.workspaceEntrySequence ?? 0) + 1;
+  const at = state.workspaceEntrySequence;
+  const digest = workspaceEntryDigest(content);
+  if (publishableWorkspaceDirectory(directory)) {
+    state.workspaceEntryObservations ??= new Map();
+    const previous = state.workspaceEntryObservations.get(directory);
+    state.workspaceEntryObservations.set(directory, {writtenAt: kind === "write" ? at : previous?.writtenAt, digest});
+    return;
+  }
+  const refused = state.unpublishableWorkspaceEntry;
+  // A read reports the current bytes of the same entry without changing it.
+  state.unpublishableWorkspaceEntry = kind === "read" && refused?.directory === directory
+    ? {...refused, digest}
+    : {directory, at, written: kind !== "read" || (refused?.directory === directory && refused.written), digest};
+}
+
 // Guidance only, never the default of a publication request: the observed
-// entry directory, or else the only one that the publication check accepts
-// when every other is unpublishable (a hidden original kept unchanged beside
-// its visible copy, as UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP asks).
+// entry directory; else, beside an entry in a directory the publication check
+// refuses (a hidden one), this run's one visible copy of it, as
+// UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP asks: an index.html this run wrote
+// after that entry last changed, or one whose bytes match it (a copy that was
+// then read). A visible directory that was only read, such as an earlier
+// round's site, is never a copy. Without a copy, the refused directory itself
+// when this run wrote it, so the step asks for the copy; else undefined.
 function guidedWorkspacePreviewDirectory(state) {
   const directory = workspacePreviewDirectoryFromState(state);
   if (directory !== undefined) return directory;
-  const publishable = [...new Set(
-    [...(state?.successfulWritePaths ?? []), ...(state?.successfulReadPaths ?? [])]
-      .filter((value) => typeof value === "string" && value.endsWith("/index.html"))
-      .map((value) => value.slice(0, -"/index.html".length))
-  )].filter(publishableWorkspaceDirectory);
-  return publishable.length === 1 ? publishable[0] : undefined;
+  const refused = state?.unpublishableWorkspaceEntry;
+  if (!refused) return undefined;
+  const observed = new Set([...(state.successfulWritePaths ?? []), ...(state.successfulReadPaths ?? [])]);
+  const copies = [...(state.workspaceEntryObservations ?? [])]
+    .filter(([candidate, entry]) => observed.has(`${candidate}/index.html`) &&
+      (entry.writtenAt > refused.at || (refused.digest !== undefined && entry.digest === refused.digest)))
+    .map(([candidate]) => candidate);
+  if (copies.length === 1) return copies[0];
+  return copies.length === 0 && refused.written ? refused.directory : undefined;
 }
 
 // The whole relativeDirectory rule above, as the model is told it.
 const PREVIEW_DIRECTORY_RULE =
   "A preview directory must be workspace-relative, with at most 12 components and 512 characters total; each component must start with a letter or digit and contain only letters, digits, dots, underscores or hyphens (128 characters maximum), so hidden directories such as .site cannot be published. ";
 
-// Next step when the site's only observed directory fails that rule. On
-// mac-mini round 106 the model wrote ".fleet-qualification-934ec2f819d5/
-// index.html"; the next step named that hidden directory and the publication
-// check then refused it. Fixed text; it never repeats the rejected name. It
-// says copy, not move: the directory may be the owner's own (a build output
-// under a hidden path), and the publication check says to preserve files.
+// Next step when the site's directory fails that rule. On mac-mini round
+// 106 the model wrote ".fleet-qualification-934ec2f819d5/index.html"; the
+// next step named that hidden directory and the publication check then
+// refused it. Fixed text; it never repeats the rejected name, and since the
+// owner may have asked for that hidden name, it suggests only the same name
+// without its leading dot. It says copy, not move: the directory may be the
+// owner's own (a build output under a hidden path), and the publication
+// check says to preserve files.
 export const UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP = PREVIEW_DIRECTORY_RULE +
-  "Copy the files (for example with one cp -r command) into a visible directory within the owner's requested scope, such as the directory name the owner asked for, and leave the original files unchanged. " +
+  "Copy the files (for example with one cp -r command) into a directory that meets this rule within the owner's requested scope (for a hidden directory, the same name without its leading dot), and leave the original files unchanged. " +
   "Then read the copy's index.html and call pixel_ods_workspace_preview with that relativeDirectory. ";
 // The same case when the owner excluded changing files or running commands
 // in this request: a copy would cross that boundary.
@@ -6300,7 +6345,8 @@ const DIRECT_WORKSPACE_TOOLS = new Set(["read", "write", "edit", "apply_patch", 
 const ECHOABLE_TOOL_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 
 // The inspection route: the model's own last plan of this run with each
-// locator nested, when only that nesting kept it from running on this run's
+// locator in the accepted form (inside locator, exact:true on a role and
+// name), when only that form kept it from running on this run's current
 // publication (strixy round 107 call 8); otherwise the step shape with
 // placeholder locators, labelled as matching nothing.
 function inspectionRouteAnswer(state, direct) {
@@ -6309,7 +6355,7 @@ function inspectionRouteAnswer(state, direct) {
     preview.siteId === `site-${preview.sha256.slice(0, 24)}`;
   const ready = bound ? correctedInspectionArgs(state.lastInspectionAttempt) : undefined;
   if (ready && ready.siteId === preview.siteId && ready.sha256 === preview.sha256) {
-    return `${direct}. Your last inspection's arguments were invalid only because of where its locators sat; send it directly with exactly these args, your own steps with each locator nested: ${JSON.stringify(ready)}.`;
+    return `${direct}. Your last inspection's arguments were invalid only in the form of its locators: each belongs inside locator, and a role and name need exact:true. Send it directly with exactly these args, your own steps with each locator in that form: ${JSON.stringify(ready)}.`;
   }
   const example = {
     siteId: bound ? preview.siteId : "SITE_ID", sha256: bound ? preview.sha256 : "SHA256",
@@ -7109,13 +7155,10 @@ export function createToolLoopGuard({
     }
   }
 
-  // Tool-result-time requirement for pixel_ods_workspace_preview_inspect.
-  // OpenClaw 2026.6.33 drops a before_agent_finalize revision after any plugin
-  // tool call, so an untested owner-requested show/hide change must be stated
-  // by the inspection result itself. Bound to this exact pending call (direct,
-  // or a Tool Search child of a pending tool_call) of the active run; a
-  // passing transition of the same snapshot earlier in the run satisfies it.
-  function previewInspectionTransition(toolCallId, params) {
+  // The pending runs of this exact inspection call (direct, or a Tool Search
+  // child of a pending tool_call) and their run state, only while that run is
+  // the active run of its session; else undefined.
+  function boundPreviewInspectionCall(toolCallId, params) {
     if (!workspacePreviewInspectionAvailable || typeof toolCallId !== 'string' || !toolCallId) return undefined;
     const parent = toolCallId.startsWith('tool_search_code:')
       ? [...pendingToolRuns].find(([id, run]) => !id.startsWith('tool_search_code:') && run.transport === 'tool_call' &&
@@ -7123,9 +7166,29 @@ export function createToolLoopGuard({
     const bound = [pendingToolRuns.get(toolCallId), parent].filter(run => run?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
       isDeepStrictEqual(run.selectedParams, params));
     const runId = bound[0]?.runId, state = runs.get(runId);
-    if (!state?.workspaceVisibilityInteractionRequired || bound.some(run => run.runId !== runId ||
+    if (!state || bound.some(run => run.runId !== runId ||
         run.inspectionSessionId !== state.currentSessionId || run.inspectionSessionKey !== state.currentSessionKey) ||
         (state.currentSessionId && sessionRuns.get(state.currentSessionId) !== runId)) return undefined;
+    return {state, bound};
+  }
+
+  // Identifiers of the run's current publication for this exact pending
+  // inspection call, or undefined. The inspection tool offers rejected
+  // arguments back as a ready plan only when they carry these identifiers.
+  function previewInspectionPublication(toolCallId, params) {
+    const preview = boundPreviewInspectionCall(toolCallId, params)?.state.workspacePreview;
+    return preview ? Object.freeze({siteId: preview.siteId, sha256: preview.sha256}) : undefined;
+  }
+
+  // Tool-result-time requirement for pixel_ods_workspace_preview_inspect.
+  // OpenClaw 2026.6.33 drops a before_agent_finalize revision after any plugin
+  // tool call, so an untested owner-requested show/hide change must be stated
+  // by the inspection result itself. Bound to this exact pending call (direct,
+  // or a Tool Search child of a pending tool_call) of the active run; a
+  // passing transition of the same snapshot earlier in the run satisfies it.
+  function previewInspectionTransition(toolCallId, params) {
+    const {state, bound} = boundPreviewInspectionCall(toolCallId, params) ?? {};
+    if (!state?.workspaceVisibilityInteractionRequired) return undefined;
     if (bound.some(({priorVisibilityInspection: prior}) => prior?.siteId === params.siteId && prior.sha256 === params.sha256 &&
         prior.sessionId === state.currentSessionId && prior.sessionKey === state.currentSessionKey)) return undefined;
     const intent = state.workspaceTransitionIntent, target = state.workspaceTransitionTarget;
@@ -7238,6 +7301,10 @@ export function createToolLoopGuard({
         successfulWriteContentByPath: new Map(),
         compareSwapRepairCounts: new Map(),
         successfulReadPaths: new Set(),
+        // index.html provenance (observeWorkspaceEntry).
+        workspaceEntrySequence: 0,
+        workspaceEntryObservations: new Map(),
+        unpublishableWorkspaceEntry: undefined,
         privateNetworkExhausted: false,
         privateNetworkRequestDenied: false,
         privateNetworkPrompt: false,
@@ -10341,6 +10408,17 @@ export function createToolLoopGuard({
         state.successfulWriteContentByPath.set(completedEditPath, editedContent);
       }
     }
+    // Entry provenance for guidedWorkspacePreviewDirectory. An edit's bytes
+    // are known only when replayed from this run's own write; a patch's never.
+    if (completedWritePath) {
+      observeWorkspaceEntry(state, completedWritePath, "write", successfulMutation.event?.params?.content);
+    } else if (successfulMutation) {
+      for (const file of workspaceMutationFiles(successfulMutation.name, successfulMutation.event?.params)) {
+        const changed = normalizeWorkspaceFilePath(file);
+        observeWorkspaceEntry(state, changed, "change",
+          successfulMutation.name === "edit" ? state.successfulWriteContentByPath.get(changed) : undefined);
+      }
+    }
     const completedRead =
       toolName === "read" && event?.result && typeof event.result === "object"
         ? event
@@ -10353,6 +10431,11 @@ export function createToolLoopGuard({
       : undefined;
     if (completedReadPath) {
       state.successfulReadPaths.add(completedReadPath);
+      // Only a whole-file read in one text block reports the entry's bytes.
+      const blocks = completedRead.result?.content;
+      const whole = completedRead.params?.offset === undefined && completedRead.params?.limit === undefined &&
+        Array.isArray(blocks) && blocks.length === 1 && blocks[0]?.type === "text" ? blocks[0].text : undefined;
+      observeWorkspaceEntry(state, completedReadPath, "read", whole);
     }
     /* Missing-file recovery: when a read of a path we previously wrote fails
      * with a structurally matched ENOENT/no-such-file error, invalidate only
@@ -11247,8 +11330,9 @@ export function createToolLoopGuard({
           : `The published snapshot is verified. Complete the requested unread static files inside ${state.workspacePreview.relativeDirectory} and any remaining owner-requested checks before replying.`,
       };
     }
-    const directory = (state.workspacePreviewRestrictions?.mutation && state.workspacePreviewRestrictions.directory) ||
-      guidedWorkspacePreviewDirectory(state);
+    const ownerDirectory = state.workspacePreviewRestrictions?.mutation && state.workspacePreviewRestrictions.directory;
+    const observedDirectory = ownerDirectory || workspacePreviewDirectoryFromState(state);
+    const directory = observedDirectory ?? guidedWorkspacePreviewDirectory(state);
     if (!directory) {
       const historicalReadback = historicalWorkspaceEntryReadback(state);
       if (historicalReadback) return historicalReadback;
@@ -11273,7 +11357,15 @@ export function createToolLoopGuard({
       return {stage, instruction: step === UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP
         ? `Do not reply yet. ${step}Do not start a sandbox server or claim another localhost URL.` : step.trimEnd()};
     }
-    state.workspacePreviewDirectory = directory;
+    // The default of a later argumentless publication is only the directory
+    // the owner named or an entry this run wrote. A guided copy, or a
+    // directory only read (possibly an earlier round's site, which a later
+    // hidden write would otherwise leave as the default), is named in this
+    // instruction and nowhere else.
+    if (directory === ownerDirectory ||
+        (directory === observedDirectory && state.successfulWritePaths.has(`${directory}/index.html`))) {
+      state.workspacePreviewDirectory = directory;
+    }
     return {
       stage,
       instruction:
@@ -12540,6 +12632,7 @@ export function createToolLoopGuard({
     },
     afterToolCall,
     previewInspectionTransition,
+    previewInspectionPublication,
     toolResultPersist,
     beforeAgentFinalize,
     recoverWorkspacePreview,

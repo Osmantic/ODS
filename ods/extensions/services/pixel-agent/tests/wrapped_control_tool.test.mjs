@@ -51,8 +51,9 @@ const INSPECT_EXAMPLE = {siteId: PUBLISH.siteId, sha256: PUBLISH.sha256, viewpor
 const DESCRIBE = 'tool_describe is its own tool, not a tool_call id. ';
 const CONTROL_ID = 'Control tools cannot be described or called by id; tool_describe and tool_call take only the id of a tool that tool_search found. ';
 const INSPECT_ROUTE = 'pixel_ods_workspace_preview_inspect is directly available in your tool list; call pixel_ods_workspace_preview_inspect itself. ';
-const READY_ROUTE = INSPECT_ROUTE + "Your last inspection's arguments were invalid only because of where its locators sat; " +
-  `send it directly with exactly these args, your own steps with each locator nested: ${JSON.stringify(READY)}.`;
+const READY_ROUTE = INSPECT_ROUTE + "Your last inspection's arguments were invalid only in the form of its locators: " +
+  'each belongs inside locator, and a role and name need exact:true. ' +
+  `Send it directly with exactly these args, your own steps with each locator in that form: ${JSON.stringify(READY)}.`;
 const SHAPE_ROUTE = INSPECT_ROUTE + 'Each step is {action, locator}; a locator is {selector} or {role, name, exact:true}. ' +
   `Shape only; these placeholder locators match nothing: ${JSON.stringify(INSPECT_EXAMPLE)}. ` +
   'Replace both locators with the requested control and affected element from your source.';
@@ -92,7 +93,8 @@ function replay(t, {prompt = TURN.prompt} = {}) {
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   const guard = createToolLoopGuard({workspacePreviewInspectionAvailable: true, abortRun: () => true});
   const inspector = createWorkspacePreviewInspectTool({request: async () => { throw Error('the inspector must not be contacted'); },
-    transitionRequirement: (toolCallId, params) => guard.previewInspectionTransition(toolCallId, params)});
+    transitionRequirement: (toolCallId, params) => guard.previewInspectionTransition(toolCallId, params),
+    currentPublication: (toolCallId, params) => guard.previewInspectionPublication(toolCallId, params)});
   const context = {agentId: 'pixel', runId: TURN.runId, sessionId: STRIXY.sessionId, sessionKey: STRIXY.sessionKey};
   guard.observeRun(context, 'pixel', {prompt}, {workspaceRoot: root});
   const files = {};
@@ -194,12 +196,13 @@ test('strixy round 107: wrapped tool_describe calls 9 and 10 get the direct rout
   // Call 8 is the recorded invalid wrapped inspection: an ordinary charged
   // failure. The tool's own result no longer says "call tool_describe ...
   // then retry through tool_call" (the recorded text before call 9); it gives
-  // the direct route and the model's own plan with each locator nested.
+  // the direct route and the model's own plan with each locator in the
+  // accepted form, since its identifiers are this run's current publication.
   assert.equal(answered(8).result.details.result.details.errorCode, 'invalid_request');
   assert.match(at(8).text, /Call tool_describe with id "pixel_ods_workspace_preview_inspect", then retry through tool_call/);
   assert.deepEqual(correctedInspectionArgs(at(8).arguments), READY);
   assert.ok(inspectText(8).includes('Next step: call pixel_ods_workspace_preview_inspect directly with exactly these args, ' +
-    `your own steps with each locator nested: ${JSON.stringify(READY)}.`), inspectText(8));
+    `your own steps with each locator in that form: ${JSON.stringify(READY)}.`), inspectText(8));
   assert.doesNotMatch(inspectText(8), /tool_describe|tool_call/);
   assert.match(at(9).seen, /Unknown tool id: tool_describe\. Did you mean: exec/, 'OpenClaw could only reject call 9');
   assert.deepEqual(answered(9).decision, {block: true, blockReason: DESCRIBE_INSPECT_ANSWER});
@@ -496,4 +499,74 @@ test('a tool that the owner\'s request excludes is never offered as a direct rou
     {...context, toolName: 'exec', toolCallId: 'exec-direct'})?.blockReason;
   assert.equal(typeof direct, 'string');
   assert.equal(excluded, DESCRIBE + direct);
+});
+
+// Re-verification of #6747 at 65412f21: after a republish, a flat inspection
+// plan with the earlier snapshot's identifiers came back from the tool as
+// "call ... with exactly these args" carrying those stale identifiers, which
+// the guard's own route answer already refused to offer. The tool now asks
+// the guard for this call's current publication and offers a plan as ready
+// only with its identifiers; otherwise the receipt caveat.
+test('rejected inspection arguments for an earlier snapshot are never offered back as ready to send', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-stale-inspection-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const guard = createToolLoopGuard({workspacePreviewInspectionAvailable: true, abortRun: () => true});
+  const inspector = createWorkspacePreviewInspectTool({request: async () => { throw Error('the inspector must not be contacted'); },
+    transitionRequirement: (toolCallId, params) => guard.previewInspectionTransition(toolCallId, params),
+    currentPublication: (toolCallId, params) => guard.previewInspectionPublication(toolCallId, params)});
+  const context = {agentId: 'pixel', runId: 'stale-run', sessionId: 'stale-session', sessionKey: 'agent:pixel:main'};
+  guard.observeRun(context, 'pixel', {prompt: 'Create a small static website in fleet-site with an index.html. It has a "Show sold out" button that reveals a hidden card. Publish it as a Workbench preview and check the show/hide interaction.'}, {workspaceRoot: root});
+  let sequence = 0;
+  const hooks = async (toolName, params, execute) => {
+    const id = `stale-${++sequence}`, ctx = {...context, toolName, toolCallId: id};
+    guard.observeModelCall({}, context);
+    const decision = guard.beforeToolCall({toolName, params, toolCallId: id}, ctx);
+    const admitted = decision?.block ? params : {...params, ...decision?.params};
+    const result = decision?.block ? vetoed(decision.blockReason) : await execute(admitted, id);
+    const isError = decision?.block === true || result.isError === true;
+    guard.afterToolCall({toolName, params: admitted, toolCallId: id, result, ...(isError ? {error: result.content[0].text} : {})}, ctx);
+    const message = {role: 'toolResult', toolName, toolCallId: id, isError, ...structuredClone(result)};
+    const persisted = guard.toolResultPersist({toolName, toolCallId: id, message}, ctx)?.message ?? message;
+    return {decision, result, text: persisted.content.filter(block => block.type === 'text').map(block => block.text).join('\n')};
+  };
+  const receipt = content => {
+    const sha256 = digest({'index.html': content}), siteId = `site-${sha256.slice(0, 24)}`;
+    return {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', status: 'succeeded', relativeDirectory: 'fleet-site', siteId, sha256,
+      entryFile: 'index.html', entrySha256: createHash('sha256').update(content).digest('hex'), files: 1, bytes: Buffer.byteLength(content),
+      port: 9437, url: `http://${siteId}.localhost:9437/${siteId}/`, httpStatus: 200, readbackVerified: true, executable: false,
+      overwritten: false, publishedPaths: ['index.html'], publishedPathsOmitted: 0};
+  };
+  const publish = async content => {
+    fs.mkdirSync(path.join(root, 'fleet-site'), {recursive: true});
+    fs.writeFileSync(path.join(root, 'fleet-site/index.html'), content);
+    await hooks('write', {path: 'fleet-site/index.html', content}, () => text('Successfully wrote'));
+    const details = receipt(content);
+    await hooks('pixel_ods_workspace_preview', {relativeDirectory: 'fleet-site'}, () => ({...text('published'), details}));
+    return details;
+  };
+  const first = await publish('<!doctype html><title>t</title><button id="b">Show sold out</button><div id="c" hidden>x</div>');
+  const current = await publish('<!doctype html><title>t</title><button id="b">Show sold out</button><div id="c" hidden>y</div>');
+  assert.notEqual(first.sha256, current.sha256);
+  const flat = ({siteId, sha256}) => ({siteId, sha256, viewport: {width: 375, height: 667}, steps: [
+    {action: 'assert-hidden', selector: '#c'}, {action: 'click', role: 'button', name: 'Show sold out'}, {action: 'assert-visible', selector: '#c'}]});
+  const inspect = params => hooks(PREVIEW_INSPECTION_TOOL, params, (admitted, id) => inspector.execute(id, admitted));
+  // The earlier snapshot's plan: the receipt caveat, never its identifiers.
+  const stale = await inspect(flat(first));
+  assert.equal(stale.result.details.errorCode, 'invalid_request');
+  const staleText = stale.result.content[0].text;
+  assert.ok(!staleText.includes(first.siteId) && !staleText.includes(first.sha256), staleText);
+  assert.doesNotMatch(staleText, /exactly these args/);
+  assert.ok(staleText.includes('with the exact published siteId and full sha256 from the latest publication receipt'), staleText);
+  assert.match(staleText, /Do not guess snapshot identifiers\./);
+  // The guard's route answer agrees: placeholders with the current identifiers.
+  const afterStale = await hooks('tool_call', {id: 'tool_describe', args: {id: PREVIEW_INSPECTION_TOOL}}, () => assert.fail('must not run'));
+  assert.ok(afterStale.decision.blockReason.includes('Shape only; these placeholder locators match nothing: '), afterStale.decision.blockReason);
+  assert.ok(!afterStale.decision.blockReason.includes(first.siteId), afterStale.decision.blockReason);
+  // The same plan for the current publication is offered ready to send.
+  const ready = correctedInspectionArgs(flat(current));
+  const bound = await inspect(flat(current));
+  assert.ok(bound.result.content[0].text.includes(`with exactly these args, your own steps with each locator in that form: ${JSON.stringify(ready)}.`),
+    bound.result.content[0].text);
+  // An unbound call (not this run's pending inspection) has no current publication.
+  assert.equal(guard.previewInspectionPublication('unbound', flat(current)), undefined);
 });

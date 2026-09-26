@@ -36,9 +36,11 @@ const LAPTOP_SITE={siteId:'site-ba3eb2f6e71217b5dbcf343e',sha256:'ba3eb2f6e71217
 const hidden={action:'assert-hidden',locator:{selector:'#midnight-card'}};
 const shown={action:'assert-visible',locator:{selector:'#midnight-card'}};
 const click={action:'click',locator:{role:'button',name:'Show sold out',exact:true}};
-test('a plan rejected only for where its locators sit gets itself back, nested and ready to send',async()=>{
-  let calls=0;
-  const tool=createWorkspacePreviewInspectTool({request:async()=>{calls++;throw Error('should not execute');}});
+test('a plan rejected only for the form of its locators gets itself back, ready to send, for the current publication',async()=>{
+  let calls=0,current;
+  const asked=[];
+  const tool=createWorkspacePreviewInspectTool({request:async()=>{calls++;throw Error('should not execute');},
+    currentPublication:(toolCallId,params)=>{asked.push([toolCallId,params]);return current;}});
   for(const [params,corrected] of [
     [{...STRIXY_SITE,steps:[{action:'assert-hidden',selector:'#midnight-card'},{action:'click',name:'Show sold out',role:'button'},{action:'assert-visible',selector:'#midnight-card'}]},
       {...STRIXY_SITE,steps:[hidden,click,shown]}],
@@ -53,10 +55,27 @@ test('a plan rejected only for where its locators sit gets itself back, nested a
   ]) {
     assert.deepEqual(correctedInspectionArgs(params),corrected);
     assert.doesNotThrow(()=>normalizeWorkspacePreviewInspectionParams(corrected));
+    current={siteId:params.siteId,sha256:params.sha256};
+    asked.length=0;
     const text=(await tool.execute('inspect',params)).content[0].text;
-    assert.ok(text.includes(`Next step: call pixel_ods_workspace_preview_inspect directly with exactly these args, your own steps with each locator nested: ${JSON.stringify(corrected)}.`),text);
+    assert.deepEqual(asked,[['inspect',params]]);
+    assert.ok(text.includes(`Next step: call pixel_ods_workspace_preview_inspect directly with exactly these args, your own steps with each locator in that form: ${JSON.stringify(corrected)}.`),text);
     assert.doesNotMatch(text,/tool_describe|tool_call/);
+    // Unknown or another current publication: never these identifiers back.
+    for(const other of [undefined,{siteId:'site-'+'c'.repeat(24),sha256:'c'.repeat(64)},{siteId:params.siteId,sha256:'c'.repeat(64)}]) {
+      current=other;
+      const caveat=(await tool.execute('inspect',params)).content[0].text;
+      assert.ok(caveat.includes('Next step: call pixel_ods_workspace_preview_inspect directly with the exact published siteId and full sha256 from the latest publication receipt'),caveat);
+      assert.match(caveat,/Do not guess snapshot identifiers\./);
+      assert.ok(!caveat.includes(params.siteId)&&!caveat.includes(params.sha256),caveat);
+    }
   }
+  // A throwing lookup is an unknown publication, never a ready plan.
+  const throwing=createWorkspacePreviewInspectTool({request:async()=>{calls++;throw Error('should not execute');},
+    currentPublication:()=>{throw Error('lookup failed');}});
+  const flat={...STRIXY_SITE,steps:[{action:'assert-hidden',selector:'#midnight-card'}]};
+  assert.ok(correctedInspectionArgs(flat));
+  assert.doesNotMatch((await throwing.execute('inspect',flat)).content[0].text,/exactly these args/);
   assert.equal(calls,0);
 });
 
