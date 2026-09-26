@@ -90,12 +90,30 @@ const ITEM_ARTICLE = /^(?:a|an|one|some|um|uma|uns|umas)\s/i;
 // Lists of cards or headings ("three event cards") name items that each carry
 // a heading; words after the noun ("tabs with titles") do not.
 const HEADED_ITEMS = words(String.raw`cards?|headings?|headlines?|titles?|cart[õo]es|cart[ãa]o|t[íi]tulos?`);
-// Anywhere in the message, a request to show content more than once
-// ("feature Dawn jazz at the top", "repeat it in the footer") lets a listed
-// name head more than one item.
-const REPEAT_CUE = words(String.raw`featur(?:e|es|ed|ing)|highlight(?:s|ed|ing)?|spotlight(?:s|ed|ing)?|pinned|` +
-  String.raw`repeat(?:s|ed|ing)?|again|twice|duplicat(?:e|es|ed|ing)|(?:also|both)\s+(?:in|on|at|as|under)|` +
-  String.raw`destaque|destacad[oa]s?|destacar|rep[ei]t\p{L}*|novamente|de\s+novo|duas\s+vezes|duplicad[oa]s?`);
+// Anywhere in the owner's words, a request that may show content more than
+// once lets a listed name head more than one item. The cue is deliberately
+// broad: any plausible request for repetition keeps the duplicate check
+// silent. It covers featuring, repeating or mirroring ("feature Dawn jazz at
+// the top", "repeat it", "again at the bottom", "a second time"), additions
+// ("put it in the sidebar too", "show it as well in the hero", "also show Dawn
+// jazz in a banner", "in both places") and carousels, which may clone slides.
+// "Too" before a word ("too long") and "as well as" are not repetition.
+const PLACE = String.raw`in|on|at|as|under|inside|within|into|near|below|above|beside|atop|next\s+to`;
+const REPEAT_CUE = words([
+  String.raw`featur(?:e|es|ed|ing)|highlight(?:s|ed|ing)?|spotlight(?:s|ed|ing)?|pinned|mirror(?:s|ed|ing)?`,
+  String.raw`repeat(?:s|ed|ing)?|again|twice|once\s+more|one\s+more\s+time|second\s+time|duplicat(?:e|es|ed|ing)|cop(?:y|ies)\s+of`,
+  String.raw`too(?![^\S\n]*[\p{L}\p{N}])|too\s+(?:and|please)|as\s+well(?!\s+as${E})`,
+  String.raw`also(?:\s+be)?\s+(?:${PLACE}|show|shown|list|listed|display|displayed|feature|include|included|put|place|placed|` +
+    String.raw`add|added|appear|appears|mention|mentioned|pin)`,
+  String.raw`both\s+(?:${PLACE}|places|spots|locations|positions|sections|areas|lists|views|pages)|in\s+both|top\s+and\s+(?:the\s+)?bottom`,
+  String.raw`carousels?|slideshows?|sliders?|marquees?|tickers?`,
+  String.raw`destaque|destacad[oa]s?|destacar|rep[ei]t\p{L}*|novamente|de\s+novo|duas\s+vezes|duplicad[oa]s?|espelh\p{L}*`,
+  String.raw`tamb[ée]m(?![^\S\n]*[\p{L}\p{N}])|tamb[ée]m\s+(?:(?:em|no|na|nos|nas)${E}|(?:mostr|exib|list|coloq|inclu|adicion|apare)\p{L}*)`,
+  String.raw`(?:em\s+)?amb[oa]s\s+(?:os\s+|as\s+)?(?:lugares|locais|partes|se[çc][õo]es)|nos\s+dois\s+lugares|c[óo]pias?\s+d[eoa]s?|carross[eé](?:l|is)`,
+].join('|'));
+// Host routing notes appended to the owner's message ("[ODS Portal command
+// completion route: ... do not call exec again ...]") are not owner requests.
+const HOST_NOTE = /^[ \t]*\[ODS (?:Portal|Pixel)\b[^\n]*/gm;
 
 // "create a public directory with index.html, ..." or "publish a folder
 // containing ...": a named directory, or the publication itself.
@@ -212,7 +230,7 @@ function enumerationItems(list, count) {
 // a name comes only from the other names of the same list.
 function enumeratedLiterals(prose) {
   const found = [];
-  const repeats = REPEAT_CUE.test(prose) ? {repeats: true} : {};
+  const repeats = REPEAT_CUE.test(prose.replace(HOST_NOTE, ' ')) ? {repeats: true} : {};
   let list = 0;
   for (const match of prose.matchAll(ENUMERATION)) {
     const count = COUNTS[match[1].toLowerCase()] ?? Number(match[1]);
@@ -339,7 +357,8 @@ const TEXT_ATTRIBUTE = /^(?:aria-label|title|alt|placeholder|value|label|data-[\
 
 // A bounded static reading of authored HTML: element and text-node strings,
 // titles, h1s and labelling attributes. Inline scripts and styles are opaque.
-function readHtml(source, corpus) {
+// Headings record the index of their document among the snapshot's files.
+function readHtml(source, corpus, document) {
   const html = source.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
   const tag = /<(\/?)([A-Za-z][A-Za-z0-9-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/g;
   const stack = [];
@@ -363,8 +382,8 @@ function readHtml(source, corpus) {
       if (element.name === 'h1') corpus.h1s.push(...values);
       if (/^h[1-6]$/.test(element.name) && values.length && corpus.headings.length <= MAX_HEADINGS) {
         // The remaining stack holds this heading's open ancestors.
-        corpus.headings.push({level: Number(element.name[1]), family: element.family, forms: values,
-          inert: stack.some(open => INERT_ELEMENTS.has(open.name))});
+        corpus.headings.push({level: Number(element.name[1]), family: element.family, forms: values, document,
+          parent: stack.at(-1)?.name ?? '', inert: stack.some(open => INERT_ELEMENTS.has(open.name))});
       }
     }
   };
@@ -406,8 +425,8 @@ function readHtml(source, corpus) {
 
 function textCorpus(files) {
   const corpus = {visible: [], attributes: [], elements: [], titles: [], h1s: [], headings: [], opaque: []};
-  for (const file of files) {
-    if (HTML_FILE.test(file.path)) readHtml(file.text, corpus);
+  for (const [document, file] of files.entries()) {
+    if (HTML_FILE.test(file.path)) readHtml(file.text, corpus, document);
     else if (/\.m?js$/i.test(file.path)) corpus.opaque.push(withoutComments(file.text, 'script'));
     else if (/\.css$/i.test(file.path)) corpus.opaque.push(withoutComments(file.text, 'style'));
     else corpus.opaque.push(file.text);
@@ -474,25 +493,34 @@ function unheadedItem(key, corpus, siblings) {
     family.some(heading => heading.keys.some(value => others.includes(value))));
 }
 
-// A listed card name that is the whole text of two or more headings of one tag
-// and class list, none inside a template or noscript, while each other name of
-// the same list is the whole text of exactly one heading: the item was
-// published more than once. Returns that heading count. Fleet round 114
-// (Qwen3.5-9B): the hidden "Midnight Sold-Out Concert" card and a full copy in
-// the section its button revealed were both h2.event-title.
+// A listed card name that is the whole text of two or more headings of one
+// HTML document, all of one tag and class list with the same parent element
+// tag and none inside a template or noscript, while each other name of the
+// same list is the whole text of exactly one heading of that document: the
+// item was published more than once. A second page that repeats a card
+// (a waitlist or detail page) is not a copy. Returns the largest such heading
+// count. Fleet round 114 (Qwen3.5-9B): the hidden "Midnight Sold-Out Concert"
+// card and a full copy in the section its button revealed were both
+// h2.event-title inside div.event-card-content.
 function duplicatedItem(key, corpus, siblings) {
   const headings = corpus.headings();
-  const named = value => headings.filter(heading => heading.keys.includes(value));
-  const copies = named(key);
-  if (copies.length < 2 || copies.some(heading => heading.inert) ||
-      new Set(copies.map(heading => heading.family)).size > 1) return 0;
-  return siblings.every(other => other === key || named(other).length === 1) ? copies.length : 0;
+  let most = 0;
+  for (const document of new Set(headings.map(heading => heading.document))) {
+    const named = value => headings.filter(heading => heading.document === document && heading.keys.includes(value));
+    const copies = named(key);
+    if (copies.length < 2 || copies.some(heading => heading.inert) ||
+        new Set(copies.map(heading => `${heading.parent}>${heading.family}`)).size > 1 ||
+        !siblings.every(other => other === key || named(other).length === 1)) continue;
+    most = Math.max(most, copies.length);
+  }
+  return most;
 }
 
 // Each miss is {} (absent), {target} (not the page title or h1), {heading}
 // (a listed item only inside a longer heading), {unheaded} (a listed card
 // name that is no heading beside its sibling cards' headings) or {duplicated}
-// (the number of headings a listed card name is, where its siblings are one).
+// (the number of headings a listed card name is in one document, where its
+// siblings are one).
 function literalMisses(literal, corpus, items, siblings) {
   const exact = literal.match === 'exact';
   const needle = exact ? canonicalText(literal.text) : folded(literal.text);

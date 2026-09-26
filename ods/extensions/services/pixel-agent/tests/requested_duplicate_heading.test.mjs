@@ -104,6 +104,31 @@ test('duplicate headings are reported only for identical markup beside exactly-o
   assert.deepEqual(duplicates(events, page(card('Midnight sold-out concert'))), []);
 });
 
+test('copies are counted within one HTML document, under one parent element tag', () => {
+  // A second page that repeats a listed card (a waitlist or detail page) is not a copy.
+  assert.deepEqual(duplicates(items, [...page(), {path: 'waitlist.html',
+    text: `<main><h1>Join the waitlist</h1>${card('Midnight sold-out concert')}<form></form></main>`}]), []);
+  assert.deepEqual(duplicates(items, [...page(), {path: 'midnight.html',
+    text: '<main><h1>Tickets</h1><h2 class="event-title">Midnight sold-out concert</h2></main>'}]), []);
+  assert.deepEqual(duplicates(items, [...page(), ...['dawn', 'river', 'midnight'].map((slug, index) => ({path: `${slug}.html`,
+    text: card(['Dawn jazz', 'River lantern walk', 'Midnight sold-out concert'][index])}))]), [], 'a detail page per card');
+  // A copy inside one document is still reported, with that document's count.
+  assert.deepEqual(duplicates(items, [...page(card('Midnight sold-out concert')), {path: 'waitlist.html',
+    text: card('Midnight sold-out concert')}]), [{text: 'Midnight sold-out concert', duplicated: 2}]);
+  assert.deepEqual(duplicates(items, [{path: 'about.html', text: '<h2 class="event-title">Dawn jazz</h2>'},
+    ...page(card('Midnight sold-out concert'))]), [{text: 'Midnight sold-out concert', duplicated: 2}],
+  'siblings are counted in the document of the copies');
+  // Headings without classes: a footer or dialog list is not a copy of the card headings.
+  const bare = name => `<article><h3>${name}</h3><p>Details.</p></article>`;
+  const bareCards = ['Dawn jazz', 'River lantern walk', 'Midnight sold-out concert'].map(bare).join('');
+  assert.deepEqual(duplicates(items, [{path: 'index.html',
+    text: `<main>${bareCards}</main><footer><h3>Midnight sold-out concert</h3></footer>`}]), []);
+  assert.deepEqual(duplicates(items, page('<dialog id="details"><h2 class="event-title">Midnight sold-out concert</h2></dialog>')), []);
+  assert.deepEqual(duplicates(items, [{path: 'index.html',
+    text: `<main>${bareCards}</main><section hidden>${bare('Midnight sold-out concert')}</section>`}]),
+  [{text: 'Midnight sold-out concert', duplicated: 2}], 'a copied card under the same parent tag');
+});
+
 test('template, noscript and script-rendered copies are never duplicate misses', () => {
   assert.deepEqual(duplicates(items, page(`<template id="sold-out">${card('Midnight sold-out concert')}</template>`)), []);
   assert.deepEqual(duplicates(items, page(`<noscript>${card('Midnight sold-out concert')}</noscript>`)), []);
@@ -131,7 +156,68 @@ test('an owner request to feature or repeat content permits a repeated card head
   assert.deepEqual(duplicates(literals, repeated), [{text: 'Midnight sold-out concert', duplicated: 2}], 'the recorded request');
 });
 
-const context = {agentId: 'pixel', runId: 'chatcmpl_0c755b44-7865-455e-a9b7-6c1d762694cc', sessionId: 'session',
+// Any plausible owner request for repetition keeps the check silent.
+test('owner requests that may show a card twice keep the duplicate check silent', () => {
+  const repeated = page(card('Dawn jazz'));
+  const silent = extra => {
+    const cued = extractRequestedLiterals(`${ROUND.prompt}${extra}`);
+    assert.deepEqual(cued.filter(literal => literal.match === 'item').map(literal => literal.repeats),
+      [true, true, true], extra);
+    assert.deepEqual(duplicates(cued, repeated), [], extra);
+  };
+  for (const extra of [
+    ' Show Dawn jazz in the hero too.', ' Put Dawn jazz in the sidebar too.', ' Put Dawn jazz in the header too, please.',
+    ' Put Dawn jazz in the footer too and make it bold.', ' Add Dawn jazz to the hero as well.',
+    ' Show Dawn jazz as well in the hero.', ' Also show Dawn jazz in a "Next up" banner at the top.',
+    ' The hero should also show Dawn jazz.', ' Dawn jazz should also be listed under "Tonight".',
+    ' Keep Dawn jazz in both places.', ' Show Dawn jazz both in the hero and in the grid.',
+    ' Show Dawn jazz across both sections.', ' Show Dawn jazz in both the hero and the grid.',
+    ' Show Dawn jazz again at the bottom.', ' Repeat it in the footer.', ' Mirror the Dawn jazz card in the sidebar.',
+    ' List the first event a second time under "Tonight".', ' Show Dawn jazz once more in the footer.',
+    ' Put a copy of the Dawn jazz card in the hero.', ' Show the next event at the top and bottom.',
+    ' Show the cards in a carousel.', ' Add a slideshow of the events.', ' Run the event names in a marquee.',
+  ]) silent(extra);
+  for (const text of ['Inclua três cartões de eventos: Jazz, Rio, Meia-noite. Mostre o Jazz no topo também.',
+    'Inclua três cartões de eventos: Jazz, Rio, Meia-noite. Também mostre o Jazz no rodapé.',
+    'Inclua três cartões de eventos: Jazz, Rio, Meia-noite. Deixe o Jazz em ambos os lugares.',
+    'Inclua três cartões de eventos: Jazz, Rio, Meia-noite. Espelhe o cartão Jazz na lateral.',
+    'Inclua três cartões de eventos: Jazz, Rio, Meia-noite. Mostre os cartões em um carrossel.']) {
+    assert.deepEqual(extractRequestedLiterals(text).map(literal => literal.repeats), [true, true, true], text);
+  }
+});
+
+test('words that do not ask for repetition, and host route notes, leave the duplicate check on', () => {
+  const repeated = page(card('Dawn jazz'));
+  for (const extra of [' It should also work on mobile.', ' The hero should also be responsive.',
+    ' Keep the descriptions from getting too long.', ' Do not make the cards too tall or too wide.',
+    ' Include a header as well as a footer.', ' Use both a header and a footer.']) {
+    const plain = extractRequestedLiterals(`${ROUND.prompt}${extra}`);
+    assert.equal(plain.filter(literal => literal.match === 'item').length, 3, extra);
+    assert.ok(plain.every(literal => !literal.repeats), extra);
+    assert.deepEqual(duplicates(plain, repeated), [{text: 'Dawn jazz', duplicated: 2}], extra);
+  }
+  // Route notes the host appends to the owner's message (pixel-edge's delivery
+  // requirement, workspace task route and command completion route) are not
+  // owner words: "copies of existing files" and "do not call exec again".
+  const routed = `${ROUND.prompt}\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. ` +
+    'If it asks for exact text, copy that full exact text. Do not answer with a generic acknowledgement. Do not output NO_REPLY.]' +
+    '\n[ODS Portal workspace task route: Perform the requested workspace mutation before verification. When tool_call is ' +
+    'visible, use it with id write and normal write args for every new file you author. edit cannot create a file and ' +
+    'requires a non-empty oldText copied from an existing file. Use edit or apply_patch only after reading an existing file. ' +
+    'Then use exec only for readback, tests, the requested digest, or copies of existing files: make copies and JSON maps ' +
+    'of file contents with one short command that reads the real files, such as cp or python3 with json.dump, never by ' +
+    're-typing them. Do not repeatedly list directories or hash proposed text instead of the created file.]' +
+    '\n[ODS Portal command completion route: Call exec exactly once for the owner\'s command. If exec returns a running ' +
+    'process session, do not call exec again. Use the visible tool_call control with id process and args containing action ' +
+    'poll plus that exact returned sessionId, and keep polling only that session until its terminal output is available. ' +
+    'Report the real terminal output; do not simulate, shorten, or restart the command.]';
+  const guarded = extractRequestedLiterals(routed);
+  assert.deepEqual(guarded.filter(literal => literal.match === 'item').map(literal => literal.repeats),
+    [undefined, undefined, undefined]);
+  assert.deepEqual(duplicates(guarded, repeated), [{text: 'Dawn jazz', duplicated: 2}]);
+});
+
+const context = {agentId: 'pixel', runId: 'run-round114', sessionId: 'session',
   sessionKey: 'agent:pixel:openai-user:owner'};
 function fixture() {
   const guard = createToolLoopGuard({workspacePreviewInspectionAvailable: true, abortRun: () => true});
