@@ -261,7 +261,7 @@ function New-ODSPortalLinuxAccount([string]$Distro, $Account) {
     $exists = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--user', 'root', '--exec', 'id', '-u', $Account.Name)
     if ($exists.Code -ne 0) {
         $created = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--user', 'root', '--exec', 'useradd', '--create-home', '--shell', '/bin/bash', '--groups', 'sudo', '--', $Account.Name)
-        if ($created.Code -ne 0) { throw "Could not create the Ubuntu user $($Account.Name): $($created.Output)" }
+        if ($created.Code -ne 0) { throw "Could not create the Ubuntu user $($Account.Name): $($created.Output) $($created.Error)" }
     }
     # The password travels only on chpasswd's stdin, never in arguments or logs.
     $password = Invoke-ODSPortalWslInput $Distro @('chpasswd') ($Account.Name + ':' + $Account.Password)
@@ -296,7 +296,7 @@ function Enable-ODSPortalSystemd([string]$Distro) {
     $written = Set-ODSPortalWslConf $Distro @('boot', 'systemd', 'true')
     if ($written.Code -ne 0) { throw "Could not turn on systemd in $Distro ($($written.Output)). Add systemd=true under [boot] in /etc/wsl.conf inside Ubuntu, run wsl --terminate $Distro, then rerun this command." }
     $stopped = Invoke-ODSPortalWsl -Arguments @('--terminate', $Distro)
-    if ($stopped.Code -ne 0) { throw "Could not restart $Distro after turning on systemd: $($stopped.Output)" }
+    if ($stopped.Code -ne 0) { throw "Could not restart $Distro after turning on systemd: $($stopped.Output) $($stopped.Error)" }
 }
 
 # ------------------------------------------------------ continue after restart

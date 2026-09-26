@@ -26,9 +26,18 @@ function Invoke-ODSPortalWsl([string[]]$Arguments) {
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $output = & wsl.exe @Arguments 2>&1
+        $records = & wsl.exe @Arguments 2>&1
         $code = $LASTEXITCODE
-        [pscustomobject]@{ Code = $code; Output = (($output | Out-String) -replace "`0", '').Trim() }
+        # Output is stdout only: WSL and Linux tools print warnings on stderr
+        # (localhost proxy, terminal size) that must not change parsed values.
+        # Error keeps them for failure messages.
+        $stdout = @($records | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
+        $stderr = @($records | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } | ForEach-Object { $_.ToString() })
+        [pscustomobject]@{
+            Code = $code
+            Output = (($stdout | Out-String) -replace "`0", '').Trim()
+            Error = (($stderr | Out-String) -replace "`0", '').Trim()
+        }
     } finally { $ErrorActionPreference = $previousPreference }
 }
 
@@ -198,7 +207,7 @@ function Initialize-ODSPortalWindowsFoundation([System.Collections.IDictionary]$
 
 function Get-ODSPortalDistroNames {
     $list = Invoke-ODSPortalWsl -Arguments @('--list', '--quiet')
-    if ($list.Code -ne 0) { throw ('Cannot list WSL distributions: ' + $list.Output) }
+    if ($list.Code -ne 0) { throw ('Cannot list WSL distributions: ' + $list.Output + ' ' + $list.Error) }
     return @($list.Output -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
 
@@ -207,7 +216,7 @@ function Install-ODSPortalUbuntu([string]$Distro, [System.Collections.IDictionar
     if (-not (Confirm-ODSPortalPreparation "Download and install $Distro? It is installed under your Windows account; existing distributions are not changed." $NonInteractive)) { return 1 }
     $installed = Invoke-ODSPortalWsl -Arguments @('--install', '--distribution', $Distro, '--no-launch')
     if ($installed.Code -eq 3010) { return (Request-ODSPortalRestart $InstallerRoot $Options 'Windows needs a restart to finish installing Ubuntu.') }
-    if ($installed.Code -ne 0) { throw ('Ubuntu installation did not complete: ' + $installed.Output) }
+    if ($installed.Code -ne 0) { throw ('Ubuntu installation did not complete: ' + $installed.Output + ' ' + $installed.Error) }
     if ($Distro -notin (Get-ODSPortalDistroNames)) { Register-ODSPortalDistro $Distro }
     if ($Distro -notin (Get-ODSPortalDistroNames)) { throw "$Distro was downloaded but is not registered. Open it once from the Start menu, then rerun this command." }
     New-ODSPortalLinuxAccount $Distro (Read-ODSPortalLinuxAccount)
@@ -283,11 +292,11 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     if ($identity.Code -ne 0 -or $identity.Output -notmatch '^\d+$' -or $identity.Output -eq '0') {
         throw "Initialize a normal Linux user and make it the default in $distro. Open Ubuntu to finish account setup, then rerun this command; do not install ODS as root."
     }
-    $init = Invoke-ODSPortalWsl -Arguments @('--distribution', $distro, '--exec', 'ps', '-p', '1', '-o', 'comm=')
+    $init = Invoke-ODSPortalWsl -Arguments @('--distribution', $distro, '--exec', 'cat', '/proc/1/comm')
     if ($init.Code -eq 0 -and $init.Output.Trim() -ne 'systemd' -and
         (Confirm-ODSPortalPreparation "Pixel needs systemd, which is off in $distro. Turn it on now? This restarts $distro, so save work in any open Ubuntu window first." $nonInteractive)) {
         Enable-ODSPortalSystemd $distro
-        $init = Invoke-ODSPortalWsl -Arguments @('--distribution', $distro, '--exec', 'ps', '-p', '1', '-o', 'comm=')
+        $init = Invoke-ODSPortalWsl -Arguments @('--distribution', $distro, '--exec', 'cat', '/proc/1/comm')
     }
     if ($init.Code -ne 0 -or $init.Output.Trim() -ne 'systemd') {
         throw "Enable systemd=true under [boot] in /etc/wsl.conf inside Ubuntu (preserve other settings). Then run wsl --terminate $distro from PowerShell, reopen Ubuntu and rerun this command."
