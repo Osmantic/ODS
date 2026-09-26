@@ -18,9 +18,10 @@ from __future__ import annotations
 import re
 
 LLAMA_CPP_DEFAULT_CACHE_RAM_MIB = 8192
-# Memory the rest of ODS and the OS keep for themselves. A 16 GB WSL VM running
-# the default stack held ~4 GiB of other containers, plus the VM's own
-# services, Pixel sandboxes and swapped-out pages.
+# Memory the rest of ODS and the OS keep for themselves. In a 16 GB WSL VM
+# running the default stack the other containers held 3.6 GiB at idle; when
+# llama-server was OOM-killed, every other process held 4.6 GiB of RAM and
+# 3.6 GiB of swap.
 STACK_RESERVE_GIB = 6
 MIN_CACHE_RAM_MIB = 512
 
