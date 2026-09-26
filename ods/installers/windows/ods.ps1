@@ -232,10 +232,10 @@ function Get-ODSDockerProjectResourceNames {
     try {
         switch ($Kind) {
             "container" {
-                return @(& docker ps -aq --filter $filter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                return @(& docker ps -a --filter $filter --format '{{.Names}}' 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             }
             "network" {
-                return @(& docker network ls -q --filter $filter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                return @(& docker network ls --filter $filter --format '{{.Name}}' 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             }
             "volume" {
                 return @(& docker volume ls -q --filter $filter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -521,7 +521,7 @@ function Invoke-Uninstall {
     if ($remainingContainers.Count -gt 0 -or $remainingNetworks.Count -gt 0 -or $remainingVolumes.Count -gt 0) {
         Write-AIError "Docker cleanup is incomplete; runtime files were left in place for recovery."
         Write-AI "Remaining resources: containers=$($remainingContainers.Count) networks=$($remainingNetworks.Count) volumes=$($remainingVolumes.Count)"
-        foreach ($name in @($remainingNetworks + $remainingVolumes)) { Write-AI "  still present: $name" }
+        foreach ($name in @($remainingContainers + $remainingNetworks + $remainingVolumes)) { Write-AI "  still present: $name" }
         Write-AI "A resource that is still in use by a container outside ODS cannot be removed; stop that container, then rerun uninstall."
         throw "ODS_UNINSTALL_DOCKER_CLEANUP_INCOMPLETE"
     }
