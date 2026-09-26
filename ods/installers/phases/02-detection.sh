@@ -662,7 +662,7 @@ if [[ "$INTERACTIVE" == "true" ]]; then
     # An external Lemonade (Windows under WSL) runs the model on a GPU this
     # Linux probe cannot see; show that GPU instead of "None".
     if [[ "${LEMONADE_EXTERNAL:-false}" == "true" && -n "${LEMONADE_GPU_NAME:-}" ]]; then
-        show_hardware_summary "${LEMONADE_GPU_NAME} (Lemonade)" "$(( ${LEMONADE_GPU_VRAM_MB:-0} / 1024 ))" "$CPU_INFO" "$RAM_GB" "$DISK_AVAIL"
+        show_hardware_summary "${LEMONADE_GPU_NAME} (Lemonade)" "$(( (${LEMONADE_GPU_VRAM_MB:-0} + 512) / 1024 ))" "$CPU_INFO" "$RAM_GB" "$DISK_AVAIL"
     else
         show_hardware_summary "$GPU_NAME" "$((GPU_VRAM / 1024))" "$CPU_INFO" "$RAM_GB" "$DISK_AVAIL"
     fi
