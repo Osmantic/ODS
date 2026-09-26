@@ -12,6 +12,13 @@ const RESERVED = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const GENERIC = /^(?:playground|project|projeto|app|application|site|website|web|game|jogo|public|src|source|build|dist|assets|static|css|js|test|tests|folder|new-project)$/i;
 const LOCAL_FOLDERS = /^(?:src|source|public|assets|static|styles?|css|js|scripts?|tests?|docs?|lib|components|build|dist)$/i;
 const CORRECTION = 'For a new project, use a workspace-relative path such as Playground/snake-game/index.html or Playground/weather-tool/main.py. Omit host home/workspace directory prefixes. Use that same descriptive folder for every project file and for preview publication. Do not use a bare filename or a generic src/public/project folder as the project name.';
+// Names of a role, manifest, test, sample or scratch file, not a project.
+// Matched on the lowercase kebab form; such names never become a suggestion.
+const ROLE_FOLDER = /^(?:index|main|app|script|program|tool|run|utils?|helpers?|common|lib|setup|readme|conftest|config|settings|constants|manage|server|client|cli|demo|example|sample|temp|tmp|scratch|(?:tests?|spec)(?:-.*)?|.*-(?:tests?|spec))$/;
+// Only a program or page file names a new project. Manifests such as
+// package.json, requirements.txt or Makefile, documents and data do not.
+const PROJECT_FILE = /\.(?:py|js|mjs|cjs|ts|tsx|jsx|html?|sh|rb|go|rs|java|kt|swift|c|cc|cpp|cs|php|lua|pl|dart)$/i;
+const NOT_RUN = 'Not run: write the first project file before running commands; write creates its folder, so mkdir is not needed.';
 
 function parts(value) {
   if (typeof value !== 'string' || value.length > 512) return null;
@@ -71,6 +78,73 @@ function relative(value, root) {
   else if (text.startsWith('/workspace/')) text = text.slice('/workspace/'.length);
   if (text.startsWith('./')) text = text.slice(2);
   return parts(text) ? text : null;
+}
+// A folder name that describes a project: valid, not generic, not a role,
+// test or sample name, and with at least three letters.
+function descriptiveFolder(name) {
+  const kebab = String(name).replace(/[._]+/g, '-').toLowerCase();
+  return parts(name)?.length === 1 && !GENERIC.test(kebab) && !ROLE_FOLDER.test(kebab)
+    && (kebab.match(/[a-z]/g) ?? []).length >= 3;
+}
+// The first name under Playground that nothing uses yet: the name itself or,
+// with suffixes, the -2, -3 ... names that reserveProject would choose. A
+// suggestion never names an existing folder, which may be an owner project.
+// Nothing is created. Null when the workspace cannot be checked, so advice
+// never affects routing.
+function freeFolder(root, name, suffixes = false) {
+  try {
+    const base = path.join(safeRoot(root),'Playground');
+    try { const stat = fs.lstatSync(base); if (!stat.isDirectory() || stat.isSymbolicLink()) return null; }
+    catch (error) { return error.code === 'ENOENT' ? name : null; }
+    for (let i = 1; i <= (suffixes ? 1000 : 1); i++) {
+      const candidate = i === 1 ? name : `${name.slice(0,58)}-${i}`;
+      try { fs.lstatSync(path.join(base,candidate)); }
+      catch (error) { return error.code === 'ENOENT' ? candidate : null; }
+    }
+  } catch { /* An unavailable workspace gets no suggestion. */ }
+  return null;
+}
+// The folder already suggested in this run, while it is still unused. Later
+// refusals repeat it, so one run never gets two different project folders.
+function earlierFolder(state, root) {
+  return state.suggestedFolder && freeFolder(root,state.suggestedFolder) === state.suggestedFolder ? state.suggestedFolder : null;
+}
+// Advice for a refused fresh-project write whose target is one file name,
+// such as /workspace/PhotoRenamer.py -> Playground/photo-renamer/PhotoRenamer.py.
+// Returns null when no descriptive, unused folder follows from the name. The
+// caller's path is never rewritten: the model sends the suggested path itself.
+function suggestedProjectPath(value, root, state) {
+  if (typeof value !== 'string') return null;
+  let text = value.replaceAll('\\', '/');
+  const configured = root.replaceAll('\\', '/').replace(/\/$/, '');
+  if (text.startsWith(`${configured}/`)) text = text.slice(configured.length + 1);
+  else if (text.startsWith('/workspace/')) text = text.slice('/workspace/'.length);
+  else if (text.startsWith('/')) text = text.slice(1);
+  if (text.startsWith('./')) text = text.slice(2);
+  if (parts(text)?.length !== 1) return null;
+  const earlier = earlierFolder(state,root);
+  if (earlier) return `Playground/${earlier}/${text}`;
+  if (!PROJECT_FILE.test(text)) return null;
+  const folder = text.slice(0, text.lastIndexOf('.')).replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2').replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/[._]+/g, '-').replace(/-{2,}/g, '-').replace(/^-|-$/g, '').toLowerCase();
+  if (!descriptiveFolder(folder)) return null;
+  const free = freeFolder(root,folder,true);
+  return free ? `Playground/${free}/${text}` : null;
+}
+// The first descriptive, unused Playground/<name> that a refused command names.
+function commandProjectFolder(command, root) {
+  for (const match of command.matchAll(/(?:^|[\s"'`=:(/])Playground\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?=$|[\s/"'`;&|)])/g)) {
+    if (descriptiveFolder(match[1]) && freeFolder(root,match[1]) === match[1]) return match[1];
+  }
+  return null;
+}
+// A command whose first step is cd into the bound project directory, written
+// relative to the workspace (optionally ./ and a trailing /), and followed by
+// the end, a newline, &&, ; or ||. A single & or | runs the cd in a subshell,
+// so those commands keep the project workdir.
+function entersProject(command, directory) {
+  const escaped = directory.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^\\s*cd\\s+(?:\\./)?${escaped}/?(?=[ \\t]*(?:$|\\n|&&|;|\\|\\|))`).test(command);
 }
 // Models misspell the Playground convention as playground/<name>/... or a
 // rooted /playground/<name>/.... Read that first segment as the workspace
@@ -478,15 +552,36 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
       const command = typeof args.command === 'string' ? args.command.trim() : '';
       const inspection = selected.tool === 'exec' && !/[;&|><`\r\n]|\$\(/.test(command)
         && /^(?:(?:pwd|ls|dir|rg|Get-ChildItem|Get-Location)(?:\s|$)|(?:node|python3?|npm|git)\s+(?:--version|-v)$|git\s+status(?:\s|$))/i.test(command);
-      if (!inspection) return {block:true,blockReason:`Create the first project file with write in a descriptive Playground folder before running commands or patches. ${CORRECTION}`};
+      if (!inspection) {
+        // A folder suggested earlier in this run wins over one the command names.
+        let next = earlierFolder(state,root) ? state.suggestedPath ?? `Playground/${state.suggestedFolder}/<file name>` : null;
+        const named = !next && selected.tool === 'exec' ? commandProjectFolder(command,root) : null;
+        if (named) {
+          next = `Playground/${named}/<file name>`;
+          state.suggestedFolder = named;
+          state.suggestedPath = undefined;
+        }
+        return {block:true,blockReason:`${NOT_RUN}${next ? ` Call write now with path ${next} and its content.` : ''} Create the first project file with write in a descriptive Playground folder before running commands or patches. ${CORRECTION}`};
+      }
     }
     if (!state.binding && state.fresh && selected.tool === 'write') {
+      // Refusals stay charged failures; only their text names the next path.
+      const refuse = () => {
+        const suggestion = suggestedProjectPath(args[key],root,state);
+        if (suggestion) {
+          state.suggestedFolder = suggestion.split('/')[1];
+          state.suggestedPath = suggestion;
+        }
+        return {block:true,blockReason:suggestion
+          ? `Not written: project files go in a descriptive Playground folder. Call write again now with path ${suggestion} and the same content, then use that folder for every project file and as exec workdir. ${CORRECTION}`
+          : CORRECTION};
+      };
       // A path the model already read with its own spelling keeps the
       // unspelled handling below: it names that file exactly as it was read.
       const readAsSpelled = existingPaths.includes(args[key]) || (target !== null && existingPaths.includes(target));
       spelled = readAsSpelled ? null : playgroundSpelling(args[key],root,minimum);
       if (spelled) target = spelled;
-      if (!target) return {block:true,blockReason:CORRECTION};
+      if (!target) return refuse();
       // Only a workspace-relative read is evidence for a workspace file: a
       // rooted /playground/... read may have been a host path.
       if (existingPaths.includes(target)
@@ -503,7 +598,7 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
       }
       const segments = parts(target);
       const candidate = segments[0] === 'Playground' ? segments[1] : segments[0];
-      if (segments.length < (segments[0] === 'Playground' ? 3 : 2) || !candidate || GENERIC.test(candidate)) return {block:true,blockReason:CORRECTION};
+      if (segments.length < (segments[0] === 'Playground' ? 3 : 2) || !candidate || GENERIC.test(candidate)) return refuse();
       // Legacy projects that the owner is working in stay exactly where they
       // are. Never silently relocate an existing path or overwrite it as new.
       if (segments[0] !== 'Playground') {
@@ -551,9 +646,10 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
     if (operand?.block) return {block:true,blockReason:operand.block};
     // Keep unrelated reads/edits and explicitly located execs untouched. For
     // an unspecified exec cwd, use the project only when the command does not
-    // name its workspace-root prefix; never rewrite shell program text.
+    // name its workspace-root prefix or first cd into the project from the
+    // workspace root; never rewrite shell program text.
     if (selected.tool === 'exec' && (args.workdir === undefined || args.workdir === '.' || args.workdir === '/workspace')) {
-      if (operand || command.includes(`${directory}/`) || command.includes('/workspace/')) mapped = null;
+      if (operand || command.includes(`${directory}/`) || command.includes('/workspace/') || entersProject(command,directory)) mapped = null;
       else if (command.includes(`${source}/`)) {
         if (directory !== `Playground/${source}`) return {block:true,blockReason:`This project is in ${directory}. Set exec workdir to ${directory} and use filenames relative to that directory; the old ${source}/ prefix names a different project.`};
         if (!simpleInspection(selected)) return {block:true,blockReason:`This project is in ${directory}. Set exec workdir to /workspace/${directory} and use filenames relative to that directory. An automatic parent directory would make this command ambiguous and could move or modify the project folder itself.`};
