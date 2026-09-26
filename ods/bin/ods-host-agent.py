@@ -605,6 +605,23 @@ def _model_lifecycle_status() -> dict:
     return payload
 
 
+_SWITCHBOARD_ROUTE_ENV_KEYS = (
+    "GPU_BACKEND",
+    "GGUF_FILE",
+    "LLM_MODEL",
+    "LEMONADE_MODEL",
+    "LEMONADE_BASE_URL",
+    "LEMONADE_API_BASE_PATH",
+    "LEMONADE_EXTERNAL",
+    "LLM_BACKEND",
+    "AMD_INFERENCE_RUNTIME",
+    "AMD_INFERENCE_RUNTIME_MODE",
+    "AMD_INFERENCE_MANAGED",
+    "CTX_SIZE",
+    "MAX_CONTEXT",
+)
+
+
 def _prepare_initial_switchboard_verification() -> bool:
     """Reset route-proof cancellation only while no lifecycle owner exists."""
     with _model_lifecycle_state_lock:
@@ -2440,6 +2457,15 @@ def _initial_switchboard_backend(env: dict) -> tuple[str, str, str | None]:
     return "llama-server", "llama-server-default", None
 
 
+def _initial_switchboard_route_env_matches(expected_env: dict) -> bool:
+    """Abandon observational proof when the installer selects another route."""
+    current_env = load_env(INSTALL_DIR / ".env")
+    return all(
+        str(current_env.get(key) or "") == str(expected_env.get(key) or "")
+        for key in _SWITCHBOARD_ROUTE_ENV_KEYS
+    )
+
+
 def _publish_verified_initial_switchboard_route(
     *,
     reason: str,
@@ -2461,6 +2487,7 @@ def _publish_verified_initial_switchboard_route(
     if not _switchboard_state_needs_current_env_verification(state_path, env):
         return False
 
+    route_env_keys = _SWITCHBOARD_ROUTE_ENV_KEYS
     identity = _switchboard_state.migrate_env_identity(env)
     if not identity:
         return False
@@ -2482,25 +2509,13 @@ def _publish_verified_initial_switchboard_route(
         interval=interval,
         return_proof=True,
         cancel_event=_switchboard_initial_verify_cancel,
+        env_still_current=lambda: _initial_switchboard_route_env_matches(env),
     )
     if not isinstance(proof, dict) or not proof.get("identity"):
         logger.info("switchboard initial route proof deferred (%s)", reason)
         return False
 
     fresh_env = load_env(INSTALL_DIR / ".env")
-    route_env_keys = (
-        "GPU_BACKEND",
-        "GGUF_FILE",
-        "LLM_MODEL",
-        "LEMONADE_MODEL",
-        "LEMONADE_BASE_URL",
-        "LEMONADE_API_BASE_PATH",
-        "LEMONADE_EXTERNAL",
-        "LLM_BACKEND",
-        "AMD_INFERENCE_RUNTIME",
-        "AMD_INFERENCE_RUNTIME_MODE",
-        "AMD_INFERENCE_MANAGED",
-    )
     if any(
         str(fresh_env.get(key) or "") != str(env.get(key) or "")
         for key in route_env_keys
@@ -15185,6 +15200,7 @@ def _wait_for_model_readiness(
     fast_poll_seconds: float = 0.0,
     fast_poll_interval: float = _MODEL_READINESS_FAST_POLL_INTERVAL_SECONDS,
     diagnosis: dict | None = None,
+    env_still_current=None,
 ) -> bool | str | dict[str, object]:
     """Prove exact runtime identity and one matching meaningful completion.
 
@@ -15197,6 +15213,10 @@ def _wait_for_model_readiness(
     there counts toward ``initial_delay``, and the full ``attempts`` schedule
     still follows, so a slow load never fails earlier than before. Lemonade
     keeps the regular cadence because its probes can send warmup loads.
+
+    ``env_still_current`` is an optional zero-arg callable; when it returns
+    False the wait aborts immediately with the existing not-ready contract
+    ({} / "" / False) instead of probing a route whose .env inputs changed.
 
     ``diagnosis`` (caller-owned) receives ``reason`` when the runtime serves
     the model but cannot satisfy the request, and ``final`` when no further
@@ -15268,6 +15288,7 @@ def _wait_for_model_readiness(
             cancel_event=cancel_event,
             allow_model_warmup=allow_model_warmup,
             diagnosis=diagnosis,
+            env_still_current=env_still_current,
         )
         # Every success contract is truthy; every not-ready result is falsy
         # and falls through to the unchanged regular schedule below.
@@ -15280,6 +15301,9 @@ def _wait_for_model_readiness(
     if cancel_event is not None and cancel_event.is_set():
         logger.info("Model readiness cancelled before probing %s", gguf_file)
         return {} if return_proof else "" if return_identity else False
+    if env_still_current is not None and not env_still_current():
+        logger.info("Model readiness aborted: route env changed before probing %s", gguf_file)
+        return {} if return_proof else "" if return_identity else False
     if initial_delay > 0:
         if cancel_event is not None:
             if cancel_event.wait(initial_delay):
@@ -15290,6 +15314,9 @@ def _wait_for_model_readiness(
     for attempt in range(max(1, attempts)):
         if cancel_event is not None and cancel_event.is_set():
             logger.info("Model readiness cancelled while probing %s", gguf_file)
+            return {} if return_proof else "" if return_identity else False
+        if env_still_current is not None and not env_still_current():
+            logger.info("Model readiness aborted: route env changed while probing %s", gguf_file)
             return {} if return_proof else "" if return_identity else False
         runtime_identity = ""
         runtime_context = 0
@@ -15302,6 +15329,11 @@ def _wait_for_model_readiness(
                 timeout=10,
             )
             body = result.stdout.strip()
+            # The installer may select its bootstrap model during the HTTP
+            # probe. Do not warm or complete the superseded native route.
+            if env_still_current is not None and not env_still_current():
+                logger.info("Model readiness aborted: route env changed after probing %s", gguf_file)
+                return {} if return_proof else "" if return_identity else False
             if is_lemonade:
                 runtime_identity = _lemonade_loaded_model_identity(
                     body,
