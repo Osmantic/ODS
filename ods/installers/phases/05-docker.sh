@@ -17,7 +17,11 @@
 # ============================================================================
 
 # shellcheck source=installers/lib/podman-registries.sh
-source "$SCRIPT_DIR/installers/lib/podman-registries.sh"
+if [[ -f "${SCRIPT_DIR:-.}/installers/lib/podman-registries.sh" ]]; then
+    source "${SCRIPT_DIR:-.}/installers/lib/podman-registries.sh"
+elif [[ -f "${SCRIPT_DIR:-.}/lib/podman-registries.sh" ]]; then
+    source "${SCRIPT_DIR:-.}/lib/podman-registries.sh"
+fi
 
 ods_progress 30 "docker" "Setting up Docker"
 show_phase 3 6 "Docker Setup" "~2 minutes"
