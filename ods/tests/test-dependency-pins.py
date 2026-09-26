@@ -30,22 +30,40 @@ def test_repo_dependency_lock_passes() -> None:
     assert errors == [], "\n".join(errors)
 
 
-def test_langfuse_minio_images_use_official_quay_registry() -> None:
-    lock = json.loads((ROOT / "config" / "dependency-lock.json").read_text(encoding="utf-8"))
-    by_id = {entry["id"]: entry["value"] for entry in lock["entries"]}
-    expected = {
-        "langfuse.minio": "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z",
-        "langfuse.minio-client": "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z",
-    }
-    assert {key: by_id[key] for key in expected} == expected
+def test_langfuse_minio_images_are_pinned_source_builds() -> None:
+    import re
+    import yaml
 
-    compose = (
-        ROOT / "extensions" / "services" / "langfuse" / "compose.yaml.disabled"
-    ).read_text(encoding="utf-8")
-    for image in expected.values():
-        assert f"image: {image}" in compose
-    assert "image: minio/minio:" not in compose
-    assert "image: minio/mc:" not in compose
+    lock = json.loads((ROOT / "config" / "dependency-lock.json").read_text())
+    by_entry = {entry["id"]: entry for entry in lock["entries"]}
+    by_id = {ident: entry["value"] for ident, entry in by_entry.items()}
+    allowed = {(item["path"], item["value"]) for item in lock["allow_local_images"]}
+    fragment = ROOT / "extensions/services/langfuse/compose.yaml.disabled"
+    services = yaml.safe_load(fragment.read_text())["services"]
+    pins = [
+        ("langfuse-minio", "minio", "MINIO", "langfuse.minio", "RELEASE.2025-09-07T16-13-09Z", "07c3a429bfed433e49018cb0f78a52145d4bedeb"),
+        ("langfuse-minio-init", "mc", "MC", "langfuse.minio-client", "RELEASE.2025-08-13T08-35-41Z", "7394ce0dd2a80935aded936b09fa12cbb3cb8096"),
+    ]
+    module = load_module()
+    for service, component, prefix, ident, release, commit in pins:
+        image = f"ods-langfuse-{component}:{release}"
+        assert services[service]["image"] == by_id[ident] == image
+        assert services[service]["build"] == {"context": "./extensions/services/langfuse", "dockerfile": f"Dockerfile.{component}"}
+        assert ("extensions/services/langfuse/compose.yaml.disabled", image) in allowed
+        dockerfile = fragment.parent / f"Dockerfile.{component}"
+        source = dockerfile.read_text()
+        args = dict(re.findall(r"^ARG ([A-Z_]+)=(.+)$", source, re.MULTILINE))
+        assert by_entry[ident]["source"] == {"repository": f"https://github.com/minio/{component}", "tag": release, "commit": commit}
+        assert args[f"{prefix}_RELEASE"] == release
+        assert args[f"{prefix}_COMMIT"] == by_entry[ident]["source"]["commit"] == commit
+        assert f'test "${{actual}}" = "${{{prefix}_COMMIT}}"' in source
+        assert f'{prefix}_RELEASE=RELEASE go run buildscripts/gen-ldflags.go "${{{prefix}_RELEASE#RELEASE.}}"' in source
+        drift = module.ImageRef(path="extensions/services/langfuse/compose.yaml.disabled", line=1,
+            raw=f"ods-langfuse-{component}:unrecorded", value=f"ods-langfuse-{component}:unrecorded", source="compose image")
+        assert module.validate_refs([drift], lock), "An unrecorded local-image tag must fail closed"
+    assert services["langfuse-minio"]["command"] == 'server /data --console-address ":9001"'
+    assert services["langfuse-minio"]["healthcheck"]["test"] == ["CMD-SHELL", "curl -sf http://127.0.0.1:9000/minio/health/live"]
+    assert "mc mb local/langfuse-events --ignore-existing" in services["langfuse-minio-init"]["command"][-1]
 
 
 def test_unallowlisted_latest_is_rejected() -> None:
@@ -257,7 +275,7 @@ def test_extension_library_sha_tags_are_rejected() -> None:
 def main() -> int:
     tests = [
         test_repo_dependency_lock_passes,
-        test_langfuse_minio_images_use_official_quay_registry,
+        test_langfuse_minio_images_are_pinned_source_builds,
         test_unallowlisted_latest_is_rejected,
         test_variable_refs_must_be_documented,
         test_ephemeral_sha_tags_are_rejected,

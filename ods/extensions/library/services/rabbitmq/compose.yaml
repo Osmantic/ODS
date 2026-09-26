@@ -6,8 +6,8 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${RABBITMQ_PORT:-11105}:15672
-    - 127.0.0.1:${RABBITMQ_AMQP_PORT:-11106}:5672
+    - "${BIND_ADDRESS:-127.0.0.1}:${RABBITMQ_PORT:-11105}:15672"
+    - "${BIND_ADDRESS:-127.0.0.1}:${RABBITMQ_AMQP_PORT:-11106}:5672"
     healthcheck:
       test:
       - CMD-SHELL

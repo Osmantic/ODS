@@ -607,6 +607,25 @@ def _model_lifecycle_status() -> dict:
     return payload
 
 
+_SWITCHBOARD_ROUTE_ENV_KEYS = (
+    "GPU_BACKEND",
+    "GGUF_FILE",
+    "LLM_MODEL",
+    "LEMONADE_MODEL",
+    "LEMONADE_BASE_URL",
+    "LEMONADE_CONTAINER_BASE_URL",
+    "LEMONADE_HOST_TRANSPORT",
+    "LEMONADE_API_BASE_PATH",
+    "LEMONADE_EXTERNAL",
+    "LLM_BACKEND",
+    "AMD_INFERENCE_RUNTIME",
+    "AMD_INFERENCE_RUNTIME_MODE",
+    "AMD_INFERENCE_MANAGED",
+    "CTX_SIZE",
+    "MAX_CONTEXT",
+)
+
+
 def _prepare_initial_switchboard_verification() -> bool:
     """Reset route-proof cancellation only while no lifecycle owner exists."""
     with _model_lifecycle_state_lock:
@@ -2442,6 +2461,15 @@ def _initial_switchboard_backend(env: dict) -> tuple[str, str, str | None]:
     return "llama-server", "llama-server-default", None
 
 
+def _initial_switchboard_route_env_matches(expected_env: dict) -> bool:
+    """Abandon observational proof when the installer selects another route."""
+    current_env = load_env(INSTALL_DIR / ".env")
+    return all(
+        str(current_env.get(key) or "") == str(expected_env.get(key) or "")
+        for key in _SWITCHBOARD_ROUTE_ENV_KEYS
+    )
+
+
 def _publish_verified_initial_switchboard_route(
     *,
     reason: str,
@@ -2463,6 +2491,7 @@ def _publish_verified_initial_switchboard_route(
     if not _switchboard_state_needs_current_env_verification(state_path, env):
         return False
 
+    route_env_keys = _SWITCHBOARD_ROUTE_ENV_KEYS
     identity = _switchboard_state.migrate_env_identity(env)
     if not identity:
         return False
@@ -2484,27 +2513,13 @@ def _publish_verified_initial_switchboard_route(
         interval=interval,
         return_proof=True,
         cancel_event=_switchboard_initial_verify_cancel,
+        env_still_current=lambda: _initial_switchboard_route_env_matches(env),
     )
     if not isinstance(proof, dict) or not proof.get("identity"):
         logger.info("switchboard initial route proof deferred (%s)", reason)
         return False
 
     fresh_env = load_env(INSTALL_DIR / ".env")
-    route_env_keys = (
-        "GPU_BACKEND",
-        "GGUF_FILE",
-        "LLM_MODEL",
-        "LEMONADE_MODEL",
-        "LEMONADE_BASE_URL",
-        "LEMONADE_CONTAINER_BASE_URL",
-        "LEMONADE_HOST_TRANSPORT",
-        "LEMONADE_API_BASE_PATH",
-        "LEMONADE_EXTERNAL",
-        "LLM_BACKEND",
-        "AMD_INFERENCE_RUNTIME",
-        "AMD_INFERENCE_RUNTIME_MODE",
-        "AMD_INFERENCE_MANAGED",
-    )
     if any(
         str(fresh_env.get(key) or "") != str(env.get(key) or "")
         for key in route_env_keys
@@ -6559,7 +6574,6 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-_BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._\-=+/]+", re.IGNORECASE)
 _install_operation_context = threading.local()
 _install_operation_guard = threading.Lock()
 _install_operation_live = set()
@@ -6666,7 +6680,9 @@ def _write_progress(service_id: str, status: str, phase_label: str = "",
         except (json.JSONDecodeError, OSError):
             pass
 
-    sanitized_error = _BEARER_RE.sub("Bearer [REDACTED]", error) if error else None
+    # Install errors reach the dashboard and Pixel and can carry command or
+    # container output: use the one output redactor.
+    sanitized_error = _redact_credential_text(error) if error else None
 
     data = {
         "service_id": service_id,
@@ -6828,8 +6844,10 @@ def _run_post_install_hook(service_id: str, ext_dir: Path) -> tuple[bool, str]:
     - On success the helper writes nothing further; the caller proceeds.
 
     The 8-key env allowlist mirrors ``_execute_hook`` (L1488-1498) to
-    keep host-agent secrets out of extension scripts. Stderr is sliced
-    tail-500 so the actionable end of the output reaches the dashboard.
+    keep host-agent secrets out of extension scripts. Stderr is untrusted
+    extension output: credentials are redacted as in container start
+    diagnostics, then it is sliced tail-500 so the actionable end of the
+    output reaches the dashboard (and Pixel, as the install error).
     """
     hook_path = _resolve_hook(ext_dir, "post_install")
     if not hook_path:
@@ -6874,7 +6892,14 @@ def _run_post_install_hook(service_id: str, ext_dir: Path) -> tuple[bool, str]:
         return (False, msg)
 
     if result.returncode != 0:
-        msg = (result.stderr or "")[-500:]
+        try:
+            declared = _declared_secret_values(service_def, ext_dir)
+            redacted = _redact_untrusted_output(result.stderr or "", {}, declared)
+        except Exception:  # Diagnostics must not end the install worker.
+            logger.exception("Could not redact post_install hook output for %s", service_id)
+            redacted = None
+        msg = (redacted[-500:] if redacted is not None else
+               "Setup hook output withheld: credential redaction could not be completed.")
         _write_progress(service_id, "error", "Setup failed", error=msg)
         return (False, msg)
 
@@ -7394,6 +7419,194 @@ STARTUP_LOG_TAIL_LINES = 12
 STARTUP_DIAGNOSTIC_LIMIT = 2000
 
 
+# One redactor for every piece of process output the agent hands back to the
+# dashboard or Pixel: build and Compose diagnostics, container start
+# diagnostics, setup hook output and every other install error (via
+# _write_progress), the llama-server log excerpt kept when an activation rolls
+# back, Windows Lemonade restart output and the container log viewer.
+_REDACTED = '[REDACTED]'
+# Terminal escapes: CSI (colors), OSC (titles) and the short ESC forms such as
+# the ESC ( B that tput sgr0 prints. They and other control characters are
+# removed before any matching, so none can sit between a name and its value.
+_OUTPUT_ANSI_RE = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b\n]*(?:\x07|\x1b\\)?|[ -/]*[0-~])')
+_OUTPUT_CONTROL_RE = re.compile(r'[\x00-\x08\x0b-\x1f]')
+# A name holds a credential when one of its words (split at _ - . and
+# camelCase) is one of these (HF_TOKEN, clientSecret, DB_PASSWORD, Cookie) ...
+_CREDENTIAL_NAME_WORDS = frozenset({
+    'token', 'secret', 'password', 'passwd', 'passphrase', 'credential', 'credentials',
+    'authorization', 'bearer', 'cookie', 'apikey', 'salt', 'pepper'})
+_CREDENTIAL_NAME_ENDINGS = ('token', 'secret', 'password', 'passwd', 'apikey', 'secretkey',
+                            'privatekey', 'accesskey', 'masterkey')
+_CREDENTIAL_NAME_STARTS = ('secret', 'password', 'passwd')
+# ... or one of these after a qualifying word (LITELLM_MASTER_KEY, api_key,
+# x-api-key, api_keys, DB_PASS, basic_auth); never a bare key/auth, sort_key or public_key.
+_QUALIFIED_CREDENTIAL_WORDS = frozenset({'key', 'keys', 'pass', 'pwd', 'auth'})
+_CREDENTIAL_QUALIFIERS = frozenset({
+    'api', 'master', 'secret', 'private', 'access', 'auth', 'encryption', 'encrypt', 'signing',
+    'client', 'admin', 'service', 'session', 'license', 'app', 'account', 'hmac', 'jwt', 'ssh',
+    'webhook', 'deploy', 'bot', 'root', 'shared', 'db', 'database', 'user', 'smtp', 'mail',
+    'proxy', 'basic', 'http'})
+_NON_CREDENTIAL_QUALIFIERS = frozenset({
+    'public', 'pub', 'sort', 'cache', 'primary', 'foreign', 'partition', 'unique', 'index',
+    'lookup', 'group', 'routing', 'hash', 'idempotency', 'translation', 'hot', 'short', 'row',
+    'column', 'field', 'map', 'object', 'first', 'second', 'last', 'next', 'test'})
+# A later word that makes the name describe a credential rather than hold one
+# (bos_token_id, TOKEN_SPY_PORT, api_key_file, token_count, secret.py:12).
+_CREDENTIAL_METADATA_WORDS = frozenset({
+    'id', 'ids', 'count', 'len', 'length', 'limit', 'size', 'max', 'min', 'type', 'kind',
+    'file', 'path', 'dir', 'url', 'uri', 'endpoint', 'port', 'host', 'name', 'ttl', 'expiry',
+    'expires', 'expiration', 'at', 'enabled', 'disabled', 'required', 'header', 'prefix',
+    'format', 'mode', 'timeout', 'env', 'var', 'usage', 'budget', 'total', 'index', 'field',
+    'hint', 'policy', 'version', 'source', 'status', 'set', 'present', 'configured', 'missing',
+    'py', 'rs', 'go', 'js', 'mjs', 'ts', 'jsx', 'tsx', 'rb', 'java', 'kt', 'c', 'h', 'cc',
+    'cpp', 'cs', 'php', 'sh', 'yaml', 'yml', 'json', 'toml', 'ini', 'conf', 'cfg', 'txt', 'log',
+    'md'})
+_NAME_WORD_RE = re.compile(r'[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+')
+_ENV_STYLE_NAME_RE = re.compile(r'[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+')
+# NAME=value, NAME: value, "name": "value", \"name\": \"value\" (escaped JSON),
+# Authorization: Bearer value, -Dproperty=value, --flag=value and --flag value.
+# The name is the whole run of name characters, leading - or . included
+# (-Dspring.datasource.password, model_list[0].litellm_params.api_key), and
+# _credential_name_kind drops that prefix. One start per run keeps this linear.
+# Only the name and separator are matched here, so a name that is not a
+# credential never hides the one after it: in "INFO: token = value" and
+# "INFO:root:token = value" the match for INFO or root ends before "token".
+_CREDENTIAL_ASSIGNMENT_RE = re.compile(
+    r'''(?<![A-Za-z0-9_.-])(?P<name>[A-Za-z0-9_.-]+)'''
+    r'''(?:\\?["'])?[ \t]*[:=](?![:=])[ \t]*'''
+    r'''|(?<![A-Za-z0-9_-])-*--(?P<flag>[A-Za-z][A-Za-z0-9_-]*)(?:=|[ \t]+)(?!-)''')
+# The scheme word of "Authorization: Bearer value" or "Authorization: token
+# value", skipped only after a credential name. A word followed by its own
+# separator ("app.auth:token : value") is the next name, not a scheme.
+_AUTH_SCHEME_RE = re.compile(r'(?i:bearer|basic|token|digest)[ \t]+(?![ \t:=])')
+# A quoted value ("...", '...', \"...\" inside a JSON string, or the first
+# item of a JSON list); a bare value; or, when a value follows a quote that is
+# never closed, the whole non-space run.
+_CREDENTIAL_VALUE_RE = re.compile(
+    r'''\[?(?P<quote>\\?["'])(?P<quoted>[^\n]*?)(?P=quote)'''
+    r'''|(?!\[?\\?["'])[^\s"',;]+'''
+    r'''|(?=\[?\\?["'][^\s"'\\,;)\]}])\S+''')
+# A Cookie header (Cookie: a=1; b=2) carries several cookies: all of them.
+_COOKIE_HEADER_VALUE_RE = re.compile(r'''(?!\[)[^\s;,"'\\`]+(?:;[ \t]*[^\s;,"'\\`]+)*''')
+_CREDENTIAL_NAME_PREFIX_RE = re.compile(r'^[-.0-9]*(?:(?<=-)D(?=[a-z]))?')
+# A tokenizer's special token (<|im_end|>, </s>) as the value of a token name.
+_SPECIAL_TOKEN_RE = re.compile(r'<[^\s<>]{1,40}>')
+_PLACEHOLDER_VALUES = frozenset({
+    'none', 'null', 'nil', 'true', 'false', 'undefined', 'yes', 'no', 'on', 'off', 'unset',
+    'bearer', 'basic', 'digest', _REDACTED.lower()})
+# Bearer <token>, and bearer = <token> or bearer: <token> in a log line.
+_BEARER_VALUE_RE = re.compile(r'''(?i)\b(bearer(?:[ \t]*[:=][ \t]*|[ \t]+))([^\s"',;]+)''')
+# The scheme is bounded so a long run of letters and dots stays linear. It is
+# not anchored, so foo_postgres:// and 1postgres:// still match.
+_URL_USERINFO_RE = re.compile(r'''([a-zA-Z][a-zA-Z0-9+.-]{0,31}://)[^/\s@"'<>]+@''')
+# Credentials recognizable without a name: private key blocks, JWTs and
+# prefixed tokens (Hugging Face, OpenAI-style sk-, GitHub, Slack, Google).
+_BARE_CREDENTIAL_RE = re.compile(
+    r'-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:.*?-----END [A-Z0-9 ]*PRIVATE KEY-----|.*\Z)'
+    r'|(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*'
+    r'|(?<![A-Za-z0-9])hf_[A-Za-z0-9]{30,}(?![A-Za-z0-9])'
+    r'|(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}'
+    r'|(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})'
+    r'|(?<![A-Za-z0-9])xox[abposr]-[A-Za-z0-9-]{10,}'
+    r'|(?<![A-Za-z0-9])AIza[A-Za-z0-9_-]{35}',
+    re.DOTALL)
+
+
+def _credential_name_kind(name: str) -> str | None:
+    """``count`` for a plain token name, ``secret`` for another credential name, else None.
+
+    A plain token name can also hold a count, an id or a tokenizer's special
+    token (``EOS token = 151645``, ``max_token: 512``, ``eos_token: <|im_end|>``),
+    so those values are kept for it. A qualified one (``SECRET_TOKEN``,
+    ``API_TOKEN``) and every key, secret or password name is always redacted.
+    """
+    name = _CREDENTIAL_NAME_PREFIX_RE.sub('', name)  # -D, --, a leading . or digit
+    words = [word.lower() for word in _NAME_WORD_RE.findall(name)]
+    env_style = _ENV_STYLE_NAME_RE.fullmatch(name) is not None
+    found = None
+    for index, word in enumerate(words):
+        previous = words[index - 1] if index else ''
+        if (word in _CREDENTIAL_NAME_WORDS or word.endswith(_CREDENTIAL_NAME_ENDINGS)
+                or word.startswith(_CREDENTIAL_NAME_STARTS)):
+            found = index
+        elif (word in _QUALIFIED_CREDENTIAL_WORDS and previous
+              and previous not in _NON_CREDENTIAL_QUALIFIERS
+              and (env_style or previous in _CREDENTIAL_QUALIFIERS)):
+            found = index
+    if found is None:
+        return None
+    later = words[found + 1:]
+    if words[found] == 'secret':
+        later = [word for word in later if word not in ('id', 'ids')]  # A Vault secret_id is a credential.
+    if any(word in _CREDENTIAL_METADATA_WORDS for word in later):
+        return None
+    plain_token = words[found] == 'token' and not any(
+        word in _CREDENTIAL_QUALIFIERS or word in _CREDENTIAL_NAME_WORDS for word in words[:found])
+    return 'count' if plain_token else 'secret'
+
+
+def _redact_credential_assignments(text: str) -> str:
+    parts, cursor = [], 0
+    for match in _CREDENTIAL_ASSIGNMENT_RE.finditer(text):
+        if match.end() < cursor:
+            continue  # Name and separator inside a value already redacted.
+        # A name that starts inside the value just redacted but whose separator
+        # comes after it still gets its value redacted: "app.auth:token : value"
+        # redacts "token" as the value of app.auth, then the value of token.
+        name = match.group('name') or match.group('flag')
+        kind = _credential_name_kind(name)
+        if not kind:
+            continue
+        scheme = _AUTH_SCHEME_RE.match(text, match.end())
+        start = scheme.end() if scheme else match.end()
+        value = _CREDENTIAL_VALUE_RE.match(text, start)
+        if value is None:
+            continue
+        quote = value.group('quote') or ''
+        if (not quote and (match.group('name') or '').lower() in ('cookie', 'set-cookie')
+                and ':' in text[match.end('name'):match.end()]):
+            value = _COOKIE_HEADER_VALUE_RE.match(text, start) or value
+        bare = value.group('quoted') if quote else value.group()
+        if (not bare.strip(' \t"\'\\') or bare.lower() in _PLACEHOLDER_VALUES
+                or re.fullmatch(r'\$\{?[A-Za-z_][A-Za-z0-9_]*\}?', bare)
+                or (kind == 'count' and (bare.isdigit() or _SPECIAL_TOKEN_RE.fullmatch(bare)))):
+            continue  # Nothing secret: an unset value, a ${REFERENCE}, a count, <|im_end|>.
+        parts += [text[cursor:value.start('quote') if quote else value.start()], quote + _REDACTED + quote]
+        cursor = value.end()
+    parts.append(text[cursor:])
+    return ''.join(parts)
+
+
+def _redact_bearer_value(match: re.Match) -> str:
+    value = match.group(2)
+    if value == _REDACTED or (value.isalpha() and len(value) <= 16):
+        return match.group(0)  # "bearer token", "Bearer authentication"
+    return match.group(1) + _REDACTED
+
+
+def _redact_credential_text(text, known_values=()) -> str:
+    """Remove credentials from untrusted process output before it is shown.
+
+    ``known_values`` are exact values to remove (configured credentials).
+    Then credential-shaped text: values of credential names (see
+    _credential_name_kind), credential flags, bearer tokens, URL user info,
+    JWTs, private keys and prefixed tokens such as ``hf_...``. Terminal
+    escapes and control characters are removed first; a carriage return
+    ends a line, as splitlines() reads it. Ordinary words, token counts,
+    digests and model names are kept.
+    """
+    text = _OUTPUT_ANSI_RE.sub('', str(text or ''))
+    text = _OUTPUT_CONTROL_RE.sub('', text.replace('\r\n', '\n').replace('\r', '\n'))
+    values = sorted({value for value in known_values if isinstance(value, str) and value},
+                    key=len, reverse=True)
+    if values:
+        text = re.sub('|'.join(re.escape(value) for value in values), _REDACTED, text)
+    text = _URL_USERINFO_RE.sub(r'\1' + _REDACTED + '@', text)
+    text = _redact_credential_assignments(text)
+    text = _BEARER_VALUE_RE.sub(_redact_bearer_value, text)
+    return _BARE_CREDENTIAL_RE.sub(_REDACTED, text)
+
+
 def _redact_untrusted_output(output: str, services: dict, extra_secrets=()) -> str | None:
     """Remove configured credential values and credential-shaped text.
 
@@ -7428,15 +7641,7 @@ def _redact_untrusted_output(output: str, services: dict, extra_secrets=()) -> s
         build = definition.get('build')
         if isinstance(build, dict):
             collect(build.get('args'))
-    output = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', output)
-    if secrets:
-        output = re.sub('|'.join(re.escape(value) for value in sorted(secrets, key=len, reverse=True)),
-                        '[REDACTED]', output)
-    output = re.sub(r'(?i)(bearer\s+)[^\s\x22\x27]+', r'\1[REDACTED]', output)
-    output = re.sub(r'([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@', r'\1[REDACTED]@', output)
-    output = re.sub(r'(?im)((?:[\w-]*(?:token|password|passwd|secret|api[_-]?key|credential)[\w-]*)[\x22\x27]?\s*[:=]\s*)(?:\x22[^\x22]*\x22|\x27[^\x27]*\x27|[^\s,;]+)',
-                    r'\1[REDACTED]', output)
-    return ''.join(c for c in output if c in '\n\t' or ord(c) >= 32)
+    return _redact_credential_text(output, secrets)
 
 
 _COMPOSE_VARIABLE_RE = re.compile(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)')
@@ -10553,7 +10758,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             # Both container streams share one pipe, preserving their emitted order.
             json_response(self, 200, {
                 "service_id": service_id,
-                "logs": output[-50000:],
+                "logs": _redact_credential_text(output)[-50000:],
                 "lines": tail,
             })
         except subprocess.TimeoutExpired:
@@ -10601,12 +10806,12 @@ class AgentHandler(BaseHTTPRequestHandler):
                 })
                 return
             if result.returncode != 0:
-                json_response(self, 500, {"error": f"docker logs failed: {output[:500]}"})
+                json_response(self, 500, {"error": f"docker logs failed: {_redact_credential_text(output)[:500]}"})
                 return
             json_response(self, 200, {
                 "service_id": sid,
                 "container_name": container_name,
-                "logs": output[-50000:],
+                "logs": _redact_credential_text(output)[-50000:],
                 "lines": tail,
             })
         except subprocess.TimeoutExpired:
@@ -15058,6 +15263,7 @@ def _wait_for_model_readiness(
     fast_poll_seconds: float = 0.0,
     fast_poll_interval: float = _MODEL_READINESS_FAST_POLL_INTERVAL_SECONDS,
     diagnosis: dict | None = None,
+    env_still_current=None,
 ) -> bool | str | dict[str, object]:
     """Prove exact runtime identity and one matching meaningful completion.
 
@@ -15070,6 +15276,10 @@ def _wait_for_model_readiness(
     there counts toward ``initial_delay``, and the full ``attempts`` schedule
     still follows, so a slow load never fails earlier than before. Lemonade
     keeps the regular cadence because its probes can send warmup loads.
+
+    ``env_still_current`` is an optional zero-arg callable; when it returns
+    False the wait aborts immediately with the existing not-ready contract
+    ({} / "" / False) instead of probing a route whose .env inputs changed.
 
     ``diagnosis`` (caller-owned) receives ``reason`` when the runtime serves
     the model but cannot satisfy the request, and ``final`` when no further
@@ -15141,6 +15351,7 @@ def _wait_for_model_readiness(
             cancel_event=cancel_event,
             allow_model_warmup=allow_model_warmup,
             diagnosis=diagnosis,
+            env_still_current=env_still_current,
         )
         # Every success contract is truthy; every not-ready result is falsy
         # and falls through to the unchanged regular schedule below.
@@ -15155,6 +15366,9 @@ def _wait_for_model_readiness(
     if cancel_event is not None and cancel_event.is_set():
         logger.info("Model readiness cancelled before probing %s", gguf_file)
         return {} if return_proof else "" if return_identity else False
+    if env_still_current is not None and not env_still_current():
+        logger.info("Model readiness aborted: route env changed before probing %s", gguf_file)
+        return {} if return_proof else "" if return_identity else False
     if initial_delay > 0:
         if cancel_event is not None:
             if cancel_event.wait(initial_delay):
@@ -15165,6 +15379,9 @@ def _wait_for_model_readiness(
     for attempt in range(max(1, attempts)):
         if cancel_event is not None and cancel_event.is_set():
             logger.info("Model readiness cancelled while probing %s", gguf_file)
+            return {} if return_proof else "" if return_identity else False
+        if env_still_current is not None and not env_still_current():
+            logger.info("Model readiness aborted: route env changed while probing %s", gguf_file)
             return {} if return_proof else "" if return_identity else False
         runtime_identity = ""
         runtime_context = 0
@@ -15180,6 +15397,11 @@ def _wait_for_model_readiness(
                     timeout=10,
                 )
                 body = result.stdout.strip()
+            # The installer may select its bootstrap model during the HTTP
+            # probe. Do not warm or complete the superseded native route.
+            if env_still_current is not None and not env_still_current():
+                logger.info("Model readiness aborted: route env changed after probing %s", gguf_file)
+                return {} if return_proof else "" if return_identity else False
             if is_lemonade:
                 runtime_identity = _lemonade_loaded_model_identity(
                     body,
@@ -15725,17 +15947,7 @@ Set-Content -LiteralPath $pidPath -Value $proc.ProcessId
                 for part in (getattr(result, "stderr", ""), getattr(result, "stdout", ""))
                 if part and part.strip()
             )
-        output = "\n".join(parts).strip()
-        output = re.sub(
-            r"(?i)(Authorization\s*[:=]\s*Bearer\s+|Bearer\s+)[^\s'\";]+",
-            r"\1[redacted]",
-            output,
-        )
-        output = re.sub(
-            r"(?i)((?:LEMONADE_ADMIN_API_KEY|LITELLM_LEMONADE_API_KEY|api[-_]?key)\s*[=:]\s*)[^\s'\";]+",
-            r"\1[redacted]",
-            output,
-        )
+        output = _redact_credential_text("\n".join(parts)).strip()
         return output[-1200:] if output else "no PowerShell output captured"
 
     try:
@@ -18021,24 +18233,16 @@ _RUNTIME_LOG_SIGNAL_RE = re.compile(
     r"error|fail|warn|exceed|capping|overflow|out of memory|unable|invalid|abort|exception|n_ctx",
     re.IGNORECASE,
 )
-_RUNTIME_LOG_SECRET_RE = re.compile(
-    r"(?i)(api[-_]?key|token|secret|password|authorization|bearer)([\"'=:\s]+)((?:bearer\s+)?[^\s\"',]+)"
-)
-_RUNTIME_LOG_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
 def _runtime_log_excerpt(text: object) -> str:
     """Bound a runtime log to the redacted lines that explain a failed start."""
-    lines = [
-        _RUNTIME_LOG_ANSI_RE.sub("", line).rstrip()
-        for line in str(text or "").splitlines()
-    ]
+    # Redact the whole log before choosing and cutting lines, so a cut never
+    # exposes part of a credential.
+    lines = [line.rstrip() for line in _redact_credential_text(text).splitlines()]
     lines = [line for line in lines if line.strip()]
     selected = [line for line in lines if _RUNTIME_LOG_SIGNAL_RE.search(line)] or lines
-    excerpt = [
-        _RUNTIME_LOG_SECRET_RE.sub(r"\1\2[redacted]", line)[:240]
-        for line in selected[-_RUNTIME_LOG_EXCERPT_MAX_LINES:]
-    ]
+    excerpt = [line[:240] for line in selected[-_RUNTIME_LOG_EXCERPT_MAX_LINES:]]
     return "\n".join(excerpt)[-_RUNTIME_LOG_EXCERPT_MAX_CHARS:]
 
 
@@ -18752,8 +18956,9 @@ def _reconcile_native_pixel_startup():
     except (OSError, ValueError, SyntaxError):
         logger.warning('Pixel startup reproof refused: helper custody')
         return
+    unavailable = None
     for attempt in range(12):
-        acquired, _active = _begin_model_lifecycle('pixel_startup_reproof')
+        acquired, active = _begin_model_lifecycle('pixel_startup_reproof')
         if acquired:
             try:
                 result = subprocess.run(
@@ -18786,6 +18991,7 @@ def _reconcile_native_pixel_startup():
                 if not retry:
                     logger.warning('Pixel startup reproof requires attention')
                     return
+                unavailable = (diagnostic.get('stage'), projection.get('reason'))
             except (OSError, ValueError, TypeError, AttributeError, subprocess.TimeoutExpired):
                 logger.warning('Pixel startup reproof failed; no automatic mutation retry')
                 return
@@ -18793,9 +18999,17 @@ def _reconcile_native_pixel_startup():
                 _end_model_lifecycle('pixel_startup_reproof')
         if attempt < 11:
             time.sleep(5)
-    logger.warning('Pixel startup reproof readiness window exhausted')
     # Every exhausted attempt was either lock contention or read-only
     # unavailability. No uncertain change is eligible for another cycle.
+    if unavailable is None:
+        # The helper never ran: another model lifecycle operation (usually a
+        # multi-minute model download) owned the lock for the whole window.
+        # The check was deferred, not failed; the next cycle retries it.
+        logger.info('Pixel access reproof deferred while %s is in progress',
+                    active.get('operation') or 'another model lifecycle operation')
+    else:
+        logger.warning('Pixel startup reproof readiness window exhausted '
+                       '(last stage=%s reason=%s)', *unavailable)
     return True
 
 

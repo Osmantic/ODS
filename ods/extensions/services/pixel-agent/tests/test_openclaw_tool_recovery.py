@@ -46,7 +46,8 @@ def run(installation, **kwargs):
 
 @pytest.mark.parametrize("module_name", [repair_module.COMPLETION_MODULE, repair_module.IMAGE_MODULE,
                                          repair_module.COMPACTION_IDLE_MODULE, repair_module.COMPACTION_BUDGET_MODULE,
-                                         repair_module.TOOL_RESULT_PROJECTION_MODULE])
+                                         repair_module.TOOL_RESULT_PROJECTION_MODULE,
+                                         repair_module.DIAGNOSTIC_STREAM_MODULE])
 def test_additional_module_has_separate_exact_byte_custody(installation, module_name):
     runtime, state, manifest, module, original, patched = installation
     completion = module.with_name(module_name)
@@ -505,6 +506,7 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
     ('OPENCLAW_READ_MODULE', 'openclaw-read-range.json', repair_module.READ_RANGE_MODULE),
     ('OPENCLAW_TRUNCATION_MODULE', 'openclaw-tool-result-projection.json', repair_module.TOOL_RESULT_PROJECTION_MODULE),
     ('OPENCLAW_COMPACTION_RESUME_MODULE', 'openclaw-compaction-resume.json', repair_module.COMPACTION_RESUME_MODULE),
+    ('OPENCLAW_DIAGNOSTIC_EVENTS_MODULE', 'openclaw-diagnostic-stream-writes.json', repair_module.DIAGNOSTIC_STREAM_MODULE),
 ])
 def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_name, module_name):
     candidate_path = os.environ.get(environment)
@@ -552,3 +554,21 @@ def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_
         assert repair_module.repair(runtime, runtime / "state", **options)["status"] == "unchanged"
         repair_module.repair(runtime, runtime / "state", restore=True, **options)
         assert module.read_bytes() == original.encode()
+
+
+def test_diagnostic_stream_writes_cli_binds_only_the_pinned_observer_module(installation):
+    runtime = installation[0]
+    manifest = json.loads((ROOT / "host/openclaw-diagnostic-stream-writes.json").read_text())
+    [(pinned, repaired)] = manifest["replacements"]
+    assert pinned.count("new Proxy(stream, ") == repaired.count("new Proxy(stream, ") == 1
+    assert "set(target, property, value, receiver)" in repaired and "set(" not in pinned
+    module = runtime / "dist" / repair_module.DIAGNOSTIC_STREAM_MODULE
+    changed = b"function observeModelCallStream() {}\n"
+    module.write_bytes(changed)
+    (runtime / "openclaw.mjs").write_text("")
+    completed = subprocess.run([sys.executable, str(ROOT / "host/openclaw_tool_recovery.py"),
+                                "--openclaw-bin", str(runtime / "openclaw.mjs"), "--diagnostic-stream-writes",
+                                "--state-dir", str(runtime.parent / "diagnostic-stream-writes")],
+                               capture_output=True, text=True)
+    assert completed.returncode != 0 and "differs from reviewed bytes" in completed.stderr
+    assert module.read_bytes() == changed

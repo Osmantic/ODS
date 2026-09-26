@@ -132,6 +132,8 @@ else
 
     # shellcheck source=../lib/llama-memory-budget.sh
     source "$SCRIPT_DIR/installers/lib/llama-memory-budget.sh"
+    # shellcheck source=../lib/searxng-locale.sh
+    source "$SCRIPT_DIR/installers/lib/searxng-locale.sh"
 
     # shellcheck source=../../lib/dotenv-quote.sh
     source "$SCRIPT_DIR/lib/dotenv-quote.sh"
@@ -1716,6 +1718,7 @@ ENV_EOF
     if [[ -f "$INSTALL_DIR/config/searxng/settings.yml" ]] && ! [[ -w "$INSTALL_DIR/config/searxng/settings.yml" ]]; then
         _phase06_repair_host_path "$INSTALL_DIR/config/searxng/settings.yml" "SearXNG configuration" || return 1
     fi
+    _searxng_lang="$(ods_searxng_default_lang)"
     cat > "$INSTALL_DIR/config/searxng/settings.yml" << SEARXNG_EOF
 use_default_settings: true
 server:
@@ -1725,9 +1728,12 @@ server:
   limiter: false
 search:
   safe_search: 0
+  # Install locale. API clients send no language, so "auto" would mean "all".
+  default_lang: "${_searxng_lang}"
   formats:
     - html
     - json
+$(ods_searxng_hostnames_yaml "$_searxng_lang")
 engines:
   - name: bing
     # Requalify before enabling: https://github.com/searxng/searxng/pull/6671
@@ -1748,7 +1754,8 @@ engines:
   - name: stackoverflow
     disabled: false
 SEARXNG_EOF
-    ai_ok "Generated SearXNG config with randomized secret key"
+    ai_ok "Generated SearXNG config with randomized secret key (search language ${_searxng_lang})"
+    unset _searxng_lang
 fi
 
 # Documentation, CLI tools, and compose variants already copied by rsync/cp block above

@@ -583,6 +583,422 @@ def _is_ods_nvidia_gpu_reservation(entry) -> bool:
         isinstance(item, str) and _NVIDIA_DEVICE_ID_RE.fullmatch(item) for item in device_ids)
 
 
+# >>> shared compose policy >>>
+# One rule set for both extension compose validators: dashboard-api
+# routers/extensions.py:_scan_compose_content (install and enable time) and
+# scripts/resolve-compose-stack.sh:_scan_user_compose_content (every `ods`
+# command). This block is byte-identical in the two files, and
+# dashboard-api tests/test_compose_policy_parity.py fails when they drift.
+#
+# The validators read PyYAML values, but Docker Compose decides what runs, so
+# every rule judges a value the way Compose resolves it and fails closed where
+# the file alone cannot decide:
+#   * Compose casts the strings true/yes/y/on (any case) to boolean true, so
+#     only an explicit false passes a boolean guard.
+#   * Compose substitutes ${VAR}, ${VAR:-default} and $VAR from the owner's
+#     environment when it renders the project. A guarded value that
+#     interpolates is rejected; the only exceptions are exact shapes ODS core
+#     itself uses (the GPU group ids, the install owner's uid:gid, and the
+#     accelerator and port shapes checked by each validator).
+#   * include:, extends:, env_file, volumes_from, secrets and configs pull
+#     other files, host paths or containers into a service outside this scan.
+#   * Compose resolves every relative bind source against the project
+#     directory, which is the ODS install directory (the first -f file), not
+#     the extension's own directory: ./.env there is the owner's secrets and
+#     ./scripts is code the ods CLI runs on the host. An imported recipe may
+#     bind only its own ./data/<id> and ./config/<id>.
+#   * PyYAML keeps the last of two duplicate keys and Compose refuses them;
+#     the loader refuses them too instead of judging a value Compose never
+#     sees.
+_COMPOSE_POLICY_FALSE = frozenset({"false", "no", "n", "off"})
+# Top-level keys an extension compose file may declare (plus x-* fields).
+_COMPOSE_POLICY_TOP_LEVEL = frozenset({"services", "volumes", "networks", "version"})
+_COMPOSE_POLICY_TOP_LEVEL_REASONS = {
+    "include": "pulls in other Compose files",
+    "name": "renames the whole Compose project",
+    "secrets": "reads host files as secrets",
+    "configs": "reads host files as configs",
+}
+# Service keys that reach host files, other containers, host code or the
+# runtime outside what this scan can judge. No shipped recipe uses them.
+_COMPOSE_POLICY_DENIED_SERVICE_KEYS = {
+    "extends": "extends another service definition",
+    "env_file": "reads an env_file from the host",
+    "label_file": "reads a label_file from the host",
+    "volumes_from": "mounts another container's volumes",
+    "secrets": "mounts Compose secrets",
+    "configs": "mounts Compose configs",
+    "device_cgroup_rules": "declares device_cgroup_rules",
+    "cgroup_parent": "sets cgroup_parent",
+    "credential_spec": "reads a credential_spec",
+    "annotations": "sets runtime annotations",
+    "develop": "syncs host files with develop",
+    "post_start": "runs a post_start lifecycle hook",
+    "pre_stop": "runs a pre_stop lifecycle hook",
+    "provider": "runs a host provider plugin",
+    "models": "attaches Docker models",
+}
+# Namespace modes: "host" shares the host's namespace; container:/service:
+# joins another container's (a core service's secrets and loopback ports).
+_COMPOSE_POLICY_NAMESPACES = (
+    ("network_mode", "network mode"),
+    ("pid", "PID namespace"),
+    ("ipc", "IPC namespace"),
+    ("uts", "UTS namespace"),
+    ("userns_mode", "user namespace"),
+    ("cgroup", "cgroup namespace"),
+)
+# Docker's default capability set, minus the defaults ODS always refused
+# (DAC_OVERRIDE, NET_RAW, SETGID, SETUID). Adding one of these is harmless;
+# any other capability (SYS_ADMIN, DAC_READ_SEARCH, BPF, ...) is refused.
+_COMPOSE_POLICY_ALLOWED_CAPS = frozenset({
+    "AUDIT_WRITE", "CHOWN", "FOWNER", "FSETID", "KILL", "MKNOD",
+    "NET_BIND_SERVICE", "SETFCAP", "SETPCAP", "SYS_CHROOT",
+})
+# Every other security_opt (seccomp/apparmor/systempaths=unconfined,
+# label=disable or type:spc_t, a seccomp profile path, writable-cgroups)
+# relaxes confinement.
+_COMPOSE_POLICY_SECURITY_OPTS = frozenset({
+    "no-new-privileges", "no-new-privileges:true", "no-new-privileges=true",
+    "no-new-privileges:false", "no-new-privileges=false",
+})
+# The render/video groups ODS core adds beside its AMD /dev/kfd and /dev/dri
+# passthrough (docker-compose.amd.yml). A curated recipe may add them only in
+# the overlay that holds that passthrough.
+_COMPOSE_POLICY_GPU_GROUPS = frozenset({"${VIDEO_GID:-44}", "${RENDER_GID:-992}"})
+# The install owner, as ODS core and curated recipes write it.
+_COMPOSE_POLICY_OWNER_USER_RE = re.compile(r"\$\{ODS_UID:-[1-9][0-9]*\}(?::\$\{ODS_GID:-[0-9]+\})?")
+_COMPOSE_POLICY_ROOT_UID_RE = re.compile(r"[+-]?[0-9]+")
+_COMPOSE_POLICY_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:[\\/]|[\\/]{2}")
+_COMPOSE_POLICY_RESERVATION_KEYS = frozenset({"cpus", "memory", "devices"})
+_COMPOSE_POLICY_NETWORK_KEYS = frozenset({"external", "name", "internal", "labels"})
+_COMPOSE_POLICY_VOLUME_KEYS = frozenset({"labels"})
+_COMPOSE_POLICY_MARKER_MAX_BYTES = 524288
+# A Compose file with every alias expanded; ODS's largest is a few hundred
+# nodes. Bounds alias bombs before anything walks the parsed document.
+_COMPOSE_POLICY_MAX_NODES = 100000
+
+
+class _ComposePolicyLoader(yaml.SafeLoader):
+    """SafeLoader that refuses duplicate mapping keys, as Compose does."""
+
+    def _refuse_duplicate_keys(self, node):
+        # SafeConstructor.flatten_mapping rewrites a mapping node in place
+        # (merged keys first, then its own), so judge each node once, on the
+        # keys its author wrote, before that happens. A layered merge
+        # (x-b: {<<: *a, restart: always}) then merged again is not a
+        # duplicate.
+        checked = self.__dict__.setdefault("_compose_policy_checked", set())
+        if id(node) in checked:
+            return
+        checked.add(id(node))
+        seen = set()
+        for key_node, value_node in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                merged = value_node.value if isinstance(value_node, yaml.SequenceNode) else [value_node]
+                for item in merged:
+                    if isinstance(item, yaml.MappingNode):
+                        self._refuse_duplicate_keys(item)
+                continue
+            if not isinstance(key_node, yaml.ScalarNode):
+                continue
+            key = self.construct_object(key_node, deep=True)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    f"found duplicate key {key!r}", key_node.start_mark)
+            seen.add(key)
+
+    def construct_mapping(self, node, deep=False):
+        if isinstance(node, yaml.MappingNode):
+            self._refuse_duplicate_keys(node)
+        return super().construct_mapping(node, deep=deep)
+
+
+def _compose_policy_bound_expansion(data):
+    """ValueError when data refers to itself or, with every alias expanded,
+    exceeds _COMPOSE_POLICY_MAX_NODES. Linear in the parsed (shared) size."""
+    sizes, active, pending = {}, set(), [(data, False)]
+    while pending:
+        item, finished = pending.pop()
+        if not isinstance(item, (dict, list)) or (not finished and id(item) in sizes):
+            continue
+        children = [*item.keys(), *item.values()] if isinstance(item, dict) else item
+        if finished:
+            active.discard(id(item))
+            sizes[id(item)] = 1 + sum(sizes[id(child)] if isinstance(child, (dict, list)) else 1
+                                      for child in children)
+            if sizes[id(item)] > _COMPOSE_POLICY_MAX_NODES:
+                raise ValueError("document expands beyond %d nodes (excessive aliasing)"
+                                 % _COMPOSE_POLICY_MAX_NODES)
+            continue
+        if id(item) in active:
+            raise ValueError("self-referencing anchor")
+        active.add(id(item))
+        pending.append((item, True))
+        pending.extend((child, False) for child in children if isinstance(child, (dict, list)))
+
+
+def _compose_policy_load(text):
+    """Parse one Compose document; ValueError for anything not judgeable.
+
+    That is invalid YAML, several documents, a duplicate key, Compose's own
+    !reset/!override tags (unknown to SafeLoader), self-referencing anchors,
+    alias bombs and unboundedly nested structures.
+    """
+    try:
+        data = yaml.load(text, Loader=_ComposePolicyLoader)  # noqa: S506 - SafeLoader subclass
+        _compose_policy_bound_expansion(data)
+    except (yaml.YAMLError, RecursionError, MemoryError, ValueError) as exc:
+        raise ValueError(str(exc) or type(exc).__name__) from None
+    return data
+
+
+def _compose_policy_interpolates(value):
+    """True when Compose would substitute into any string within value."""
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            if "$" in item.replace("$$", ""):
+                return True
+        elif isinstance(item, dict):
+            pending.extend(item.keys())
+            pending.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            pending.extend(item)
+    return False
+
+
+def _compose_policy_false(value):
+    """True when Compose reads value as boolean false (absent counts)."""
+    if value is None or value is False:
+        return True
+    return (isinstance(value, str) and not _compose_policy_interpolates(value)
+            and value.strip().lower() in _COMPOSE_POLICY_FALSE)
+
+
+def _compose_policy_list(name, key, value, problems):
+    """value as a list, or None after recording that Compose would not see one."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    problems.append(f"service '{name}' {key} must be a list")
+    return None
+
+
+def _compose_policy_volume_problems(name, volumes, *, builtin, namespace):
+    problems = []
+    for volume in _compose_policy_list(name, "volumes", volumes, problems) or []:
+        if isinstance(volume, dict):
+            source = volume.get("source")
+            source = "" if source is None else str(source)
+            spec = volume
+            host_path = volume.get("type") == "bind"
+        elif isinstance(volume, str):
+            source = volume.split(":", 1)[0]
+            spec = volume
+            host_path = source.startswith(".")
+        else:
+            problems.append(f"service '{name}' has an unsupported volume entry")
+            continue
+        text = str(spec)
+        if "docker.sock" in text or "docker_engine" in text:
+            problems.append(f"service '{name}' has a Docker socket mount")
+        # Built-in extensions ship with ODS; litellm selects its config file
+        # from the owner's ODS_MODE. User and library files may not choose a
+        # host path at render time.
+        if not builtin and _compose_policy_interpolates(spec):
+            problems.append(f"service '{name}' volume '{text}' chooses its source with ${{...}} interpolation")
+            continue
+        if isinstance(volume, str) and _COMPOSE_POLICY_WINDOWS_PATH_RE.match(volume):
+            source = volume.rsplit(":", 1)[0] if volume.count(":") > 1 else volume
+        if source.startswith(("/", "~")) or _COMPOSE_POLICY_WINDOWS_PATH_RE.match(source):
+            problems.append(f"service '{name}' bind-mounts absolute host path '{source}'")
+        elif ".." in source.replace("\\", "/").split("/"):
+            problems.append(
+                f"service '{name}' bind-mounts relative host path '{source}' escaping the project directory")
+        elif host_path:
+            parts = [part for part in source.replace("\\", "/").split("/") if part not in ("", ".")]
+            if not parts or parts[0].startswith(".") or parts in (["data"], ["config"]):
+                problems.append(f"service '{name}' bind-mounts the ODS install directory or its "
+                                f"secrets ('{source}')")
+            elif namespace is not None and (len(parts) < 2 or parts[0] not in ("data", "config")
+                                            or parts[1] != namespace):
+                problems.append(f"service '{name}' bind-mounts '{source}' outside its own "
+                                f"./data/{namespace} and ./config/{namespace}")
+    return problems
+
+
+def _compose_policy_service_problems(name, service, *, own_services, accelerator=None,
+                                     builtin=False, check_root_user=True, namespace=None):
+    """Policy problems of one service definition (an empty list passes).
+
+    ``accelerator`` is the backend whose GPU this file may request: the
+    caller passes it only for a curated recipe's own compose.<backend>.yaml.
+    ``builtin`` is for ODS's own extensions (read-only EXTENSIONS_DIR).
+    ``namespace`` is the extension id of an untrusted (imported) recipe,
+    whose relative bind mounts must stay in ./data/<id> or ./config/<id>.
+    """
+    problems = []
+    for key, reason in _COMPOSE_POLICY_DENIED_SERVICE_KEYS.items():
+        if key in service:
+            problems.append(f"service '{name}' {reason}")
+    if not _compose_policy_false(service.get("privileged")):
+        problems.append(f"service '{name}' uses privileged mode")
+    if not _compose_policy_false(service.get("use_api_socket")):
+        problems.append(f"service '{name}' mounts the Docker API socket (use_api_socket)")
+    for key, label in _COMPOSE_POLICY_NAMESPACES:
+        mode = service.get(key)
+        if mode is None:
+            continue
+        if not isinstance(mode, str) or _compose_policy_interpolates(mode):
+            problems.append(f"service '{name}' {key} must be a literal string")
+            continue
+        normalized = mode.strip().lower()
+        kind, _, target = mode.strip().partition(":")
+        if normalized == "host":
+            problems.append(f"service '{name}' uses host {label}")
+        elif kind.lower() == "container":
+            problems.append(f"service '{name}' joins another container's {label}")
+        elif kind.lower() == "service" and target not in own_services:
+            problems.append(f"service '{name}' joins the {label} of service '{target}' outside this file")
+    for cap in _compose_policy_list(name, "cap_add", service.get("cap_add"), problems) or []:
+        if str(cap).strip().upper().removeprefix("CAP_") not in _COMPOSE_POLICY_ALLOWED_CAPS:
+            problems.append(f"service '{name}' adds dangerous capability: {cap}")
+    for opt in _compose_policy_list(name, "security_opt", service.get("security_opt"), problems) or []:
+        if str(opt).strip().lower() not in _COMPOSE_POLICY_SECURITY_OPTS:
+            problems.append(f"service '{name}' uses dangerous security_opt '{opt}'")
+    groups = _compose_policy_list(name, "group_add", service.get("group_add"), problems) or []
+    if groups and accelerator != "amd":
+        problems.append(f"service '{name}' adds supplementary groups (group_add); only a curated "
+                        f"recipe's compose.amd.yaml may add the GPU video/render groups")
+    elif any(not isinstance(group, str) or group not in _COMPOSE_POLICY_GPU_GROUPS for group in groups):
+        problems.append(f"service '{name}' adds groups other than the GPU video/render groups")
+    if service.get("sysctls"):
+        problems.append(f"service '{name}' declares sysctls")
+    if check_root_user and service.get("user") is not None:
+        user = str(service["user"]).strip()
+        uid = user.split(":", 1)[0].strip()
+        if _compose_policy_interpolates(user):
+            if not _COMPOSE_POLICY_OWNER_USER_RE.fullmatch(user):
+                problems.append(f"service '{name}' chooses its user with ${{...}} interpolation")
+        elif uid.lower() == "root" or (_COMPOSE_POLICY_ROOT_UID_RE.fullmatch(uid) and int(uid) == 0):
+            problems.append(f"service '{name}' runs as root")
+    labels = service.get("labels")
+    if isinstance(labels, dict):
+        label_keys = list(labels)
+    elif isinstance(labels, list):
+        label_keys = [str(label).split("=", 1)[0] for label in labels]
+    else:
+        label_keys = []
+        if labels is not None:
+            problems.append(f"service '{name}' labels must be a mapping or a list")
+    for label in label_keys:
+        if (_compose_policy_interpolates(label)
+                or str(label).strip().lower().startswith(("com.docker.compose.", "io.docker."))):
+            problems.append(f"service '{name}' uses reserved Docker Compose label '{label}'")
+    problems.extend(_compose_policy_volume_problems(name, service.get("volumes"), builtin=builtin,
+                                                    namespace=namespace))
+    networks = service.get("networks")
+    if isinstance(networks, dict) and any(options not in (None, {}) for options in networks.values()):
+        problems.append(f"service '{name}' sets per-network options (aliases, addresses)")
+    deploy = service.get("deploy")
+    resources = deploy.get("resources") if isinstance(deploy, dict) else None
+    reservations = resources.get("reservations") if isinstance(resources, dict) else None
+    if isinstance(reservations, dict) and set(reservations) - _COMPOSE_POLICY_RESERVATION_KEYS:
+        extra = ", ".join(sorted(map(str, set(reservations) - _COMPOSE_POLICY_RESERVATION_KEYS)))
+        problems.append(f"service '{name}' reserves unsupported resources: {extra}")
+    return problems
+
+
+def _compose_policy_document_problems(data):
+    """Policy problems of the top level: keys, named networks and volumes."""
+    problems = []
+    for key in data:
+        if not isinstance(key, str) or not (key in _COMPOSE_POLICY_TOP_LEVEL or key.startswith("x-")):
+            reason = _COMPOSE_POLICY_TOP_LEVEL_REASONS.get(key, "is not permitted in an extension")
+            problems.append(f"top-level '{key}' {reason}")
+    networks = data.get("networks")
+    if networks is not None and not isinstance(networks, dict):
+        problems.append("top-level networks must be a mapping")
+    for key, network in (networks.items() if isinstance(networks, dict) else ()):
+        if network is None:
+            continue
+        if not isinstance(network, dict) or set(network) - _COMPOSE_POLICY_NETWORK_KEYS:
+            problems.append(f"network '{key}' sets a driver or options")
+            continue
+        external = network.get("external")
+        named = network.get("name")
+        if isinstance(external, dict):
+            named = external.get("name", named)
+        if named is None and not _compose_policy_false(external):
+            named = key
+        # Only ODS's own network may be joined by name; any other name can be
+        # Docker's host or default bridge network or another project's.
+        if named is not None and named != "ods-network":
+            problems.append(f"network '{key}' joins Docker network '{named}' outside ODS")
+    volumes = data.get("volumes")
+    if volumes is not None and not isinstance(volumes, dict):
+        problems.append("top-level volumes must be a mapping")
+    for key, volume in (volumes.items() if isinstance(volumes, dict) else ()):
+        if volume is None:
+            continue
+        if not isinstance(volume, dict):
+            problems.append(f"named volume '{key}' must be a mapping")
+            continue
+        options = volume.get("driver_opts")
+        if isinstance(options, dict) and str(options.get("device", "")).startswith("/"):
+            problems.append(f"named volume '{key}' uses driver_opts to bind-mount host path "
+                            f"'{options.get('device')}'")
+        elif set(volume) - _COMPOSE_POLICY_VOLUME_KEYS:
+            problems.append(f"named volume '{key}' sets a driver, driver_opts, name or external")
+    return problems
+
+
+def _compose_policy_unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate key {key!r}")
+        result[key] = value
+    return result
+
+
+def _compose_policy_library_origin(extension_dir):
+    """Classify an extension by its upstream.json provenance marker.
+
+    "curated": no marker, or one without origin github-proposal;
+    "imported": origin github-proposal (a proposed GitHub recipe);
+    "invalid": a link or other non-regular file, over 512 KiB, not UTF-8
+    JSON, or with a duplicate key. Trust is the absence of the imported
+    marker, so an invalid marker must never read as curated.
+    """
+    import stat
+
+    marker = extension_dir / "upstream.json"
+    try:
+        if marker.is_symlink():
+            return "invalid"
+        if not marker.exists():
+            return "curated"
+        descriptor = os.open(marker, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return "invalid"
+            raw = stream.read(_COMPOSE_POLICY_MARKER_MAX_BYTES + 1)
+        if len(raw) > _COMPOSE_POLICY_MARKER_MAX_BYTES:
+            return "invalid"
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_compose_policy_unique_object)
+    except (OSError, ValueError, RecursionError):
+        return "invalid"
+    if isinstance(value, dict) and value.get("origin") == "github-proposal":
+        return "imported"
+    return "curated"
+# <<< shared compose policy <<<
+
+
 def _scan_compose_content(
     compose_path: Path,
     *,
@@ -591,6 +1007,8 @@ def _scan_compose_content(
     skip_name_collision: bool = False,
     skip_gpu_passthrough_check: bool = False,
     skip_root_user_check: bool = False,
+    builtin: bool = False,
+    extension_id: str | None = None,
 ) -> None:
     """Reject compose files containing dangerous directives.
 
@@ -598,14 +1016,20 @@ def _scan_compose_content(
     ``trusted`` does it permit that backend's GPU ("nvidia" or "amd"), in
     exactly the ODS core shape; any other device request is rejected, and
     ``gpus``/``runtime`` are rejected unless ``skip_gpu_passthrough_check``.
+    Every other rule is the shared compose policy (``_compose_policy_*``),
+    the same code scripts/resolve-compose-stack.sh runs. ``builtin`` marks
+    an extension shipped in EXTENSIONS_DIR, whose volume sources may
+    interpolate owner settings. ``extension_id`` names the extension: an
+    untrusted one may bind-mount only its own ./data/<id> and ./config/<id>.
     """
     allowed_trusted_extra_hosts = {"host.docker.internal:host-gateway"}
     if not trusted:
         accelerator = None
+    namespace = None if trusted else extension_id
 
     try:
-        data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
-    except (yaml.YAMLError, OSError) as e:
+        data = _compose_policy_load(compose_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
         raise HTTPException(status_code=400, detail=f"Invalid compose file: {e}")
 
     if not isinstance(data, dict):
@@ -613,9 +1037,15 @@ def _scan_compose_content(
             status_code=400, detail="Compose file must be a YAML mapping",
         )
 
+    def reject(problems):
+        if problems:
+            raise HTTPException(status_code=400, detail=f"Extension rejected: {problems[0]}")
+
+    reject(_compose_policy_document_problems(data))
     services = data.get("services", {})
     if not isinstance(services, dict):
         return
+    own_services = {str(name) for name in services}
 
     for svc_name in services:
         if not skip_name_collision and svc_name in CORE_SERVICE_IDS:
@@ -627,92 +1057,11 @@ def _scan_compose_content(
     for svc_name, svc_def in services.items():
         if not isinstance(svc_def, dict):
             continue
-        if svc_def.get("privileged") is True:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Service '{svc_name}' uses privileged mode",
-            )
-        # Block Docker Compose internal label spoofing
-        labels = svc_def.get("labels", [])
-        if isinstance(labels, dict):
-            label_keys = labels.keys()
-        elif isinstance(labels, list):
-            label_keys = [lbl.split("=", 1)[0] for lbl in labels if isinstance(lbl, str)]
-        else:
-            label_keys = []
-        for lk in label_keys:
-            if lk.lower().startswith(("com.docker.compose.", "io.docker.")):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Extension rejected: reserved Docker Compose label '{lk}' in service '{svc_name}'",
-                )
-        volumes = svc_def.get("volumes", [])
-        if isinstance(volumes, list):
-            for vol in volumes:
-                vol_str = str(vol)
-                if "docker.sock" in vol_str:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Extension rejected: Docker socket mount in {svc_name}",
-                    )
-                # Resolve the host-side source for both short-form
-                # ("source:target[:opts]") and long-form ({type: bind,
-                # source: ...}) entries, so a long-form bind can't slip an
-                # absolute/relative host path past the string-only check.
-                if isinstance(vol, dict):
-                    vol_source = str(vol.get("source", ""))
-                else:
-                    vol_source = vol_str.split(":", 1)[0]
-                if vol_source.startswith("/"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Extension rejected: absolute host path mount '{vol_source}' in {svc_name}",
-                    )
-                if ".." in vol_source.split("/"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Extension rejected: relative host path mount '{vol_source}' escaping the project directory in {svc_name}",
-                    )
-        cap_add = svc_def.get("cap_add", [])
-        if isinstance(cap_add, list):
-            for cap in cap_add:
-                cap_str = str(cap).upper().removeprefix("CAP_")
-                if cap_str in {
-                    "SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "NET_RAW",
-                    "DAC_OVERRIDE", "SETUID", "SETGID", "SYS_MODULE",
-                    "SYS_RAWIO", "ALL",
-                }:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Service '{svc_name}' adds dangerous capability: {cap}",
-                    )
-        if svc_def.get("pid") == "host":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Service '{svc_name}' uses host PID namespace",
-            )
-        if svc_def.get("network_mode") == "host":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Service '{svc_name}' uses host network mode",
-            )
-        if svc_def.get("ipc") == "host":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Service '{svc_name}' uses host IPC namespace",
-            )
-        if svc_def.get("userns_mode") == "host":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Service '{svc_name}' uses host user namespace",
-            )
-        if not skip_root_user_check:
-            user = svc_def.get("user")
-            if user is not None and str(user).split(":")[0] in ("root", "0"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Service '{svc_name}' runs as root",
-                )
+        # Privileges, namespaces, capabilities, security options, groups,
+        # users, labels, volumes and the keys that pull in other files.
+        reject(_compose_policy_service_problems(
+            svc_name, svc_def, own_services=own_services, accelerator=accelerator,
+            builtin=builtin, check_root_user=not skip_root_user_check, namespace=namespace))
         if not trusted and "build" in svc_def:
             try:
                 from extension_recipe_package import verify_package, verify_installed_package
@@ -733,8 +1082,11 @@ def _scan_compose_content(
                 if svc_name not in {entry['service'] for entry in source_builds(candidate)}:
                     raise ValueError('Source service is not reviewed')
             except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError):
-                raise HTTPException(status_code=400,
-                    detail=f"Service '{svc_name}' uses a local build without a verified source recipe") from None
+                from builtin_source_recipes import verify_builtin_source_build
+                if not (builtin and verify_builtin_source_build(
+                        compose_path, str(svc_name), svc_def, EXTENSIONS_DIR)):
+                    raise HTTPException(status_code=400,
+                        detail=f"Service '{svc_name}' uses a local build without a verified source recipe") from None
         extra_hosts = svc_def.get("extra_hosts")
         if extra_hosts and not trusted:
             raise HTTPException(
@@ -752,20 +1104,6 @@ def _scan_compose_content(
                     raise HTTPException(
                         status_code=400,
                         detail=f"Extension rejected: unsupported extra_hosts in {svc_name}",
-                    )
-        if svc_def.get("sysctls"):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Extension rejected: sysctls in {svc_name}",
-            )
-        security_opt = svc_def.get("security_opt", [])
-        if isinstance(security_opt, list):
-            for opt in security_opt:
-                opt_str = str(opt).lower().replace("=", ":")
-                if opt_str in ("seccomp:unconfined", "apparmor:unconfined", "label:disable"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Extension rejected: dangerous security_opt '{opt}' in {svc_name}",
                     )
         devices = svc_def.get("devices")
         if devices and accelerator != "amd":
@@ -883,23 +1221,6 @@ def _scan_compose_content(
                             f"in {svc_name} must specify host:host_port:container_port"
                         ),
                     )
-
-    # Scan top-level named volumes for bind-mount backdoors via driver_opts
-    top_volumes = data.get("volumes", {})
-    if isinstance(top_volumes, dict):
-        for vol_name, vol_def in top_volumes.items():
-            if not isinstance(vol_def, dict):
-                continue
-            driver_opts = vol_def.get("driver_opts", {})
-            if not isinstance(driver_opts, dict):
-                continue
-            vol_type = str(driver_opts.get("type", "")).lower()
-            device = str(driver_opts.get("device", ""))
-            if vol_type in ("none", "bind") and device.startswith("/"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Extension rejected: named volume '{vol_name}' uses driver_opts to bind-mount host path '{device}'",
-                )
 
 
 def _ignore_special(directory: str, files: list[str]) -> list[str]:
@@ -2321,9 +2642,15 @@ async def _validated_github_recipe(candidate, api_key, *, replacing=None):
             reserved.discard(replacing)
             matches = [identifier for identifier in matches if identifier != replacing]
 
+        manifest = candidate.get('manifest') if isinstance(candidate, dict) else None
+        service = manifest.get('service') if isinstance(manifest, dict) else None
+        target = service.get('id') if isinstance(service, dict) else None
+
         def scan(path):
             try:
-                _scan_compose_content(path)
+                # A proposal installs as extension `target`; its bind mounts
+                # must stay in that extension's own ./data and ./config.
+                _scan_compose_content(path, extension_id=target if isinstance(target, str) else '')
                 return True
             except HTTPException:
                 return False  # scanner details can contain rejected values
@@ -2839,6 +3166,133 @@ async def extension_logs(
         raise HTTPException(status_code=502, detail=f"Invalid host agent response: {exc}") from exc
 
 
+def _installed_definition_difference(staged: Path, installed: Path, *,
+                                     compose_path: Path | None = None) -> str | None:
+    """The first file a library install writes that changed in installed.
+
+    Compose may build or mount any file shipped by the library, including
+    Dockerfiles and scripts, so every staged path is checked: no link, same
+    type, same executable bit, same bytes. Owner-added data and configuration
+    are not library files and are left alone. ``compose_path`` is the
+    installed file holding the staged compose.yaml (compose.yaml.disabled
+    while the extension is disabled). Returns the installed name of the first
+    changed path, or None when every path is unchanged.
+    """
+    for expected in sorted(staged.rglob('*')):
+        relative = expected.relative_to(staged)
+        actual = installed / relative
+        if compose_path is not None and relative.as_posix() == 'compose.yaml':
+            actual = compose_path
+        if (actual.is_symlink() or (expected.is_dir() and not actual.is_dir())
+                or (expected.is_file() and (not actual.is_file()
+                    or bool(actual.stat().st_mode & 0o111)
+                       != bool(expected.stat().st_mode & 0o111)
+                    or actual.read_bytes() != expected.read_bytes()))):
+            return actual.relative_to(installed).as_posix()
+    return None
+
+
+def _library_recipe_mismatch_cause(service_id: str, difference: str) -> str:
+    """Say why an installed curated recipe no longer matches the library.
+
+    Only for messages: the install receipt (_library_update_state) sits in the
+    writable extension directory, so it tells the owner which side changed
+    but never decides trust.
+    """
+    state = _library_update_state(service_id)
+    library_changed = state["update_available"]
+    edited = state["locally_modified"]
+    if library_changed and edited:
+        return (f"the library recipe changed since install and its installed files were edited "
+                f"after install (first difference: {difference}). Update it from the library, "
+                f"which keeps your edited files as the rollback backup,")
+    if library_changed:
+        return (f"the library recipe changed since install, for example with an ODS update "
+                f"(first difference: {difference}). Update it from the library")
+    if edited:
+        return (f"its installed files were edited after install (first difference: "
+                f"{difference}). Undo the edit, or update it from the library, which keeps your "
+                f"edited files as the rollback backup,")
+    return (f"its installed files differ from the library recipe (first difference: {difference}), "
+            f"and no install receipt shows whether the library or the installed copy changed. "
+            f"Update it from the library")
+
+
+def _installed_library_recipe_trust(service_id: str, ext_dir: Path,
+                                    compose_path: Path) -> tuple[bool, str | None]:
+    """Whether an installed extension keeps its curated-library compose privileges.
+
+    Install grants a curated recipe its local ``build:`` and the host-gateway
+    ``extra_hosts`` entry only after staging it from the library
+    (_staged_library_extension). Enabling it again, or starting it after a
+    stop, reaches the same decision from the same evidence rather than from
+    its name: stage the library recipe of this id through that install path,
+    which re-runs install's trust decision (_compose_policy_library_origin)
+    and every compose scan, and require each file it would install to be
+    unchanged here. An imported recipe, a library recipe that changed since
+    install, or installed files edited after install get the untrusted scan.
+
+    Returns ``(trusted, lost)``. ``lost`` is set only for a curated recipe
+    whose files no longer match its library recipe; it says whether the
+    library or the installed copy changed, and how to restore the privileges.
+    """
+    installed = USER_EXTENSIONS_DIR / service_id
+    if installed.is_symlink() or installed.resolve() != ext_dir.resolve():
+        return False, None
+    if not (EXTENSIONS_LIBRARY_DIR / service_id / 'compose.yaml').is_file():
+        return False, None
+    try:
+        with _staged_library_extension(service_id, ext_dir) as (staged, _source_digest):
+            if _compose_policy_library_origin(staged) != "curated":
+                return False, None
+            difference = _installed_definition_difference(staged, ext_dir, compose_path=compose_path)
+            if difference is None:
+                return True, None
+        cause = _library_recipe_mismatch_cause(service_id, difference)
+    except (HTTPException, OSError, ValueError):
+        return False, None
+    lost = (f"Extension '{service_id}' no longer has its curated-library privileges "
+            f"because {cause} to restore them.")
+    logger.warning(
+        "Installed extension %s no longer matches its curated library recipe; checking it "
+        "without curated-library privileges. %s", service_id, lost,
+    )
+    return False, lost
+
+
+def _scan_installed_compose(service_id: str, ext_dir: Path, compose_path: Path, *,
+                            is_builtin: bool) -> None:
+    """Re-scan an installed extension's compose file before it starts (TOCTOU).
+
+    Built-in extensions legitimately declare their own service name in their
+    compose file, so skip the CORE_SERVICE_IDS name-collision check for them.
+    User extensions still get the full anti-shadowing scan. Some built-ins
+    also legitimately need `user: "0:0"` to perform init-time chown before
+    dropping privileges via setpriv (e.g. openclaw), so skip the root-user
+    check for built-ins only. The `trusted` flag is separate: a curated
+    library recipe keeps install's privileges (local `build:`, the
+    host-gateway route) only while its installed files still match the
+    library recipe it was installed from. When it lost them, a rejection
+    says why, instead of only naming the privilege it no longer has.
+    """
+    trusted, lost = (False, None) if is_builtin else _installed_library_recipe_trust(
+        service_id, ext_dir, compose_path)
+    try:
+        _scan_compose_content(
+            compose_path,
+            trusted=trusted,
+            skip_name_collision=is_builtin,
+            skip_gpu_passthrough_check=is_builtin,
+            skip_root_user_check=is_builtin,
+            builtin=is_builtin,
+            extension_id=_imported_extension_namespace(service_id, ext_dir, is_builtin),
+        )
+    except HTTPException as exc:
+        if lost is None or exc.status_code != 400 or not isinstance(exc.detail, str):
+            raise
+        raise HTTPException(status_code=400, detail=f"{lost} {exc.detail}") from None
+
+
 @contextlib.contextmanager
 def _staged_library_extension(service_id: str, dest: Path):
     """Yield a validated, rewritten library copy on the destination filesystem."""
@@ -2900,22 +3354,33 @@ def _staged_library_extension(service_id: str, dest: Path):
         staged = Path(tmpdir) / service_id
         _invalidate_extension_digest_cache(source)
         source_digest_before = _extension_tree_digest(source)
+        # Imported GitHub recipes never inherit curated-library privileges,
+        # and trust is the ABSENCE of their upstream.json marker. The copy
+        # below skips links and special files, so a linked marker would vanish
+        # and the installed copy would read as curated; an oversized, invalid
+        # or duplicate-key marker was not written by publish_package either.
+        # Refuse the install instead of guessing. The compose resolver treats
+        # the same markers as untrusted (_library_recipe_trusted).
+        library_origin = _compose_policy_library_origin(source)
         _copytree_safe(source, staged)
+        if library_origin == "invalid" or _compose_policy_library_origin(staged) != library_origin:
+            raise HTTPException(
+                status_code=400,
+                detail=("Extension rejected: upstream.json must be a regular JSON file of at most "
+                        "512 KiB without duplicate keys"),
+            )
         # Security scan the staged copy (prevents TOCTOU)
         staged_compose = staged / "compose.yaml"
         if staged_compose.exists():
-            # Imported GitHub recipes never inherit curated-library privileges.
-            upstream_path = staged / 'upstream.json'
-            upstream = json.loads(upstream_path.read_text(encoding='utf-8')) if upstream_path.is_file() else {}
-            trusted_library = not (isinstance(upstream, dict) and upstream.get('origin') == 'github-proposal')
-            _scan_compose_content(staged_compose, trusted=trusted_library)
+            trusted_library = library_origin == "curated"
+            _scan_compose_content(staged_compose, trusted=trusted_library, extension_id=service_id)
             # The compose resolver also loads compose.<backend>.yaml,
             # compose.local.yaml and compose.multigpu.yaml, with this policy.
             # Scan them here too, so an overlay it would drop fails the
             # install. Only compose.nvidia.yaml / compose.amd.yaml may request
             # that backend's GPU.
             for overlay in sorted(staged.glob('compose.*.yaml')):
-                _scan_compose_content(overlay, trusted=trusted_library,
+                _scan_compose_content(overlay, trusted=trusted_library, extension_id=service_id,
                                       accelerator=_LIBRARY_ACCELERATOR_OVERLAYS.get(overlay.name))
             if not trusted_library:
                 from extension_recipe_package import verify_package
@@ -3007,18 +3472,9 @@ def _install_from_library(service_id: str, *, operation_id: str | None = None) -
         # preserves curated-library policy without granting those privileges to
         # a modified installed definition or an imported GitHub recipe.
         with _staged_library_extension(service_id, dest) as (staged, _source_digest):
-            # Compose may build or mount any file shipped by the library,
-            # including Dockerfiles and scripts. Check every staged source
-            # path, while leaving owner-added data and configuration intact.
-            for expected in staged.rglob('*'):
-                actual = dest / expected.relative_to(staged)
-                if (actual.is_symlink() or (expected.is_dir() and not actual.is_dir())
-                        or (expected.is_file() and (not actual.is_file()
-                            or bool(actual.stat().st_mode & 0o111)
-                               != bool(expected.stat().st_mode & 0o111)
-                            or actual.read_bytes() != expected.read_bytes()))):
-                    raise HTTPException(status_code=409,
-                        detail='Existing extension definition changed; files were preserved')
+            if _installed_definition_difference(staged, dest) is not None:
+                raise HTTPException(status_code=409,
+                    detail='Existing extension definition changed; files were preserved')
         return
 
     with _staged_library_extension(service_id, dest) as (staged, source_digest):
@@ -3699,6 +4155,20 @@ def _get_missing_deps_transitive(
     return _order
 
 
+def _imported_extension_namespace(service_id: str, ext_dir: Path, is_builtin: bool) -> str | None:
+    """The bind-mount namespace the enable/activate re-scan enforces.
+
+    Pass the extension id only where the install gate and the compose
+    resolver apply the imported-recipe namespace (./data/<id>, ./config/<id>):
+    not for built-ins or curated library recipes (whether or not their files
+    still match the library, see _installed_library_recipe_trust), always for
+    an imported or unclassifiable upstream.json marker.
+    """
+    if is_builtin or _compose_policy_library_origin(ext_dir) == "curated":
+        return None
+    return service_id
+
+
 def _activate_service(service_id: str) -> dict:
     """Core enable logic â€” NO lock acquisition. Called inside _extensions_lock.
 
@@ -3722,22 +4192,9 @@ def _activate_service(service_id: str) -> dict:
             status_code=404, detail=f"Extension has no compose file: {service_id}",
         )
 
-    # Re-scan compose content (TOCTOU prevention). Built-in extensions
-    # legitimately declare their own service name in their compose file, so
-    # skip the CORE_SERVICE_IDS name-collision check for them. User extensions
-    # still get the full anti-shadowing scan. Some built-ins also legitimately
-    # need `user: "0:0"` to perform init-time chown before dropping privileges
-    # via setpriv (e.g. openclaw), so skip the root-user check for built-ins
-    # only. The `trusted` flag is separate and controls whether `build:`
-    # directives are allowed (library installs need it, built-in activations
-    # do not).
+    # Re-scan compose content (TOCTOU prevention).
     is_builtin = ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
-    _scan_compose_content(
-        disabled_compose,
-        skip_name_collision=is_builtin,
-        skip_gpu_passthrough_check=is_builtin,
-        skip_root_user_check=is_builtin,
-    )
+    _scan_installed_compose(service_id, ext_dir, disabled_compose, is_builtin=is_builtin)
 
     # Reject symlinks
     st = os.lstat(disabled_compose)
@@ -3809,16 +4266,9 @@ def enable_extension(
                 raise HTTPException(
                     status_code=400, detail="Compose file is a symlink",
                 )
-            # Built-in extensions legitimately use their own service name which
-            # appears in CORE_SERVICE_IDS â€” skip the name-collision check for
-            # them, mirroring _activate_service's logic.
+            # The same re-scan as _activate_service.
             is_builtin = ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
-            _scan_compose_content(
-                enabled_compose,
-                skip_name_collision=is_builtin,
-                skip_gpu_passthrough_check=is_builtin,
-                skip_root_user_check=is_builtin,
-            )
+            _scan_installed_compose(service_id, ext_dir, enabled_compose, is_builtin=is_builtin)
     elif not disabled_compose.exists():
         raise HTTPException(
             status_code=404, detail=f"Extension has no compose file: {service_id}",

@@ -354,6 +354,186 @@ $script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4343; ProcessName = 
 Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -UsesNativeLemonade).Count `
     1 "Native AMD installation rejects a foreign listener"
 
+function Remove-VoiceSeedDir {
+    param([string]$Path)
+    $canonical = [IO.Path]::GetFullPath($Path)
+    $prefix = Join-Path ([IO.Path]::GetTempPath()) "ods-voice-seed-"
+    if (-not $canonical.StartsWith($prefix, [StringComparison]::Ordinal) -or
+        (Split-Path -Leaf $canonical) -notmatch '^ods-voice-seed-[a-f0-9]{32}$' -or
+        ((Get-Item -LiteralPath $canonical -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Unexpected test cleanup path"
+    }
+    Remove-Item -LiteralPath $canonical -Recurse -Force
+}
+
+$savedVoiceOverride = $env:WHISPER_PORT
+try {
+    Remove-Item Env:WHISPER_PORT -ErrorAction SilentlyContinue
+# ── Voice (Whisper) port parity: phase 04 preflight vs env generator ──────
+$script:voicePass = 0
+$script:voiceCase = 0
+function Assert-VoiceEqual {
+    param($Actual, $Expected, [string]$Label)
+    $script:voiceCase++
+    if ("$Actual" -ceq "$Expected") {
+        $script:voicePass++
+        Write-Host "[PASS] $Label"
+    } else {
+        throw "$Label expected '$Expected', got '$Actual'"
+    }
+}
+
+$script:voiceIfAst = $ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.IfStatementAst] -and
+        $node.Clauses[0].Item1.Extent.Text -match 'enableVoice'
+}, $true)
+if (-not $script:voiceIfAst) { throw "Phase 04 enableVoice block not found" }
+$voiceBlock = [scriptblock]::Create(($script:voiceIfAst.Clauses[0].Item2.Statements.Extent.Text -join "`n"))
+
+function Get-PhaseVoicePort {
+    param([string]$Backend, [bool]$Cloud = $false, [string]$InstallDir = "")
+    $gpuInfo = @{ Backend = $Backend }
+    $cloudMode = $Cloud
+    $installDir = $InstallDir
+    $_usesNativeLemonade = ($Backend -eq "amd" -and -not $Cloud)
+    $_portsToCheck = [ordered]@{}
+    . $voiceBlock
+    return ,$_portsToCheck
+}
+
+# Fake conflict probe: reads $script:mockListeners only; no real sockets.
+function Test-WindowsLemonadeWhisperPortConflict {
+    param([int]$Port = 9000)
+    $listener = $script:mockListeners[$Port]
+    return [bool]($listener -and $listener.InUse -and
+        $listener.ProcessName -match '(?i)lemonade')
+}
+
+function New-VoiceSeedDir {
+    param([string]$Content = "")
+    $dir = Join-Path ([IO.Path]::GetTempPath()) "ods-voice-seed-$([Guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    if ($Content) { Set-Content -LiteralPath (Join-Path $dir ".env") -Value $Content }
+    return $dir
+}
+
+function Get-GeneratorWhisperPort {
+    param(
+        [string]$Backend,
+        [string]$Runtime = "",
+        [string]$Location = "",
+        [string]$SeedEnv = "",
+        [string]$ProcessPort = ""
+    )
+    $dir = New-VoiceSeedDir -Content $SeedEnv
+    $savedWhisper = $env:WHISPER_PORT
+    try {
+        if ($ProcessPort) { $env:WHISPER_PORT = $ProcessPort }
+        function Write-WindowsODSLemonadeLiteLlmConfig {
+            param($InstallDir, $ModelId, $Port, $ApiKey)
+            return (Join-Path $InstallDir "config\\litellm\\lemonade.yaml")
+        }
+        $null = New-ODSEnv -InstallDir $dir -TierConfig $tierConfig -Tier "3" `
+            -GpuBackend $Backend -AmdInferenceRuntime $Runtime `
+            -AmdInferenceLocation $Location
+        $envText = Get-Content -LiteralPath (Join-Path $dir ".env") -Raw
+        if ($envText -notmatch "(?m)^WHISPER_PORT=([^\r\n]+)\r?$") {
+            throw "Generator .env missing WHISPER_PORT"
+        }
+        return $Matches[1].Trim()
+    } finally {
+        if ($null -eq $savedWhisper) {
+            Remove-Item Env:WHISPER_PORT -ErrorAction SilentlyContinue
+        } else { $env:WHISPER_PORT = $savedWhisper }
+        Remove-VoiceSeedDir $dir
+    }
+}
+
+function Assert-VoiceAborts {
+    param([System.Collections.IDictionary]$PortsToCheck, [string]$Label)
+    $conflicts = @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $PortsToCheck)
+    if ($conflicts.Count -eq 0) { throw "$Label expected a selected-port conflict" }
+    $aborted = $false
+    try {
+        $null = Assert-WindowsODSSelectedPortAvailability -Conflicts $conflicts -NonInteractive
+    } catch {
+        $aborted = ($_.Exception.Message -eq "ODS_INSTALL_ABORTED")
+    }
+    Assert-VoiceEqual $aborted $true $Label
+}
+
+# 1. NVIDIA + foreign Lemonade on 9000 -> 9100 (old phase 04 fails here)
+$script:mockListeners[9000] = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
+$ports = Get-PhaseVoicePort -Backend "nvidia"
+Assert-VoiceEqual $ports["Whisper (STT)"] 9100 "phase nvidia foreign lemonade 9000 -> 9100"
+Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia") "9100" `
+    "generator nvidia foreign lemonade 9000 -> 9100"
+
+Assert-VoiceEqual @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ports).Count 0 "selected 9100 is free despite foreign 9000"
+
+# 2. Persisted 9100 with a foreign listener still aborts non-interactive installs
+$script:mockListeners[9100] = @{ InUse = $true; ProcessId = 4343; ProcessName = "OtherServer" }
+$seedDir = New-VoiceSeedDir -Content "WHISPER_PORT=9100"
+try {
+    $ports = Get-PhaseVoicePort -Backend "nvidia" -InstallDir $seedDir
+    Assert-VoiceAborts -PortsToCheck $ports "persisted 9100 foreign listener aborts"
+} finally {
+    Remove-VoiceSeedDir $seedDir
+}
+
+# 3. Non-Lemonade listener on default 9000 is rejected
+$script:mockListeners[9000] = @{ InUse = $true; ProcessId = 4343; ProcessName = "nginx" }
+$ports = Get-PhaseVoicePort -Backend "nvidia"
+Assert-VoiceAborts -PortsToCheck $ports "non-lemonade 9000 listener aborts"
+
+# 4. No 9000 listener -> default 9000 everywhere
+$script:mockListeners.Remove(9000)
+$ports = Get-PhaseVoicePort -Backend "nvidia"
+Assert-VoiceEqual $ports["Whisper (STT)"] 9000 "phase free 9000 default"
+Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia") "9000" `
+    "generator free 9000 default"
+
+# 5. Managed AMD (lemonade/host) default -> 9100
+$ports = Get-PhaseVoicePort -Backend "amd"
+Assert-VoiceEqual $ports["Whisper (STT)"] 9100 "phase managed amd default 9100"
+Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "amd" -Runtime "lemonade" -Location "host") "9100" `
+    "generator managed amd default 9100"
+
+# 6. Persisted custom 9182 is preserved
+$seedDir = New-VoiceSeedDir -Content "WHISPER_PORT=9182"
+try {
+    $ports = Get-PhaseVoicePort -Backend "nvidia" -InstallDir $seedDir
+    Assert-VoiceEqual $ports["Whisper (STT)"] 9182 "phase persisted 9182 preserved"
+    Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia" -SeedEnv "WHISPER_PORT=9182") "9182" `
+        "generator persisted 9182 preserved"
+
+    # 7. Process override 9282 beats persisted 9182 (old generator fails here)
+    $env:WHISPER_PORT = "9282"
+    $ports = Get-PhaseVoicePort -Backend "nvidia" -InstallDir $seedDir
+    Assert-VoiceEqual $ports["Whisper (STT)"] 9282 "phase process 9282 overrides persisted 9182"
+    Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia" `
+        -SeedEnv "WHISPER_PORT=9182" -ProcessPort "9282") "9282" `
+        "generator process 9282 overrides persisted 9182"
+    Remove-Item Env:WHISPER_PORT -ErrorAction SilentlyContinue
+} finally {
+    Remove-VoiceSeedDir $seedDir
+}
+
+# 8. Cached 9000 + Lemonade listener -> 9100
+$script:mockListeners[9000] = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
+$ports = Get-PhaseVoicePort -Backend "nvidia"
+Assert-VoiceEqual $ports["Whisper (STT)"] 9100 "phase cached 9000 lemonade -> 9100"
+Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia" -SeedEnv "WHISPER_PORT=9000") "9100" `
+    "generator cached 9000 lemonade -> 9100"
+
+Write-Host ("[PASS] Voice port parity: {0}/{1} cases" -f $script:voicePass, $script:voiceCase)
+if ($script:voicePass -ne $script:voiceCase) { $global:LASTEXITCODE = 1; exit 1 }
+
+} finally {
+    if ($null -eq $savedVoiceOverride) { Remove-Item Env:WHISPER_PORT -ErrorAction SilentlyContinue } else { $env:WHISPER_PORT = $savedVoiceOverride }
+}
+
 Write-Host "[PASS] Windows service port preflight and env generation"
 $global:LASTEXITCODE = 0
 exit 0

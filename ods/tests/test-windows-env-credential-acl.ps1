@@ -107,3 +107,6 @@ try {
     Remove-Item -LiteralPath $resolved -Recurse -Force
 }
 Write-Host "Windows env credential ACL: $checks checks passed; $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)."
+
+# The existing CI entrypoint runs this contract on both PowerShell 7 and 5.1.
+& (Join-Path $PSScriptRoot 'test-windows-whisper-port-conflict.ps1')

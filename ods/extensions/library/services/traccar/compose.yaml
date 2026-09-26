@@ -6,8 +6,8 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${TRACCAR_PORT:-11118}:8082
-    - 127.0.0.1:${TRACCAR_DEVICE_PORT:-11119}:5055
+    - "${BIND_ADDRESS:-127.0.0.1}:${TRACCAR_PORT:-11118}:8082"
+    - "${BIND_ADDRESS:-127.0.0.1}:${TRACCAR_DEVICE_PORT:-11119}:5055"
     healthcheck:
       test:
       - CMD

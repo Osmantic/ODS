@@ -122,6 +122,23 @@ class WindowsLemonadeProof(unittest.TestCase):
         self.assertTrue(diagnosis["final"])
         self.assertEqual(request.call_count, 1)
 
+    def test_changed_route_cancels_after_container_probe_without_completion(self):
+        with patch.object(agent, "_container_lemonade_request", return_value=health()) as request:
+            proof = agent._wait_for_model_readiness(
+                ENV, model_id=MODEL, gguf_file=MODEL, llm_model_name=MODEL,
+                lemonade_model_id=MODEL, attempts=1, initial_delay=0,
+                return_proof=True, env_still_current=lambda: not request.called,
+            )
+        self.assertFalse(proof)
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(request.call_args.args[2], "/health")
+
+    def test_transport_change_invalidates_initial_route_proof(self):
+        for key, value in (("LEMONADE_HOST_TRANSPORT", "direct"),
+                           ("LEMONADE_CONTAINER_BASE_URL", "http://host.docker.internal:18080")):
+            with self.subTest(key=key), patch.object(agent, "load_env", return_value={**ENV, key: value}):
+                self.assertFalse(agent._initial_switchboard_route_env_matches(ENV))
+
 
 if __name__ == "__main__":
     unittest.main()

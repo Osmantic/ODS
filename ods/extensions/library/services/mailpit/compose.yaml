@@ -6,8 +6,8 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${MAILPIT_PORT:-11052}:8025
-    - 127.0.0.1:${MAILPIT_SMTP_PORT:-11053}:1025
+    - "${BIND_ADDRESS:-127.0.0.1}:${MAILPIT_PORT:-11052}:8025"
+    - "${BIND_ADDRESS:-127.0.0.1}:${MAILPIT_SMTP_PORT:-11053}:1025"
     healthcheck:
       test:
       - CMD

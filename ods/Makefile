@@ -134,6 +134,9 @@ test: ## Run unit and contract tests
 	@echo "=== brave-search searxng compat contract ==="
 	@bash tests/test-brave-search-searxng-compat.sh
 	@echo ""
+	@echo "=== SearXNG factory config contract ==="
+	@bash tests/test-searxng-config-contract.sh
+	@echo ""
 	@echo "=== ods-cli pipefail tolerance ==="
 	@bash tests/test-ods-cli-pipefail-tolerance.sh
 	@bash tests/test-cli-prompts-noninteractive.sh

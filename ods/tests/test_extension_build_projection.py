@@ -7,6 +7,7 @@ import pytest
 import json
 import hashlib
 import shlex
+import shutil
 import subprocess
 import sys
 import yaml
@@ -335,3 +336,144 @@ def test_resolver_rejects_gpus_and_runtime_for_every_recipe(tmp_path, upstream, 
     files, diagnostics = resolve_root(root, 'nvidia')
     assert not any('user-extensions/gpu-recipe/' in path for path in files)
     assert reason in diagnostics
+
+
+IMPORTED = {'origin': 'github-proposal', 'repository': 'https://github.com/owner/project'}
+
+
+@pytest.mark.parametrize('upstream', [None, IMPORTED], ids=['curated', 'imported'])
+@pytest.mark.parametrize('base, reason', [
+    ({'privileged': 'true'}, 'uses privileged mode'),
+    ({'network_mode': '${RECIPE_NET:-host}'}, 'network_mode must be a literal string'),
+    ({'cap_add': ['CAP_SYS_ADMIN']}, 'adds dangerous capability: CAP_SYS_ADMIN'),
+    ({'security_opt': ['systempaths=unconfined']}, "dangerous security_opt 'systempaths=unconfined'"),
+    ({'group_add': ['docker']}, 'adds supplementary groups'),
+    ({'device_cgroup_rules': ['c 1:1 rwm']}, 'declares device_cgroup_rules'),
+    ({'extends': {'file': 'base.yml', 'service': 'base'}}, 'extends another service definition'),
+    ({'volumes': ['./.env:/secrets/.env:ro']}, 'bind-mounts the ODS install directory'),
+], ids=['string-privileged', 'interpolated-host-network', 'cap-prefix', 'systempaths', 'group-add',
+        'device-cgroup-rules', 'extends', 'install-env'])
+def test_resolver_applies_the_shared_policy_to_every_recipe(tmp_path, upstream, base, reason):
+    """The shared compose policy drops the whole recipe, curated or imported."""
+    root = gpu_recipe_root(tmp_path, upstream=upstream, base=base)
+    files, diagnostics = resolve_root(root, 'nvidia')
+    assert not any('user-extensions/gpu-recipe/' in path for path in files)
+    assert reason in diagnostics
+
+
+@pytest.mark.parametrize('upstream, volume, kept', [
+    (IMPORTED, './data/gpu-recipe/state:/state', True),
+    (IMPORTED, './config/gpu-recipe/app.yaml:/etc/app.yaml:ro', True),
+    (IMPORTED, './scripts:/host-scripts', False),
+    (IMPORTED, './data/n8n:/n8n', False),
+    (IMPORTED, './upload:/upload', False),
+    (None, './upload:/upload', True),
+], ids=['imported-own-data', 'imported-own-config', 'imported-ods-scripts', 'imported-core-data',
+        'imported-install-root', 'curated-reviewed-bind'])
+def test_resolver_keeps_imported_binds_in_their_own_namespace(tmp_path, upstream, volume, kept):
+    """Relative binds resolve against the install directory; an imported recipe
+    may reach only its own ./data/<id> and ./config/<id>."""
+    root = gpu_recipe_root(tmp_path, upstream=upstream, base={'volumes': [volume]})
+    files, diagnostics = resolve_root(root, 'nvidia')
+    assert ('data/user-extensions/gpu-recipe/compose.yaml' in files) is kept, diagnostics
+    if not kept:
+        assert 'outside its own ./data/gpu-recipe and ./config/gpu-recipe' in diagnostics
+
+
+def test_resolver_rejects_an_unparseable_user_extension_without_failing_the_stack(tmp_path):
+    """Invalid UTF-8 used to raise out of the scan and abort every `ods` command."""
+    root = gpu_recipe_root(tmp_path)
+    (root / 'data/user-extensions/gpu-recipe/compose.yaml').write_bytes(
+        b'services:\n  gpu-recipe:\n    image: \xff\xfe\n')
+    files, diagnostics = resolve_root(root, 'nvidia')  # exits 0: the stack still resolves
+    assert not any('user-extensions/gpu-recipe/' in path for path in files)
+    assert 'invalid compose file' in diagnostics
+
+
+def user_extension(root, identifier, service, *, upstream=None, extra=None):
+    """One enabled user extension (ods.services.v1 manifest, gpu_backends all)."""
+    extension = root / 'data/user-extensions' / identifier
+    extension.mkdir(parents=True)
+    (extension / 'manifest.yaml').write_text(yaml.safe_dump({'schema_version': 'ods.services.v1', 'service': {
+        'id': identifier, 'name': identifier, 'compose_file': 'compose.yaml', 'gpu_backends': ['all']}}))
+    services = {identifier: {'image': 'busybox:1.36', **service}, **(extra or {})}
+    (extension / 'compose.yaml').write_text(yaml.safe_dump({'services': services}))
+    if upstream is not None:
+        (extension / 'upstream.json').write_text(json.dumps(upstream))
+
+
+def compose_loads(root, files):
+    """`docker compose config` of the resolved stack (never `up`)."""
+    if subprocess.run(['docker', 'compose', 'version'], capture_output=True).returncode != 0:
+        pytest.skip('Docker Compose v2 is unavailable')
+    env = {key: value for key, value in os.environ.items()
+           if key in {'PATH', 'HOME', 'DOCKER_CONFIG', 'DOCKER_HOST', 'DOCKER_CONTEXT'}}
+    flags = [argument for path in files for argument in ('-f', path)]
+    result = subprocess.run(['docker', 'compose', '-p', 'ods-cascade-fixture', '--project-directory', str(root),
+                             *flags, 'config', '-q'], cwd=root, env=env, capture_output=True, text=True,
+                            timeout=120)
+    return result.returncode == 0, result.stderr
+
+
+def cascade_root(tmp_path):
+    """A refused provider, a dependent chain on it, and an unrelated healthy pair."""
+    root = tmp_path
+    (root / 'docker-compose.base.yml').write_text('services:\n  core-svc:\n    image: busybox:1.36\n')
+    (root / 'docker-compose.nvidia.yml').write_text('services: {}\n')
+    user_extension(root, 'fx-env-file', {'env_file': ['./data/fx-env-file/app.env']})
+    user_extension(root, 'fx-dependent', {'depends_on': ['fx-env-file']})
+    user_extension(root, 'fx-chain', {'depends_on': {'fx-dependent': {'condition': 'service_started'}}})
+    user_extension(root, 'fx-link', {'links': ['fx-env-file:legacy-alias']})
+    user_extension(root, 'fx-provider', {})
+    user_extension(root, 'fx-consumer', {'depends_on': ['fx-provider', 'core-svc']})
+    return root
+
+
+def test_resolver_drops_the_dependents_of_a_refused_extension(tmp_path):
+    """Compose refuses the whole project when a kept service depends on a
+    refused one; every `ods` command, host-agent start/stop and the installer
+    would fail. The dependents go too (transitively), naming the chain."""
+    root = cascade_root(tmp_path)
+    files, diagnostics = resolve_root(root, 'nvidia')
+    for dropped in ('fx-env-file', 'fx-dependent', 'fx-chain', 'fx-link'):
+        assert not any(f'user-extensions/{dropped}/' in path for path in files), (dropped, files)
+    for kept in ('fx-provider', 'fx-consumer'):
+        assert f'data/user-extensions/{kept}/compose.yaml' in files, (kept, diagnostics)
+    refused = "which fx-env-file/compose.yaml declares but was refused: service 'fx-env-file' reads an env_file"
+    assert f"WARNING: fx-dependent: skipped because service 'fx-dependent' needs 'fx-env-file', {refused}" \
+        in diagnostics
+    assert f"WARNING: fx-link: skipped because service 'fx-link' needs 'fx-env-file', {refused}" in diagnostics
+    assert ("WARNING: fx-chain: skipped because service 'fx-chain' needs 'fx-dependent', which fx-dependent "
+            "declares but was skipped because service 'fx-dependent' needs 'fx-env-file'") in diagnostics
+    assert 'fx-consumer' not in diagnostics and 'fx-provider' not in diagnostics
+
+
+def test_resolver_drops_a_dependent_of_a_service_nothing_declares(tmp_path):
+    (tmp_path / 'docker-compose.base.yml').write_text('services: {}\n')
+    user_extension(tmp_path, 'fx-orphan', {'depends_on': ['not-installed']})
+    files, diagnostics = resolve_root(tmp_path, 'nvidia')
+    assert not any('user-extensions/fx-orphan/' in path for path in files)
+    assert ("fx-orphan: skipped because service 'fx-orphan' needs 'not-installed', which no enabled "
+            "extension or ODS service declares") in diagnostics
+
+
+@pytest.mark.skipif(shutil.which('docker') is None, reason='needs the Docker CLI')
+def test_resolved_stack_still_loads_after_a_refusal(tmp_path):
+    root = cascade_root(tmp_path)
+    (root / 'data/fx-env-file').mkdir(parents=True)
+    (root / 'data/fx-env-file/app.env').write_text('')
+    files, _ = resolve_root(root, 'nvidia')
+    ok, error = compose_loads(root, files)
+    assert ok, error
+
+
+def test_resolver_drops_an_alias_bomb_without_failing_the_stack(tmp_path):
+    """The expansion bound refuses the one extension instead of exhausting memory."""
+    root = gpu_recipe_root(tmp_path)
+    bomb = ('x-0: &x0 [a, a, a, a, a, a, a, a, a, a]\n'
+            + ''.join(f"x-{n}: &x{n} [{', '.join([f'*x{n - 1}'] * 10)}]\n" for n in range(1, 9))
+            + 'services:\n  gpu-recipe:\n    image: busybox:1.36\n    labels: *x8\n')
+    (root / 'data/user-extensions/gpu-recipe/compose.yaml').write_text(bomb)
+    files, diagnostics = resolve_root(root, 'nvidia')
+    assert not any('user-extensions/gpu-recipe/' in path for path in files)
+    assert 'excessive aliasing' in diagnostics

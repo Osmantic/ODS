@@ -125,7 +125,14 @@ def _install_root(tmp_path, monkeypatch):
     root = tmp_path / "ods"
     (root / "config").mkdir(parents=True)
     shutil.copy2(ODS / "config/core-service-ids.json", root / "config/core-service-ids.json")
-    (root / "docker-compose.base.yml").write_text("services: {}\n", encoding="utf-8")
+    # A resolvable core stack (base + backend overlay) declaring the core
+    # service curated recipes wait on (continue, localai). The resolver drops
+    # an extension that needs a service no resolved file declares, because
+    # Compose would refuse the whole project.
+    (root / "docker-compose.base.yml").write_text(
+        "services:\n  llama-server:\n    image: example:llama-server\n", encoding="utf-8")
+    for backend in ("nvidia", "amd", "cpu"):
+        (root / f"docker-compose.{backend}.yml").write_text("services: {}\n", encoding="utf-8")
     monkeypatch.setattr(extensions, "EXTENSIONS_LIBRARY_DIR", LIBRARY)
     monkeypatch.setattr(extensions, "USER_EXTENSIONS_DIR", root / "data/user-extensions")
     return root

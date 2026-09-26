@@ -10456,6 +10456,35 @@ test("allows direct verification and a terminal stderr merge after a blocked pip
   assert.equal(reply(guard), undefined);
 });
 
+test("a refused redirect after a passing run keeps the pass until the workspace changes", () => {
+  const guard = createToolLoopGuard();
+  const direct = { command: "python3 -m unittest -v", workdir: "/workspace/project" };
+  assert.equal(call(guard, "exec", { event: { params: direct } }), undefined);
+  afterCall(guard, "exec", {
+    event: { params: direct, result: { isError: false, details: { exitCode: 0 } } },
+  });
+  const redirected = { command: "python3 -m unittest -v > test-results.txt 2>&1", workdir: "/workspace/project" };
+  const refusal = { block: true, blockReason: VERIFICATION_COMMAND_NOT_AUDITABLE_REASON };
+  const refuse = (toolCallId) => {
+    assert.deepEqual(call(guard, "exec", { event: { params: redirected, toolCallId } }), refusal);
+    afterCall(guard, "exec", { event: { params: redirected, toolCallId, error: refusal.blockReason } });
+  };
+  // The refused command runs nothing, so the real pass still describes the code.
+  refuse("call-refused-1");
+  refuse("call-refused-2");
+  assert.deepEqual(guard.verificationForRun("run-1"), { status: "passed" });
+
+  // After a workspace change the old pass no longer covers a refused check.
+  const write = { path: "project/totals.py", content: "TOTAL = 3" };
+  call(guard, "write", { event: { params: write } });
+  afterCall(guard, "write", { event: { params: write, result: { details: { status: "completed" } } } });
+  refuse("call-refused-3");
+  assert.deepEqual(guard.verificationForRun("run-1"), {
+    status: "failed",
+    text: VERIFICATION_FAILED_DELIVERY_PREFIX,
+  });
+});
+
 test("final delivery preserves a model response after passing verification", () => {
   const guard = createToolLoopGuard();
   const params = { command: "python3 -m unittest -v", workdir: "/workspace/project" };
