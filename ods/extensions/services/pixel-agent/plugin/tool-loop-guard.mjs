@@ -1408,7 +1408,121 @@ function verificationFingerprintIsPythonUnittest(fingerprint) {
   }
 }
 
-function execResultHasNonCleanUnittestOutcome(event) {
+// unittest's TextTestRunner ends every run with its own summary: "Ran N
+// tests in X.XXXs", one blank line, then "OK", "OK (skipped=2)", "FAILED
+// (failures=1)" or "NO TESTS RAN". Fleet, open-prompt 07 photo-renamer on
+// d4a61f33 (tower3, Qwen3.5-27B): an exit-0 run ended "Ran 11 tests ... OK",
+// yet a passing negative-path test had printed "Error: Folder ... does not
+// exist." and that program output kept the verification failed. When such a
+// summary is present, the result fails only on: a zero-test summary or NO
+// TESTS RAN, a summary not followed by OK, a FAILED ( line, nonzero expected
+// failures or unexpected successes (each also in its -v form), a failure
+// header after unittest's "=" separator, a line-start FAIL, or AssertionError
+// anywhere. Program output such as "Error:", "ERROR:" or "ERROR:root:..."
+// logging, or a -v docstring, does not fail it. Returns undefined when no
+// summary is present, so custom runners keep the text heuristics below. Only
+// a result of unittest's own runner is judged this way (see
+// execFingerprintRunsUnittestRunner).
+const UNITTEST_RUN_SUMMARY = /^Ran (\d+) tests? in \d+(?:\.\d+)?s\s*$/;
+const UNITTEST_CLEAN_RESULT = /^OK(?: \([^()]*\))?\s*$/;
+// printErrorList writes separator1 ("=" * 70), then "FAIL: test_x
+// (module.Class.test_x)" or "ERROR: setUpClass (module.Class)": a test name
+// and a dotted identifier. A photo renamer's "ERROR: IMG_0001.jpg (no EXIF
+// date)" or "ERROR: IMG_0002.jpg (corrupt)" is not a header.
+const UNITTEST_ERROR_SEPARATOR = /^={70}\s*$/;
+const UNITTEST_FAILURE_HEADER = /^(?:FAIL|ERROR): [\p{L}\p{N}_.]+ \([\p{L}\p{N}_.]+\)/u;
+// df3f4bf3a: a check that runs beside unittest in the same exec and prints
+// its failure still fails the run, whatever the summary says: module-level
+// checks imported by discovery, a test that catches its own assertion and
+// prints the traceback. Such a line starts with an upper-case FAIL word, or
+// with FAIL in any case before ":", "(", a space, a tab or the line end
+// ("fail: negative numbers", "Fail: ..."). AssertionError counts anywhere and
+// in any case: in a repr ("Test failed: AssertionError('...')") or after a
+// mark ("✗ add(-1, -2): AssertionError: ..."). A passing test that prints
+// such text therefore fails the run: a false failure, never a false pass.
+const CHECKER_FAILURE_LINE = /^[ \t]*FAIL\b/;
+const CHECKER_FAIL_LINE_ANY_CASE = /^[ \t]*FAIL(?:[:( \t]|$)/i;
+const CHECKER_ASSERTION_ERROR = /\bAssertionError\b/i;
+// unittest's FAILED result, and the same counts in any case.
+const UNITTEST_FAILED_RESULT = /^[ \t]*FAILED \(/;
+const UNITTEST_FAILED_COUNTS =
+  /^[ \t]*failed\s*\(\s*(?:failures|errors|expected failures|unexpected successes)\s*=/i;
+
+// Python 3.14 colors unittest's markers when its output is a terminal (a pty
+// exec), e.g. "\x1b[32mOK\x1b[0m (\x1b[33mskipped=1\x1b[0m)".
+function withoutTerminalColors(text) {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function unittestRunnerSummaryHasNonCleanOutcome(values) {
+  const texts = values.map(withoutTerminalColors);
+  const outputs = texts.map((text) => text.split(/\r?\n/));
+  if (!outputs.some((lines) => lines.some((line) => UNITTEST_RUN_SUMMARY.test(line)))) {
+    return undefined;
+  }
+  for (const lines of outputs) {
+    for (const [index, line] of lines.entries()) {
+      const summary = line.match(UNITTEST_RUN_SUMMARY);
+      if (summary) {
+        if (Number(summary[1]) === 0) return true;
+        const outcome = /^\s*$/.test(lines[index + 1] ?? "") ? lines[index + 2] : lines[index + 1];
+        if (!UNITTEST_CLEAN_RESULT.test(outcome ?? "")) return true;
+      }
+      if (
+        (UNITTEST_FAILURE_HEADER.test(line) && UNITTEST_ERROR_SEPARATOR.test(lines[index - 1] ?? "")) ||
+        CHECKER_FAILURE_LINE.test(line) ||
+        CHECKER_FAIL_LINE_ANY_CASE.test(line) ||
+        UNITTEST_FAILED_RESULT.test(line) ||
+        UNITTEST_FAILED_COUNTS.test(line)
+      ) {
+        return true;
+      }
+    }
+  }
+  return texts.some(
+    (text) =>
+      CHECKER_ASSERTION_ERROR.test(text) ||
+      /\bexpected failures?\s*=\s*[1-9][0-9]*\b/i.test(text) ||
+      /\bunexpected successes?\s*=\s*[1-9][0-9]*\b/i.test(text) ||
+      /\.\.\.\s+expected failure\b/i.test(text) ||
+      /\.\.\.\s+unexpected success\b/i.test(text) ||
+      /\bNO\s+TESTS?\s+RAN\b/i.test(text)
+  );
+}
+
+// A unittest summary is the run's own verdict only when unittest's runner is
+// the process the model ran: `python3 -m unittest ...`, alone or after `cd
+// /workspace/...`. Anything else in the same result can print a summary the
+// runner never printed, so such a result is judged by the text heuristics:
+// - setup that andChainVerificationParams accepts before the test (`echo Ran
+//   5 tests in 0.001s && echo && echo OK && ...`, `cp summary.txt
+//   /dev/stdout && ...`, or any other setup segment);
+// - a test script (`python3 test_calc.py`), whose own code runs around
+//   unittest.main(): checks after unittest.main(exit=False), or a custom
+//   runner that prints a summary of its own;
+// - a second process started beside the runner with `&` (`python3 -m
+//   unittest test_calc & python3 check_calc.py`), which
+//   verificationCommandIsAuditable does not refuse.
+// The fingerprint is execFingerprint of the command as the model sent it.
+function execFingerprintRunsUnittestRunner(fingerprint) {
+  if (typeof fingerprint !== "string" || !fingerprint) return false;
+  let command;
+  try {
+    [command] = JSON.parse(fingerprint);
+  } catch {
+    return false;
+  }
+  if (typeof command !== "string") return false;
+  const parsed = verificationCommand({ command });
+  return Boolean(parsed) && verificationCommandIsAuditable({ command }) &&
+    !parsed.withoutStderrMerge.includes("&") &&
+    /^python(?:3(?:\.\d+)?)?\s+-m\s+unittest\b/i.test(parsed.withoutStderrMerge);
+}
+
+// trustRunnerSummary: false keeps the text heuristics for every result (a
+// command other than unittest's own runner, and the transcript compaction
+// below).
+function execResultHasNonCleanUnittestOutcome(event, { trustRunnerSummary = true } = {}) {
   const result = event?.result;
   if (!result || typeof result !== "object" || Array.isArray(result)) return false;
   const values = [
@@ -1419,6 +1533,10 @@ function execResultHasNonCleanUnittestOutcome(event) {
       ? result.content.map((item) => item?.type === "text" ? item.text : undefined)
       : []),
   ];
+  const runnerVerdict = trustRunnerSummary
+    ? unittestRunnerSummaryHasNonCleanOutcome(values.filter((value) => typeof value === "string"))
+    : undefined;
+  if (runnerVerdict !== undefined) return runnerVerdict;
   return values.some(
     (value) =>
       typeof value === "string" &&
@@ -3205,7 +3323,10 @@ function cleanUnittestSummary(result) {
     result.isError === true ||
     result?.details?.status !== "completed" ||
     result?.details?.exitCode !== 0 ||
-    execResultHasNonCleanUnittestOutcome({ result })
+    // Compaction hides every other line from the model, so it needs the
+    // strict text heuristics as well: a result that passed despite program
+    // output keeps that output in the transcript.
+    execResultHasNonCleanUnittestOutcome({ result }, { trustRunnerSummary: false })
   ) {
     return undefined;
   }
@@ -8906,11 +9027,18 @@ export function createToolLoopGuard({
           state.latestVerificationPassedGeneration === state.previewVerificationGeneration)) {
         state.latestVerificationStatus = "failed";
       }
-      // The refusal runs nothing; repeats (often with a variant redirect) are
-      // bounded by recordFreeCorrection instead of each draining the budget.
-      recordFreeCorrection(state, "verification-not-auditable",
-        context?.toolCallId ?? event?.toolCallId, toolName);
-      return { block: true, blockReason: VERIFICATION_COMMAND_NOT_AUDITABLE_REASON };
+      // After a coding stop, the stop's own terminal handling below answers
+      // every further exec (one terminal refusal, then abort). "Run it
+      // directly" would contradict its "Do not call another tool", and a
+      // model obeys the newer message (strixy, d4a61f33: `...; echo
+      // "EXIT:$?"` was coached, then rerun bare).
+      if (!state?.codingExhausted) {
+        // The refusal runs nothing; repeats (often with a variant redirect) are
+        // bounded by recordFreeCorrection instead of each draining the budget.
+        recordFreeCorrection(state, "verification-not-auditable",
+          context?.toolCallId ?? event?.toolCallId, toolName);
+        return { block: true, blockReason: VERIFICATION_COMMAND_NOT_AUDITABLE_REASON };
+      }
     }
 
     if (state?.privateNetworkPrompt) {
@@ -10584,7 +10712,9 @@ export function createToolLoopGuard({
         (
           pending.verificationFingerprint &&
           verificationFingerprintIsPythonUnittest(pending.verificationFingerprint) &&
-          execResultHasNonCleanUnittestOutcome(event)
+          execResultHasNonCleanUnittestOutcome(event, {
+            trustRunnerSummary: execFingerprintRunsUnittestRunner(pending.fingerprint),
+          })
         );
       if (verificationFailed) {
         if (pending.fingerprint) {
@@ -10669,7 +10799,9 @@ export function createToolLoopGuard({
       (
         verificationFingerprint &&
         verificationFingerprintIsPythonUnittest(verificationFingerprint) &&
-        execResultHasNonCleanUnittestOutcome(execEvent)
+        execResultHasNonCleanUnittestOutcome(execEvent, {
+          trustRunnerSummary: execFingerprintRunsUnittestRunner(fingerprint),
+        })
       );
     // Native exec has no Tool Search envelope. Capture the same bounded
     // failure projection only after this exact call's terminal unittest result;
