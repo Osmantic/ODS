@@ -41,6 +41,9 @@ This is a behavior-preserving roadmap. It is not a rewrite proposal.
    - Move table rendering, service alias lookup, and masked config formatting
      into small sourced modules.
    - Validation: CLI smoke and snapshot-style output checks.
+   - Progress: pure status-color, JSON-escaping, and separator primitives now
+     live in `lib/cli-format.sh`; service aliases and config masking remain in
+     their current owners for later independent slices.
 
 2. **Read-only status and logs**
    - Extract commands that inspect Docker/service state without mutating host

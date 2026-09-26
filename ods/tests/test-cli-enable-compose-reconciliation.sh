@@ -19,6 +19,7 @@ make_install() {
         "$install_dir/extensions/services/ods-proxy"
 
     cp "$ROOT_DIR/ods-cli" "$install_dir/ods-cli"
+    cp "$ROOT_DIR/lib/cli-format.sh" "$install_dir/lib/"
     cp "$ROOT_DIR/lib/service-registry.sh" "$install_dir/lib/"
     cp "$ROOT_DIR/lib/python-cmd.sh" "$install_dir/lib/"
     cat > "$install_dir/scripts/resolve-compose-stack.sh" <<'RESOLVER'
