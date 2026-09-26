@@ -200,6 +200,11 @@ def test_native_update_warns_when_retired_text_needs_review(tmp_path, monkeypatc
     assert module.remove_retired_workspace_text(source=source, preparation=preparation, node=Path('/node'),
         state_dir=str(state)) == {'status': 'manual-review-required', 'detail': review}
     assert review in capsys.readouterr().err
+    monkeypatch.setattr(module.subprocess, 'run',
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout=''))
+    assert module.remove_retired_workspace_text(source=source, preparation=preparation, node=Path('/node'),
+        state_dir=str(state)) == {'status': 'manual-review-required',
+        'detail': 'Retired workspace text: not checked (exit 1)'}
     for state_dir in (None, 'relative/state', str(tmp_path / 'missing-state')):
         assert module.remove_retired_workspace_text(source=source, preparation=preparation, node=Path('/node'),
             state_dir=state_dir)['status'] == 'manual-review-required'

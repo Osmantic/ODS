@@ -92,9 +92,11 @@ def remove_retired_workspace_text(*, source, preparation, node, state_dir):
             capture_output=True, text=True, timeout=30, check=False)
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
         return _retired_text_review('Retired workspace text: not checked (' + type(error).__name__ + ')')
+    detail = result.stdout.strip()
     if result.returncode:
-        return _retired_text_review(result.stdout.strip())
-    return {'status': 'checked', 'detail': result.stdout.strip()}
+        # A script that stopped before reporting any file prints nothing to stdout.
+        return _retired_text_review(detail or 'Retired workspace text: not checked (exit ' + str(result.returncode) + ')')
+    return {'status': 'checked', 'detail': detail}
 
 
 def _retired_text_review(detail):
