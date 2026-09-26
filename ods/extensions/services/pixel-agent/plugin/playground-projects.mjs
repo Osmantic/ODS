@@ -164,6 +164,37 @@ function playgroundSpelling(value, root, minimum) {
   if (segments[0] !== 'Playground' && distinctSpelling(root,segments[0])) return null;
   return canonical;
 }
+// Top-level host, container and notebook directories. A rooted path under one
+// of them is a host path, never a new project folder. Names such as src, app,
+// tmp or lib are also GENERIC or role names.
+const ROOT_DIRECTORY = /^(?:bin|boot|dev|etc|home|lib|lib32|lib64|libx32|libexec|media|mnt|opt|proc|root|run|sbin|snap|srv|sys|tmp|usr|var|nix|private|cores|net|afs|users|library|applications|system|volumes|network|windows|programdata|workspaces?|sandbox|data|content|outputs?)$/i;
+// Models that take the sandbox /workspace for the filesystem root write a new
+// project as /<name>/<file>, a path outside the workspace. Read it as the
+// workspace-relative <name>/<file> only when <name> is a descriptive project
+// folder, not a host or container directory, not a Playground spelling (see
+// playgroundSpelling) and not a component of the configured root, and no
+// entry with that name exists at the filesystem root or in the workspace. An
+// existing workspace folder may be an owner project, so a rooted spelling is
+// never read onto it. The result routes as if the model had written it
+// relative; it grants no location.
+function rootedProjectPath(value, root) {
+  if (typeof value !== 'string') return null;
+  const text = value.replaceAll('\\', '/');
+  if (!text.startsWith('/')) return null;
+  const segments = parts(text.slice(1));
+  const name = segments?.[0];
+  if (!segments || !descriptiveFolder(name) || ROOT_DIRECTORY.test(name) || /playground/i.test(name)) return null;
+  const base = safeRoot(root);
+  const components = [...root.replaceAll('\\', '/').split('/'), ...base.split(path.sep)].map(part => part.toLowerCase());
+  if (components.includes(name.toLowerCase())) return null;
+  for (const directory of [path.parse(base).root, base]) {
+    // An entry, or one that cannot be checked (EACCES, EBUSY), may be what
+    // the model meant: only a confirmed absence allows the reading.
+    try { fs.lstatSync(path.join(directory,name)); return null; }
+    catch (error) { if (error.code !== 'ENOENT') return null; }
+  }
+  return segments.join('/');
+}
 // How the workspace holds an entry with this spelling: 'missing', 'same' (the
 // Playground folder entry itself, as on a case-insensitive workspace) or
 // 'distinct' (a separate directory or link on a case-sensitive workspace).
@@ -574,13 +605,14 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
         }
         return {block:true,blockReason:suggestion
           ? `Not written: project files go in a descriptive Playground folder. Call write again now with path ${suggestion} and the same content, then use that folder for every project file and as exec workdir. ${CORRECTION}`
-          : CORRECTION};
+          : `Not written. ${CORRECTION}`};
       };
       // A path the model already read with its own spelling keeps the
       // unspelled handling below: it names that file exactly as it was read.
       const readAsSpelled = existingPaths.includes(args[key]) || (target !== null && existingPaths.includes(target));
       spelled = readAsSpelled ? null : playgroundSpelling(args[key],root,minimum);
       if (spelled) target = spelled;
+      if (!target && !readAsSpelled) target = rootedProjectPath(args[key],root);
       if (!target) return refuse();
       // Only a workspace-relative read is evidence for a workspace file: a
       // rooted /playground/... read may have been a host path.
@@ -619,13 +651,20 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
       if (value && !value.startsWith('Playground/') && (mutation || !value.includes('/') || LOCAL_FOLDERS.test(value.split('/')[0]))) return `${directory}/${value}`;
       return undefined;
     };
+    // A rooted /<source> spelling of this bound project routes like <source>,
+    // unless the model already read that rooted path as written. Any other
+    // rooted path keeps the ordinary routing below.
+    const rootedSource = value => {
+      const rooted = existingPaths.includes(value) ? null : rootedProjectPath(value,root);
+      return rooted === source || rooted?.startsWith(`${source}/`) ? rooted : null;
+    };
     if (selected.tool === 'apply_patch') {
       if (typeof args.input !== 'string') return {block:true,blockReason:`Use apply_patch input with file paths inside ${directory}.`};
       let count = 0, invalid = false;
       const input = args.input.replace(PATCH_HEADER,(_line,prefix,value)=>{
         count++;
         const spelledValue = playgroundSpelling(value,root,3);
-        const mapped = projectPath(spelledValue && projectPath(spelledValue) ? spelledValue : relative(value,root),true);
+        const mapped = projectPath(spelledValue && projectPath(spelledValue) ? spelledValue : relative(value,root) ?? rootedSource(value),true);
         if (!mapped) {invalid=true;return _line;}
         return prefix+mapped;
       });
@@ -636,6 +675,7 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
     // path. Any other spelled name keeps the ordinary routing below.
     spelled ??= playgroundSpelling(args[key],root,minimum);
     if (spelled && projectPath(spelled)) target = spelled;
+    target ??= rootedSource(args[key]);
     let mapped = projectPath(target,['write','edit'].includes(selected.tool));
     // A path operand misspelling this project from the workspace root cannot
     // resolve there or from an inferred cwd; name the folder instead. One
