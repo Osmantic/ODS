@@ -18,7 +18,7 @@ jobs:
       run:
         working-directory: ods
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
       - name: Install backup test tools
         run: |
           sudo apt-get update
@@ -40,8 +40,8 @@ jobs:
       matrix:
         python: ['3.9', '3.11', '3.12']
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6
         with:
           python-version: ${{ matrix.python }}
       - name: Host import and runtime status require no optional dependencies
@@ -57,8 +57,8 @@ jobs:
       run:
         working-directory: ods
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6
         with:
           python-version: ${{ matrix.python }}
       - name: Install isolated inference test dependencies
@@ -115,8 +115,8 @@ jobs:
       run:
         working-directory: ods/extensions/services/token-spy
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6
         with:
           python-version: "3.12"
       - name: Install test dependencies
@@ -151,10 +151,10 @@ jobs:
       DB_PASSWORD: testpass
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Setup Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6
         with:
           python-version: "3.12"
 
@@ -171,10 +171,10 @@ jobs:
         working-directory: ods
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Set up Python for manifest validation
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6
         with:
           python-version: "3.12"
 
