@@ -24,6 +24,8 @@ try {
   const originals = Object.fromEntries(['AGENTS.md', 'TOOLS.md'].map(name => [name,
     fs.readFileSync(new URL(`../../../../vendor/pixel/workspace-template/${name}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n')]));
   for (const [name, value] of Object.entries(originals)) fs.writeFileSync(path.join(workspace, name), value);
+  const memory = fs.readFileSync(new URL('../../../../vendor/pixel/workspace-template/MEMORY.md', import.meta.url), 'utf8');
+  fs.writeFileSync(path.join(workspace, 'MEMORY.md'), memory);
   const config = {agents: {list: [{id: 'pixel', workspace, tools: {deny: [...CALENDAR_TOOLS, ...FRONTIER_TOOLS]}}]},
     plugins: {entries: {'pixel-ods': {enabled: true}, 'pixel-operations-broker': {enabled: true}}}};
   fs.writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(config));
@@ -35,6 +37,10 @@ try {
   const params = {workspaceDir: workspace, config, sessionKey: 'agent:pixel:isolated-fixture', agentId: 'pixel'};
   const text = (files, name) => files.find(file => file.name === name).content;
   const first = await resolveFiles(params), frozenFirst = structuredClone(first);
+  // The hook sees MEMORY.md under the exact name and path its retired-text filter requires.
+  const memoryFile = first.find(file => file.name === 'MEMORY.md');
+  assert.equal(memoryFile?.path, path.join(workspace, 'MEMORY.md'));
+  assert.equal(memoryFile.content, memory);
   assert.ok(!text(first, 'AGENTS.md').includes('copy its exact `etag`'));
   assert.ok(!text(first, 'TOOLS.md').includes('sanitizedPreview'));
   config.agents.list[0].tools.deny = [];

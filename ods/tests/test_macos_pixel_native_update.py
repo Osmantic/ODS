@@ -114,6 +114,7 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
                 expected += ['activate', 'finalize']
                 assert result['status'] == 'selection-ready'
                 assert result['portalIdentityMigration']['status'] == 'manual-review-required'
+                assert result['retiredWorkspaceText']['status'] == 'manual-review-required'
             else:
                 assert result['status'] == 'prepared'
             assert stages == expected
@@ -155,3 +156,60 @@ def test_native_update_checks_owner_profile_after_activation(tmp_path, monkeypat
 def test_native_update_does_not_claim_profile_migration_without_candidate(tmp_path):
     assert module.migrate_public_identity(source=tmp_path, preparation=tmp_path, node=Path('/node')) == {
         'status': 'manual-review-required'}
+
+
+def _retired_text_fixture(tmp_path, monkeypatch):
+    source = tmp_path / 'source'
+    script = source / 'scripts/migrate-retired-workspace-text.mjs'
+    script.parent.mkdir(parents=True)
+    script.write_text('// tested separately by the bundled source suite\n')
+    preparation = tmp_path / 'preparation'
+    (preparation / 'candidate').mkdir(parents=True)
+    state = tmp_path / 'owner-home/.openclaw'
+    workspace = state / 'workspace-pixel'
+    workspace.mkdir(parents=True)
+    document = {'agents': {'list': [{'id': 'pixel', 'workspace': str(workspace)}]}}
+    monkeypatch.setattr(module, 'helper', lambda _name: SimpleNamespace(private_json=lambda _path: document))
+    return source, script, preparation, workspace, state
+
+
+def test_native_update_removes_retired_workspace_text_after_activation(tmp_path, monkeypatch, capsys):
+    source, script, preparation, workspace, state = _retired_text_fixture(tmp_path, monkeypatch)
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0,
+            stdout='Retired workspace text: AGENTS.md current\nRetired workspace text: MEMORY.md current\n')
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    result = module.remove_retired_workspace_text(source=source, preparation=preparation, node=Path('/node'),
+        state_dir=str(state))
+    assert result == {'status': 'checked', 'detail':
+        'Retired workspace text: AGENTS.md current\nRetired workspace text: MEMORY.md current'}
+    # Backups hold the removed text, so they go to the OpenClaw state directory, not the workspace.
+    assert calls == [(['/node', str(script), str(workspace), str(state / 'backups/retired-workspace-text')],
+        {'capture_output': True, 'text': True, 'timeout': 30, 'check': False})]
+    assert capsys.readouterr().err == ''
+
+
+def test_native_update_warns_when_retired_text_needs_review(tmp_path, monkeypatch, capsys):
+    source, script, preparation, _workspace, state = _retired_text_fixture(tmp_path, monkeypatch)
+    review = ('Retired workspace text: AGENTS.md modified retired section present; review\n'
+        'Retired workspace text: MEMORY.md skipped-backup-conflict (backup /b/MEMORY.md.bak); review')
+    monkeypatch.setattr(module.subprocess, 'run',
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout=review + '\n'))
+    assert module.remove_retired_workspace_text(source=source, preparation=preparation, node=Path('/node'),
+        state_dir=str(state)) == {'status': 'manual-review-required', 'detail': review}
+    assert review in capsys.readouterr().err
+    monkeypatch.setattr(module.subprocess, 'run',
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout=''))
+    assert module.remove_retired_workspace_text(source=source, preparation=preparation, node=Path('/node'),
+        state_dir=str(state)) == {'status': 'manual-review-required',
+        'detail': 'Retired workspace text: not checked (exit 1)'}
+    for state_dir in (None, 'relative/state', str(tmp_path / 'missing-state')):
+        assert module.remove_retired_workspace_text(source=source, preparation=preparation, node=Path('/node'),
+            state_dir=state_dir)['status'] == 'manual-review-required'
+    script.unlink()
+    assert module.remove_retired_workspace_text(source=source, preparation=preparation, node=Path('/node'),
+        state_dir=str(state)) == {'status': 'manual-review-required',
+        'detail': 'Retired workspace text: not checked (ValueError)'}
+    assert 'not checked (ValueError)' in capsys.readouterr().err

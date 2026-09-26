@@ -38,6 +38,17 @@ def activation_command(preparation, prepared, *, install_dir, ods_source, owner,
     return command
 
 
+def _owner_workspace(candidate):
+    document = helper('pixel-native-config').private_json(candidate / 'openclaw.json')
+    agents = document['agents']['list']
+    if len(agents) != 1 or agents[0].get('id') != 'pixel':
+        raise ValueError('native-portal-profile-agent-required')
+    workspace = Path(agents[0]['workspace'])
+    if not workspace.is_absolute() or not workspace.is_dir() or workspace.resolve(strict=True) != workspace:
+        raise ValueError('native-portal-profile-workspace-required')
+    return workspace
+
+
 def migrate_public_identity(*, source, preparation, node):
     """Refresh only unmodified legacy profiles after a proved native update.
 
@@ -47,13 +58,7 @@ def migrate_public_identity(*, source, preparation, node):
     """
     try:
         candidate = preparation / 'candidate'
-        document = helper('pixel-native-config').private_json(candidate / 'openclaw.json')
-        agents = document['agents']['list']
-        if len(agents) != 1 or agents[0].get('id') != 'pixel':
-            raise ValueError('native-portal-profile-agent-required')
-        workspace = Path(agents[0]['workspace'])
-        if not workspace.is_absolute() or not workspace.is_dir() or workspace.resolve(strict=True) != workspace:
-            raise ValueError('native-portal-profile-workspace-required')
+        workspace = _owner_workspace(candidate)
         generated = candidate / 'workspace'
         script = source / 'scripts/migrate-portal-identity.mjs'
         if not generated.is_dir() or not script.is_file():
@@ -65,6 +70,39 @@ def migrate_public_identity(*, source, preparation, node):
         return {'status': 'checked', 'detail': result.stdout.strip()}
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError):
         return {'status': 'manual-review-required'}
+
+
+def remove_retired_workspace_text(*, source, preparation, node, state_dir):
+    """Remove exact retired template text that an earlier install copied.
+
+    Like the profile repair, this runs after activation and outside its
+    transaction. The script changes only byte-exact shipped blocks and keeps a
+    private backup of each changed file under the OpenClaw state directory,
+    outside the workspace. Anything it could not remove is reported for review.
+    """
+    try:
+        workspace = _owner_workspace(preparation / 'candidate')
+        state = Path(state_dir)
+        if not state.is_absolute() or not state.is_dir():
+            raise ValueError('native-openclaw-state-required')
+        script = source / 'scripts/migrate-retired-workspace-text.mjs'
+        if not script.is_file():
+            raise ValueError('native-retired-text-script-required')
+        result = subprocess.run([str(node), str(script), str(workspace), str(state / 'backups/retired-workspace-text')],
+            capture_output=True, text=True, timeout=30, check=False)
+    except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        return _retired_text_review('Retired workspace text: not checked (' + type(error).__name__ + ')')
+    detail = result.stdout.strip()
+    if result.returncode:
+        # A script that stopped before reporting any file prints nothing to stdout.
+        return _retired_text_review(detail or 'Retired workspace text: not checked (exit ' + str(result.returncode) + ')')
+    return {'status': 'checked', 'detail': detail}
+
+
+def _retired_text_review(detail):
+    print('Warning: review the Pixel workspace; retired template text was not fully removed.\n' + detail,
+        file=sys.stderr)
+    return {'status': 'manual-review-required', 'detail': detail}
 
 
 def update(*, install_dir, ods_source, prepare_only=False):
@@ -118,6 +156,8 @@ def update(*, install_dir, ods_source, prepare_only=False):
         outcome = helper('pixel-native-finalize').finalize_update(preparation)
         outcome['portalIdentityMigration'] = migrate_public_identity(
             source=source, preparation=preparation, node=node)
+        outcome['retiredWorkspaceText'] = remove_retired_workspace_text(
+            source=source, preparation=preparation, node=node, state_dir=environment.get('OPENCLAW_STATE_DIR'))
         return outcome
     finally:
         for key, value in saved.items():

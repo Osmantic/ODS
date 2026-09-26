@@ -40,7 +40,7 @@ commit and candidate manifest.
 ## Staging, canary, and promotion
 
 - [ ] Clean install/removal and forced apply failure were proven in disposable state.
-- [ ] Tower2 staging uses distinct state, ports, credentials, spools, and projections.
+- [ ] The staging host uses distinct state, ports, credentials, spools, and projections.
 - [ ] Synthetic source/web/session/Operations checks passed.
 - [ ] Canary scope and observation window were approved and completed.
 - [ ] Live rollback rehearsal restored the exact prior supported runtime.

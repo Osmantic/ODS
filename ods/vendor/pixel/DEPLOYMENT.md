@@ -287,7 +287,7 @@ deployment state outside Git.
 The workspace Access application must include `GET /api/v1/approvals`,
 `GET /api/v1/permissions`, `POST /api/v1/actions/request`, and
 `POST /api/v1/actions/cancel`. Create the approval application on the exact
-`pixel.lightheartcloud.com/approve/*` path, enable its Access **Cookie Path** setting, and
+`pixel.example.com/approve/*` path (your workspace hostname), enable its Access **Cookie Path** setting, and
 require independent MFA on every login. It protects `GET /approve/session`,
 `GET /approve/session.js`, `POST /approve/execute`, `POST /approve/onboarding`, and
 `POST /approve/permissions` under
