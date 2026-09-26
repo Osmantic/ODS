@@ -207,7 +207,10 @@ semver_compare() {
     fi
     
     local IFS='.'
-    local i v1_parts=($v1) v2_parts=($v2)
+    local i
+    local -a v1_parts v2_parts
+    IFS='.' read -ra v1_parts <<< "$v1"
+    IFS='.' read -ra v2_parts <<< "$v2"
     
     for ((i=0; i<3; i++)); do
         local n1="${v1_parts[$i]:-0}"
