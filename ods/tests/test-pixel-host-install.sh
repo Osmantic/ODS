@@ -74,6 +74,49 @@ else
     fail "stale docker group refresh altered arguments or skipped sg"
 fi
 
+mkdir -p "$TEST_ROOT/group-bin"
+cat > "$TEST_ROOT/group-bin/sg" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$2" == -c ]]
+[[ "${PIXEL_TEST_DENY_GROUP:-}" != "$1" ]] || exit 73
+export PIXEL_TEST_REFRESHED="${PIXEL_TEST_REFRESHED:-}${1} "
+exec bash -c "$3"
+SH
+chmod +x "$TEST_ROOT/group-bin/sg"
+for group_case in pixel both current unregistered denied denied_inner denied_outer; do
+    if (
+        export PATH="$TEST_ROOT/group-bin:$PATH" PIXEL_TEST_REFRESHED=''
+        current='users docker'; account='users docker ods-pixel'; expected='ods-pixel '
+        case "$group_case" in
+            both) current=users; expected='docker ods-pixel ' ;;
+            current) current="$account"; expected='' ;;
+            unregistered) account="$current"; expected='' ;;
+            denied) export PIXEL_TEST_DENY_GROUP=ods-pixel ;;
+            denied_inner) current=users; export PIXEL_TEST_DENY_GROUP=ods-pixel ;;
+            denied_outer) current=users; export PIXEL_TEST_DENY_GROUP=docker ;;
+        esac
+        id() {
+            if [[ "$1" == -un ]]; then command id -un
+            elif [[ "$1" == -nG && "$#" == 1 ]]; then printf '%s\n' "$current"
+            elif [[ "$1" == -nG && "$2" == "$owner" ]]; then printf '%s\n' "$account"
+            else command id "$@"; fi
+        }
+        ods_sudo() { return 99; }
+        tricky_arg="space ' \" ; touch $TEST_ROOT/UNEXPECTED"
+        result=0
+        actual="$(ods_pixel_run_as_owner "$owner" "$TEST_ROOT" python3 -c \
+            'import os,sys; print(os.environ["PIXEL_TEST_REFRESHED"] + "|" + sys.argv[1] + "|" + os.environ["HOME"])' \
+            "$tricky_arg")" || result=$?
+        if [[ "$group_case" == denied* ]]; then
+            [[ "$result" == 73 && -z "$actual" ]]
+        else
+            [[ "$result" == 0 && "$actual" == "$expected|$tricky_arg|$TEST_ROOT" && ! -e "$TEST_ROOT/UNEXPECTED" ]]
+        fi
+    ); then pass "owner runtime group refresh: $group_case"
+    else fail "owner runtime group refresh: $group_case"; fi
+done
+
 probe_program="$TEST_ROOT/manager-probe.py"
 probe_counter="$TEST_ROOT/manager-probe.count"
 cat > "$probe_program" <<'PY'

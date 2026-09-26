@@ -95,7 +95,8 @@ PY
 }
 
 ods_pixel_run_as_owner() {
-    local owner="$1" home="$2" current_groups account_groups argv_json
+    local owner="$1" home="$2" current_groups account_groups argv_json group refresh_command
+    local -a refresh_groups=()
     shift 2
     # A redundant sudo -u of the already-current owner can allocate a fresh
     # pseudo-terminal (sudoers use_pty). Pixel's child installers then lose
@@ -103,20 +104,33 @@ ods_pixel_run_as_owner() {
     if [[ "$(id -un)" == "$owner" ]]; then
         current_groups=" $(id -nG) "
         account_groups=" $(id -nG "$owner") "
-        if [[ "$current_groups" != *" docker "* && "$account_groups" == *" docker "* ]]; then
-            # A first install may have just added the owner to docker. Refresh
-            # that group without sudo's new pseudo-terminal. Encode argv as
-            # JSON in the environment so sg's shell never interpolates paths,
-            # options, or credentials supplied by the caller.
+        for group in docker ods-pixel; do
+            if [[ "$current_groups" != *" $group "* && "$account_groups" == *" $group "* ]]; then
+                refresh_groups+=("$group")
+            fi
+        done
+        if (( ${#refresh_groups[@]} > 0 )); then
+            # A first install may have just granted Docker and Pixel socket
+            # access. sg adds only its requested group, so refresh each missing
+            # runtime group without creating another sudo pseudo-terminal.
+            # Caller arguments remain JSON in the environment, never shell code.
             if ! command -v sg >/dev/null 2>&1 \
                 || ! command -v python3 >/dev/null 2>&1; then
-                printf '%s\n' 'error: docker group refresh requires sg and python3' >&2
+                printf '%s\n' 'error: runtime group refresh requires sg and python3' >&2
                 return 1
             fi
             argv_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@")" || return 1
+            refresh_command="$(python3 - "${refresh_groups[@]:1}" <<'PY'
+import shlex, sys
+decoder = 'import json,os; argv=json.loads(os.environ.pop("ODS_PIXEL_OWNER_ARGV_JSON")); os.execvpe(argv[0],argv,os.environ)'
+command = 'exec python3 -c ' + shlex.quote(decoder)
+for group in reversed(sys.argv[1:]):
+    command = 'exec sg ' + shlex.quote(group) + ' -c ' + shlex.quote(command)
+print(command)
+PY
+            )" || return 1
             HOME="$home" USER="$owner" LOGNAME="$owner" PATH="$PATH" \
-                ODS_PIXEL_OWNER_ARGV_JSON="$argv_json" sg docker -c \
-                'exec python3 -c "import json,os; argv=json.loads(os.environ.pop(\"ODS_PIXEL_OWNER_ARGV_JSON\")); os.execvpe(argv[0],argv,os.environ)"'
+                ODS_PIXEL_OWNER_ARGV_JSON="$argv_json" sg "${refresh_groups[0]}" -c "$refresh_command"
         else
             env HOME="$home" USER="$owner" LOGNAME="$owner" PATH="$PATH" "$@"
         fi
