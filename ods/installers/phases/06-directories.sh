@@ -756,7 +756,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     DIFY_SECRET_KEY=$(_phase06_env_hex_secret DIFY_SECRET_KEY 32)
     QDRANT_API_KEY=$(_phase06_env_hex_secret QDRANT_API_KEY 32)
     _token_spy_key_default=""
-    if [[ -f "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt" ]]; then
+    if [[ -r "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt" ]]; then
         _token_spy_key_default=$(tr -d '\r\n' < "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt" 2>/dev/null || true)
     fi
     if [[ -z "$_token_spy_key_default" ]]; then
