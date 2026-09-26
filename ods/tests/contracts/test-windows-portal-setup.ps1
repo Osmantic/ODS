@@ -2,6 +2,20 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../../installers/windows/lib/wsl-portal-setup.ps1')
 $originalOS = $env:OS
+if ($IsLinux) {
+    # Real Invoke-ODSPortalWsl: stderr warnings never reach parsed Output.
+    $fake = Join-Path ([IO.Path]::GetTempPath()) ('ods-fake-wsl-' + [guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $fake
+    try {
+        Set-Content -LiteralPath (Join-Path $fake 'wsl.exe') -Value "#!/bin/sh`necho 'your 131072x1 screen size is bogus. expect trouble' >&2`necho systemd`nexit 0" -NoNewline
+        chmod +x (Join-Path $fake 'wsl.exe')
+        $previousPath = $env:PATH
+        $env:PATH = $fake + [IO.Path]::PathSeparator + $env:PATH
+        try { $warned = Invoke-ODSPortalWsl -Arguments @('--distribution', 'Ubuntu-24.04', '--exec', 'cat', '/proc/1/comm') } finally { $env:PATH = $previousPath }
+        if ($warned.Output -ne 'systemd' -or $warned.Error -notmatch 'screen size is bogus' -or $warned.Code -ne 0) { throw 'WSL stderr warnings leak into parsed output' }
+        Write-Host 'PASS WSL stderr warnings stay out of parsed output'
+    } finally { Remove-Item -LiteralPath $fake -Recurse -Force }
+}
 $env:OS = 'Windows_NT'
 $script:checks = 0
 function Check([bool]$Condition, [string]$Message) {
@@ -80,10 +94,10 @@ function Invoke-ODSPortalWsl([string[]]$Arguments) {
         '^--distribution Ubuntu --exec id -u$' { $output='1000'; break }
         '^--distribution Ubuntu --exec cat /etc/os-release$' { $output="NAME=`"Ubuntu`"`nID=ubuntu`nVERSION_ID=`"24.04`""; if ($script:releaseOverride) { $output=$script:releaseOverride }; break }
         '^--distribution Ubuntu-24.04 --exec cat /etc/os-release$' { $output="NAME=`"Ubuntu`"`nID=ubuntu`nVERSION_ID=`"24.04`""; break }
-        '^--distribution Ubuntu --exec ps -p 1 -o comm=$' { $output='systemd'; break }
+        '^--distribution Ubuntu --exec cat /proc/1/comm$' { $output='systemd'; break }
         '^--distribution Ubuntu --exec docker (info|compose version)$' { break }
         '^--distribution Ubuntu-24.04 --exec id -u$' { $output='1000'; if ($script:scenario -in @('root','resume-user')) { $output='0' }; break }
-        '^--distribution Ubuntu-24.04 --exec ps -p 1 -o comm=$' { $output='systemd'; if ($script:scenario -in @('init','init-stuck')) { $output='init' }; break }
+        '^--distribution Ubuntu-24.04 --exec cat /proc/1/comm$' { $output='systemd'; if ($script:scenario -in @('init','init-stuck')) { $output='init' }; break }
         '^--distribution Ubuntu-24.04 --exec docker info$' { if ($script:scenario -eq 'docker' -or -not $script:integrated) { $code=1 }; break }
         '^--distribution Ubuntu-24.04 --exec docker compose version$' { if ($script:scenario -eq 'compose') { $code=1 }; break }
         '^--distribution Ubuntu-24.04 --exec /usr/lib/wsl/lib/nvidia-smi -L$' { $output='GPU 0: NVIDIA GeForce RTX 4060 (UUID: GPU-00000000)'; if ($script:scenario -eq 'gpu-hidden') { $code=1; $output='command not found' }; break }
@@ -137,7 +151,7 @@ try {
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'existing Ubuntu without systemd is fixed after consent'
     $order = $script:calls.ToArray()
     Check ([Array]::IndexOf($order, 'systemd:Ubuntu-24.04') -ge 0 -and [Array]::IndexOf($order, 'systemd:Ubuntu-24.04') -lt [Array]::IndexOf($order, 'install:Ubuntu-24.04')) 'systemd is turned on before ODS installs'
-    Check (@($script:calls | Where-Object { $_ -eq '--distribution Ubuntu-24.04 --exec ps -p 1 -o comm=' }).Count -eq 2) 'PID 1 is rechecked after turning on systemd'
+    Check (@($script:calls | Where-Object { $_ -eq '--distribution Ubuntu-24.04 --exec cat /proc/1/comm' }).Count -eq 2) 'PID 1 is rechecked after turning on systemd'
     Reset-Scenario
     $script:scenario = 'init'; $script:allowPreparation = $false
     $rejected = $false
