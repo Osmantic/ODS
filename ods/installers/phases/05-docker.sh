@@ -538,10 +538,17 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
             case "$PKG_MANAGER" in
                 apt)
                     # Add NVIDIA GPG key (apt's signed-by trust anchor for the toolkit repo)
-                    curl -fsSL --max-time 60 https://nvidia.github.io/libnvidia-container/gpgkey | \
-                        ods_sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+                    # Add NVIDIA GPG key (apt's signed-by trust anchor for the toolkit repo)
+                    local tmp_gpg
+                    tmp_gpg=$(mktemp)
+                    if ! curl -fsSL --max-time 60 https://nvidia.github.io/libnvidia-container/gpgkey -o "$tmp_gpg"; then
+                        rm -f "$tmp_gpg"
+                        error "NVIDIA Container Toolkit keyring download failed. Check network connectivity to nvidia.github.io."
+                    fi
+                    cat "$tmp_gpg" | ods_sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+                    rm -f "$tmp_gpg"
                     if [[ ! -s /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg ]]; then
-                        error "NVIDIA Container Toolkit keyring download failed (empty or missing /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg). Check network connectivity to nvidia.github.io."
+                        error "Failed to write NVIDIA Container Toolkit keyring to /usr/share/keyrings/."
                     fi
                     # Fingerprint pin: defense against MITM at the CDN/DNS edge serving
                     # nvidia.github.io. NVIDIA does not publish this fingerprint in their
