@@ -66,6 +66,8 @@ function Reset-Scenario {
     $script:userEnablesIntegration = $true
     $script:launcherPresent = $true
     $script:installNeedsRestart = $false
+    $script:amdPlan = $null
+    $script:amdArgs = @()
 }
 function Test-ODSPortalVirtualization { $script:calls.Add('virt-check'); return $script:virtualization }
 function Get-ODSPortalFreeSystemGB { return $script:freeGB }
@@ -91,6 +93,8 @@ function New-ODSPortalLinuxAccount([string]$Distro, $Account) {
     if ($script:scenario -eq 'resume-user') { $script:scenario='ready' }
 }
 function Get-ODSPortalWindowsNvidiaDriver { return $script:nvidiaDriver }
+function Get-ODSPortalAmdPlan([string]$SourceRoot) { $script:calls.Add('amd-plan'); return $script:amdPlan }
+function Initialize-ODSPortalAmdLemonade($Plan, [string]$SourceRoot, [bool]$NonInteractive) { $script:calls.Add('amd-lemonade:' + $Plan.GpuName); return $script:amdArgs }
 function Test-ODSPortalAdministrator { return $script:scenario -eq 'admin' }
 function Test-ODSNativeWindowsInstall { return $script:scenario -eq 'native' }
 function Get-Command { if ($script:scenario -eq 'no-wsl') { return $null }; return [pscustomobject]@{ Name='wsl.exe' } }
@@ -219,6 +223,31 @@ try {
     $script:nvidiaDriver = 566
     Check ((Invoke-ODSPortalSetup @{Cloud=$true} 'unused') -eq 0) 'cloud mode does not require local NVIDIA readiness'
     Check (-not ($script:calls -match 'nvidia-smi|Runtimes')) 'cloud mode performs no GPU probes'
+    Check (-not $script:calls.Contains('amd-plan')) 'cloud mode does not plan an AMD GPU route'
+    # AMD: the model runs in Lemonade Server on Windows; Linux gets --lemonade-url.
+    $fixturePlan = [pscustomobject]@{ GpuName='AMD Radeon RX 9070 XT'; VramMB=16304; Model='qwen3.5-9b'; LinuxTier='2' }
+    $fixtureLemonadeArgs = @('--lemonade-url', 'http://localhost:8080', '--lemonade-model', 'extra.Qwen3.5-9B-Q4_K_M.gguf', '--lemonade-gpu-name', 'AMD Radeon RX 9070 XT', '--lemonade-gpu-vram-mb', '16304')
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan
+    $script:amdArgs = $fixtureLemonadeArgs
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'AMD host installs through Windows Lemonade'
+    Check (($script:capturedArguments -join ' ') -match '--pixel --no-hermes --no-openclaw --lemonade-url http://localhost:8080 --lemonade-model extra\.Qwen3\.5-9B-Q4_K_M\.gguf --lemonade-gpu-name AMD Radeon RX 9070 XT --lemonade-gpu-vram-mb 16304 --tier 2$') 'AMD host passes the Lemonade route and GPU tier to Linux'
+    Check ($script:calls.IndexOf('amd-lemonade:AMD Radeon RX 9070 XT') -lt $script:calls.IndexOf('install:Ubuntu-24.04')) 'Lemonade is ready before the Linux installer starts'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan
+    $script:amdArgs = $fixtureLemonadeArgs
+    Check ((Invoke-ODSPortalSetup @{Tier='3'} 'unused') -eq 0) 'AMD host with an explicit tier installs'
+    Check ((@($script:capturedArguments | Where-Object { $_ -eq '--tier' })).Count -eq 1 -and ($script:capturedArguments -join ' ') -match '--tier 3') 'explicit -Tier is kept and not duplicated by the AMD route'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan
+    $script:amdArgs = @()
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'AMD host that declines Lemonade still installs'
+    Check (-not (($script:capturedArguments -join ' ') -match 'lemonade|--tier')) 'declined Lemonade keeps the CPU route'
+    Reset-Scenario
+    $script:nvidiaDriver = 576
+    $script:amdPlan = $fixturePlan
+    $null = Invoke-ODSPortalSetup @{} 'unused'
+    Check (-not $script:calls.Contains('amd-plan')) 'NVIDIA host never takes the AMD route'
     Reset-Scenario
     $script:scenario='missing'
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'new Ubuntu initializes then installs'
