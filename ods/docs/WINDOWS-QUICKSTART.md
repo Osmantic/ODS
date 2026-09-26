@@ -22,11 +22,11 @@ Pixel uses source bundled in public Osmantic/ODS, not a private repository.
 
 Every stage asks before changing anything. Answer `y` to continue.
 
-1. **Capacity.** Setup needs 40 GB free on the Windows drive that stores Ubuntu and Docker data, and hardware virtualization (Intel VT-x or AMD SVM) turned on in the BIOS/UEFI. It stops before any change if either is missing.
+1. **Capacity.** Setup needs 40 GB free on the Windows drive that stores Ubuntu and Docker data, and hardware virtualization (Intel VT-x or AMD SVM) turned on in the BIOS/UEFI. It stops before installing WSL if either is missing. When WSL is already installed (for example on a rerun), low space is only a warning.
 2. **WSL and Docker Desktop.** If WSL is not ready, setup enables Windows Subsystem for Linux and Virtual Machine Platform with administrator approval. If Docker Desktop is missing, it installs it with winget (`--accept-license --backend=wsl-2`, which accepts the Docker Subscription Service Agreement). Both share one Windows restart. Setup registers a one-time `RunOnce` entry for your Windows user, so after you restart and sign in, a PowerShell window continues setup with the same options. Windows removes the entry before running it. The continuation script is `%LOCALAPPDATA%\ODS\portal-setup-resume.ps1`. Without winget, setup links the Docker Desktop installer and stops.
 3. **Ubuntu.** Setup reuses a single existing distribution named Ubuntu, Ubuntu-24.04 or Ubuntu-26.04, and checks inside it that the release really is Ubuntu 24.04/26.04 (Pixel's requirement). Older releases such as Ubuntu-22.04 are never changed or selected automatically; if your only `Ubuntu` is older, rerun with `-Distro Ubuntu-24.04` to add a separate 24.04. If several qualifying distributions exist, select one with `-Distro <name>`. If none exists, setup downloads Ubuntu-24.04 under your Windows account and asks in PowerShell for a new Linux username and password. It creates that user with sudo rights, makes it the default and enables systemd in `/etc/wsl.conf`. The password is passed only on stdin to `chpasswd`. An existing Ubuntu that still opens as root gets its own interactive setup window instead.
 4. **Checks.** Setup requires WSL 0.67.6 or newer, WSL2, a non-root default user and systemd, and stops with instructions otherwise. If an existing Ubuntu has systemd off, setup asks to turn it on (`[boot] systemd=true` in `/etc/wsl.conf`, other settings kept) and restarts that distribution.
-5. **Docker connection.** Setup starts Docker Desktop if needed and waits up to 10 minutes for its engine. If `docker info` fails inside Ubuntu, it asks to turn on Docker's WSL integration for that distribution: it stops Docker Desktop, shuts WSL down (Docker's data disk must be released before it starts again), adds the distribution to `IntegratedWslDistros` in Docker's settings file, and starts Docker again. A Hyper-V Docker engine is reported, not changed. `docker compose version` must also work.
+5. **Docker connection.** Setup starts Docker Desktop if needed and waits up to 10 minutes for its engine. It then waits up to a minute for `docker info` to work inside Ubuntu, because Docker Desktop connects to a distribution a few seconds after it starts. If it still does not, setup shows the exact steps (Docker Desktop > Settings > Resources > WSL integration > turn on the distribution > **Apply & restart**), brings Docker Desktop to the front and continues by itself as soon as Docker answers inside Ubuntu. Setup never edits Docker's settings or stops Docker Desktop. `docker compose version` must also work.
    With an NVIDIA GPU, update the Windows driver to 570 or newer first. Setup checks that Ubuntu sees the GPU and that Docker Desktop exposes its NVIDIA runtime, and stops before any Linux changes if not. Never install NVIDIA drivers or the container toolkit inside Ubuntu; see the [WSL2 GPU guide](WINDOWS-WSL2-GPU-GUIDE.md).
 6. **ODS.** The Linux installer runs with `--pixel --no-hermes --no-openclaw`. When Ubuntu asks for your `[sudo] password`, type the Ubuntu password; nothing appears while you type.
 7. **Verification.** The wrapper verifies Pixel gateway/ingress services, private ingress health, the dashboard HTTP endpoint and the authenticated Portal availability API. A dashboard that opens while its agent is unavailable is a failed verification. On success it opens Portal and creates an **ODS Portal** desktop shortcut (not in `-NonInteractive` runs). Send a message in Portal to verify model generation too.
@@ -91,6 +91,13 @@ Pixel is the agent, not the model server. This change does not add a Windows GPU
 Setup detects native runtimes at `ODS_HOME` or `%USERPROFILE%\ods` and stops to avoid competing stacks. Check any older custom location yourself. No data migration or deletion is automatic. Preserve needed data and migrate/remove the old deployment before switching; removal is destructive and your explicit choice.
 
 Manage existing native installations using their own `ods.ps1`. The native implementation remains at `ods/installers/windows/install-windows.ps1` for maintenance, not the recommended new-install path. Native commands do not manage the WSL runtime.
+
+To remove a native installation completely before switching (containers, Docker volumes, data and models; this cannot be undone), run from its runtime folder:
+
+```powershell
+cd $env:USERPROFILE\ods
+.\ods.ps1 uninstall --force
+```
 
 ## Uninstall WSL ODS
 
