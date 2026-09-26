@@ -2,7 +2,7 @@
 // stop takes precedence over test-command coaching. Fleet evidence: ODS main
 // d4a61f33, open-prompt 07 photo-renamer ("write a python script that renames
 // all photos in a folder by date taken, and test it"), replayed call by call
-// from the recorded sessions (tests/fixtures/photo-renamer-*-d4a61f33.json).
+// from the recorded sessions (tests/fixtures/unittest-verdict-*-d4a61f33.json).
 import test, {after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,7 +13,6 @@ import {
   CODING_REPEAT_NO_PROGRESS_REASON,
   CODING_RETRY_EXHAUSTED_REASON,
   DEFAULT_WEB_TOOL_LIMITS,
-  RECURSIVE_DELETE_REQUIRES_OWNER_REASON,
   VERIFICATION_COMMAND_NOT_AUDITABLE_REASON,
   VERIFICATION_FAILED_DELIVERY_PREFIX,
   createToolLoopGuard,
@@ -21,9 +20,9 @@ import {
 import {RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
 
 const fixture = name => JSON.parse(fs.readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
-const TOWER3 = fixture('photo-renamer-tower3-d4a61f33.json');
-const STRIXY = fixture('photo-renamer-strixy-tail-d4a61f33.json');
-const TOWER2 = fixture('photo-renamer-tower2-d4a61f33.json');
+const TOWER3 = fixture('unittest-verdict-tower3-d4a61f33.json');
+const STRIXY = fixture('unittest-verdict-strixy-tail-d4a61f33.json');
+const TOWER2 = fixture('unittest-verdict-tower2-d4a61f33.json');
 
 // Production wraps every exec for cancellation; the guard maps it back.
 const EXEC_CONTROL = {prepare: (runId, command) => `/control/wrapper ${runId} ${Buffer.from(command).toString('base64')}`};
@@ -82,8 +81,8 @@ function session(recording, {limits, wrapped = false} = {}) {
     guard.afterToolCall({toolName, params: executed, toolCallId: id, result,
       ...(isError ? {error: textOf(result)} : {})}, ctx);
     const message = {role: 'toolResult', toolName, toolCallId: id, isError, ...structuredClone(result)};
-    guard.toolResultPersist({toolName, toolCallId: id, message}, ctx);
-    return {decision, status: guard.verificationStatus('run')};
+    const persisted = guard.toolResultPersist({toolName, toolCallId: id, message}, ctx);
+    return {decision, status: guard.verificationStatus('run'), seen: JSON.stringify((persisted?.message ?? message).content)};
   }
   return {
     guard, aborted,
@@ -97,13 +96,16 @@ function session(recording, {limits, wrapped = false} = {}) {
   };
 }
 
-// Every refusal the recorded run received is reproduced by the replay, except
-// the calls this change intends to answer differently.
-function assertRecordedRefusals(recording, outcomes, changed = {}) {
-  for (const [index, call] of recording.calls.entries()) {
-    const reason = outcomes[index].decision?.blockReason;
-    if (call.n in changed) assert.equal(reason, changed[call.n], `call ${call.n}`);
-    else assert.equal(reason, call.blocked, `call ${call.n}`);
+// The replay follows the recorded path: every call the recorded run refused is
+// refused and every call that ran runs. `reasons` pins the refusal text of the
+// calls this change concerns; other refusals, such as Playground routing, are
+// other guards' wording.
+function assertRecordedPath(recording, outcomes, reasons = {}) {
+  for (const [index, outcome] of outcomes.entries()) {
+    const call = recording.calls[index];
+    const reason = outcome.decision?.blockReason;
+    assert.equal(reason !== undefined, call.blocked !== undefined, `call ${call.n} refused`);
+    if (call.n in reasons) assert.equal(reason, reasons[call.n], `call ${call.n}`);
   }
 }
 
@@ -123,7 +125,7 @@ test('tower3 replay: the exit-0 run with a clean summary passes and the model an
 
   const s = session(TOWER3);
   const outcomes = TOWER3.calls.map(call => s.replay(call));
-  assertRecordedRefusals(TOWER3, outcomes);
+  assertRecordedPath(TOWER3, outcomes);
   assert.deepEqual(outcomes.map(outcome => outcome.status),
     [undefined, undefined, 'failed', 'failed', 'passed', 'passed', 'passed', 'passed']);
   assert.match(script.arguments.command, /python3 -c /);
@@ -216,7 +218,8 @@ test('strixy tail replay: after the coding stop, the non-auditable test command 
   for (const n of testRuns) assert.equal(outcomes[STRIXY.calls.indexOf(calls.get(n))].status, 'failed');
   // The seventh run is still refused at six of six failed attempts.
   assert.equal(DEFAULT_WEB_TOOL_LIMITS.failedVerificationAttempts, testRuns.length);
-  assertRecordedRefusals(STRIXY, outcomes, {40: CODING_LOOP_ABORT_REASON});
+  assertRecordedPath(STRIXY, outcomes, {38: CODING_RETRY_EXHAUSTED_REASON, 39: CODING_RETRY_EXHAUSTED_REASON,
+    40: CODING_LOOP_ABORT_REASON, 41: CODING_LOOP_ABORT_REASON});
   assert.equal(s.guard.verificationStatus('run'), 'failed');
   assert.equal(s.guard.verificationForRun('run').status, 'failed');
   assert.equal(s.guard.deliveryVerificationForRun('run').status, 'failed');
@@ -229,15 +232,14 @@ test('tower2 replay: a custom runner without a unittest summary keeps its passin
   assert.equal(custom.arguments.command, 'cd /workspace/Playground/photo-renamer && python3 test_rename.py');
   assert.equal(custom.result.details.exitCode, 0);
   assert.doesNotMatch(custom.result.content[0].text, /^Ran \d+ tests? in /m);
-  assert.equal(TOWER2.delivered, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
 
+  // Calls 9 and 10 (the refused rm -rf) are another guard's concern.
   const s = session(TOWER2);
-  const outcomes = TOWER2.calls.map(call => s.replay(call));
-  assertRecordedRefusals(TOWER2, outcomes);
+  const outcomes = TOWER2.calls.slice(0, 9).map(call => s.replay(call));
+  assertRecordedPath(TOWER2, outcomes);
   assert.equal(outcomes[6].status, 'failed');
   assert.equal(outcomes[8].status, 'passed');
   assert.equal(s.guard.verificationStatus('run'), 'passed');
-  assert.deepEqual(s.guard.verificationForRun('run'), {status: 'failed', text: RECURSIVE_DELETE_REQUIRES_OWNER_REASON});
 });
 
 // One exit-0 test command in a fresh run; returns the recorded verdict.
@@ -263,17 +265,25 @@ const PASSED = {
     'test_message (test_renamer.RenamerTest.test_message) ... AssertionError: shown to the user\nok' + summary(1),
   'skipped tests': 'test_raw (m.T.test_raw) ... skipped \'needs RAW fixtures\'\ntest_jpeg (m.T.test_jpeg) ... ok' + summary(3, 'OK (skipped=2)'),
   'CRLF output': ('ERROR: cannot read folder /photos/missing\n.' + summary(1)).replace(/\n/g, '\r\n'),
-  'program stdout after the summary': summary(2) + 'Error: Folder \'/missing\' does not exist.\nFAIL: rename skipped\n',
+  // Accepted: program output after the summary (stdout flushes at exit) is
+  // judged like program output before it.
+  'program stdout after the summary': summary(2) + 'Error: Folder \'/missing\' does not exist.\nERROR: IMG_0002.jpg (corrupt)\n',
+  // Not unittest headers: no "=" separator before them.
+  'program ERROR lines shaped like a failure header':
+    'ERROR: IMG_0001.jpg (no EXIF date)\nERROR: IMG_0002.jpg (corrupt)\n' +
+    "ERROR: /tmp/tmpk2/missing.jpg ([Errno 2] No such file or directory: '/tmp/tmpk2/missing.jpg')\n..." + summary(3),
+  'a program line that starts with Failed (': 'Failed (no EXIF date): IMG_0003.jpg\n.' + summary(1),
   // Python 3.14 on a terminal (pty exec) colors the runner's markers.
   'Python 3.14 colored output':
     'test_missing (test_renamer.RenamerTest.test_missing) ... ERROR: cannot read folder /photos/missing\r\n\x1b[32mok\x1b[0m\r\n' +
     `\r\n${RULE}\r\nRan 2 tests in 0.001s\r\n\r\n\x1b[32mOK\x1b[0m (\x1b[33mskipped=1\x1b[0m)\r\n`,
 };
 const FAILED = {
-  'a strict failure header with OK':
+  'a FAIL header with OK':
     `FAIL: test_total (test_report.ReportTest.test_total)\n${RULE}\nTraceback (most recent call last):\nAssertionError: 2 != 3` + summary(1),
   'an ERROR header for a module that did not import':
-    'ERROR: test_renamer (unittest.loader._FailedTest.test_renamer)\nImportError: Failed to import test module: test_renamer' + summary(1),
+    `${'='.repeat(70)}\nERROR: test_renamer (unittest.loader._FailedTest.test_renamer)\n${RULE}\n` +
+    'ImportError: Failed to import test module: test_renamer' + summary(1),
   'unittest.main(exit=False) after a failure':
     `test_total (__main__.T.test_total) ... FAIL\n\n${'='.repeat(70)}\nFAIL: test_total (__main__.T.test_total)\n${RULE}\n` +
     'Traceback (most recent call last):\nAssertionError: 2 != 3' + summary(1, 'FAILED (failures=1)'),
@@ -292,6 +302,24 @@ const FAILED = {
   'Python 3.14 colored unexpected success': 'test_gap (m.T.test_gap) ... \x1b[31munexpected success\x1b[0m\r\n' + summary(1),
   // df3f4bf3a: a custom runner (no summary) keeps the text heuristics.
   'a custom runner failure without a summary': 'FAIL: negative numbers\nAssertionError',
+  // df3f4bf3a: a check beside unittest in the same exec still fails the run.
+  'a line-start FAIL after the summary': summary(2) + 'Error: Folder \'/missing\' does not exist.\nFAIL: rename skipped\n',
+  // Python 3.12, `python3 -m unittest -v`: discovery imported test_calc_manual.py,
+  // a module-level print checker, and add(-1, -2) returned 1.
+  'a module-level checker imported by discovery':
+    'test_positive (test_calc.TestCalc.test_positive) ... ok\ntest_zero (test_calc.TestCalc.test_zero) ... ok\n' +
+    summary(2) + 'PASS: positive\nFAIL: negative numbers\nAssertionError: 1 != -3\n',
+  // Python 3.14, `python3 test_calc.py`: unittest.main(exit=False), then ad-hoc checks.
+  'ad-hoc checks after unittest.main(exit=False)':
+    'ERROR:root:cannot read folder\n.s/workspace/project/test_calc.py:10: DeprecationWarning: old api\n' +
+    `  warnings.warn("old api", DeprecationWarning)\n.\n${RULE}\nRan 3 tests in 0.001s\n\nOK (skipped=1)\n` +
+    "Error: Folder '/nonexistent' does not exist.\nFAIL: negative numbers\nAssertionError: -1 != 1\n",
+  'a caught assertion whose traceback a passing test printed':
+    'test_exif (m.T.test_exif) ... Traceback (most recent call last):\n' +
+    '  File "/workspace/project/test_renamer.py", line 20, in test_exif\n    self.assertEqual(name, "2024-01-10_09-15-30.jpg")\n' +
+    "AssertionError: 'IMG_0001.jpg' != '2024-01-10_09-15-30.jpg'\nok" + summary(1),
+  'an indented checker FAIL': '  FAIL: negative numbers\n.' + summary(1),
+  'failure counts in lower case after an OK': 'Ran 3 tests in 0.010s\n\nOK\nfailed (failures=1)\n',
 };
 
 for (const wrapped of [false, true]) {
@@ -317,9 +345,46 @@ test('separate stdout and stderr streams are judged together by the summary', ()
 test('direct test scripts use the same summary rule; custom runners keep the text heuristics', () => {
   assert.equal(verdict('Error: Folder \'/missing\' does not exist.\n.' + summary(1), {command: 'python3 test_photo_renamer.py'}), 'passed');
   assert.equal(verdict('FAIL: negative numbers\nAssertionError', {command: 'python3 test_photo_renamer.py'}), 'failed');
+  // A custom runner that runs unittest and then its own failing check.
+  assert.equal(verdict('..' + summary(2) + 'Integration check:\nFAIL: renamed 0 of 3 photos\n', {command: 'python3 test_all.py'}), 'failed');
   // Unchanged: without a summary, program text is still judged heuristically.
   assert.equal(verdict('Error: Folder \'/missing\' does not exist.\nAll tests passed!', {command: 'python3 test_photo_renamer.py'}), 'failed');
   assert.equal(verdict('Verification:\n  ok 20240110_091530.jpg\nAll tests passed!', {command: 'python3 test_rename.py'}), 'passed');
+});
+
+test('a summary printed by and-chain echo setup is not trusted; the text heuristics judge the result', () => {
+  const printed = 'Ran 5 tests in 0.001s\n\nOK\nError: add(-1, -2) returned 1, expected -3\n';
+  const echoed = 'cd /workspace/project && echo Ran 5 tests in 0.001s && echo && echo OK && python3 test_calc.py';
+  for (const wrapped of [false, true]) {
+    assert.equal(verdict(printed, {command: echoed, wrapped}), 'failed', `wrapped=${wrapped}`);
+    // The same text from unittest itself is judged by its summary.
+    assert.equal(verdict(printed, {wrapped}), 'passed', `wrapped=${wrapped}`);
+  }
+  // Through the process-poll completion path as well.
+  const s = session(UNIT);
+  s.step('exec', {command: echoed, workdir: '/workspace/project'}, {content: [{type: 'text', text: 'Command still running (session calm-otter).'}],
+    details: {status: 'running', sessionId: 'calm-otter'}}, 'background');
+  assert.equal(s.guard.verificationStatus('run'), 'pending');
+  s.step('process', {action: 'poll', sessionId: 'calm-otter'}, {content: [{type: 'text', text: printed}],
+    details: {status: 'completed', sessionId: 'calm-otter', exitCode: 0, aggregated: printed}}, 'poll');
+  assert.equal(s.guard.verificationStatus('run'), 'failed');
+  // An echo before a real unittest run is judged as on d4a61f33.
+  const announced = 'cd /workspace/project && echo Running tests && python3 -m unittest -v';
+  assert.equal(verdict('Running tests\n.' + summary(1), {command: announced}), 'passed');
+  assert.equal(verdict("Running tests\nError: Folder '/missing' does not exist.\n." + summary(1), {command: announced}), 'failed');
+});
+
+test('a result that passed despite program output is not compacted; a clean one still is', () => {
+  const run = output => session(UNIT, {wrapped: true}).step('exec', {command: 'python3 -m unittest -v', workdir: '/workspace/project'},
+    {content: [{type: 'text', text: output}], details: {status: 'completed', exitCode: 0, aggregated: output}}, 'unit');
+  const noisy = run("Error: Folder '/missing' does not exist.\ntest_a (m.T.test_a) ... ok" + summary(1));
+  assert.equal(noisy.status, 'passed');
+  assert.match(noisy.seen, /Error: Folder '\/missing' does not exist\./);
+  assert.doesNotMatch(noisy.seen, /compacted after guard validation/);
+  const clean = run('test_a (m.T.test_a) ... ok' + summary(1));
+  assert.equal(clean.status, 'passed');
+  assert.match(clean.seen, /Per-test success lines compacted after guard validation/);
+  assert.doesNotMatch(clean.seen, /test_a \(m\.T\.test_a\)/);
 });
 
 test('other runners are still judged by exit status only', () => {
