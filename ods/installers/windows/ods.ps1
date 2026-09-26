@@ -56,6 +56,8 @@ $_resolvedLemonadeExe = Resolve-ODSLemonadeExe
 if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
 $script:LEMONADE_TASK_NAME = "ODSLemonadeRuntime"
 $script:ODS_MODEL_UPGRADE_TASK_NAME = "ODSModelUpgrade"
+# Registered by install-windows.ps1 for the native llama-server runtime.
+$script:NATIVE_LLAMA_TASK_NAME = "ODSNativeLlamaRuntime"
 
 # ── Resolve install directory ──
 $InstallDir = $script:ODS_INSTALL_DIR
@@ -468,9 +470,17 @@ function Invoke-Uninstall {
         Write-AIWarn "Native inference stop skipped: $_"
     }
 
-    foreach ($taskName in @($script:ODS_AGENT_TASK_NAME, $script:ODS_MODEL_UPGRADE_TASK_NAME, $script:LEMONADE_TASK_NAME, $script:OPENCODE_TASK_NAME)) {
-        try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch { }
-        try { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+    foreach ($taskName in @($script:ODS_AGENT_TASK_NAME, $script:ODS_MODEL_UPGRADE_TASK_NAME, $script:LEMONADE_TASK_NAME, $script:OPENCODE_TASK_NAME, $script:NATIVE_LLAMA_TASK_NAME)) {
+        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        if (-not $task) { continue }
+        # A task left behind keeps a helper running against a deleted runtime,
+        # so a failed removal is reported with the command to finish it.
+        try {
+            if ($task.State -eq 'Running') { Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop }
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
+        } catch [Microsoft.Management.Infrastructure.CimException] {
+            Write-AIWarn "Scheduled task $taskName could not be removed ($($_.Exception.Message)). Remove it with: Unregister-ScheduledTask -TaskName '$taskName' -Confirm:`$false"
+        }
     }
 
     $composeDownSucceeded = $false
