@@ -133,6 +133,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and put `<think>` blocks in replies.
 
 ### Fixed
+- Windows `ods.ps1 uninstall` no longer stops at "Docker cleanup is incomplete"
+  when a volume or network with the `ods` compose label is not in the saved
+  compose files (an older release or a since-disabled extension). It now removes
+  every labelled leftover after `compose down`, and a single leftover name is
+  passed to `docker` whole instead of one character per argument. If something
+  still cannot be removed, the message names it. Uninstall also removes the
+  `ODSNativeLlamaRuntime` scheduled task, and a helper task it cannot remove is
+  reported with the command to remove it instead of being skipped silently.
 - Gemma 4 26B-A4B (`gemma4-26b-a4b-q4`) and Gemma 4 31B (`gemma4-31b-q4`)
   download again. ggml-org deleted both Q4_K_M files from its repos on
   2026-07-16, so the catalog and the Gemma-profile tier maps (`NV_ULTRA`,
