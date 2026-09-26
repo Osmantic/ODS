@@ -17,6 +17,12 @@ export const DERIVED_FILE_CONTRACT = "Files that copy or aggregate existing file
 // never interpolated with the owner's names, so prompt bytes stay stable.
 export const NAMED_ITEM_CONTRACT = "When the owner names items (cards, sections, pages, buttons), use each name verbatim as that item's heading or label; put extra detail in body text, not in the heading.";
 
+// The tool-loop guard refuses an unrequested recursive forced delete and can
+// stop tool use for the turn (tower2 photo-renamer: an unrequested "manual
+// test" ended with rm -rf after the real test had passed). Constant text in
+// the constant workspace guide, so prompt bytes stay stable.
+export const RECURSIVE_DELETE_CONTRACT = "Do not delete directories recursively (rm -rf or equivalents) unless the owner asked; ODS refuses that and may stop tool use for the turn. Keep temporary test inputs inside the project folder and leave cleanup to the owner.";
+
 export const AGENT_SKILLS = Object.freeze({
   extensions: `ODS extension work
 Choose an approach from repository evidence and the owner's actual request. Read upstream installation/build requirements, supported platforms and verification instructions; inspect files or experiment in the isolated workspace when useful. A URL, README claim or sandbox pip installation is not a registered ODS extension.
@@ -29,7 +35,7 @@ Use available host facts: OS, architecture, GPU backend, memory and dependency s
 Preserve files/framework; read before edit/apply_patch. Use write for authored content. ${DERIVED_FILE_CONTRACT} List uncertain directories. Use portable workdir/file-relative paths, never /workspace. Split oversized writes.
 Workspace execution is not host installation. Use workdir, not shell directory chains. After timeouts, observe the same exec handle; never duplicate it. Parallelize independent actions only.
 For source maps/copies, use the final executed files, parse maps back and check required keys/values. Compare decoded/raw bytes, including trailing newlines; filenames are not contents. For requested logs, capture real process stdout/stderr as bytes, save and display them, and retain exit status. Never handwrite a transcript after a failed command. Regenerate dependent artifacts after source changes; finish comparisons before publishing.
-For CLI work, run documented arguments on real files; inspect exit status, stdout, stderr and artifacts; imports or calls to main do not verify its entry point. Derive normal/rejected cases from requested keys, paths and corrections. Distinguish ordinary file endings from malformed records. Retain and fix matching failures; never replace them with easier cases or normalize forbidden values. Preserve inputs and protected tests.
+For CLI work, run documented arguments on real files; inspect exit status, stdout, stderr and artifacts; imports or calls to main do not verify its entry point. Derive normal/rejected cases from requested keys, paths and corrections. Distinguish ordinary file endings from malformed records. Retain and fix matching failures; never replace them with easier cases or normalize forbidden values. Preserve inputs and protected tests. ${RECURSIVE_DELETE_CONTRACT}
 For new projects without a destination, use a descriptive Playground folder; keep existing locations. Sandbox servers are not browser-accessible. For publication, run the framework's real build and publish its output directory containing index.html with pixel_ods_workspace_preview. Never handwrite dist files. Preview URLs have a site prefix: prefer relative asset URLs (for Vite, --base=./); /assets may resolve elsewhere. Preserve the framework; index.html may exist only in build output. Verify scripts/styles load and the application boots at the exact published URL; exercise requested controls with an available browser. Share its verified URL. HTTP readback alone does not prove behavior. Changes after publication require a new snapshot.
 ${NAMED_ITEM_CONTRACT}
 ${PREVIEW_RUNTIME_CONTRACT}`,
