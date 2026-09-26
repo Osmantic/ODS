@@ -1182,11 +1182,13 @@ class TestCheckServiceHealthSystemd:
 
         monkeypatch.setattr("helpers.request_agent_json", fake_request)
 
+        # OpenCode reports its full lifecycle (tests/test_opencode_app.py);
+        # other host-managed services keep the loopback port proof.
         config = {
-            "name": "opencode", "port": 3003, "external_port": 3003,
+            "name": "host-tool", "port": 3003, "external_port": 3003,
             "health": "/health", "host": "localhost", "type": "host-systemd",
         }
-        result = await check_service_health("opencode", config)
+        result = await check_service_health("host-tool", config)
         assert result.status == "healthy"
         assert result.response_time_ms == 12.3
 
@@ -1198,10 +1200,10 @@ class TestCheckServiceHealthSystemd:
         )
 
         config = {
-            "name": "opencode", "port": 3003, "external_port": 3003,
+            "name": "host-tool", "port": 3003, "external_port": 3003,
             "health": "/health", "host": "localhost", "type": "host-systemd",
         }
-        result = await check_service_health("opencode", config)
+        result = await check_service_health("host-tool", config)
         assert result.status == "not_deployed"
         assert result.response_time_ms == 2.0
 

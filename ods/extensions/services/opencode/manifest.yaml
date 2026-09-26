@@ -40,7 +40,9 @@ features:
     enabled_services_all: [opencode]
     setup_time: Ready
     priority: 6
+    # The OpenCode page opens OpenCode when this browser is on the ODS
+    # machine and otherwise explains how to reach its loopback-only server.
     launch:
-      type: service
-      service: opencode
+      type: internal
+      path: /apps/opencode
     gpu_backends: [all]

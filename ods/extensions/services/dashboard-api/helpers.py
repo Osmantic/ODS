@@ -21,7 +21,7 @@ import httpx
 from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, read_live_env_value
 from env_values import parse_env_value
 from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
-from host_agent_client import AgentClientError, async_request_json as request_agent_json
+from host_agent_client import AgentClientError, AgentHTTPError, async_request_json as request_agent_json
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
 from service_health_dns import ServiceHealthResolver
 
@@ -177,7 +177,68 @@ async def _check_tailscale_health(service_id: str, config: dict) -> ServiceStatu
     return _service_status_from_config(service_id, config, "unhealthy")
 
 
+# Last OpenCode lifecycle reported by the host agent. The dashboard uses it to
+# tell "never set up" from "installed but stopped"; a bare port probe cannot.
+_opencode_lifecycle: Optional[dict] = None
+
+_OPENCODE_STATE_STATUS = {
+    "running": "healthy",
+    "starting": "degraded",
+    "installing": "degraded",
+    "stopped": "down",
+    "not_installed": "not_deployed",
+}
+
+
+def get_opencode_lifecycle() -> Optional[dict]:
+    """Return the most recent OpenCode lifecycle snapshot, if any."""
+    return _opencode_lifecycle
+
+
+async def _check_opencode_health(service_id: str, config: dict) -> ServiceStatus:
+    """Map the host agent's OpenCode lifecycle onto the service vocabulary.
+
+    ``running`` -> healthy, ``starting``/``installing`` -> degraded,
+    ``stopped`` -> down (installed but not running), ``not_installed`` ->
+    not_deployed. Older host agents without the lifecycle route fall back to
+    the loopback port proof.
+    """
+    global _opencode_lifecycle
+    try:
+        payload = await request_agent_json("GET", "/v1/opencode/status", timeout=10)
+    except AgentHTTPError as exc:
+        _opencode_lifecycle = None
+        if exc.status_code == 404:
+            return await _check_host_port_health(service_id, config)
+        return _service_status_from_config(service_id, config, "down")
+    except AgentClientError:
+        _opencode_lifecycle = None
+        return _service_status_from_config(service_id, config, "down")
+
+    status = _OPENCODE_STATE_STATUS.get(payload.get("state"))
+    if status is None:
+        _opencode_lifecycle = None
+        return _service_status_from_config(service_id, config, "down")
+    _opencode_lifecycle = payload
+    response_time = payload.get("responseTimeMs")
+    return ServiceStatus(
+        id=service_id,
+        name=config["name"],
+        port=config["port"],
+        external_port=config.get("external_port", config["port"]),
+        status=status,
+        response_time_ms=response_time if isinstance(response_time, (int, float)) else None,
+    )
+
+
 async def _check_host_systemd_health(service_id: str, config: dict) -> ServiceStatus:
+    """Check a host-managed service through the authenticated host-agent."""
+    if service_id == "opencode":
+        return await _check_opencode_health(service_id, config)
+    return await _check_host_port_health(service_id, config)
+
+
+async def _check_host_port_health(service_id: str, config: dict) -> ServiceStatus:
     """Check a host-managed service through the authenticated host-agent.
 
     Host-systemd services such as OpenCode usually bind to host loopback. From
@@ -852,6 +913,17 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
 _services_cache: Optional[list] = None  # list[ServiceStatus], set by poll loop
 
 
+def _host_service_affirmed_stopped(service_id: str) -> bool:
+    """True when the host agent confirmed an installed service is stopped.
+
+    Agent failures still surface as ``down``; those remain hidden for optional
+    host tools. A confirmed stopped OpenCode must stay visible so the owner can
+    start it instead of seeing it vanish or a permanent "Offline" entry.
+    """
+    lifecycle = _opencode_lifecycle if service_id == "opencode" else None
+    return bool(lifecycle and lifecycle.get("state") == "stopped")
+
+
 def _normalize_cached_service_status(status: ServiceStatus) -> ServiceStatus:
     """Avoid treating absent optional host-managed tools as broken services."""
     config = SERVICES.get(status.id, {})
@@ -859,6 +931,7 @@ def _normalize_cached_service_status(status: ServiceStatus) -> ServiceStatus:
         status.status == "down"
         and config.get("type") == "host-systemd"
         and not config.get("required", False)
+        and not _host_service_affirmed_stopped(status.id)
     ):
         return ServiceStatus(
             id=status.id,
@@ -880,6 +953,16 @@ def set_services_cache(statuses: list) -> None:
 def get_cached_services() -> Optional[list]:
     """Read cached health check results. Returns None if no poll has completed yet."""
     return _services_cache
+
+
+async def refresh_cached_service_status(service_id: str) -> None:
+    """Re-check one service and replace its cached row after an owner action."""
+    global _services_cache
+    config = SERVICES.get(service_id)
+    if config is None or _services_cache is None:
+        return
+    status = _normalize_cached_service_status(await check_service_health(service_id, config))
+    _services_cache = [status if item.id == service_id else item for item in _services_cache]
 
 
 # --- Service Health ---

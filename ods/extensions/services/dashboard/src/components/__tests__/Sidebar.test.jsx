@@ -68,26 +68,75 @@ describe('Sidebar', () => {
     expect(screen.getAllByText('ODS 1.0.0')).toHaveLength(1)
   })
 
-  test('keeps an always-visible OpenCode launcher in the default application list', () => {
-    getSidebarExternalLinks.mockReturnValueOnce([
+  test('leads a stopped OpenCode to its page instead of a dead Offline entry', () => {
+    getSidebarExternalLinks.mockReturnValue([
       {
         key: 'opencode',
         url: 'http://localhost:3003',
         icon: () => <span data-testid="opencode-icon">OC</span>,
         label: 'OpenCode',
         healthy: false,
-        alwaysVisible: true,
+        alwaysVisible: false,
+        visible: true,
+        state: 'stopped',
+        internalPath: '/apps/opencode',
+        stateLabel: 'Stopped',
       },
     ])
 
     render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
 
-    expect(screen.getByText('OpenCode')).toBeInTheDocument()
-    expect(screen.getByText('Offline')).toBeInTheDocument()
-    expect(screen.getByText('OpenCode').closest('a')).not.toHaveAttribute('href')
+    const entry = screen.getByRole('link', { name: 'OpenCode' })
+    expect(entry).toHaveAttribute('href', '/apps/opencode')
+    expect(entry).not.toHaveAttribute('target')
+    expect(screen.getByText('Stopped')).toBeInTheDocument()
+    expect(screen.queryByText('Offline')).not.toBeInTheDocument()
     const applications=screen.getByLabelText('Applications')
     expect(applications).toHaveClass('pixel-nav-item')
     expect(applications.querySelector('svg')).toBeInTheDocument()
+  })
+
+  test('opens a running OpenCode in a new tab', () => {
+    getSidebarExternalLinks.mockReturnValue([
+      {
+        key: 'opencode',
+        url: 'http://localhost:3003',
+        icon: () => <span data-testid="opencode-icon">OC</span>,
+        label: 'OpenCode',
+        healthy: true,
+        visible: true,
+        state: 'running',
+        internalPath: null,
+        stateLabel: null,
+      },
+    ])
+
+    render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
+
+    const entry = screen.getByRole('link', { name: 'OpenCode' })
+    expect(entry).toHaveAttribute('href', 'http://localhost:3003')
+    expect(entry).toHaveAttribute('target', '_blank')
+  })
+
+  test('lists no OpenCode entry when it was never set up', () => {
+    getSidebarExternalLinks.mockReturnValue([
+      {
+        key: 'opencode',
+        url: 'http://localhost:3003',
+        icon: () => <span data-testid="opencode-icon">OC</span>,
+        label: 'OpenCode',
+        healthy: false,
+        alwaysVisible: false,
+        visible: false,
+        state: 'not_installed',
+        internalPath: '/apps/opencode',
+      },
+    ])
+
+    render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
+
+    expect(screen.queryByText('OpenCode')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Applications')).not.toBeInTheDocument()
   })
 
   test.each([

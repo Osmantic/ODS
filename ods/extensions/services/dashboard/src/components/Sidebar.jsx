@@ -42,7 +42,7 @@ export default function Sidebar({ status, collapsed, onToggle }) {
     return () => { active = false }
   }, [])
   const applications = getSidebarExternalLinks({ status, getExternalUrl: fallbackServiceUrl, apiLinks })
-    .filter(link => link.healthy || link.alwaysVisible)
+    .filter(link => link.healthy || link.alwaysVisible || link.visible)
   const links = pixelMode ? [
     { path: '/pixel', label: displayName, icon: Sparkles },
     { path: '/pixel/settings', label: 'Settings', icon: Settings },
@@ -78,7 +78,10 @@ export default function Sidebar({ status, collapsed, onToggle }) {
       {links.filter(item => item.label.toLowerCase().includes(query.toLowerCase())).map(({ path, label, icon: Icon }) => <NavLink key={path} to={path} end title={label} aria-label={label} onClick={event => navigatePanel(event, path)} className={({ isActive }) => `pixel-nav-item ${isActive ? 'is-active' : ''}`}><Icon size={16} /><span>{label}</span></NavLink>)}
       {!pixelMode && applications.length > 0 && <details className="pixel-applications" open={query ? true : undefined}>
         <summary className="pixel-nav-item" aria-label="Applications" title="Applications"><Grid2X2 size={16}/><span>Applications</span><svg className="rail-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg></summary>
-        {applications.filter(link => link.label.toLowerCase().includes(query.toLowerCase())).map(({ key, label, icon: Icon, healthy, url }) => {
+        {applications.filter(link => link.label.toLowerCase().includes(query.toLowerCase())).map(({ key, label, icon: Icon, healthy, url, internalPath, stateLabel }) => {
+          if (internalPath) {
+            return <NavLink key={key} to={internalPath} onClick={closeSearch} className={({ isActive }) => `pixel-nav-item ${isActive ? 'is-active' : ''}`} title={stateLabel ? `${label} · ${stateLabel}` : label} aria-label={label}><Icon size={16} /><span>{label}</span>{stateLabel && !collapsed && <small>{stateLabel}</small>}</NavLink>
+          }
           const href = key === 'openclaw' && serviceTokens.openclaw ? withServiceToken(url, serviceTokens.openclaw) : url
           return <a key={key} className="pixel-nav-item" title={healthy ? label : `${label} · Offline`} aria-label={label} aria-disabled={!healthy} href={healthy ? href : undefined} target={healthy ? '_blank' : undefined} rel="noopener noreferrer"><Icon size={16} /><span>{label}</span>{!healthy && !collapsed && <small>Offline</small>}</a>
         })}

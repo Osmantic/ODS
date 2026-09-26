@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appendPath, fallbackServiceUrl, serviceUrl } from './serviceUrls'
+import { appendPath, fallbackServiceUrl, isLoopbackBrowser, serviceUrl } from './serviceUrls'
 
 describe('service URL helpers', () => {
   it('uses configured public URLs as exact operator-facing links by default', () => {
@@ -19,6 +19,20 @@ describe('service URL helpers', () => {
 
   it('falls back to host-port links with ui paths when no public URL is configured', () => {
     expect(serviceUrl({ external_port: 3005, ui_path: '/dashboard' })).toBe('http://localhost:3005/dashboard')
+  })
+
+  it.each([
+    ['localhost', true],
+    ['127.0.0.1', true],
+    ['127.10.0.3', true],
+    ['[::1]', true],
+    ['ods.localhost', true],
+    ['tower2', false],
+    ['dashboard.tower2.local', false],
+    ['192.168.1.20', false],
+    ['localhost.example.test', false],
+  ])('treats %s as on the ODS machine: %s', (host, expected) => {
+    expect(isLoopbackBrowser(host)).toBe(expected)
   })
 
   it('keeps appendPath and fallback helpers stable for root paths', () => {

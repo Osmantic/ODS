@@ -374,9 +374,77 @@ def _is_one_shot_extension(ext: dict) -> bool:
 
 
 
+_OPENCODE_EXTENSION_STATUS = {
+    "degraded": "installing",
+    "down": "stopped",
+    "not_deployed": "not_installed",
+}
+
+
+def _opencode_extension_status(svc) -> str:
+    """OpenCode is a host application: report its lifecycle, not container state.
+
+    ``helpers._check_opencode_health`` maps the host agent's lifecycle onto
+    healthy / degraded (starting or setting up) / down (installed, stopped) /
+    not_deployed (never set up). A dashboard setup writes the same progress
+    records as library installs, so the card shows its phase and failure.
+    """
+    status = svc.status if svc else None
+    if status == "healthy":
+        return "enabled"
+    progress = _read_progress("opencode")
+    if progress:
+        phase = progress.get("status")
+        if phase in ("pulling", "starting") and not _is_stale(
+            progress.get("updated_at", ""), max_age_seconds=900,
+        ):
+            return "installing"
+        if phase == "error" and status in (None, "not_deployed"):
+            return "error"
+    return _OPENCODE_EXTENSION_STATUS.get(status, "disabled")
+
+
+def _opencode_catalog_fields(status: str) -> dict:
+    """Library affordances for OpenCode: Linux setup and the app page."""
+    from helpers import get_opencode_lifecycle  # noqa: PLC0415 - avoid import cycle
+
+    lifecycle = get_opencode_lifecycle() or {}
+    issue = lifecycle.get("setupIssue")
+    return {
+        "installable": status in ("not_installed", "error") and lifecycle.get("setupSupported") is True,
+        "app_path": "/apps/opencode",
+        "setup_issue": issue if isinstance(issue, str) else None,
+    }
+
+
+def _opencode_extension_action(action: str) -> dict:
+    """Route the library's Install/Start for OpenCode to the host lifecycle."""
+    timeout = 150 if action == "start" else 30
+    try:
+        body = request_agent_json("POST", f"/v1/opencode/{action}", timeout=timeout)
+    except AgentHTTPError as exc:
+        if action == "start" and exc.status_code == 409:
+            try:
+                code = json.loads(exc.response_text or "{}").get("code")
+            except (ValueError, AttributeError):
+                code = None
+            if code == "opencode_not_installed":
+                return _opencode_extension_action("setup")
+        status_code = exc.status_code if exc.status_code in (409, 502, 504) else 502
+        raise HTTPException(status_code=status_code, detail=exc.detail) from exc
+    except AgentClientError as exc:
+        raise HTTPException(
+            status_code=503, detail="Host agent is unavailable; OpenCode cannot be managed right now",
+        ) from exc
+    status = body.get("status") if isinstance(body.get("status"), dict) else {}
+    return {"id": "opencode", "action": action, "state": status.get("state")}
+
+
 def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     """Compute the runtime status of an extension."""
     ext_id = ext["id"]
+    if ext_id == "opencode" and ext_id in SERVICES:
+        return _opencode_extension_status(services_by_id.get(ext_id))
     one_shot = _is_one_shot_extension(ext)
 
     # Check for in-flight install operations (progress files take priority)
@@ -1683,6 +1751,8 @@ async def extensions_catalog(
             "dependency_status": {},
             **update_state,
         }
+        if ext_id == "opencode" and ext_id in SERVICES:
+            enriched.update(_opencode_catalog_fields(status))
         llm_contract = _llm_contract_for_extension(ext)
         if llm_contract is not None:
             enriched["llm"] = llm_contract
@@ -3108,7 +3178,7 @@ async def extension_detail(
         if _progress and _progress.get("error"):
             error_message = _progress["error"]
 
-    return {
+    detail = {
         "id": ext["id"],
         "name": ext["name"],
         "description": ext.get("description", ""),
@@ -3133,6 +3203,21 @@ async def extension_detail(
             "cli_disable": f"ods disable {service_id}",
         },
     }
+    if service_id == "opencode" and service_id in SERVICES:
+        # OpenCode is a host application, not a Compose extension: 'ods
+        # enable opencode' does not apply. Point owners and agents at the
+        # dashboard page that starts it or, on Linux, sets it up.
+        fields = _opencode_catalog_fields(status)
+        detail.update(fields)
+        detail["setup_instructions"] = {
+            "steps": [
+                f"Open the OpenCode page in the ODS dashboard ({fields['app_path']})",
+                "Start OpenCode there when it is stopped; on Linux, set it up there when it is not installed",
+                "OpenCode listens only on this machine; the page shows how to reach it from another device",
+            ],
+            "app_path": fields["app_path"],
+        }
+    return detail
 
 
 # --- Mutation endpoints ---
@@ -3582,6 +3667,8 @@ def _rewrite_build_context(compose_path: Path, final_dir: Path) -> None:
 @router.post("/api/extensions/{service_id}/install")
 @_serialize_extension_operation
 def install_extension(service_id: str, api_key: str = Depends(verify_api_key)):
+    if service_id == "opencode" and service_id in SERVICES:
+        return _opencode_extension_action("setup")
     return _install_extension(service_id, api_key=api_key)
 
 
@@ -4238,6 +4325,10 @@ def enable_extension(
 ):
     """Enable an installed extension, optionally auto-enabling dependencies."""
     _validate_service_id(service_id)
+    if service_id == "opencode" and service_id in SERVICES:
+        # Host application: start the installed service, or set it up when
+        # a failed setup is retried from the library card.
+        return _opencode_extension_action("start")
     _assert_not_core(service_id)
 
     ext_dir = _resolve_extension_dir(service_id)

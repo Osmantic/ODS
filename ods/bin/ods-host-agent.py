@@ -8387,6 +8387,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_access_mode(False)
         elif path == "/v1/host/port":
             self._handle_host_port_status(parse_qs(parsed.query))
+        elif path == "/v1/opencode/status" and not parsed.query:
+            self._handle_opencode_status()
         elif path == "/v1/setup/state":
             self._handle_setup_state()
         else:
@@ -8572,6 +8574,32 @@ class AgentHandler(BaseHTTPRequestHandler):
         except (OSError, RuntimeError) as exc:
             logger.exception("Could not read setup state")
             json_response(self, 500, {"error": f"Could not read setup state: {exc}"})
+
+    def _handle_opencode_status(self):
+        """Report the ODS-managed OpenCode lifecycle for the dashboard."""
+        if not check_auth(self):
+            return
+        try:
+            json_response(self, 200, _opencode_app_status(), no_store=True)
+        except (RuntimeError, OSError, ValueError) as exc:
+            logger.warning("OpenCode status failed: %s", exc)
+            json_response(self, 500, {"error": "OpenCode status is unavailable"})
+
+    def _handle_opencode_action(self, action: str):
+        """Start the installed OpenCode service or set it up (Linux)."""
+        if not check_auth(self):
+            return
+        discard_request_body(self)
+        env = load_env(INSTALL_DIR / ".env")
+        try:
+            if action == "start":
+                code, body = _begin_opencode_start(env)
+            else:
+                code, body = _begin_opencode_setup(env)
+        except (RuntimeError, OSError, ValueError) as exc:
+            logger.warning("OpenCode %s failed: %s", action, exc)
+            code, body = 500, {"error": f"OpenCode {action} failed", "code": f"opencode_{action}_failed"}
+        json_response(self, code, body, no_store=True)
 
     def _handle_host_port_status(self, query: dict[str, list[str]]):
         """Return whether a host-local TCP port is reachable.
@@ -8910,6 +8938,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_access_mode(True)
         elif self.path == "/v1/pixel/apps/open":
             self._handle_pixel_open_app()
+        elif self.path in ("/v1/opencode/start", "/v1/opencode/setup"):
+            self._handle_opencode_action(self.path.rsplit("/", 1)[-1])
         elif self.path in ("/v1/extension/start", "/v1/extension/stop"):
             action = "start" if self.path.endswith("/start") else "stop"
             self._handle_extension(action)
@@ -16671,8 +16701,12 @@ def _opencode_installed() -> bool:
     )
 
 
-def _capture_opencode_config() -> dict | None:
-    """Snapshot OpenCode config, using either compatibility file as a source."""
+def _capture_opencode_config(assume_installed: bool = False) -> dict | None:
+    """Snapshot OpenCode config, using either compatibility file as a source.
+
+    ``assume_installed`` is for dashboard setup, which has just resolved the
+    executable itself (possibly an existing one outside ``~/.opencode``).
+    """
     paths = _opencode_config_paths()
     files: dict[Path, dict] = {}
     parsed_sources: list[tuple[Path, dict]] = []
@@ -16706,7 +16740,11 @@ def _capture_opencode_config() -> dict | None:
             "OpenCode config is malformed and cannot be updated safely: "
             + "; ".join(parse_errors)
         )
-    if not any(item["exists"] for item in files.values()) and not _opencode_installed():
+    if (
+        not any(item["exists"] for item in files.values())
+        and not assume_installed
+        and not _opencode_installed()
+    ):
         return None
     source: dict = {}
     for _path, parsed in sorted(
@@ -16928,6 +16966,19 @@ if ($action -eq 'inspect') {
     if ($owned.Count -gt 0) { 'true' } else { 'false' }
     exit 0
 }
+if ($action -eq 'start') {
+    if ($owned.Count -gt 0) { 'true'; exit 0 }
+    # Prefer the installer's task: its launcher confines Bun's temp copies.
+    try {
+        Start-ScheduledTask -TaskName 'ODSOpenCodeWeb' -ErrorAction Stop
+    } catch {
+        Start-Process -FilePath $exe `
+            -ArgumentList @('web', '--port', [string]$port, '--hostname', '127.0.0.1') `
+            -WindowStyle Hidden | Out-Null
+    }
+    'true'
+    exit 0
+}
 if ($action -ne 'restart') { throw "Unsupported OpenCode action: $action" }
 if ($owned.Count -eq 0) { 'false'; exit 0 }
 foreach ($process in $owned) {
@@ -17050,6 +17101,387 @@ def _restart_managed_opencode(state: dict | None = None) -> bool:
         raise RuntimeError(f"Could not restart managed OpenCode: {detail[:300]}")
     _wait_for_opencode_health()
     return True
+
+
+# ---------------------------------------------------------------------------
+# OpenCode as a dashboard application
+#
+# OpenCode is a host process (systemd user unit, LaunchAgent, or scheduled
+# task), not a container. A TCP probe alone cannot tell "the owner never
+# selected OpenCode" from "the installed service stopped", so the dashboard
+# used to show a permanent "Offline" entry on installs that never had it.
+# These helpers report the managed lifecycle explicitly and let the dashboard
+# start an installed service or, on Linux, set up the reviewed release.
+# ---------------------------------------------------------------------------
+
+_OPENCODE_LINUX_UNIT = "opencode-web.service"
+_OPENCODE_MACOS_LABEL = "com.ods.opencode-web"
+_OPENCODE_PROGRESS_ID = "opencode"
+_OPENCODE_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$")
+_opencode_setup_lock = threading.Lock()
+_opencode_setup_thread: threading.Thread | None = None
+
+
+def _opencode_linux_unit_path() -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / _OPENCODE_LINUX_UNIT
+
+
+def _opencode_macos_plist_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{_OPENCODE_MACOS_LABEL}.plist"
+
+
+def _opencode_service_registered(system: str | None = None) -> bool:
+    """Return whether ODS registered its managed OpenCode web service."""
+    system = system or platform.system()
+    if system == "Linux":
+        return _opencode_linux_unit_path().is_file()
+    if system == "Darwin":
+        return _opencode_macos_plist_path().is_file()
+    if system == "Windows":
+        # The Windows installer always registers ODSOpenCodeWeb together with
+        # the managed binary; start falls back to the binary when the task is
+        # missing.
+        return (Path.home() / ".opencode" / "bin" / "opencode.exe").is_file()
+    return False
+
+
+def _probe_opencode_web(port: int, timeout: float = 2.0) -> dict:
+    """Probe OpenCode's own health route on host loopback.
+
+    ``GET /global/health`` returns ``{"healthy": true, "version": ...}``.
+    Anything else answering on the port is reported as reachable but not
+    healthy, so an unrelated process is never presented as OpenCode.
+    """
+    opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
+    started = time.monotonic()
+    result = {"reachable": False, "healthy": False, "version": None}
+    try:
+        request = urllib_request.Request(f"http://127.0.0.1:{int(port)}/global/health")
+        with opener.open(request, timeout=timeout) as response:
+            result["reachable"] = True
+            payload = json.loads(response.read(4096).decode("utf-8"))
+        if isinstance(payload, dict) and payload.get("healthy") is True:
+            result["healthy"] = True
+            version = payload.get("version")
+            if isinstance(version, str) and _OPENCODE_VERSION_RE.fullmatch(version):
+                result["version"] = version
+    except urllib_error.HTTPError as exc:
+        result["reachable"] = True
+        exc.close()
+    except (OSError, ValueError):
+        pass
+    result["response_time_ms"] = round((time.monotonic() - started) * 1000, 1)
+    return result
+
+
+def _opencode_service_active() -> bool | None:
+    """Return the service manager's view, or None when it cannot be read."""
+    try:
+        if platform.system() == "Darwin":
+            # A loaded LaunchAgent is not necessarily running; only a live
+            # process means OpenCode is still starting rather than stopped.
+            result = subprocess.run(
+                ["launchctl", "print", f"gui/{os.getuid()}/{_OPENCODE_MACOS_LABEL}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            return result.returncode == 0 and re.search(
+                r"^\s*state = running\s*$", result.stdout or "", re.MULTILINE,
+            ) is not None
+        return bool(_capture_managed_opencode_state().get("active"))
+    except (RuntimeError, OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _opencode_setup_in_progress() -> bool:
+    thread = _opencode_setup_thread
+    return bool(thread is not None and thread.is_alive())
+
+
+def _opencode_setup_issue(env: dict, system: str | None = None) -> str | None:
+    """Explain why dashboard setup is unavailable, or return None."""
+    system = system or platform.system()
+    if system != "Linux":
+        return (
+            "OpenCode is set up by the ODS installer on this platform. "
+            "Re-run the installer to repair it."
+        )
+    if shutil.which("systemctl") is None:
+        return "Dashboard setup needs systemd user services (systemctl was not found)."
+    getuid = getattr(os, "getuid", None)
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or (
+        f"/run/user/{getuid()}" if callable(getuid) else ""
+    )
+    if not runtime_dir or not Path(runtime_dir, "bus").exists():
+        return (
+            "Dashboard setup needs a running systemd user session for this account. "
+            "Run 'loginctl enable-linger' for the ODS user, then try again."
+        )
+    for required in (
+        INSTALL_DIR / "installers" / "lib" / "opencode-runtime.sh",
+        INSTALL_DIR / "installers" / "lib" / "opencode-release.tsv",
+        INSTALL_DIR / "opencode" / "opencode-web.service",
+    ):
+        if not required.is_file():
+            return f"This ODS installation is missing {required.name}; update ODS first."
+    external = str(env.get("EXTERNAL_LLM_URL") or "").strip() and str(
+        env.get("EXTERNAL_LLM_MODEL") or ""
+    ).strip()
+    if _normal_switchboard_mode(env) != "enabled":
+        if external:
+            return (
+                "This installation routes an external model without the ODS switchboard. "
+                "Re-run the installer with --opencode to set OpenCode up."
+            )
+        if not str(env.get("LLM_MODEL") or "").strip():
+            return "No active model is configured yet. Activate a model, then set OpenCode up."
+    return None
+
+
+def _opencode_app_status(env: dict | None = None) -> dict:
+    """Return the dashboard-facing OpenCode lifecycle state.
+
+    States: ``running`` (health route answered), ``installing`` (dashboard
+    setup in progress), ``not_installed`` (no ODS-managed service), ``starting``
+    (service manager active, health pending) and ``stopped``.
+    """
+    env = env if env is not None else load_env(INSTALL_DIR / ".env")
+    system = platform.system()
+    port = _opencode_port()
+    probe = _probe_opencode_web(port)
+    registered = _opencode_service_registered(system)
+    active = None
+    if probe["healthy"]:
+        state = "running"
+    elif _opencode_setup_in_progress():
+        state = "installing"
+    elif not registered:
+        state = "not_installed"
+    else:
+        active = _opencode_service_active()
+        state = "starting" if active else "stopped"
+    setup_issue = None if state == "running" else _opencode_setup_issue(env, system)
+    return {
+        "state": state,
+        "platform": system.lower(),
+        "port": port,
+        "installed": bool(registered or probe["healthy"]),
+        "registered": registered,
+        "serviceActive": active,
+        "healthy": probe["healthy"],
+        "reachable": probe["reachable"],
+        "portInUse": bool(probe["reachable"] and not probe["healthy"]),
+        "version": probe["version"],
+        "responseTimeMs": probe["response_time_ms"],
+        "startSupported": bool(registered),
+        "setupSupported": setup_issue is None and state != "running",
+        "setupIssue": setup_issue,
+    }
+
+
+def _start_managed_opencode() -> None:
+    """Start the registered ODS OpenCode service and prove its health route."""
+    system = platform.system()
+    if system == "Linux":
+        user_env = _opencode_user_service_env()
+        # A crash loop can leave the unit in start-limit-hit; clear that one
+        # unit so an explicit owner start is honoured.
+        subprocess.run(
+            ["systemctl", "--user", "reset-failed", _OPENCODE_LINUX_UNIT],
+            capture_output=True, text=True, timeout=15, env=user_env,
+        )
+        result = subprocess.run(
+            ["systemctl", "--user", "start", _OPENCODE_LINUX_UNIT],
+            capture_output=True, text=True, timeout=60, env=user_env,
+        )
+    elif system == "Darwin":
+        target = f"gui/{os.getuid()}/{_OPENCODE_MACOS_LABEL}"
+        loaded = subprocess.run(
+            ["launchctl", "print", target], capture_output=True, text=True, timeout=15,
+        ).returncode == 0
+        command = (
+            ["launchctl", "kickstart", target]
+            if loaded
+            else ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(_opencode_macos_plist_path())]
+        )
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    elif system == "Windows":
+        if not _run_windows_opencode_control("start"):
+            raise RuntimeError("The ODS OpenCode task could not be started")
+        _wait_for_opencode_health()
+        return
+    else:
+        raise RuntimeError(f"OpenCode start is not supported on {system}")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not start OpenCode: {detail[:300]}")
+    _wait_for_opencode_health()
+
+
+def _opencode_setup_candidate() -> str:
+    """Mirror the installer's binary discovery for the reviewed-release reuse."""
+    managed = Path.home() / ".opencode" / "bin" / "opencode"
+    if managed.is_file() and os.access(managed, os.X_OK):
+        return str(managed)
+    found = shutil.which("opencode")
+    if found and os.path.isabs(found) and Path(found).is_file() and os.access(found, os.X_OK):
+        return found
+    return ""
+
+
+def _render_opencode_unit(template: str, binary: Path) -> str:
+    home = str(Path.home())
+    for value in (home, str(binary)):
+        # The unit uses these paths unquoted in ExecStart/WorkingDirectory and
+        # inside quoted Environment= values; systemd also expands '%'.
+        if not os.path.isabs(value) or any(
+            character.isspace() or character in '%"\\' for character in value
+        ):
+            raise RuntimeError(f"Unsupported path for the OpenCode service: {value!r}")
+    return (
+        template.replace("__HOME__", home)
+        .replace("__OPENCODE_BIN_DIR__", str(binary.parent))
+        .replace("__OPENCODE_BIN__", str(binary))
+    )
+
+
+def _setup_managed_opencode(env: dict) -> None:
+    """Install the reviewed OpenCode release and its managed Linux service.
+
+    The binary step reuses ``installers/lib/opencode-runtime.sh`` (pinned
+    release, SHA256 verification, staged version check). The model route uses
+    the same writer as model activation, and the unit is rendered from the
+    shipped ``opencode/opencode-web.service`` template, as phase 07 does.
+    """
+    runtime = INSTALL_DIR / "installers" / "lib" / "opencode-runtime.sh"
+    _write_progress(_OPENCODE_PROGRESS_ID, "pulling", "Downloading the reviewed OpenCode release")
+    result = subprocess.run(
+        ["bash", "-c", '. "$1" && ods_install_opencode "$2"', "ods-opencode-setup",
+         str(runtime), _opencode_setup_candidate()],
+        capture_output=True, text=True, timeout=900, env=os.environ.copy(),
+    )
+    lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    if result.returncode != 0 or not lines:
+        detail = (result.stderr or "").strip().splitlines()[-1:] or ["no output"]
+        raise RuntimeError(f"OpenCode download or verification failed: {detail[0][:300]}")
+    binary = Path(lines[-1])
+    if not binary.is_absolute() or not binary.is_file():
+        raise RuntimeError("OpenCode installer did not return a usable executable")
+
+    _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Connecting OpenCode to the active ODS model")
+    try:
+        context_length = int(str(env.get("MAX_CONTEXT") or env.get("CTX_SIZE") or "65536").strip())
+    except ValueError as exc:
+        raise RuntimeError("MAX_CONTEXT must be a number to configure OpenCode") from exc
+    if context_length < 1024:
+        raise RuntimeError("OpenCode requires a context of at least 1024 tokens")
+    model_id = str(env.get("LLM_MODEL") or "").strip() or "ods/current"
+    snapshot = _capture_opencode_config(assume_installed=True)
+    if snapshot is None:
+        raise RuntimeError("OpenCode configuration could not be prepared")
+    try:
+        _update_opencode_config(env, snapshot, model_id, context_length, display_name=model_id)
+    except Exception:
+        _restore_opencode_config(snapshot)
+        raise
+
+    template = (INSTALL_DIR / "opencode" / "opencode-web.service").read_text(encoding="utf-8")
+    _atomic_write_text(_opencode_linux_unit_path(), _render_opencode_unit(template, binary), 0o644)
+
+    _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Starting OpenCode")
+    user_env = _opencode_user_service_env()
+    for command in (
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", _OPENCODE_LINUX_UNIT],
+        ["systemctl", "--user", "restart", _OPENCODE_LINUX_UNIT],
+    ):
+        step = subprocess.run(command, capture_output=True, text=True, timeout=60, env=user_env)
+        if step.returncode != 0:
+            detail = (step.stderr or step.stdout or "").strip()
+            raise RuntimeError(f"{' '.join(command[1:])} failed: {detail[:300]}")
+    # Keep the user service running after logout, as the installer does. This
+    # is best effort because some hosts require an administrator to allow it.
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    if user and shutil.which("loginctl"):
+        linger = subprocess.run(
+            ["loginctl", "enable-linger", user], capture_output=True, text=True, timeout=15,
+        )
+        if linger.returncode != 0:
+            logger.warning("Could not enable linger for OpenCode; it may stop after logout")
+    _wait_for_opencode_health()
+    _write_progress(_OPENCODE_PROGRESS_ID, "started", "OpenCode is ready")
+
+
+def _run_opencode_setup(env: dict) -> None:
+    try:
+        _setup_managed_opencode(env)
+    except Exception as exc:  # noqa: BLE001 - reported to the owner via progress
+        logger.warning("OpenCode setup failed: %s", exc)
+        try:
+            _write_progress(_OPENCODE_PROGRESS_ID, "error", "OpenCode setup failed", error=str(exc)[:500])
+        except OSError:
+            logger.exception("Could not record OpenCode setup failure")
+    finally:
+        _end_model_lifecycle("opencode_setup")
+
+
+def _begin_opencode_setup(env: dict) -> tuple[int, dict]:
+    """Start dashboard setup in the background; returns (HTTP code, body)."""
+    global _opencode_setup_thread
+    issue = _opencode_setup_issue(env)
+    if issue:
+        return 409, {"error": issue, "code": "opencode_setup_unsupported"}
+    with _opencode_setup_lock:
+        if _opencode_setup_in_progress():
+            return 202, {"accepted": True, "status": _opencode_app_status(env)}
+        status = _opencode_app_status(env)
+        if status["state"] == "running":
+            return 200, {"accepted": False, "status": status}
+        acquired, active = _begin_model_lifecycle("opencode_setup")
+        if not acquired:
+            return 409, _model_lifecycle_conflict("OpenCode setup", active)
+        try:
+            _write_progress(_OPENCODE_PROGRESS_ID, "pulling", "Preparing OpenCode setup")
+            thread = threading.Thread(
+                target=_run_opencode_setup, args=(env,), name="opencode-setup", daemon=True,
+            )
+            _opencode_setup_thread = thread
+            thread.start()
+        except Exception:
+            _opencode_setup_thread = None
+            _end_model_lifecycle("opencode_setup")
+            raise
+    return 202, {"accepted": True, "status": {**status, "state": "installing"}}
+
+
+def _begin_opencode_start(env: dict) -> tuple[int, dict]:
+    """Start the registered service synchronously; returns (HTTP code, body)."""
+    status = _opencode_app_status(env)
+    if status["state"] == "running":
+        return 200, {"started": False, "status": status}
+    if status["state"] == "installing":
+        return 409, {"error": "OpenCode setup is still running", "code": "opencode_installing", "status": status}
+    if not status["registered"]:
+        return 409, {
+            "error": "OpenCode is not set up on this ODS installation",
+            "code": "opencode_not_installed",
+            "status": status,
+        }
+    if status["portInUse"]:
+        return 409, {
+            "error": f"Port {status['port']} is used by another program, so OpenCode cannot start",
+            "code": "opencode_port_in_use",
+            "status": status,
+        }
+    acquired, active = _begin_model_lifecycle("opencode_start")
+    if not acquired:
+        return 409, _model_lifecycle_conflict("starting OpenCode", active)
+    try:
+        _start_managed_opencode()
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        return 502, {"error": str(exc)[:500], "code": "opencode_start_failed", "status": _opencode_app_status(env)}
+    finally:
+        _end_model_lifecycle("opencode_start")
+    return 200, {"started": True, "status": _opencode_app_status(env)}
 
 
 def _perplexica_config_url(env: dict) -> str:
