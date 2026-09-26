@@ -190,7 +190,7 @@ function transitionIncompleteFeedback(request, requirement, final = false) {
   if (final) return `${why}${FINAL}`;
   if (!args) return `${why} Next step: find the affected element and its control in your source, then call pixel_ods_workspace_preview_inspect ` +
     `again on the same snapshot with steps ${first}(target), click(control), ${last}(target), using one unchanging target locator in both assertions, such as an id. ${keep}`;
-  return `${why} Next step: call pixel_ods_workspace_preview_inspect again (through tool_call if that is how you called it) with exactly these args: ${JSON.stringify(args)} ${targetAbout(correction)} ${KEEP_CLICK} ${keep}`;
+  return `${why} Next step: call pixel_ods_workspace_preview_inspect directly again with exactly these args: ${JSON.stringify(args)} ${targetAbout(correction)} ${KEEP_CLICK} ${keep}`;
 }
 
 // Every non-passing result below names one ready, validated call, a measured
@@ -446,13 +446,21 @@ const SAFE_KEY = /^[A-Za-z_$][\w$-]{0,39}(?:\.[A-Za-z_$][\w$-]{0,39})?$/;
 const SHAPE_EXAMPLE = JSON.stringify({siteId:'<siteId from the latest publication receipt>',sha256:'<full sha256 from the latest publication receipt>',
   viewport:{width:375,height:667},steps:[{action:'assert-hidden',locator:{selector:'#<id of the affected element>'}},
     {action:'click',locator:{role:'button',name:'<exact button text>',exact:true}},{action:'assert-visible',locator:{selector:'#<id of the affected element>'}}]});
+// Rejected arguments whose identifiers are not the run's current publication
+// (#6747): an earlier snapshot's plan, or no known publication for this call.
+// No ready call carries them back.
+const UNBOUND_REJECTION_NEXT = 'Next step: call pixel_ods_workspace_preview_inspect directly with the exact published siteId and full sha256 from the latest publication receipt, viewport {width,height}, and steps. Each step is {action, locator}; a locator is {"selector":"..."} or {"role":"...","name":"...","exact":true}. Use a CSS selector for elements whose role is not supported. Do not guess snapshot identifiers.';
 // Names the failing step and key and the reason; then one ready call: the
 // request's own identifiers and locators, losslessly repaired, when they test
 // a show/hide change or no owner requirement is bound; else the owner's
 // requirement-derived plan on the request's valid snapshot binding (laptop
 // round 107's repaired args asserted a state-qualified card visible before
 // the click and could not pass); else the repaired args; else one shape example.
-function rejectedFeedback(error, params, requirementOf, stated) {
+// publicationOf() is undefined when the tool has no publication lookup;
+// otherwise the run's current {siteId, sha256} for this exact call, or null.
+// With a lookup, a ready call is offered only for the current publication's
+// identifiers (#6747); an earlier snapshot's identifiers are never sent back.
+function rejectedFeedback(error, params, requirementOf, stated, publicationOf = () => undefined) {
   const key = typeof error?.key === 'string' && SAFE_KEY.test(error.key) ? `key ${JSON.stringify(error.key)}` : undefined;
   const where = [error?.step !== undefined ? `step ${error.step + 1}` : undefined, key].filter(Boolean).join(', ');
   const reason = error && Object.hasOwn(error, 'role')
@@ -460,6 +468,9 @@ function rejectedFeedback(error, params, requirementOf, stated) {
     : INPUT_HINTS.get(error?.message) ?? 'Check the tool schema.';
   const diagnosis = 'Preview inspection request rejected before execution: invalid arguments. ' + (where ? `At ${where}: ` : '') + reason +
     ' The inspector was not contacted; this does not establish service unavailability. Requested behavior remains unverified.';
+  const publication = publicationOf();
+  if (publication !== undefined && (publication === null || params?.siteId !== publication.siteId || params?.sha256 !== publication.sha256))
+    return {diagnosis, next: ` ${UNBOUND_REJECTION_NEXT}`};
   const repaired = argumentCorrection(params);
   const partial = repaired ? {schemaVersion:1, action:'inspect', ...repaired} : validPartialRequest(params);
   const requirement = partial && !(repaired && hasVisibilityTransitionPlan(repaired)) ? requirementOf() : undefined;
@@ -528,6 +539,31 @@ export function argumentCorrection(params) {
   const args={siteId:params.siteId,sha256:params.sha256,viewport:params.viewport,steps};
   try { normalizeWorkspacePreviewInspectionParams(args); } catch { return undefined; }
   return isDeepStrictEqual(args,params) ? undefined : structuredClone(args);
+}
+// #6747: a rejected plan whose only defect is where its locators sit: a
+// selector or role/name beside action instead of inside locator (strixy round
+// 107 calls 8, 11 and 12), or a role/name locator without exact:true (laptop
+// round 107 call 4). Returns the same identifiers, viewport and steps with
+// each locator nested, only when that alone makes the plan valid; else
+// undefined. It never guesses a locator, an action or an identifier. The run
+// guard's answer to a wrapped tool_describe of this tool uses it; the tool's
+// own rejection feedback uses argumentCorrection above.
+export function correctedInspectionArgs(params) {
+  if(!exact(params,['siteId','sha256','viewport','steps']) || !Array.isArray(params.steps)) return undefined;
+  const steps=params.steps.map(step=>{
+    if(!step || typeof step!=='object' || Array.isArray(step)) return undefined;
+    const {action,locator,...flat}=step;
+    const source=locator===undefined ? flat : Object.keys(flat).length===0 ? locator : undefined;
+    if(exact(source,['selector'])) return {action,locator:{selector:source.selector}};
+    if(exact(source,['role','name']) || (exact(source,['role','name','exact']) && source.exact===true))
+      return {action,locator:{role:source.role,name:source.name,exact:true}};
+    return undefined;
+  });
+  if(steps.includes(undefined)) return undefined;
+  const args={siteId:params.siteId,sha256:params.sha256,viewport:params.viewport,steps};
+  if(isDeepStrictEqual(args,params)) return undefined;
+  try { normalizeWorkspacePreviewInspectionParams(args); } catch { return undefined; }
+  return args;
 }
 // A valid snapshot binding with only the steps that are valid on their own
 // (after lossless repair); the owner's show/hide requirement fills the rest.
@@ -603,8 +639,10 @@ function nativeRequest(payload,{signal}={}) {
 // undefined; it can only withhold "passed", never grant it. guidance(toolCallId,
 // params), also from the run guard, only words a failed result: the direction
 // the owner's wording stated and whether this failure ends the response's
-// tool use.
-export function createWorkspacePreviewInspectTool({request,transport='unix',transitionRequirement,guidance}={}) {
+// tool use. currentPublication(toolCallId, params), also the guard's, returns
+// the {siteId, sha256} of the run's current publication for exactly this call,
+// or undefined; it only decides whether rejected arguments get a ready call.
+export function createWorkspacePreviewInspectTool({request,transport='unix',transitionRequirement,guidance,currentPublication}={}) {
   if(!['unix','native'].includes(transport))throw Error('invalid inspection transport');
   request??=transport==='unix'?unixRequest:nativeRequest;
   return {name:'pixel_ods_workspace_preview_inspect',
@@ -626,13 +664,19 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
       // A failure that ends the response's tool use replaces its next step.
       const final=()=>hintsOf().finalFailure===true;
       const compose=({diagnosis,next})=>`${diagnosis}${final()?FINAL:next}`;
+      // Without a lookup, undefined; a missing or throwing lookup is an unknown
+      // publication (null), never a ready call.
+      const publicationOf=()=>{
+        if (typeof currentPublication!=='function') return undefined;
+        try { return currentPublication(toolCallId,params) ?? null; } catch { return null; }
+      };
       // Bad model arguments are not evidence that the installed broker is down.
       // Keep this outside the transport catch so the ordinary bounded correction
       // path remains available, without invoking the broker on invalid input.
       if (!signal?.aborted) {
         try { normalized=normalizeWorkspacePreviewInspectionParams(params); }
         catch (error) { return {
-          content:[{type:'text',text:compose(rejectedFeedback(error,params,requirementOf,stated))}],
+          content:[{type:'text',text:compose(rejectedFeedback(error,params,requirementOf,stated,publicationOf))}],
           details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'invalid_request',scope:INSPECTION_SCOPE},isError:true,
         }; }
       }

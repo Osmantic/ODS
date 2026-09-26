@@ -560,6 +560,9 @@ test('the registered inspection tool asks the run guard about exactly its own ca
     toolLoopGuard: {previewInspectionTransition: (id, params) => {
       asked.push([id, params]);
       return {target: OWNER_PHRASE, outline: outlineOf(TOWER2, TOWER2_PUBLISH).outline, initiallyHidden: true};
+    }, previewInspectionPublication: (id, params) => {
+      asked.push(['publication', id, params]);
+      return {siteId: TOWER2_INSPECT.arguments.siteId, sha256: TOWER2_INSPECT.arguments.sha256};
     }},
   });
   assert.deepEqual(registered.names, [PREVIEW_INSPECTION_TOOL]);
@@ -567,4 +570,11 @@ test('the registered inspection tool asks the run guard about exactly its own ca
   assert.deepEqual(asked, [['call-1', TOWER2_INSPECT.arguments]]);
   assert.ok(result.content[0].text.startsWith(INCOMPLETE), result.content[0].text);
   assert.deepEqual(nextArgs(result.content[0].text).steps, transition(TOWER2_TARGET));
+  // Rejected arguments ask the guard for this call's current publication.
+  const flat = {...TOWER2_INSPECT.arguments, steps: [{action: 'assert-hidden', selector: '#x'}]};
+  const rejected = await registered.tool.execute('call-2', flat);
+  // Integration with #6748: a lossless repair that tests no change also asks
+  // for this call's requirement; both lookups are bound to exactly call-2.
+  assert.deepEqual(asked.slice(1), [['publication', 'call-2', flat], ['call-2', flat]]);
+  assert.match(rejected.content[0].text, /with exactly these args/);
 });

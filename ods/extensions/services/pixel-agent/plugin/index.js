@@ -761,6 +761,9 @@ export default definePluginEntry({
         transitionRequirement: (toolCallId, params) => toolLoopGuard.previewInspectionTransition(toolCallId, params),
         // Wording only: the owner's stated direction and whether a failure ends tool use.
         guidance: (toolCallId, params) => toolLoopGuard.previewInspectionGuidance(toolCallId, params),
+        // Rejected arguments come back as a ready plan only for the run's
+        // current publication, never with an earlier snapshot's identifiers.
+        currentPublication: (toolCallId, params) => toolLoopGuard.previewInspectionPublication(toolCallId, params),
       }), { names: ["pixel_ods_workspace_preview_inspect"] });
     }
 

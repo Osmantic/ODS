@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {createToolLoopGuard, WORKSPACE_PREVIEW_COMPLETE_REASON} from '../plugin/tool-loop-guard.mjs';
 import {PREVIEW_INSPECTION_TOOL, PAGE_ERROR_REPAIR_INSTRUCTION, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection,
-  boundStaticPreviewInspection} from '../plugin/preview-interaction-assurance.mjs';
+  boundStaticPreviewInspection, visibilityInspectionInstruction} from '../plugin/preview-interaction-assurance.mjs';
 import {INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash, normalizeWorkspacePreviewInspectionParams, createWorkspacePreviewInspectTool} from '../plugin/workspace-preview-inspect.mjs';
 
 const owner='Create and publish a website in a new workspace directory site. Add a button that toggles hidden details.';
@@ -181,10 +181,12 @@ test('published links remain available without falsely passing missing interacti
   const retry=guard.beforeAgentFinalize({},context)?.retry;assert.equal(retry?.idempotencyKey,'pixel-ods-workspace-preview-interaction');assert.equal(retry?.maxAttempts,1);
   const guidance=guard.toolResultPersist({message:{role:'toolResult',toolName:'pixel_ods_workspace_preview',toolCallId:'publish',content:[{type:'text',text:'published'}]}},{...context,toolCallId:'publish'});
   assert.match(JSON.stringify(guidance),/pixel_ods_workspace_preview_inspect/);
-  // Strixy round 107 obeyed "call tool_describe ..." as tool_call {id: "tool_describe"};
-  // OpenClaw 2026.6.33 tool_call accepts the tool's own name or id directly.
+  // The inspection tool is directly visible to Pixel. Naming the Tool Search
+  // route steered strixy round 107 into tool_call {id:"tool_describe"}, which
+  // OpenClaw cannot resolve, and into unshaped tool_call arguments.
   assert.doesNotMatch(retry.instruction,/tool_describe/);
-  assert.match(retry.instruction,/If you call tools through tool_call, give tool_call the id "pixel_ods_workspace_preview_inspect" and these args; no other tool call is needed first\./);
+  assert.doesNotMatch(retry.instruction,/tool_call/);
+  assert.equal(retry.instruction,visibilityInspectionInstruction(preview));
   assert.match(retry.instruction,/call pixel_ods_workspace_preview_inspect directly/);
   assert.ok(retry.instruction.includes(preview.sha256));
   assert.ok(retry.instruction.includes(preview.siteId));
