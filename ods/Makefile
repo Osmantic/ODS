@@ -100,6 +100,9 @@ test: ## Run unit and contract tests
 	@echo "=== health-check.sh --json output contract ==="
 	@bash tests/test-health-check-json-output.sh
 	@echo ""
+	@echo "=== restore confirmation UX ==="
+	@bash tests/test-restore-safety-ux.sh
+	@echo ""
 	@echo "=== QR code helper LAN detection ==="
 	@bash tests/test-qrcode-helper.sh
 	@echo ""

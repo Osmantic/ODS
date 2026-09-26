@@ -296,6 +296,9 @@ jobs:
       - name: Post-install Inference Validation Tests
         run: python3 tests/test_validate_chat_response.py
 
+      - name: Restore Safety UX Tests
+        run: bash tests/test-restore-safety-ux.sh
+
       - name: QR Code Helper Tests
         run: bash tests/test-qrcode-helper.sh
 
