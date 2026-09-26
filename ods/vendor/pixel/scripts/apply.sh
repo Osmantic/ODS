@@ -299,6 +299,10 @@ pixel_atomic_symlink "$release" "$PIXEL_INSTALL_DIR/current"
 cp -a -n -- "$ROOT/.generated/workspace/." "$PIXEL_WORKSPACE/"
 node "$ROOT/scripts/migrate-portal-identity.mjs" "$PIXEL_WORKSPACE" "$ROOT/.generated/workspace"
 node "$ROOT/scripts/migrate-workspace-source-boundary.mjs" "$PIXEL_WORKSPACE" >/dev/null
+# cp -n keeps existing workspace files, so remove exact retired template text here.
+# Cleanup failure leaves owner files unchanged and must not roll back the release.
+node "$ROOT/scripts/migrate-retired-workspace-text.mjs" "$PIXEL_WORKSPACE" \
+  || pixel_warn "Retired workspace template text could not be removed from every file; failed files were left unchanged"
 rm -f -- "$PIXEL_WORKSPACE/scripts/xfeed.sh"
 # Existing workspace data belongs to the owner and may include read-only sandbox mounts.
 # Only managed/new paths receive deployment permissions; never recursively chmod memory.

@@ -20,8 +20,7 @@ test('disabled detail omitted; universal rules, Operations and research constrai
   const event = fixture(), priorObjects = [...event.context.bootstrapFiles];
   assert.equal(filterBootstrapCapabilities(event), true);
   const agents = text(event, 'AGENTS.md'), tools = text(event, 'TOOLS.md');
-  assert.ok(!agents.includes("Michael's settled") && !agents.includes('Tower2 (DSV4)'));
-  assert.ok(agents.includes('## Local execution') && agents.includes('Calendar tools are disabled'));
+  assert.ok(agents.includes('Calendar tools are disabled') && !agents.includes('## Local execution'));
   assert.ok(!agents.includes('copy its exact `etag`') && !agents.includes('Record every spillover'));
   assert.ok(!tools.includes('sanitizedPreview') && tools.includes('Frontier tools are disabled'));
   for (const value of ['Never reveal credentials or private keys.',
@@ -120,11 +119,21 @@ test('owner edits, wrong file paths and unknown default revisions remain byte-ex
   }
 });
 
+test('current MEMORY.md and other startup files pass through unchanged', () => {
+  const event = fixture();
+  const memory = fs.readFileSync(new URL('../../../../vendor/pixel/workspace-template/MEMORY.md', import.meta.url), 'utf8');
+  event.context.bootstrapFiles.push({name: 'MEMORY.md', path: path.join(workspace, 'MEMORY.md'), content: memory, missing: false},
+    {name: 'SOUL.md', path: path.join(workspace, 'SOUL.md'), content: 'Soul.\n', missing: false});
+  filterBootstrapCapabilities(event);
+  assert.equal(text(event, 'MEMORY.md'), memory);
+  assert.equal(text(event, 'SOUL.md'), 'Soul.\n');
+});
+
 test('registers the actual bootstrap event with a stable hook name', () => {
   const calls = [];
   registerBootstrapCapabilities({registerHook: (...args) => calls.push(args)});
   assert.equal(calls.length, 1); assert.equal(calls[0][0], 'agent:bootstrap');
   assert.equal(calls[0][2].name, 'pixel-ods-capability-bootstrap');
   const event = fixture(); calls[0][1](event);
-  assert.ok(text(event, 'AGENTS.md').includes('## Local execution'));
+  assert.ok(text(event, 'AGENTS.md').includes('Calendar tools are disabled'));
 });

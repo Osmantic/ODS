@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`6e82d4c974be8c7b5aebe3a4ffd5374e20ad0ac5`, and its SHA-256 is
-`115da4c894a40991c40fc3f5ff94cb2763b4b9395d875e1b781f234d563fc79b`.
+`ec0e015fa1c469d61908fbd5c016f5e9272c5e50`, and its SHA-256 is
+`47bfa1e729637e28f979f4041bf8704bc0e040cacfa223bc7a29277bc8d7515e`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -36,6 +36,20 @@ validation. Native boundary tests cover 25 and 32 accepted tools and 33 rejected
 the ODS installer additionally configures the pinned bundle using its actual
 generated extension tool list. The bundle retains its public synthetic identity
 and timestamp, contains one root commit, and two regenerations were byte-identical.
+
+The ODS workspace-template adaptation removes an owner-specific operating-procedure
+section from `workspace-template/AGENTS.md` and its matching `MEMORY.md` entry,
+which the first export had carried from the private repository. Both files now equal
+the private repository's pre-2026-08-17 template. `scripts/migrate-retired-workspace-text.mjs`,
+run by `apply.sh` and the macOS native update, removes only byte-exact shipped
+copies from existing workspaces, keeps a backup next to each changed file, and
+identifies the retired text by SHA-256 so the wording is not republished. The
+same pass replaces owner names, hosts and paths in documentation and test
+fixtures with neutral placeholders, and keeps the trial-corpus denylist only as
+salted SHA-256 digests. The bundle keeps its public synthetic identity
+and timestamp and one root commit; regenerations with Git 2.43 on Linux and Git
+2.53 on Windows were byte-identical. Earlier Git history still contains the
+removed text.
 
 ## Pending upstream change: Anthropic work-provider model
 

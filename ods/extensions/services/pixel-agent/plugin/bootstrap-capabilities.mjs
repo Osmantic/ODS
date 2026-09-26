@@ -1,11 +1,23 @@
 import {createHash} from 'node:crypto';
 import path from 'node:path';
 
-// Reviewed vendor defaults only. Unknown revisions and any owner edits retain
-// their complete original text. No workspace file is read or written here.
+// Capability trimming applies to reviewed vendor defaults only. Unknown revisions
+// and owner edits keep their complete text, apart from exact retired blocks below.
+// No workspace file is read or written here.
 const DEFAULT_DIGESTS = Object.freeze({
-  'AGENTS.md': 'c5fe405d7c9a243ef21660aea711de14164dd1b245613f0970026f1881f4a225',
+  'AGENTS.md': '54691ec83d97a2edc9ea20b546228ffb32240f7688b662ad3da756864ff8ddb1',
   'TOOLS.md': '1c575473578d8db98838c1587ce27e0be6ee6d51e2dab2539304f68f7dd8ea53',
+});
+// Retired template text that earlier ODS Pixel bundles copied into workspaces (#6156).
+// The upgrade migration (vendor/pixel/scripts/migrate-retired-workspace-text.mjs) removes
+// it from disk; until it has run, an exact copy is also left out of the prompt here.
+// Same SHA-256 table as that migration: canonical LF text, never the retired wording.
+export const RETIRED_TEXT = Object.freeze({
+  'AGENTS.md': Object.freeze({sections: Object.freeze(['a79b56d5d9f5d76a1bb643bc53d37b97104ccc628182ec013edde8ed865b683f']),
+    lines: Object.freeze([]), emptyHeadings: Object.freeze([])}),
+  'MEMORY.md': Object.freeze({sections: Object.freeze([]),
+    lines: Object.freeze(['73195176060dcedc9a4ac7f0abf1590f3c275a9c743aa7bf562303207819ccf3']),
+    emptyHeadings: Object.freeze(['## Standing operating decisions'])}),
 });
 export const CALENDAR_TOOLS = Object.freeze(['pixel_calendar_list', 'pixel_calendar_get',
   'pixel_calendar_propose_create', 'pixel_calendar_propose_update', 'pixel_calendar_propose_delete']);
@@ -14,7 +26,7 @@ export const FRONTIER_TOOLS = Object.freeze(['pixel_frontier_plan_review', 'pixe
   'pixel_frontier_job_cancel', 'pixel_frontier_usage', 'pixel_frontier_finalize']);
 const CALENDAR_UNAVAILABLE = 'Calendar tools are disabled for this agent. Do not claim to read or change events or substitute another tool for Calendar access.\n\n';
 const FRONTIER_UNAVAILABLE = 'Frontier tools are disabled for this agent. Do not route Frontier requests through web, shell, Operations, or another limb.\n\n';
-const PRODUCT_EXECUTION = '## Local execution\n\nUse the model and tools configured for this ODS installation. Do not assume access to another owner\'s machines, models, or accounting services. Verify tool results before claiming completion.\n\n';
+const BOM = '﻿';
 
 function denied(name, patterns) {
   return Array.isArray(patterns) && patterns.some(pattern => typeof pattern === 'string'
@@ -35,15 +47,65 @@ function section(text, start, end, replacement = '') {
   return text.slice(0, a) + replacement + text.slice(b);
 }
 
-function reviewedSection(text, digest, replacement) {
-  const boundaries = [...text.matchAll(/^## /gm)].map(match => match.index);
-  boundaries.push(text.length);
-  for (let index = 0; index < boundaries.length - 1; index++) {
-    const start = boundaries[index], end = boundaries[index + 1];
-    if (createHash('sha256').update(text.slice(start, end)).digest('hex') === digest)
-      return text.slice(0, start) + replacement + text.slice(end);
+const sha256 = value => createHash('sha256').update(value).digest('hex');
+
+function textLines(text) {
+  const lines = [];
+  for (let start = text.startsWith(BOM) ? 1 : 0; start < text.length;) {
+    const newline = text.indexOf('\n', start), next = newline < 0 ? text.length : newline + 1;
+    let end = newline < 0 ? text.length : newline;
+    if (end > start && text[end - 1] === '\r') end--;
+    lines.push({start, next, text: text.slice(start, end)});
+    start = next;
   }
-  throw new Error('reviewed-bootstrap-section-missing');
+  return lines;
+}
+
+// Mirrors removeRetiredWorkspaceText in the vendored migration: exact blocks only,
+// with CRLF and trailing empty lines normalized for matching; all other text is kept.
+export function removeRetiredText(name, text, table = RETIRED_TEXT) {
+  const retired = Object.hasOwn(table, name) ? table[name] : null;
+  if (!retired) return text;
+  const lines = textLines(text), drop = new Array(lines.length).fill(false);
+  const heading = index => /^##? /.test(lines[index].text), blank = index => /^[ \t]*$/.test(lines[index].text);
+  const nextHeading = after => {
+    for (let index = after + 1; index < lines.length; index++) if (heading(index)) return index;
+    return lines.length;
+  };
+  let removed = 0;
+  for (let index = 0; retired.sections.length && index < lines.length; index++) {
+    if (!heading(index)) continue;
+    const end = nextHeading(index);
+    let last = end;
+    while (last > index + 1 && lines[last - 1].text === '') last--;
+    const canonical = lines.slice(index, last).map(line => `${line.text}\n`).join('');
+    if (retired.sections.includes(sha256(canonical))) { drop.fill(true, index, end); removed++; }
+    index = end - 1;
+  }
+  const removedLines = [];
+  for (let index = 0; retired.lines.length && index < lines.length; index++) {
+    if (!drop[index] && retired.lines.includes(sha256(lines[index].text))) { drop[index] = true; removedLines.push(index); removed++; }
+  }
+  for (const index of removedLines) {
+    let owner = index - 1;
+    while (owner >= 0 && !heading(owner)) owner--;
+    if (owner < 0 || drop[owner] || !retired.emptyHeadings.includes(lines[owner].text)) continue;
+    const end = nextHeading(owner);
+    let empty = true;
+    for (let line = owner + 1; line < end; line++) if (!drop[line] && !blank(line)) empty = false;
+    if (empty) drop.fill(true, owner, end);
+  }
+  if (!removed) return text;
+  // A block removed from the end of the file must not leave trailing blank lines behind.
+  if (drop[lines.length - 1]) {
+    for (let index = lines.length - 1; index >= 0; index--) {
+      if (drop[index]) continue;
+      if (!blank(index)) break;
+      drop[index] = true;
+    }
+  }
+  return (text.startsWith(BOM) ? BOM : '')
+    + lines.filter((_, index) => !drop[index]).map(line => text.slice(line.start, line.next)).join('');
 }
 
 export function filterBootstrapCapabilities(event) {
@@ -65,17 +127,18 @@ export function filterBootstrapCapabilities(event) {
   // Build all changes before publishing; do not mutate original file objects.
   const updates = [];
   for (let index = 0; index < files.length; index++) {
-    const file = files[index], expected = DEFAULT_DIGESTS[file?.name];
-    if (!expected || file.missing || typeof file.content !== 'string'
-        || file.path !== path.join(path.resolve(workspace), file.name)
-        || createHash('sha256').update(file.content).digest('hex') !== expected) continue;
-    let content = file.content;
-    if (file.name === 'AGENTS.md') {
-      content = reviewedSection(content, 'f4ae5ee982981b26ec0b4130772d4ed6e7519eec0ae77650a777325bfa79b818', PRODUCT_EXECUTION);
-      if (frontierDisabled) content = section(content, 'Frontier work follows a narrower boundary.', '## Calendar: bounded direct actions and approval\n', FRONTIER_UNAVAILABLE);
-      if (calendarDisabled) content = section(content, '## Calendar: bounded direct actions and approval\n', '## Perception limits\n', CALENDAR_UNAVAILABLE);
-    } else if (frontierDisabled) {
-      content = section(content, '## Frontier limb\n', null, FRONTIER_UNAVAILABLE);
+    const file = files[index], name = file?.name, expected = DEFAULT_DIGESTS[name];
+    if ((!expected && !Object.hasOwn(RETIRED_TEXT, name ?? '')) || file.missing || typeof file.content !== 'string'
+        || file.path !== path.join(path.resolve(workspace), name)) continue;
+    // Exact retired blocks leave the prompt even from owner-edited files; nothing else does.
+    let content = removeRetiredText(name, file.content);
+    if (expected && sha256(content) === expected) {
+      if (name === 'AGENTS.md') {
+        if (frontierDisabled) content = section(content, 'Frontier work follows a narrower boundary.', '## Calendar: bounded direct actions and approval\n', FRONTIER_UNAVAILABLE);
+        if (calendarDisabled) content = section(content, '## Calendar: bounded direct actions and approval\n', '## Perception limits\n', CALENDAR_UNAVAILABLE);
+      } else if (frontierDisabled) {
+        content = section(content, '## Frontier limb\n', null, FRONTIER_UNAVAILABLE);
+      }
     }
     if (content !== file.content) updates.push([index, {...file, content}]);
   }

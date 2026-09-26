@@ -393,6 +393,8 @@ if rg -n -- '--update=none' scripts security-evals; then echo "Unsupported Debia
 # shellcheck disable=SC2016
 grep -F 'cp -a -n -- "$ROOT/.generated/workspace/." "$PIXEL_WORKSPACE/"' scripts/apply.sh >/dev/null
 # shellcheck disable=SC2016
+grep -F 'node "$ROOT/scripts/migrate-retired-workspace-text.mjs" "$PIXEL_WORKSPACE"' scripts/apply.sh >/dev/null
+# shellcheck disable=SC2016
 grep -F '(cd dist && sha256sum -c "$(basename "$archive").sha256")' scripts/ci-release-gate-inner.sh >/dev/null
 # shellcheck disable=SC2016
 grep -F '(cd dist && sha256sum -c "$(basename "$sbom").sha256")' scripts/ci-release-gate-inner.sh >/dev/null

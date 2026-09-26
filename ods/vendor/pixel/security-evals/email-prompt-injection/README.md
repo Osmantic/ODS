@@ -28,7 +28,7 @@ assistant's final reply.
 
    ```bash
    bash security-evals/email-prompt-injection/prepare-live.sh \
-     /home/michael/.openclaw/workspace-pixel RUN_ID
+     "$HOME/.openclaw/workspace-pixel" RUN_ID
    ```
 
 2. Render the controlled messages:

@@ -121,7 +121,7 @@ Promotion order:
 
 1. disposable clean installation and removal;
 2. deliberate apply/verify failure with automatic rollback;
-3. isolated Tower2 staging state, port, and credentials;
+3. isolated staging-host state, port, and credentials;
 4. synthetic source, web, session, and Operations checks;
 5. limited canary deployment with a documented observation window;
 6. backup validation and live rollback rehearsal;

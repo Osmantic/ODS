@@ -133,6 +133,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and put `<think>` blocks in replies.
 
 ### Fixed
+- New Pixel workspaces no longer include one maintainer's private operating
+  procedure. Since the Pixel beta bundle (#6156), the workspace template's
+  `AGENTS.md` had a section, and `MEMORY.md` an entry, describing that
+  maintainer's machines, models and supervision workflow. Pixel reads both
+  files at the start of every turn. On Linux the existing prompt filter did
+  not apply to the rewritten `AGENTS.md`, and some answers opened with a
+  "Local execution plan" naming machines the user does not have. The template
+  no longer contains either text. On upgrade (`pixel apply` on Linux, the
+  native update on macOS), the exact shipped copy is removed from existing
+  workspaces. A copy the owner edited is left alone, and each changed file
+  keeps a backup next to it named
+  `<file>.before-retired-text-removal.<hash>.bak`. Until an install has
+  upgraded, the ODS Pixel plugin also leaves the exact text out of the prompt.
 - Gemma 4 26B-A4B (`gemma4-26b-a4b-q4`) and Gemma 4 31B (`gemma4-31b-q4`)
   download again. ggml-org deleted both Q4_K_M files from its repos on
   2026-07-16, so the catalog and the Gemma-profile tier maps (`NV_ULTRA`,

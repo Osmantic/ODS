@@ -114,6 +114,7 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
                 expected += ['activate', 'finalize']
                 assert result['status'] == 'selection-ready'
                 assert result['portalIdentityMigration']['status'] == 'manual-review-required'
+                assert result['retiredWorkspaceText']['status'] == 'manual-review-required'
             else:
                 assert result['status'] == 'prepared'
             assert stages == expected
@@ -154,4 +155,43 @@ def test_native_update_checks_owner_profile_after_activation(tmp_path, monkeypat
 
 def test_native_update_does_not_claim_profile_migration_without_candidate(tmp_path):
     assert module.migrate_public_identity(source=tmp_path, preparation=tmp_path, node=Path('/node')) == {
+        'status': 'manual-review-required'}
+
+
+def _retired_text_fixture(tmp_path, monkeypatch):
+    source = tmp_path / 'source'
+    script = source / 'scripts/migrate-retired-workspace-text.mjs'
+    script.parent.mkdir(parents=True)
+    script.write_text('// tested separately by the bundled source suite\n')
+    preparation = tmp_path / 'preparation'
+    (preparation / 'candidate').mkdir(parents=True)
+    workspace = tmp_path / 'owner-workspace'
+    workspace.mkdir()
+    document = {'agents': {'list': [{'id': 'pixel', 'workspace': str(workspace)}]}}
+    monkeypatch.setattr(module, 'helper', lambda _name: SimpleNamespace(private_json=lambda _path: document))
+    return source, script, preparation, workspace
+
+
+def test_native_update_removes_retired_workspace_text_after_activation(tmp_path, monkeypatch):
+    source, script, preparation, workspace = _retired_text_fixture(tmp_path, monkeypatch)
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout='Retired workspace text: AGENTS.md current; MEMORY.md current\n')
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    result = module.remove_retired_workspace_text(source=source, preparation=preparation, node=Path('/node'))
+    assert result == {'status': 'checked', 'detail':
+        'Retired workspace text: AGENTS.md current; MEMORY.md current'}
+    assert calls == [(['/node', str(script), str(workspace)],
+        {'capture_output': True, 'text': True, 'timeout': 30, 'check': False})]
+
+
+def test_native_update_reports_retired_text_failure_for_review(tmp_path, monkeypatch):
+    source, script, preparation, _workspace = _retired_text_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(module.subprocess, 'run',
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout='Retired workspace text: AGENTS.md failed (EACCES)\n'))
+    assert module.remove_retired_workspace_text(source=source, preparation=preparation, node=Path('/node')) == {
+        'status': 'manual-review-required'}
+    script.unlink()
+    assert module.remove_retired_workspace_text(source=source, preparation=preparation, node=Path('/node')) == {
         'status': 'manual-review-required'}

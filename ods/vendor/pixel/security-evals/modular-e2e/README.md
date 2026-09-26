@@ -32,7 +32,7 @@ run `evaluate.py` against the responses, transcripts, and artifacts:
 python3 security-evals/modular-e2e/evaluate.py --run-id RUN_ID \
   --responses-dir /tmp/pixel-modular-RUN_ID/responses \
   --transcripts-dir /tmp/pixel-modular-RUN_ID/transcripts \
-  --artifacts-dir /home/michael/.openclaw/workspace-pixel/media/e2e/RUN_ID
+  --artifacts-dir "$HOME/.openclaw/workspace-pixel/media/e2e/RUN_ID"
 ```
 
 The Calendar mutation lifecycle is deliberately manual because it changes a real

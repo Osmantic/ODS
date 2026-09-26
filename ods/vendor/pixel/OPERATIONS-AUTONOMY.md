@@ -56,7 +56,7 @@ The v1 migration is explicit and never overwrites its input or an existing outpu
 ```bash
 ./pixel ops-policy-migrate /secure/client/policy-v1.json \
   /secure/client/policy-v2.json \
-  --environment tower2=production \
+  --environment host-a=production \
   --environment worker-a=lab \
   --update-onboarding /secure/client/onboarding.json \
   --confirm

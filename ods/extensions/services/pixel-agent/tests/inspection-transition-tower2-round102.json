@@ -41,7 +41,7 @@
       "exitCode": 0,
       "durationMs": 160,
       "aggregated": "total 32\ndrwxr-xr-x   2 sandbox sandbox  4096 Sep 25 22:07 .\ndrwx------ 141 sandbox sandbox 12288 Sep 25 22:06 ..\n-rw-------   1 sandbox sandbox  2764 Sep 25 22:06 index.html\n-rw-------   1 sandbox sandbox  1150 Sep 25 22:07 script.js\n-rw-------   1 sandbox sandbox  4488 Sep 25 22:07 styles.css",
-      "cwd": "/home/michael/.openclaw/workspace-pixel"
+      "cwd": "/home/owner/.openclaw/workspace-pixel"
      }
     },
     {
