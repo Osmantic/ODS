@@ -22,11 +22,20 @@ assert 'BindsTo=pixel-ingress.service pixel-workspace-preview.service' in unit
 assert 'ExecStart=/usr/local/libexec/ods-pixel-wsl-runtime-bridge ensure' in unit
 assert 'ExecStop=/usr/local/libexec/ods-pixel-wsl-runtime-bridge remove' in unit
 assert 'PIXEL_RUNTIME_BIND_PROPAGATION_VALUE=rshared' in phase
-assert 'PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/host/wsl/ods-portal-runtime/ingress' in phase
+assert 'PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-runtime/ingress' in phase
 assert '"${docker_command[@]}" info --format' in phase
 assert '"${docker_command[@]}" context inspect' in phase
 assert 'systemctl enable ods-pixel-wsl-runtime-bridge.service' in installer
 assert 'systemctl start ods-pixel-wsl-runtime-bridge.service' in installer
 assert 'systemctl disable --now ods-pixel-wsl-runtime-bridge.service' in uninstall
+# Docker Desktop translates bind sources from the calling distro; the daemon's
+# own /mnt/host/wsl name fails there as "is mounted on / but it is not a shared mount".
+for text in (phase, installer):
+    assert '/mnt/host/wsl' not in text
+# Pixel Edge starts with the prerequisites, before the bridge exists, so the
+# empty shared targets must be created before that Compose launch.
+precreate = installer.index('/mnt/wsl/ods-portal-runtime/ingress /mnt/wsl/ods-portal-runtime/preview')
+prerequisites_up = installer.index('"${pixel_prerequisites[@]}" >>"$LOG_FILE"')
+assert precreate < prerequisites_up, 'WSL runtime targets must exist before Pixel Edge starts'
 PY
 echo "Pixel WSL shared runtime bridge checks passed"
