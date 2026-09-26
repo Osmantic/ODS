@@ -8,9 +8,12 @@
 //
 // OpenClaw 2026.6.33 treats such a reply as an incomplete terminal turn: it
 // skips before_agent_finalize and replaces the reply, text answers included,
-// with its generic "couldn't generate a response". For a Portal owner turn the
-// ingress first asks for one continuation turn (below). Delivery reports the
-// cut plainly only when no continuation ran or the continuation was cut too.
+// with its generic "couldn't generate a response". After a tool error
+// (attempt.lastToolError) it instead delivers the cut reply's own text. For a
+// Portal owner turn the ingress first asks for one continuation turn (below).
+// Delivery reports the cut plainly only when no continuation ran or the
+// continuation was cut too, and never over a result the host already
+// verified (a passed receipt is kept).
 
 export function outputLimitReply(message) {
   return message?.role === 'assistant' && message.stopReason === 'length';
@@ -34,25 +37,41 @@ export const OUTPUT_LIMIT_CONTINUATION_PROMPT =
 // The owner-visible report for an owner chat turn whose final reply was cut
 // and not continued, or whose continuation was cut too. The wording fits the
 // request: a workspace task lost what the reply was still writing; a written
-// answer was cut off. Neither claims more than the cut shows.
+// answer was cut off. Neither claims more than the cut shows. The answer
+// text reads correctly both after the cut answer's own delivered text and in
+// place of OpenClaw's incomplete-turn text.
 export const OUTPUT_LIMIT_WORKSPACE_TEXT =
   "Pixel's reply reached the model's output limit before it finished, so anything that reply was still writing, " +
   'such as a large file, was not saved. Files saved by earlier steps are kept. ' +
   'Ask Pixel to continue in smaller steps, with large content split across several smaller files.';
 export const OUTPUT_LIMIT_ANSWER_TEXT =
-  "Pixel's answer reached the model's output limit before it finished, so it was cut off and not delivered. " +
+  "Pixel's answer reached the model's output limit before it finished and was cut off. " +
   'Ask for a shorter answer, or ask Pixel to answer in parts.';
 export const OUTPUT_LIMIT_CONTINUED_TEXT =
   'Pixel already continued this request once automatically after an earlier reply was cut off.';
 
-// The failed receipt for such a turn. The report leads, followed by the run's
-// own receipt text when both fit within the ingress verification bound
-// (`limit`); otherwise the report stands alone. A failed receipt carries
-// neither passed-only field (the ingress rejects it otherwise).
+// A failed receipt whose text follows the model's own visible reply instead
+// of replacing it. The ingress (and the channel delivery hook) append it to a
+// visible reply and use it alone in place of OpenClaw's incomplete-turn text.
+// host/pixel_ingress.mjs holds the same value.
+export const OUTPUT_LIMIT_AFTER_REPLY = 'after-reply';
+
+// The failed receipt for such a turn. `verification` is the run's own none or
+// failed delivery receipt (a passed or pending one is never reported). A
+// written answer with no receipt of its own keeps whatever part of the answer
+// OpenClaw delivered: the report follows it (OUTPUT_LIMIT_AFTER_REPLY), with
+// the stale-exec-warning marker the kept reply needs. Otherwise the report
+// leads, followed by the run's own receipt text when both fit within the
+// ingress verification bound (`limit`), else alone; such a failed receipt
+// carries neither passed-only field (the ingress rejects it otherwise).
 export function outputLimitReport(verification, {workspace = false, continued = false} = {}, limit) {
-  const {suppressStaleExecWarning: _noneOrPassed, deliveryMode: _passed, ...receipt} = verification ?? {};
+  const {suppressStaleExecWarning, deliveryMode: _passed, ...receipt} = verification ?? {};
   const report = `${continued ? `${OUTPUT_LIMIT_CONTINUED_TEXT} ` : ''}` +
     (workspace ? OUTPUT_LIMIT_WORKSPACE_TEXT : OUTPUT_LIMIT_ANSWER_TEXT);
+  if (!workspace && receipt.status === 'none' && !receipt.text) {
+    return {...receipt, status: 'failed', text: report, deliveryMode: OUTPUT_LIMIT_AFTER_REPLY,
+      ...(suppressStaleExecWarning === true ? {suppressStaleExecWarning} : {})};
+  }
   const text = [report, receipt.text].filter(Boolean).join('\n\n');
   return {...receipt, status: 'failed', text: text.length <= limit ? text : report};
 }

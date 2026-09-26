@@ -15,7 +15,7 @@ import {createToolLoopGuard, userMessageExtensionLifecycleIntent, userMessageOpe
   userMessageRequestsWorkspaceContinuation, userMessageRequestsWorkspacePreview, userMessageRequestsWorkspaceTools,
   userMessageRequestsWorkspaceVisualContinuation, userMessageRequiresOperations,
   workspacePreviewMode} from '../plugin/tool-loop-guard.mjs';
-import {OUTPUT_LIMIT_CONTINUATION_PROMPT, OUTPUT_LIMIT_CONTINUED_TEXT,
+import {OUTPUT_LIMIT_ANSWER_TEXT, OUTPUT_LIMIT_CONTINUATION_PROMPT, OUTPUT_LIMIT_CONTINUED_TEXT,
   OUTPUT_LIMIT_WORKSPACE_TEXT} from '../plugin/output-limit-recovery.mjs';
 import {ODS_COMPACT_CONVERSATION_CONTRACT, ODS_CONVERSATION_CONTRACT, promptContractForAgent} from '../plugin/prompt-contract.mjs';
 import {OUTPUT_LIMIT_CONTINUATION_PROMPT as INGRESS_PROMPT, computeSessionUser,
@@ -46,7 +46,7 @@ function turn(guard, {runId, prompt = STRIXY_PROMPT, sessionKey = OWNER_KEY, tri
     contract: () => promptContractForAgent(context, 'pixel', event, {maxOutputTokens: 8192}).appendSystemContext,
     reply: message => guard.observeAssistantMessage({message}, context),
     finalize: message => guard.beforeAgentFinalize({lastAssistantMessage: message.content[0].text}, context),
-    grant: () => guard.outputLimitContinuationForRun(runId),
+    grant: options => guard.outputLimitContinuationForRun(runId, options),
     verification: () => guard.deliveryVerificationForRun(runId)};
 }
 
@@ -69,14 +69,18 @@ function write(guard, context, params, toolCallId, root = undefined) {
   return executed.path;
 }
 
-function publishSplitPage(guard, context) {
+const SPLIT_PAGE = [
+  {path: 'Playground/forest/index.html', content: '<!doctype html><link rel="stylesheet" href="styles.css"><script src="script.js" defer></script><h1>Forest</h1>'},
+  {path: 'Playground/forest/styles.css', content: 'body{background:#0b3d20;color:#e8f5e9}'},
+  {path: 'Playground/forest/script.js', content: 'document.body.dataset.fireflies = "on";'},
+];
+
+// Writes the split page's files (all, or those an earlier turn did not save)
+// and publishes the page.
+function publishSplitPage(guard, context, {written = SPLIT_PAGE} = {}) {
   const directory = 'Playground/forest';
-  const files = [
-    {path: `${directory}/index.html`, content: '<!doctype html><link rel="stylesheet" href="styles.css"><script src="script.js" defer></script><h1>Forest</h1>'},
-    {path: `${directory}/styles.css`, content: 'body{background:#0b3d20;color:#e8f5e9}'},
-    {path: `${directory}/script.js`, content: 'document.body.dataset.fireflies = "on";'},
-  ];
-  files.forEach((params, index) => write(guard, context, params, `write-${index}`));
+  const files = SPLIT_PAGE;
+  written.forEach((params, index) => write(guard, context, params, `write-${index}`));
   const params = {relativeDirectory: directory};
   const ctx = toolContext(context, 'pixel_ods_workspace_preview', 'preview-1');
   assert.notEqual(guard.beforeToolCall({toolName: ctx.toolName, params, toolCallId: ctx.toolCallId}, ctx)?.block, true);
@@ -154,6 +158,86 @@ test('a cut after earlier tool work in the same turn is still granted', () => {
   write(guard, owner.context, {path: 'Playground/forest/styles.css', content: 'body{background:#0b3d20}'}, 'write-styles');
   owner.reply(CUT);
   assert.deepEqual(owner.grant(), {...INELIGIBLE, eligible: true, user: USER});
+});
+
+// #6743 review: following the prevention line, the first turn saved
+// index.html and its styles.css write was cut. The continuation, classified
+// as the owner request, was refused the preview ("has not created or
+// inspected an index.html"), and rewriting index.html byte for byte ends
+// OpenClaw's run ("No changes made"). The cut run's saved files now count as
+// inspected by the continuation.
+test('a continuation publishes a page whose index.html the cut turn already saved', () => {
+  const guard = createToolLoopGuard({abortRun: () => true});
+  const owner = turn(guard, {runId: 'run-1'});
+  write(guard, owner.context, SPLIT_PAGE[0], 'write-index');
+  owner.reply({...CUT, content: [CUT.content[0], {type: 'toolCall', id: 'call-2', name: 'write',
+    arguments: {path: 'Playground/forest/styles.css', content: ':root{--moss:#2f5d3a'}}]});
+  assert.equal(owner.grant().eligible, true);
+  const next = turn(guard, {runId: 'run-2', prompt: OUTPUT_LIMIT_CONTINUATION_PROMPT});
+  publishSplitPage(guard, next.context, {written: SPLIT_PAGE.slice(1)});
+  next.reply(DONE);
+  assert.equal(next.finalize(DONE), undefined);
+  const verification = next.verification();
+  assert.equal(verification.status, 'passed', verification.text);
+  assert.equal(verification.preview.files, 3);
+});
+
+// OpenClaw delivers a cut reply's own text after a tool error. A workspace
+// task is still continued; a written answer keeps what OpenClaw delivered,
+// followed by the report.
+test('a cut whose own text OpenClaw delivered is continued only for a workspace task', () => {
+  const guard = createToolLoopGuard({abortRun: () => true});
+  const site = turn(guard, {runId: 'site'});
+  site.reply(CUT);
+  assert.deepEqual(site.grant({incompleteTurn: false}), {...INELIGIBLE, eligible: true, user: USER});
+  const answerKey = `agent:pixel:openai-user:${computeSessionUser({user: 'long-answer'})}`;
+  const answer = turn(guard, {runId: 'answer', sessionKey: answerKey,
+    prompt: 'Write me the longest, most detailed guide you can about how old-growth forests store carbon.'});
+  answer.reply({...CUT, content: [{type: 'text', text: 'Old-growth forests store carbon in'}]});
+  assert.deepEqual(answer.grant({incompleteTurn: false}), INELIGIBLE);
+  assert.deepEqual(answer.verification(), {status: 'failed', text: OUTPUT_LIMIT_ANSWER_TEXT, deliveryMode: 'after-reply'});
+  assert.equal(guard.continuationAllowed('answer'), true, 'a /goal plan stays active, as without the report');
+});
+
+// #6743 review: a result the host already verified was reported as failed and
+// continued when only the closing reply was cut.
+test('a cut closing reply keeps a verified result and gets no continuation', () => {
+  const receipts = [];
+  for (const cut of [false, true]) {
+    const guard = createToolLoopGuard({abortRun: () => true});
+    const owner = turn(guard, {runId: 'run-1'});
+    publishSplitPage(guard, owner.context);
+    owner.reply(cut ? CUT : DONE);
+    if (cut) {
+      assert.deepEqual(owner.grant(), INELIGIBLE);
+      assert.deepEqual(owner.grant({incompleteTurn: false}), INELIGIBLE);
+    }
+    receipts.push(owner.verification());
+  }
+  assert.equal(receipts[0].status, 'passed');
+  assert.deepEqual(receipts[1], receipts[0], 'the same receipt as the uncut turn');
+});
+
+// #6743 review: a Stop after the grant, before OpenClaw starts the
+// continuation, found only the ended cut run and aborted nothing.
+test('a Stop after the grant withdraws the continuation before it starts', async () => {
+  const guard = createToolLoopGuard({abortRun: () => false});
+  const owner = turn(guard, {runId: 'run-1'});
+  owner.reply(CUT);
+  assert.equal(owner.grant().eligible, true);
+  assert.equal(await guard.abortUserRun(USER), true, 'acknowledged, so the ingress closes the continuation request');
+  assert.equal(await guard.abortUserRun(USER), false, 'withdrawn once');
+  const next = turn(guard, {runId: 'run-2', prompt: OUTPUT_LIMIT_CONTINUATION_PROMPT});
+  const ctx = toolContext(next.context, 'write', 'late-write');
+  const decision = guard.beforeToolCall({toolName: 'write', toolCallId: 'late-write',
+    params: {path: 'Playground/forest/index.html', content: '<h1>late</h1>'}}, ctx);
+  assert.equal(decision?.block, true, 'a continuation that still starts is cancelled');
+  assert.deepEqual(next.grant(), INELIGIBLE);
+  // The chat's next owner message is its own turn.
+  const later = turn(guard, {runId: 'run-3', prompt: 'Thanks. What else can you do?'});
+  assert.equal(later.event.prompt, 'Thanks. What else can you do?');
+  assert.notEqual(guard.beforeToolCall({toolName: 'read', toolCallId: 'read-1', params: {path: 'notes.md'}},
+    toolContext(later.context, 'read', 'read-1'))?.block, true);
 });
 
 const FALSE_READY = {role: 'assistant', stopReason: 'stop', content: [{type: 'text',
@@ -269,7 +353,8 @@ test('cancelled, host-operation, extension and exact-download turns keep the hon
 
 // Loopback gateway double: completions in order, one grant answer per run.
 async function fixture(t, {first = CUT_COMPLETION, grant = {...INELIGIBLE, eligible: true, user: USER}, grantStatus = 200,
-  grantReply, second = DONE_COMPLETION, secondStatus = 200, verifications = {}, holdGrant = false, readOnlyProof} = {}) {
+  grantReply, second = DONE_COMPLETION, secondStatus = 200, verifications = {}, holdGrant = false, readOnlyProof,
+  activity = () => null, beforeFirst, beforeSecond} = {}) {
   const seen = {submissions: [], grants: [], verifications: [], readOnly: 0};
   let release, grantRequested;
   const released = new Promise(resolve => { release = resolve; });
@@ -283,7 +368,8 @@ async function fixture(t, {first = CUT_COMPLETION, grant = {...INELIGIBLE, eligi
       case '/health': return json({ok: true});
       case '/v1/chat/completions':
         seen.submissions.push(body);
-        if (seen.submissions.length === 1) return json(first);
+        if (seen.submissions.length === 1) { await beforeFirst?.(); return json(first); }
+        await beforeSecond?.();
         if (secondStatus !== 200) {
           res.writeHead(secondStatus, {'content-type': 'application/json'});
           return res.end('{"error":{"message":"unavailable"}}');
@@ -304,7 +390,7 @@ async function fixture(t, {first = CUT_COMPLETION, grant = {...INELIGIBLE, eligi
         return json(readOnlyProof ?? {schemaVersion: 1, kind: 'ods-extension-read-only-continuation', eligible: false});
       case '/pixel-ods/unfinished-extension-decision':
         return json({schemaVersion: 1, kind: 'ods-extension-unfinished-decision', eligible: false});
-      case '/pixel-ods/activity': return json({task: null});
+      case '/pixel-ods/activity': return json({task: activity()});
       default: res.writeHead(404); return res.end();
     }
   });
@@ -347,7 +433,7 @@ for (const stream of [true, false]) {
       {role: 'user', content: OUTPUT_LIMIT_CONTINUATION_PROMPT}], 'same trusted system text, fixed message only');
     assert.equal(continuation.user, first.user);
     assert.equal(continuation.stream, false);
-    assert.deepEqual(f.seen.grants, [{runId: RUN_1}]);
+    assert.deepEqual(f.seen.grants, [{runId: RUN_1, incompleteTurn: true}]);
     assert.deepEqual(f.seen.verifications, [RUN_2], 'delivery verifies the continuation run');
   });
 }
@@ -359,7 +445,7 @@ test('a continuation cut again is reported honestly and never continued again', 
   assert.equal(result.text, OUTPUT_LIMIT_WORKSPACE_TEXT);
   assert.equal(result.outcome, 'failed');
   assert.equal(f.seen.submissions.length, 2);
-  assert.deepEqual(f.seen.grants, [{runId: RUN_1}], 'the continuation run is never offered another turn');
+  assert.deepEqual(f.seen.grants, [{runId: RUN_1, incompleteTurn: true}], 'the continuation run is never offered another turn');
 });
 
 test('refused, unbound or unavailable grants keep the honest report without a second turn', {timeout: 20000}, async t => {
@@ -402,26 +488,59 @@ test('a turn another continuation already recovered is not continued again', {ti
   assert.deepEqual(f.seen.grants, [], 'at most one continuation of any kind per owner turn');
 });
 
-// An ordinary answer is never a cut turn: its delivery does not depend on the
-// plugin's continuation route, even when that route is broken.
+// Only the plugin knows whether a run was cut (OpenClaw delivers a cut reply's
+// own text after a tool error), so every completed owner turn asks, saying
+// whether OpenClaw answered with its incomplete-turn text. The request is
+// optional: a broken route is a refusal, never a failed turn (#6743 review:
+// a bad grant answer ended the turn with a stream error and no text).
+const BROKEN_GRANT_ROUTES = [
+  ['reset', res => res.socket.destroy()],
+  ['not json', res => { res.writeHead(200, {'content-type': 'application/json'}); res.end('<html>not json'); }],
+  ['truncated json', res => { res.writeHead(200, {'content-type': 'application/json'}); res.end('{"schemaVersion":1,'); }],
+];
 for (const stream of [true, false]) {
-  test(`an ordinary answer never asks for a continuation (stream=${stream})`, {timeout: 10000}, async t => {
-    for (const [label, grantReply] of [
-      ['reset', res => res.socket.destroy()],
-      ['not json', res => { res.writeHead(200, {'content-type': 'application/json'}); res.end('<html>not json'); }],
-    ]) {
+  test(`an ordinary answer is delivered whatever the continuation route answers (stream=${stream})`, {timeout: 10000}, async t => {
+    for (const [label, grantReply] of BROKEN_GRANT_ROUTES) {
       for (const content of ['Your forest page is published.', 'NO_REPLY']) {
         const f = await fixture(t, {first: {...DONE_COMPLETION, choices: [{index: 0,
           message: {role: 'assistant', content}, finish_reason: 'stop'}]}, grantReply});
         const result = await f.chat({stream});
         assert.equal(result.status, 200, label);
+        if (stream) assert.deepEqual(result.frames.filter(frame => frame.error), [], label);
         if (content !== 'NO_REPLY') assert.equal(result.text, content, label);
-        assert.deepEqual(f.seen.grants, [], label);
+        assert.deepEqual(f.seen.grants, [{runId: RUN_2, incompleteTurn: false}], label);
         assert.equal(f.seen.submissions.length, 1, label);
       }
     }
   });
+
+  test(`a cut turn whose grant request fails delivers the cut run's report (stream=${stream})`, {timeout: 10000}, async t => {
+    for (const [label, grantReply] of BROKEN_GRANT_ROUTES) {
+      const f = await fixture(t, {grantReply, verifications: {[RUN_1]: HONEST}});
+      const result = await f.chat({stream});
+      assert.equal(result.status, 200, label);
+      if (stream) {
+        assert.deepEqual(result.frames.filter(frame => frame.error), [], label);
+        assert.equal(result.outcome, 'failed', label);
+      }
+      assert.equal(result.text, OUTPUT_LIMIT_WORKSPACE_TEXT, label);
+      assert.equal(f.seen.submissions.length, 1, label);
+      assert.deepEqual(f.seen.verifications, [RUN_1], label);
+    }
+  });
 }
+
+// After a tool error OpenClaw delivers the cut reply's own text instead of its
+// incomplete-turn text; the plugin decides (a workspace task is continued).
+test('a cut turn that OpenClaw answered with its own text asks as such and may be continued', {timeout: 10000}, async t => {
+  const opening = 'Let me build something impressive — a full forest-themed interactive experience.';
+  const f = await fixture(t, {first: {...CUT_COMPLETION, choices: [{index: 0,
+    message: {role: 'assistant', content: opening}, finish_reason: 'stop'}]}, verifications: {[RUN_1]: HONEST}});
+  const result = await f.chat();
+  assert.equal(result.text, 'Your forest page is published.');
+  assert.deepEqual(f.seen.grants, [{runId: RUN_1, incompleteTurn: false}]);
+  assert.equal(f.seen.submissions.length, 2);
+});
 
 // OpenClaw 2026.6.33 (resolveIncompleteTurnPayloadText) ends a cut turn with
 // one of two texts; after tool activity it is the second.
@@ -434,7 +553,7 @@ test('every OpenClaw incomplete-turn text of a cut turn is offered the continuat
         message: {role: 'assistant', content}, finish_reason: 'stop'}]}, verifications: {[RUN_1]: HONEST}});
       const result = await f.chat();
       assert.equal(result.text, 'Your forest page is published.');
-      assert.deepEqual(f.seen.grants, [{runId: RUN_1}]);
+      assert.deepEqual(f.seen.grants, [{runId: RUN_1, incompleteTurn: true}]);
       assert.equal(f.seen.submissions.length, 2);
     });
   }
@@ -449,7 +568,33 @@ for (const stream of [true, false]) {
       'did not complete (gateway HTTP 503). It may have acted before it stopped; check what it changed before asking Pixel to continue.');
     if (stream) assert.equal(result.outcome, 'failed');
     assert.equal(f.seen.submissions.length, 2, 'never retried');
-    assert.deepEqual(f.seen.grants, [{runId: RUN_1}]);
+    assert.deepEqual(f.seen.grants, [{runId: RUN_1, incompleteTurn: true}]);
     assert.deepEqual(f.seen.verifications, [RUN_1], 'the cut run is the one reported');
   });
 }
+
+// #6743 review: the Portal's live activity stayed on the cut run (running, 0
+// calls) while the continuation did the turn's work, because the ingress
+// poller locked onto the first run it saw.
+test('the live activity follows the continuation run', {timeout: 15000}, async t => {
+  const started = {}, served = {};
+  let finished, secondServed;
+  const secondSeen = new Promise(resolve => { secondServed = resolve; });
+  const task = runId => ({schemaVersion: 1, runId, startedAt: started[runId] ??= new Date().toISOString(),
+    finishedAt: runId === RUN_1 && finished ? finished : null, state: runId === RUN_1 && finished ? 'completed' : 'running',
+    calls: 0, failures: 0, blocked: 0, truncated: false, activities: []});
+  let current = RUN_1, firstServed;
+  const firstSeen = new Promise(resolve => { firstServed = resolve; });
+  const f = await fixture(t, {verifications: {[RUN_1]: HONEST},
+    activity: () => {
+      served[current] = (served[current] ?? 0) + 1;
+      (current === RUN_1 ? firstServed : secondServed)();
+      return task(current);
+    },
+    beforeFirst: async () => { await firstSeen; finished = new Date(Date.now() + 1).toISOString(); },
+    beforeSecond: async () => { current = RUN_2; await secondSeen; }});
+  const result = await f.chat();
+  assert.equal(result.text, 'Your forest page is published.');
+  assert.deepEqual(result.frames.filter(frame => frame.object === 'ods.task.activity').map(frame => frame.id), [RUN_1, RUN_2]);
+  assert.ok(served[RUN_2] >= 1);
+});

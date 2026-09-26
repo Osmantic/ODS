@@ -53,6 +53,12 @@ export const OUTPUT_LIMIT_CONTINUATION_PROMPT =
   "(for a web page, separate index.html, styles.css and script.js, each kept short), then finish the remaining requested steps " +
   "and give the owner a visible answer. Do not repeat tool actions that already completed; build on their saved results. " +
   "For a long written answer, give a complete but more concise answer.";
+// A failed receipt whose text follows the model's own visible reply instead of
+// replacing it: Pixel's output-limit report for a written answer that OpenClaw
+// delivered cut off. Without a visible reply (OpenClaw's incomplete-turn
+// text) the text replaces it as usual. Byte-identical to
+// OUTPUT_LIMIT_AFTER_REPLY in the plugin's output-limit-recovery.mjs.
+export const OUTPUT_LIMIT_AFTER_REPLY = "after-reply";
 const OPERATIONS_UNAVAILABLE_ZERO_SUBMISSIONS_CODE =
   "operations-unavailable-zero-submissions";
 const CONNECT_TIMEOUT_MS = 5000;
@@ -781,9 +787,12 @@ function parseVerificationResponse(value, runId) {
   const hasRecoveryCode =
     status === "failed" &&
     value.code === OPERATIONS_UNAVAILABLE_ZERO_SUBMISSIONS_CODE;
+  // The kept reply of an after-reply receipt still needs its stale exec
+  // warning removed; no other failed receipt keeps the model's reply.
+  const afterReply = status === "failed" && value.deliveryMode === OUTPUT_LIMIT_AFTER_REPLY;
   const suppressStaleExecWarning =
     value.suppressStaleExecWarning === true &&
-    (status === "none" || status === "passed");
+    (status === "none" || status === "passed" || afterReply);
   const hasPreview =
     (status === "passed" || status === "failed") && Object.prototype.hasOwnProperty.call(value, "preview");
   const expectedKeys = carriesAuthoritativeText
@@ -800,6 +809,7 @@ function parseVerificationResponse(value, runId) {
   if (status === "passed" && carriesAuthoritativeText && value.deliveryMode === "append") {
     expectedKeys.push("deliveryMode");
   }
+  if (afterReply) expectedKeys.push("deliveryMode");
   const preview = value.preview;
   const previewKeys = [
     "bytes",
@@ -844,6 +854,7 @@ function parseVerificationResponse(value, runId) {
   if (
     Object.keys(value).sort().join("\n") !== expectedKeys.sort().join("\n") ||
     (hasRecoveryCode && hasPreview) ||
+    (afterReply && (hasRecoveryCode || hasPreview || hasQuestions)) ||
     (carriesAuthoritativeText &&
       (typeof value.text !== "string" ||
         value.text.length < 1 ||
@@ -938,7 +949,33 @@ function deliveryVerification(completion, verification) {
   };
 }
 
+// OpenClaw 2026.6.33 can retain a failed deferred `tool_call` exec after a
+// later wrapped exec succeeds. Strip only its exact generated ODS control
+// suffix, and only when the in-process guard observed that recovery. Near
+// matches and current failures pass through unchanged.
+function withoutStaleExecWarning(content) {
+  return content.replace(
+    /(?:\r?\n){2}⚠️ 🛠️ `\/run\/pixel-ods-control\/cancellable-exec\.sh (?:[0-9a-f]{64}|[0-9a-f]{16}…[0-9a-f]{3,16}) [A-Za-z0-9+/]+={0,2}` failed$/u,
+    ""
+  );
+}
+
 function applyVerificationToCompletion(completion, verification) {
+  if (verification.deliveryMode === OUTPUT_LIMIT_AFTER_REPLY) {
+    const choice = completion?.choices?.[0];
+    const content = choice?.message?.content;
+    if (typeof content === "string" && !missingVisibleAssistantText(content) && !incompleteTurnContent(content)) {
+      // The model's own delivered text, then the report (which OpenClaw's
+      // reply delivery hook may already have appended).
+      const kept = verification.suppressStaleExecWarning ? withoutStaleExecWarning(content) : content;
+      const text = kept === verification.text || kept.endsWith(`\n\n${verification.text}`)
+        ? kept : `${kept}\n\n${verification.text}`;
+      return {
+        ...completion,
+        choices: [{ ...choice, message: { ...choice.message, content: text } }, ...completion.choices.slice(1)],
+      };
+    }
+  }
   if (verification.deliveryMode === "append") {
     const choice = completion?.choices?.[0];
     const content = choice?.message?.content;
@@ -961,14 +998,7 @@ function applyVerificationToCompletion(completion, verification) {
     if (!verification.suppressStaleExecWarning || typeof content !== "string") {
       return completion;
     }
-    // OpenClaw 2026.6.33 can retain a failed deferred `tool_call` exec after a
-    // later wrapped exec succeeds. Strip only its exact generated ODS control
-    // suffix, and only when the in-process guard observed that recovery. Near
-    // matches and current failures pass through unchanged.
-    const cleaned = content.replace(
-      /(?:\r?\n){2}⚠️ 🛠️ `\/run\/pixel-ods-control\/cancellable-exec\.sh (?:[0-9a-f]{64}|[0-9a-f]{16}…[0-9a-f]{3,16}) [A-Za-z0-9+/]+={0,2}` failed$/u,
-      ""
-    );
+    const cleaned = withoutStaleExecWarning(content);
     if (cleaned === content) return completion;
     const choice = completion.choices[0];
     return {
@@ -1038,8 +1068,11 @@ function completionSse(completion, verification) {
 }
 
 // Side-channel observations only. Answer bytes still wait for final verification.
+// Follows the first run of this request that it sees; followNextRun() switches
+// it to the next run the ingress starts for the same request (an output-limit
+// continuation), which does most of such a turn's work.
 export function streamTaskActivity(res, user, token, gatewayPort, signal, deps = defaultDeps) {
-  const since = new Date().toISOString();
+  let since = new Date().toISOString();
   let stopped = false, timer, inFlight, last = '', runId;
   async function poll() {
     if (stopped || signal.aborted || res.destroyed || res.writableEnded) return;
@@ -1069,7 +1102,11 @@ export function streamTaskActivity(res, user, token, gatewayPort, signal, deps =
     }
   }
   timer = deps.setTimeout(poll, 250);
-  return () => { stopped = true; deps.clearTimeout(timer); inFlight?.abort(); };
+  const stop = () => { stopped = true; deps.clearTimeout(timer); inFlight?.abort(); };
+  // A poll still in flight can only report the earlier run, which started
+  // before the new `since`.
+  stop.followNextRun = () => { runId = undefined; since = new Date().toISOString(); };
+  return stop;
 }
 
 function registerActiveGatewayTransport(activeGatewayTransports, user, controller) {
@@ -1197,40 +1234,48 @@ async function maybeContinueUnfinishedExtensionDecision(completion, outgoing, to
   return recovered;
 }
 
-function isIncompleteTurnFailure(completion) {
-  const choice = completion?.choices?.length === 1 ? completion.choices[0] : undefined;
-  const content = choice?.message?.content;
-  return OPENAI_RUN_ID.test(completion?.id ?? '') && choice?.finish_reason === 'stop' && typeof content === 'string' &&
+function incompleteTurnContent(content) {
+  return typeof content === 'string' &&
     INCOMPLETE_TURN_RESPONSES.some(text => content === text || content.endsWith(`\n\n${text}`));
 }
 
 // Asks the plugin whether this completed run ended on a reply cut at the output
-// limit that may be continued once. An older plugin has no such route (404);
-// then, as for any refusal, the run's honest output-limit report stands.
-async function outputLimitContinuationGranted(runId, user, token, gatewayPort, signal, deps) {
+// limit that may be continued once, saying whether OpenClaw answered with its
+// incomplete-turn text (otherwise it delivered the cut reply's own text, after
+// a tool error). Only the plugin knows whether the run was cut, so every
+// completed owner turn asks, as for an unfinished extension decision. Any
+// failure of this optional request is a refusal: the run's own receipt
+// (Pixel's output-limit report for a cut run) is delivered. An older plugin
+// has no such route (404).
+async function outputLimitContinuationGranted(runId, user, incompleteTurn, token, gatewayPort, signal, deps) {
   if (!OPENAI_RUN_ID.test(runId ?? '') || typeof user !== 'string') return false;
-  const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/output-limit-continuation`, {
-    method:'POST', headers:upstreamHeaders(false, token),
-    body:JSON.stringify({runId}), redirect:'error', signal,
-  });
-  if (response.status !== 200 || !String(response.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) {
-    await drain(response.body); return false;
-  }
-  const proof = JSON.parse((await readBounded(response.body, 1024)).toString('utf8'));
-  return proof?.schemaVersion === 1 && proof.kind === 'ods-output-limit-continuation' && proof.eligible === true &&
-    Object.keys(proof).sort().join() === 'eligible,kind,schemaVersion,user' && proof.user === user;
+  try {
+    const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/output-limit-continuation`, {
+      method:'POST', headers:upstreamHeaders(false, token),
+      body:JSON.stringify({runId, incompleteTurn}), redirect:'error', signal,
+    });
+    if (response.status !== 200 || !String(response.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) {
+      await drain(response.body); return false;
+    }
+    const proof = JSON.parse((await readBounded(response.body, 1024)).toString('utf8'));
+    return proof?.schemaVersion === 1 && proof.kind === 'ods-output-limit-continuation' && proof.eligible === true &&
+      Object.keys(proof).sort().join() === 'eligible,kind,schemaVersion,user' && proof.user === user;
+  } catch { return false; }
 }
 
 // Returns {completion}, or {completion, failedStatus} when the gateway answered
 // the granted continuation with a non-200 status: then the owner turn's own
 // report is delivered, saying so (outputLimitContinuationFailure).
-async function maybeContinueOutputLimitTurn(completion, outgoing, token, gatewayPort, signal, deps) {
-  // Only OpenClaw's incomplete-turn result can be a cut final reply; an
-  // ordinary answer never reaches the plugin route.
-  if (!isIncompleteTurnFailure(completion) ||
-      !await outputLimitContinuationGranted(completion.id, outgoing.user, token, gatewayPort, signal, deps))
+// `onContinue` runs just before the continuation is submitted.
+async function maybeContinueOutputLimitTurn(completion, outgoing, token, gatewayPort, signal, deps, onContinue) {
+  const choice = completion?.choices?.length === 1 ? completion.choices[0] : undefined;
+  if (!OPENAI_RUN_ID.test(completion?.id ?? '') || choice?.finish_reason !== 'stop' ||
+      typeof choice.message?.content !== 'string' ||
+      !await outputLimitContinuationGranted(completion.id, outgoing.user, incompleteTurnContent(choice.message.content),
+        token, gatewayPort, signal, deps))
     return {completion};
   if (signal.aborted) throw new HttpError(503, 'output-limit continuation interrupted');
+  onContinue?.();
   // A new turn of the same chat with the same trusted system messages. It never
   // replays the owner's message or a tool; the plugin grants it once per turn
   // and refuses it for the continuation's own run, so it cannot repeat.
@@ -1366,7 +1411,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
         // At most one continuation of any kind per owner turn.
         const continued = completion === originalCompletion
           ? await maybeContinueOutputLimitTurn(completion, gatewayOutgoing, token,
-            gatewayPort, controller.signal, deps)
+            gatewayPort, controller.signal, deps, () => stopActivity?.followNextRun())
           : {completion};
         completion = continued.completion;
         completionRunId = completion?.id;

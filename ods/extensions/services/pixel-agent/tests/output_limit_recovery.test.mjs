@@ -1,6 +1,7 @@
 // A reply that reaches the model output limit ends the run with nothing it
 // was writing saved, and OpenClaw 2026.6.33 replaces it, text answers
-// included, with a generic "couldn't generate a response". These tests run the
+// included, with a generic "couldn't generate a response" (after a tool error
+// it delivers the cut reply's own text instead). These tests run the
 // Portal path as production does: the real ingress over loopback TCP (also on
 // Windows) in front of a gateway double whose Pixel routes are served by a
 // real tool-loop guard. Each model submission is one run, classified and
@@ -33,6 +34,10 @@ const CUT = {role: 'assistant', stopReason: 'length', usage: {output: 8192},
 const said = text => ({role: 'assistant', stopReason: 'stop', content: [{type: 'text', text}]});
 // OpenClaw 2026.6.33 resolveIncompleteTurnPayloadText for a cut turn.
 const GENERIC = "⚠️ Agent couldn't generate a response. Please try again.";
+const GENERIC_TOOLS = "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying.";
+// The retained exec failure OpenClaw appends to delivered text (see
+// staleExecWarning); the ingress strips it when the guard marked it stale.
+const STALE_WARNING = `\n\n⚠️ 🛠️ \`/run/pixel-ods-control/cancellable-exec.sh ${'a'.repeat(64)} cHl0aG9u\` failed`;
 const MAX_TEXT = 32 * 1024;
 const TOKEN = 'test-gateway-token-0123456789abcdef';
 
@@ -134,7 +139,7 @@ async function ingressWith(t, route) {
   t.after(async () => {
     for (const server of [ingress, gateway]) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
   });
-  return async (prompt, {stream = true} = {}) => {
+  const chat = async (prompt, {stream = true} = {}) => {
     const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {method: 'POST',
       signal: AbortSignal.timeout(8000), headers: {'content-type': 'application/json', connection: 'close'},
       body: JSON.stringify({user: 'output-limit-report', stream, messages: [{role: 'user', content: prompt}]})});
@@ -144,6 +149,11 @@ async function ingressWith(t, route) {
     return {status: response.status, body, errors: frames.filter(frame => frame.error), outcome: frames.at(-1)?.pixel_outcome?.status,
       text: frames.map(frame => frame.choices?.[0]?.delta?.content ?? '').join('')};
   };
+  // The Portal's Stop for this chat.
+  chat.cancel = async () => (await fetch(`http://127.0.0.1:${port}/v1/chat/cancel`, {method: 'POST',
+    signal: AbortSignal.timeout(8000), headers: {'content-type': 'application/json', connection: 'close'},
+    body: JSON.stringify({user: 'output-limit-report'})})).json();
+  return chat;
 }
 
 const completion = (id, content) => ({id, object: 'chat.completion',
@@ -153,7 +163,7 @@ const INELIGIBLE_DECISION = {schemaVersion: 1, kind: 'ods-extension-unfinished-d
 
 // The gateway double backed by a real guard: `scripts` are the model runs in
 // submission order; each returns the text OpenClaw answers with.
-async function portal(t, scripts, {trigger = 'user'} = {}) {
+async function portal(t, scripts, {trigger = 'user', ...hooks} = {}) {
   const guard = createToolLoopGuard({abortRun: () => true});
   const seen = {runs: [], prompts: [], grants: [], receipts: []};
   const chat = await ingressWith(t, async (url, body) => {
@@ -172,10 +182,13 @@ async function portal(t, scripts, {trigger = 'user'} = {}) {
         return receipt;
       }
       case '/pixel-ods/output-limit-continuation': {
-        const grant = guard.outputLimitContinuationForRun(body.runId);
-        seen.grants.push({runId: body.runId, eligible: grant.eligible});
+        await hooks.beforeGrant?.(guard, body);
+        const grant = guard.outputLimitContinuationForRun(body.runId, {incompleteTurn: body.incompleteTurn});
+        seen.grants.push({runId: body.runId, eligible: grant.eligible, incompleteTurn: body.incompleteTurn});
+        await hooks.afterGrant?.(guard, body);
         return grant;
       }
+      case '/pixel-ods/abort': return {aborted: await guard.abortUserRun(body.user)};
       // No extension backend here: these continuations are never granted.
       case '/pixel-ods/read-only-extension-continuation': return INELIGIBLE_READ_ONLY;
       case '/pixel-ods/unfinished-extension-decision': return INELIGIBLE_DECISION;
@@ -191,16 +204,21 @@ const cutTurn = run => { run.reply(CUT); return GENERIC; };
 // #6742 review: a receipt forced to failed kept suppressStaleExecWarning, which
 // the ingress accepts only on a none or passed receipt, so the owner got an
 // HTTP 502 (or an SSE error) instead of any answer.
+// #6743 review: when OpenClaw delivered the cut answer's own text (it does
+// after a tool error), the report replaced it. The delivered part is kept,
+// without the stale exec warning, and the report follows it.
 for (const stream of [false, true]) {
-  test(`a cut reply after a stale exec warning is reported, not rejected (stream=${stream})`, {timeout: 10000}, async t => {
-    const {seen, chat} = await portal(t, [run => { staleExecWarning(run); run.reply(CUT); return OPENING; }]);
+  test(`a cut answer whose own text OpenClaw delivered keeps it, followed by the report (stream=${stream})`, {timeout: 10000}, async t => {
+    const {seen, chat} = await portal(t, [run => { staleExecWarning(run); run.reply(CUT); return OPENING + STALE_WARNING; }]);
     const result = await chat(TEXT, {stream});
     assert.equal(result.status, 200, result.body);
     assert.deepEqual(result.errors ?? [], [], result.body);
-    assert.equal(result.text, OUTPUT_LIMIT_ANSWER_TEXT);
+    assert.equal(result.text, `${OPENING}\n\n${OUTPUT_LIMIT_ANSWER_TEXT}`);
     if (stream) assert.equal(result.outcome, 'failed');
-    assert.deepEqual(seen.receipts.map(({receipt}) => receipt), [{status: 'failed', text: OUTPUT_LIMIT_ANSWER_TEXT}]);
-    assert.deepEqual(seen.grants, [], 'OpenClaw delivered text, so the ingress asks for no continuation');
+    assert.deepEqual(seen.receipts.map(({receipt}) => receipt), [{status: 'failed', text: OUTPUT_LIMIT_ANSWER_TEXT,
+      deliveryMode: 'after-reply', suppressStaleExecWarning: true}]);
+    assert.deepEqual(seen.grants, [{runId: seen.runs[0], eligible: false, incompleteTurn: false}],
+      'a written answer OpenClaw delivered is not continued');
   });
 
   test(`a lane stop after a stale exec warning is reported, not rejected (stream=${stream})`, {timeout: 10000}, async t => {
@@ -223,8 +241,21 @@ for (const stream of [false, true]) {
   });
 }
 
-// Each kind of request gets words that fit it, whether no continuation ran
-// (OpenClaw delivered the cut reply's text) or the continuation was cut too.
+// The same cut written answer answered with OpenClaw's incomplete-turn text
+// has nothing to keep: it is continued, and when it cannot be the report
+// stands alone.
+test('a written answer OpenClaw replaced keeps the report alone when not continued', {timeout: 10000}, async t => {
+  const {seen, chat} = await portal(t, [run => { run.reply(CUT); return GENERIC; }], {
+    beforeGrant: (guard, {runId}) => { guard.outputLimitContinuationForRun(runId); }});
+  const result = await chat(TEXT);
+  assert.equal(result.status, 200, result.body);
+  assert.equal(result.text, OUTPUT_LIMIT_ANSWER_TEXT);
+  assert.equal(result.outcome, 'failed');
+  assert.deepEqual(seen.grants, [{runId: seen.runs[0], eligible: false, incompleteTurn: true}]);
+});
+
+// Each kind of request gets words that fit it when the continuation was cut
+// too.
 for (const [kind, prompt, report] of [['text answer', TEXT, OUTPUT_LIMIT_ANSWER_TEXT],
   ['workspace task', SITE, OUTPUT_LIMIT_WORKSPACE_TEXT]]) {
   const words = text => {
@@ -232,26 +263,16 @@ for (const [kind, prompt, report] of [['text answer', TEXT, OUTPUT_LIMIT_ANSWER_
     else assert.match(text, /such as a large file, was not saved/, text);
   };
 
-  test(`a cut ${kind} without a continuation is reported in its own words`, {timeout: 10000}, async t => {
-    const {seen, chat} = await portal(t, [run => { staleExecWarning(run); run.reply(CUT); return OPENING; }]);
-    const result = await chat(prompt);
-    assert.equal(result.status, 200, result.body);
-    assert.equal(result.outcome, 'failed');
-    assert.equal(result.text.split('\n\n')[0], report);
-    if (kind === 'text answer') assert.equal(result.text, report, 'no receipt text of its own');
-    words(result.text);
-    assert.deepEqual(seen.grants, []);
-  });
-
   test(`a ${kind} cut again after its continuation is reported in its own words`, {timeout: 10000}, async t => {
     const {seen, chat} = await portal(t, [cutTurn, cutTurn]);
     const result = await chat(prompt);
     assert.equal(result.status, 200, result.body);
     assert.equal(result.outcome, 'failed');
     assert.equal(result.text.split('\n\n')[0], `${OUTPUT_LIMIT_CONTINUED_TEXT} ${report}`);
+    if (kind === 'text answer') assert.equal(result.text, `${OUTPUT_LIMIT_CONTINUED_TEXT} ${report}`, 'no receipt text of its own');
     words(result.text);
     assert.equal(seen.prompts[1], OUTPUT_LIMIT_CONTINUATION_PROMPT, 'the continuation ran first');
-    assert.deepEqual(seen.grants, [{runId: seen.runs[0], eligible: true}], 'never continued twice');
+    assert.deepEqual(seen.grants, [{runId: seen.runs[0], eligible: true, incompleteTurn: true}], 'never continued twice');
     assert.deepEqual(seen.receipts.map(({runId}) => runId), [seen.runs[1]], 'the continuation run is reported');
   });
 }
@@ -267,9 +288,28 @@ test('a cut workspace task that is continued delivers the continuation, not the 
   assert.ok(result.text.startsWith(`${READY}\n\n`), result.text);
   assert.doesNotMatch(result.text, /output limit/);
   assert.deepEqual(seen.prompts, [SITE, OUTPUT_LIMIT_CONTINUATION_PROMPT]);
-  assert.deepEqual(seen.grants, [{runId: seen.runs[0], eligible: true}]);
+  assert.deepEqual(seen.grants, [{runId: seen.runs[0], eligible: true, incompleteTurn: true}]);
   assert.deepEqual(seen.receipts.map(({runId}) => runId), [seen.runs[1]]);
   assert.equal(seen.receipts[0].receipt.preview.files, 3);
+});
+
+// #6743 review: a website cut after an earlier tool error (OpenClaw then
+// delivers the reply's opening sentence) was never continued.
+test('a cut workspace task whose own text OpenClaw delivered is continued too', {timeout: 10000}, async t => {
+  const {seen, chat} = await portal(t, [
+    run => {
+      run.call('read', {path: 'Playground/forest/notes.md'}, {isError: true, content: [{type: 'text', text: 'ENOENT'}],
+        details: {status: 'error'}});
+      run.reply(CUT);
+      return OPENING;
+    },
+    run => { publishSplitPage(run); run.reply(said(READY)); return READY; }]);
+  const result = await chat(SITE);
+  assert.equal(result.status, 200, result.body);
+  assert.equal(result.outcome, 'passed');
+  assert.ok(result.text.startsWith(`${READY}\n\n`), result.text);
+  assert.deepEqual(seen.prompts, [SITE, OUTPUT_LIMIT_CONTINUATION_PROMPT]);
+  assert.deepEqual(seen.grants, [{runId: seen.runs[0], eligible: true, incompleteTurn: false}]);
 });
 
 test('a cut text answer that is continued delivers the concise answer', {timeout: 10000}, async t => {
@@ -281,12 +321,78 @@ test('a cut text answer that is continued delivers the concise answer', {timeout
   assert.deepEqual(seen.receipts.map(({runId}) => runId), [seen.runs[1]]);
 });
 
+// #6743 review: a result the host had already verified became 'failed' (or
+// was continued into an unverified 'none') when only the closing reply was
+// cut. Each is compared with the same work whose closing reply completed.
+const CALC = 'Write a Python script calc.py with a function add(a, b) and unit tests in test_calc.py, then run the tests ' +
+  'with python3 -m unittest.' + DELIVERY;
+const calcWork = run => {
+  const ok = {content: [{type: 'text', text: 'ok'}], details: {status: 'completed'}};
+  run.call('write', {path: 'calc.py', content: 'def add(a, b):\n    return a + b\n'}, ok);
+  run.call('write', {path: 'test_calc.py', content: 'import unittest\nfrom calc import add\n' +
+    'class T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(1, 2), 3)\n'}, ok);
+  run.call('exec', {command: 'python3 -m unittest -v', workdir: '/workspace'}, {isError: false,
+    content: [{type: 'text', text: 'test_add (test_calc.T.test_add) ... ok\n\nRan 1 test in 0.001s\n\nOK'}],
+    details: {status: 'completed', exitCode: 0}});
+};
+const hostIdentity = run => run.call('pixel_ods_host_observe', {actions: ['host.identity']}, {details: {
+  jobId: 'ops-1234567890123-abcdef123456', status: 'succeeded', waitTimedOut: false, steps: [{stepId: 'observe-1',
+    target: 'ods-host', action: 'host.identity', exitCode: 0, stdout: 'test-host\n', stderr: '',
+    outputTruncated: {stdout: false, stderr: false}, riskSignals: []}]}});
+const failedRead = run => run.call('read', {path: 'Playground/forest/missing.txt'}, {isError: true,
+  content: [{type: 'text', text: 'ENOENT'}], details: {status: 'error'}});
+for (const [label, prompt, work] of [
+  ['published preview', SITE, publishSplitPage],
+  ['passing test run', CALC, calcWork],
+  ['host observation', 'Check the ODS host hostname.' + DELIVERY, hostIdentity],
+]) {
+  test(`a verified ${label} is kept when only the closing reply is cut`, {timeout: 20000}, async t => {
+    // OpenClaw's incomplete-turn text, or (after a tool error) the reply's own text.
+    for (const [variant, closing, cutText] of [['incomplete-turn text', () => {}, GENERIC_TOOLS],
+      ['own text', failedRead, OPENING]]) {
+      await t.test(variant, async t => {
+        const served = [];
+        for (const cut of [false, true]) {
+          const {seen, chat} = await portal(t, [run => {
+            work(run);
+            closing(run);
+            run.reply(cut ? CUT : said(READY));
+            return cut ? cutText : READY;
+          }]);
+          const result = await chat(prompt);
+          assert.equal(result.status, 200, result.body);
+          assert.doesNotMatch(result.text, /output limit/i);
+          assert.deepEqual(seen.grants.map(({eligible}) => eligible), [false], 'never continued');
+          assert.equal(seen.runs.length, 1);
+          served.push({outcome: result.outcome, receipt: seen.receipts[0].receipt});
+        }
+        assert.equal(served[0].outcome, 'passed');
+        assert.deepEqual(served[1], served[0], 'the same receipt as when the closing reply completed');
+      });
+    }
+  });
+}
+
+// #6743 review: a Stop that reached Pixel after the grant, before OpenClaw
+// started the continuation, found only the ended cut run: nothing was
+// aborted and the continuation ran.
+test('a Stop after the grant closes the continuation before it runs', {timeout: 10000}, async t => {
+  let stop;
+  const {seen, chat} = await portal(t, [cutTurn, run => { publishSplitPage(run); return READY; }], {
+    afterGrant: async () => { stop = await chat.cancel(); }});
+  const result = await chat(SITE).catch(error => ({error}));
+  assert.deepEqual(stop, {aborted: true});
+  assert.equal(seen.grants[0].eligible, true);
+  assert.equal(seen.runs.length, 1, 'the continuation never starts');
+  assert.notEqual(result.outcome, 'passed');
+});
+
 test('a later complete reply in the same run clears the report', {timeout: 10000}, async t => {
   const {seen, chat} = await portal(t, [run => { run.reply(CUT); run.reply(said(GUIDE)); return GUIDE; }]);
   const result = await chat(TEXT);
   assert.equal(result.text, GUIDE);
   assert.notEqual(result.outcome, 'failed');
-  assert.deepEqual(seen.grants, []);
+  assert.deepEqual(seen.grants, [{runId: seen.runs[0], eligible: false, incompleteTurn: false}]);
 });
 
 // Only an owner chat turn is reported: a heartbeat, cron or team-worker run
@@ -305,7 +411,7 @@ test('heartbeat, cron and team-worker receipts are unchanged by a cut reply', {t
         assert.doesNotMatch(result.text, /output limit/i);
         assert.equal(guard.replyPayloadSending({runId: seen.runs[0], kind: 'final', payload: {text: OPENING}}), undefined,
           'the channel delivery keeps the run reply');
-        assert.deepEqual(seen.grants.map(({eligible}) => eligible), cut ? [false] : []);
+        assert.deepEqual(seen.grants.map(({eligible}) => eligible), [false]);
         served.push(seen.receipts[0].receipt);
       }
       assert.deepEqual(served[0], served[1], 'the same receipt as without the cut');
@@ -329,7 +435,7 @@ test('a receipt still waiting on its verification is unchanged by a cut reply', 
   assert.equal(result.status, 200, result.body);
   assert.equal(result.outcome, 'pending');
   assert.equal(result.text, VERIFICATION_PENDING_DELIVERY_PREFIX);
-  assert.deepEqual(seen.grants, [{runId: seen.runs[0], eligible: false}]);
+  assert.deepEqual(seen.grants, [{runId: seen.runs[0], eligible: false, incompleteTurn: true}]);
 });
 
 // The ingress rejects receipt text over 32 KiB (MAX_VERIFICATION_TEXT).
@@ -354,8 +460,12 @@ test('the report and the receipt it leads stay within the 32 KiB ingress bound',
   const both = outputLimitReport(edge, {workspace: true}, MAX_TEXT);
   assert.equal(both.text.length, MAX_TEXT, 'a receipt that fits is kept');
   assert.equal((await deliver(both)).text, `${OUTPUT_LIMIT_WORKSPACE_TEXT}\n\n${edge.text}`);
+  assert.deepEqual(outputLimitReport({status: 'none', suppressStaleExecWarning: true}, {workspace: true}, MAX_TEXT),
+    {status: 'failed', text: OUTPUT_LIMIT_WORKSPACE_TEXT}, 'no passed-only field on the failed receipt');
+  // A written answer with no receipt of its own follows the kept reply, which
+  // still needs its stale exec warning removed.
   assert.deepEqual(outputLimitReport({status: 'none', suppressStaleExecWarning: true}, {}, MAX_TEXT),
-    {status: 'failed', text: OUTPUT_LIMIT_ANSWER_TEXT}, 'no passed-only field on the failed receipt');
+    {status: 'failed', text: OUTPUT_LIMIT_ANSWER_TEXT, deliveryMode: 'after-reply', suppressStaleExecWarning: true});
 });
 
 test('a continuation the gateway does not complete keeps the bounded report', {timeout: 10000}, async t => {
@@ -383,4 +493,54 @@ test('a continuation the gateway does not complete keeps the bounded report', {t
   assert.equal(result.text, `${OUTPUT_LIMIT_WORKSPACE_TEXT}\n\nPixel's automatic continuation after the output limit ` +
     'did not complete (gateway HTTP 503). It may have acted before it stopped; check what it changed before asking Pixel to continue.');
   assert.ok(result.text.length <= MAX_TEXT);
+});
+
+// The after-reply receipt keeps only a visible model reply, and only on a
+// failed receipt with text and nothing else that decides the delivery.
+test('after-reply delivery follows a visible reply and cannot weaken any other receipt', {timeout: 30000}, async t => {
+  const RUN = `chatcmpl_${randomUUID()}`;
+  const deliver = async (content, receipt, stream = true) => (await ingressWith(t, async url => url === '/v1/chat/completions'
+    ? completion(RUN, content) : url === '/pixel-ods/verification' ? receipt
+      : url === '/pixel-ods/output-limit-continuation' ? {schemaVersion: 1, kind: 'ods-output-limit-continuation', eligible: false}
+        : url === '/pixel-ods/read-only-extension-continuation' ? INELIGIBLE_READ_ONLY
+          : url === '/pixel-ods/unfinished-extension-decision' ? INELIGIBLE_DECISION
+            : url === '/pixel-ods/activity' ? {task: null} : undefined))(TEXT, {stream});
+  const report = {status: 'failed', text: OUTPUT_LIMIT_ANSWER_TEXT, deliveryMode: 'after-reply'};
+  for (const [content, expected] of [
+    [OPENING, `${OPENING}\n\n${OUTPUT_LIMIT_ANSWER_TEXT}`],
+    [`${OPENING}\n\n${OUTPUT_LIMIT_ANSWER_TEXT}`, `${OPENING}\n\n${OUTPUT_LIMIT_ANSWER_TEXT}`],
+    [OUTPUT_LIMIT_ANSWER_TEXT, OUTPUT_LIMIT_ANSWER_TEXT],
+    [GENERIC, OUTPUT_LIMIT_ANSWER_TEXT],
+    [GENERIC_TOOLS, OUTPUT_LIMIT_ANSWER_TEXT],
+    [`Wrote notes.md.\n\n${GENERIC_TOOLS}`, OUTPUT_LIMIT_ANSWER_TEXT],
+    ['NO_REPLY', OUTPUT_LIMIT_ANSWER_TEXT],
+    ['', OUTPUT_LIMIT_ANSWER_TEXT],
+  ]) {
+    const result = await deliver(content, report);
+    assert.equal(result.status, 200, result.body);
+    assert.equal(result.outcome, 'failed');
+    assert.equal(result.text, expected, JSON.stringify(content));
+  }
+  assert.equal((await deliver(OPENING + STALE_WARNING, {...report, suppressStaleExecWarning: true})).text,
+    `${OPENING}\n\n${OUTPUT_LIMIT_ANSWER_TEXT}`);
+  // Without after-reply a failed receipt still replaces the reply.
+  assert.equal((await deliver(OPENING, {status: 'failed', text: OUTPUT_LIMIT_ANSWER_TEXT})).text, OUTPUT_LIMIT_ANSWER_TEXT);
+  const preview = {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', relativeDirectory: 'Playground/forest',
+    siteId: `site-${'a'.repeat(24)}`, port: 9437, url: `http://site-${'a'.repeat(24)}.localhost:9437/site-${'a'.repeat(24)}/`,
+    files: 1, bytes: 1, sha256: 'a'.repeat(64), entrySha256: 'b'.repeat(64)};
+  for (const receipt of [
+    {status: 'passed', text: 'Evidence.', deliveryMode: 'after-reply'},
+    {status: 'pending', text: 'Waiting.', deliveryMode: 'after-reply'},
+    {status: 'none', deliveryMode: 'after-reply'},
+    {status: 'failed', deliveryMode: 'after-reply'},
+    {...report, preview},
+    {...report, code: 'operations-unavailable-zero-submissions'},
+    {...report, questions: [{id: 'q1', question: 'Which?', options: ['a', 'b']}]},
+    {status: 'failed', text: OUTPUT_LIMIT_ANSWER_TEXT, suppressStaleExecWarning: true},
+    {...report, text: 'x'.repeat(MAX_TEXT + 1)},
+  ]) {
+    const result = await deliver(OPENING, receipt, false);
+    assert.equal(result.status, 502, JSON.stringify(receipt).slice(0, 200));
+    assert.doesNotMatch(result.body, /immersive|impressive/);
+  }
 });

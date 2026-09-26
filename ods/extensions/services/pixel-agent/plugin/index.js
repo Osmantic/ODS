@@ -215,7 +215,8 @@ async function readAbortUser(req) {
   }
 }
 
-async function readVerificationRun(req) {
+// `flags` names boolean fields the body carries besides runId.
+async function readVerificationRun(req, flags = []) {
   if (req.method !== "POST") return { status: 405 };
   const contentType = String(req.headers["content-type"] ?? "").toLowerCase();
   if (contentType.split(";", 1)[0].trim() !== "application/json") return { status: 415 };
@@ -232,13 +233,14 @@ async function readVerificationRun(req) {
       !body ||
       typeof body !== "object" ||
       Array.isArray(body) ||
-      Object.keys(body).length !== 1 ||
+      Object.keys(body).length !== 1 + flags.length ||
       typeof body.runId !== "string" ||
-      !OPENAI_RUN_ID.test(body.runId)
+      !OPENAI_RUN_ID.test(body.runId) ||
+      flags.some(flag => typeof body[flag] !== "boolean")
     ) {
       return { status: 400 };
     }
-    return { status: 200, runId: body.runId };
+    return { status: 200, runId: body.runId, ...Object.fromEntries(flags.map(flag => [flag, body[flag]])) };
   } catch {
     return { status: 400 };
   }
@@ -597,17 +599,19 @@ export default definePluginEntry({
     });
     // One continuation turn for an owner turn whose final reply was cut at the
     // output limit. The ingress submits a fixed message; nothing is replayed.
+    // It says whether OpenClaw answered with its incomplete-turn text.
     api.registerHttpRoute({
       path: "/pixel-ods/output-limit-continuation",
       auth: "gateway",
       match: "exact",
       handler: async (req, res) => {
-        const parsed = await readVerificationRun(req);
+        const parsed = await readVerificationRun(req, ["incompleteTurn"]);
         if (parsed.status !== 200) {
           sendJson(res, parsed.status, {error:"invalid continuation request"});
           return true;
         }
-        sendJson(res, 200, toolLoopGuard.outputLimitContinuationForRun(parsed.runId));
+        sendJson(res, 200, toolLoopGuard.outputLimitContinuationForRun(parsed.runId,
+          {incompleteTurn: parsed.incompleteTurn}));
         return true;
       },
     });
