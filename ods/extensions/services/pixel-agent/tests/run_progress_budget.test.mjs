@@ -143,3 +143,33 @@ test('read-only echo classification excludes substitutions, redirections and com
   for (const command of ['echo "Done!"', "echo 'Site ready'", "echo 'literal $HOME' "]) assert.equal(isLiteralEcho(command), true, command);
   for (const command of ['echo "$HOME"', 'echo "$(touch bad)"', 'echo "`touch bad`"', 'echo "ok" > index.html', 'echo "ok"; rm file', 'echo "ok" && run', 'echo "a\\"', undefined]) assert.equal(isLiteralEcho(command), false, command);
 });
+
+// A result offered to the model must not name a call the budget will refuse.
+test('failureEnds says, read-only, whether one more failure stops the response or its lane', () => {
+  const budget = createRunProgressBudget();
+  for (let i = 0; i < 3; i++) {
+    assert.equal(budget.failureEnds(), false);
+    budget.beginModelRound();
+    budget.observeResult({callId: `bad-${i}`, tool: 'tool_call', failed: true});
+  }
+  assert.equal(budget.failureEnds(), true, 'the fourth consecutive failure stops the response');
+  assert.equal(budget.exhausted, false, 'asking changes nothing');
+  budget.observeResult({callId: 'ok', tool: 'read', params: {path: 'file'}, failed: false});
+  assert.equal(budget.failureEnds(), false);
+  // Eleven failures in all: the twelfth stops the response whatever came between.
+  for (let i = 3; i < 11; i++) {
+    budget.observeResult({callId: `bad-${i}`, tool: 'tool_call', failed: true});
+    if (i % 2) budget.observeResult({callId: `ok-${i}`, tool: 'read', params: {path: `f${i}`}, failed: false});
+  }
+  assert.equal(budget.failureEnds(), true);
+  // A classified lane stops at its own fourth consecutive failure.
+  const lanes = createRunProgressBudget();
+  for (let i = 0; i < 3; i++) lanes.observeResult({callId: `w-${i}`, tool: 'write', failed: true, lane: 'workspace'});
+  assert.equal(lanes.failureEnds('workspace'), true);
+  assert.equal(lanes.failureEnds('extension'), false);
+  assert.equal(lanes.failureEnds(), false);
+  // Eight model rounds without progress: the next round stops the response.
+  const rounds = createRunProgressBudget();
+  for (let i = 0; i < RUN_PROGRESS_LIMITS.roundsWithoutProgress; i++) rounds.beginModelRound();
+  assert.equal(rounds.failureEnds(), true);
+});

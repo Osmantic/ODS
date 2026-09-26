@@ -141,6 +141,22 @@ test('laptop round 107 call 4: a role/name locator without exact gets exact:true
   assert.deepEqual(readyArgs(await rejected(loose)),args);
 });
 
+// Once exact:true is added, laptop call 4's steps assert the state-qualified
+// card visible before the click and cannot pass; with the owner requirement
+// bound, its plan over the same locators is offered instead.
+test('laptop round 107 call 4: with the owner requirement, a repair that tests no change gets the requirement plan',async()=>{
+  const call=byCall(LAPTOP,4);
+  const requirement={target:'Midnight sold-out concert',control:{role:'button',name:'Show sold out'},initiallyHidden:true};
+  const text=await rejected(call.arguments,{transitionRequirement:()=>requirement,guidance:()=>({direction:'hidden'})});
+  const card={selector:'.event-card.sold-out'};
+  assert.deepEqual(readyArgs(text),{...call.arguments,steps:[{action:'assert-hidden',locator:card},{action:'click',locator:BUTTON},
+    {action:'assert-visible',locator:card}]});
+  assert.doesNotMatch(text,/these are your own identifiers/);
+  // A repaired plan that already tests a change stays the model's own; the requirement is not consulted.
+  const own=await rejected(byCall(STRIXY,8).arguments,{transitionRequirement:()=>assert.fail('not consulted')});
+  assert.match(own,/these are your own identifiers and locators in the required shape\.$/);
+});
+
 test('laptop round 107 call 14: {} gets one shape example and no args',async()=>{
   const call=byCall(LAPTOP,14);
   assert.deepEqual(call.arguments,{});

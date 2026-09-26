@@ -1499,6 +1499,65 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(result["steps"][3]["before"]["display"], "none")
         self.assertEqual(recorded["details"]["steps"][3]["before"]["display"], "none")
 
+    def test_laptop_round107_uppercase_control_needs_its_css_locator(self):
+        # site-ba3eb2f6 repaired to start hidden: .show-sold-out-btn is
+        # text-transform: uppercase, so the exact role/name click matches
+        # nothing, and the published id offered in its place passes.
+        files, _ = recorded_site("inspection-recovery-laptop-round107.json", 3)
+        html = files["index.html"].decode()
+        repaired = html.replace('<article class="event-card sold-out">', '<article class="event-card sold-out hidden">', 1)
+        self.assertNotEqual(repaired, html)
+        files = {"index.html": repaired.encode()}
+        card = ".event-card.sold-out"
+        result = self.check(None, [step("assert-hidden", card), step("click", name="Show sold out"), step("assert-visible", card)], files)
+        self.assertEqual(result["steps"][1]["errorCode"], "no_match", result)
+        result = self.check(None, [step("assert-hidden", card), step("click", "#showSoldOutBtn"), step("assert-visible", card)], files)
+        self.assertEqual(result["status"], "passed", result)
+
+    def test_laptop_round107_item_target_measures_the_broken_toggle(self):
+        # site-c54d9d87 (call 13): the card has the hidden attribute and the
+        # handler removes a class. The CSS item target is measured after the
+        # click; the role/name heading was only a no_match.
+        files, _ = recorded_site("inspection-recovery-laptop-round107.json", 12)
+        item = "article.event-card.sold-out"
+        result = self.check(None, [step("assert-hidden", item), step("click", ".show-sold-out-btn"), step("assert-visible", item)], files)
+        self.assertEqual([s["status"] for s in result["steps"]], ["passed", "passed", "failed"], result)
+        self.assertEqual(result["steps"][2]["errorCode"], "visibility_mismatch")
+        self.assertEqual(result["steps"][2]["before"]["display"], "none")
+        heading = ("heading", "Midnight Sold-Out Concert")
+        result = self.check(None, [role_step("assert-hidden", *heading), step("click", ".show-sold-out-btn"), role_step("assert-visible", *heading)], files)
+        self.assertEqual(result["steps"][2]["errorCode"], "no_match", result)
+
+    def test_laptop_round107_call24_css_control_reaches_the_measurement(self):
+        # site-1f5f2cf8 (call 24): the recorded role/name click matched nothing;
+        # the offered #showSoldOutBtn plan clicks and measures .sold-out-card.
+        files, fixture = recorded_site("inspection-recovery-laptop-round107.json", 23)
+        recorded = next(call for call in fixture["turns"][0]["calls"] if call["call"] == 24)
+        result = self.check(None, recorded["arguments"]["steps"], files)
+        self.assertEqual(result["steps"][2]["errorCode"], "no_match", result)
+        card = ".sold-out-card"
+        result = self.check(None, [step("assert-hidden", card), step("click", "#showSoldOutBtn"), step("assert-visible", card)], files)
+        self.assertEqual([s["status"] for s in result["steps"]], ["passed", "passed", "failed"], result)
+        self.assertEqual(result["steps"][2]["before"]["display"], "none")
+
+    def test_mac_round107_repair_steps(self):
+        # The steps named for the new snapshot: the published heading around
+        # the model's .reveal-btn click. They fail on the recorded page and
+        # pass once the handler toggles the class the CSS hides.
+        files, _ = recorded_site("inspection-recovery-mac-round107.json", 2)
+        heading = ("heading", "Midnight Sold-out Concert")
+        plan = [role_step("assert-hidden", *heading), step("click", ".reveal-btn"), role_step("assert-visible", *heading)]
+        result = self.check(None, plan, files)
+        self.assertEqual(result["steps"][2]["errorCode"], "no_match", result)
+        html = files["index.html"].decode()
+        for old, new in (("const isHidden = hiddenCard.style.display === 'none';", "const isHidden = hiddenCard.classList.contains('hidden');"),
+                         ("hiddenCard.style.display = 'flex';", "hiddenCard.classList.remove('hidden');"),
+                         ("hiddenCard.style.display = 'none';", "hiddenCard.classList.add('hidden');")):
+            self.assertIn(old, html)
+            html = html.replace(old, new, 1)
+        result = self.check(None, plan, {"index.html": html.encode()})
+        self.assertEqual(result["status"], "passed", result)
+
 
 @unittest.skipUnless(
     os.environ.get("ODS_INSPECTION_TEST_IMAGE"), "isolated Docker image test opt in"

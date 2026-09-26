@@ -554,14 +554,23 @@ export function requestedTextCheck(literals, preview, {receipt, trackedContent, 
 }
 
 // A bounded static outline of the published entry page for choosing one stable
-// inspection locator: each element's tag, id, classes and parent, headings'
-// authored accessible names, the class names the published scripts add,
+// inspection locator: each element's tag, id, classes and parent, the authored
+// accessible names of headings and of controls (with their role), the class
+// names the published scripts add,
 // remove or toggle, and the one heading whose text is the owner's phrase
 // (headingIndex). Read from the same digest-bound bytes as requestedTextCheck.
 // It names locators; it verifies nothing. Unbound or oversized pages yield
 // undefined.
 const MAX_OUTLINE_ELEMENTS = 4000, MAX_OUTLINE_NAME_CHARS = 120, MAX_TOGGLED_CLASSES = 64;
 const CSS_IDENTIFIER = /^-?[A-Za-z_][\w-]*$/;
+const CONTROL_ROLES = new Set(['button', 'link', 'tab', 'switch']);
+// A clickable control's role as authored: an explicit supported role, else a
+// button element or a link with an href.
+function controlRole(tag, attributes) {
+  const role = attributes.get('role')?.trim().toLowerCase();
+  if (role) return CONTROL_ROLES.has(role) ? role : undefined;
+  return tag === 'button' ? 'button' : tag === 'a' && attributes.has('href') ? 'link' : undefined;
+}
 function htmlOutline(source) {
   const html = source.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
   const tag = /<(\/?)([A-Za-z][A-Za-z0-9-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/g;
@@ -609,9 +618,10 @@ function htmlOutline(source) {
       continue;
     }
     if (!VOID_ELEMENTS.has(name) && !/\/\s*$/.test(match[3]) && stack.length < 1024) {
-      const heading = /^h[1-6]$/.test(name);
+      const heading = /^h[1-6]$/.test(name), role = heading ? undefined : controlRole(name, attributes);
       if (heading) elements[index].heading = true;
-      stack.push({name, index, ...(heading ? {text: '', label: attributes.get('aria-label'),
+      if (role) elements[index].role = role;
+      stack.push({name, index, ...(heading || role ? {text: '', label: attributes.get('aria-label'),
         labelledBy: attributes.has('aria-labelledby')} : {})});
     }
   }

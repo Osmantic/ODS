@@ -1,5 +1,5 @@
 {
- "evidence": "windows-laptop-wsl-beta (Qwen3.5-9B, RTX 5070 laptop 8 GB), ODS main d4a61f33, ods-main-qualification-20260924-r049 round 107 website journey, session fabc87a8-0e08-4e86-9d4d-94b092d931fb (2026-09-25T23:26Z). Call 4 (transcript row 11) omitted exact:true on the button locator and was rejected. Call 5 (row 13) asserted \".event-card.sold-out.hidden\" hidden on site-ba3eb2f6, whose card is never hidden, and matched nothing. The model concluded the inspector snapshots before JavaScript runs (rows 25, 33, 35), sent {} (call 14, row 31), and after repairs published site-1f5f2cf8, where call 26 (row 55, result row 56) measured \".sold-out-card\" display:none after a real click: the handler removes .hidden while the CSS hides .sold-out-card. The model read the receipt's \"before\" as a pre-script snapshot (rows 57, 63, 73). Owner message, the model-authored file and applied edits, host publication receipts, inspection arguments, capsule receipts and tool texts, byte for byte; reads, repeated inspections, a failed edit and the answers are omitted.",
+ "evidence": "windows-laptop-wsl-beta (Qwen3.5-9B, RTX 5070 laptop 8 GB), ODS main d4a61f33, ods-main-qualification-20260924-r049 round 107 website journey, session fabc87a8-0e08-4e86-9d4d-94b092d931fb (2026-09-25T23:26Z). Call 4 (transcript row 11) omitted exact:true on the button locator and was rejected. Call 5 (row 13) asserted \".event-card.sold-out.hidden\" hidden on site-ba3eb2f6, whose card is never hidden, and matched nothing. The model concluded the inspector snapshots before JavaScript runs (rows 25, 33, 35), sent {} (call 14, row 31), and after repairs published site-1f5f2cf8, where call 26 (row 55, result row 56) measured \".sold-out-card\" display:none after a real click: the handler removes .hidden while the CSS hides .sold-out-card. The model read the receipt's \"before\" as a pre-script snapshot (rows 57, 63, 73). Owner message, the model-authored file and applied edits, host publication receipts, inspection arguments, capsule receipts and tool texts, byte for byte; reads, repeated inspections, a failed edit and the answers are omitted. Calls 13 (row 29, site-c54d9d87, whose card has the hidden attribute that the handler never removes) and 24 (row 51, site-1f5f2cf8, a role/name click on a visible button that the capsule names \"SHOW SOLD OUT\" because of text-transform: uppercase) are recorded as returned.",
  "session": {
   "sessionId": "fabc87a8-0e08-4e86-9d4d-94b092d931fb",
   "sessionKey": "agent:pixel:openai-user:ods-52471fb05fcfa342743d3c7de184445480ae8baf14aa74d4fca92c435fed9eba"
@@ -361,6 +361,140 @@
      }
     },
     {
+     "call": 13,
+     "row": 29,
+     "id": "zWiTPxuA7eNTnNAF8EsmKTLDFqhwuORn",
+     "tool": "pixel_ods_workspace_preview_inspect",
+     "transport": "tool_call",
+     "arguments": {
+      "siteId": "site-c54d9d87a7934302078a8ee4",
+      "sha256": "c54d9d87a7934302078a8ee4c00286e167abc94c31612519a6897f7ff853b232",
+      "viewport": {
+       "width": 375,
+       "height": 667
+      },
+      "steps": [
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": "h1"
+        }
+       },
+       {
+        "action": "assert-hidden",
+        "locator": {
+         "selector": "article.hidden"
+        }
+       },
+       {
+        "action": "click",
+        "locator": {
+         "selector": ".show-sold-out-btn"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": "article:not(.hidden)"
+        }
+       }
+      ]
+     },
+     "details": {
+      "blockedRequests": [],
+      "diagnostics": {
+       "hiddenUntilFoundCount": 0,
+       "renderedHiddenAttributeCount": 0
+      },
+      "kind": "ods-pixel-preview-inspection",
+      "planSha256": "430433b634fe2f41725e6de62008ea42c6bdc2575724384065b3d862a8f30b5e",
+      "renderedColors": {
+       "colors": [
+        {
+         "hex": "#0f1423",
+         "name": "black",
+         "percent": 47
+        },
+        {
+         "hex": "#12192e",
+         "name": "blue",
+         "percent": 25
+        },
+        {
+         "hex": "#7759de",
+         "name": "blue",
+         "percent": 12
+        },
+        {
+         "hex": "#8156d6",
+         "name": "purple",
+         "percent": 6
+        },
+        {
+         "hex": "#19a3a7",
+         "name": "teal",
+         "percent": 4
+        },
+        {
+         "hex": "#8e7bd9",
+         "name": "blue",
+         "percent": 1
+        }
+       ],
+       "viewport": {
+        "height": 720,
+        "width": 1280
+       }
+      },
+      "schemaVersion": 1,
+      "scope": "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.",
+      "sha256": "c54d9d87a7934302078a8ee4c00286e167abc94c31612519a6897f7ff853b232",
+      "siteId": "site-c54d9d87a7934302078a8ee4",
+      "status": "failed",
+      "steps": [
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 0,
+        "locator": {
+         "selector": "h1"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-hidden",
+        "before": {
+         "count": 0
+        },
+        "errorCode": "no_match",
+        "index": 1,
+        "locator": {
+         "selector": "article.hidden"
+        },
+        "stable": true,
+        "status": "failed"
+       }
+      ],
+      "viewport": {
+       "height": 667,
+       "width": 375
+      },
+      "ok": false
+     },
+     "isError": true,
+     "text": "Preview inspection failed. Step 2 (assert-hidden) matched no element, so nothing was measured and later steps did not run. Copy the exact role and accessible name (case, spacing, punctuation) or a CSS selector such as an id from your source, and retry the inspection on the same published snapshot. Do not change the site only to satisfy a locator. Requested behavior remains unverified. Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality. Rendered colors (by area, desktop 1280x720 as loaded): black 47%, blue #12192e 25%, blue #7759de 12%, purple #8156d6 6%, teal #19a3a7 4%, blue #8e7bd9 1%. Colors under 1% of the view and hover/focus-only styles are not listed. Evidence: {\"blockedRequests\":[],\"diagnostics\":{\"hiddenUntilFoundCount\":0,\"renderedHiddenAttributeCount\":0},\"kind\":\"ods-pixel-preview-inspection\",\"planSha256\":\"430433b634fe2f41725e6de62008ea42c6bdc2575724384065b3d862a8f30b5e\",\"schemaVersion\":1,\"scope\":\"Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.\",\"sha256\":\"c54d9d87a7934302078a8ee4c00286e167abc94c31612519a6897f7ff853b232\",\"siteId\":\"site-c54d9d87a7934302078a8ee4\",\"status\":\"failed\",\"steps\":[{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":0,\"locator\":{\"selector\":\"h1\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-hidden\",\"before\":{\"count\":0},\"errorCode\":\"no_match\",\"index\":1,\"locator\":{\"selector\":\"article.hidden\"},\"stable\":true,\"status\":\"failed\"}],\"viewport\":{\"height\":667,\"width\":375}}"
+    },
+    {
      "call": 14,
      "row": 31,
      "id": "g1nRTYHswt6nJAy6y2XPVeOjqmmZRpNJ",
@@ -435,6 +569,163 @@
       "status": "succeeded",
       "url": "http://site-1f5f2cf8da3b36f920507469.localhost:19437/site-1f5f2cf8da3b36f920507469/"
      }
+    },
+    {
+     "call": 24,
+     "row": 51,
+     "id": "2idLzxS8XNkW8Wuq37LaFtOe4pBPdetF",
+     "tool": "pixel_ods_workspace_preview_inspect",
+     "transport": "tool_call",
+     "arguments": {
+      "siteId": "site-1f5f2cf8da3b36f920507469",
+      "sha256": "1f5f2cf8da3b36f920507469d941da24c00b8866f924e72b6cc7332812722018",
+      "viewport": {
+       "width": 375,
+       "height": 667
+      },
+      "steps": [
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": "h1"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".show-sold-out-btn"
+        }
+       },
+       {
+        "action": "click",
+        "locator": {
+         "role": "button",
+         "name": "Show sold out",
+         "exact": true
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".sold-out-card"
+        }
+       }
+      ]
+     },
+     "details": {
+      "blockedRequests": [],
+      "diagnostics": {
+       "hiddenUntilFoundCount": 0,
+       "renderedHiddenAttributeCount": 0
+      },
+      "kind": "ods-pixel-preview-inspection",
+      "planSha256": "b0a0cf1565b218650597d89131798e8d490607339076143c43f78055e888282a",
+      "renderedColors": {
+       "colors": [
+        {
+         "hex": "#0f1423",
+         "name": "black",
+         "percent": 47
+        },
+        {
+         "hex": "#12192e",
+         "name": "blue",
+         "percent": 25
+        },
+        {
+         "hex": "#7759de",
+         "name": "blue",
+         "percent": 12
+        },
+        {
+         "hex": "#8156d6",
+         "name": "purple",
+         "percent": 6
+        },
+        {
+         "hex": "#19a3a7",
+         "name": "teal",
+         "percent": 4
+        },
+        {
+         "hex": "#8e7bd9",
+         "name": "blue",
+         "percent": 1
+        }
+       ],
+       "viewport": {
+        "height": 720,
+        "width": 1280
+       }
+      },
+      "schemaVersion": 1,
+      "scope": "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.",
+      "sha256": "1f5f2cf8da3b36f920507469d941da24c00b8866f924e72b6cc7332812722018",
+      "siteId": "site-1f5f2cf8da3b36f920507469",
+      "status": "failed",
+      "steps": [
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 0,
+        "locator": {
+         "selector": "h1"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "inline-block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 1,
+        "locator": {
+         "selector": ".show-sold-out-btn"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "click",
+        "before": {
+         "count": 0
+        },
+        "errorCode": "no_match",
+        "index": 2,
+        "locator": {
+         "exact": true,
+         "name": "Show sold out",
+         "role": "button"
+        },
+        "stable": true,
+        "status": "failed"
+       }
+      ],
+      "viewport": {
+       "height": 667,
+       "width": 375
+      },
+      "ok": false
+     },
+     "isError": true,
+     "text": "Preview inspection failed. Step 3 (click) matched no element, so nothing was measured and later steps did not run. For click, role/name locators match only rendered elements, so a hidden element is not matched. Copy the exact role and accessible name (case, spacing, punctuation) or a CSS selector such as an id from your source, and retry the inspection on the same published snapshot. Do not change the site only to satisfy a locator. Requested behavior remains unverified. Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality. Rendered colors (by area, desktop 1280x720 as loaded): black 47%, blue #12192e 25%, blue #7759de 12%, purple #8156d6 6%, teal #19a3a7 4%, blue #8e7bd9 1%. Colors under 1% of the view and hover/focus-only styles are not listed. Evidence: {\"blockedRequests\":[],\"diagnostics\":{\"hiddenUntilFoundCount\":0,\"renderedHiddenAttributeCount\":0},\"kind\":\"ods-pixel-preview-inspection\",\"planSha256\":\"b0a0cf1565b218650597d89131798e8d490607339076143c43f78055e888282a\",\"schemaVersion\":1,\"scope\":\"Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.\",\"sha256\":\"1f5f2cf8da3b36f920507469d941da24c00b8866f924e72b6cc7332812722018\",\"siteId\":\"site-1f5f2cf8da3b36f920507469\",\"status\":\"failed\",\"steps\":[{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":0,\"locator\":{\"selector\":\"h1\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"inline-block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":1,\"locator\":{\"selector\":\".show-sold-out-btn\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"click\",\"before\":{\"count\":0},\"errorCode\":\"no_match\",\"index\":2,\"locator\":{\"exact\":true,\"name\":\"Show sold out\",\"role\":\"button\"},\"stable\":true,\"status\":\"failed\"}],\"viewport\":{\"height\":667,\"width\":375}}"
     },
     {
      "call": 26,

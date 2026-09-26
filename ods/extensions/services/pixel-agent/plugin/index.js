@@ -759,6 +759,8 @@ export default definePluginEntry({
         // Finalize-time revisions do not reach the model after a plugin tool
         // call; an untested requested show/hide change is reported here.
         transitionRequirement: (toolCallId, params) => toolLoopGuard.previewInspectionTransition(toolCallId, params),
+        // Wording only: the owner's stated direction and whether a failure ends tool use.
+        guidance: (toolCallId, params) => toolLoopGuard.previewInspectionGuidance(toolCallId, params),
       }), { names: ["pixel_ods_workspace_preview_inspect"] });
     }
 

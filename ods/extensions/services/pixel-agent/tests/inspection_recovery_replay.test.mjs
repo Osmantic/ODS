@@ -9,7 +9,9 @@
 // - mac-mini round 106 (main b060c6ae): four locator failures on a working
 //   page tripped the consecutive-failure fuse;
 // - mac-mini round 107 (main d4a61f33): a broken inline-style toggle called
-//   "a timing issue".
+//   "a timing issue";
+// - tower2 round 107 (Qwen3-Coder-Next, main d4a61f33, passing): steps that
+//   already showed the card change, then a failing extra check of a button.
 // OpenClaw 2026.6.33 drops before_agent_finalize revisions after a plugin tool
 // call, so the inspection result is the only place a fix can be delivered.
 import test from 'node:test';
@@ -20,7 +22,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {extractRequestedLiterals, publishedElementOutline} from '../plugin/requested-literals.mjs';
-import {PREVIEW_INSPECTION_TOOL, boundVisibilityInspection, requestedVisibilityTransition} from '../plugin/preview-interaction-assurance.mjs';
+import {PREVIEW_INSPECTION_TOOL, boundVisibilityInspection, requestedVisibilityTransition, statedVisibilityDirection}
+  from '../plugin/preview-interaction-assurance.mjs';
 import {INSPECTION_KIND, INSPECTION_SCOPE, createWorkspacePreviewInspectTool, inspectionPlanHash,
   normalizeWorkspacePreviewInspectionParams} from '../plugin/workspace-preview-inspect.mjs';
 
@@ -125,7 +128,8 @@ function replay(t, fixture, model) {
   const guard = createToolLoopGuard({workspacePreviewInspectionAvailable: true, abortRun: () => true});
   const run = capsule(fixture, model);
   const tool = createWorkspacePreviewInspectTool({request: async request => run(request),
-    transitionRequirement: (toolCallId, params) => guard.previewInspectionTransition(toolCallId, params)});
+    transitionRequirement: (toolCallId, params) => guard.previewInspectionTransition(toolCallId, params),
+    guidance: (toolCallId, params) => guard.previewInspectionGuidance(toolCallId, params)});
   const [turn] = fixture.turns;
   const context = {agentId: 'pixel', ...fixture.session, runId: turn.runId};
   guard.observeRun(context, 'pixel', {prompt: turn.prompt}, {workspaceRoot: root});
@@ -249,7 +253,8 @@ test('strixy round 107 call 11: the resent flattened steps get the same ready ar
 });
 
 // Tower2 round 094 asserted the card by role "article", which no lossless
-// repair can fix; the guard-bound requirement names the published heading.
+// repair can fix; the guard-bound requirement names the published item as a
+// CSS target, which is measured whether or not it is rendered.
 test('strixy round 107 snapshot: an unrepairable role gets the guard-bound requirement plan', async t => {
   const r = replay(t, STRIXY, STRIXY_PAGE);
   await r.through(7);
@@ -260,13 +265,30 @@ test('strixy round 107 snapshot: an unrepairable role gets the guard-bound requi
   const text = assertNotPassing(await r.inspect(params, 'article-role', 'tool_call'));
   assert.ok(text.includes('At step 1, key "locator.role": role "article" is not one of '), text);
   const args = readyArgs(text);
-  assert.deepEqual(args, {...params, steps: [{action: 'assert-hidden', locator: OWNER_HEADING}, {action: 'click', locator: BUTTON},
-    {action: 'assert-visible', locator: OWNER_HEADING}]});
-  assert.ok(text.includes(' The target is the heading "Midnight sold-out concert" of the requested "Midnight sold-out concert" element, read from the published source;'), text);
+  assert.deepEqual(args, STRIXY_PLAN(publish));
+  assert.ok(text.includes(' The target "#midnight-card" is the requested "Midnight sold-out concert" heading or the element around it, ' +
+    'read from the published source; it holds no other heading and not the control.'), text);
   assert.equal(r.run.plans.length, 0);
   const corrected = await r.inspect(args, 'article-corrected', 'tool_call');
   assert.equal(corrected.details.status, 'passed');
   assert.equal(r.verification().status, 'passed');
+});
+
+// Strixy round 107 calls 8 to 11: the failure that ends the response's tool
+// use offers no call (the next one is refused); it says to answer instead.
+test('strixy round 107: the failure that ends tool use names no further call', async t => {
+  const r = replay(t, STRIXY, STRIXY_PAGE);
+  const first = assertNotPassing(await r.through(8));
+  assert.ok(readyArgs(first));
+  const resent = call(STRIXY, 11).arguments;
+  for (const id of ['again-1', 'again-2']) assert.ok(readyArgs(assertNotPassing(await r.inspect(resent, id, 'tool_call'))));
+  const last = assertNotPassing(await r.inspect(resent, 'again-3', 'tool_call'));
+  assert.ok(last.endsWith(' Requested behavior remains unverified. This failed call was the last one this response allows, so no further tool call ' +
+    'can run: do not call any tool. Answer the owner now from the results already returned, and report the requested behavior as unverified.'), last);
+  assert.doesNotMatch(last, /Next step|exactly these args|in this shape/);
+  const ctx = {agentId: 'pixel', ...STRIXY.session, runId: STRIXY.turns[0].runId, toolName: 'tool_call', toolCallId: 'refused'};
+  assert.equal(r.guard.beforeToolCall({toolName: 'tool_call', runId: ctx.runId, toolCallId: 'refused',
+    params: {id: PREVIEW_INSPECTION_TOOL, args: resent}}, ctx)?.block, true, 'the guard refuses the next call');
 });
 
 // Laptop's first page (site-ba3eb2f6): <article class="event-card sold-out">
@@ -277,67 +299,117 @@ const LAPTOP_PAGE = {
   before: page([[{selector: 'h1'}, 'visible'], [LAPTOP_CARD, 'visible'], [LAPTOP_CONTROL, 'visible'], [BUTTON, 'visible']]),
   after: page([[{selector: 'h1'}, 'visible'], [LAPTOP_CARD, 'visible'], [LAPTOP_CONTROL, 'visible']]),
 };
-const laptopPlan = snapshot => ({siteId: snapshot.siteId, sha256: snapshot.sha256, viewport: {width: 375, height: 667},
-  steps: [{action: 'assert-hidden', locator: LAPTOP_CARD}, {action: 'click', locator: LAPTOP_CONTROL}, {action: 'assert-visible', locator: LAPTOP_CARD}]});
+const planOn = (snapshot, target, control) => ({siteId: snapshot.siteId, sha256: snapshot.sha256, viewport: {width: 375, height: 667},
+  steps: [{action: 'assert-hidden', locator: target}, {action: 'click', locator: control}, {action: 'assert-visible', locator: target}]});
+const stepsAfterRepair = text => {
+  const match = /republish, then inspect the new snapshot with these steps, using siteId and sha256 from its publication receipt: (\[.*?\])\./.exec(text);
+  assert.ok(match, text);
+  return JSON.parse(match[1]);
+};
 
-test('laptop round 107: call 13 gets ready args for the stable card locator; the page then gets a measured diagnosis', async t => {
+test('laptop round 107 call 4: a lossless repair that tests no change gets the owner-requirement plan', async t => {
   const r = replay(t, LAPTOP, LAPTOP_PAGE);
   const publish = call(LAPTOP, 3).details;
-  // Call 4 (row 11): the button locator without exact:true, repaired losslessly.
-  const lossless = readyArgs(assertNotPassing(await r.through(4)));
-  assert.deepEqual(lossless.steps[2], {action: 'click', locator: BUTTON});
-  // Call 5 (row 13): ".event-card.sold-out.hidden" matched nothing on site-ba3eb2f6.
-  const recorded = call(LAPTOP, 5);
-  const failed = await r.through(5);
-  const text = assertNotPassing(failed, recordedReceipt(recorded));
-  assert.ok(summaryOf(text).startsWith(summaryOf(recorded.text)), 'the recorded locator feedback is kept');
+  const text = assertNotPassing(await r.through(4));
+  assert.ok(text.includes('At step 3, key "locator.exact": '), text);
+  // The repaired call-4 steps asserted ".event-card.sold-out.hidden" visible
+  // before the click; the owner's plan asserts the card on both sides of it.
   const args = readyArgs(text);
-  assert.deepEqual(args, laptopPlan(publish));
-  assert.ok(text.includes('The target ".event-card.sold-out" is your locators ".event-card.sold-out.hidden" and ' +
-    '".event-card.sold-out:not(.hidden)" with state qualifiers removed; it matches exactly one element in the published source; ' +
-    'it contains the requested "Midnight sold-out concert" heading.'), text);
-  assert.ok(!JSON.stringify(args).includes('.event-card.sold-out.hidden'), 'the unmatched locator is never reused');
-  assert.ok(normalizeWorkspacePreviewInspectionParams(args));
-  // Sending them measures the real defect: the card is visible as the page loads.
+  assert.deepEqual(args, planOn(publish, LAPTOP_CARD, BUTTON));
+  assert.doesNotMatch(text, /these are your own identifiers/);
+  // Sending them measures the real defect; the owner's wording says hidden first.
   const measured = await r.inspect(args, 'laptop-corrected', 'tool_call');
   const diagnosis = assertNotPassing(measured, measured.details);
   assert.equal(measured.details.steps[0].errorCode, 'visibility_mismatch');
   assert.ok(diagnosis.startsWith('Preview inspection failed. Step 1 (assert-hidden) ".event-card.sold-out" measured display "block", ' +
     'visibility "visible", opacity "1" and rectCount 1 as the page loaded, before any click, so it is visible where this step expects it hidden. ' +
-    `The element is visible as the page loads; the owner asked for it hidden initially. ${FACTS}`), diagnosis);
-  assert.match(diagnosis, /Next step: repair the source so it is hidden as the page loads .*, republish, then inspect the new snapshot with the same steps\./);
+    `The element is visible as the page loads, but the owner's request has it hidden until the click. ${FACTS}`), diagnosis);
+  assert.match(diagnosis, /Next step: repair the source so it is hidden as the page loads \(for example, a class or attribute in the published HTML that the CSS hides and the click handler changes\)/);
+  assert.deepEqual(stepsAfterRepair(diagnosis), args.steps, 'the steps for the new snapshot, never state-qualified locators');
   assert.equal(READY.exec(diagnosis), null, 'no args: the repair changes the snapshot');
   assert.equal(r.verification().status, 'failed');
 });
 
-test('laptop round 107: the lossless call-4 args lead to the same ready args', async t => {
+test('laptop round 107 call 5: the unmatched state-qualified locator gets the stable card locator', async t => {
   const r = replay(t, LAPTOP, LAPTOP_PAGE);
-  const lossless = readyArgs((await r.through(4)).content[0].text);
-  const failed = await r.inspect(lossless, 'lossless', 'tool_call');
-  assert.equal(failed.details.steps.at(-1).errorCode, 'no_match');
-  assert.deepEqual(readyArgs(failed.content[0].text), {...laptopPlan(call(LAPTOP, 3).details),
-    steps: [{action: 'assert-hidden', locator: LAPTOP_CARD}, {action: 'click', locator: BUTTON}, {action: 'assert-visible', locator: LAPTOP_CARD}]});
+  const recorded = call(LAPTOP, 5);
+  const text = assertNotPassing(await r.through(5), recordedReceipt(recorded));
+  assert.ok(summaryOf(text).startsWith(summaryOf(recorded.text)), 'the recorded locator feedback is kept');
+  const args = readyArgs(text);
+  assert.deepEqual(args, planOn(call(LAPTOP, 3).details, LAPTOP_CARD, LAPTOP_CONTROL));
+  assert.ok(text.includes('The target ".event-card.sold-out" is your locators ".event-card.sold-out.hidden" and ' +
+    '".event-card.sold-out:not(.hidden)" with state qualifiers removed; it matches exactly one element in the published source; ' +
+    'it contains the requested "Midnight sold-out concert" heading.'), text);
+  assert.ok(!JSON.stringify(args).includes('.event-card.sold-out.hidden'), 'the unmatched locator is never reused');
+  assert.ok(normalizeWorkspacePreviewInspectionParams(args));
 });
 
-// Call 26 (row 55, result row 56) on site-1f5f2cf8: the handler removes .hidden,
-// but .sold-out-card {display:none} hides the card.
-test('laptop round 107 row 56: the recorded receipt names the post-click display:none and the repair', async () => {
+// Call 13 on site-c54d9d87: <article class="event-card sold-out" hidden>, and
+// the handler removes a class, not the attribute. The owner-named item as a
+// CSS target measures the broken toggle; a role/name heading asserted visible
+// would only have matched nothing.
+const LAPTOP_ITEM = {selector: 'article.event-card.sold-out'};
+test('laptop round 107 call 13: a CSS item target turns the broken toggle into a measured repair', async t => {
+  const r = replay(t, LAPTOP, {
+    before: page([[{selector: 'h1'}, 'visible'], [LAPTOP_ITEM, 'hidden'], [LAPTOP_CONTROL, 'visible']]),
+    after: page([[{selector: 'h1'}, 'visible'], [LAPTOP_ITEM, 'hidden'], [LAPTOP_CONTROL, 'visible']]),
+  });
+  const recorded = call(LAPTOP, 13), publish = call(LAPTOP, 12).details;
+  const text = assertNotPassing(await r.through(13), recordedReceipt(recorded));
+  assert.ok(summaryOf(text).startsWith(summaryOf(recorded.text)), 'the recorded locator feedback is kept');
+  const args = readyArgs(text);
+  assert.deepEqual(args, planOn(publish, LAPTOP_ITEM, LAPTOP_CONTROL));
+  assert.ok(text.includes(' The target "article.event-card.sold-out" is the requested "Midnight sold-out concert" heading or the element around it,'), text);
+  const measured = await r.inspect(args, 'item', 'tool_call');
+  const diagnosis = assertNotPassing(measured, measured.details);
+  assert.deepEqual(measured.details.steps.map(step => [step.status, step.errorCode]), [['passed', undefined], ['passed', undefined], ['failed', 'visibility_mismatch']]);
+  assert.ok(diagnosis.startsWith('Preview inspection failed. Step 3 (assert-visible) "article.event-card.sold-out" measured display "none", ' +
+    'visibility "visible", opacity "1" and rectCount 0 after the click at step 2 (".show-sold-out-btn"), so it is hidden where this step expects it visible. ' +
+    FACTS), diagnosis);
+  assert.match(diagnosis, /Next step: repair the source \(for example, have the click handler change the same class or attribute that the CSS uses to hide it\)/);
+  assert.deepEqual(stepsAfterRepair(diagnosis), args.steps);
+});
+
+// Call 24 on site-1f5f2cf8: the visible button is "SHOW SOLD OUT" to the
+// capsule (.show-sold-out-btn {text-transform: uppercase}), so the exact
+// role/name click matched nothing. The published id replaces it.
+test('laptop round 107 call 24: a role/name click that matched no rendered control gets its published id', async t => {
+  const r = replay(t, LAPTOP, LAPTOP_PAGE);
+  const recorded = call(LAPTOP, 24), publish = call(LAPTOP, 23).details;
+  assert.match(recorded.text, /For click, role\/name locators match only rendered elements, so a hidden element is not matched\./);
+  const text = assertNotPassing(await r.through(24), recordedReceipt(recorded));
+  assert.ok(text.startsWith('Preview inspection failed. Step 3 (click) matched no rendered element with exactly that role and accessible name, ' +
+    'so nothing was clicked and later steps did not run. The accessible name comes from the rendered text, so CSS text-transform (such as uppercase) ' +
+    'changes it; a hidden control is not matched either. The published source has one button with that name ignoring case: "#showSoldOutBtn".'), text);
+  assert.deepEqual(readyArgs(text), planOn(publish, {selector: '.sold-out-card'}, {selector: '#showSoldOutBtn'}));
+});
+
+// Call 26 (row 55, result row 56) on site-1f5f2cf8: the handler removes
+// .hidden, but .sold-out-card {display:none} hides the card. The repair the
+// text names may remove .sold-out-card itself, so the steps for the new
+// snapshot name the card by its other classes (laptop call 38 did exactly that,
+// then re-sent ".sold-out-card" at call 40, which matched nothing).
+test('laptop round 107 row 56: the post-click display:none gets a repair and repair-stable steps', async t => {
   const recorded = call(LAPTOP, 26), receipt = recordedReceipt(recorded);
-  let consulted = 0;
-  const tool = createWorkspacePreviewInspectTool({request: async () => structuredClone(receipt), transitionRequirement: () => { consulted += 1; }});
-  const result = await tool.execute('row-56', recorded.arguments);
-  const text = assertNotPassing(result, receipt);
   assert.match(recorded.text, /^Preview inspection failed\. Requested behavior remains unverified; a failed inspection does not establish a visibility transition\./);
+  const r = replay(t, LAPTOP, LAPTOP_PAGE);
+  await r.through(23);
+  const text = assertNotPassing(await r.inspect(recorded.arguments, recorded.id, 'tool_call'), receipt);
   assert.ok(text.startsWith('Preview inspection failed. Step 4 (assert-visible) ".sold-out-card" measured display "none", visibility "visible", ' +
     'opacity "1" and rectCount 0 after the click at step 3 (".show-sold-out-btn"), so it is hidden where this step expects it visible. ' +
     `${FACTS} Requested behavior remains unverified; a failed inspection does not establish a visibility transition. ` +
     'Next step: repair the source (for example, have the click handler change the same class or attribute that the CSS uses to hide it), ' +
-    `republish, then inspect the new snapshot with the same steps. ${INSPECTION_SCOPE}`), text);
-  assert.equal(consulted, 0, 'a post-click measurement needs no owner requirement');
+    'republish, then inspect the new snapshot with these steps, using siteId and sha256 from its publication receipt: '), text);
+  assert.deepEqual(stepsAfterRepair(text), [{action: 'assert-hidden', locator: LAPTOP_ITEM}, {action: 'click', locator: LAPTOP_CONTROL},
+    {action: 'assert-visible', locator: LAPTOP_ITEM}]);
   // Evidence and palette are unchanged.
   assert.equal(text.slice(text.indexOf(` ${INSPECTION_SCOPE}`)), recorded.text.slice(recorded.text.indexOf(` ${INSPECTION_SCOPE}`)));
+  // Without a bound requirement the steps are not guessed: ".sold-out-card" may be what the repair removes.
+  const plain = createWorkspacePreviewInspectTool({request: async () => structuredClone(receipt)});
+  assert.ok((await plain.execute('row-56', recorded.arguments)).content[0].text.includes('Next step: repair the source (for example, ' +
+    'have the click handler change the same class or attribute that the CSS uses to hide it), republish, then inspect the new snapshot, ' +
+    `asserting one unchanging locator of the element, such as an id, before the click and after it. ${INSPECTION_SCOPE}`));
 });
-
 // Mac round 106: <article class="event-card hidden"> (display:none) with the
 // script removing .hidden on the .reveal-btn click; the heading plan passes.
 const MAC106_PAGE = {
@@ -381,14 +453,132 @@ test('mac round 106: calls 9-12 each get ready args for the published heading, n
 // Mac round 107: the handler tests hiddenCard.style.display === 'none', empty
 // on load, so the first click sets display:none.
 test('mac round 107: the recorded call-8 receipt names step 8 after the click on step 7', async () => {
+  const requirement = ownerRequirement(MAC107, 2);
   for (const number of [3, 8]) {
     const recorded = call(MAC107, number), receipt = recordedReceipt(recorded);
-    const tool = createWorkspacePreviewInspectTool({request: async () => structuredClone(receipt)});
-    const text = assertNotPassing(await tool.execute(`call-${number}`, recorded.arguments), receipt);
-    assert.ok(text.startsWith('Preview inspection failed. Step 8 (assert-visible) ".event-card.hidden" measured display "none", ' +
-      'visibility "visible", opacity "1" and rectCount 0 after the click at step 7 (".reveal-btn"), so it is hidden where this step expects it visible. ' +
-      FACTS), text);
-    assert.match(text, /have the click handler change the same class or attribute that the CSS uses to hide it\), republish/);
+    for (const bound of [false, true]) {
+      const tool = createWorkspacePreviewInspectTool({request: async () => structuredClone(receipt),
+        ...(bound ? {transitionRequirement: () => requirement, guidance: () => ({direction: 'hidden'})} : {})});
+      const text = assertNotPassing(await tool.execute(`call-${number}`, recorded.arguments), receipt);
+      assert.ok(text.startsWith('Preview inspection failed. Step 8 (assert-visible) ".event-card.hidden" measured display "none", ' +
+        'visibility "visible", opacity "1" and rectCount 0 after the click at step 7 (".reveal-btn"), so it is hidden where this step expects it visible. ' +
+        FACTS), text);
+      assert.match(text, /have the click handler change the same class or attribute that the CSS uses to hide it\), republish/);
+      // ".event-card" alone names all three cards: without the published outline no steps are guessed.
+      if (!bound) assert.match(text, /republish, then inspect the new snapshot, asserting one unchanging locator of the element, such as an id, before the click and after it\./);
+      else assert.deepEqual(stepsAfterRepair(text), [{action: 'assert-hidden', locator: {role: 'heading', name: 'Midnight Sold-out Concert', exact: true}},
+        {action: 'click', locator: {selector: '.reveal-btn'}}, {action: 'assert-visible', locator: {role: 'heading', name: 'Midnight Sold-out Concert', exact: true}}]);
+    }
   }
   assert.match(call(MAC107, 8).arguments.steps[5].action, /assert-hidden/, 'the card was hidden before the click');
+});
+
+// Tower2 round 107 (passing) call 20: steps 4, 6 and 7 already showed the card
+// hidden, then the click, then visible; step 8 was the model's own extra check
+// of the renamed button. The passing steps are offered, never a site repair.
+const TOWER2 = load('inspection-recovery-tower2-round107.json');
+const tower2Call = number => TOWER2.turns[0].calls.find(item => item.call === number);
+const TOWER2_REQUIREMENT = Object.freeze({target: 'Midnight sold-out concert', control: {role: 'button', name: 'Show sold out'}, initiallyHidden: true});
+test('tower2 round 107 call 20: a failing extra check after a proven change gets the passing steps', async () => {
+  const recorded = tower2Call(20), receipt = recordedReceipt(recorded);
+  assert.match(recorded.text, /^Preview inspection failed\. Requested behavior remains unverified;/);
+  for (const guidance of [{direction: 'hidden'}, {}]) {
+    const tool = createWorkspacePreviewInspectTool({request: async () => structuredClone(receipt),
+      transitionRequirement: () => TOWER2_REQUIREMENT, guidance: () => guidance});
+    const text = assertNotPassing(await tool.execute('call-20', recorded.arguments), receipt);
+    assert.ok(text.includes('Step 8 (assert-hidden) button "Hide sold out" measured display "flex", visibility "visible", opacity "1" and rectCount 1 ' +
+      'after the click at step 6 (button "Show sold out"), so it is visible where this step expects it hidden. Steps 4, 6 and 7 before it already ' +
+      'measured "#midnight-concert" hidden before the click and visible after it; step 8 checks another element.'), text);
+    assert.doesNotMatch(text, /repair the source/);
+    const match = /with exactly these args: (\{.*?\}) These are your steps 1 to 7, unchanged\. Change the site only if the owner asked for button "Hide sold out" to be hidden after the click\./.exec(text);
+    assert.ok(match, text);
+    const args = JSON.parse(match[1]);
+    assert.deepEqual(args, {...recorded.arguments, steps: recorded.arguments.steps.slice(0, 7)});
+    // Those steps passed on this snapshot: the same capsule measurements, minus step 8.
+    const passing = {...receipt, status: 'passed', planSha256: inspectionPlanHash(normalizeWorkspacePreviewInspectionParams(args)),
+      steps: receipt.steps.slice(0, 7)};
+    const next = await createWorkspacePreviewInspectTool({request: async () => structuredClone(passing)}).execute('next', args);
+    assert.equal(next.details.status, 'passed');
+    assert.ok(boundVisibilityInspection(args, next, {siteId: args.siteId, sha256: args.sha256}));
+  }
+});
+
+// Call 21 clicked the button by its old name after the first click renamed it.
+test('tower2 round 107 call 21: a renamed control is not called hidden', async () => {
+  const recorded = tower2Call(21), receipt = recordedReceipt(recorded);
+  const text = assertNotPassing(await createWorkspacePreviewInspectTool({request: async () => structuredClone(receipt)})
+    .execute('call-21', recorded.arguments), receipt);
+  assert.ok(text.startsWith('Preview inspection failed. Step 8 (click) matched no rendered element with exactly that role and accessible name, ' +
+    'so nothing was clicked and later steps did not run. The accessible name comes from the rendered text, so CSS text-transform (such as uppercase), ' +
+    'or an earlier click that changed its text, changes it; a hidden control is not matched either. Use a CSS selector such as the id of the control ' +
+    'from your source, and retry the inspection on the same published snapshot.'), text);
+});
+
+// The owner's stated direction decides only where the owner's own wording
+// fixed it (reviewer probes P4, P5 and P9 of PR #6748).
+test('only the owner\'s explicit wording states which state comes first', () => {
+  const fleet = STRIXY.turns[0].prompt;
+  assert.equal(statedVisibilityDirection(fleet), 'hidden');
+  assert.equal(statedVisibilityDirection('Provide an accessible button named exactly "Hide details" that hides the Details panel when clicked.'), 'visible');
+  assert.equal(statedVisibilityDirection('Add a FAQ where clicking a question expands its answer.'), 'hidden');
+  for (const open of ['Build a page with a "Menu" button that toggles the navigation panel.',
+    'Clicking the button shows the panel; clicking again hides it.', 'Add a button that shows or hides the details.',
+    'Create a static page with a heading titled "Hello".']) assert.equal(statedVisibilityDirection(open), undefined, open);
+  // requestedVisibilityTransition keeps its hidden-first default for all of them.
+  for (const prompt of ['Build a page with a "Menu" button that toggles the navigation panel.', fleet])
+    assert.equal(requestedVisibilityTransition(prompt, extractRequestedLiterals(prompt)).initiallyHidden, true);
+});
+
+const withPrompt = (fixture, prompt) => ({...fixture, turns: [{...fixture.turns[0], prompt}]});
+const STRIXY_REVEAL = 'Initially hide the entire Midnight sold-out concert card. Provide an accessible button named exactly "Show sold out" that reveals that card when clicked.';
+test('a hide-on-click owner gets a repair, never the reverse plan, on a page that starts hidden (P5)', async t => {
+  const prompt = STRIXY.turns[0].prompt.replace(STRIXY_REVEAL,
+    'Show the entire Midnight sold-out concert card on load. Provide an accessible button named exactly "Show sold out" that hides that card when clicked.');
+  assert.notEqual(prompt, STRIXY.turns[0].prompt);
+  const r = replay(t, withPrompt(STRIXY, prompt), STRIXY_PAGE);
+  await r.through(7);
+  const publish = call(STRIXY, 7).details;
+  const owner = {...STRIXY_PLAN(publish), steps: [{action: 'assert-visible', locator: {selector: '#midnight-card'}}, {action: 'click', locator: BUTTON},
+    {action: 'assert-hidden', locator: {selector: '#midnight-card'}}]};
+  const result = await r.inspect(owner, 'owner-direction', 'tool_call');
+  const text = assertNotPassing(result, result.details);
+  assert.ok(text.includes('so it is hidden where this step expects it visible. The element is hidden as the page loads, but the owner\'s request has it ' +
+    'visible until the click.'), text);
+  assert.match(text, /Next step: repair the source so it is visible as the page loads/);
+  assert.equal(READY.exec(text), null, 'the hidden-first plan is not offered');
+  assert.equal(r.verification().status, 'failed');
+});
+
+test('a toggle owner gets both orders, and the owner is never said to have asked for one (P9)', async t => {
+  const prompt = STRIXY.turns[0].prompt.replace(STRIXY_REVEAL, 'Provide an accessible button named exactly "Show sold out" that toggles the Midnight sold-out concert card.');
+  const r = replay(t, withPrompt(STRIXY, prompt), STRIXY_PAGE);
+  await r.through(7);
+  const publish = call(STRIXY, 7).details;
+  const visibleFirst = {...STRIXY_PLAN(publish), steps: [{action: 'assert-visible', locator: {selector: '#midnight-card'}}, {action: 'click', locator: BUTTON},
+    {action: 'assert-hidden', locator: {selector: '#midnight-card'}}]};
+  const result = await r.inspect(visibleFirst, 'toggle', 'tool_call');
+  const text = assertNotPassing(result, result.details);
+  assert.ok(text.includes('The element is hidden as the page loads; the owner\'s request does not say whether it starts hidden or visible.'), text);
+  assert.doesNotMatch(text, /the owner's request has it|the owner asked for it hidden initially/);
+  assert.match(text, /Next step: if the owner asked for it visible until the click, repair the source so it is visible as the page loads/);
+  const otherwise = /Otherwise the page may start hidden: call pixel_ods_workspace_preview_inspect \(a tool in your list; call it by name\) with exactly these args: (\{.*?\}) The target /.exec(text);
+  assert.deepEqual(JSON.parse(otherwise[1]), STRIXY_PLAN(publish));
+});
+
+test('a hide-on-click owner whose page starts visible gets the owner-order plan on the same snapshot (P4)', async () => {
+  const params = {siteId: 'site-' + 'a'.repeat(24), sha256: 'a'.repeat(64), viewport: {width: 375, height: 667},
+    steps: [{action: 'assert-hidden', locator: {selector: '#details'}}, {action: 'click', locator: {role: 'button', name: 'Hide details', exact: true}},
+      {action: 'assert-visible', locator: {selector: '#details'}}]};
+  const model = capsule(STRIXY, {before: page([[{selector: '#details'}, 'visible'], [{role: 'button', name: 'Hide details', exact: true}, 'visible']]),
+    after: page([[{selector: '#details'}, 'hidden']])});
+  const requirement = {control: {role: 'button', name: 'Hide details'}, initiallyHidden: false};
+  const tool = createWorkspacePreviewInspectTool({request: async request => model(request), transitionRequirement: () => requirement,
+    guidance: () => ({direction: 'visible'})});
+  const result = await tool.execute('p4', params);
+  const text = assertNotPassing(result, result.details);
+  assert.ok(text.includes('The element is visible as the page loads, as the owner\'s request has it before the click, so these steps assert the reverse order; ' +
+    'the site needs no change for this.'), text);
+  const args = readyArgs(text);
+  assert.deepEqual(args.steps.map(step => step.action), ['assert-visible', 'click', 'assert-hidden']);
+  assert.equal((await tool.execute('p4-next', args)).details.status, 'passed');
 });
