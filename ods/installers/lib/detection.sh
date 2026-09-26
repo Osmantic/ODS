@@ -301,6 +301,39 @@ apply_cpu_gpu_fallback() {
     CAP_COMPOSE_OVERLAYS=""
 }
 
+# Merge a loaded capability profile over detect_gpu() results.
+# config/hardware-classes.json has no Intel class and detect-hardware.sh only
+# reads AMD vendor nodes, so an Arc host classifies as cpu_fallback. Keep
+# detect_gpu()'s verified sysfs match and drop the profile's tier so phase 02
+# picks ARC/ARC_LITE from VRAM instead of downgrading the host to CPU.
+apply_capability_gpu_override() {
+    [[ "${CAP_PROFILE_LOADED:-false}" == "true" ]] || return 0
+    if [[ "${GPU_BACKEND:-}" == "intel" && "${CAP_LLM_BACKEND:-}" != "intel" ]]; then
+        log "Capabilities backend '${CAP_LLM_BACKEND:-unknown}' ignored: detect_gpu found Intel Arc (${GPU_NAME:-unknown})"
+        CAP_RECOMMENDED_TIER=""
+        return 0
+    fi
+    case "${CAP_LLM_BACKEND:-}" in
+        amd)    GPU_BACKEND="amd" ;;
+        intel)  GPU_BACKEND="intel" ;;
+        cpu)    GPU_BACKEND="cpu" ;;
+        apple)  GPU_BACKEND="apple" ;;
+        jetson)
+            if [[ "${ODS_ENABLE_EXPERIMENTAL_JETSON:-0}" == "1" ]]; then
+                GPU_BACKEND="jetson"
+            else
+                GPU_BACKEND="cpu"
+            fi
+            ;;
+        *) GPU_BACKEND="nvidia" ;;
+    esac
+    if [[ -n "${CAP_GPU_MEMORY_TYPE:-}" ]]; then GPU_MEMORY_TYPE="${CAP_GPU_MEMORY_TYPE}"; fi
+    if [[ -n "${CAP_GPU_NAME:-}" ]]; then GPU_NAME="${CAP_GPU_NAME}"; fi
+    if [[ -n "${CAP_GPU_VRAM_MB:-}" ]]; then GPU_VRAM="${CAP_GPU_VRAM_MB}"; fi
+    if [[ -n "${CAP_GPU_COUNT:-}" ]]; then GPU_COUNT="${CAP_GPU_COUNT}"; fi
+    log "Capabilities override detection: backend=${GPU_BACKEND}, memory=${GPU_MEMORY_TYPE:-}, tier=${CAP_RECOMMENDED_TIER:-unknown}"
+}
+
 select_cpu_fallback_tier() {
     local ram_gb="${1:-0}"
     if ! [[ "$ram_gb" =~ ^[0-9]+$ ]]; then
