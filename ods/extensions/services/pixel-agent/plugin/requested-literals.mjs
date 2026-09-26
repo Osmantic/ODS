@@ -8,7 +8,11 @@
 // while the other listed items are exact headings, is reported the same way,
 // as is a listed card name that is no heading at all beside such headings.
 // File names the owner lists for a named, published directory are checked
-// against the receipt's complete published path list.
+// against the receipt's complete published path list. A quotation that names
+// a button or link ("a button named exactly ...") is also a control name: the
+// browser inspection's load-time accessible names, computed after the page
+// scripts ran, must include it (bytes alone cannot show an aria-label a
+// script sets on load).
 import {createHash} from 'node:crypto';
 import * as fs from 'node:fs';
 import path from 'node:path';
@@ -65,6 +69,14 @@ const PAGE_TITLE = new RegExp(`${B}(?:(?:page|document|browser|tab|html)\\s+titl
 const MAIN_HEADING = new RegExp(`${B}(?:h1|(?:main|top[- ]level|primary)\\s+heading|t[íi]tulo\\s+principal)${E}|<h1>`, 'iu');
 
 const QUOTATION = /"([^"\n]{1,160})"|“([^”"\n]{1,160})”|«\s?([^»\n]{1,160}?)\s?»|‘([^’\n]{1,160})’|(?<![\p{L}\p{N}])'([^'\n]{1,160})'(?![\p{L}\p{N}])/gu;
+// A quotation that names a control's accessible name: "a button named exactly",
+// "a link called", "a button with the accessible name". The noun must come
+// directly before the naming cue; "a "Buy" button" or "button text" is text only.
+const CONTROL_NAME_CUE = tail(String.raw`(buttons?|links?|bot[ãa]o|bot[õo]es)\s*,?\s+(?:(?:that|which)\s+is\s+|que\s+[ée]\s+)?` +
+  String.raw`(?:(?:accessibly\s+)?named|called|labell?ed|titled|entitled|with\s+(?:the\s+|an?\s+)?(?:accessible\s+)?(?:name|label)|` +
+  String.raw`whose\s+(?:accessible\s+)?name\s+is|chamad[oa]s?|nomead[oa]s?|rotulad[oa]s?|intitulad[oa]s?|` +
+  String.raw`com\s+(?:o\s+)?(?:nome|r[óo]tulo)(?:\s+acess[íi]vel)?)(?:\s+(?:exactly|exatamente))?`);
+const CONTROL_ROLE = noun => /^link/i.test(noun) ? 'link' : 'button';
 
 const COUNTS = {two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,
   dois:2,duas:2,'três':3,tres:3,quatro:4,cinco:5,seis:6,sete:7,oito:8,nove:9,dez:10};
@@ -156,7 +168,9 @@ function quotedLiterals(prose) {
     const targets = [];
     if (PAGE_TITLE.test(local)) targets.push('page title');
     if (MAIN_HEADING.test(local)) targets.push('h1');
-    found.push({text, match: exact || EXACT_MODE.test(lastWords(local, 3)) ? 'exact' : 'caseless', targets});
+    const control = CONTROL_NAME_CUE.exec(local);
+    found.push({text, match: exact || EXACT_MODE.test(lastWords(local, 3)) ? 'exact' : 'caseless', targets,
+      ...(control ? {control: CONTROL_ROLE(control[1])} : {})});
   }
   return found;
 }
@@ -254,7 +268,7 @@ function fileLiterals(prose) {
 export function extractRequestedLiterals(ownerText) {
   const prose = ownerProse(ownerText);
   const seen = new Set(), literals = [];
-  for (const literal of [...quotedLiterals(prose), ...enumeratedLiterals(prose),
+  for (const {control, ...literal} of [...quotedLiterals(prose), ...enumeratedLiterals(prose),
     ...fileLiterals(ownerProse(ownerText, {keepInlineCode: true}))]) {
     const key = relaxed(literal.text);
     if (!key || seen.has(key) || literals.length >= MAX_REQUESTED_LITERALS) continue;
@@ -262,6 +276,23 @@ export function extractRequestedLiterals(ownerText) {
     literals.push(Object.freeze({...literal, targets: Object.freeze(literal.targets)}));
   }
   return Object.freeze(literals);
+}
+
+export const MAX_REQUESTED_CONTROL_NAMES = 8;
+
+// Controls the current owner message names ("an accessible button named
+// exactly "Show sold out""): {text, role, match}. The same quotation is also
+// an ordinary requested literal (its text must be on the page); this adds the
+// requirement that a button or link has exactly that accessible name.
+export function extractRequestedControlNames(ownerText) {
+  const seen = new Set(), names = [];
+  for (const literal of quotedLiterals(ownerProse(ownerText))) {
+    const key = `${literal.control}:${relaxed(literal.text)}`;
+    if (!literal.control || seen.has(key) || names.length >= MAX_REQUESTED_CONTROL_NAMES) continue;
+    seen.add(key);
+    names.push(Object.freeze({text: literal.text, role: literal.control, match: literal.match}));
+  }
+  return Object.freeze(names);
 }
 
 const NAMED_ENTITIES = {amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0',copy:'©',reg:'®',trade:'™',
@@ -533,21 +564,93 @@ function missingPublishedFiles(literals, preview, receipt) {
   return wanted.filter(literal => !names.has(literal.text.toLowerCase())).map(literal => ({text: literal.text, file: true}));
 }
 
-// Checks requested literals against the exact published snapshot: current-run
-// written bytes first, then workspace files, each accepted only when they
-// reproduce the receipt's snapshot digest. Unbound input yields no result.
+const snapshotPreview = preview => Boolean(preview && /^[a-f0-9]{64}$/.test(preview.sha256 ?? '') &&
+  Number.isSafeInteger(preview.files) && preview.files >= 1 && preview.files <= 128 &&
+  typeof preview.relativeDirectory === 'string');
+// The exact published snapshot's text files: current-run written bytes first,
+// then workspace files, each accepted only when they reproduce the receipt's
+// snapshot digest.
+const snapshotTextFiles = (preview, {receipt, trackedContent, workspaceRoot}) =>
+  trackedSnapshot(preview, trackedContent) ?? workspaceSnapshot(preview, receipt, workspaceRoot);
+
+// Checks requested literals against the exact published snapshot. Unbound
+// input yields no result.
 export function requestedTextCheck(literals, preview, {receipt, trackedContent, workspaceRoot} = {}) {
   try {
-    if (!Array.isArray(literals) || !literals.length || !preview || !/^[a-f0-9]{64}$/.test(preview.sha256 ?? '') ||
-        !Number.isSafeInteger(preview.files) || preview.files < 1 || preview.files > 128 ||
-        typeof preview.relativeDirectory !== 'string') return undefined;
+    if (!Array.isArray(literals) || !literals.length || !snapshotPreview(preview)) return undefined;
     const text = literals.filter(literal => literal.match !== 'file');
-    const files = text.length ? trackedSnapshot(preview, trackedContent) ?? workspaceSnapshot(preview, receipt, workspaceRoot)
-      : undefined;
+    const files = text.length ? snapshotTextFiles(preview, {receipt, trackedContent, workspaceRoot}) : undefined;
     const published = missingPublishedFiles(literals, preview, receipt);
     if (!files && !published) return undefined;
     return Object.freeze({siteId: preview.siteId, sha256: preview.sha256,
       missing: Object.freeze([...files ? missingRequestedText(text, files) : [], ...published ?? []].map(Object.freeze))});
+  } catch {
+    return undefined;
+  }
+}
+
+// Script text that sets a control's accessible name at runtime.
+const ARIA_NAME_WRITE = /\bsetAttribute\s*\(\s*(['"`])aria-(?:label|labelledby)\1|\.aria(?:Label|LabelledByElements)\s*=(?!=)/;
+const MARKUP_ARIA_LABEL = /<[A-Za-z][^>]*?\saria-label\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+const MAX_NAME_SCRIPTS = 8;
+
+// Where a published snapshot can set accessible names, for a precise repair
+// hint only: the published files whose script text writes aria-label or
+// aria-labelledby, and the aria-label values written in HTML markup. Bound to
+// the snapshot digest like requestedTextCheck; never a verdict on its own.
+export function requestedControlSources(names, preview, {receipt, trackedContent, workspaceRoot} = {}) {
+  try {
+    if (!Array.isArray(names) || !names.length || !snapshotPreview(preview)) return undefined;
+    const files = snapshotTextFiles(preview, {receipt, trackedContent, workspaceRoot});
+    if (!files) return undefined;
+    const scripts = [], labels = new Set();
+    for (const file of files) {
+      const html = HTML_FILE.test(file.path);
+      if (!html && !/\.m?js$/i.test(file.path)) continue;
+      const source = html ? file.text.replace(/<!--[\s\S]*?(?:-->|$)/g, '') : withoutComments(file.text, 'script');
+      if (ARIA_NAME_WRITE.test(source) && scripts.length < MAX_NAME_SCRIPTS) scripts.push(file.path);
+      if (!html) continue;
+      const markup = source.replace(/<(script|style)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, ' ');
+      for (const match of markup.matchAll(MARKUP_ARIA_LABEL)) {
+        labels.add(canonicalText(decodeEntities(match[1] ?? match[2] ?? match[3] ?? '')));
+      }
+    }
+    return Object.freeze({siteId: preview.siteId, sha256: preview.sha256, scripts: Object.freeze(scripts),
+      markupLabels: Object.freeze([...labels])});
+  } catch {
+    return undefined;
+  }
+}
+
+const controlKey = (value, exact) => exact ? canonicalText(value) : folded(value);
+
+// Owner-requested control names against the inspection's load-time accessible
+// names (the capsule's `controls`, computed after the page scripts ran; hidden
+// controls count). `evidence` is {siteId, sha256, controls} from a validated
+// receipt of this snapshot. A miss needs the complete list: when the page has
+// more buttons and links than the receipt lists, an absent name is unknown.
+// Each miss keeps the most telling control: one whose own text is the
+// requested name but whose accessible name differs (an aria-label or
+// aria-labelledby replaced it), one named the same except for letter case, or
+// a control of another role with that name.
+export function requestedControlNameCheck(names, preview, evidence) {
+  try {
+    if (!Array.isArray(names) || !names.length || !preview || !evidence?.controls ||
+        evidence.siteId !== preview.siteId || evidence.sha256 !== preview.sha256) return undefined;
+    const {count, items} = evidence.controls;
+    const complete = count === items.length;
+    const missing = [];
+    for (const requested of names) {
+      const exact = requested.match === 'exact', want = controlKey(requested.text, exact);
+      const sameRole = items.filter(item => item.role === requested.role);
+      if (!want || sameRole.some(item => controlKey(item.name, exact) === want) || !complete) continue;
+      const candidate = sameRole.find(item => item.text !== undefined && controlKey(item.text, exact) === want) ??
+        sameRole.find(item => folded(item.name) === folded(requested.text)) ??
+        items.find(item => item.role !== requested.role && controlKey(item.name, exact) === want);
+      missing.push(Object.freeze({text: requested.text, role: requested.role, match: requested.match,
+        ...(candidate ? {candidate: Object.freeze({...candidate})} : {})}));
+    }
+    return Object.freeze({siteId: preview.siteId, sha256: preview.sha256, missing: Object.freeze(missing)});
   } catch {
     return undefined;
   }
@@ -638,9 +741,8 @@ function toggledClasses(sources) {
 
 export function publishedElementOutline(phrase, preview, {receipt, trackedContent, workspaceRoot} = {}) {
   try {
-    if (!preview || !/^[a-f0-9]{64}$/.test(preview.sha256 ?? '') || !Number.isSafeInteger(preview.files) ||
-        preview.files < 1 || preview.files > 128 || typeof preview.relativeDirectory !== 'string') return undefined;
-    const files = trackedSnapshot(preview, trackedContent) ?? workspaceSnapshot(preview, receipt, workspaceRoot);
+    if (!snapshotPreview(preview)) return undefined;
+    const files = snapshotTextFiles(preview, {receipt, trackedContent, workspaceRoot});
     const entry = files?.find(file => file.path === 'index.html');
     const outline = entry && htmlOutline(entry.text);
     if (!outline) return undefined;
@@ -654,6 +756,84 @@ export function publishedElementOutline(phrase, preview, {receipt, trackedConten
   } catch {
     return undefined;
   }
+}
+
+const boundSources = (preview, sources) => sources && preview && sources.siteId === preview.siteId &&
+  sources.sha256 === preview.sha256 ? sources : undefined;
+const namedAs = miss => miss.match === 'exact' ? 'named exactly' : 'named';
+const overridden = miss => miss.candidate?.role === miss.role && miss.candidate.text !== undefined &&
+  controlKey(miss.candidate.text, miss.match === 'exact') === controlKey(miss.text, miss.match === 'exact');
+
+// What supplied the replacing name, as precisely as the snapshot shows.
+function overrideOrigin(candidate, sources) {
+  if (candidate.source === 'aria-labelledby') return 'the element its aria-labelledby attribute references';
+  if (candidate.source !== 'aria-label') return 'another naming attribute (such as title or value)';
+  if (sources?.markupLabels.includes(canonicalText(candidate.name))) return 'its aria-label attribute in the HTML';
+  if (sources?.scripts.length) return `an aria-label that a published script sets when the page loads (${JSON.stringify(sources.scripts)})`;
+  return 'its aria-label attribute (in the HTML or set by a script)';
+}
+
+function controlNameRepair(miss, sources) {
+  const want = JSON.stringify(miss.text), role = miss.role, candidate = miss.candidate;
+  const head = `The owner requested a ${role} ${namedAs(miss)} ${want}, but after the page scripts ran no ${role} ` +
+    'has that accessible name';
+  const tail = 'republish, then inspect the new snapshot.';
+  if (overridden(miss)) {
+    return `${head}: the ${role} whose text is ${want} is named ${JSON.stringify(candidate.name)} by ` +
+      `${overrideOrigin(candidate, sources)}, which replaces its text as the accessible name. ` +
+      `Remove that override or make it exactly ${want}, ${tail}`;
+  }
+  if (candidate?.role === role) {
+    return `${head}: the closest ${role} is named ${JSON.stringify(candidate.name)}, and the name must match ` +
+      `${miss.match === 'exact' ? 'exactly, including letter case' : 'the requested words'}. Rename it to ${want}, ${tail}`;
+  }
+  if (candidate) {
+    return `${head}: a ${candidate.role}, not a ${role}, is named ${want}. Make that control a real ${role} ` +
+      `(${role === 'button' ? 'a <button> element' : 'an <a href> element'}) with that name, ${tail}`;
+  }
+  return `${head}. Give the ${role} exactly that accessible name (its visible text, or an aria-label identical to it), ${tail}`;
+}
+
+const controlMisses = (preview, check) => boundMisses(preview, check) ? check.missing : [];
+
+// Tool-result repair step; varies only by the owner's quoted names and the
+// page's own names and script paths, so per-slot coaching dedupe applies.
+export function requestedControlNameInstruction(preview, check, sources) {
+  const misses = controlMisses(preview, check);
+  if (!misses.length) return undefined;
+  return sentences(misses.map(miss => controlNameRepair(miss, boundSources(preview, sources))));
+}
+
+// The one bounded finalization revision for control names that still fail.
+export const REQUESTED_CONTROL_NAME_REVISION_INSTRUCTION = [
+  'Requested control names are still not the accessible names on the published page: ',
+  '. Give each requested button or link exactly that accessible name after the page scripts run ' +
+  '(remove any aria-label, aria-labelledby or script that replaces it), republish with pixel_ods_workspace_preview, ' +
+  'inspect the new snapshot, and keep everything else unchanged.',
+];
+
+export function requestedControlNameRevisionInstruction(preview, check) {
+  const misses = controlMisses(preview, check);
+  return misses.length ? REQUESTED_CONTROL_NAME_REVISION_INSTRUCTION.join(nameList(misses)) : undefined;
+}
+
+// Asks for the load-time names when nothing has reported them for this
+// snapshot yet: any inspection of it carries them.
+export function requestedControlNameInspectionInstruction(preview, names) {
+  if (!preview || !Array.isArray(names) || !names.length) return undefined;
+  const [first] = names;
+  return `The owner requested ${names.map(name => `a ${name.role} ${namedAs(name)} ${JSON.stringify(name.text)}`).join(', ')}. ` +
+    'Publication does not render the page, so no accessible name is verified yet. Before replying, call ' +
+    `pixel_ods_workspace_preview_inspect on this snapshot (siteId ${JSON.stringify(preview.siteId)}, sha256 ` +
+    `${JSON.stringify(preview.sha256)}) with a step for that control by its exact role and name, such as ` +
+    `${JSON.stringify({action: 'assert-visible', locator: {role: first.role, name: first.text, exact: true}})}. ` +
+    'Every inspection reports the accessible names of the buttons and links after the page scripts ran.';
+}
+
+function controlDeliveryNote(miss) {
+  const want = JSON.stringify(miss.text);
+  return `The published page has no ${miss.role} ${namedAs(miss)} ${want} after its scripts run` +
+    (overridden(miss) ? ` (the ${miss.role} with that text is named ${JSON.stringify(miss.candidate.name)})` : '') + '.';
 }
 
 const absent = check => check.missing.filter(miss => !miss.heading && !miss.unheaded && !miss.file);
@@ -724,15 +904,19 @@ export function requestedTextRevisionInstruction(preview, check) {
   ]);
 }
 
-export function requestedTextDeliveryNote(preview, check) {
-  if (!boundMisses(preview, check)) return undefined;
-  const missing = absent(check), headings = inHeadings(check), names = unheaded(check), files = unpublished(check);
+// `controls` is the optional requestedControlNameCheck of the same snapshot.
+export function requestedTextDeliveryNote(preview, check, controls) {
+  const text = boundMisses(preview, check), controlNames = controlMisses(preview, controls);
+  if (!text && !controlNames.length) return undefined;
+  const missing = text ? absent(check) : [], headings = text ? inHeadings(check) : [];
+  const names = text ? unheaded(check) : [], files = text ? unpublished(check) : [];
   return sentences([
     missing.length && `The published page does not contain text the owner requested: ${missingList(missing)}.`,
     headings.length && 'The published page uses requested names only inside longer headings: ' +
       `${headings.map(miss => `${JSON.stringify(miss.text)} (${JSON.stringify(miss.heading)})`).join(', ')}.`,
     names.length && `The published page shows requested names, but not as headings like the other listed items: ${missingList(names)}.`,
     files.length && `The published directory does not contain files the owner requested: ${missingList(files)}.`,
+    ...controlNames.map(controlDeliveryNote),
     'The preview is available, but that requirement is not met.',
   ]);
 }

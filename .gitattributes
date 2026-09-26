@@ -16,6 +16,9 @@ docker-entrypoint* text eol=lf
 # Source patches are hash-bound build inputs; checkout/archive must preserve LF.
 ods/extensions/services/pixel-agent/runtime-source/*.patch text eol=lf
 
+# Recorded preview snapshots reproduce a published digest byte for byte.
+ods/tests/fixtures/preview-controls/** -text -whitespace
+
 # PowerShell scripts can use CRLF (native Windows)
 *.ps1 text eol=crlf
 *.psm1 text eol=crlf

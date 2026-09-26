@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import {createWorkspacePreviewInspectTool,normalizeWorkspacePreviewInspectionParams as normalize,validateWorkspacePreviewInspectionReceipt as validate,inspectionPlanHash,renderedColorsLine,INSPECTION_KIND,INSPECTION_SCOPE,MAX_PAGE_ERRORS,MAX_RENDERED_COLORS,NEUTRAL_COLOR_NAMES,RENDERED_COLOR_NAMES} from '../extensions/services/pixel-agent/plugin/workspace-preview-inspect.mjs';
+import {createWorkspacePreviewInspectTool,normalizeWorkspacePreviewInspectionParams as normalize,validateWorkspacePreviewInspectionReceipt as validate,inspectionPlanHash,renderedColorsLine,INSPECTION_KIND,INSPECTION_SCOPE,MAX_PAGE_ERRORS,MAX_RENDERED_COLORS,NEUTRAL_COLOR_NAMES,RENDERED_COLOR_NAMES,MAX_CONTROLS,MAX_CONTROL_COUNT,MAX_CONTROL_CHARS,CONTROL_ROLES,CONTROL_SOURCES} from '../extensions/services/pixel-agent/plugin/workspace-preview-inspect.mjs';
 const params=()=>({siteId:'site-'+'a'.repeat(24),sha256:'a'.repeat(64),viewport:{width:375,height:812},steps:[{action:'assert-hidden',locator:{selector:'#card'}},{action:'click',locator:{role:'button',name:'Mostrar próximos eventos',exact:true}},{action:'assert-visible',locator:{selector:'#card'}}]});
 const state=visible=>({count:1,visible,display:visible?'block':'none',visibility:'visible',opacity:'1',hidden:!visible,hiddenUntilFound:false,rectCount:visible?1:0});
 function receipt(request) {return {schemaVersion:1,kind:INSPECTION_KIND,status:'passed',siteId:request.siteId,sha256:request.sha256,planSha256:inspectionPlanHash(request),viewport:request.viewport,steps:request.steps.map((s,index)=>({index,...s,before:state(index!==0),stable:true,status:'passed',...(s.action==='click'?{after:state(true)}:{})})),diagnostics:{renderedHiddenAttributeCount:0,hiddenUntilFoundCount:0},blockedRequests:[],scope:INSPECTION_SCOPE};}
@@ -266,4 +266,48 @@ test('tool description points to the rendered colors for color changes',()=>{
  const {description}=createWorkspacePreviewInspectTool({request:async()=>{}});
  assert.match(description,/also lists the rendered colors of the page by area at a desktop view as first loaded; use them to confirm a requested color change is actually visible\./);
  assert.match(description,/This tests CSS layout visibility, not pixel paint, occlusion or clipping\./);
+});
+
+// Load-time control names. Real capsule output for the fleet round 100 page
+// (tower2, tests/fixtures/preview-controls/tower2-r100): script.js replaced
+// the "Show sold out" button's name on load.
+const TOWER2_CONTROLS={count:3,items:[{role:'link',name:'Get Tickets',visible:true,source:'content'},{role:'link',name:'Get Tickets',visible:true,source:'content'},{role:'button',name:'Show the sold out midnight concert card',visible:true,source:'aria-label',text:'Show sold out'}]};
+const withControls=(request,controls,value=receipt(request))=>({...value,controls});
+const control=extra=>({role:'button',name:'Show sold out',visible:true,source:'content',...extra});
+test('load-time control names are optional, exactly bounded receipt evidence',()=>{
+ const request=normalize(params());
+ assert.equal(validate(receipt(request),request).controls,undefined,'older capsules omit the field');
+ for(const ok of [TOWER2_CONTROLS,{count:0,items:[]},{count:MAX_CONTROL_COUNT,items:[control()]},{count:1,items:[control({name:''})]},
+   {count:1,items:[control({visible:false,source:'aria-labelledby',text:'x'.repeat(MAX_CONTROL_CHARS)})]},
+   {count:MAX_CONTROLS,items:Array.from({length:MAX_CONTROLS},(_,i)=>control({name:`Action ${i}`}))}]) {
+  assert.ok(validate(withControls(request,ok),request),JSON.stringify(ok));
+ }
+ const bad=[{count:0,items:[control()]},{count:MAX_CONTROL_COUNT+1,items:[]},{count:-1,items:[]},{count:1.5,items:[]},{count:'1',items:[]},
+  {items:[]},{count:1},{count:1,items:[control()],extra:true},{count:MAX_CONTROLS+1,items:Array.from({length:MAX_CONTROLS+1},()=>control())},null,[],'buttons'];
+ for(const change of [{role:'tab'},{role:'Button'},{name:'x'.repeat(MAX_CONTROL_CHARS+1)},{name:'line\nbreak'},{name:'\u202eflipped'},{name:7},
+   {visible:'true'},{source:'title'},{text:''},{text:'Show sold out'},{text:'x'.repeat(MAX_CONTROL_CHARS+1)},{extra:1}]) bad.push({count:1,items:[control(change)]});
+ const missing=control();delete missing.source;bad.push({count:1,items:[missing]});
+ for(const controls of bad) assert.throws(()=>validate(withControls(request,controls),request),undefined,JSON.stringify(controls));
+ const failure={schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'unavailable',siteId:request.siteId,sha256:request.sha256,planSha256:inspectionPlanHash(request),scope:INSPECTION_SCOPE};
+ assert.throws(()=>validate({...failure,controls:TOWER2_CONTROLS},request),undefined,'a transport failure carries no names');
+});
+test('capsule and plugin share the control-name bounds and vocabulary',()=>{
+ const source=fs.readFileSync(new URL('../extensions/services/pixel-agent/host/preview_inspection_capsule.py',import.meta.url),'utf8');
+ const bound=name=>Number(source.match(new RegExp(`^${name} = (\\d+)\\r?$`,'m'))[1]);
+ assert.equal(bound('MAX_CONTROLS'),MAX_CONTROLS);assert.equal(bound('MAX_CONTROL_COUNT'),MAX_CONTROL_COUNT);assert.equal(bound('MAX_CONTROL_CHARS'),MAX_CONTROL_CHARS);
+ const tuple=name=>JSON.parse('['+source.match(new RegExp(`^${name} = \\(([^\\n]+)\\)\\r?$`,'m'))[1]+']');
+ assert.deepEqual(tuple('CONTROL_ROLES'),[...CONTROL_ROLES]);assert.deepEqual(tuple('CONTROL_SOURCES'),[...CONTROL_SOURCES]);
+ assert.match(source,/const CONTROLS = new Set\(\['button', 'link'\]\);/);
+ for(const value of CONTROL_SOURCES) assert.ok(source.includes(`'${value}'`),value);
+});
+test('the tool states load-time names only to explain a missed exact name, never in the evidence copy',async()=>{
+ const plain=(await createWorkspacePreviewInspectTool({request:async r=>receipt(r)}).execute('plain',params())).content[0].text;
+ const result=await createWorkspacePreviewInspectTool({request:async r=>withControls(r,TOWER2_CONTROLS)}).execute('names',params());
+ assert.equal(result.content[0].text,plain,'a passed plan reads exactly as before');
+ assert.deepEqual(result.details.controls,TOWER2_CONTROLS);
+ const failed=request=>{const value=withControls(request,TOWER2_CONTROLS,unmatched(request,2,'no_match',0));return value;};
+ const click=fleetParams();click.steps[2].locator.name='Show sold out';
+ const text=(await createWorkspacePreviewInspectTool({request:async r=>failed(r)}).execute('miss',click)).content[0].text;
+ assert.match(text,/^Preview inspection failed\. Step 3 \(click\) matched no element, so nothing was measured and later steps did not run\. At load, after the page scripts ran, the rendered button whose text is "Show sold out" has the accessible name "Show the sold out midnight concert card", set by its aria-label attribute, which replaces its text as the name\./);
+ assert.equal(JSON.parse(text.slice(text.indexOf(' Evidence: ')+11)).controls,undefined);
 });
