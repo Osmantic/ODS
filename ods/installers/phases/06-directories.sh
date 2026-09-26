@@ -1260,7 +1260,7 @@ AMD_INFERENCE_SUPPORTED_BACKENDS=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; th
 AMD_INFERENCE_RUNTIME_MODE=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "external-lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "linux-container"; else echo ""; fi)
 AMD_INFERENCE_MANAGED=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "false"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "true"; else echo ""; fi)
 LEMONADE_EXTERNAL=${LEMONADE_EXTERNAL_VALUE}
-LEMONADE_HOST_TRANSPORT=${LEMONADE_HOST_TRANSPORT:-direct}
+LEMONADE_HOST_TRANSPORT=$(dotenv_value "${LEMONADE_HOST_TRANSPORT}")
 LEMONADE_BASE_URL=$(dotenv_value "${LEMONADE_BASE_URL_VALUE}")
 LEMONADE_CONTAINER_BASE_URL=$(dotenv_value "${LEMONADE_CONTAINER_BASE_URL_VALUE}")
 LEMONADE_API_BASE_PATH=$(dotenv_value "${LEMONADE_API_BASE_PATH_VALUE}")
