@@ -59,8 +59,12 @@ function Update-ODSPortalDockerSettings([string]$Json, [string]$FileName, [strin
     # settings-store.json (current Docker Desktop) uses PascalCase keys and the
     # older settings.json uses camelCase; an existing key's spelling wins.
     # Returns $null when the WSL engine is off, which integration cannot fix.
-    $settings = $Json | ConvertFrom-Json
-    if ($null -eq $settings -or $settings -isnot [pscustomobject]) { throw "Docker Desktop settings in $FileName are not a JSON object." }
+    # Check the document shape on the text: ConvertFrom-Json unrolls a
+    # one-element array, and [pscustomobject] matches any value in Windows
+    # PowerShell 5.1.
+    if (-not $Json.TrimStart().StartsWith('{')) { throw "Docker Desktop settings in $FileName are not a JSON object." }
+    $settings = ConvertFrom-Json -InputObject $Json
+    if ($settings -isnot [System.Management.Automation.PSCustomObject]) { throw "Docker Desktop settings in $FileName are not a JSON object." }
     $names = @($settings.PSObject.Properties.Name)
     $pascal = $FileName -eq 'settings-store.json'
     foreach ($engineKey in @('WslEngineEnabled', 'wslEngineEnabled')) {
