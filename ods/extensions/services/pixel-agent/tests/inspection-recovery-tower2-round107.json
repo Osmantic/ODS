@@ -1,0 +1,611 @@
+{
+ "evidence": "tower2 (Qwen3-Coder-Next), ODS main d4a61f33, ods-main-qualification-20260924-r049 round 107 website journey (passed), session a674292a-a04f-46b8-8ac6-978f1e27cda1. Call 20 (transcript row 43, result row 44) passed step 4 (#midnight-concert hidden), the click at step 6 and step 7 (#midnight-concert visible), then failed its own extra step 8: the renamed \"Hide sold out\" button asserted hidden. Call 21 (row 45) clicked the button by its old name after the first click renamed it. Owner message, inspection arguments, capsule receipts and tool texts, byte for byte from J/round-107/tower2/serving-logs/openclaw-pixel-a674292a-a04f-46b8-8ac6-978f1e27cda1.jsonl.gz; everything else is omitted.",
+ "turns": [
+  {
+   "prompt": "Create a polished responsive static event website in a new workspace directory fleet-qualification-a207d9f3c13a. Actually write files and publish a verified Pixel workspace preview. Page title and one h1 must be exactly \"Night Garden FLEET-3647664889\". Include three event cards: Dawn jazz, River lantern walk, and Midnight sold-out concert. Initially hide the entire Midnight sold-out concert card. Provide an accessible button named exactly \"Show sold out\" that reveals that card when clicked. Mobile width 375px must not overflow horizontally. Use semantic HTML, attractive CSS, working JavaScript, no external libraries, no localStorage dependency. Include the preview URL in your final response. Do the work now.\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. If it asks for exact text, copy that full exact text. Do not answer with a generic acknowledgement. Do not output NO_REPLY.]\n[ODS Portal workspace task route: Perform the requested workspace mutation before verification. When tool_call is visible, use it with id write and normal write args for every new file you author. edit cannot create a file and requires a non-empty oldText copied from an existing file. Use edit or apply_patch only after reading an existing file. Then use exec only for readback, tests, the requested digest, or copies of existing files: make copies and JSON maps of file contents with one short command that reads the real files, such as cp or python3 with json.dump, never by re-typing them. Do not repeatedly list directories or hash proposed text instead of the created file.]",
+   "calls": [
+    {
+     "call": 20,
+     "row": 43,
+     "resultRow": 44,
+     "id": "pXTkc9MO6hL4LOv8RAirrKnFu41wLeOz",
+     "tool": "pixel_ods_workspace_preview_inspect",
+     "arguments": {
+      "siteId": "site-9cae6c6fcc91f63199def0bb",
+      "sha256": "9cae6c6fcc91f63199def0bb0ec67efa35a387769621124afa45a31e60caa5bc",
+      "viewport": {
+       "width": 375,
+       "height": 667
+      },
+      "steps": [
+       {
+        "action": "assert-visible",
+        "locator": {
+         "role": "heading",
+         "name": "Night Garden FLEET-3647664889",
+         "exact": true
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "role": "heading",
+         "name": "Dawn jazz",
+         "exact": true
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "role": "heading",
+         "name": "River lantern walk",
+         "exact": true
+        }
+       },
+       {
+        "action": "assert-hidden",
+        "locator": {
+         "selector": "#midnight-concert"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "role": "button",
+         "name": "Show sold out",
+         "exact": true
+        }
+       },
+       {
+        "action": "click",
+        "locator": {
+         "role": "button",
+         "name": "Show sold out",
+         "exact": true
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": "#midnight-concert"
+        }
+       },
+       {
+        "action": "assert-hidden",
+        "locator": {
+         "role": "button",
+         "name": "Hide sold out",
+         "exact": true
+        }
+       }
+      ]
+     },
+     "details": {
+      "blockedRequests": [],
+      "diagnostics": {
+       "hiddenUntilFoundCount": 0,
+       "renderedHiddenAttributeCount": 0
+      },
+      "kind": "ods-pixel-preview-inspection",
+      "planSha256": "8562c5565e5170171ac2e38bc8d97c4cafdf4e7d4efa4c815db3cf9f664f9b8b",
+      "renderedColors": {
+       "colors": [
+        {
+         "hex": "#190b2c",
+         "name": "purple",
+         "percent": 45
+        },
+        {
+         "hex": "#13142c",
+         "name": "black",
+         "percent": 23
+        },
+        {
+         "hex": "#16102d",
+         "name": "blue",
+         "percent": 20
+        },
+        {
+         "hex": "#1f1f36",
+         "name": "dark gray",
+         "percent": 11
+        },
+        {
+         "hex": "#7362f3",
+         "name": "blue",
+         "percent": 1
+        }
+       ],
+       "viewport": {
+        "height": 720,
+        "width": 1280
+       }
+      },
+      "schemaVersion": 1,
+      "scope": "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.",
+      "sha256": "9cae6c6fcc91f63199def0bb0ec67efa35a387769621124afa45a31e60caa5bc",
+      "siteId": "site-9cae6c6fcc91f63199def0bb",
+      "status": "failed",
+      "steps": [
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 0,
+        "locator": {
+         "exact": true,
+         "name": "Night Garden FLEET-3647664889",
+         "role": "heading"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 1,
+        "locator": {
+         "exact": true,
+         "name": "Dawn jazz",
+         "role": "heading"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 2,
+        "locator": {
+         "exact": true,
+         "name": "River lantern walk",
+         "role": "heading"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-hidden",
+        "before": {
+         "count": 1,
+         "display": "none",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "0.35",
+         "rectCount": 0,
+         "visibility": "visible",
+         "visible": false
+        },
+        "index": 3,
+        "locator": {
+         "selector": "#midnight-concert"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "flex",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 4,
+        "locator": {
+         "exact": true,
+         "name": "Show sold out",
+         "role": "button"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "click",
+        "after": {
+         "count": 0
+        },
+        "before": {
+         "count": 1,
+         "display": "flex",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 5,
+        "locator": {
+         "exact": true,
+         "name": "Show sold out",
+         "role": "button"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 6,
+        "locator": {
+         "selector": "#midnight-concert"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-hidden",
+        "before": {
+         "count": 1,
+         "display": "flex",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "errorCode": "visibility_mismatch",
+        "index": 7,
+        "locator": {
+         "exact": true,
+         "name": "Hide sold out",
+         "role": "button"
+        },
+        "stable": true,
+        "status": "failed"
+       }
+      ],
+      "viewport": {
+       "height": 667,
+       "width": 375
+      },
+      "ok": false
+     },
+     "isError": true,
+     "text": "Preview inspection failed. Requested behavior remains unverified; a failed inspection does not establish a visibility transition. Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality. Rendered colors (by area, desktop 1280x720 as loaded): purple #190b2c 45%, black 23%, blue #16102d 20%, dark gray 11%, blue #7362f3 1%. Colors under 1% of the view and hover/focus-only styles are not listed. Evidence: {\"blockedRequests\":[],\"diagnostics\":{\"hiddenUntilFoundCount\":0,\"renderedHiddenAttributeCount\":0},\"kind\":\"ods-pixel-preview-inspection\",\"planSha256\":\"8562c5565e5170171ac2e38bc8d97c4cafdf4e7d4efa4c815db3cf9f664f9b8b\",\"schemaVersion\":1,\"scope\":\"Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.\",\"sha256\":\"9cae6c6fcc91f63199def0bb0ec67efa35a387769621124afa45a31e60caa5bc\",\"siteId\":\"site-9cae6c6fcc91f63199def0bb\",\"status\":\"failed\",\"steps\":[{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":0,\"locator\":{\"exact\":true,\"name\":\"Night Garden FLEET-3647664889\",\"role\":\"heading\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":1,\"locator\":{\"exact\":true,\"name\":\"Dawn jazz\",\"role\":\"heading\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":2,\"locator\":{\"exact\":true,\"name\":\"River lantern walk\",\"role\":\"heading\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-hidden\",\"before\":{\"count\":1,\"display\":\"none\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"0.35\",\"rectCount\":0,\"visibility\":\"visible\",\"visible\":false},\"index\":3,\"locator\":{\"selector\":\"#midnight-concert\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"flex\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":4,\"locator\":{\"exact\":true,\"name\":\"Show sold out\",\"role\":\"button\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"click\",\"after\":{\"count\":0},\"before\":{\"count\":1,\"display\":\"flex\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":5,\"locator\":{\"exact\":true,\"name\":\"Show sold out\",\"role\":\"button\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":6,\"locator\":{\"selector\":\"#midnight-concert\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-hidden\",\"before\":{\"count\":1,\"display\":\"flex\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"errorCode\":\"visibility_mismatch\",\"index\":7,\"locator\":{\"exact\":true,\"name\":\"Hide sold out\",\"role\":\"button\"},\"stable\":true,\"status\":\"failed\"}],\"viewport\":{\"height\":667,\"width\":375}}"
+    },
+    {
+     "call": 21,
+     "row": 45,
+     "resultRow": 46,
+     "id": "fo8b7qGv7VDxualYfABaCcURddAbGZqx",
+     "tool": "pixel_ods_workspace_preview_inspect",
+     "arguments": {
+      "siteId": "site-9cae6c6fcc91f63199def0bb",
+      "sha256": "9cae6c6fcc91f63199def0bb0ec67efa35a387769621124afa45a31e60caa5bc",
+      "viewport": {
+       "width": 375,
+       "height": 667
+      },
+      "steps": [
+       {
+        "action": "assert-visible",
+        "locator": {
+         "role": "heading",
+         "name": "Night Garden FLEET-3647664889",
+         "exact": true
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "role": "heading",
+         "name": "Dawn jazz",
+         "exact": true
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "role": "heading",
+         "name": "River lantern walk",
+         "exact": true
+        }
+       },
+       {
+        "action": "assert-hidden",
+        "locator": {
+         "selector": "#midnight-concert"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "role": "button",
+         "name": "Show sold out",
+         "exact": true
+        }
+       },
+       {
+        "action": "click",
+        "locator": {
+         "role": "button",
+         "name": "Show sold out",
+         "exact": true
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": "#midnight-concert"
+        }
+       },
+       {
+        "action": "click",
+        "locator": {
+         "role": "button",
+         "name": "Show sold out",
+         "exact": true
+        }
+       },
+       {
+        "action": "assert-hidden",
+        "locator": {
+         "selector": "#midnight-concert"
+        }
+       }
+      ]
+     },
+     "details": {
+      "blockedRequests": [],
+      "diagnostics": {
+       "hiddenUntilFoundCount": 0,
+       "renderedHiddenAttributeCount": 0
+      },
+      "kind": "ods-pixel-preview-inspection",
+      "planSha256": "17eda045aeab55b95da3f2d63e83976438f10c0b164cc6b01b99a9e2be32ce15",
+      "renderedColors": {
+       "colors": [
+        {
+         "hex": "#190b2c",
+         "name": "purple",
+         "percent": 45
+        },
+        {
+         "hex": "#13142c",
+         "name": "black",
+         "percent": 23
+        },
+        {
+         "hex": "#16102d",
+         "name": "blue",
+         "percent": 20
+        },
+        {
+         "hex": "#1f1f36",
+         "name": "dark gray",
+         "percent": 11
+        },
+        {
+         "hex": "#7362f3",
+         "name": "blue",
+         "percent": 1
+        }
+       ],
+       "viewport": {
+        "height": 720,
+        "width": 1280
+       }
+      },
+      "schemaVersion": 1,
+      "scope": "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.",
+      "sha256": "9cae6c6fcc91f63199def0bb0ec67efa35a387769621124afa45a31e60caa5bc",
+      "siteId": "site-9cae6c6fcc91f63199def0bb",
+      "status": "failed",
+      "steps": [
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 0,
+        "locator": {
+         "exact": true,
+         "name": "Night Garden FLEET-3647664889",
+         "role": "heading"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 1,
+        "locator": {
+         "exact": true,
+         "name": "Dawn jazz",
+         "role": "heading"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 2,
+        "locator": {
+         "exact": true,
+         "name": "River lantern walk",
+         "role": "heading"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-hidden",
+        "before": {
+         "count": 1,
+         "display": "none",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "0.35",
+         "rectCount": 0,
+         "visibility": "visible",
+         "visible": false
+        },
+        "index": 3,
+        "locator": {
+         "selector": "#midnight-concert"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "flex",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 4,
+        "locator": {
+         "exact": true,
+         "name": "Show sold out",
+         "role": "button"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "click",
+        "after": {
+         "count": 0
+        },
+        "before": {
+         "count": 1,
+         "display": "flex",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 5,
+        "locator": {
+         "exact": true,
+         "name": "Show sold out",
+         "role": "button"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 6,
+        "locator": {
+         "selector": "#midnight-concert"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "click",
+        "before": {
+         "count": 0
+        },
+        "errorCode": "no_match",
+        "index": 7,
+        "locator": {
+         "exact": true,
+         "name": "Show sold out",
+         "role": "button"
+        },
+        "stable": true,
+        "status": "failed"
+       }
+      ],
+      "viewport": {
+       "height": 667,
+       "width": 375
+      },
+      "ok": false
+     },
+     "isError": true,
+     "text": "Preview inspection failed. Step 8 (click) matched no element, so nothing was measured and later steps did not run. For click, role/name locators match only rendered elements, so a hidden element is not matched. Copy the exact role and accessible name (case, spacing, punctuation) or a CSS selector such as an id from your source, and retry the inspection on the same published snapshot. Do not change the site only to satisfy a locator. Requested behavior remains unverified. Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality. Rendered colors (by area, desktop 1280x720 as loaded): purple #190b2c 45%, black 23%, blue #16102d 20%, dark gray 11%, blue #7362f3 1%. Colors under 1% of the view and hover/focus-only styles are not listed. Evidence: {\"blockedRequests\":[],\"diagnostics\":{\"hiddenUntilFoundCount\":0,\"renderedHiddenAttributeCount\":0},\"kind\":\"ods-pixel-preview-inspection\",\"planSha256\":\"17eda045aeab55b95da3f2d63e83976438f10c0b164cc6b01b99a9e2be32ce15\",\"schemaVersion\":1,\"scope\":\"Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.\",\"sha256\":\"9cae6c6fcc91f63199def0bb0ec67efa35a387769621124afa45a31e60caa5bc\",\"siteId\":\"site-9cae6c6fcc91f63199def0bb\",\"status\":\"failed\",\"steps\":[{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":0,\"locator\":{\"exact\":true,\"name\":\"Night Garden FLEET-3647664889\",\"role\":\"heading\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":1,\"locator\":{\"exact\":true,\"name\":\"Dawn jazz\",\"role\":\"heading\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":2,\"locator\":{\"exact\":true,\"name\":\"River lantern walk\",\"role\":\"heading\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-hidden\",\"before\":{\"count\":1,\"display\":\"none\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"0.35\",\"rectCount\":0,\"visibility\":\"visible\",\"visible\":false},\"index\":3,\"locator\":{\"selector\":\"#midnight-concert\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"flex\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":4,\"locator\":{\"exact\":true,\"name\":\"Show sold out\",\"role\":\"button\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"click\",\"after\":{\"count\":0},\"before\":{\"count\":1,\"display\":\"flex\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":5,\"locator\":{\"exact\":true,\"name\":\"Show sold out\",\"role\":\"button\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":6,\"locator\":{\"selector\":\"#midnight-concert\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"click\",\"before\":{\"count\":0},\"errorCode\":\"no_match\",\"index\":7,\"locator\":{\"exact\":true,\"name\":\"Show sold out\",\"role\":\"button\"},\"stable\":true,\"status\":\"failed\"}],\"viewport\":{\"height\":667,\"width\":375}}"
+    }
+   ]
+  }
+ ]
+}

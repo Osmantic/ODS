@@ -1,0 +1,625 @@
+{
+ "evidence": "mac-mini (Apple M4 base), ODS main d4a61f33, ods-main-qualification-20260924-r049 round 107 website journey, session eee86647-c98b-4c80-9496-84e94632c67b (2026-09-26T00:05Z). The click handler tests hiddenCard.style.display === \"none\", which is empty while the CSS class hides the card, so the first click sets display:none. Inspections 3 and 8 measured \".event-card.hidden\" display:none after a real click (step 7), and the model called it a timing issue and delivered. Owner message, the published index.html, the host publication receipt, inspection arguments and capsule receipts, byte for byte; reads, execs and the answer are omitted.",
+ "session": {
+  "sessionId": "eee86647-c98b-4c80-9496-84e94632c67b",
+  "sessionKey": "agent:pixel:openai-user:ods-fe1bff91cb14695ae3123c805f541673fe36b5027736e2311b66c31f591f256f"
+ },
+ "turns": [
+  {
+   "runId": "chatcmpl_6e048aa6-1674-4817-8154-a2e50e57a97a",
+   "prompt": "Create a polished responsive static event website in a new workspace directory fleet-qualification-1f5685f99115. Actually write files and publish a verified Pixel workspace preview. Page title and one h1 must be exactly \"Night Garden FLEET-bc730aa461\". Include three event cards: Dawn jazz, River lantern walk, and Midnight sold-out concert. Initially hide the entire Midnight sold-out concert card. Provide an accessible button named exactly \"Show sold out\" that reveals that card when clicked. Mobile width 375px must not overflow horizontally. Use semantic HTML, attractive CSS, working JavaScript, no external libraries, no localStorage dependency. Include the preview URL in your final response. Do the work now.\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. If it asks for exact text, copy that full exact text. Do not answer with a generic acknowledgement. Do not output NO_REPLY.]\n[ODS Portal workspace task route: Perform the requested workspace mutation before verification. When tool_call is visible, use it with id write and normal write args for every new file you author. edit cannot create a file and requires a non-empty oldText copied from an existing file. Use edit or apply_patch only after reading an existing file. Then use exec only for readback, tests, the requested digest, or copies of existing files: make copies and JSON maps of file contents with one short command that reads the real files, such as cp or python3 with json.dump, never by re-typing them. Do not repeatedly list directories or hash proposed text instead of the created file.]",
+   "calls": [
+    {
+     "call": 1,
+     "row": 5,
+     "id": "jWpV4HGQPgFZNvOMQswFsQt9c84dDxXw",
+     "tool": "write",
+     "arguments": {
+      "path": "workspace/fleet-qualification-1f5685f99115/index.html",
+      "content": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <title>Night Garden FLEET-bc730aa461</title>\n    <style>\n        * {\n            margin: 0;\n            padding: 0;\n            box-sizing: border-box;\n        }\n\n        body {\n            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;\n            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);\n            min-height: 100vh;\n            color: #fff;\n            line-height: 1.6;\n        }\n\n        .container {\n            max-width: 1200px;\n            margin: 0 auto;\n            padding: 2rem 1rem;\n        }\n\n        header {\n            text-align: center;\n            padding: 3rem 0 2rem;\n        }\n\n        h1 {\n            font-size: 2.5rem;\n            font-weight: 700;\n            background: linear-gradient(90deg, #e94560, #ff6b6b, #feca57);\n            -webkit-background-clip: text;\n            -webkit-text-fill-color: transparent;\n            background-clip: text;\n            margin-bottom: 0.5rem;\n        }\n\n        .subtitle {\n            font-size: 1.1rem;\n            color: #a8a8a8;\n            font-weight: 300;\n        }\n\n        .events-grid {\n            display: grid;\n            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));\n            gap: 2rem;\n            margin-top: 2rem;\n        }\n\n        .event-card {\n            background: rgba(255, 255, 255, 0.05);\n            border-radius: 16px;\n            padding: 2rem;\n            border: 1px solid rgba(255, 255, 255, 0.1);\n            backdrop-filter: blur(10px);\n            transition: all 0.3s ease;\n            display: flex;\n            flex-direction: column;\n            height: 100%;\n        }\n\n        .event-card:hover:not(.hidden) {\n            transform: translateY(-5px);\n            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);\n            border-color: rgba(233, 69, 96, 0.3);\n        }\n\n        .event-card.hidden {\n            display: none;\n        }\n\n        .event-card.sold-out {\n            opacity: 0.6;\n        }\n\n        .event-card.sold-out::after {\n            content: '';\n            position: absolute;\n            top: 0;\n            left: 0;\n            right: 0;\n            bottom: 0;\n            background: rgba(0, 0, 0, 0.5);\n            border-radius: 16px;\n            display: flex;\n            align-items: center;\n            justify-content: center;\n            flex-direction: column;\n            z-index: 1;\n        }\n\n        .event-card.sold-out .content {\n            position: relative;\n            z-index: 2;\n        }\n\n        .event-time {\n            font-size: 0.85rem;\n            color: #feca57;\n            text-transform: uppercase;\n            letter-spacing: 2px;\n            margin-bottom: 1rem;\n            font-weight: 600;\n        }\n\n        .event-title {\n            font-size: 1.5rem;\n            font-weight: 600;\n            margin-bottom: 1rem;\n            color: #fff;\n        }\n\n        .event-description {\n            font-size: 0.95rem;\n            color: #b8b8b8;\n            margin-bottom: 1.5rem;\n            flex-grow: 1;\n        }\n\n        .event-details {\n            display: flex;\n            flex-direction: column;\n            gap: 0.5rem;\n        }\n\n        .detail-item {\n            display: flex;\n            align-items: center;\n            gap: 0.5rem;\n            font-size: 0.9rem;\n            color: #d8d8d8;\n        }\n\n        .detail-item::before {\n            content: '•';\n            color: #e94560;\n            font-weight: bold;\n        }\n\n        .sold-badge {\n            display: inline-block;\n            background: #e74c3c;\n            color: #fff;\n            padding: 0.25rem 0.75rem;\n            border-radius: 20px;\n            font-size: 0.75rem;\n            font-weight: 600;\n            text-transform: uppercase;\n            letter-spacing: 1px;\n            margin-bottom: 1rem;\n        }\n\n        .reveal-btn {\n            display: block;\n            margin: 3rem auto 0;\n            padding: 1rem 2.5rem;\n            font-size: 1rem;\n            font-weight: 600;\n            color: #fff;\n            background: linear-gradient(90deg, #e94560, #ff6b6b);\n            border: none;\n            border-radius: 50px;\n            cursor: pointer;\n            transition: all 0.3s ease;\n            box-shadow: 0 4px 15px rgba(233, 69, 96, 0.3);\n        }\n\n        .reveal-btn:hover {\n            transform: translateY(-2px);\n            box-shadow: 0 6px 20px rgba(233, 69, 96, 0.4);\n        }\n\n        .reveal-btn:active {\n            transform: translateY(0);\n        }\n\n        footer {\n            text-align: center;\n            padding: 2rem 0;\n            color: #666;\n            font-size: 0.85rem;\n            margin-top: 2rem;\n        }\n\n        @media (max-width: 768px) {\n            h1 {\n                font-size: 2rem;\n            }\n\n            .subtitle {\n                font-size: 1rem;\n            }\n\n            .container {\n                padding: 1.5rem 1rem;\n            }\n\n            .events-grid {\n                grid-template-columns: 1fr;\n                gap: 1.5rem;\n            }\n\n            .event-card {\n                padding: 1.5rem;\n            }\n\n            .event-time {\n                font-size: 0.8rem;\n            }\n\n            .event-title {\n                font-size: 1.25rem;\n            }\n\n            .event-description {\n                font-size: 0.85rem;\n            }\n\n            .reveal-btn {\n                padding: 0.875rem 2rem;\n                font-size: 0.95rem;\n            }\n        }\n\n        @media (max-width: 375px) {\n            h1 {\n                font-size: 1.75rem;\n            }\n\n            .subtitle {\n                font-size: 0.9rem;\n            }\n\n            .container {\n                padding: 1rem 0.5rem;\n            }\n\n            .events-grid {\n                gap: 1rem;\n            }\n\n            .event-card {\n                padding: 1.25rem;\n            }\n\n            .event-time {\n                font-size: 0.75rem;\n            }\n\n            .event-title {\n                font-size: 1.1rem;\n            }\n\n            .event-description {\n                font-size: 0.8rem;\n            }\n\n            .detail-item {\n                font-size: 0.8rem;\n            }\n\n            .reveal-btn {\n                padding: 0.75rem 1.5rem;\n                font-size: 0.9rem;\n            }\n        }\n    </style>\n</head>\n<body>\n    <div class=\"container\">\n        <header>\n            <h1>Night Garden FLEET-bc730aa461</h1>\n            <p class=\"subtitle\">An unforgettable evening of music, light, and nature</p>\n        </header>\n\n        <main>\n            <div class=\"events-grid\">\n                <!-- Dawn Jazz Card -->\n                <article class=\"event-card\">\n                    <div class=\"event-time\">🎷 7:00 PM - 9:00 PM</div>\n                    <h2 class=\"event-title\">Dawn Jazz</h2>\n                    <p class=\"event-description\">\n                        Experience smooth jazz melodies as the night begins to fade. \n                        Our resident jazz ensemble brings together talented musicians \n                        performing classic standards and original compositions under \n                        the twinkling stars.\n                    </p>\n                    <div class=\"event-details\">\n                        <div class=\"detail-item\">🎺 Live Jazz Ensemble</div>\n                        <div class=\"detail-item\">🍷 Wine & Tapas</div>\n                        <div class=\"detail-item\">🌙 Perfect for couples</div>\n                    </div>\n                </article>\n\n                <!-- River Lantern Walk Card -->\n                <article class=\"event-card\">\n                    <div class=\"event-time\">🏮 8:30 PM - 10:30 PM</div>\n                    <h2 class=\"event-title\">River Lantern Walk</h2>\n                    <p class=\"event-description\">\n                        Join us for a serene evening stroll along the riverbank. \n                        Release your wishes into the water in beautifully crafted \n                        lanterns while enjoying the peaceful sounds of flowing water.\n                    </p>\n                    <div class=\"event-details\">\n                        <div class=\"detail-item\">🏮 500+ Lanterns</div>\n                        <div class=\"detail-item\">🌊 Guided Walk</div>\n                        <div class=\"detail-item\">📸 Photo opportunities</div>\n                    </div>\n                </article>\n\n                <!-- Midnight Sold Out Card -->\n                <article class=\"event-card hidden\">\n                    <div class=\"sold-badge\">SOLD OUT</div>\n                    <div class=\"event-time\">🎸 11:00 PM - 1:00 AM</div>\n                    <h2 class=\"event-title\">Midnight Sold-out Concert</h2>\n                    <p class=\"event-description\">\n                        The night's grand finale features an electrifying performance \n                        by award-winning indie rock sensation. An intimate setting \n                        with the band just steps away, delivering raw energy and \n                        unforgettable moments.\n                    </p>\n                    <div class=\"event-details\">\n                        <div class=\"detail-item\">🎸 Live Band Performance</div>\n                        <div class=\"detail-item\">🎤 VIP Seating</div>\n                        <div class=\"detail-item\">🎶 Open Bar</div>\n                    </div>\n                </article>\n            </div>\n\n            <button class=\"reveal-btn\" type=\"button\" aria-expanded=\"false\">Show sold out</button>\n        </main>\n\n        <footer>\n            <p>&copy; 2026 Night Garden Event Series. All rights reserved.</p>\n        </footer>\n    </div>\n\n    <script>\n        document.addEventListener('DOMContentLoaded', function() {\n            const revealBtn = document.querySelector('.reveal-btn');\n            const hiddenCard = document.querySelector('.event-card.hidden');\n            const hiddenCardTitle = document.querySelector('.event-card.hidden .event-title');\n            \n            revealBtn.addEventListener('click', function() {\n                const isHidden = hiddenCard.style.display === 'none';\n                \n                if (isHidden) {\n                    hiddenCard.style.display = 'flex';\n                    revealBtn.textContent = 'Hide sold out';\n                    revealBtn.setAttribute('aria-expanded', 'true');\n                    \n                    // Add a subtle fade-in animation\n                    hiddenCard.style.opacity = '0';\n                    hiddenCard.style.transition = 'opacity 0.5s ease';\n                    setTimeout(() => {\n                        hiddenCard.style.opacity = '1';\n                    }, 10);\n                } else {\n                    hiddenCard.style.display = 'none';\n                    revealBtn.textContent = 'Show sold out';\n                    revealBtn.setAttribute('aria-expanded', 'false');\n                }\n            });\n\n            // Make the card clickable when it's hidden to show it\n            if (hiddenCard) {\n                hiddenCard.addEventListener('click', function(e) {\n                    // Only trigger if clicking on the card itself, not on children\n                    if (e.target === hiddenCard) {\n                        revealBtn.click();\n                    }\n                });\n            }\n        });\n    </script>\n</body>\n</html>\n"
+     }
+    },
+    {
+     "call": 2,
+     "row": 7,
+     "id": "3QiZ2VnIXOF02GZxxgU8dV2d4elmAxwW",
+     "tool": "pixel_ods_workspace_preview",
+     "arguments": {
+      "relativeDirectory": "fleet-qualification-1f5685f99115"
+     },
+     "details": {
+      "boundary": "Create-only static-site snapshot from the configured Pixel workspace to a dedicated loopback preview origin; no arbitrary host path, network destination, server process, overwrite, or execution authority.",
+      "bytes": 11587,
+      "entryFile": "index.html",
+      "entrySha256": "6e74374943ca300481e2db8aeae2dbba040c674614d5629aa411697e16aed24d",
+      "executable": false,
+      "files": 1,
+      "httpStatus": 200,
+      "kind": "ods-pixel-workspace-preview",
+      "overwritten": false,
+      "port": 9437,
+      "publishedEmptyPaths": [],
+      "publishedEmptyPathsOmitted": 0,
+      "publishedPaths": [
+       "index.html"
+      ],
+      "publishedPathsOmitted": 0,
+      "readbackVerified": true,
+      "relativeDirectory": "fleet-qualification-1f5685f99115",
+      "schemaVersion": 1,
+      "sha256": "c948016e599f2296c6d8ed75103ab2f6eba6db4e4006ea410d35fc09c719d706",
+      "siteId": "site-c948016e599f2296c6d8ed75",
+      "status": "succeeded",
+      "url": "http://site-c948016e599f2296c6d8ed75.localhost:9437/site-c948016e599f2296c6d8ed75/"
+     }
+    },
+    {
+     "call": 3,
+     "row": 9,
+     "id": "3QH31KtSebfwxY4Gsge237wZLLEjvTaD",
+     "tool": "pixel_ods_workspace_preview_inspect",
+     "arguments": {
+      "siteId": "site-c948016e599f2296c6d8ed75",
+      "sha256": "c948016e599f2296c6d8ed75103ab2f6eba6db4e4006ea410d35fc09c719d706",
+      "viewport": {
+       "width": 375,
+       "height": 667
+      },
+      "steps": [
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": "h1"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".subtitle"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".events-grid"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".event-card:first-of-type"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".event-card:nth-child(2)"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".reveal-btn"
+        }
+       },
+       {
+        "action": "click",
+        "locator": {
+         "selector": ".reveal-btn"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".event-card.hidden"
+        }
+       }
+      ]
+     },
+     "details": {
+      "blockedRequests": [],
+      "diagnostics": {
+       "hiddenUntilFoundCount": 0,
+       "renderedHiddenAttributeCount": 0
+      },
+      "kind": "ods-pixel-preview-inspection",
+      "planSha256": "768a952db2ca9a5b0090ad669f3d35060f11e4fa93697adb224fc500b56e3ba9",
+      "renderedColors": {
+       "colors": [
+        {
+         "hex": "#24293f",
+         "name": "blue",
+         "percent": 81
+        },
+        {
+         "hex": "#25293e",
+         "name": "dark gray",
+         "percent": 14
+        },
+        {
+         "hex": "#6a6f7d",
+         "name": "gray",
+         "percent": 2
+        },
+        {
+         "hex": "#f15364",
+         "name": "red",
+         "percent": 1
+        },
+        {
+         "hex": "#f55a66",
+         "name": "red",
+         "percent": 1
+        }
+       ],
+       "viewport": {
+        "height": 720,
+        "width": 1280
+       }
+      },
+      "schemaVersion": 1,
+      "scope": "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.",
+      "sha256": "c948016e599f2296c6d8ed75103ab2f6eba6db4e4006ea410d35fc09c719d706",
+      "siteId": "site-c948016e599f2296c6d8ed75",
+      "status": "failed",
+      "steps": [
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 0,
+        "locator": {
+         "selector": "h1"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 1,
+        "locator": {
+         "selector": ".subtitle"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "grid",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 2,
+        "locator": {
+         "selector": ".events-grid"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "flex",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 3,
+        "locator": {
+         "selector": ".event-card:first-of-type"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "flex",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 4,
+        "locator": {
+         "selector": ".event-card:nth-child(2)"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 5,
+        "locator": {
+         "selector": ".reveal-btn"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "click",
+        "after": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 6,
+        "locator": {
+         "selector": ".reveal-btn"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "none",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 0,
+         "visibility": "visible",
+         "visible": false
+        },
+        "errorCode": "visibility_mismatch",
+        "index": 7,
+        "locator": {
+         "selector": ".event-card.hidden"
+        },
+        "stable": true,
+        "status": "failed"
+       }
+      ],
+      "viewport": {
+       "height": 667,
+       "width": 375
+      },
+      "ok": false
+     },
+     "isError": true,
+     "text": "Preview inspection failed. Requested behavior remains unverified; a failed inspection does not establish a visibility transition. Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality. Rendered colors (by area, desktop 1280x720 as loaded): blue #24293f 81%, dark gray 14%, gray 2%, red #f15364 1%, red #f55a66 1%. Colors under 1% of the view and hover/focus-only styles are not listed. Evidence: {\"blockedRequests\":[],\"diagnostics\":{\"hiddenUntilFoundCount\":0,\"renderedHiddenAttributeCount\":0},\"kind\":\"ods-pixel-preview-inspection\",\"planSha256\":\"768a952db2ca9a5b0090ad669f3d35060f11e4fa93697adb224fc500b56e3ba9\",\"schemaVersion\":1,\"scope\":\"Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.\",\"sha256\":\"c948016e599f2296c6d8ed75103ab2f6eba6db4e4006ea410d35fc09c719d706\",\"siteId\":\"site-c948016e599f2296c6d8ed75\",\"status\":\"failed\",\"steps\":[{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":0,\"locator\":{\"selector\":\"h1\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":1,\"locator\":{\"selector\":\".subtitle\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"grid\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":2,\"locator\":{\"selector\":\".events-grid\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"flex\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":3,\"locator\":{\"selector\":\".event-card:first-of-type\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"flex\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":4,\"locator\":{\"selector\":\".event-card:nth-child(2)\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":5,\"locator\":{\"selector\":\".reveal-btn\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"click\",\"after\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":6,\"locator\":{\"selector\":\".reveal-btn\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"none\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":0,\"visibility\":\"visible\",\"visible\":false},\"errorCode\":\"visibility_mismatch\",\"index\":7,\"locator\":{\"selector\":\".event-card.hidden\"},\"stable\":true,\"status\":\"failed\"}],\"viewport\":{\"height\":667,\"width\":375}}"
+    },
+    {
+     "call": 8,
+     "row": 19,
+     "id": "Y64EZssOSzISlgdPosanjEaPww0s7Qxb",
+     "tool": "pixel_ods_workspace_preview_inspect",
+     "arguments": {
+      "siteId": "site-c948016e599f2296c6d8ed75",
+      "sha256": "c948016e599f2296c6d8ed75103ab2f6eba6db4e4006ea410d35fc09c719d706",
+      "viewport": {
+       "width": 375,
+       "height": 667
+      },
+      "steps": [
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": "h1"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".subtitle"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".events-grid"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".event-card:first-of-type"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".event-card:nth-child(2)"
+        }
+       },
+       {
+        "action": "assert-hidden",
+        "locator": {
+         "selector": ".event-card.hidden"
+        }
+       },
+       {
+        "action": "click",
+        "locator": {
+         "selector": ".reveal-btn"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".event-card.hidden"
+        }
+       }
+      ]
+     },
+     "details": {
+      "blockedRequests": [],
+      "diagnostics": {
+       "hiddenUntilFoundCount": 0,
+       "renderedHiddenAttributeCount": 0
+      },
+      "kind": "ods-pixel-preview-inspection",
+      "planSha256": "2e62871bf162a2fa3b938899ebea9101a99d2fd0fe65ec06d4828d28814d6f30",
+      "renderedColors": {
+       "colors": [
+        {
+         "hex": "#24293f",
+         "name": "blue",
+         "percent": 81
+        },
+        {
+         "hex": "#25293e",
+         "name": "dark gray",
+         "percent": 14
+        },
+        {
+         "hex": "#6a6f7d",
+         "name": "gray",
+         "percent": 2
+        },
+        {
+         "hex": "#f15364",
+         "name": "red",
+         "percent": 1
+        },
+        {
+         "hex": "#f55a66",
+         "name": "red",
+         "percent": 1
+        }
+       ],
+       "viewport": {
+        "height": 720,
+        "width": 1280
+       }
+      },
+      "schemaVersion": 1,
+      "scope": "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.",
+      "sha256": "c948016e599f2296c6d8ed75103ab2f6eba6db4e4006ea410d35fc09c719d706",
+      "siteId": "site-c948016e599f2296c6d8ed75",
+      "status": "failed",
+      "steps": [
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 0,
+        "locator": {
+         "selector": "h1"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 1,
+        "locator": {
+         "selector": ".subtitle"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "grid",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 2,
+        "locator": {
+         "selector": ".events-grid"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "flex",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 3,
+        "locator": {
+         "selector": ".event-card:first-of-type"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "flex",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 4,
+        "locator": {
+         "selector": ".event-card:nth-child(2)"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-hidden",
+        "before": {
+         "count": 1,
+         "display": "none",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 0,
+         "visibility": "visible",
+         "visible": false
+        },
+        "index": 5,
+        "locator": {
+         "selector": ".event-card.hidden"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "click",
+        "after": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 6,
+        "locator": {
+         "selector": ".reveal-btn"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "none",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 0,
+         "visibility": "visible",
+         "visible": false
+        },
+        "errorCode": "visibility_mismatch",
+        "index": 7,
+        "locator": {
+         "selector": ".event-card.hidden"
+        },
+        "stable": true,
+        "status": "failed"
+       }
+      ],
+      "viewport": {
+       "height": 667,
+       "width": 375
+      },
+      "ok": false
+     },
+     "isError": true,
+     "text": "Preview inspection failed. Requested behavior remains unverified; a failed inspection does not establish a visibility transition. Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality. Rendered colors (by area, desktop 1280x720 as loaded): blue #24293f 81%, dark gray 14%, gray 2%, red #f15364 1%, red #f55a66 1%. Colors under 1% of the view and hover/focus-only styles are not listed. Evidence: {\"blockedRequests\":[],\"diagnostics\":{\"hiddenUntilFoundCount\":0,\"renderedHiddenAttributeCount\":0},\"kind\":\"ods-pixel-preview-inspection\",\"planSha256\":\"2e62871bf162a2fa3b938899ebea9101a99d2fd0fe65ec06d4828d28814d6f30\",\"schemaVersion\":1,\"scope\":\"Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.\",\"sha256\":\"c948016e599f2296c6d8ed75103ab2f6eba6db4e4006ea410d35fc09c719d706\",\"siteId\":\"site-c948016e599f2296c6d8ed75\",\"status\":\"failed\",\"steps\":[{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":0,\"locator\":{\"selector\":\"h1\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":1,\"locator\":{\"selector\":\".subtitle\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"grid\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":2,\"locator\":{\"selector\":\".events-grid\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"flex\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":3,\"locator\":{\"selector\":\".event-card:first-of-type\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"flex\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":4,\"locator\":{\"selector\":\".event-card:nth-child(2)\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-hidden\",\"before\":{\"count\":1,\"display\":\"none\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":0,\"visibility\":\"visible\",\"visible\":false},\"index\":5,\"locator\":{\"selector\":\".event-card.hidden\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"click\",\"after\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":6,\"locator\":{\"selector\":\".reveal-btn\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"none\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":0,\"visibility\":\"visible\",\"visible\":false},\"errorCode\":\"visibility_mismatch\",\"index\":7,\"locator\":{\"selector\":\".event-card.hidden\"},\"stable\":true,\"status\":\"failed\"}],\"viewport\":{\"height\":667,\"width\":375}}"
+    }
+   ]
+  }
+ ]
+}
