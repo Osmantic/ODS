@@ -218,11 +218,15 @@ test('strixy round 107: wrapped tool_describe calls 9 and 10 get the direct rout
   assert.ok(inspectText(11).includes(JSON.stringify(READY)), inspectText(11));
   assert.doesNotMatch(answered(11).text, /This response was stopped/);
   // The recorded calls 12 and 13 are still invalid; they reach the unchanged
-  // consecutive fuse at call 13, and nothing after it runs.
+  // consecutive fuse at call 13. Integration with #6749: call 13's rejection
+  // is correctable, so its fuse-tripping charge waits for exactly one
+  // corrected attempt; the next failure of any tool lands it and stops the run.
   for (const n of [12, 13]) {
     assert.notEqual(answered(n).decision?.block, true, `call ${n}`);
     assert.equal(answered(n).result.details.result.details.errorCode, 'invalid_request', `call ${n}`);
   }
+  assert.equal(r.exhausted(), false, 'one corrected attempt may follow call 13');
+  await r.fail();
   assert.equal(r.exhausted(), true);
 });
 

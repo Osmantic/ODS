@@ -9,6 +9,11 @@ export const RUN_PROGRESS_LIMITS = Object.freeze({
   identicalSuccesses: 2,
 });
 
+// Failures per run whose fuse-tripping charge may wait for one corrected
+// attempt (see observeResult). Kept outside RUN_PROGRESS_LIMITS: those four
+// fuses are unchanged, and this number grants no failure beyond the total cap.
+export const RUN_PROGRESS_CORRECTED_ATTEMPTS = 2;
+
 export const RUN_PROGRESS_STOP_REASON =
   'This response was stopped after repeated tool failures or attempts without progress. ' +
   'Saved files and previously verified publications were preserved. ' +
@@ -42,6 +47,27 @@ export function createRunProgressBudget() {
   const successes = new Map();
   const laneFailures = new Map();
   const exhaustedLanes = new Set();
+  // At most one failure's consecutive charge is pending: 'global' or a lane.
+  let deferred;
+  let corrections = 0;
+  const charge = counter => {
+    if (counter === 'global') { consecutiveFailures += 1; return; }
+    const count = (laneFailures.get(counter) ?? 0) + 1;
+    laneFailures.set(counter, count);
+    if (count >= RUN_PROGRESS_LIMITS.consecutiveFailures) exhaustedLanes.add(counter);
+  };
+  // Whether charging this counter now would stop the run (global) or its lane.
+  const trips = counter => counter === 'global'
+    ? consecutiveFailures + 1 >= RUN_PROGRESS_LIMITS.consecutiveFailures
+    : !exhaustedLanes.has(counter) && (laneFailures.get(counter) ?? 0) + 1 >= RUN_PROGRESS_LIMITS.consecutiveFailures;
+  // A mixed task may retain its other lane, never an unlimited retry
+  // allowance. Unknown calls retain the strict global consecutive fuse;
+  // every failure still consumes the unchanged total/global round caps.
+  const settle = () => {
+    terminal = exhaustedLanes.size === PROGRESS_LANES.size ||
+      consecutiveFailures >= RUN_PROGRESS_LIMITS.consecutiveFailures ||
+      failures >= RUN_PROGRESS_LIMITS.totalFailures;
+  };
   return {
     get exhausted() { return terminal; },
     // Another guard (the research web-loop terminal) stopped the response.
@@ -62,30 +88,48 @@ export function createRunProgressBudget() {
       if (++rounds > RUN_PROGRESS_LIMITS.roundsWithoutProgress) terminal = true;
       return terminal;
     },
-    observeResult({ callId, tool, params, failed, pending = false, discovery = false, lane }) {
+    // correctable: the caller established that this failure measured nothing
+    // and that its result already gives the model the correction. When its
+    // consecutive (or lane) charge would stop the run or its lane, that
+    // charge waits for exactly one next result: only a passing corrected
+    // check (corrected) forgives it; the next failure of any tool, or any
+    // other success, charges it, which stops the run (or lane) one result
+    // after it would have stopped without the wait. Discovery and free
+    // corrections neither charge nor forgive it; model rounds keep advancing
+    // meanwhile. Below the fuse a correctable failure is charged at once and
+    // spends nothing. The total cap counts every failure at once and is never
+    // held back. At most one charge waits, and at most
+    // RUN_PROGRESS_CORRECTED_ATTEMPTS per run.
+    observeResult({ callId, tool, params, failed, pending = false, discovery = false, lane, correctable = false, corrected = false }) {
       if (terminal || typeof callId !== 'string' || !callId || seenCalls.has(callId)) return;
       seenCalls.add(callId);
       if (seenCalls.size > 256) seenCalls.delete(seenCalls.values().next().value);
       const classifiedLane = PROGRESS_LANES.has(lane) ? lane : undefined;
       if (failed) {
         failures += 1;
-        if (classifiedLane) {
-          const count = (laneFailures.get(classifiedLane) ?? 0) + 1;
-          laneFailures.set(classifiedLane, count);
-          if (count >= RUN_PROGRESS_LIMITS.consecutiveFailures) exhaustedLanes.add(classifiedLane);
-        } else consecutiveFailures += 1;
-        // A mixed task may retain its other lane, never an unlimited retry
-        // allowance. Unknown calls retain the strict global consecutive fuse;
-        // every failure still consumes the unchanged total/global round caps.
-        terminal = exhaustedLanes.size === PROGRESS_LANES.size ||
-          consecutiveFailures >= RUN_PROGRESS_LIMITS.consecutiveFailures ||
-          failures >= RUN_PROGRESS_LIMITS.totalFailures;
+        const counter = classifiedLane ?? 'global';
+        if (correctable === true && deferred === undefined && corrections < RUN_PROGRESS_CORRECTED_ATTEMPTS && trips(counter)) {
+          deferred = counter;
+          corrections += 1;
+        } else {
+          charge(counter);
+          if (deferred !== undefined) charge(deferred);
+          deferred = undefined;
+        }
+        settle();
         return;
       }
       // Discovery changes the available schemas, not the task's outcome. A
       // successful search between failed actions must not erase their history
       // or let differently worded searches keep a run alive indefinitely.
       if (discovery || tool === 'tool_search' || tool === 'tool_describe' || tool === 'pixel_ods_skill') return;
+      if (deferred !== undefined) {
+        const forgiven = corrected === true && (deferred === 'global' || deferred === classifiedLane);
+        if (!forgiven) charge(deferred);
+        deferred = undefined;
+        settle();
+        if (terminal) return;
+      }
       consecutiveFailures = 0;
       if (classifiedLane) laneFailures.set(classifiedLane, 0);
       // An actual running-process receipt is a verified wait, not a failure.
