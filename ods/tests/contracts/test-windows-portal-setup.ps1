@@ -23,6 +23,26 @@ function Check([bool]$Condition, [string]$Message) {
     $script:checks++
     Write-Host "PASS $Message"
 }
+# Real Invoke-ODSPortalLinuxInstaller: the delegate runs in a child PowerShell
+# on this console (not through this pipeline), gets its arguments intact and
+# its exit code is the only value returned.
+$delegateRoot = Join-Path ([IO.Path]::GetTempPath()) ('ods-portal-delegate-' + [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $delegateRoot
+try {
+    $record = Join-Path $delegateRoot 'args.json'
+    Set-Content -LiteralPath (Join-Path $delegateRoot 'windows.ps1') -Encoding UTF8 -Value @"
+param([string]`$Distro, [string]`$InstallRoot, [switch]`$OpenPortal, [string[]]`$PassthroughArgs)
+Write-Output 'delegate stdout'
+[IO.File]::WriteAllText('$record', (ConvertTo-Json -Compress @{ d = `$Distro; r = `$InstallRoot; o = [bool]`$OpenPortal; a = `$PassthroughArgs }))
+exit 23
+"@
+    $returned = @(Invoke-ODSPortalLinuxInstaller $delegateRoot 'Ubuntu-24.04' @('--pixel', "it's `$(x)", 'two words') "/home/o'brien/ODS data" $true)
+    $seen = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
+    Check ($returned.Count -eq 1 -and $returned[0] -eq 23) 'delegate exit code is the only returned value'
+    Check ($seen.d -eq 'Ubuntu-24.04' -and $seen.r -eq "/home/o'brien/ODS data" -and $seen.o -eq $true -and (@($seen.a) -join '|') -eq "--pixel|it's `$(x)|two words") 'delegate receives arguments intact'
+    Set-Content -LiteralPath (Join-Path $delegateRoot 'windows.ps1') -Encoding UTF8 -Value "throw 'delegate failed'"
+    Check ((Invoke-ODSPortalLinuxInstaller $delegateRoot 'Ubuntu-24.04' @() '' $false) -ne 0) 'delegate that throws is a failure'
+} finally { Remove-Item -LiteralPath $delegateRoot -Recurse -Force }
 function Reset-Scenario {
     $script:calls = [Collections.Generic.List[string]]::new()
     $script:prompts = [Collections.Generic.List[string]]::new()
@@ -43,6 +63,9 @@ function Reset-Scenario {
     $script:dockerInstalled = $true
     $script:engineUp = $true
     $script:integrated = $true
+    $script:userEnablesIntegration = $true
+    $script:launcherPresent = $true
+    $script:installNeedsRestart = $false
 }
 function Test-ODSPortalVirtualization { $script:calls.Add('virt-check'); return $script:virtualization }
 function Get-ODSPortalFreeSystemGB { return $script:freeGB }
@@ -50,7 +73,14 @@ function Get-ODSPortalDockerDesktop { return [pscustomobject]@{ Installed=$scrip
 function Install-ODSPortalDockerDesktop { $script:calls.Add('docker-install'); $script:dockerInstalled = $true }
 function Test-ODSPortalDockerEngine($Desktop) { return $script:engineUp }
 function Start-ODSPortalDockerDesktop($Desktop) { $script:calls.Add('docker-start'); $script:engineUp = $true }
-function Enable-ODSPortalDockerWslIntegration($Desktop, [string]$Distro) { $script:calls.Add('docker-integrate:' + $Distro); if ($script:scenario -ne 'docker') { $script:integrated = $true } }
+function Wait-ODSPortalDistroDocker([string]$Distro, [int]$Seconds) {
+    $script:calls.Add('docker-wait:' + $Distro + ':' + $Seconds)
+    # The long wait is the one after the user was shown the Docker settings.
+    if ($Seconds -gt $script:ODSPortalIntegrationWaitSeconds) { $script:integrated = $script:userEnablesIntegration }
+    return ($script:integrated -and $script:scenario -ne 'docker')
+}
+function Start-Process([string]$FilePath) { $script:calls.Add('open:' + $FilePath) }
+function Get-ODSPortalDistroLauncher([string]$Distro) { if ($script:launcherPresent) { return 'ubuntu2404.exe' }; return $null }
 function Enable-ODSPortalSystemd([string]$Distro) { $script:calls.Add('systemd:' + $Distro); if ($script:scenario -eq 'init') { $script:scenario = 'ready' } }
 function Register-ODSPortalResume([string]$InstallerRoot, [System.Collections.IDictionary]$Options) { $script:calls.Add('resume') }
 function Register-ODSPortalDistro([string]$Distro) { $script:calls.Add('register:' + $Distro); $script:registerNeeded = $false }
@@ -91,11 +121,11 @@ function Invoke-ODSPortalWsl([string[]]$Arguments) {
         '^--version$' { $output="Versao do WSL: 2.6.1.0`nVersao do kernel: 6.6.87.2"; if ($script:scenario -eq 'old-wsl') { $output="WSL version: 0.60.0`nKernel version: 6.6.87.2" }; if ($script:scenario -eq 'inbox-wsl') { $code=1; $output='Invalid command line option' }; break }
         '^--status$' { if ($script:scenario -eq 'features') { $code=1 }; break }
         '^--list --quiet$' { if ($script:scenario -ne 'missing' -or ($script:downloaded -and -not $script:registerNeeded)) { $output='Ubuntu-24.04' }; if ($script:scenario -eq 'existing-ubuntu') { $output='Ubuntu' }; break }
-        '^--install --distribution Ubuntu-24.04 --no-launch$' { $code=$script:downloadCode; if ($code -eq 0) { $script:downloaded = $true }; break }
+        '^--install --distribution Ubuntu-24.04 --no-launch$' { $code=$script:downloadCode; if ($code -eq 0 -and -not $script:installNeedsRestart) { $script:downloaded = $true }; break }
         '^--list --verbose$' { $output='* Ubuntu-24.04    Em Execucao   2'; if ($script:scenario -eq 'wsl1') { $output=$output -replace '2$', '1' }; if ($script:scenario -eq 'existing-ubuntu') { $output='* Ubuntu    Stopped    2' }; break }
         '^--distribution Ubuntu --exec id -u$' { $output='1000'; break }
         '^--distribution Ubuntu --exec cat /etc/os-release$' { $output="NAME=`"Ubuntu`"`nID=ubuntu`nVERSION_ID=`"24.04`""; if ($script:releaseOverride) { $output=$script:releaseOverride }; break }
-        '^--distribution Ubuntu-24.04 --exec cat /etc/os-release$' { $output="NAME=`"Ubuntu`"`nID=ubuntu`nVERSION_ID=`"24.04`""; break }
+        '^--distribution Ubuntu-24.04 --exec cat /etc/os-release$' { $output="NAME=`"Ubuntu`"`nID=ubuntu`nVERSION_ID=`"24.04`""; if ($script:scenario -eq 'distro-broken') { $code=-1; $output='Catastrophic failure' }; break }
         '^--distribution Ubuntu --exec cat /proc/1/comm$' { $output='systemd'; break }
         '^--distribution Ubuntu --exec docker (info|compose version)$' { break }
         '^--distribution Ubuntu-24.04 --exec id -u$' { $output='1000'; if ($script:scenario -in @('root','resume-user')) { $output='0' }; break }
@@ -135,6 +165,11 @@ try {
         try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
         Check ($message -match '-Distro Ubuntu-24.04' -and -not $script:calls.Contains('install:Ubuntu')) "unqualified release under the Ubuntu name stops before ODS ($($release -replace '\s+', ' '))"
     }
+    Reset-Scenario
+    $script:scenario='distro-broken'
+    $message=''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'did not start' -and $message -match 'Catastrophic failure' -and $message -notmatch 'Pixel requires') 'a distro that fails to start reports the WSL error, not a wrong release'
     Reset-Scenario
     Check ((Invoke-ODSPortalSetup @{DryRun=$true} 'unused') -eq 0) 'dry run succeeds'
     Check ($script:calls.Count -eq 0) 'dry run performs no native calls'
@@ -202,8 +237,9 @@ try {
     try { $null=Invoke-ODSPortalSetup @{NonInteractive=$true} 'unused' } catch { $rejected=$true }
     Check ($rejected -and -not $script:calls.Contains('user:Ubuntu-24.04')) 'noninteractive root never opens user setup or installs ODS'
     Reset-Scenario
-    $script:scenario='missing'; $script:downloadCode=3010
-    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 3010) 'Ubuntu requiring reboot preserves restart exit'
+    # Real wsl.exe exits 0 without downloading when Windows must restart first.
+    $script:scenario='missing'; $script:installNeedsRestart=$true; $script:launcherPresent=$false
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 3010) 'wsl --install that needs a restart (exit 0, nothing downloaded) requests the restart'
     Check (-not $script:calls.Contains('account-prompt') -and -not $script:calls.Contains('install:Ubuntu-24.04')) 'restart stops before user setup and ODS'
     Check ($script:calls.Contains('resume')) 'Ubuntu restart registers automatic continuation'
     foreach ($phase in @('download', 'user-setup')) {
@@ -257,10 +293,13 @@ try {
     $null = Invoke-ODSPortalSetup @{NonInteractive=$true} 'unused'
     Check (-not $script:openPortal) 'non-interactive install never opens a browser'
     Reset-Scenario
-    $script:freeGB = 12
+    $script:freeGB = 12; $script:scenario = 'features'
     $message=''
     try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
-    Check ($message -match '40 GB' -and $script:calls.Count -le 1) 'low disk space stops before any change'
+    Check ($message -match '40 GB' -and -not $script:calls.Contains('features')) 'low disk space stops before WSL is installed'
+    Reset-Scenario
+    $script:freeGB = 12
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'low disk space on a host with WSL (rerun) only warns'
     Reset-Scenario
     $script:scenario='no-wsl'; $script:virtualization=$false
     $message=''
@@ -287,18 +326,25 @@ try {
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'stopped Docker Desktop is started automatically'
     Check ($script:calls.Contains('docker-start')) 'Docker Desktop start was requested'
     Reset-Scenario
-    $script:integrated=$false
-    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'missing WSL integration is enabled automatically'
-    Check ($script:calls.Contains('docker-integrate:Ubuntu-24.04')) 'integration targets the selected distro'
-    Check (@($script:prompts | Where-Object { $_ -match 'WSL integration for Ubuntu-24\.04\?' }).Count -eq 1) 'integration prompt names the distro'
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0 -and -not ($script:calls -like 'open:*')) 'integrated Docker needs no user action'
     Reset-Scenario
-    $script:integrated=$false; $script:allowPreparation=$false
-    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 1 -and -not $script:calls.Contains('docker-integrate:Ubuntu-24.04')) 'declining WSL integration changes nothing'
+    $script:integrated=$false
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'missing WSL integration continues once the user turns it on'
+    $order = $script:calls.ToArray()
+    $short = [Array]::IndexOf($order, 'docker-wait:Ubuntu-24.04:' + $script:ODSPortalIntegrationWaitSeconds)
+    $open = [Array]::IndexOf($order, 'open:docker-desktop.exe')
+    $long = [Array]::IndexOf($order, 'docker-wait:Ubuntu-24.04:' + $script:ODSPortalDockerWaitSeconds)
+    Check ($short -ge 0 -and $short -lt $open -and $open -lt $long -and $long -lt [Array]::IndexOf($order, 'install:Ubuntu-24.04')) 'setup waits, shows Docker Desktop, waits for the user, then installs'
+    Reset-Scenario
+    $script:integrated=$false; $script:userEnablesIntegration=$false
+    $message=''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'Resources > WSL integration, turn on Ubuntu-24\.04' -and -not $script:calls.Contains('install:Ubuntu-24.04')) 'integration still off stops with the exact Docker Desktop steps'
     Reset-Scenario
     $script:integrated=$false
     $rejected=$false
     try { $null = Invoke-ODSPortalSetup @{NonInteractive=$true} 'unused' } catch { $rejected=$true }
-    Check (-not $script:calls.Contains('docker-integrate:Ubuntu-24.04') -and -not $script:calls.Contains('install:Ubuntu-24.04')) 'non-interactive setup never changes Docker Desktop settings'
+    Check ($rejected -and -not ($script:calls -like 'open:*') -and -not $script:calls.Contains('install:Ubuntu-24.04')) 'non-interactive setup reports missing integration without waiting for the user'
     # Exercise the actual root script in a child PowerShell, with only its
     # destination replaced. This catches failures swallowed at script boundaries.
     $fixture = Join-Path ([IO.Path]::GetTempPath()) ('ods-portal-entry-' + [guid]::NewGuid().ToString('N'))

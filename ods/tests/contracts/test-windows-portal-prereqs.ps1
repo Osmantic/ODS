@@ -32,29 +32,12 @@ Check ($text -notmatch 'DryRun' -and $text -notmatch '-Rag' -and $text -notmatch
 $installDir = $call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $_.Value -like '/home/*' }
 Check ($installDir.Value -eq "/home/o'brien/ods `$(x)" -and $installDir.StringConstantType -eq 'SingleQuoted') 'resume values are single-quoted literals'
 
-# Docker Desktop settings: current PascalCase store, older camelCase file.
-$store = Update-ODSPortalDockerSettings '{"AutoStart":true,"IntegratedWslDistros":["Other"],"FeatureFlags":{"X":true}}' 'settings-store.json' 'Ubuntu-24.04' | ConvertFrom-Json
-Check ((@($store.IntegratedWslDistros) -join ',') -eq 'Other,Ubuntu-24.04') 'adds distro to existing PascalCase list'
-Check ($store.AutoStart -eq $true -and $store.FeatureFlags.X -eq $true) 'keeps unrelated Docker settings'
-$fresh = Update-ODSPortalDockerSettings '{"AutoStart":false}' 'settings-store.json' 'Ubuntu' | ConvertFrom-Json
-Check ((@($fresh.IntegratedWslDistros) -join ',') -eq 'Ubuntu' -and -not ($fresh.PSObject.Properties.Name -ccontains 'integratedWslDistros')) 'creates PascalCase key in settings-store.json'
-$legacy = Update-ODSPortalDockerSettings '{"integratedWslDistros":[]}' 'settings.json' 'Ubuntu' | ConvertFrom-Json
-Check ((@($legacy.integratedWslDistros) -join ',') -eq 'Ubuntu') 'uses camelCase key in legacy settings.json'
-$same = '{"IntegratedWslDistros":["Ubuntu-24.04"]}'
-Check ((Update-ODSPortalDockerSettings $same 'settings-store.json' 'Ubuntu-24.04') -eq $same) 'already integrated distro leaves the file unchanged'
-Check ($null -eq (Update-ODSPortalDockerSettings '{"WslEngineEnabled":false}' 'settings-store.json' 'Ubuntu')) 'Hyper-V engine is reported instead of edited'
-Check ($null -eq (Update-ODSPortalDockerSettings '{"wslEngineEnabled":false}' 'settings.json' 'Ubuntu')) 'legacy Hyper-V engine is reported instead of edited'
-foreach ($json in @('[1,2]', '[{"a":1}]', '1', '"x"')) {
-    $rejected = $false
-    try { $null = Update-ODSPortalDockerSettings $json 'settings-store.json' 'Ubuntu' } catch { $rejected = $true }
-    Check $rejected "non-object Docker settings are refused: $json"
-}
-
 # Capacity gate: disk first, then virtualization only when WSL is not ready.
 function Get-ODSPortalFreeSystemGB { return $script:free }
 function Test-ODSPortalVirtualization { $script:virtChecked = $true; return $script:virt }
 foreach ($case in @(
-    @{ free=39; virt=$true; ready=$true; ok=$false; name='39 GB free is refused' },
+    @{ free=39; virt=$true; ready=$false; ok=$false; name='39 GB free is refused before installing WSL' },
+    @{ free=20; virt=$true; ready=$true; ok=$true; name='low space only warns when WSL is already installed (rerun)' },
     @{ free=40; virt=$true; ready=$true; ok=$true; name='40 GB free passes' },
     @{ free=80; virt=$false; ready=$false; ok=$false; name='disabled virtualization is refused before WSL setup' },
     @{ free=80; virt=$false; ready=$true; ok=$true; name='working WSL does not depend on the firmware flag' })) {
@@ -64,31 +47,25 @@ foreach ($case in @(
     Check ($passed -eq $case.ok) $case.name
 }
 
-# WSL integration: stop Docker, release its data disk with a WSL shutdown,
-# edit the settings file, then start Docker. Starting right after the stop
-# left a real host stuck with "disk not found".
-$appData = Join-Path ([IO.Path]::GetTempPath()) ('ods-appdata-' + [guid]::NewGuid().ToString('N'))
-$null = New-Item -ItemType Directory -Path (Join-Path $appData 'Docker')
-$previousAppData = $env:APPDATA
-try {
-    $env:APPDATA = $appData
-    $settingsFile = Join-Path $appData 'Docker/settings-store.json'
-    [IO.File]::WriteAllText($settingsFile, '{"WslEngineEnabled":true}')
-    $script:steps = [Collections.Generic.List[string]]::new()
-    function Invoke-ODSPortalDockerCli([string]$Cli, [string[]]$Arguments) { $script:steps.Add('docker ' + ($Arguments -join ' ')); return [pscustomobject]@{ Code = 0; Output = '' } }
-    function Invoke-ODSPortalWsl([string[]]$Arguments) {
-        $script:steps.Add('wsl ' + ($Arguments -join ' '))
-        $script:settingsAtShutdown = [IO.File]::ReadAllText($settingsFile)
-        return [pscustomobject]@{ Code = 0; Output = ''; Error = '' }
-    }
-    function Start-ODSPortalDockerDesktop($Desktop) { $script:steps.Add('start'); $script:settingsAtStart = [IO.File]::ReadAllText($settingsFile) }
-    Enable-ODSPortalDockerWslIntegration ([pscustomobject]@{ Cli = 'docker.exe'; Exe = 'Docker Desktop.exe' }) 'Ubuntu-24.04'
-    Check (($script:steps -join ' | ') -eq 'docker desktop stop | wsl --shutdown | start') 'integration stops Docker, shuts WSL down, then starts Docker'
-    Check ($script:settingsAtShutdown -notmatch 'Ubuntu-24.04' -and $script:settingsAtStart -match '"IntegratedWslDistros"\s*:\s*\[\s*"Ubuntu-24.04"') 'settings are written after Docker stops and before it starts'
-} finally {
-    $env:APPDATA = $previousAppData
-    Remove-Item -LiteralPath $appData -Recurse -Force
+# Docker inside the distro: a bounded wait that stops at the first answer
+# or at the deadline, never beyond it.
+$script:answers = [Collections.Generic.Queue[int]]::new()
+function Invoke-ODSPortalWsl([string[]]$Arguments) { return [pscustomobject]@{ Code = $script:answers.Dequeue(); Output = ''; Error = '' } }
+function Start-Sleep([int]$Seconds) { $script:slept += $Seconds }
+$script:slept = 0; $script:answers.Enqueue(1); $script:answers.Enqueue(1); $script:answers.Enqueue(0)
+Check ((Wait-ODSPortalDistroDocker 'Ubuntu-24.04' 600) -and $script:slept -eq 10) 'waits until docker answers inside the distro'
+$script:answers.Clear(); $script:slept = 0; $script:answers.Enqueue(1)
+Check (-not (Wait-ODSPortalDistroDocker 'Ubuntu-24.04' 0) -and $script:slept -eq 0) 'a zero-second wait checks once and gives up'
+Remove-Item Function:\Start-Sleep
+
+# A failed restart after writing the default user must stop setup: otherwise
+# Ubuntu keeps opening as root and the user is sent to the wrong fix.
+$failedRestart = & {
+    function Invoke-ODSPortalWsl([string[]]$Arguments) { return [pscustomobject]@{ Code = $(if ($Arguments -contains '--terminate') { 1 } else { 0 }); Output = ''; Error = 'terminate failed' } }
+    function Invoke-ODSPortalWslInput([string]$Distro, [string[]]$Command, [string]$Text) { return [pscustomobject]@{ Code = 0; Output = '' } }
+    try { New-ODSPortalLinuxAccount 'Ubuntu-24.04' ([pscustomobject]@{ Name = 'maria'; Password = 'x' }); '' } catch { $_.Exception.Message }
 }
+Check ($failedRestart -match 'Could not restart Ubuntu-24.04' -and $failedRestart -match 'terminate failed') 'a failed distro restart after setting the default user stops setup'
 
 # Password bytes reach the distro exactly: UTF-8, LF only, no console code page.
 # Runnable only where a fake wsl.exe script can execute.
