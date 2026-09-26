@@ -77,12 +77,25 @@ export function createRunProgressBudget() {
     laneExhausted(lane) { return exhaustedLanes.has(lane); },
     // Read-only: whether one more failed call (in lane) would stop the response
     // or that lane, or the next model round would, so no further call of it runs.
-    failureEnds(lane) {
+    // correctable: that failure would be observed as correctable. It follows
+    // observeResult's failure path exactly: a correctable failure whose charge
+    // would wait (below) ends nothing but the total cap, and a charge already
+    // waiting lands with any failure.
+    failureEnds(lane, { correctable = false } = {}) {
       if (terminal || rounds >= RUN_PROGRESS_LIMITS.roundsWithoutProgress ||
           failures + 1 >= RUN_PROGRESS_LIMITS.totalFailures) return true;
-      return PROGRESS_LANES.has(lane)
-        ? exhaustedLanes.has(lane) || (laneFailures.get(lane) ?? 0) + 1 >= RUN_PROGRESS_LIMITS.consecutiveFailures
-        : consecutiveFailures + 1 >= RUN_PROGRESS_LIMITS.consecutiveFailures;
+      const counter = PROGRESS_LANES.has(lane) ? lane : 'global';
+      if (correctable === true && deferred === undefined && corrections < RUN_PROGRESS_CORRECTED_ATTEMPTS && trips(counter)) return false;
+      let consecutive = consecutiveFailures;
+      const lanes = new Map(laneFailures), exhausted = new Set(exhaustedLanes);
+      for (const charged of deferred === undefined ? [counter] : [counter, deferred]) {
+        if (charged === 'global') { consecutive += 1; continue; }
+        const count = (lanes.get(charged) ?? 0) + 1;
+        lanes.set(charged, count);
+        if (count >= RUN_PROGRESS_LIMITS.consecutiveFailures) exhausted.add(charged);
+      }
+      return consecutive >= RUN_PROGRESS_LIMITS.consecutiveFailures || exhausted.size === PROGRESS_LANES.size ||
+        (counter !== 'global' && exhausted.has(counter));
     },
     beginModelRound() {
       if (++rounds > RUN_PROGRESS_LIMITS.roundsWithoutProgress) terminal = true;

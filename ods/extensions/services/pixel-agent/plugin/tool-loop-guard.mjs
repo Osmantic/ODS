@@ -7231,7 +7231,11 @@ export function createToolLoopGuard({
       (state.workspaceTransitionDirection === 'hidden') === requirement.initiallyHidden ? state.workspaceTransitionDirection : undefined;
     const outer = bound.find(run => run.transport === 'tool_call');
     const lane = toolProgressLane(state, PREVIEW_INSPECTION_TOOL, outer ? outer.selectedToolTarget : undefined);
-    return Object.freeze({...(direction ? {direction} : {}), ...(state.progressBudget.failureEnds(lane) ? {finalFailure: true} : {})});
+    const ends = state.progressBudget.failureEnds(lane);
+    // correctableWaits: a correctable failure of this call would wait for one
+    // corrected attempt instead (run-progress-budget.mjs), so it ends nothing.
+    const waits = ends && !state.progressBudget.failureEnds(lane, {correctable: true});
+    return Object.freeze({...(direction ? {direction} : {}), ...(ends ? {finalFailure: true} : {}), ...(waits ? {correctableWaits: true} : {})});
   }
 
   function rememberToolRun(

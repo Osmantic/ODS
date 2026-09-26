@@ -218,6 +218,25 @@ export function failedLocatorCorrection(request, requirement, failing, options =
     ? correction : {...correction, args: undefined};
 }
 const LOCATOR_ERRORS = new Set(['no_match', 'selector_not_unique', 'invalid_selector']);
+// #6749's classifier, moved here unchanged and re-exported by
+// preview-interaction-assurance.mjs. A failed inspection whose result already
+// tells the model how to correct the same check, and whose failure measured
+// nothing: arguments rejected before the broker ran, a requested transition
+// that was never tested (INCOMPLETE, with its next steps), or a final step
+// whose locator matched no element, several elements, or was not valid CSS.
+// Only its run-budget charge may wait for one corrected attempt
+// (run-progress-budget.mjs); it is never evidence or a pass. Page errors,
+// blocked requests, visibility mismatches, click failures, unstable steps and
+// unavailable, timed-out or cancelled inspections are not correctable.
+export function correctableInspectionFailure(result) {
+  const details = result?.details;
+  if (result?.isError !== true || details?.kind !== INSPECTION_KIND) return false;
+  if (details.errorCode === 'invalid_request') return details.status === 'failed';
+  if (details.status === 'incomplete') return details.errorCode === TRANSITION_UNTESTED;
+  return details.status === 'failed' && details.errorCode === undefined && details.pageErrors === undefined &&
+    Array.isArray(details.blockedRequests) && details.blockedRequests.length === 0 &&
+    Array.isArray(details.steps) && LOCATOR_ERRORS.has(details.steps.at(-1)?.errorCode);
+}
 const clicksBefore = (result, step) => result.steps.filter(item => item.index < step.index && item.action === 'click');
 // The last passing assertion of the same locator before the last click that precedes step.
 function assertedBeforeClick(result, step) {
@@ -662,8 +681,13 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
       };
       const stated=()=>({hidden:'assert-hidden',visible:'assert-visible'})[hintsOf().direction];
       // A failure that ends the response's tool use replaces its next step.
-      const final=()=>hintsOf().finalFailure===true;
-      const compose=({diagnosis,next})=>`${diagnosis}${final()?FINAL:next}`;
+      // A correctable failure (correctableInspectionFailure of this result)
+      // whose run-budget charge waits for one corrected attempt (#6749) ends
+      // nothing (guidance correctableWaits), so it keeps its next step.
+      const final=failure=>hintsOf().finalFailure===true &&
+        !(hintsOf().correctableWaits===true && correctableInspectionFailure(failure));
+      const compose=({diagnosis,next},failure)=>`${diagnosis}${final(failure)?FINAL:next}`;
+      const rejection={schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'invalid_request',scope:INSPECTION_SCOPE};
       // Without a lookup, undefined; a missing or throwing lookup is an unknown
       // publication (null), never a ready call.
       const publicationOf=()=>{
@@ -676,8 +700,8 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
       if (!signal?.aborted) {
         try { normalized=normalizeWorkspacePreviewInspectionParams(params); }
         catch (error) { return {
-          content:[{type:'text',text:compose(rejectedFeedback(error,params,requirementOf,stated,publicationOf))}],
-          details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'invalid_request',scope:INSPECTION_SCOPE},isError:true,
+          content:[{type:'text',text:compose(rejectedFeedback(error,params,requirementOf,stated,publicationOf),{isError:true,details:rejection})}],
+          details:{...rejection},isError:true,
         }; }
       }
       try {
@@ -692,12 +716,14 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
         const feedback=failing ? failureFeedback(normalized, result, failing, {requirementOf, stated: stated()}) : undefined;
         // Quote page text once, labelled; the evidence copy keeps only the count.
         const errorFeedback=pageErrors ? pageErrorFeedback(pageErrors) : undefined;
+        // The failure this result reports, as the run budget classifies it.
+        const failure={isError:true,details:requirement?{kind:INSPECTION_KIND,status:'incomplete',errorCode:TRANSITION_UNTESTED}:result};
         const summary=pageErrors
           ? `Preview inspection ${result.status==='passed'?'steps passed, but':'failed, and'} ${result.status==='passed'
-            ? `${errorFeedback.diagnosis}${errorFeedback.next}` : compose(errorFeedback)}`
-          : requirement ? transitionIncompleteFeedback(normalized, requirement, final())
+            ? `${errorFeedback.diagnosis}${errorFeedback.next}` : compose(errorFeedback,failure)}`
+          : requirement ? transitionIncompleteFeedback(normalized, requirement, final(failure))
             : result.status==='passed' ? `Preview inspection passed. ${passedFeedback(normalized)}`
-              : `Preview inspection failed. ${feedback ? compose(feedback) : `${UNVERIFIED}${final() ? FINAL : ''}`}`;
+              : `Preview inspection failed. ${feedback ? compose(feedback,failure) : `${UNVERIFIED}${final(failure) ? FINAL : ''}`}`;
         // The palette is stated once, as its fixed line; the evidence copy omits
         // it and the load-time control names (used only for locator feedback).
         const {renderedColors,controls,...rest}=result;

@@ -1,6 +1,5 @@
 import {
   INSPECTION_KIND,
-  TRANSITION_UNTESTED,
   hasVisibilityTransitionPlan,
   inspectionControls,
   inspectionPageErrors,
@@ -172,16 +171,9 @@ export function visibilityInspectionMatches(proof, preview) {
 // Page errors, blocked requests, visibility mismatches, click failures,
 // unstable steps and unavailable, timed-out or cancelled inspections are not
 // correctable.
-const UNMEASURED_LOCATOR = new Set(['no_match', 'selector_not_unique', 'invalid_selector']);
-export function correctableInspectionFailure(result) {
-  const details = result?.details;
-  if (result?.isError !== true || details?.kind !== INSPECTION_KIND) return false;
-  if (details.errorCode === 'invalid_request') return details.status === 'failed';
-  if (details.status === 'incomplete') return details.errorCode === TRANSITION_UNTESTED;
-  return details.status === 'failed' && details.errorCode === undefined && details.pageErrors === undefined &&
-    Array.isArray(details.blockedRequests) && details.blockedRequests.length === 0 &&
-    Array.isArray(details.steps) && UNMEASURED_LOCATOR.has(details.steps.at(-1)?.errorCode);
-}
+// Defined in workspace-preview-inspect.mjs (unchanged), so the inspection
+// tool words its own result from the same classification the budget uses.
+export { correctableInspectionFailure } from './workspace-preview-inspect.mjs';
 
 // The corrected attempt that forgives such a failure's waiting charge: an
 // inspection whose steps all passed without page script errors. Any other

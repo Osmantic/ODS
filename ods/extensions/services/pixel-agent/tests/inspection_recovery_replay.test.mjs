@@ -276,13 +276,16 @@ test('strixy round 107 snapshot: an unrepairable role gets the guard-bound requi
 
 // Strixy round 107 calls 8 to 11: the failure that ends the response's tool
 // use offers no call (the next one is refused); it says to answer instead.
+// Integration with #6749: the rejection at the fuse (again-3) is correctable,
+// so its charge waits for one corrected attempt and it keeps its ready call;
+// the next failure (again-4) is the one that ends tool use.
 test('strixy round 107: the failure that ends tool use names no further call', async t => {
   const r = replay(t, STRIXY, STRIXY_PAGE);
   const first = assertNotPassing(await r.through(8));
   assert.ok(readyArgs(first));
   const resent = call(STRIXY, 11).arguments;
-  for (const id of ['again-1', 'again-2']) assert.ok(readyArgs(assertNotPassing(await r.inspect(resent, id, 'tool_call'))));
-  const last = assertNotPassing(await r.inspect(resent, 'again-3', 'tool_call'));
+  for (const id of ['again-1', 'again-2', 'again-3']) assert.ok(readyArgs(assertNotPassing(await r.inspect(resent, id, 'tool_call'))));
+  const last = assertNotPassing(await r.inspect(resent, 'again-4', 'tool_call'));
   assert.ok(last.endsWith(' Requested behavior remains unverified. This failed call was the last one this response allows, so no further tool call ' +
     'can run: do not call any tool. Answer the owner now from the results already returned, and report the requested behavior as unverified.'), last);
   assert.doesNotMatch(last, /Next step|exactly these args|in this shape/);
