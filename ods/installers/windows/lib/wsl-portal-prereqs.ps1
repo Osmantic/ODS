@@ -159,7 +159,7 @@ function Wait-ODSPortalDockerEngine($Desktop) {
         if (Test-ODSPortalDockerEngine $Desktop) { return }
         Start-Sleep -Seconds 5
     }
-    throw "Docker Desktop is still not ready after $($script:ODSPortalDockerWaitSeconds / 60) minutes. Open Docker Desktop, accept any prompt it shows, wait until it says Engine running, then rerun this command."
+    throw "Docker Desktop is still not ready after $($script:ODSPortalDockerWaitSeconds / 60) minutes. Open Docker Desktop and accept any prompt it shows. If it stays on Starting, quit Docker Desktop (right-click the whale icon > Quit), run wsl --shutdown in PowerShell, then rerun this command; setup starts Docker again."
 }
 
 function Start-ODSPortalDockerDesktop($Desktop) {
@@ -181,6 +181,11 @@ function Enable-ODSPortalDockerWslIntegration($Desktop, [string]$Distro) {
     Write-Host '         Restarting Docker Desktop with WSL integration for your Ubuntu...'
     $stop = Invoke-ODSPortalDockerCli $Desktop.Cli @('desktop', 'stop')
     if ($stop.Code -ne 0) { throw "Docker Desktop could not be stopped automatically. $manual" }
+    # Docker's data disk stays attached to the shared WSL VM for a moment after
+    # it stops. Starting again right away failed on a real host with "disk not
+    # found" and left the engine stuck starting; a WSL shutdown releases it.
+    $shutdown = Invoke-ODSPortalWsl -Arguments @('--shutdown')
+    if ($shutdown.Code -ne 0) { throw "WSL could not be shut down before restarting Docker Desktop: $($shutdown.Output) $($shutdown.Error)" }
     $current = [IO.File]::ReadAllText($file)
     $updated = Update-ODSPortalDockerSettings $current (Split-Path -Leaf $file) $Distro
     if ($null -eq $updated) { throw $hyperV }
