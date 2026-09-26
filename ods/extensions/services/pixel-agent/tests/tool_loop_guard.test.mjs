@@ -1492,7 +1492,12 @@ test("workspace inspection preserves effects instead of scripting the next actio
     // No exec has run yet, so no background session can exist to list.
     assert.equal(invoke("process", {action: "list"})?.blockReason, PHANTOM_PROCESS_REASON);
     assert.deepEqual(prepared, [], "read/list/projection cannot create a directory or run shell");
-    assert.notEqual(invoke("tool_search", {query: "Python csv documentation", limit: 2})?.block, true);
+    const discovery = invoke("tool_search", {query: "Python csv documentation", limit: 2});
+    // OpenClaw cannot resolve a control tool as a tool_call id; the wrapped
+    // form is answered with the direct route and runs nothing.
+    if (wrapped) assert.equal(discovery?.blockReason,
+      "tool_search is its own tool, not a tool_call id. Call tool_search directly with the same args.");
+    else assert.notEqual(discovery?.block, true);
     assert.notEqual(invoke("exec", {command: "ls -la /workspace/project"})?.block, true);
     assert.deepEqual(prepared, ["ls -la /workspace/project"], "execute only the model-selected command before any write");
     assert.equal(invoke("pixel_ops_shell_propose", {target: "ods-host", command: "pwd"}).blockReason,
@@ -9370,11 +9375,19 @@ test("redundant workspace transport cannot bypass existing execution boundaries"
     } } }), { block: true, blockReason: reason });
     assert.deepEqual(prepared, []);
   }
-  for (const params of [
-    { id: "tool_call", args: { id: "pixel_ods_host_command_propose", args: { command: "hostname" } } },
-    { id: "tool_call", args: { id: "exec", args: { command: "pwd" } }, extra: true },
-    { id: "tool_call", args: { id: "tool_call", args: { id: "exec", args: { command: "pwd" } } } },
-  ]) assert.equal(call(createToolLoopGuard(), "tool_call", { event: { params } }), undefined);
+  // Inexact envelopes are never unwrapped into a core call. tool_call is not
+  // a catalog id, so each is answered with its direct route and runs nothing.
+  const nested = "tool_call is its own tool, not a tool_call id. Call tool_call directly with the inner id and args.";
+  for (const [params, blockReason] of [
+    [{ id: "tool_call", args: { id: "pixel_ods_host_command_propose", args: { command: "hostname" } } }, nested],
+    [{ id: "tool_call", args: { id: "exec", args: { command: "pwd" } }, extra: true },
+      "tool_call is its own tool, not a tool_call id. exec is directly available in your tool list; call exec itself."],
+    // The inner id is itself a control tool, which OpenClaw never resolves.
+    [{ id: "tool_call", args: { id: "tool_call", args: { id: "exec", args: { command: "pwd" } } } },
+      "tool_call is its own tool, not a tool_call id. Control tools cannot be described or called by id; " +
+      "tool_describe and tool_call take only the id of a tool that tool_search found. " +
+      "Call the tool you need directly by its own name from your tool list, or find it with tool_search."],
+  ]) assert.deepEqual(call(createToolLoopGuard(), "tool_call", { event: { params } }), { block: true, blockReason });
 });
 
 test("blocks recursive forced deletion unless the owner explicitly names the workspace tree", () => {
@@ -12011,7 +12024,9 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
   const successfulEdit = persistFollowup("tool_call", "continuation-edit", wrappedCoreResult(
     mutationName, { details: { status: "completed" }, content: [{ type: "text", text: "Changed requested file." }] }
   ));
-  assert.match(successfulEdit.content.map(item => item.text ?? "").join("\n"), /Call tool_call with id pixel_ods_workspace_preview/);
+  const successfulEditText = successfulEdit.content.map(item => item.text ?? "").join("\n");
+  assert.match(successfulEditText, /Call pixel_ods_workspace_preview with args/);
+  assert.doesNotMatch(successfulEditText, /tool_call with id pixel_ods_workspace_preview/);
   assert.match(finalizeFollowup().retry.instruction, /Call tool_call now with id pixel_ods_workspace_preview/);
   assert.equal(finalizeFollowup().retry.maxAttempts, 1);
 
@@ -15296,7 +15311,7 @@ test("mixed diagnostics retain explicit status and app-metadata exclusions", () 
 });
 
 
-test("read-only tool discovery has equivalent direct and wrapped admission during host work", () => {
+test("read-only tool discovery stays admitted during host work, and its wrapped form gets the direct route", () => {
   const guard = createToolLoopGuard();
   const context = { agentId: "pixel", runId: "run-1", sessionId: "session-1" };
   guard.observeRun(context, "pixel", { prompt: "Report the ODS host kernel and memory." });
@@ -15304,7 +15319,10 @@ test("read-only tool discovery has equivalent direct and wrapped admission durin
     guard.observeModelCall({ runId: "run-1" }, context, "pixel");
     for (const tool of ["tool_search", "tool_describe"]) {
       assert.notEqual(call(guard, tool, { event: { params: { query: "extension inspection" } } })?.block, true);
-      assert.notEqual(call(guard, "tool_call", { event: { params: { id: tool, args: { query: "extension inspection" } } } })?.block, true);
+      // OpenClaw cannot resolve a control tool as a tool_call id. The wrapped
+      // form is answered with the direct route, never an Operations refusal.
+      assert.equal(call(guard, "tool_call", { event: { params: { id: tool, args: { query: "extension inspection" } } } })?.blockReason,
+        `${tool} is its own tool, not a tool_call id. Call ${tool} directly with the same args.`);
     }
   }
   assert.equal(call(guard, "tool_call", { event: { params: { id: "message", args: {} } } }).block, true);
