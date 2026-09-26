@@ -386,7 +386,7 @@ real-harness fixtures `tests/runtime_progress_finalization.integration.mjs`,
 ## Output limit
 
 A reply that reaches the model's output-token limit (`stopReason` `length`)
-ends the run, and OpenClaw never runs its unfinished tool call. On strixy
+ends the run, and OpenClaw never runs its unfinished tool call. In a recorded run
 (2026-09-25, Qwen3.6-35B-A3B, 8192 output tokens) the owner's forest-website
 request was one whole-page `write` cut after 220 s; nothing was saved.
 

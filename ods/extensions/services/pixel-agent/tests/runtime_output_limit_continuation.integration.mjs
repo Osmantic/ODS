@@ -1,7 +1,7 @@
 // Real pinned harness + the real pixel-ods plugin + the real ingress on the
 // Portal history path; deterministic model, a stand-in ODS preview host,
 // disposable state.
-// strixy 2026-09-25: the owner's website request produced one reply that
+// Recorded 2026-09-25: the owner's website request produced one reply that
 // wrote the whole page in one tool call and stopped at the output limit
 // (finish_reason "length"). OpenClaw 2026.6.33 does not run the cut call and
 // skips before_agent_finalize, so the ingress asks Pixel for one continuation
@@ -151,7 +151,7 @@ net.createConnection=function(options,...rest){if(options&&typeof options==='obj
   chmodSync(join(controls,'cancellable-exec.sh'),0o500);
   mkdirSync(workspace);mkdirSync(join(root,'node_modules'));symlinkSync(pkg,join(root,'node_modules','openclaw'));
   const model='Qwen3.6-35B-A3B';
-  // The strixy managed shape: an 8192-token output limit for the local model.
+  // The recorded managed shape: an 8192-token output limit for the local model.
   const config={logging:{file:join(root,'runtime.log')},update:{checkOnStart:false},
     gateway:{mode:'local',bind:'loopback',port,auth:{mode:'token',token:'fixture-only'},http:{endpoints:{chatCompletions:{enabled:true}}}},
     agents:{defaults:{workspace,skipBootstrap:true,sandbox:{mode:'off'},model:{primary:`ods-local/${model}`},contextTokens:131072,heartbeat:{every:'0m'}},

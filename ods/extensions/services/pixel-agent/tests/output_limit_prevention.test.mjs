@@ -5,11 +5,11 @@ import {configuredMaxOutputTokens, outputBudgetContract} from '../plugin/output-
 import {ODS_COMPACT_CONVERSATION_CONTRACT, ODS_CONVERSATION_CONTRACT, ODS_WORKSPACE_PREVIEW_CONTRACT,
   promptContractForAgent} from '../plugin/prompt-contract.mjs';
 
-// strixy 2026-09-25: Qwen3.6-35B-A3B with an 8192-token output limit wrote the
+// Recorded 2026-09-25: Qwen3.6-35B-A3B with an 8192-token output limit wrote the
 // whole requested page in one write call; the reply was cut at 8192 tokens and
 // nothing was saved. Pixel now states the per-reply limit so the model plans
 // several smaller writes from the start.
-const STRIXY_PROMPT = 'as a demo of your capabilities, make me a cool looking webpage with a forest theme and cool forest ' +
+const RECORDED_PROMPT = 'as a demo of your capabilities, make me a cool looking webpage with a forest theme and cool forest ' +
   "type effects.  Best you can do.\n\n[ODS Portal delivery requirement: Answer the owner's complete message above.]";
 const TEXT_PROMPT = 'Write me the longest, most detailed guide you can about how old-growth forests store carbon.';
 
@@ -26,7 +26,7 @@ function managedConfig({rowMax = 8192, agentParams = {maxTokens: 8192}, defaults
 }
 
 test('the output limit is read the way OpenClaw applies it', () => {
-  assert.equal(configuredMaxOutputTokens(managedConfig(), 'pixel'), 8192, 'strixy managed config');
+  assert.equal(configuredMaxOutputTokens(managedConfig(), 'pixel'), 8192, 'recorded managed config');
   assert.equal(configuredMaxOutputTokens(managedConfig({agentParams: {}}), 'pixel'), 8192, 'row limit alone');
   assert.equal(configuredMaxOutputTokens(managedConfig({agentParams: {maxTokens: 3000}}), 'pixel'), 3000);
   assert.equal(configuredMaxOutputTokens(managedConfig({agentParams: {maxTokens: 20000}}), 'pixel'), 8192,
@@ -66,11 +66,11 @@ test('the budget line is host-constant and precedes every per-request section', 
   for (const [lean, conversation] of [[true, ODS_COMPACT_CONVERSATION_CONTRACT], [false, ODS_CONVERSATION_CONTRACT]]) {
     const contract = prompt => promptContractForAgent({agentId: 'pixel', contextTokenBudget: 65536}, 'pixel', {prompt},
       {configuredLeanPrompt: lean, maxOutputTokens: 8192}).appendSystemContext;
-    const site = contract(STRIXY_PROMPT), text = contract(TEXT_PROMPT);
+    const site = contract(RECORDED_PROMPT), text = contract(TEXT_PROMPT);
     assert.equal(text, `${conversation} ${line}`);
     assert.ok(site.startsWith(`${conversation} ${line} `), 'same prefix as any other turn');
-    assert.ok(site.includes(ODS_WORKSPACE_PREVIEW_CONTRACT), 'the strixy request keeps its website route');
-    assert.equal(contract(STRIXY_PROMPT), site, 'byte-stable across turns');
+    assert.ok(site.includes(ODS_WORKSPACE_PREVIEW_CONTRACT), 'the recorded request keeps its website route');
+    assert.equal(contract(RECORDED_PROMPT), site, 'byte-stable across turns');
   }
   // Without a known limit nothing changes (a dynamic provider, older configs).
   assert.equal(promptContractForAgent({agentId: 'pixel', contextTokenBudget: 65536}, 'pixel', {prompt: TEXT_PROMPT},

@@ -2,7 +2,7 @@
 // ends the run. Its unfinished tool call never runs, so nothing it was
 // writing is saved.
 //
-// strixy 2026-09-25 (Qwen3.6-35B-A3B, 8192 output tokens): "make me a cool
+// Recorded 2026-09-25 (Qwen3.6-35B-A3B, 8192 output tokens): "make me a cool
 // looking webpage ... Best you can do" produced one whole-page write that was
 // cut at 8192 tokens after 220 s. No file was written or published.
 //

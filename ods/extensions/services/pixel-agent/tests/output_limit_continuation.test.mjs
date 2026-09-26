@@ -1,4 +1,4 @@
-// strixy 2026-09-25 (Qwen3.6-35B-A3B, 8192 output tokens): "make me a cool
+// Recorded 2026-09-25 (Qwen3.6-35B-A3B, 8192 output tokens): "make me a cool
 // looking webpage ... Best you can do" was one whole-page write cut at the
 // output limit after 220 s. OpenClaw 2026.6.33 skips before_agent_finalize for
 // such a turn, so the Portal ingress asks Pixel for one continuation turn.
@@ -21,10 +21,10 @@ import {ODS_COMPACT_CONVERSATION_CONTRACT, ODS_CONVERSATION_CONTRACT, promptCont
 import {OUTPUT_LIMIT_AFTER_REPLY as INGRESS_AFTER_REPLY, OUTPUT_LIMIT_CONTINUATION_PROMPT as INGRESS_PROMPT, computeSessionUser,
   createIngressServer} from '../host/pixel_ingress.mjs';
 
-const CHAT = 'strixy-forest-demo';
+const CHAT = 'recorded-forest-demo';
 const USER = computeSessionUser({user: CHAT});
 const OWNER_KEY = `agent:pixel:openai-user:${USER}`;
-const STRIXY_PROMPT = 'as a demo of your capabilities, make me a cool looking webpage with a forest theme and cool forest ' +
+const RECORDED_PROMPT = 'as a demo of your capabilities, make me a cool looking webpage with a forest theme and cool forest ' +
   "type effects.  Best you can do.\n\n[ODS Portal delivery requirement: Answer the owner's complete message above.]";
 // The recorded reply: one sentence, then the whole page in one write call,
 // cut at the output limit (its arguments end mid-document).
@@ -38,7 +38,7 @@ const GENERIC = "⚠️ Agent couldn't generate a response. Please try again.";
 
 // before_prompt_build as plugin/index.js runs it: the run is classified by
 // outputLimitContinuationEvent's event, which observeRun and the contract read.
-function turn(guard, {runId, prompt = STRIXY_PROMPT, sessionKey = OWNER_KEY, trigger = 'user', workspaceRoot} = {}) {
+function turn(guard, {runId, prompt = RECORDED_PROMPT, sessionKey = OWNER_KEY, trigger = 'user', workspaceRoot} = {}) {
   const context = {agentId: 'pixel', runId, sessionId: 'session-1', sessionKey, trigger};
   const event = guard.outputLimitContinuationEvent(context, 'pixel', {prompt});
   guard.observeRun(context, 'pixel', event, workspaceRoot ? {workspaceRoot} : undefined);
@@ -125,7 +125,7 @@ test('the continuation message selects no workspace, preview, visual-edit or hos
   }
 });
 
-test('the recorded strixy turn is granted exactly one continuation, bound to its chat', () => {
+test('the recorded turn is granted exactly one continuation, bound to its chat', () => {
   const guard = createToolLoopGuard({abortRun: () => true});
   const owner = turn(guard, {runId: 'run-1'});
   owner.reply(CUT);
@@ -260,9 +260,9 @@ test('the continuation run keeps the owner request contract and delivery checks'
   // OpenClaw 2026.6.33 puts its timestamp envelope in front of the message.
   const message = `[Fri 2026-09-25 18:40 EDT] ${OUTPUT_LIMIT_CONTINUATION_PROMPT}`;
   const next = turn(guard, {runId: 'run-2', prompt: message});
-  assert.equal(next.event.prompt, STRIXY_PROMPT, 'classified as the owner message it continues');
+  assert.equal(next.event.prompt, RECORDED_PROMPT, 'classified as the owner message it continues');
   assert.equal(next.contract(), owner.contract(), 'the same system contract, byte for byte');
-  assert.equal(guard.outputLimitContinuationEvent(next.context, 'pixel', {prompt: message}).prompt, STRIXY_PROMPT,
+  assert.equal(guard.outputLimitContinuationEvent(next.context, 'pixel', {prompt: message}).prompt, RECORDED_PROMPT,
     'every attempt of the continuation run');
   next.reply(FALSE_READY);
   next.finalize(FALSE_READY);
@@ -406,7 +406,7 @@ async function fixture(t, {first = CUT_COMPLETION, grant = {...INELIGIBLE, eligi
     const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {method: 'POST', signal,
       headers: {'content-type': 'application/json', connection: 'close'},
       body: JSON.stringify({user: CHAT, stream, messages: [{role: 'system', content: 'Trusted identity'},
-        {role: 'user', content: STRIXY_PROMPT}]})});
+        {role: 'user', content: RECORDED_PROMPT}]})});
     const body = await response.text();
     if (!stream) return {status: response.status, text: JSON.parse(body).choices[0].message.content};
     const frames = body.split(/\r?\n/).filter(line => line.startsWith('data: {')).map(line => JSON.parse(line.slice(6)));
@@ -429,7 +429,7 @@ for (const stream of [true, false]) {
     assert.equal(result.text, 'Your forest page is published.');
     assert.equal(f.seen.submissions.length, 2, 'one continuation, never a replay');
     const [first, continuation] = f.seen.submissions;
-    assert.equal(first.messages.at(-1).content, STRIXY_PROMPT);
+    assert.equal(first.messages.at(-1).content, RECORDED_PROMPT);
     assert.deepEqual(continuation.messages, [{role: 'system', content: 'Trusted identity'},
       {role: 'user', content: OUTPUT_LIMIT_CONTINUATION_PROMPT}], 'same trusted system text, fixed message only');
     assert.equal(continuation.user, first.user);

@@ -17,7 +17,7 @@ import {OUTPUT_LIMIT_ANSWER_TEXT, OUTPUT_LIMIT_CONTINUATION_PROMPT, OUTPUT_LIMIT
 import {computeSessionUser, createIngressServer} from '../host/pixel_ingress.mjs';
 
 const DELIVERY = "\n\n[ODS Portal delivery requirement: Answer the owner's complete message above.]";
-// strixy 2026-09-25 (Qwen3.6-35B-A3B, 8192 output tokens): this request was one
+// Recorded 2026-09-25 (Qwen3.6-35B-A3B, 8192 output tokens): this request was one
 // whole-page write cut after 220 s; the owner received nothing.
 const SITE = 'as a demo of your capabilities, make me a cool looking webpage with a forest theme and cool forest ' +
   'type effects.  Best you can do.' + DELIVERY;
