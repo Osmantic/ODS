@@ -55,6 +55,13 @@ export function createRunProgressBudget() {
     stop() { terminal = true; correction = undefined; },
     get exhaustedLanes() { return [...exhaustedLanes]; },
     laneExhausted(lane) { return exhaustedLanes.has(lane); },
+    beginModelRound() {
+      if (++rounds > RUN_PROGRESS_LIMITS.roundsWithoutProgress) {
+        terminal = true;
+        correction = undefined;
+      }
+      return terminal;
+    },
     get pendingCorrection() { return terminal ? correction : undefined; },
     // Called with the first tool call after a correctable refusal tripped the
     // fuse; remedy is true only when the caller established that this call is
@@ -71,13 +78,6 @@ export function createRunProgressBudget() {
       if (remedy !== true) return false;
       terminal = false;
       return true;
-    },
-    beginModelRound() {
-      if (++rounds > RUN_PROGRESS_LIMITS.roundsWithoutProgress) {
-        terminal = true;
-        correction = undefined;
-      }
-      return terminal;
     },
     // correctableRefusal: the kind of a refusal that ran nothing and whose
     // text names its own remedy, as the caller established (for example the
