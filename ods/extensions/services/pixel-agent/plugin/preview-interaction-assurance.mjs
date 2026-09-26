@@ -1,10 +1,13 @@
 import {
   hasVisibilityTransitionPlan,
+  inspectionControls,
   inspectionPageErrors,
   normalizeWorkspacePreviewInspectionParams,
+  validateIncompleteInspectionReceipt,
   validateWorkspacePreviewInspectionReceipt,
 } from './workspace-preview-inspect.mjs';
 export { hasVisibilityTransitionPlan } from './workspace-preview-inspect.mjs';
+import { canonicalText } from './requested-literals.mjs';
 
 export const PREVIEW_INSPECTION_TOOL = 'pixel_ods_workspace_preview_inspect';
 
@@ -17,6 +20,58 @@ export function requestsVisibilityInteraction(text) {
     /\b(?:shows?|hides?|hidden|reveals?|toggles?|expands?|collapses?|visible)\b/i.test(clause));
 }
 
+// The owner's own wording of a requested show/hide change, used only to name
+// the likely affected element and control in an inspection's corrective steps
+// (laptop round 100: the model asserted the button and a post-click class,
+// never the card). It is never evidence that the change works. The target is
+// an owner-required literal (requested-literals.mjs) inside a show/hide clause
+// other than the control's name; the control is a quoted name directly after
+// "button" (or link/tab/switch). Only an explicit initially-hidden or hide-on-
+// click wording decides the direction; otherwise the target starts hidden.
+const QUOTED = /"[^"\n]*"|“[^”\n]*”|«[^»\n]*»|‘[^’\n]*’|(?<![\p{L}\p{N}])'[^'\n]*'(?![\p{L}\p{N}])/gu;
+// "a visible footer" describes content, not a change of visibility.
+const SHOW_HIDE_CLAUSE = /\b(?:shows?|shown|showing|hides?|hidden|hiding|reveals?|revealed|revealing|toggles?|toggled|expands?|expanded|collapses?|collapsed|appears?|disappears?)\b|\b(?:becomes?|made|makes?|turns?)\s+(?:in)?visible\b/i;
+const STARTS_HIDDEN = /\b(?:initially|at\s+first|by\s+default|on\s+(?:page\s+)?load)\b[^.!?;\n]{0,40}\b(?:hide|hidden|invisible)\b|\b(?:hide|hidden|invisible)\b[^.!?;\n]{0,80}\b(?:initially|at\s+first|by\s+default|on\s+(?:page\s+)?load|until)\b|\bstarts?\s+(?:out\s+)?(?:hidden|collapsed|invisible)\b/i;
+const CLICK_REVEALS = /\b(?:reveals?|shows?|expands?|opens?|displays?|unhides?)\b/i;
+const CLICK_CONCEALS = /\b(?:hides?|collapses?|dismiss(?:es)?|closes?)\b/i;
+const CONTROL_ROLES = {button: 'button', toggle: 'button', link: 'link', tab: 'tab', switch: 'switch'};
+const foldedText = value => canonicalText(value).toLowerCase();
+const escapeRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const phraseIn = (text, phrase) => Boolean(phrase) &&
+  new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(phrase)}(?![\\p{L}\\p{N}])`, 'u').test(text);
+
+export function requestedVisibilityTransition(ownerText, literals) {
+  const prose = String(ownerText ?? '').slice(0, 12000)
+    .replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g, '\n').replace(/^[ \t]*>[^\n]*/gm, '\n');
+  const clauses = prose.split(/[!?;\n]+|\.(?=\s|$)/).map(clause => ({clause, bare: clause.replace(QUOTED, ' ')}))
+    .filter(({bare}) => !/^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|avoid|skip|explain|describe|example)\b/i.test(bare) &&
+      SHOW_HIDE_CLAUSE.test(bare));
+  if (!clauses.length) return undefined;
+  const text = Array.isArray(literals) ? literals.filter(literal => literal && literal.match !== 'file' &&
+    typeof literal.text === 'string' && !literal.targets?.some(target => target === 'page title' || target === 'h1')) : [];
+  let control;
+  for (const literal of text.filter(literal => literal.match !== 'item')) {
+    const cue = new RegExp(`\\b(button|toggle|link|tab|switch)\\b[^"“”«»‘’.!?;\\n]{0,48}["“«‘']\\s?${escapeRegExp(literal.text)}\\s?["”»’']`, 'iu')
+      .exec(canonicalText(prose));
+    if (cue) { control = Object.freeze({role: CONTROL_ROLES[cue[1].toLowerCase()], name: literal.text}); break; }
+  }
+  const candidates = text.filter(literal => literal.text !== control?.name);
+  const target = [...candidates.filter(literal => literal.match === 'item'), ...candidates.filter(literal => literal.match !== 'item')]
+    .find(literal => clauses.some(({clause}) => phraseIn(foldedText(clause), foldedText(literal.text))))?.text;
+  const hidesOnClick = clauses.some(({bare}) => /\b(?:click(?:s|ed|ing)?|press(?:es|ed)?|tap(?:s|ped)?|buttons?|toggles?)\b/i.test(bare) &&
+    CLICK_CONCEALS.test(bare) && !CLICK_REVEALS.test(bare));
+  const initiallyHidden = clauses.some(({bare}) => STARTS_HIDDEN.test(bare)) || !hidesOnClick;
+  return Object.freeze({...(target ? {target} : {}), ...(control ? {control} : {}), initiallyHidden});
+}
+
+// A later turn that preserves the bound behavior keeps the earlier wording
+// for whatever the current message does not name itself.
+export function inheritedVisibilityTransition(current, inherited) {
+  if (!inherited) return current;
+  if (current?.target) return current.control || !inherited.control ? current : Object.freeze({...current, control: inherited.control});
+  return Object.freeze({...inherited, ...(current?.control ? {control: current.control} : {})});
+}
+
 // This does not identify an interaction or establish that one works. It only
 // recognizes an owner's explicit request to preserve a previously bound duty.
 // Callers must supply current owner prose, not assistant text or quoted examples.
@@ -26,11 +81,15 @@ export function requestsBehaviorPreservation(text) {
     /\b(?:preserve|retain|keep|maintain)\b[^.!?;\n]{0,160}\b(?:behaviou?r|functionality|interactions?)\b/i.test(clause));
 }
 
-function boundReceipt(params, result, preview) {
+// `incomplete` also accepts an untested-transition result and yields the
+// capsule receipt it carries; only load-time evidence readers pass it.
+function boundReceipt(params, result, preview, {incomplete = false} = {}) {
   if (!preview || !result?.details) return undefined;
   const request = normalizeWorkspacePreviewInspectionParams(params);
   if (request.siteId !== preview.siteId || request.sha256 !== preview.sha256) return undefined;
-  return {request, receipt: validateWorkspacePreviewInspectionReceipt(result.details, request)};
+  return {request, receipt: incomplete && result.details.status === 'incomplete'
+    ? validateIncompleteInspectionReceipt(result.details, request)
+    : validateWorkspacePreviewInspectionReceipt(result.details, request)};
 }
 
 // Passing steps on a page that threw uncaught script errors are not verified
@@ -50,6 +109,20 @@ export function boundInspectionPageErrors(params, result, preview) {
   try {
     const {receipt} = boundReceipt(params, result, preview) ?? {};
     return inspectionPageErrors(receipt) ? Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256}) : undefined;
+  } catch { return undefined; }
+}
+
+// The load-time control names of a valid receipt bound to this snapshot,
+// passed, failed or incomplete (an untested requested show/hide change; its
+// capsule receipt passed): they are observed before any step runs, so a
+// failed step or a missing transition does not void them. `controls` is
+// undefined when the receipt carries none (an older capsule or a transport
+// failure). Never interaction evidence.
+export function boundInspectionControls(params, result, preview) {
+  try {
+    const {receipt} = boundReceipt(params, result, preview, {incomplete: true}) ?? {};
+    return receipt ? Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256,
+      controls: inspectionControls(receipt)}) : undefined;
   } catch { return undefined; }
 }
 

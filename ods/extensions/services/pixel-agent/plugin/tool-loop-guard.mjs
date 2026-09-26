@@ -37,11 +37,14 @@ import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
-  boundInspectionPageErrors, pageErrorRepairInstruction, visibilityInspectionMatches, visibilityInspectionInstruction } from './preview-interaction-assurance.mjs';
+  boundInspectionPageErrors, boundInspectionControls, pageErrorRepairInstruction, visibilityInspectionMatches,
+  visibilityInspectionInstruction, requestedVisibilityTransition, inheritedVisibilityTransition } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
-  requestedTextDeliveryNote } from './requested-literals.mjs';
+  requestedTextDeliveryNote, publishedElementOutline, extractRequestedControlNames, requestedControlSources,
+  requestedControlNameCheck, requestedControlNameInstruction, requestedControlNameRevisionInstruction,
+  requestedControlNameInspectionInstruction } from './requested-literals.mjs';
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -6966,8 +6969,35 @@ export function createToolLoopGuard({
       sessionPreviewVisibilityObligations.set(sessionId, Object.freeze({
         sessionKey:state.currentSessionKey, siteId:preview.siteId, sha256:preview.sha256,
         relativeDirectory:preview.relativeDirectory,
+        // Owner wording only (affected element, control, direction); no proof.
+        ...(state.workspaceTransitionIntent ? {transition:state.workspaceTransitionIntent} : {}),
       }));
     }
+  }
+
+  // Tool-result-time requirement for pixel_ods_workspace_preview_inspect.
+  // OpenClaw 2026.6.33 drops a before_agent_finalize revision after any plugin
+  // tool call, so an untested owner-requested show/hide change must be stated
+  // by the inspection result itself. Bound to this exact pending call (direct,
+  // or a Tool Search child of a pending tool_call) of the active run; a
+  // passing transition of the same snapshot earlier in the run satisfies it.
+  function previewInspectionTransition(toolCallId, params) {
+    if (!workspacePreviewInspectionAvailable || typeof toolCallId !== 'string' || !toolCallId) return undefined;
+    const parent = toolCallId.startsWith('tool_search_code:')
+      ? [...pendingToolRuns].find(([id, run]) => !id.startsWith('tool_search_code:') && run.transport === 'tool_call' &&
+        toolCallId.startsWith(toolSearchChildPrefix(id)))?.[1] : undefined;
+    const bound = [pendingToolRuns.get(toolCallId), parent].filter(run => run?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
+      isDeepStrictEqual(run.selectedParams, params));
+    const runId = bound[0]?.runId, state = runs.get(runId);
+    if (!state?.workspaceVisibilityInteractionRequired || bound.some(run => run.runId !== runId ||
+        run.inspectionSessionId !== state.currentSessionId || run.inspectionSessionKey !== state.currentSessionKey) ||
+        (state.currentSessionId && sessionRuns.get(state.currentSessionId) !== runId)) return undefined;
+    if (bound.some(({priorVisibilityInspection: prior}) => prior?.siteId === params.siteId && prior.sha256 === params.sha256 &&
+        prior.sessionId === state.currentSessionId && prior.sessionKey === state.currentSessionKey)) return undefined;
+    const intent = state.workspaceTransitionIntent, target = state.workspaceTransitionTarget;
+    const outline = target?.siteId === params.siteId && target.sha256 === params.sha256 ? target.outline : undefined;
+    return Object.freeze({...(intent?.target ? {target: intent.target} : {}), ...(outline ? {outline} : {}),
+      ...(intent?.control ? {control: intent.control} : {}), initiallyHidden: intent?.initiallyHidden !== false});
   }
 
   function rememberToolRun(
@@ -6985,8 +7015,14 @@ export function createToolLoopGuard({
       pendingToolRuns.delete(pendingToolRuns.keys().next().value);
     }
     const state = runs.get(runId);
+    // A Tool Search child (its own hooks, a child ID) is the same action as its
+    // pending tool_call parent, whose before hook already took the proof.
+    const parentPrior = selectedToolName === PREVIEW_INSPECTION_TOOL && toolCallId.startsWith('tool_search_code:')
+      ? [...pendingToolRuns].find(([id, run]) => !id.startsWith('tool_search_code:') && run.runId === runId &&
+        run.selectedToolName === PREVIEW_INSPECTION_TOOL && toolCallId.startsWith(toolSearchChildPrefix(id)))?.[1]
+        ?.priorVisibilityInspection : undefined;
     const priorVisibilityInspection = selectedToolName === PREVIEW_INSPECTION_TOOL
-      ? state?.workspaceVisibilityInspection : undefined;
+      ? state?.workspaceVisibilityInspection ?? parentPrior : undefined;
     // Keep the previous proof with this exact pending call. Until its receipt
     // validates, neither unfinished nor mismatched inspections retain a pass.
     if (selectedToolName === PREVIEW_INSPECTION_TOOL && state) {
@@ -7170,6 +7206,7 @@ export function createToolLoopGuard({
         failedVerificationAttempts: 0,
         latestVerificationStatus: undefined,
         latestVerificationFingerprint: undefined,
+        latestVerificationPassedGeneration: undefined,
         wrappedExecFailurePending: false,
         suppressStaleExecWarning: false,
         recursiveDeleteAuthorized: false,
@@ -8863,7 +8900,12 @@ export function createToolLoopGuard({
       selectedToolName === "exec" &&
       !verificationCommandIsAuditable(selectedParams)
     ) {
-      if (state) state.latestVerificationStatus = "failed";
+      // The refusal runs nothing, so it cannot invalidate a real pass when no
+      // call that could change the workspace has run since that pass.
+      if (state && !(state.latestVerificationStatus === "passed" &&
+          state.latestVerificationPassedGeneration === state.previewVerificationGeneration)) {
+        state.latestVerificationStatus = "failed";
+      }
       // The refusal runs nothing; repeats (often with a variant redirect) are
       // bounded by recordFreeCorrection instead of each draining the budget.
       recordFreeCorrection(state, "verification-not-auditable",
@@ -9375,14 +9417,23 @@ export function createToolLoopGuard({
           visibilityObligation.relativeDirectory === trustedSessionPreview.relativeDirectory;
         if (preservesBoundBehavior) state.workspaceInheritedVisibilityObligation = Object.freeze({
           sessionId, sessionKey:state.currentSessionKey, ownerIntent,
+          ...(visibilityObligation.transition ? {transition:visibilityObligation.transition} : {}),
         });
         const inheritedVisibility = state.workspaceInheritedVisibilityObligation;
+        const inheritsVisibility = Boolean(inheritedVisibility) && inheritedVisibility.sessionId === sessionId &&
+          inheritedVisibility.sessionKey === state.currentSessionKey && inheritedVisibility.ownerIntent === ownerIntent;
         state.workspaceVisibilityInteractionRequired = workspacePreviewInspectionAvailable &&
-          state.workspacePreviewRequired && (requestsVisibilityInteraction(ownerLaneText(ownerIntent)) ||
-            (inheritedVisibility?.sessionId === sessionId && inheritedVisibility.sessionKey === state.currentSessionKey &&
-              inheritedVisibility.ownerIntent === ownerIntent));
+          state.workspacePreviewRequired && (requestsVisibilityInteraction(ownerLaneText(ownerIntent)) || inheritsVisibility);
         // Checked only against a successful publication; never gates publishing.
         state.requestedLiterals = extractRequestedLiterals(ownerIntent);
+        // Checked only against a browser inspection's load-time names.
+        state.requestedControlNames = workspacePreviewInspectionAvailable
+          ? extractRequestedControlNames(ownerIntent) : [];
+        // Names the likely affected element and control for the inspection's
+        // corrective steps; a preserved behavior keeps the earlier wording.
+        state.workspaceTransitionIntent = state.workspaceVisibilityInteractionRequired
+          ? inheritedVisibilityTransition(requestedVisibilityTransition(ownerIntent, state.requestedLiterals),
+            inheritsVisibility ? inheritedVisibility.transition : undefined) : undefined;
         state.workspacePreviewMode = state.workspacePreviewRequired
           ? (trustedSessionPreview ? "continuation" : workspacePreviewMode(event?.messages, event?.prompt))
           : undefined;
@@ -9793,6 +9844,20 @@ export function createToolLoopGuard({
         // Selects the repair instruction only; bound to this exact snapshot.
         state.workspaceInspectionPageErrors = !event?.error
           ? boundInspectionPageErrors(inspected.params, inspected.result, state.workspacePreview) : undefined;
+        // Load-time names precede every step, so a failed step or an untested
+        // show/hide change (incomplete) keeps them. A receipt without them
+        // (older capsule, transport failure) changes no verdict, but this
+        // snapshot is not sent back for another inspection. Not gated on
+        // event.error: OpenClaw 2026.6.33 sets it for every error result of a
+        // direct call (tower2's transport), which failed and incomplete
+        // inspections are; a thrown call has no receipt to bind.
+        const controls = state.requestedControlNames?.length
+          ? boundInspectionControls(inspected.params, inspected.result, state.workspacePreview) : undefined;
+        if (controls) {
+          state.workspaceControlNamesInspected = controls.sha256;
+          if (controls.controls) state.workspaceControlNameCheck =
+            requestedControlNameCheck(state.requestedControlNames, state.workspacePreview, controls);
+        }
       }
     }
     const refusedCall = state.previewRevalidationRefusedCalls?.delete(toolCallId) === true && failedToolOutcome(event);
@@ -10207,6 +10272,18 @@ export function createToolLoopGuard({
         state.workspaceRequestedTextCheck = requestedTextCheck(state.requestedLiterals, preview, {
           receipt: previewEvent.result?.details, trackedContent: state.successfulWriteContentByPath,
           workspaceRoot: state.configuredWorkspaceRoot});
+        // Repair-hint provenance only; the verdict needs an inspection.
+        state.workspaceControlNameSources = requestedControlSources(state.requestedControlNames, preview, {
+          receipt: previewEvent.result?.details, trackedContent: state.successfulWriteContentByPath,
+          workspaceRoot: state.configuredWorkspaceRoot});
+        // An outline of these same bytes (ids, classes, the owner-named
+        // heading) to choose one stable locator for corrective inspection
+        // steps; never evidence.
+        const transitionOutline = state.workspaceTransitionIntent ? publishedElementOutline(
+          state.workspaceTransitionIntent.target, preview, {receipt: previewEvent.result?.details,
+            trackedContent: state.successfulWriteContentByPath, workspaceRoot: state.configuredWorkspaceRoot}) : undefined;
+        state.workspaceTransitionTarget = transitionOutline
+          ? Object.freeze({siteId: preview.siteId, sha256: preview.sha256, outline: transitionOutline}) : undefined;
         state.previewRevalidationCandidate = Object.freeze({preview:Object.freeze({...preview}),
           sessionId:state.currentSessionId,sessionKey:state.currentSessionKey,workspaceRoot:state.configuredWorkspaceRoot});
         state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;
@@ -10533,6 +10610,7 @@ export function createToolLoopGuard({
         if (pending.verificationFingerprint) {
           state.failedVerificationAttempts = 0;
           state.latestVerificationStatus = "passed";
+          state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
         }
       }
       return;
@@ -10642,6 +10720,7 @@ export function createToolLoopGuard({
       if (verificationFingerprint) {
         state.failedVerificationAttempts = 0;
         state.latestVerificationStatus = "passed";
+        state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
       }
     }
   }
@@ -10943,6 +11022,22 @@ export function createToolLoopGuard({
     return instruction;
   }
 
+  // The same single bounded revision for requested control names that the
+  // latest inspection of this snapshot showed missing. The repair step itself
+  // travels on that inspection's result; this is only the finalization pass.
+  function takeControlNameRevision(state) {
+    const instruction = requestedControlNameRevisionInstruction(state.workspacePreview, state.workspaceControlNameCheck);
+    if (!instruction || state.controlNameRevisionSpent || state.clientCancelled) return undefined;
+    state.controlNameRevisionSpent = true;
+    return instruction;
+  }
+
+  // Requested control names that no inspection of this snapshot answered yet.
+  function controlNamesUninspected(state) {
+    return Boolean(state.requestedControlNames?.length && state.workspacePreview &&
+      state.workspaceControlNamesInspected !== state.workspacePreview.sha256);
+  }
+
   function trustedWorkspacePreviewContinuation(state) {
     if (
       !state?.workspacePreviewRequired ||
@@ -10964,12 +11059,22 @@ export function createToolLoopGuard({
           : {stage: 'workspace-preview-requested-text',
             finalize: 'Owner-requested text is still missing after the bounded revision.'};
       }
+      if (requestedControlNameInstruction(state.workspacePreview, state.workspaceControlNameCheck)) {
+        const instruction = takeControlNameRevision(state);
+        return instruction ? {stage: 'workspace-preview-control-name', instruction}
+          : {stage: 'workspace-preview-control-name',
+            finalize: 'Owner-requested control names are still not met after the bounded revision.'};
+      }
       if (workspacePreviewReadbackComplete(state)) {
         if (state.workspaceVisibilityInteractionRequired &&
             !workspaceVisibilityInspectionPassed(state) &&
             !state.workspaceVisibilityInspectionUnavailable) return {
           stage: 'workspace-preview-interaction',
           instruction: visibilityInspectionInstruction(state.workspacePreview, state.workspaceInspectionPageErrors),
+        };
+        if (controlNamesUninspected(state) && !state.workspaceVisibilityInspectionUnavailable) return {
+          stage: 'workspace-preview-control-name-inspection',
+          instruction: requestedControlNameInspectionInstruction(state.workspacePreview, state.requestedControlNames),
         };
         return undefined;
       }
@@ -11268,12 +11373,22 @@ export function createToolLoopGuard({
         state.requestedTextNoted = state.workspacePreview.sha256;
         return `[ODS Pixel next step] ${requestedText}`;
       }
+      // An inspection showed a requested control name missing after the page
+      // scripts ran; that also needs a republish, so it precedes inspection.
+      const controlName = requestedControlNameInstruction(state.workspacePreview, state.workspaceControlNameCheck,
+        state.workspaceControlNameSources);
+      if (controlName) return `[ODS Pixel next step] ${controlName}`;
       if (workspacePreviewReadbackComplete(state)) {
         if (state.workspaceVisibilityInteractionRequired &&
             !workspaceVisibilityInspectionPassed(state)) {
           return '[ODS Pixel next step] ' + (state.workspaceVisibilityInspectionUnavailable
             ? 'Keep the published preview, but report the requested interaction as unverified because inspection is unavailable. Do not claim the interaction works.'
             : visibilityInspectionInstruction(state.workspacePreview, state.workspaceInspectionPageErrors));
+        }
+        // Any inspection of this snapshot reports its load-time names.
+        if (controlNamesUninspected(state) && !state.workspaceVisibilityInspectionUnavailable) {
+          return `[ODS Pixel next step] ${requestedControlNameInspectionInstruction(state.workspacePreview,
+            state.requestedControlNames)}`;
         }
         // Page errors never block delivery, but must not be followed by
         // "give the final result" coaching as a second, conflicting step.
@@ -11289,6 +11404,15 @@ export function createToolLoopGuard({
         )
         : `[ODS Pixel next step] ${WORKSPACE_PREVIEW_REQUIRES_READBACK_REASON}`;
     })();
+    // A failed inspection is never coached as success, but when its own
+    // load-time names show a requested control name missing, that repair is
+    // the next step (tower2 round 100: the exact-name click matched nothing
+    // because a script replaced the button's name on load).
+    const controlNameRepair = failedToolResult && state?.workspacePreview &&
+      (pending?.selectedToolName ?? message.toolName) === PREVIEW_INSPECTION_TOOL &&
+      !state.progressBudget.laneExhausted('workspace') && !state.operationsRequired && !state.exactDownloadRequested
+      ? requestedControlNameInstruction(state.workspacePreview, state.workspaceControlNameCheck,
+        state.workspaceControlNameSources) : undefined;
     const hostToolResult =
       pending?.selectedToolName === SYNCHRONOUS_HOST_OBSERVE_TOOL ||
       pending?.selectedToolName === SYNCHRONOUS_HOST_COMMAND_TOOL ||
@@ -11328,6 +11452,7 @@ export function createToolLoopGuard({
       !compactNativeWebResult &&
       !nativeFetchGuidance &&
       !previewStageInstruction &&
+      !controlNameRepair &&
       !sandboxPathCorrection &&
       !executionGuidance
     ) {
@@ -11383,6 +11508,9 @@ export function createToolLoopGuard({
       content.push({type:'text',text:executionGuidance});
     if (previewStageInstruction && coachingDue('preview', previewStageInstruction)) {
       content.push({ type: "text", text: previewStageInstruction });
+    }
+    if (controlNameRepair && coachingDue('control-name', `[ODS Pixel next step] ${controlNameRepair}`)) {
+      content.push({type: 'text', text: `[ODS Pixel next step] ${controlNameRepair}`});
     }
     if (hostEvidence && state.operationsHostResultCompactionsRemaining > 0) {
       state.operationsHostResultCompactionsRemaining -= 1;
@@ -11869,7 +11997,10 @@ export function createToolLoopGuard({
       const checkIncomplete = checkStatus === "failed" || checkStatus === "pending";
       const checkText = checkStatus === "failed" ? VERIFICATION_FAILED_DELIVERY_PREFIX
         : checkStatus === "pending" ? VERIFICATION_PENDING_DELIVERY_PREFIX : "";
-      const requestedTextMissing = requestedTextDeliveryNote(state.workspacePreview, state.workspaceRequestedTextCheck);
+      // Requested text or control names the snapshot or its latest inspection
+      // showed missing withhold certification, whatever else passed.
+      const requestedTextMissing = requestedTextDeliveryNote(state.workspacePreview, state.workspaceRequestedTextCheck,
+        state.workspaceControlNameCheck);
       return {
         status: checkIncomplete ? checkStatus : interactionUnverified || requestedTextMissing ? "failed" : "passed",
         text:
@@ -12132,7 +12263,8 @@ export function createToolLoopGuard({
           verificationStatus: state.latestVerificationStatus, researchLimit: state.researchStopped,
           unverifiedLinks: unverified,
           refusedToolCalls: state.progressFinalization.partial,
-          requestedTextMissing: requestedTextDeliveryNote(preview, state.workspaceRequestedTextCheck),
+          requestedTextMissing: requestedTextDeliveryNote(preview, state.workspaceRequestedTextCheck,
+            state.workspaceControlNameCheck),
           ...(modelAnswer ? {} : {synthesis: {note: STOP_SYNTHESIS_NOTE, pages: synthesized.pages}})}), ...receipt};
       }
       // Without an answer, the fixed stop text is followed by the host's list
@@ -12230,6 +12362,7 @@ export function createToolLoopGuard({
       state.githubCanonicalSatisfied = true;
     },
     afterToolCall,
+    previewInspectionTransition,
     toolResultPersist,
     beforeAgentFinalize,
     recoverWorkspacePreview,
