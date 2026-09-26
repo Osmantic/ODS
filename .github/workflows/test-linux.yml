@@ -325,6 +325,9 @@ jobs:
       - name: Uninstall Compose Flags Tests
         run: bash tests/test-uninstall-compose-flags.sh
 
+      - name: Uninstall Refuses Unreachable Docker
+        run: bash tests/test-uninstall-docker-access.sh
+
       - name: Same-filesystem model preservation
         run: python3 tests/test_bootstrap_keep_models.py
       - name: Forced reinstall preflight runs before removal
