@@ -28,3 +28,6 @@ ods/tests/fixtures/preview-controls/** -text -whitespace
 # (column padding, trailing whitespace from rocm-smi/amd-smi/etc).
 # Don't let `git diff --check` flag intentional whitespace as an error.
 ods/tests/fixtures/amd/*.txt -whitespace
+
+# Recorded preview pages reproduce a published snapshot digest byte for byte.
+ods/tests/fixtures/preview-inspection-laptop-round*.html -text -whitespace

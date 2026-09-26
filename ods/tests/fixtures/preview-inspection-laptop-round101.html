@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Night Garden FLEET-42f805f551</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      min-height: 100vh;
+      color: #e8e8e8;
+      padding: 2rem 1rem;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    header {
+      text-align: center;
+      padding: 3rem 0;
+    }
+
+    h1 {
+      font-size: clamp(1.8rem, 5vw, 3rem);
+      font-weight: 700;
+      color: #fff;
+      text-shadow: 0 0 20px rgba(255, 255, 255, 0.3), 0 0 40px rgba(100, 200, 255, 0.3);
+      letter-spacing: 2px;
+      margin-bottom: 0.5rem;
+    }
+
+    .subtitle {
+      font-size: 1rem;
+      color: #a0a0a0;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+    }
+
+    .events-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 2rem;
+      padding: 2rem 0;
+    }
+
+    .event-card {
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 16px;
+      padding: 2rem;
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .event-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: linear-gradient(90deg, #e94560, #ff6b6b);
+    }
+
+    .event-card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+    }
+
+    .event-card.hidden {
+      display: none;
+    }
+
+    .event-card h2 {
+      font-size: 1.5rem;
+      color: #fff;
+      margin-bottom: 1rem;
+    }
+
+    .event-card .time {
+      font-size: 1rem;
+      color: #e94560;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    .event-card .location {
+      font-size: 0.9rem;
+      color: #a0a0a0;
+      margin-bottom: 1rem;
+    }
+
+    .event-card p {
+      font-size: 1rem;
+      line-height: 1.6;
+      color: #d0d0d0;
+      margin-bottom: 1rem;
+    }
+
+    .event-card .price {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #fff;
+      background: rgba(233, 69, 96, 0.2);
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      display: inline-block;
+    }
+
+    .event-card.sold-out .event-card::before {
+      background: linear-gradient(90deg, #ff6b6b, #feca57);
+    }
+
+    .event-card.sold-out h2 {
+      color: #ff6b6b;
+    }
+
+    .event-card.sold-out p {
+      opacity: 0.7;
+    }
+
+    .sold-out-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #ff6b6b;
+      z-index: 1;
+    }
+
+    .reveal-btn {
+      display: block;
+      margin: 3rem auto 0;
+      padding: 1rem 2.5rem;
+      font-size: 1rem;
+      font-weight: 600;
+      color: #fff;
+      background: linear-gradient(135deg, #e94560, #ff6b6b);
+      border: none;
+      border-radius: 50px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 20px rgba(233, 69, 96, 0.4);
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
+    .reveal-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 30px rgba(233, 69, 96, 0.6);
+      background: linear-gradient(135deg, #ff6b6b, #e94560);
+    }
+
+    .reveal-btn:active {
+      transform: translateY(0);
+    }
+
+    footer {
+      text-align: center;
+      padding: 2rem 0;
+      color: #666;
+      font-size: 0.875rem;
+    }
+
+    @media (max-width: 480px) {
+      body {
+        padding: 1.5rem 0.5rem;
+      }
+
+      header {
+        padding: 2rem 0;
+      }
+
+      .events-grid {
+        grid-template-columns: 1fr;
+        gap: 1.5rem;
+      }
+
+      .event-card {
+        padding: 1.5rem;
+      }
+
+      h1 {
+        font-size: 1.8rem;
+      }
+
+      .reveal-btn {
+        padding: 0.875rem 2rem;
+        font-size: 0.875rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Night Garden FLEET-42f805f551</h1>
+      <p class="subtitle">Summer Festival 2026</p>
+    </header>
+
+    <main class="events-grid">
+      <article class="event-card">
+        <h2>Dawn Jazz</h2>
+        <p class="time">7:00 PM - 9:00 PM</p>
+        <p class="location">Garden Pavilion • Main Stage</p>
+        <p>Start your evening with smooth jazz under the stars. Features renowned local artists playing classic and contemporary jazz favorites in a relaxed, intimate setting.</p>
+        <span class="price">$25 - $45</span>
+      </article>
+
+      <article class="event-card">
+        <h2>River Lantern Walk</h2>
+        <p class="time">9:30 PM - 11:00 PM</p>
+        <p class="location">Riverside Path • Guided Tour</p>
+        <p>A magical evening stroll along the riverbank with hundreds of illuminated lanterns. Each participant receives a custom lantern to light the way through the enchanted gardens.</p>
+        <span class="price">$35 - $55</span>
+      </article>
+
+      <article class="event-card hidden sold-out">
+        <div class="sold-out-overlay">SOLD OUT</div>
+        <h2>Midnight Sold-Out Concert</h2>
+        <p class="time">12:00 AM - 2:00 AM</p>
+        <p class="location">Amphitheater • Main Stage</p>
+        <p>The grand finale featuring an exclusive performance by the featured headliner. An unforgettable night of music, light, and celebration to close out an incredible evening.</p>
+        <span class="price">$75 - $125</span>
+      </article>
+    </main>
+
+    <button class="reveal-btn" id="revealBtn" type="button">Show sold out</button>
+
+    <footer>
+      <p>© 2026 Night Garden Festival • All rights reserved</p>
+    </footer>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const revealBtn = document.getElementById('revealBtn');
+      const hiddenCard = document.querySelector('.event-card.hidden');
+
+      revealBtn.addEventListener('click', function() {
+        if (hiddenCard) {
+          hiddenCard.classList.remove('hidden');
+          revealBtn.textContent = 'Hide sold out';
+          revealBtn.style.background = 'linear-gradient(135deg, #4ecdc4, #44a08d)';
+          revealBtn.style.boxShadow = '0 4px 20px rgba(78, 205, 196, 0.4)';
+        }
+      });
+
+      revealBtn.addEventListener('mouseenter', function() {
+        if (hiddenCard && !hiddenCard.classList.contains('hidden')) {
+          revealBtn.style.background = 'linear-gradient(135deg, #66bb6a, #44a08d)';
+          revealBtn.style.boxShadow = '0 4px 20px rgba(78, 205, 196, 0.6)';
+        }
+      });
+
+      revealBtn.addEventListener('mouseleave', function() {
+        if (hiddenCard && !hiddenCard.classList.contains('hidden')) {
+          revealBtn.style.background = 'linear-gradient(135deg, #e94560, #ff6b6b)';
+          revealBtn.style.boxShadow = '0 4px 20px rgba(233, 69, 96, 0.4)';
+        }
+      });
+    });
+  </script>
+</body>
+</html>

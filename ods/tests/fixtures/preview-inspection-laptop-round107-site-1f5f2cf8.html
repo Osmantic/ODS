@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Night Garden FLEET-c8c40c5702</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --primary-purple: #6c5ce7;
+      --secondary-purple: #a29bfe;
+      --dark-bg: #0a0a0f;
+      --card-bg: #1a1a2e;
+      --text-primary: #ffffff;
+      --text-secondary: #b8b8d0;
+      --accent-gold: #fdcb6e;
+      --sold-out-bg: #2d2d44;
+      --sold-out-overlay: rgba(0, 0, 0, 0.95);
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: var(--dark-bg);
+      background: linear-gradient(135deg, var(--dark-bg) 0%, #16213e 100%);
+      min-height: 100vh;
+      color: var(--text-primary);
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2rem 1rem;
+    }
+
+    header {
+      text-align: center;
+      padding: 3rem 0 2rem;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 5vw, 3.5rem);
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--secondary-purple) 0%, var(--accent-gold) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      margin-bottom: 1rem;
+    }
+
+    .subtitle {
+      font-size: 1.1rem;
+      color: var(--text-secondary);
+      font-weight: 300;
+    }
+
+    .events-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 2rem;
+      margin-top: 2rem;
+    }
+
+    .event-card {
+      background: var(--card-bg);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+      opacity: 1;
+      transform: none;
+    }
+
+    .sold-out-card {
+      display: none;
+    }
+
+    .event-card:hover {
+      transform: translateY(-8px);
+      box-shadow: 0 16px 48px rgba(108, 92, 231, 0.3);
+    }
+
+    .card-image {
+      height: 200px;
+      background: linear-gradient(135deg, var(--primary-purple) 0%, #8854d0 100%);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card-image::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.05'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zm0-30V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+    }
+
+    .card-content {
+      padding: 1.5rem;
+    }
+
+    .event-title {
+      font-size: 1.4rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      color: var(--text-primary);
+    }
+
+    .event-time {
+      font-size: 0.95rem;
+      color: var(--accent-gold);
+      margin-bottom: 1rem;
+      font-weight: 500;
+    }
+
+    .event-description {
+      font-size: 0.95rem;
+      color: var(--text-secondary);
+      margin-bottom: 1rem;
+    }
+
+    .event-details {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+    }
+
+    .detail-item {
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
+
+    .sold-out-badge {
+      position: absolute;
+      top: 1rem;
+      right: 1rem;
+      background: var(--accent-gold);
+      color: var(--dark-bg);
+      padding: 0.5rem 1rem;
+      border-radius: 20px;
+      font-weight: 700;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .sold-out-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--sold-out-overlay);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    .event-card.sold-out .sold-out-overlay {
+      opacity: 1;
+    }
+
+    .sold-out-message {
+      color: var(--accent-gold);
+      font-weight: 700;
+      font-size: 1.2rem;
+      text-align: center;
+      padding: 1rem;
+    }
+
+    .cta-button {
+      display: inline-block;
+      background: linear-gradient(135deg, var(--primary-purple) 0%, var(--secondary-purple) 100%);
+      color: white;
+      padding: 0.75rem 1.5rem;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      margin-top: 1rem;
+    }
+
+    .cta-button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px rgba(108, 92, 231, 0.4);
+    }
+
+    .cta-button:active {
+      transform: translateY(0);
+    }
+
+    .toggle-section {
+      text-align: center;
+      margin: 3rem 0 2rem;
+      padding: 1rem;
+    }
+
+    .show-sold-out-btn {
+      background: transparent;
+      border: 2px solid var(--primary-purple);
+      color: var(--text-primary);
+      padding: 0.75rem 2rem;
+      font-size: 1rem;
+      font-weight: 600;
+      border-radius: 50px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .show-sold-out-btn:hover {
+      background: var(--primary-purple);
+      box-shadow: 0 8px 24px rgba(108, 92, 231, 0.4);
+    }
+
+    .show-sold-out-btn:active {
+      transform: scale(0.98);
+    }
+
+    footer {
+      text-align: center;
+      padding: 2rem;
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      margin-top: 2rem;
+    }
+
+    @media (max-width: 375px) {
+      .container {
+        padding: 1rem 0.75rem;
+      }
+
+      header {
+        padding: 2rem 0 1.5rem;
+      }
+
+      .events-grid {
+        grid-template-columns: 1fr;
+        gap: 1.5rem;
+      }
+
+      .event-card {
+        border-radius: 12px;
+      }
+
+      .card-image {
+        height: 160px;
+      }
+
+      .card-content {
+        padding: 1.25rem;
+      }
+
+      .event-title {
+        font-size: 1.2rem;
+      }
+
+      .event-details {
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+
+      .show-sold-out-btn {
+        padding: 0.6rem 1.5rem;
+        font-size: 0.9rem;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .events-grid {
+        grid-template-columns: 1fr;
+        gap: 1.5rem;
+      }
+
+      h1 {
+        font-size: 2rem;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .event-card {
+        transition: none;
+      }
+
+      .event-card.hidden {
+        display: none;
+      }
+
+      .sold-out-overlay {
+        transition: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Night Garden FLEET-c8c40c5702</h1>
+      <p class="subtitle">An unforgettable night of music, culture, and magic</p>
+    </header>
+
+    <main>
+      <div class="events-grid">
+        <article class="event-card">
+          <div class="card-image">
+            <div class="card-content">
+              <h2 class="event-title">Dawn Jazz</h2>
+              <p class="event-time">🎵 8:00 PM - 10:00 PM</p>
+              <p class="event-description">
+                Experience smooth jazz melodies as the night transitions into dawn.
+                Featuring renowned artists from around the globe, bringing together
+                the best of contemporary and classic jazz in an intimate setting.
+              </p>
+              <div class="event-details">
+                <span class="detail-item">🎷 Live Performance</span>
+                <span class="detail-item">🎺 20+ Musicians</span>
+                <span class="detail-item">🎟️ All Ages</span>
+              </div>
+              <button class="cta-button">Get Tickets</button>
+            </div>
+          </div>
+        </article>
+
+        <article class="event-card">
+          <div class="card-image" style="background: linear-gradient(135deg, #6c5ce7 0%, #00b894 100%);">
+            <div class="card-content">
+              <h2 class="event-title">River Lantern Walk</h2>
+              <p class="event-time">🏮 9:00 PM - 11:00 PM</p>
+              <p class="event-description">
+                Join us for a serene walk along the riverbank adorned with thousands
+                of glowing lanterns. A peaceful journey through light and reflection,
+                celebrating the beauty of our natural surroundings.
+              </p>
+              <div class="event-details">
+                <span class="detail-item">🚶 Guided Walk</span>
+                <span class="detail-item">🌊 River Path</span>
+                <span class="detail-item">🎨 Art Installation</span>
+              </div>
+              <button class="cta-button">Register Now</button>
+            </div>
+          </div>
+        </article>
+
+        <article class="event-card sold-out sold-out-card">
+          <div class="sold-out-badge">SOLD OUT</div>
+          <div class="card-image" style="background: linear-gradient(135deg, #e17055 0%, #d63031 100%);">
+            <div class="sold-out-overlay">
+              <p class="sold-out-message">🎫 This event is sold out</p>
+            </div>
+            <div class="card-content">
+              <h2 class="event-title">Midnight Sold-Out Concert</h2>
+              <p class="event-time">🎤 11:30 PM - 2:00 AM</p>
+              <p class="event-description">
+                The headline act of the night! An electrifying performance featuring
+                world-class artists delivering an unforgettable show. Don't miss out
+                on this spectacular finale to an extraordinary evening.
+              </p>
+              <div class="event-details">
+                <span class="detail-item">🌟 Headliner</span>
+                <span class="detail-item">🔥 Premium Experience</span>
+                <span class="detail-item">🎭 Main Stage</span>
+              </div>
+              <button class="cta-button" disabled>Already Sold Out</button>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div class="toggle-section">
+        <button type="button" class="show-sold-out-btn" id="showSoldOutBtn" style="display: inline-block;">Show sold out</button>
+      </div>
+    </main>
+
+    <footer>
+      <p>&copy; 2026 Night Garden Events. All rights reserved.</p>
+    </footer>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const showSoldOutBtn = document.getElementById('showSoldOutBtn');
+      const soldOutCard = document.querySelector('.event-card.sold-out');
+
+      showSoldOutBtn.addEventListener('click', function() {
+        if (soldOutCard) {
+          soldOutCard.classList.remove('hidden');
+        }
+
+        showSoldOutBtn.textContent = 'Hide sold out';
+        showSoldOutBtn.style.borderColor = 'var(--accent-gold)';
+        showSoldOutBtn.style.color = 'var(--accent-gold)';
+        showSoldOutBtn.style.background = 'var(--sold-out-bg)';
+
+        const originalText = 'Show sold out';
+        const revertedText = 'Hide sold out';
+
+        showSoldOutBtn.dataset.originalText = originalText;
+
+        setTimeout(function() {
+          showSoldOutBtn.dataset.revertedText = revertedText;
+        }, 1000);
+      });
+    });
+  </script>
+</body>
+</html>
