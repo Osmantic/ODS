@@ -1265,6 +1265,9 @@ MINIMAX_API_KEY=$(dotenv_value "${MINIMAX_API_KEY:-}")
 TARGET_API_KEY=not-needed
 
 #=== LLM Settings (llama-server) ===
+# Read back by ods-cli (status-json, mode, model current), the host agent and
+# bootstrap-upgrade when they re-resolve the compose stack.
+TIER=$(dotenv_value "${TIER}")
 MODEL_PROFILE=$(dotenv_value "${MODEL_PROFILE_VALUE}")
 # Effective model profile for this hardware: ${MODEL_PROFILE_EFFECTIVE:-qwen}
 LLM_MODEL=${LLM_MODEL}

@@ -93,6 +93,8 @@ for tier in 1 CLOUD; do
         || fail "tier $tier macOS install must use one TTS worker"
     grep -qx 'HERMES_REQUIRE_OWNER_CARD=false' "$env_file" \
         || fail "tier $tier must open Hermes without an owner card by default"
+    grep -qx "TIER=$tier" "$env_file" \
+        || fail "tier $tier .env must persist TIER for ods-cli and the host agent"
     pass "tier $tier: generated .env assigns every key once"
 
     # validate-env.sh needs Bash 4+ (associative arrays); ods-cli runs it with

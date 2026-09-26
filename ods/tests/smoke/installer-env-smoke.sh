@@ -286,6 +286,14 @@ if [[ "$ENV_GENERATED" == true && -f "$INSTALL_DIR/.env" ]]; then
         fail "Generated .env does not contain the host UID/GID"
     fi
 
+    # ods-cli status-json/mode/model current, the host agent and
+    # bootstrap-upgrade all read TIER back from .env.
+    if grep -qx "TIER=T1" "$INSTALL_DIR/.env"; then
+        pass "Installer tier is persisted as TIER"
+    else
+        fail "Generated .env does not persist TIER"
+    fi
+
     DUPES=$(grep -v '^#' "$INSTALL_DIR/.env" | grep -v '^$' | cut -d= -f1 | sort | uniq -d)
     if [[ -z "$DUPES" ]]; then
         pass "No duplicate keys in .env"

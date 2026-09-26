@@ -610,6 +610,7 @@ ODS_MACOS_HOST_AGENT_BRIDGE_ENABLED=${macos_host_agent_bridge_enabled}
 ODS_MACOS_HOST_GATEWAY=${macos_host_gateway}
 ODS_MACOS_VM_IP=${macos_vm_ip}
 ODS_NATIVE_LLAMA_PORT=${native_llama_port}
+TIER=${tier}
 MODEL_PROFILE=${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}
 # Effective model profile for this hardware: ${MODEL_PROFILE_EFFECTIVE:-qwen}
 LLM_MODEL=${LLM_MODEL}

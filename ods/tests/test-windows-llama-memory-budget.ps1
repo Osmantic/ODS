@@ -49,6 +49,10 @@ try {
     if ($nvidiaEnv -notmatch '(?m)^LLAMA_SERVER_MEMORY_LIMIT=5G\r?$') {
         throw "Fresh NVIDIA install did not use Docker's lower 8 GiB memory reading"
     }
+    # `ods model current` and the host agent read the tier back from .env.
+    if ($nvidiaEnv -notmatch '(?m)^TIER=1\r?$') {
+        throw "Generated .env does not persist TIER"
+    }
 
     $nvidiaEnv = $nvidiaEnv -replace '(?m)^LLAMA_SERVER_MEMORY_LIMIT=.*$', 'LLAMA_SERVER_MEMORY_LIMIT=7G'
     [IO.File]::WriteAllText($nvidiaEnvPath, $nvidiaEnv)
