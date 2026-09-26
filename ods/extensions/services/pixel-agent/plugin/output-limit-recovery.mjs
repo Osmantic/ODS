@@ -1,29 +1,16 @@
 // A model reply that reaches the output-token limit (stopReason "length")
 // ends the run. Its unfinished tool call never runs, so nothing it was
-// writing is saved, and the owner sees only the reply's opening text.
+// writing is saved.
 //
 // strixy 2026-09-25 (Qwen3.6-35B-A3B, 8192 output tokens): "make me a cool
 // looking webpage ... Best you can do" produced one whole-page write that was
-// cut at 8192 tokens after 220 s. The owner saw one sentence and no page.
+// cut at 8192 tokens after 220 s. No file was written or published.
 //
-// Delivery reports a final reply cut at the output limit plainly, in place of
-// OpenClaw's generic "couldn't generate a response". OpenClaw 2026.6.33 skips
-// before_agent_finalize when such a reply is the whole turn; when the hook does
-// run, it grants one bounded revision pass that asks for smaller steps. For
-// Portal turns, where the hook is skipped, the ingress asks for one
-// continuation turn instead (below). Either way an owner turn gets one pass.
-
-// The revision prompt is appended after the history and is not persisted.
-// Keep both strings byte-identical (no per-turn variable text).
-export const OUTPUT_LIMIT_REASON =
-  'The previous reply reached the model output limit before it finished, so its unfinished tool call did not run and nothing from it was saved.';
-export const OUTPUT_LIMIT_INSTRUCTION =
-  "Continue the owner's request now in smaller steps. Do not repeat the cut-off call as one large write: " +
-  'split large content across several files or several smaller writes (for a web page, separate index.html, ' +
-  'styles.css and script.js, each kept short), then finish the remaining requested steps and give the owner a visible answer.';
-export const OUTPUT_LIMIT_UNRECOVERED_TEXT =
-  "Pixel's reply reached the model output limit before its last step finished, so that step did not run. " +
-  'The workspace is preserved; ask Pixel to continue in smaller steps.';
+// OpenClaw 2026.6.33 treats such a reply as an incomplete terminal turn: it
+// skips before_agent_finalize and replaces the reply, text answers included,
+// with its generic "couldn't generate a response". For a Portal owner turn the
+// ingress first asks for one continuation turn (below). Delivery reports the
+// cut plainly only when no continuation ran or the continuation was cut too.
 
 export function outputLimitReply(message) {
   return message?.role === 'assistant' && message.stopReason === 'length';
@@ -34,11 +21,41 @@ export function outputLimitReply(message) {
 // new turn of the same chat. It never repeats the owner's message or a tool.
 // host/pixel_ingress.mjs holds the same bytes; the plugin recognizes the turn
 // by them and grants it no further output-limit pass. The wording must not
-// select a workspace, preview or visual-edit route (tested).
+// select a workspace, preview or visual-edit route (tested). No per-turn
+// variable text.
 export const OUTPUT_LIMIT_CONTINUATION_PROMPT =
-  `ODS internal continuation: ${OUTPUT_LIMIT_REASON} ${OUTPUT_LIMIT_INSTRUCTION} ` +
-  'Do not repeat tool actions that already completed; build on their saved results. ' +
+  'ODS internal continuation: The previous reply reached the model output limit before it finished, ' +
+  "so its unfinished tool call did not run and nothing from it was saved. Continue the owner's request now in smaller steps. " +
+  'Do not repeat the cut-off call as one large write: split large content across several files or several smaller writes ' +
+  '(for a web page, separate index.html, styles.css and script.js, each kept short), then finish the remaining requested steps ' +
+  'and give the owner a visible answer. Do not repeat tool actions that already completed; build on their saved results. ' +
   'For a long written answer, give a complete but more concise answer.';
+
+// The owner-visible report for an owner chat turn whose final reply was cut
+// and not continued, or whose continuation was cut too. The wording fits the
+// request: a workspace task lost what the reply was still writing; a written
+// answer was cut off. Neither claims more than the cut shows.
+export const OUTPUT_LIMIT_WORKSPACE_TEXT =
+  "Pixel's reply reached the model's output limit before it finished, so anything that reply was still writing, " +
+  'such as a large file, was not saved. Files saved by earlier steps are kept. ' +
+  'Ask Pixel to continue in smaller steps, with large content split across several smaller files.';
+export const OUTPUT_LIMIT_ANSWER_TEXT =
+  "Pixel's answer reached the model's output limit before it finished, so it was cut off and not delivered. " +
+  'Ask for a shorter answer, or ask Pixel to answer in parts.';
+export const OUTPUT_LIMIT_CONTINUED_TEXT =
+  'Pixel already continued this request once automatically after an earlier reply was cut off.';
+
+// The failed receipt for such a turn. The report leads, followed by the run's
+// own receipt text when both fit within the ingress verification bound
+// (`limit`); otherwise the report stands alone. A failed receipt carries
+// neither passed-only field (the ingress rejects it otherwise).
+export function outputLimitReport(verification, {workspace = false, continued = false} = {}, limit) {
+  const {suppressStaleExecWarning: _noneOrPassed, deliveryMode: _passed, ...receipt} = verification ?? {};
+  const report = `${continued ? `${OUTPUT_LIMIT_CONTINUED_TEXT} ` : ''}` +
+    (workspace ? OUTPUT_LIMIT_WORKSPACE_TEXT : OUTPUT_LIMIT_ANSWER_TEXT);
+  const text = [report, receipt.text].filter(Boolean).join('\n\n');
+  return {...receipt, status: 'failed', text: text.length <= limit ? text : report};
+}
 
 // Prevention: one prompt line with the active model's per-reply output limit,
 // so large content is planned as several smaller writes from the start. The

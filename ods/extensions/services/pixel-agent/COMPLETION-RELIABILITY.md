@@ -397,10 +397,10 @@ each well under half of it. The line depends only on the host's model, so it is
 byte-stable per host and sits before every per-request section. It limits one
 reply, not the size of the work.
 
-Recovery: delivery reports a final reply cut at the limit plainly.
-OpenClaw skips `before_agent_finalize` when such a reply is the whole turn and
-returns its incomplete-turn text ("Agent couldn't generate a response", in
-either form), so for a Portal turn ending that way the ingress asks
+Continuation first. OpenClaw skips `before_agent_finalize` when a cut reply is
+the whole turn and replaces it, text answers included, with its incomplete-turn
+text ("Agent couldn't generate a response", in either form), so Pixel cannot
+revise it inside the run. For a Portal turn ending that way the ingress asks
 `/pixel-ods/output-limit-continuation`; an ordinary answer never reaches that
 route. For an owner chat turn whose final reply was cut (after earlier tool
 calls too), that is not cancelled, stopped, waiting on questions or
@@ -419,19 +419,35 @@ website request; files the cut run wrote into a new Playground project stay
 that project. Any other next message, another chat or a non-owner run never
 uses the grant.
 
-The continuation's run is never granted another pass, and a continuation cut
-again keeps the honest report. If the gateway answers the continuation with a
-non-200 status, the owner receives the cut turn's report and a line saying the
-automatic continuation did not complete (it is not retried). A failed grant
-request or an invalid continuation response ends the turn with the ingress
-error, as the other ingress continuations do. An owner turn gets at most one
-pass of any kind: the finalize revision when OpenClaw runs the hook, this
-continuation otherwise, and no output-limit continuation after another ingress
-continuation. An older plugin without the route leaves the report unchanged.
-The continuation shares the owner turn's ingress timeout.
+Report otherwise. When no continuation ran (the grant was refused, or OpenClaw
+delivered the cut reply's own text, for example after a tool error), or the
+continuation was cut too, the owner chat turn's
+receipt is `failed` and leads with a plain report in words that fit the
+request: a workspace task (a requested or observed file change) hears that
+what the reply was still writing, such as a large file, was not saved and that
+earlier files are kept; a written answer hears that it was cut off, never that
+a file write was cut. A continuation that was cut again says so first. The
+run's own receipt text follows when both fit the ingress's 32 KiB receipt
+bound; otherwise the report stands alone. Heartbeat, cron and team-worker runs
+keep their receipts, and a receipt still waiting on the host or the owner
+(`pending`) is unchanged. A receipt that ends `failed` or `pending` (this
+report, a stopped mixed-task lane, a combined mixed-task receipt) drops
+`suppressStaleExecWarning`, which the ingress accepts only on `none` or
+`passed` receipts.
+
+The continuation's run is never granted another pass. If the gateway answers
+the continuation with a non-200 status, the owner receives the cut turn's
+report and a line saying the automatic continuation did not complete (it is
+not retried), within the same bound. A failed grant request or an invalid
+continuation response ends the turn with the ingress error, as the other
+ingress continuations do. An owner turn gets at most one continuation of any
+kind: no output-limit continuation after another ingress continuation. The
+continuation shares the owner turn's ingress timeout.
 
 `tests/output_limit_prevention.test.mjs`, `tests/output_limit_recovery.test.mjs`,
-`tests/output_limit_continuation.test.mjs` and the real-harness fixture
+`tests/output_limit_continuation.test.mjs` (the real ingress in front of a
+gateway double; the recovery file serves its Pixel routes from a real guard)
+and the real-harness fixture
 `tests/runtime_output_limit_continuation.integration.mjs` (the real plugin and
 ingress, each cut case compared with the same model behaviour uncut) cover
 these paths.

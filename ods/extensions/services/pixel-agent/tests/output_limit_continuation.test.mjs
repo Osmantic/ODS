@@ -15,7 +15,8 @@ import {createToolLoopGuard, userMessageExtensionLifecycleIntent, userMessageOpe
   userMessageRequestsWorkspaceContinuation, userMessageRequestsWorkspacePreview, userMessageRequestsWorkspaceTools,
   userMessageRequestsWorkspaceVisualContinuation, userMessageRequiresOperations,
   workspacePreviewMode} from '../plugin/tool-loop-guard.mjs';
-import {OUTPUT_LIMIT_CONTINUATION_PROMPT, OUTPUT_LIMIT_UNRECOVERED_TEXT} from '../plugin/output-limit-recovery.mjs';
+import {OUTPUT_LIMIT_CONTINUATION_PROMPT, OUTPUT_LIMIT_CONTINUED_TEXT,
+  OUTPUT_LIMIT_WORKSPACE_TEXT} from '../plugin/output-limit-recovery.mjs';
 import {ODS_COMPACT_CONVERSATION_CONTRACT, ODS_CONVERSATION_CONTRACT, promptContractForAgent} from '../plugin/prompt-contract.mjs';
 import {OUTPUT_LIMIT_CONTINUATION_PROMPT as INGRESS_PROMPT, computeSessionUser,
   createIngressServer} from '../host/pixel_ingress.mjs';
@@ -126,7 +127,9 @@ test('the recorded strixy turn is granted exactly one continuation, bound to its
   // OpenClaw 2026.6.33 does not run before_agent_finalize for this turn.
   assert.deepEqual(owner.grant(), {...INELIGIBLE, eligible: true, user: USER});
   assert.deepEqual(owner.grant(), INELIGIBLE, 'consumed on grant');
-  assert.ok(owner.verification().text.startsWith(OUTPUT_LIMIT_UNRECOVERED_TEXT), 'the honest report stands for the cut run');
+  const report = owner.verification();
+  assert.equal(report.status, 'failed');
+  assert.equal(report.text.split('\n\n')[0], OUTPUT_LIMIT_WORKSPACE_TEXT, 'the honest report leads for the cut run');
 });
 
 test('the continuation turn can deliver the page as split files', () => {
@@ -224,20 +227,15 @@ test('a continuation cut again keeps the honest report and gets no further pass'
   assert.equal(owner.grant().eligible, true);
   const next = turn(guard, {runId: 'run-2', prompt: OUTPUT_LIMIT_CONTINUATION_PROMPT});
   next.reply(CUT);
-  assert.notEqual(next.finalize(CUT)?.retry?.idempotencyKey, 'ods-output-limit-recovery', 'no in-run pass either');
   assert.deepEqual(next.grant(), INELIGIBLE);
   const verification = next.verification();
   assert.equal(verification.status, 'failed');
-  assert.ok(verification.text.startsWith(OUTPUT_LIMIT_UNRECOVERED_TEXT));
+  assert.equal(verification.text.split('\n\n')[0], `${OUTPUT_LIMIT_CONTINUED_TEXT} ${OUTPUT_LIMIT_WORKSPACE_TEXT}`,
+    'the report says the automatic continuation was cut too');
 });
 
-test('no continuation after an in-run pass, after a later reply, or outside owner chat turns', () => {
+test('no continuation after a later reply or outside owner chat turns', () => {
   const guard = createToolLoopGuard({abortRun: () => true});
-  const revised = turn(guard, {runId: 'revised'});
-  revised.reply(CUT);
-  assert.equal(revised.finalize(CUT)?.action, 'revise', 'the hook ran and used the one pass');
-  revised.reply(CUT);
-  assert.deepEqual(revised.grant(), INELIGIBLE);
   const finished = turn(guard, {runId: 'finished'});
   finished.reply(CUT);
   finished.reply(DONE);
@@ -334,7 +332,7 @@ const RUN_1 = 'chatcmpl_11111111-2222-4333-8444-555555555555';
 const RUN_2 = 'chatcmpl_aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const CUT_COMPLETION = {id: RUN_1, choices: [{index: 0, message: {role: 'assistant', content: GENERIC}, finish_reason: 'stop'}]};
 const DONE_COMPLETION = {id: RUN_2, choices: [{index: 0, message: {role: 'assistant', content: DONE.content[0].text}, finish_reason: 'stop'}]};
-const HONEST = {status: 'failed', text: OUTPUT_LIMIT_UNRECOVERED_TEXT};
+const HONEST = {status: 'failed', text: OUTPUT_LIMIT_WORKSPACE_TEXT};
 
 for (const stream of [true, false]) {
   test(`the ingress continues a cut owner turn once with the fixed message (stream=${stream})`, {timeout: 10000}, async t => {
@@ -358,7 +356,7 @@ test('a continuation cut again is reported honestly and never continued again', 
   const second = {...CUT_COMPLETION, id: RUN_2};
   const f = await fixture(t, {second, verifications: {[RUN_1]: HONEST, [RUN_2]: HONEST}});
   const result = await f.chat();
-  assert.equal(result.text, OUTPUT_LIMIT_UNRECOVERED_TEXT);
+  assert.equal(result.text, OUTPUT_LIMIT_WORKSPACE_TEXT);
   assert.equal(result.outcome, 'failed');
   assert.equal(f.seen.submissions.length, 2);
   assert.deepEqual(f.seen.grants, [{runId: RUN_1}], 'the continuation run is never offered another turn');
@@ -374,7 +372,7 @@ test('refused, unbound or unavailable grants keep the honest report without a se
     await t.test(label, async t => {
       const f = await fixture(t, {...options, verifications: {[RUN_1]: HONEST}});
       const result = await f.chat();
-      assert.equal(result.text, OUTPUT_LIMIT_UNRECOVERED_TEXT);
+      assert.equal(result.text, OUTPUT_LIMIT_WORKSPACE_TEXT);
       assert.equal(result.outcome, 'failed');
       assert.equal(f.seen.submissions.length, 1);
       assert.deepEqual(f.seen.verifications, [RUN_1]);
@@ -447,8 +445,8 @@ for (const stream of [true, false]) {
     const f = await fixture(t, {secondStatus: 503, verifications: {[RUN_1]: HONEST}});
     const result = await f.chat({stream});
     assert.equal(result.status, 200);
-    assert.equal(result.text, `${OUTPUT_LIMIT_UNRECOVERED_TEXT}\n\nPixel's automatic continuation after the output limit ` +
-      'did not complete (gateway HTTP 503). Check the workspace before asking Pixel to continue.');
+    assert.equal(result.text, `${OUTPUT_LIMIT_WORKSPACE_TEXT}\n\nPixel's automatic continuation after the output limit ` +
+      'did not complete (gateway HTTP 503). It may have acted before it stopped; check what it changed before asking Pixel to continue.');
     if (stream) assert.equal(result.outcome, 'failed');
     assert.equal(f.seen.submissions.length, 2, 'never retried');
     assert.deepEqual(f.seen.grants, [{runId: RUN_1}]);

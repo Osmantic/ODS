@@ -1259,14 +1259,21 @@ async function maybeContinueOutputLimitTurn(completion, outgoing, token, gateway
 
 // The grant was used but the gateway did not complete the continuation (for
 // example it refused the request or the run failed). Deliver the cut turn's
-// report and say so; the continuation may have acted before failing. A failed
-// receipt carries neither passed-only field (see parseVerificationResponse).
+// report and say so; the continuation may have acted before failing. The
+// request may be a workspace task or a written answer, so the line fits both.
+// A failed receipt carries neither passed-only field (see
+// parseVerificationResponse), and the text stays within the receipt bound:
+// when the whole receipt does not fit with this line, its leading paragraph
+// (Pixel's output-limit report) does.
 function outputLimitContinuationFailure(verification, failedStatus) {
   if (failedStatus === undefined) return verification;
   const { suppressStaleExecWarning, deliveryMode, ...evidence } = verification;
-  return {...evidence, status:'failed', text:[verification.text,
-    `Pixel's automatic continuation after the output limit did not complete (gateway HTTP ${failedStatus}). ` +
-    'Check the workspace before asking Pixel to continue.'].filter(Boolean).join('\n\n')};
+  const failure = `Pixel's automatic continuation after the output limit did not complete (gateway HTTP ${failedStatus}). ` +
+    'It may have acted before it stopped; check what it changed before asking Pixel to continue.';
+  const text = [verification.text, failure].filter(Boolean).join('\n\n');
+  const lead = [verification.text?.split('\n\n')[0], failure].filter(Boolean).join('\n\n');
+  return {...evidence, status:'failed',
+    text:text.length <= MAX_VERIFICATION_TEXT ? text : lead.length <= MAX_VERIFICATION_TEXT ? lead : failure};
 }
 
 async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps, hooks = {}, activeGatewayTransports = new Map()) {

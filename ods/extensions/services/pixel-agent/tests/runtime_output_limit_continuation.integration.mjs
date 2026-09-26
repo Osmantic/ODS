@@ -7,7 +7,8 @@
 // turn with a fixed message. Each cut case is compared with the same model
 // behaviour without the cut: the continuation keeps the owner request's
 // contract, Playground project and delivery checks, so the owner receives
-// what the uncut turn would have delivered.
+// what the uncut turn would have delivered. A continuation cut again is
+// reported once, in words that fit a website request or a written answer.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
@@ -20,7 +21,8 @@ import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
 import {createIngressServer, gatewayFetch} from '../host/pixel_ingress.mjs';
 import {createChatHistoryLedger} from '../host/chat_history_ledger.mjs';
-import {OUTPUT_LIMIT_CONTINUATION_PROMPT,OUTPUT_LIMIT_UNRECOVERED_TEXT} from '../plugin/output-limit-recovery.mjs';
+import {OUTPUT_LIMIT_ANSWER_TEXT,OUTPUT_LIMIT_CONTINUATION_PROMPT,OUTPUT_LIMIT_CONTINUED_TEXT,
+  OUTPUT_LIMIT_WORKSPACE_TEXT} from '../plugin/output-limit-recovery.mjs';
 
 const pkg=process.env.OPENCLAW_PACKAGE;
 const DELIVERY="\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. " +
@@ -40,7 +42,9 @@ const CASES={
   'tools then cut':{prompt:SITE,steps:[write(STYLES),cut,write(PAGE),say(READY)],control:[write(STYLES),write(PAGE),say(READY)],continuationRound:2},
   'unfounded ready claim':{prompt:SITE,steps:[cut,say(READY)],control:[say(READY)],continuationRound:1},
   'text':{prompt:TEXT,steps:[cutText,say(GUIDE)],control:[say(GUIDE)],continuationRound:1,followUp:true},
-  'cut again':{prompt:SITE,steps:[cut,cut]},
+  // Cut twice: the report leads, in words that fit the request.
+  'cut again':{prompt:SITE,steps:[cut,cut],report:OUTPUT_LIMIT_WORKSPACE_TEXT},
+  'text cut again':{prompt:TEXT,steps:[cutText,cutText],report:OUTPUT_LIMIT_ANSWER_TEXT},
 };
 
 async function run(prompt,steps,{followUp=false}={}) {
@@ -156,9 +160,11 @@ for (const [name,spec] of Object.entries(CASES)) test(`real Pixel output-limit c
   // The cut call never ran: no file holds its unfinished document.
   assert.ok(!Object.values(result.contents).some(content=>content.includes('--moss')),trace);
   assert.deepEqual(result.ledger,['ready'],trace);
-  if(name==='cut again'){
+  if(spec.report){
     assert.equal(result.requests.length,2,'one continuation, never a loop\n'+trace);
-    assert.ok(turn.delivered.startsWith(OUTPUT_LIMIT_UNRECOVERED_TEXT),trace);
+    assert.ok(turn.delivered.startsWith(`${OUTPUT_LIMIT_CONTINUED_TEXT} ${spec.report}`),trace);
+    // A written answer is never told that a file write was cut.
+    if(spec.prompt===TEXT)assert.equal(turn.delivered,`${OUTPUT_LIMIT_CONTINUED_TEXT} ${spec.report}`,trace);
     assert.equal(turn.outcome,'failed',trace);
     return;
   }

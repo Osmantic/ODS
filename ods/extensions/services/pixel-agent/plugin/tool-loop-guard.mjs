@@ -32,8 +32,7 @@ import { assistantMessageText, composeProgressFinalization, composeReadPages, cr
   PROGRESS_FINALIZATION_INSTRUCTION } from "./progress-finalization.mjs";
 import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisRequest } from "./stop-synthesis.mjs";
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerChatUser, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
-import { OUTPUT_LIMIT_CONTINUATION_PROMPT, OUTPUT_LIMIT_INSTRUCTION, OUTPUT_LIMIT_REASON, OUTPUT_LIMIT_UNRECOVERED_TEXT,
-  outputLimitReply } from "./output-limit-recovery.mjs";
+import { OUTPUT_LIMIT_CONTINUATION_PROMPT, outputLimitReply, outputLimitReport } from "./output-limit-recovery.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
@@ -9367,7 +9366,7 @@ export function createToolLoopGuard({
       // 2026.6.33 buildToolContext has none); they keep the turn's chat user.
       state.ownerChatUser = ownerChatUser(context, agentId) ?? state.ownerChatUser;
       // The ingress output-limit continuation is itself the owner turn's one
-      // output-limit pass; neither route grants it another.
+      // output-limit pass and is never granted another.
       if (currentUserText(event?.messages, event?.prompt).includes(OUTPUT_LIMIT_CONTINUATION_PROMPT)) {
         state.outputLimitRetried = true;
       }
@@ -11769,15 +11768,6 @@ export function createToolLoopGuard({
       });
     }
     if (state?.recursiveDeleteDenied || state?.progressBudget.exhausted || state?.clientCancelled || state?.webLoopAborted) return undefined;
-    // A reply cut at the output limit never ran its unfinished tool call.
-    // OpenClaw 2026.6.33 skips this hook when such a reply is the whole turn
-    // (incompleteTerminalAssistant); when it does run, grant one pass.
-    if (state?.outputLimitStop && !state.outputLimitRetried && state.ownerIntentObserved &&
-        !state.managedTeamWorker && ownerInteractiveTurn(context, agentId)) {
-      state.outputLimitRetried = true;
-      return {action: 'revise', reason: OUTPUT_LIMIT_REASON, retry: {
-        instruction: OUTPUT_LIMIT_INSTRUCTION, idempotencyKey: 'ods-output-limit-recovery', maxAttempts: 1}};
-    }
     // A silent sentinel is never an answer to an owner-authored chat message.
     // One revision pass; the harness still refuses it after side effects.
     if (state?.ownerIntentObserved && !state.managedTeamWorker && !state.silentOwnerReplyRetried &&
@@ -11815,16 +11805,37 @@ export function createToolLoopGuard({
 
   function verificationForRun(runId) {
     let verification = mixedTaskVerificationForRun(runId);
-    // Delivery reports a final reply cut at the output limit whether or not
-    // before_agent_finalize ran, instead of a generic "try again".
-    if (runs.get(runId)?.outputLimitStop) {
-      verification = {...verification, status:'failed',
-        text:[OUTPUT_LIMIT_UNRECOVERED_TEXT, verification.text].filter(Boolean).join('\n\n')};
-    }
-    const stopped = runs.get(runId)?.progressBudget.exhaustedLanes ?? [];
-    if (!stopped.length) return verification;
-    return {...verification,status:'failed',
+    const state = runs.get(runId);
+    const stopped = state?.progressBudget.exhaustedLanes ?? [];
+    if (stopped.length) verification = {...verification,status:'failed',
       text:[verification.text,...stopped.map(progressLaneStopReason)].filter(Boolean).join('\n\n')};
+    // An owner chat turn whose final reply was cut at the output limit and not
+    // continued, or whose continuation (outputLimitContinuationForRun) was cut
+    // too. OpenClaw 2026.6.33 normally skips before_agent_finalize for it and
+    // replaces the reply, text answers included, with a generic "couldn't
+    // generate a response"; say what happened instead, in words that fit the
+    // request.
+    // Heartbeat, cron and team runs, and receipts still waiting on the host or
+    // the owner, are unchanged.
+    if (state?.outputLimitStop && state.ownerChatUser && state.ownerIntentObserved && !state.managedTeamWorker &&
+        verification.status !== 'pending') {
+      verification = outputLimitReport(verification, {
+        workspace: Boolean(state.workspaceTaskRequested || state.workspaceMutationRequested ||
+          state.successfulWritePaths.size || state.successfulEditPaths.size),
+        continued: Boolean(state.outputLimitContinuation),
+      }, MAX_INGRESS_VERIFICATION_TEXT);
+    }
+    return ingressReceipt(verification);
+  }
+
+  // The ingress accepts suppressStaleExecWarning only on a none or passed
+  // receipt and rejects any other receipt carrying it (HTTP 502). A receipt
+  // forced to failed (lane stop, output limit) or combined into a failed or
+  // pending mixed-task receipt drops it.
+  function ingressReceipt(verification) {
+    if (!verification.suppressStaleExecWarning || ['none', 'passed'].includes(verification.status)) return verification;
+    const {suppressStaleExecWarning: _noneOrPassedOnly, ...receipt} = verification;
+    return receipt;
   }
 
   function mixedTaskVerificationForRun(runId) {
@@ -12345,7 +12356,7 @@ export function createToolLoopGuard({
     // before_agent_finalize then). OpenClaw runs tools only after a complete
     // tool-use reply and any later reply clears outputLimitStop, so no tool
     // ran after the cut. Consumed on grant. Cancelled, stopped, waiting and
-    // host-operation, extension or exact-download turns keep the honest report:
+    // host-operation, extension or exact-download turns get no continuation:
     // their receipts, not a new model turn, decide what happens next.
     // The grant is remembered for the chat's next owner turn, which the
     // continuation run is classified by (outputLimitContinuationEvent).
