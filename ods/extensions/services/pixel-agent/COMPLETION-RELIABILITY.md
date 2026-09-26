@@ -418,6 +418,10 @@ tool calls too) when:
   preview, a passing test run, a host observation) or a `pending` one gets no
   continuation, because only the closing reply was cut or the host decides
   what happens next;
+- its latest test run did not fail and is not still running. The
+  continuation run has no test result of its own, so its reply could claim a
+  pass that no test showed; such a turn keeps its own receipt, reported as
+  below;
 - OpenClaw answered with its incomplete-turn text, or the request is a
   workspace task (a requested or observed file change). A written answer whose
   own text OpenClaw delivered keeps it (below).

@@ -13,7 +13,8 @@
 // After a tool error OpenClaw delivers a cut reply's own text instead of its
 // incomplete-turn text: a website is still continued, and a written answer
 // keeps its delivered part, followed by the report. A result the host
-// already verified is kept when only the closing reply is cut.
+// already verified is kept when only the closing reply is cut, and a turn
+// whose test run failed is reported as failed, never continued.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
@@ -21,7 +22,7 @@ import net from 'node:net';
 import {once} from 'node:events';
 import {spawn, execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync,readFileSync,readdirSync,rmSync,statSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync,readFileSync,readdirSync,rmSync,statSync,copyFileSync,chmodSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
@@ -30,6 +31,7 @@ import {createIngressServer, gatewayFetch} from '../host/pixel_ingress.mjs';
 import {createChatHistoryLedger} from '../host/chat_history_ledger.mjs';
 import {OUTPUT_LIMIT_ANSWER_TEXT,OUTPUT_LIMIT_CONTINUATION_PROMPT,OUTPUT_LIMIT_CONTINUED_TEXT,
   OUTPUT_LIMIT_WORKSPACE_TEXT} from '../plugin/output-limit-recovery.mjs';
+import {VERIFICATION_FAILED_DELIVERY_PREFIX} from '../plugin/tool-loop-guard.mjs';
 
 const pkg=process.env.OPENCLAW_PACKAGE;
 const DELIVERY="\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. " +
@@ -96,9 +98,10 @@ async function run(prompt,steps,{followUp=false,delayMs=0}={}) {
     if(delayMs)await delay(delayMs);
     res.writeHead(200,{'Content-Type':'text/event-stream'});
     if(step.say){res.write(chunk({role:'assistant',content:step.say}));res.end(chunk({},'stop')+'data: [DONE]\n\n');return;}
-    if(step.write||step.read||step.preview){
+    if(step.write||step.read||step.preview||step.exec){
       res.write(chunk({role:'assistant',content:''}));
       res.write(step.write?call('write',step.write):step.read?call('read',{path:step.read})
+        :step.exec?call('exec',{command:step.exec,workdir:join(workspace,step.workdir)})
         :call('pixel_ods_workspace_preview',{relativeDirectory:step.preview}));
       res.end(chunk({},'tool_calls')+'data: [DONE]\n\n');return;
     }
@@ -142,6 +145,10 @@ net.createConnection=function(options,...rest){if(options&&typeof options==='obj
   const port=probe.address().port;await new Promise(resolve=>probe.close(resolve));
   // Pixel's access runtime keeps its state under ~/.openclaw.
   mkdirSync(join(root,'.openclaw'),{mode:0o700});
+  // Pixel runs exec through its cancellable wrapper under ~/.openclaw.
+  const controls=join(root,'.openclaw','.ods-exec-control');mkdirSync(controls,{mode:0o700});
+  copyFileSync(new URL('../host/cancellable-exec.sh',import.meta.url),join(controls,'cancellable-exec.sh'));
+  chmodSync(join(controls,'cancellable-exec.sh'),0o500);
   mkdirSync(workspace);mkdirSync(join(root,'node_modules'));symlinkSync(pkg,join(root,'node_modules','openclaw'));
   const model='Qwen3.6-35B-A3B';
   // The strixy managed shape: an 8192-token output limit for the local model.
@@ -151,7 +158,7 @@ net.createConnection=function(options,...rest){if(options&&typeof options==='obj
       list:[{id:'pixel',default:true,workspace,model:`ods-local/${model}`,contextTokens:131072,params:{maxTokens:8192}}]},
     models:{mode:'replace',providers:{'ods-local':{baseUrl:`http://127.0.0.1:${upstream.address().port}/v1`,api:'openai-completions',apiKey:'fixture-only',
       models:[{id:model,name:`ODS Local ${model}`,contextWindow:131072,maxTokens:8192,reasoning:false,input:['text']}]}}},
-    tools:{exec:{host:'gateway'}},
+    tools:{exec:{host:'gateway',security:'full',ask:'off'}},
     plugins:{allow:['pixel-ods'],load:{paths:[fileURLToPath(new URL('../plugin/',import.meta.url))]},
       entries:{'pixel-ods':{enabled:true,config:{modelContextWindow:131072},hooks:{allowConversationAccess:true}}}}};
   writeFileSync(join(root,'openclaw.json'),JSON.stringify(config));
@@ -201,7 +208,7 @@ net.createConnection=function(options,...rest){if(options&&typeof options==='obj
     const ledger=readdirSync(join(root,'chat-state')).filter(name=>name.endsWith('.json'))
       .map(name=>JSON.parse(readFileSync(join(root,'chat-state',name),'utf8')).status);
     const files=readdirSync(workspace,{recursive:true}).map(String).filter(file=>!file.startsWith('.')).sort();
-    const contents=Object.fromEntries(files.filter(file=>/\.(?:html|css|js)$/.test(file))
+    const contents=Object.fromEntries(files.filter(file=>/\.(?:html|css|js|py)$/.test(file))
       .map(file=>[file,readFileSync(join(workspace,file),'utf8')]));
     return {turns,requests,firstTurnRequests,grants:await Promise.all(grants),ledger,files,contents,published,log};
   } finally {
@@ -307,4 +314,38 @@ test('real Pixel output-limit report: a verified page is kept when only the clos
   assert.equal(result.turns[0].outcome,'passed',trace);
   assert.equal(result.turns[0].preview,control.turns[0].preview,trace);
   assert.doesNotMatch(result.turns[0].delivered,/output limit/i,trace);
+});
+
+// #6743 re-verification: the owner's tests ran and failed, and the reply
+// carrying the whole-file fix was cut. The failed exec is a tool error, so
+// OpenClaw delivered the cut reply's own text and the ingress asked with
+// incompleteTurn false; the continuation rewrote calc.py and said "all tests
+// pass now" without running them, and the owner got outcome none. A turn
+// whose latest test run failed is not continued: the owner gets the failed
+// report, and the same model behaviour uncut is delivered as failed too.
+// (This gateway fixture has no /workspace, so the unittest run Pixel binds to
+// /workspace/Playground/calc runs in the fallback directory and exits 5 with
+// no tests run: a failed test run to Pixel, as a failing assertion is.)
+const CALC='Write a Python script calc.py with a function add(a, b) and unit tests in test_calc.py, '+
+  'then run the tests with python3 -m unittest.'+DELIVERY;
+const BUGGY={path:'Playground/calc/calc.py',content:'def add(a, b):\n    return a - b\n'};
+const FIXED={path:'Playground/calc/calc.py',content:'def add(a, b):\n    return a + b\n'};
+const TESTS={path:'Playground/calc/test_calc.py',content:'import unittest\nfrom calc import add\n\n'+
+  'class T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(1, 2), 3)\n'};
+const CLAIM='Fixed add() in calc.py; all tests pass now.';
+test('real Pixel output-limit report: a failed test run is not continued into an unchecked claim',{skip,timeout:300000},async()=>{
+  const failingTests=[write(BUGGY),write(TESTS),{exec:'python3 -m unittest -v',workdir:'Playground/calc'}];
+  const result=await run(CALC,[...failingTests,{cut:true,path:BUGGY.path},write(FIXED),say(CLAIM)]);
+  const control=await run(CALC,[...failingTests,write(FIXED),say(CLAIM)]);
+  const trace=traceOf(result);
+  const [turn]=result.turns;
+  assert.match(result.requests[failingTests.length].toolResults.at(-1),/Command exited with code [1-9]/,'the test run failed\n'+trace);
+  assert.deepEqual(result.grants.map(({eligible,incompleteTurn})=>({eligible,incompleteTurn})),
+    [{eligible:false,incompleteTurn:false}],trace);
+  assert.equal(result.requests.length,failingTests.length+1,'no continuation\n'+trace);
+  assert.equal(turn.outcome,'failed',trace);
+  assert.equal(turn.delivered,`${OUTPUT_LIMIT_WORKSPACE_TEXT}\n\n${VERIFICATION_FAILED_DELIVERY_PREFIX}`,trace);
+  assert.equal(result.contents[BUGGY.path],BUGGY.content,'the cut fix never ran\n'+trace);
+  assert.equal(control.turns[0].outcome,'failed',traceOf(control));
+  assert.equal(control.turns[0].delivered,VERIFICATION_FAILED_DELIVERY_PREFIX,traceOf(control));
 });

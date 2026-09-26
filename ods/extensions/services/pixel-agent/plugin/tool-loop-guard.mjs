@@ -12405,7 +12405,10 @@ export function createToolLoopGuard({
     // host-operation, extension or exact-download turns get no continuation:
     // their receipts, not a new model turn, decide what happens next. Nor does
     // a turn whose receipt already passed: the host verified its result, and
-    // only the closing reply was cut.
+    // only the closing reply was cut. Nor does a turn whose latest test run
+    // failed or is still running: the continuation run has no test result of
+    // its own, so its reply could claim a pass that no test showed. That
+    // turn's failed receipt, with the report, is delivered instead.
     // `incompleteTurn` says whether OpenClaw answered with its incomplete-turn
     // text. When it delivered the cut reply's own text instead (after a tool
     // error), only a workspace task is continued; a written answer keeps its
@@ -12420,6 +12423,7 @@ export function createToolLoopGuard({
           state.progressBudget.exhausted || state.recursiveDeleteDenied || state.webLoopAborted ||
           state.ownerQuestions || state.operationsRequired || state.operationsSubmittedJobs.size > 0 ||
           state.githubExtensionRequest || state.extensionCompletionGate?.active || state.extensionPendingHandoff ||
+          state.latestVerificationStatus === 'failed' || state.latestVerificationStatus === 'pending' ||
           state.exactDownloadRequested || (!incompleteTurn && !outputLimitWorkspaceTask(state)) ||
           !outputLimitReportDue(state, runReceiptForRun(runId)))
         return {schemaVersion:1, kind:'ods-output-limit-continuation', eligible:false};

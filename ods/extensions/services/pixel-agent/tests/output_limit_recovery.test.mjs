@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {createHash, randomUUID} from 'node:crypto';
-import {createToolLoopGuard, VERIFICATION_PENDING_DELIVERY_PREFIX} from '../plugin/tool-loop-guard.mjs';
+import {createToolLoopGuard, VERIFICATION_FAILED_DELIVERY_PREFIX, VERIFICATION_PENDING_DELIVERY_PREFIX} from '../plugin/tool-loop-guard.mjs';
 import {OUTPUT_LIMIT_ANSWER_TEXT, OUTPUT_LIMIT_CONTINUATION_PROMPT, OUTPUT_LIMIT_CONTINUED_TEXT,
   OUTPUT_LIMIT_WORKSPACE_TEXT, outputLimitReply, outputLimitReport} from '../plugin/output-limit-recovery.mjs';
 import {computeSessionUser, createIngressServer} from '../host/pixel_ingress.mjs';
@@ -437,6 +437,71 @@ test('a receipt still waiting on its verification is unchanged by a cut reply', 
   assert.equal(result.outcome, 'pending');
   assert.equal(result.text, VERIFICATION_PENDING_DELIVERY_PREFIX);
   assert.deepEqual(seen.grants, [{runId: seen.runs[0], eligible: false, incompleteTurn: true}]);
+});
+
+// #6743 re-verification: the owner's tests ran and failed, and the whole-file
+// fix write was cut. The failed exec is a tool error, so OpenClaw delivered the
+// cut reply's own text, and the workspace task was continued. The continuation
+// run had no test result of its own: it rewrote calc.py, said "all tests pass
+// now" without running them, and the owner got outcome `none`. A turn whose
+// latest test run failed, or is still running, is not continued; the owner
+// gets the failed report, as without a continuation.
+test('a cut after a failed or still-running test run keeps the failed report and is not continued', {timeout: 20000}, async t => {
+  const CALC = 'Write a Python script calc.py with a function add(a, b) and unit tests in test_calc.py, ' +
+    'then run the tests with python3 -m unittest.' + DELIVERY;
+  const CLAIM = 'Fixed add() in calc.py; all tests pass now.';
+  const ok = {content: [{type: 'text', text: 'ok'}], details: {status: 'completed'}};
+  const failedTests = 'test_add (test_calc.T.test_add) ... FAIL\n\nFAIL: test_add (test_calc.T.test_add)\n' +
+    'AssertionError: -1 != 3\n\nRan 1 test in 0.000s\n\nFAILED (failures=1)\n';
+  const writeCalc = (run, operator) => run.call('write', {path: 'Playground/calc/calc.py',
+    content: `def add(a, b):\n    return a ${operator} b\n`}, ok);
+  const failingTests = run => {
+    writeCalc(run, '-');
+    run.call('write', {path: 'Playground/calc/test_calc.py', content: 'import unittest\nfrom calc import add\n\n' +
+      'class T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(1, 2), 3)\n'}, ok);
+    run.call('exec', {command: 'python3 -m unittest -v', workdir: 'Playground/calc'},
+      {content: [{type: 'text', text: `${failedTests}\n(Command exited with code 1)`}],
+        details: {status: 'completed', exitCode: 1, aggregated: failedTests}});
+  };
+  // The continuation the cut run would get: the fix and an unchecked claim.
+  const fixAndClaim = run => { writeCalc(run, '+'); run.reply(said(CLAIM)); return CLAIM; };
+
+  // Control: the same model behaviour without the cut is delivered as failed.
+  const control = await portal(t, [run => { failingTests(run); return fixAndClaim(run); }]);
+  const uncut = await control.chat(CALC);
+  assert.equal(uncut.status, 200, uncut.body);
+  assert.equal(uncut.outcome, 'failed');
+  assert.equal(uncut.text, VERIFICATION_FAILED_DELIVERY_PREFIX);
+
+  const {seen, chat} = await portal(t, [run => {
+    failingTests(run);
+    run.reply(CUT);
+    return `${OPENING}\n\n⚠️ 🛠️ \`run python3 (in ~/workspace/Playground/calc)\` failed`;
+  }, fixAndClaim]);
+  const result = await chat(CALC);
+  assert.equal(result.status, 200, result.body);
+  assert.deepEqual(seen.grants, [{runId: seen.runs[0], eligible: false, incompleteTurn: false}]);
+  assert.deepEqual(seen.prompts, [CALC], 'no continuation run');
+  assert.equal(result.outcome, 'failed');
+  assert.equal(result.text, `${OUTPUT_LIMIT_WORKSPACE_TEXT}\n\n${VERIFICATION_FAILED_DELIVERY_PREFIX}`);
+  assert.doesNotMatch(result.text, /tests pass/);
+
+  // A website whose test run is still running when the reply is cut: its
+  // receipt is failed (no page yet), and a continuation that published the
+  // page would have been delivered as passed.
+  const pending = await portal(t, [run => {
+    run.call('write', {path: 'Playground/forest/styles.css', content: 'body{background:#0b3d20}'}, ok);
+    run.call('exec', {command: 'python3 -m unittest -v', workdir: 'Playground/forest'},
+      {content: [{type: 'text', text: 'running'}], details: {status: 'running', sessionId: 'unittest-1'}});
+    run.reply(CUT);
+    return GENERIC;
+  }, run => { publishSplitPage(run); run.reply(said(READY)); return READY; }]);
+  const site = await pending.chat(SITE);
+  assert.equal(site.status, 200, site.body);
+  assert.deepEqual(pending.seen.grants, [{runId: pending.seen.runs[0], eligible: false, incompleteTurn: true}]);
+  assert.equal(pending.seen.runs.length, 1, 'no continuation run');
+  assert.equal(site.outcome, 'failed');
+  assert.equal(site.text.split('\n\n')[0], OUTPUT_LIMIT_WORKSPACE_TEXT);
 });
 
 // The ingress rejects receipt text over 32 KiB (MAX_VERIFICATION_TEXT).
