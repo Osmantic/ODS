@@ -71,6 +71,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
 ```
 
+The Windows command guides Ubuntu/WSL2 preparation and requires Pixel, with no Hermes fallback. A restart, Ubuntu user setup and Docker WSL integration may be required. See [Windows Quickstart](docs/WINDOWS-QUICKSTART.md).
+
 Useful install flags:
 
 | Linux/macOS | Windows | Purpose |
@@ -87,14 +89,14 @@ Useful install flags:
 
 ## Uninstall
 
-Linux/macOS:
+Linux/macOS, or inside Ubuntu for Windows/WSL:
 
 ```bash
 cd ~/ods
 ./ods-uninstall.sh --force
 ```
 
-Windows:
+Legacy native Windows installations only:
 
 ```powershell
 $installDir = "$env:USERPROFILE\ods"
@@ -113,8 +115,8 @@ ODS downloads a small model first so you can start chatting quickly,
 then downloads and hot-swaps the full model in the background.
 
 Pixel is installed automatically on qualified Ubuntu 24.04/26.04 or Debian 12
-PID1-systemd hosts. Everywhere else, ODS uses the
-Hermes fallback. See [docs/PIXEL.md](docs/PIXEL.md). Hermes-enabled installs
+PID1-systemd hosts. The Windows entry point explicitly requires Pixel in WSL2 and stops on failure. Other Linux entry points without `--pixel` may use the
+Hermes fallback on unsupported hosts. See [docs/PIXEL.md](docs/PIXEL.md). Hermes-enabled installs
 keep the bootstrap model at a 64K context floor, then promote the full local
 model target to 128K after the background swap.
 
@@ -160,7 +162,7 @@ cd $env:USERPROFILE\ods
 .\ods.ps1 report
 ```
 
-For a lower-level source-tree check on Linux/macOS:
+For a lower-level source-tree check on Linux/macOS, or inside Ubuntu for Windows/WSL:
 
 ```bash
 cd ~/ods

@@ -167,7 +167,7 @@ if (-not $_tierDisk.Sufficient) {
         $_installDirHint = "$($Matches[1].ToUpperInvariant()):\ods"
     }
     Write-AI "  To use a different drive/path, rerun from the source checkout with:"
-    Write-AI "  .\install.ps1 -InstallDir $_installDirHint"
+    Write-AI "  .\ods\installers\windows\install-windows.ps1 -InstallDir $_installDirHint"
     if (-not $force) {
         Write-AIError "Insufficient disk space. Free up space and re-run, or use --Force to override."
         throw "ODS_INSTALL_ABORTED"

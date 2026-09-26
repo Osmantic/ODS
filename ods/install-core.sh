@@ -119,6 +119,7 @@ ENABLE_RECOMMENDED=true
 ENABLE_HERMES=true
 ENABLE_PIXEL="${ENABLE_PIXEL:-auto}"
 PIXEL_EXPLICIT=false
+HERMES_EXPLICIT=false
 ENABLE_OPENCLAW=false
 OPENCLAW_EXPLICIT=false
 ENABLE_OPENCODE=false
@@ -264,8 +265,8 @@ while [[ $# -gt 0 ]]; do
         --no-rag) ENABLE_RAG=false; shift ;;
         --recommended) ENABLE_RECOMMENDED=true; shift ;;
         --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
-        --hermes) ENABLE_HERMES=true; shift ;;
-        --no-hermes) ENABLE_HERMES=false; shift ;;
+        --hermes) ENABLE_HERMES=true; HERMES_EXPLICIT=true; shift ;;
+        --no-hermes) ENABLE_HERMES=false; HERMES_EXPLICIT=true; shift ;;
         --pixel) ENABLE_PIXEL=true; PIXEL_EXPLICIT=true; shift ;;
         --no-pixel) ENABLE_PIXEL=false; PIXEL_EXPLICIT=true; shift ;;
         --openclaw) ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;

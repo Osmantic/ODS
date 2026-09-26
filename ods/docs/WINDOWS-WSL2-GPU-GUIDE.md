@@ -1,9 +1,15 @@
 # Windows WSL2 GPU Guide for ODS
 
 Complete guide for running ODS on Windows with WSL2 and NVIDIA GPU
-passthrough. AMD Strix Halo installs also use Docker Desktop + WSL2 for the
-service stack, but local inference runs through the Windows host accelerated
-path selected by `install.ps1`.
+passthrough. `install.ps1` installs ODS inside Ubuntu/WSL2; it no longer
+selects a native Windows inference path. A Lemonade server running on Windows
+(AMD) is not adopted automatically: use a GPU backend detected inside WSL, CPU,
+or an explicitly configured reachable model endpoint.
+
+Before the Linux installer starts, `install.ps1` stops with instructions when
+Windows has an NVIDIA driver but it is older than 570, Ubuntu cannot see the
+GPU (`/usr/lib/wsl/lib/nvidia-smi -L`), or Docker Desktop does not expose its
+`nvidia` runtime (`docker info --format '{{json .Runtimes}}'`).
 
 ## Quick Verification
 
@@ -69,11 +75,14 @@ wsl --status
 
 Download latest drivers from https://www.nvidia.com/drivers
 
-**Verify driver includes WSL2 support:**
+**Verify the driver version:**
 ```powershell
-# Driver version 465.21 or later includes WSL2 support
-# Game Ready drivers work fine for compute
+# ODS's CUDA runtime requires driver 570 or newer.
+# Game Ready and Studio drivers both work for compute.
+nvidia-smi --query-gpu=driver_version --format=csv,noheader
 ```
+
+After updating the driver, run `wsl --shutdown` so Ubuntu picks it up.
 
 ### Step 4: Run ODS Installer
 
@@ -98,9 +107,9 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 nvidia-smi
 # If this fails, install NVIDIA drivers on Windows
 
-# Verify WSL2 has GPU support
-wsl cat /proc/driver/nvidia/version
-# Should show driver version
+# Verify WSL2 has GPU support (the driver is provided by Windows)
+wsl /usr/lib/wsl/lib/nvidia-smi -L
+# Should list your GPU. If it does not, run: wsl --update; wsl --shutdown
 ```
 
 ### Issue: GPU works in WSL2 but not in Docker

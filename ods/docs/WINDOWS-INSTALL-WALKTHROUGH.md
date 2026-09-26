@@ -1,4 +1,6 @@
-# ODS Windows Installation Walkthrough
+# Legacy native Windows installation walkthrough
+
+For new Pixel/Portal installations, use [Windows Quickstart](WINDOWS-QUICKSTART.md). The root `install.ps1` now guides Ubuntu/WSL2 setup. This page describes only the legacy native implementation and Windows runtime paths; it does not install Pixel in Ubuntu.
 
 Step-by-step guide for installing ODS on Windows 10/11 with WSL2,
 Docker Desktop, and NVIDIA or AMD GPU support.
@@ -89,7 +91,7 @@ Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" 
 Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
 cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1
+.\ods\installers\windows\install-windows.ps1
 ```
 
 The installer will:
@@ -113,7 +115,7 @@ NTFS/ReFS target path with enough space explicitly:
 
 ```powershell
 $installDir = "D:\Apps\ods"
-.\install.ps1 -InstallDir $installDir
+.\ods\installers\windows\install-windows.ps1 -InstallDir $installDir
 ```
 
 After installation, run management commands from the runtime directory:
@@ -143,7 +145,7 @@ the runtime is intentionally created inside your checkout:
 
 ```powershell
 $env:ODS_HOME = "C:\path\to\ODS\ods"
-.\install.ps1
+.\ods\installers\windows\install-windows.ps1
 ```
 
 **First run takes 10-30 minutes** depending on download speed. Bootstrap mode
@@ -154,20 +156,20 @@ background.
 
 ```powershell
 # Specific tier with voice
-.\install.ps1 -Tier 2 -Voice
+.\ods\installers\windows\install-windows.ps1 -Tier 2 -Voice
 
 # Full stack with everything
-.\install.ps1 -All
+.\ods\installers\windows\install-windows.ps1 -All
 
 # Simulate installer planning without making changes
-.\install.ps1 -DryRun
+.\ods\installers\windows\install-windows.ps1 -DryRun
 
 # Wait for the full model instead of using bootstrap fast-start
-.\install.ps1 -NoBootstrap
+.\ods\installers\windows\install-windows.ps1 -NoBootstrap
 
 # Install runtime files on a specific drive/path
 $installDir = "D:\Apps\ods"
-.\install.ps1 -InstallDir $installDir
+.\ods\installers\windows\install-windows.ps1 -InstallDir $installDir
 ```
 
 ---

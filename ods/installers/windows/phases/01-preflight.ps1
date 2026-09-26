@@ -81,7 +81,7 @@ if ($installDir -match "^([A-Za-z]):") { $_installDrive = $Matches[1].ToUpperInv
 if ($_sourceDrive -and $_installDrive -and $_sourceDrive -ne $_installDrive) {
     Write-AIWarn "Source checkout is on ${_sourceDrive}: but the runtime install target is on ${_installDrive}:."
     Write-AI "  To install the runtime on another drive, rerun with:"
-    Write-AI "  .\install.ps1 -InstallDir ${_sourceDrive}:\ods"
+    Write-AI "  .\ods\installers\windows\install-windows.ps1 -InstallDir ${_sourceDrive}:\ods"
 }
 
 # ── Docker Desktop ───────────────────────────────────────────────────────────
@@ -283,7 +283,7 @@ if (-not $_disk.Sufficient) {
         $_installDirHint = "$($Matches[1].ToUpperInvariant()):\ods"
     }
     Write-AI "  Free up space on $($_disk.Drive), or rerun from the source checkout with:"
-    Write-AI "  .\install.ps1 -InstallDir $_installDirHint"
+    Write-AI "  .\ods\installers\windows\install-windows.ps1 -InstallDir $_installDirHint"
     throw "ODS_INSTALL_ABORTED"
 }
 Write-AISuccess "Disk space OK ($($_disk.FreeGB) GB free)"
@@ -295,7 +295,7 @@ if (-not (Test-Path $_composeBase)) {
     Write-AIError "docker-compose.base.yml not found in: $sourceRoot"
     Write-AI "  Make sure you are running this installer from the ODS clone:"
     Write-AI "  git clone https://github.com/Osmantic/ODS.git"
-    Write-AI "  cd ODS && .\install.ps1"
+    Write-AI "  cd ODS; .\ods\installers\windows\install-windows.ps1"
     throw "ODS_INSTALL_ABORTED"
 }
 Write-AISuccess "Source tree OK"

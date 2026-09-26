@@ -15,18 +15,34 @@ bridge, unit, phase, installer, uninstall = (Path(value).read_text(encoding='utf
 assert 'bridge /run/ods-pixel "$base/ingress"' in bridge
 assert 'bridge /run/ods-pixel-preview "$base/preview"' in bridge
 assert 'mountpoint -q -- "$target"' in bridge
-assert '[[ "$source_inode" == "$target_inode" ]]' in bridge
-assert '[[ "$(findmnt -n -o PROPAGATION -T "$target")" == shared ]]' in bridge
+assert '[[ "$target_inode" == "$source_inode" ]]' in bridge
+# Docker Desktop's WSL proxy binds each bind source onto itself; the bridge
+# stacks on that bind (same /mnt/wsl device) and reads only the top mount.
+assert '[[ "${target_inode%%:*}" == "$wsl_device" ]]' in bridge
+assert '[[ "$(findmnt -n -o PROPAGATION -T "$target" | tail -n 1)" == shared ]]' in bridge
 assert 'ConditionVirtualization=wsl' in unit
 assert 'BindsTo=pixel-ingress.service pixel-workspace-preview.service' in unit
 assert 'ExecStart=/usr/local/libexec/ods-pixel-wsl-runtime-bridge ensure' in unit
 assert 'ExecStop=/usr/local/libexec/ods-pixel-wsl-runtime-bridge remove' in unit
 assert 'PIXEL_RUNTIME_BIND_PROPAGATION_VALUE=rshared' in phase
-assert 'PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/host/wsl/ods-portal-runtime/ingress' in phase
+assert 'PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-runtime/ingress' in phase
 assert '"${docker_command[@]}" info --format' in phase
 assert '"${docker_command[@]}" context inspect' in phase
 assert 'systemctl enable ods-pixel-wsl-runtime-bridge.service' in installer
 assert 'systemctl start ods-pixel-wsl-runtime-bridge.service' in installer
 assert 'systemctl disable --now ods-pixel-wsl-runtime-bridge.service' in uninstall
+# Docker Desktop translates bind sources from the calling distro; the daemon's
+# own /mnt/host/wsl name fails there as "is mounted on / but it is not a shared mount".
+for text in (phase, installer):
+    assert '/mnt/host/wsl' not in text
+# Pixel Edge starts with the prerequisites, before the bridge exists, so the
+# empty shared targets must be created before that Compose launch.
+precreate = installer.index('/mnt/wsl/ods-portal-runtime/ingress /mnt/wsl/ods-portal-runtime/preview')
+prerequisites_up = installer.index('"${pixel_prerequisites[@]}" >>"$LOG_FILE"')
+assert precreate < prerequisites_up, 'WSL runtime targets must exist before Pixel Edge starts'
+# A failed bridge must say why in the journal, and the installer must show it.
+assert '|| exit 1' not in bridge and '|| return 1' not in bridge
+assert 'fail "$target is mounted from another directory than $source' in bridge
+assert 'journalctl -u ods-pixel-wsl-runtime-bridge.service -n 20' in installer
 PY
 echo "Pixel WSL shared runtime bridge checks passed"

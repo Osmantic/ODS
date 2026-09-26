@@ -33,6 +33,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rejects a llama.cpp image without a digest.
 
 ### Changed
+- Windows: `install.ps1` now installs ODS inside Ubuntu/WSL2 with Pixel
+  (`--pixel --no-hermes --no-openclaw`) instead of the native Windows stack.
+  It prepares WSL and Ubuntu 24.04 when needed, and stops with instructions,
+  before changing anything in Ubuntu, when WSL2, systemd, a non-root user,
+  Docker Desktop's WSL integration or, on NVIDIA machines, a Windows driver
+  >= 570 with GPU and `nvidia` runtime visible from Ubuntu is missing. An
+  existing Ubuntu older than 24.04 is never reused. Success now requires the
+  authenticated Portal status API to report the agent available. Existing
+  native Windows installs are detected and left untouched; `install.ps1`
+  refuses to run beside them. Keep managing them with their own `ods.ps1`, or
+  rerun `ods\installers\windows\install-windows.ps1`. AMD machines that used
+  the native Lemonade path now get a GPU backend detected inside WSL, CPU, or
+  an explicitly configured endpoint. The Linux installer runs on the same
+  console (download progress and UTF-8 output stay visible), and warnings WSL
+  prints on stderr no longer turn a passing check into a failure.
+- Linux on WSL: an NVIDIA driver older than 570 stops with Windows update
+  instructions instead of installing `nvidia-driver-*` inside the distro,
+  which breaks WSL GPU passthrough.
+- Linux on WSL with Docker Desktop: Pixel Edge now binds the runtime bridge
+  as `/mnt/wsl/ods-portal-runtime/*`, the distro path Docker Desktop's WSL
+  proxy translates, and the installer creates those empty targets before Pixel
+  Edge starts. The daemon-side `/mnt/host/wsl/...` path stopped every fresh
+  install with "is mounted on / but it is not a shared mount".
+- Linux on WSL with Docker Desktop: the Pixel runtime bridge accepts Docker's
+  bind of its own empty runtime targets and checks the top mount's propagation.
+  Bridge refusals now explain their cause, and the installer shows the service
+  journal when startup or its active-state check fails.
+- Installer: Full Stack, Core Only and Custom preserve explicit `--hermes`,
+  `--no-hermes`, `--openclaw` and `--no-openclaw` choices. Custom skips agent
+  questions already answered by those flags, including the Windows Pixel path.
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
   file. The 48 other re-pinned models download the same bytes: each sha256 was

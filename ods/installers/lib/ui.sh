@@ -659,8 +659,10 @@ show_install_menu() {
             ENABLE_WORKFLOWS=true
             ENABLE_RAG=true
             ENABLE_RECOMMENDED=true
-            ENABLE_HERMES=true
-            ENABLE_OPENCLAW=false  # deprecated; Hermes is the new default
+            # --hermes/--no-hermes on the command line wins over the preset
+            # (the Windows Pixel path passes --no-hermes).
+            [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=true
+            [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
             ENABLE_OPENCODE=true
             ENABLE_COMFYUI=true
             ENABLE_APE=true
@@ -686,8 +688,8 @@ show_install_menu() {
             ENABLE_WORKFLOWS=false
             ENABLE_RAG=false
             ENABLE_RECOMMENDED=false
-            ENABLE_HERMES=false
-            ENABLE_OPENCLAW=false
+            [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=false
+            [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
             ENABLE_OPENCODE=false
             ENABLE_COMFYUI=false
             ENABLE_APE=false
@@ -705,8 +707,10 @@ show_install_menu() {
             ENABLE_WORKFLOWS=true
             ENABLE_RAG=true
             ENABLE_RECOMMENDED=true
-            ENABLE_HERMES=true
-            ENABLE_OPENCLAW=false  # deprecated; Hermes is the new default
+            # --hermes/--no-hermes on the command line wins over the preset
+            # (the Windows Pixel path passes --no-hermes).
+            [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=true
+            [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
             ENABLE_OPENCODE=true
             ENABLE_COMFYUI=true
             ENABLE_APE=true

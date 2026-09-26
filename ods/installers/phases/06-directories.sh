@@ -104,8 +104,11 @@ _phase06_pixel_runtime_layout() {
     docker_os="$(timeout 10s "${docker_command[@]}" info --format '{{.OperatingSystem}}' 2>/dev/null)" || return 1
     [[ "$docker_os" == "Docker Desktop" ]] || return 0
     [[ -d "$wsl_mount" && "$(findmnt -n -o PROPAGATION -T "$wsl_mount")" == shared ]] || return 1
-    PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/host/wsl/ods-portal-runtime/ingress
-    PIXEL_PREVIEW_RUNTIME_DIR_VALUE=/mnt/host/wsl/ods-portal-runtime/preview
+    # Use this distro's path. Docker Desktop's WSL proxy translates bind
+    # sources from the calling distro; the daemon's own name for this tmpfs
+    # is resolved inside this distro instead and fails as "not a shared mount".
+    PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-runtime/ingress
+    PIXEL_PREVIEW_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-runtime/preview
     PIXEL_RUNTIME_BIND_PROPAGATION_VALUE=rshared
 }
 

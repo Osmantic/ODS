@@ -131,11 +131,11 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
 ```
 
-Windows installs keep the cloned repo separate from the runtime directory. The
-installer writes `.env`, models, logs, and compose state to
-`$env:USERPROFILE\ods` by default (or `$env:ODS_HOME`). After
-installing, run `.\ods.ps1` or manual `docker compose` commands from that
-runtime directory, not from the source checkout.
+The Windows entry point guides Ubuntu/WSL2 preparation and requires Pixel with
+Hermes disabled. Start in normal PowerShell; feature preparation may request
+administrator approval and a restart. The runtime lives at `~/ods` inside Ubuntu;
+manage it there with `./ods status`. Docker Desktop must expose Docker/Compose
+to that distribution. Existing native Windows installations are not migrated.
 
 See [`docs/WINDOWS-QUICKSTART.md`](docs/WINDOWS-QUICKSTART.md) for details.
 

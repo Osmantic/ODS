@@ -261,7 +261,7 @@ if (-not $_diskCheck.Sufficient) {
         $_installDirHint = "$($Matches[1].ToUpperInvariant()):\ods"
     }
     Write-AI "  To use a different drive, rerun from the source checkout with:"
-    Write-AI "  .\install.ps1 -InstallDir $_installDirHint"
+    Write-AI "  .\ods\installers\windows\install-windows.ps1 -InstallDir $_installDirHint"
     $requirementsMet = $false
 } else {
     Write-AISuccess "Disk: $($_diskCheck.FreeGB) GB free OK (>= ${_minDiskGB} GB for Tier $selectedTier)"

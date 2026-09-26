@@ -28,6 +28,8 @@ test: ## Run unit and contract tests
 	@python3 tests/test-model-library-pinned-urls.py
 	@bash tests/test-installer-context-parity.sh
 	@bash tests/test-hermes-context-floor.sh
+	@bash tests/test-install-menu-hermes-flag.sh
+	@bash tests/test-custom-menu-agent-flags.sh
 	@echo ""
 	@echo "=== Hermes slash worker prune ==="
 	@bash tests/test-hermes-slash-worker-prune.sh
@@ -53,6 +55,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-linux-host-agent-stop.sh
 	@bash tests/test-preflight-dashboard-port.sh
 	@bash tests/test-wsl-broken-docker-shim.sh
+	@bash tests/test-wsl-nvidia-driver-guard.sh
 	@bash tests/test-ui-missing-container-fast-fail.sh
 	@echo ""
 	@echo "=== ods-doctor rootless subordinate IDs ==="

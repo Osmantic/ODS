@@ -9,6 +9,7 @@ param(
     [switch]$NoDelegate,
     [switch]$SkipDockerCheck,
     [string]$Distro = "",
+    [string]$InstallRoot = "",
     [string]$ReportPath = "$env:TEMP\\ods-windows-preflight.json",
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$PassthroughArgs
@@ -16,6 +17,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $checks = @()
+$requestedInstallRoot = $InstallRoot
 . (Join-Path $PSScriptRoot "wsl-lifecycle.ps1") -Distro $Distro
 
 function Write-Section([string]$Message) {
@@ -190,9 +192,13 @@ if ($NoDelegate) {
 
 # Establish the independent Windows-owned WSL client before the installer's
 # client can exit. The installed directory may not exist until install-core runs.
-$rootCommand = New-ODSWslRootCommand $repoRootWsl
-$linuxInstallRoot = (& wsl.exe --distribution $Distro --exec bash -lc $rootCommand | Select-Object -Last 1).Trim()
-if ($LASTEXITCODE -ne 0) { throw "Could not resolve the Linux installation directory" }
+if ($requestedInstallRoot) {
+    $linuxInstallRoot = $requestedInstallRoot
+} else {
+    $rootCommand = New-ODSWslRootCommand $repoRootWsl
+    $linuxInstallRoot = (& wsl.exe --distribution $Distro --exec bash -lc $rootCommand | Select-Object -Last 1).Trim()
+    if ($LASTEXITCODE -ne 0) { throw "Could not resolve the Linux installation directory" }
+}
 $lifetimeIdentity = Get-ODSWslIdentity $Distro $linuxInstallRoot
 # Pin the resolver result into the actual installer invocation, even when a
 # later login shell would choose different environment defaults.
@@ -214,6 +220,15 @@ if ($Distro) {
     & wsl.exe bash -lc $wslCommand
 }
 $installerExitCode = $LASTEXITCODE
+if ($installerExitCode -eq 0 -and $lifetimeRequired -and '--pixel' -cin $PassthroughArgs) {
+    $verifyPath = Convert-ToWslPath (Join-Path $PSScriptRoot 'verify-wsl-portal.sh')
+    $verifyCommand = 'bash ' + (ConvertTo-ODSBashArgument $verifyPath) + ' ' + (ConvertTo-ODSBashArgument $linuxInstallRoot)
+    & wsl.exe --distribution $Distro --exec bash -lc $verifyCommand
+    $installerExitCode = $LASTEXITCODE
+    if ($installerExitCode -ne 0) {
+        Write-Warning 'Pixel/Portal verification failed. ODS is not ready; inspect the reported service or endpoint and rerun the same install command. No Hermes fallback was started.'
+    }
+}
 if ($installerExitCode -ne 0 -and $lifetimeRequired) {
     Write-Warning "Installation failed. The ODS WSL lifetime remains available for diagnosis; use lifecycle release to release only its WSL client if the incomplete install cannot stop normally."
 }

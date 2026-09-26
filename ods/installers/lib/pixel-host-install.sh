@@ -4075,8 +4075,8 @@ _ods_pixel_install_ingress() {
     local wsl_bridge_unit="$plugin_root/host/pixel-wsl-runtime-bridge.service"
     local ods_version="${VERSION:-3.0.0}"
     if grep -Fxq 'PIXEL_RUNTIME_BIND_PROPAGATION=rshared' "${INSTALL_DIR:?}/.env"; then
-        grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/host/wsl/ods-portal-runtime/ingress' "$INSTALL_DIR/.env" || return 1
-        grep -Fxq 'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/host/wsl/ods-portal-runtime/preview' "$INSTALL_DIR/.env" || return 1
+        grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/ingress' "$INSTALL_DIR/.env" || return 1
+        grep -Fxq 'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/preview' "$INSTALL_DIR/.env" || return 1
         grep -qi microsoft /proc/sys/kernel/osrelease || return 1
         wsl_bridge=true
     fi
@@ -4273,8 +4273,13 @@ PY
     ods_sudo systemctl restart pixel-ingress.service || return 1
     if "$wsl_bridge"; then
         ods_sudo systemctl enable ods-pixel-wsl-runtime-bridge.service || return 1
-        ods_sudo systemctl start ods-pixel-wsl-runtime-bridge.service || return 1
-        ods_sudo systemctl is-active --quiet ods-pixel-wsl-runtime-bridge.service || return 1
+        if ! ods_sudo systemctl start ods-pixel-wsl-runtime-bridge.service \
+            || ! ods_sudo systemctl is-active --quiet ods-pixel-wsl-runtime-bridge.service; then
+            ai_bad "The WSL runtime bridge for Pixel Edge did not start. Its journal:"
+            ods_sudo journalctl -u ods-pixel-wsl-runtime-bridge.service -n 20 --no-pager -o cat \
+                || ai_warn "journalctl could not read the bridge journal (non-fatal)"
+            return 1
+        fi
     fi
     ods_sudo systemctl is-active --quiet openclaw-gateway.service pixel-ingress.service \
         pixel-extension-manager.service pixel-artifact-promoter.service \
@@ -4528,6 +4533,13 @@ ods_pixel_install_default_agent() {
         searxng|parallel-free) ;;
         *) ai_bad "Pixel returned an invalid native search provider."; return 1 ;;
     esac
+    if grep -Fxq 'PIXEL_RUNTIME_BIND_PROPAGATION=rshared' "${INSTALL_DIR:?}/.env"; then
+        # Pixel Edge starts here, before the WSL runtime bridge is installed.
+        # Create the fixed empty targets on WSL's shared tmpfs so its rshared
+        # binds exist now and receive the bridge mounts when they arrive.
+        ods_sudo install -d -o root -g root -m 0755 -- /mnt/wsl/ods-portal-runtime \
+            /mnt/wsl/ods-portal-runtime/ingress /mnt/wsl/ods-portal-runtime/preview || return 1
+    fi
     ai "Starting the ODS model gateway, control API, and search prerequisites for Pixel review..."
     # The scoped extension manager validates its contract against dashboard-api
     # while Pixel is installed below. The access coordinator also requires the

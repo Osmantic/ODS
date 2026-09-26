@@ -237,7 +237,11 @@ for file in "${windows_copy_paste_docs[@]}"; do
     require_literal "$file" "$WINDOWS_SOURCE_ZIP_URL" "Windows no-Git source ZIP install"
     require_literal "$file" '[guid]::NewGuid().ToString("N")' "Windows collision-free temporary source directory"
     require_literal "$file" 'Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force' "Windows source ZIP expansion"
-    require_literal "$file" '.\install.ps1' "Windows installer invocation"
+    if [[ "$file" == "$ROOT_DIR/docs/WINDOWS-INSTALL-WALKTHROUGH.md" ]]; then
+        require_literal "$file" '.\ods\installers\windows\install-windows.ps1' "Legacy native installer invocation"
+    else
+        require_literal "$file" '.\install.ps1' "Windows installer invocation"
+    fi
     if grep -qF 'Remove-Item -LiteralPath $odsSrc -Recurse' "$file"; then
         fail "Windows copy/paste install must not recursively delete a reusable temporary path in ${file#"$REPO_ROOT"/}"
     fi

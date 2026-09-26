@@ -575,6 +575,20 @@ detect_gpu() {
 MIN_DRIVER_VERSION=570
 MIN_WHISPER_CUDA_DRIVER_VERSION=575
 
+# WSL2 receives the NVIDIA driver from Windows through /usr/lib/wsl/lib.
+# Installing a Linux nvidia-driver package inside the distro shadows those
+# libraries and breaks GPU passthrough, and "reboot" inside WSL does not load
+# a Windows driver. An old WSL driver is therefore a Windows-side fix only.
+ods_wsl_nvidia_driver_too_old() {
+    local driver="${1:-unknown}"
+    ai_bad "NVIDIA driver ${driver} comes from Windows and is older than ${MIN_DRIVER_VERSION}."
+    ai "Update the NVIDIA driver on Windows (NVIDIA App or nvidia.com), then run in PowerShell:"
+    ai "  wsl --shutdown"
+    ai "Reopen Ubuntu, confirm nvidia-smi shows driver >= ${MIN_DRIVER_VERSION}, and re-run ODS."
+    ai "Do not install NVIDIA drivers inside WSL; that breaks GPU passthrough."
+    error "NVIDIA driver ${driver} on Windows is below ${MIN_DRIVER_VERSION}."
+}
+
 ods_whisper_cuda_supported() {
     local backend="${1:-${GPU_BACKEND:-cpu}}"
     local driver_major="${2:-${DRIVER_VERSION:-0}}"

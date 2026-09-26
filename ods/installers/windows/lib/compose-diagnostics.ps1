@@ -348,7 +348,7 @@ function Write-ODSComposeFailureReport {
         [string[]]$ComposeArgs = @(),
         [string]$Phase = "install",
         [string]$ComposeLogPath = "",
-        [string]$NextStep = "Open the saved report, fix the failed image/port/compose error it identifies, then re-run .\install.ps1."
+        [string]$NextStep = "Open the saved report, fix the failed image/port/compose error it identifies, then re-run .\ods\installers\windows\install-windows.ps1."
     )
 
     $logsDir = Join-Path $InstallDir "logs"
@@ -444,7 +444,7 @@ function Write-ODSComposeDiagnostics {
         [string]$Phase = "install",
         [string[]]$ComposeArgs = @(),
         [string]$ComposeLogPath = "",
-        [string]$NextStep = "Open the saved report, fix the failed image/port/compose error it identifies, then re-run .\install.ps1.",
+        [string]$NextStep = "Open the saved report, fix the failed image/port/compose error it identifies, then re-run .\ods\installers\windows\install-windows.ps1.",
         [switch]$SaveReport
     )
 

@@ -498,6 +498,7 @@ jobs:
           bash tests/test-linux-install-preflight.sh
           bash tests/test-preflight-dashboard-port.sh
           bash tests/test-wsl-broken-docker-shim.sh
+          bash tests/test-wsl-nvidia-driver-guard.sh
 
       - name: Installer Simulation Harness
         run: |
