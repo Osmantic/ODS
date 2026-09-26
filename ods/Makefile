@@ -29,6 +29,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-installer-context-parity.sh
 	@bash tests/test-hermes-context-floor.sh
 	@bash tests/test-install-menu-hermes-flag.sh
+	@bash tests/test-lemonade-external-gpu.sh
 	@echo ""
 	@echo "=== Hermes slash worker prune ==="
 	@bash tests/test-hermes-slash-worker-prune.sh

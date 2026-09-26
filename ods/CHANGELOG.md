@@ -77,6 +77,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The installer menu presets (Full Stack, Core Only) no longer override an
   explicit `--hermes` or `--no-hermes`. The Windows Pixel path passes
   `--no-hermes`; choosing Full Stack downloaded and enabled Hermes anyway.
+- Windows (`install.ps1`) with an AMD GPU now runs the model on the GPU through
+  Lemonade Server on Windows instead of on the CPU in WSL. Setup detects the
+  GPU and its memory in Windows, picks the model as the native installer does,
+  installs the pinned Lemonade for the user after asking, downloads the model
+  with checksum verification, runs Lemonade on 127.0.0.1 from a sign-in
+  scheduled task (`ODSLemonadeRuntime`), loads the model, and passes the route
+  to the Linux installer. `install-core.sh` gains `--lemonade-model`,
+  `--lemonade-gpu-name` and `--lemonade-gpu-vram-mb`; the hardware scan shows
+  that GPU instead of "None".
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
   file. The 48 other re-pinned models download the same bytes: each sha256 was
