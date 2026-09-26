@@ -12087,6 +12087,100 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
 });
 }
 
+// OpenClaw 2026.6.33 prefixes every before_agent_finalize revision with this
+// text and sends it as the next attempt's prompt of the same run; after a
+// mid-turn context compaction the next attempt's prompt is the continuation.
+const HARNESS_REVISION_PREFIX = "Before accepting the previous final answer, apply this revision request and produce " +
+  "the revised final answer. Do not repeat completed work or rerun tools unless the request explicitly requires it.";
+const HARNESS_MID_TURN_CONTINUATION = "Continue from the current transcript after the latest tool result. Do not repeat " +
+  "the original user request, and do not rerun completed tools unless the transcript shows they are still needed.";
+
+// Fleet qualification, event search after a website and a coding task in the
+// same chat (three hosts, Qwen3-Coder-Next and Qwen3.5). The source revision
+// "...or remove that URL and mark the claim as unverified" was read as a
+// request to edit the chat's last verified preview: the revision's page reads
+// were refused as outside that artifact (two runs then hit their tool limit,
+// with the old preview link appended), or Pixel was sent to edit and republish
+// that project page although the owner said "Do not create files". A harness
+// prompt is not the owner's.
+test("a harness revision of a research answer keeps the research scope, not a visual edit of the last preview", () => {
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel",
+    { prompt: "Build and show me an interactive website demo." });
+  const site = { path: "signal-garden/index.html", content: "<!doctype html><title>Signal Garden</title><p>slow</p>" };
+  call(guard, "write", { event: { params: site } });
+  afterCall(guard, "write", { event: { params: site, result: { details: { status: "completed" } } } });
+  const snapshot = workspacePreviewSnapshot("signal-garden", [site]);
+  call(guard, "pixel_ods_workspace_preview", { event: { params: { relativeDirectory: "signal-garden" } } });
+  afterCall(guard, "pixel_ods_workspace_preview", { event: { params: { relativeDirectory: "signal-garden" }, result: { details: {
+    schemaVersion: 1, kind: "ods-pixel-workspace-preview", status: "succeeded", relativeDirectory: "signal-garden",
+    siteId: snapshot.siteId, port: 9437, url: `http://${snapshot.siteId}.localhost:9437/${snapshot.siteId}/`, ...snapshot,
+    httpStatus: 200, readbackVerified: true, executable: false, overwritten: false,
+  } } } });
+
+  const owner = "Today is 2026-09-26. Search the live web for at least three public events in Philadelphia happening " +
+    "within the next 45 days. Actually search and open sources. For each give event title, exact date, venue and a " +
+    "direct official source URL. Exclude undated listings and past events. Explain any unavailable result honestly. " +
+    "Do not create files.\n\n[ODS Portal delivery requirement: Answer the owner's complete message above.]";
+  const run2 = { runId: "run-2", sessionId: "session-1" };
+  const context2 = { agentId: "pixel", ...run2 };
+  guard.observeRun(context2, "pixel", { prompt: owner });
+  const listing = "https://allevents.in/philadelphia/concerts";
+  const own = "https://philadelphia.heliumcomedy.com/events/133898";
+  const search = { query: "Philadelphia events September 2026" };
+  call(guard, "web_search", { event: { runId: "run-2", params: search }, context: run2 });
+  afterCall(guard, "web_search", { event: { runId: "run-2", params: search, result: {
+    content: [{ type: "text", text: JSON.stringify({ results: [{ url: listing, title: "Concerts" }, { url: own, title: "Christian Johnson" }] }) }],
+    details: { results: [{ url: listing }, { url: own }] },
+  } }, context: run2 });
+  const read = (url) => {
+    assert.notEqual(call(guard, "web_fetch", { event: { runId: "run-2", params: { url } }, context: run2 })?.block, true, url);
+    afterCall(guard, "web_fetch", { event: { runId: "run-2", params: { url }, result: {
+      content: [{ type: "text", text: `Fetched ${url}` }],
+      details: { status: 200, url, finalUrl: url, text: "Christian Johnson, Sunday, September 27, 2026, 7:00 PM, Helium Comedy Club" },
+    } }, context: run2 });
+  };
+  read(listing);
+  const armed = guard.beforeAgentFinalize({ lastAssistantMessage:
+    `1. Christian Johnson - September 27, 2026 - Helium Comedy Club - ${own}\n2. Weezer - September 29, 2026 - ${listing}` },
+  context2);
+  assert.equal(armed?.retry?.idempotencyKey, "ods-opened-source-attribution");
+
+  guard.observeRun(context2, "pixel", {
+    prompt: `${HARNESS_REVISION_PREFIX}\n\n${armed.reason}\n\n${armed.retry.instruction}`,
+    messages: [{ role: "user", content: [{ type: "text", text: owner }] }],
+  });
+  // The revision reads the cited page: a web read, not an edit outside a bound artifact.
+  read(own);
+  const revised = guard.beforeAgentFinalize({ lastAssistantMessage:
+    `1. Christian Johnson - September 27, 2026 - Helium Comedy Club - ${own}\n2. Weezer - September 29, 2026 - ${listing}` },
+  context2);
+  // No edit-and-republish pass for the earlier artifact, and no preview link on the answer.
+  assert.equal(revised, undefined, JSON.stringify(revised));
+  assert.deepEqual(guard.deliveryVerificationForRun("run-2"), { status: "none" });
+});
+
+test("a harness continuation keeps the owner's requested test run as an obligation", () => {
+  const owner = "CODE TASK: In a new workspace project calc, implement totals.py and test_totals.py. Write meaningful " +
+    "unittest tests and actually run python3 -m unittest -v capturing both streams. Final reply includes test outcome.";
+  for (const retry of [HARNESS_MID_TURN_CONTINUATION,
+    `${HARNESS_REVISION_PREFIX}\n\nThe research answer is missing source attribution.\n\nRevise it.`]) {
+    const guard = createToolLoopGuard();
+    const context = { agentId: "pixel", runId: "run-1", sessionId: "session-1" };
+    guard.observeRun(context, "pixel", { prompt: owner });
+    const file = { path: "calc/totals.py", content: "def total(values):\n    return sum(values)\n" };
+    call(guard, "write", { event: { params: file } });
+    afterCall(guard, "write", { event: { params: file, result: { details: { status: "completed" } } } });
+    const before = guard.deliveryVerificationForRun("run-1");
+    assert.equal(before.status, "failed");
+    guard.observeRun(context, "pixel", { prompt: retry, messages: [{ role: "user", content: owner }] });
+    assert.deepEqual(guard.deliveryVerificationForRun("run-1"), before, retry.slice(0, 40));
+    // The owner's own message again (OpenClaw's retry after a precheck overflow) classifies as before.
+    guard.observeRun(context, "pixel", { prompt: owner });
+    assert.deepEqual(guard.deliveryVerificationForRun("run-1"), before);
+  }
+});
+
 test("fresh-chat repair of an explicitly named workspace project can inspect and verify", () => {
   for (const verb of ["Repair", "Fix"]) {
     const guard = createToolLoopGuard();

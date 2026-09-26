@@ -9341,16 +9341,26 @@ export function createToolLoopGuard({
       const state = stateFor(runId);
       state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
+      // One run answers one owner message, which its first attempt carries. A
+      // later attempt of the same run carries a harness prompt instead: a
+      // before_agent_finalize revision, or the continuation after a mid-turn
+      // context compaction. That text is not the owner's, so it never
+      // re-derives what the owner asked for (a fleet event search: the source
+      // revision "...or remove that URL..." read as an edit of the chat's last
+      // published preview, so its page reads were refused, or Pixel rewrote an
+      // unrelated project's page and republished it in a research turn that
+      // said "Do not create files").
+      const harnessAttempt = typeof state.ownerRequestText === "string" && ownerIntent !== state.ownerRequestText;
       if (ownerIntent) state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);
-      if (ownerIntent) state.githubExtensionRequest = /^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(ownerIntent);
+      if (ownerIntent && !harnessAttempt) state.githubExtensionRequest = /^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(ownerIntent);
       if (capabilities !== undefined) state.preparationExecutionHost = capabilities.executionHost;
-      if (ownerIntent) state.playgroundOwnerIntent = ownerIntent;
-      if (ownerIntent) state.ownerResearchDate = ownerResearchDate(ownerIntent);
-      if (ownerIntent) state.ownerQuestionIntent=requestsChoiceQuestion(ownerIntent);
+      if (ownerIntent && !harnessAttempt) state.playgroundOwnerIntent = ownerIntent;
+      if (ownerIntent && !harnessAttempt) state.ownerResearchDate = ownerResearchDate(ownerIntent);
+      if (ownerIntent && !harnessAttempt) state.ownerQuestionIntent=requestsChoiceQuestion(ownerIntent);
       if (teamRole) {state.managedTeamWorker=true;state.managedTeamReadOnly=teamRole!=='Builder';state.managedTeamCoordinator=teamRole==='Coordinator';state.ownerQuestionIntent=teamQuestionIntent;}
       if (capabilities !== undefined) {
         state.configuredWorkspaceRoot = capabilities.workspaceRoot;
-        state.privateBrowserAccess = capabilities.privateBrowserAccess === true &&
+        if (!harnessAttempt) state.privateBrowserAccess = capabilities.privateBrowserAccess === true &&
           userMessageRequestsPrivateUrl(event?.messages, event?.prompt);
       }
       if (typeof sessionId === "string" && sessionId) {
@@ -9367,7 +9377,7 @@ export function createToolLoopGuard({
       // same run carries a harness retry prompt instead.
       if (ownerIntent) state.ownerRequestText ??= ownerIntent;
       takeOwnerCancellation(state, runId, context, agentId);
-      if (currentUserText(event?.messages, event?.prompt)) {
+      if (!harnessAttempt && currentUserText(event?.messages, event?.prompt)) {
         state.ownerIntentObserved = true;
         state.workspacePreviewForbidden = ownerForbidsWorkspacePreview(event?.messages, event?.prompt);
         const previousPreview = typeof sessionId === "string" && sessionId
@@ -9576,7 +9586,7 @@ export function createToolLoopGuard({
             ? userMessageWorkspaceContinuationPath(event?.messages, event?.prompt)
             : undefined;
       }
-      const observationIntent = currentOwnerIntentText(event?.messages, event?.prompt) ?? "";
+      const observationIntent = harnessAttempt ? "" : currentOwnerIntentText(event?.messages, event?.prompt) ?? "";
       for (const [name, pattern] of [
         ["pixel_ods_status", "ODS\\s+status|pixel_ods_status"],
         ["pixel_ods_apps_list", "ODS\\s+(?:apps?|applications?)|pixel_ods_apps_list"],
@@ -9585,7 +9595,7 @@ export function createToolLoopGuard({
       ]) {
         if (explicitlyRejectsOdsTool(observationIntent, pattern)) state.odsExcludedTools.add(name);
       }
-      if (!state.operationsRequired && !state.odsRoutingInitialized) {
+      if (!harnessAttempt && !state.operationsRequired && !state.odsRoutingInitialized) {
         const requirements = userMessageOdsToolRequirements(event?.messages, event?.prompt);
         if (requirements.length > 0) {
           // Outstanding routing work is consumed by the outer Tool Search hook.
@@ -9595,7 +9605,7 @@ export function createToolLoopGuard({
           state.odsRoutingInitialized = true;
         }
       }
-      const githubUrl = userMessageGitHubRepositoryUrl(event?.messages, event?.prompt);
+      const githubUrl = harnessAttempt ? undefined : userMessageGitHubRepositoryUrl(event?.messages, event?.prompt);
       if (githubUrl) {
         if (!state.githubCanonicalUrl) {
           state.githubCanonicalUrl = githubUrl;
