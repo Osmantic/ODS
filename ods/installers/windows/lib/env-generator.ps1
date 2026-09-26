@@ -720,8 +720,10 @@ function New-ODSEnv {
     # way on managed AMD/Lemonade installs or when a Lemonade process actually
     # listens on 9000 (e.g. Docker publishing Whisper there while an unrelated
     # LemonadeServer holds loopback 9000). Custom .env ports remain unchanged.
-    $whisperPort = Get-EnvOrNew "WHISPER_PORT" "9000"
-    $whisperPort = Resolve-WindowsWhisperHostPort -ConfiguredPort $whisperPort `
+    $whisperPort = Resolve-WindowsODSPort `
+        -Name "WHISPER_PORT" -DefaultPort 9000 `
+        -ExistingEnv $existingEnv -InstallDir $InstallDir
+    $whisperPort = Resolve-WindowsWhisperHostPort -ConfiguredPort ([string]$whisperPort) `
         -GpuBackend $GpuBackend -AmdInferenceRuntime $AmdInferenceRuntime `
         -AmdInferenceLocation $AmdInferenceLocation
 
