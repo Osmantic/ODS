@@ -263,6 +263,33 @@ class TestBuildApiStatus:
         assert result["inference"]["loadedModel"] == "Test-32B"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("active,count,expected", [
+        (True, 3412, 3412), (False, 3412, None), (None, 3412, None), (True, None, None),
+    ], ids=["generating", "idle", "unknown-activity", "ambiguous"])
+    async def test_live_output_tokens_require_active_measured_generation(
+        self, monkeypatch, active, count, expected,
+    ):
+        from models import BootstrapStatus, ModelInfo
+
+        monkeypatch.setattr("main.get_gpu_info", lambda: None)
+        monkeypatch.setattr("main.get_all_services", AsyncMock(return_value=[]))
+        monkeypatch.setattr("main.get_model_info", lambda: ModelInfo(name="Test-32B", size_gb=16.0, context_length=32768))
+        monkeypatch.setattr("main.get_bootstrap_status", lambda: BootstrapStatus(active=False))
+        monkeypatch.setattr("main.get_loaded_model", AsyncMock(return_value="Test-32B"))
+        monkeypatch.setattr("main.get_llama_metrics", AsyncMock(return_value={
+            "tokens_per_second": 14.1, "throughput_model": "Test-32B",
+            "inference_active": active, "live_output_tokens": count,
+        }))
+        monkeypatch.setattr("main.get_llama_context_size", AsyncMock(return_value=32768))
+        monkeypatch.setattr("main.get_uptime", lambda: 0)
+        monkeypatch.setattr("main.get_cpu_metrics", lambda: {"percent": 0, "temp_c": None})
+        monkeypatch.setattr("main.get_ram_metrics", lambda: {"used_gb": 0, "total_gb": 0, "percent": 0})
+
+        result = await _build_api_status()
+
+        assert result["inference"]["liveOutputTokens"] == expected
+
+    @pytest.mark.asyncio
     async def test_live_runtime_model_overrides_stale_configured_model(self, monkeypatch):
         from models import BootstrapStatus, ModelInfo
 
@@ -1158,6 +1185,7 @@ class TestApiStatusFallback:
         assert data["inference"]["throughputState"] == "unavailable"
         assert data["inference"]["throughputModel"] == ("known-model" if prior else None)
         assert data["inference"]["throughputSampledAt"] == (123.0 if prior else None)
+        assert data["inference"]["liveOutputTokens"] is None
 
     def test_runtime_error_propagates_as_500(self, test_client, monkeypatch):
         """Programming errors (RuntimeError) inside _build_api_status must

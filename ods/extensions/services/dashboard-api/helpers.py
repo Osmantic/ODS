@@ -498,6 +498,7 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
                 "throughput_sampled_at": previous["at"] if previous else None,
                 "throughput_model": previous_identity[4] if previous else None,
                 "inference_active": None,
+                "live_output_tokens": None,
             }
         if previous_identity != identity:
             _prev_tokens.clear()
@@ -514,7 +515,8 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
             _prev_tokens.clear()
             if "result" in _llama_metrics_sample:
                 _llama_metrics_sample["result"].update(
-                    throughput_state="unavailable", inference_active=None)
+                    throughput_state="unavailable", inference_active=None,
+                    live_output_tokens=None)
             raise
         mode = result.pop("_throughput_mode", "latest_completion" if LLM_BACKEND == "lemonade" else "generation_interval")
 
@@ -545,6 +547,7 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
                                        else "measured" if newly_measured else "retained")
         result["throughput_mode"] = previous.get("mode", mode) if previous else mode
         result.setdefault("inference_active", None)
+        result.setdefault("live_output_tokens", None)
         result["throughput_model"] = model_name or None
         _llama_metrics_sample.update(identity=identity, time=_metrics_clock(), result=dict(result))
         return result
@@ -558,6 +561,8 @@ def _observe_live_output_slots(payload, sampled_at: float):
     This is distinct from Prometheus n_decode_total (decode invocations).
     Read only numeric identifiers/counters; never retain prompt/params/text.
     The caller owns the shared sampler lock and clears this baseline on failure.
+    The baseline also keeps the output count of a sole active generation;
+    several concurrent generations have no single count to report.
     """
     if not isinstance(payload, list):
         raise ValueError("slot metrics must be a list")
@@ -582,7 +587,8 @@ def _observe_live_output_slots(payload, sampled_at: float):
         seen_slots.add(slot_id)
         counts[(slot_id, task_id)] = count
     previous = _prev_tokens.get("live_slots")
-    _prev_tokens["live_slots"] = {"at": sampled_at, "counts": counts}
+    _prev_tokens["live_slots"] = {"at": sampled_at, "counts": counts,
+                                  "single": next(iter(counts.values())) if len(counts) == 1 else None}
     if not counts or previous is None or previous["counts"].keys() != counts.keys():
         return None
     elapsed = sampled_at - previous["at"]
@@ -722,11 +728,15 @@ async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Opt
         mode = "generation_interval"
         if reset or active is not True:
             _prev_tokens.pop("live_slots", None)
+        live_output_tokens = None
         if active is True:
             try:
                 slots = await client.get(f"http://{host}:{metrics_port}/slots", params=params, timeout=2.0)
                 slots.raise_for_status()
                 live_rate = _observe_live_output_slots(slots.json(), _metrics_clock())
+                # Output accepted so far by the one active generation, measured
+                # in this sample. Never held across samples or estimated.
+                live_output_tokens = _prev_tokens["live_slots"]["single"]
                 if live_rate is not None and live_rate > 0:
                     tps, available, mode = live_rate, True, "live_output_interval"
             except (httpx.HTTPError, OSError, ValueError, KeyError):
@@ -743,6 +753,7 @@ async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Opt
             "_counter_reset": reset,
             "_counters": (curr, gen_secs),
             "inference_active": active,
+            "live_output_tokens": live_output_tokens,
         }
     except (AgentClientError, httpx.HTTPError, httpx.TimeoutException, OSError, ValueError, KeyError) as e:
         _prev_tokens.clear()  # never measure a rate across an unavailable gap

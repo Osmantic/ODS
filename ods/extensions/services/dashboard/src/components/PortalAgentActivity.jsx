@@ -41,7 +41,7 @@ function ActivityRow({event,active}) {
   </li>
 }
 
-export default function PortalAgentActivity({task:raw,active=false,status}) {
+export default function PortalAgentActivity({task:raw,active=false,status,liveOutputTokens=null}) {
   const task=parseTaskActivity(raw,raw?.runId)
   const id=useId(), viewport=useRef(null), content=useRef(null), follow=useRef(true), mountedAt=useRef(Date.now())
   const failed=status==='error' || task?.state==='failed'
@@ -56,6 +56,10 @@ export default function PortalAgentActivity({task:raw,active=false,status}) {
   const progress=[...events].reverse().find(event=>event.display?.type==='text' && event.state==='completed')?.display?.label
   const activeLabel=progress || (currentType==='search' || current?.kind==='browser'?'Searching the web…':currentType==='text' || !current?'Thinking…':currentType==='steps'?'Planning…':'Working…')
   const label=active?activeLabel:stopped?'Stopped':failed?'Needs attention':`Worked for ${activityDuration(seconds)}`
+  // A measured runtime counter while no tool is running: the model is still
+  // producing this step (often a long file write). Never an estimate.
+  const liveOutput=active && !current && Number.isSafeInteger(liveOutputTokens) && liveOutputTokens>0
+    ?liveOutputTokens.toLocaleString(typeof navigator==='undefined'?'en':navigator.language):null
   const refreshFade=()=>{const el=viewport.current;if(el)setFade({top:el.scrollTop>2,bottom:el.scrollTop+el.clientHeight<el.scrollHeight-2})}
   useEffect(()=>{
     if(!active)return
@@ -79,6 +83,7 @@ export default function PortalAgentActivity({task:raw,active=false,status}) {
     }}>
       <span className={active?'portal-agent-shimmer':''}>{label}</span>
       {active && seconds>=1 && <span className="portal-agent-time">{activityDuration(seconds)}</span>}
+      {liveOutput && <span className="portal-agent-time" title="Output generated so far, measured by the local model runtime">{liveOutput} tokens</span>}
       <ChevronDown size={13} aria-hidden="true"/>
     </button>
     <div id={`${id}-log`} role="region" aria-labelledby={`${id}-trigger`} hidden={!open}>
