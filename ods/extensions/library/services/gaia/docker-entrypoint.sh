@@ -42,8 +42,8 @@ if [[ "$backend_port" == "$port" ]]; then
   exit 2
 fi
 
-# gaia-ui prepends ~/.gaia/bin (and a uv install dir) to the backend's PATH.
-if ngrok_path="$(PATH="$HOME/.gaia/bin:$HOME/.local/bin:$PATH"; command -v ngrok)"; then
+# gaia-ui prepends ~/.gaia/bin and uv's install dirs to the backend's PATH.
+if ngrok_path="$(PATH="$HOME/.gaia/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; command -v ngrok)"; then
   log "refusing to start: found $ngrok_path. GAIA's tunnel login trusts loopback peers, and every client reaches this container's GAIA through a loopback forwarder."
   exit 1
 fi

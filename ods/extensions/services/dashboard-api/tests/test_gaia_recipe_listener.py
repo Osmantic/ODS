@@ -241,11 +241,13 @@ def test_serve_only_mode_runs_gaia_ui_directly_on_the_service_port(entrypoint):
 
 
 @needs_linux_node
-def test_refuses_to_start_when_ngrok_could_enable_the_tunnel(entrypoint, tmp_path):
-    gaia_bin = tmp_path / "home/.gaia/bin"
-    gaia_bin.mkdir(parents=True)
-    (gaia_bin / "ngrok").write_text("#!/bin/sh\n")
-    (gaia_bin / "ngrok").chmod(0o755)
+@pytest.mark.parametrize("bin_dir", [".gaia/bin", ".local/bin", ".cargo/bin"])
+def test_refuses_to_start_when_ngrok_could_enable_the_tunnel(entrypoint, tmp_path, bin_dir):
+    """gaia-ui puts these HOME dirs first on the backend's PATH."""
+    ngrok_dir = tmp_path / "home" / bin_dir
+    ngrok_dir.mkdir(parents=True)
+    (ngrok_dir / "ngrok").write_text("#!/bin/sh\n")
+    (ngrok_dir / "ngrok").chmod(0o755)
     ep = entrypoint()
     assert ep.wait_exit() == 1
     assert "refusing to start" in ep.log.read_text()
