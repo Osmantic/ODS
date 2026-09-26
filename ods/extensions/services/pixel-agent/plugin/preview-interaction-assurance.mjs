@@ -1,7 +1,9 @@
 import {
   hasVisibilityTransitionPlan,
+  inspectionControls,
   inspectionPageErrors,
   normalizeWorkspacePreviewInspectionParams,
+  validateIncompleteInspectionReceipt,
   validateWorkspacePreviewInspectionReceipt,
 } from './workspace-preview-inspect.mjs';
 export { hasVisibilityTransitionPlan } from './workspace-preview-inspect.mjs';
@@ -79,11 +81,15 @@ export function requestsBehaviorPreservation(text) {
     /\b(?:preserve|retain|keep|maintain)\b[^.!?;\n]{0,160}\b(?:behaviou?r|functionality|interactions?)\b/i.test(clause));
 }
 
-function boundReceipt(params, result, preview) {
+// `incomplete` also accepts an untested-transition result and yields the
+// capsule receipt it carries; only load-time evidence readers pass it.
+function boundReceipt(params, result, preview, {incomplete = false} = {}) {
   if (!preview || !result?.details) return undefined;
   const request = normalizeWorkspacePreviewInspectionParams(params);
   if (request.siteId !== preview.siteId || request.sha256 !== preview.sha256) return undefined;
-  return {request, receipt: validateWorkspacePreviewInspectionReceipt(result.details, request)};
+  return {request, receipt: incomplete && result.details.status === 'incomplete'
+    ? validateIncompleteInspectionReceipt(result.details, request)
+    : validateWorkspacePreviewInspectionReceipt(result.details, request)};
 }
 
 // Passing steps on a page that threw uncaught script errors are not verified
@@ -103,6 +109,20 @@ export function boundInspectionPageErrors(params, result, preview) {
   try {
     const {receipt} = boundReceipt(params, result, preview) ?? {};
     return inspectionPageErrors(receipt) ? Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256}) : undefined;
+  } catch { return undefined; }
+}
+
+// The load-time control names of a valid receipt bound to this snapshot,
+// passed, failed or incomplete (an untested requested show/hide change; its
+// capsule receipt passed): they are observed before any step runs, so a
+// failed step or a missing transition does not void them. `controls` is
+// undefined when the receipt carries none (an older capsule or a transport
+// failure). Never interaction evidence.
+export function boundInspectionControls(params, result, preview) {
+  try {
+    const {receipt} = boundReceipt(params, result, preview, {incomplete: true}) ?? {};
+    return receipt ? Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256,
+      controls: inspectionControls(receipt)}) : undefined;
   } catch { return undefined; }
 }
 

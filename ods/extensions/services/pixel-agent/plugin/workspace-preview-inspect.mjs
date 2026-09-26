@@ -28,12 +28,56 @@ export function hasVisibilityTransitionPlan(request) {
         isDeepStrictEqual(before.locator, after.locator))));
 }
 
+// Load-time controls (capsule-computed): the accessible name of every button
+// and link after the page scripts ran, hidden ones included, in document
+// order. Names and text are page data. Evidence about names only; it never
+// changes a step, the receipt status or interaction proof.
+export const MAX_CONTROLS = 48, MAX_CONTROL_COUNT = 1000, MAX_CONTROL_CHARS = 120;
+export const CONTROL_ROLES = Object.freeze(['button','link']);
+export const CONTROL_SOURCES = Object.freeze(['aria-labelledby','aria-label','content','other']);
+const controlsValid = c => exact(c,['count','items']) && Number.isSafeInteger(c.count) && c.count>=0 && c.count<=MAX_CONTROL_COUNT &&
+  Array.isArray(c.items) && c.items.length<=Math.min(c.count,MAX_CONTROLS) &&
+  c.items.every(i=>exact(i,['role','name','visible','source',...(i.text===undefined?[]:['text'])]) && CONTROL_ROLES.includes(i.role) &&
+    (i.name==='' || printable(i.name,MAX_CONTROL_CHARS)) && typeof i.visible==='boolean' &&
+    CONTROL_SOURCES.includes(i.source) && (i.text===undefined || (printable(i.text,MAX_CONTROL_CHARS) && i.text!==i.name)));
+export const inspectionControls = receipt => receipt?.controls;
+const collapse = value => String(value).trim().replace(/\s+/g,' ');
+// Why an exact role/name locator matched nothing although a control of that
+// role shows the name as its text, or differs only in letter case.
+function nameDiagnosis(locator, controls) {
+  if (!controls || !CONTROL_ROLES.includes(locator.role)) return '';
+  const want = collapse(locator.name), same = controls.items.filter(item => item.role === locator.role);
+  const replaced = same.find(item => item.text !== undefined && item.text === want);
+  if (replaced) {
+    const by = {'aria-label':'its aria-label attribute','aria-labelledby':'the element its aria-labelledby attribute references'}[replaced.source] ?? 'another naming attribute';
+    return ` At load, after the page scripts ran, the ${replaced.visible ? 'rendered' : 'hidden'} ${locator.role} whose text is ${JSON.stringify(want)} has the accessible name ${JSON.stringify(replaced.name)}, set by ${by}, which replaces its text as the name. Role/name locators match the accessible name, not the text.`;
+  }
+  const cased = same.find(item => item.name !== want && item.name.toLowerCase() === want.toLowerCase());
+  return cased ? ` At load, a ${locator.role} is named ${JSON.stringify(cased.name)}; accessible names match case-sensitively.` : '';
+}
+// A rendered control whose load-time name is exactly this locator's name,
+// while no rendered element matched it before any click could change the page.
+// Load-time names follow getByRole; role/name steps match Chromium's own name
+// verbatim, which keeps the space beside an aria-hidden icon (" Show sold out",
+// test_preview_inspection.py). Such a page is correct: an untested show/hide
+// change prescribes the owner's exact name as the click, and that step cannot
+// match here.
+function presentName(step, controls, clickedBefore) {
+  if (!controls || clickedBefore || step.action === 'assert-hidden' || !CONTROL_ROLES.includes(step.locator.role)) return undefined;
+  const want = collapse(step.locator.name);
+  return controls.items.some(item => item.role === step.locator.role && item.visible && item.name === want) ? want : undefined;
+}
 // A locator that matched no element, or several, produced no measurement. Say
-// which, and how to fix the locator; never suggest changing the site for it.
-function locatorFeedback(step) {
+// which, and how to fix the locator; never suggest changing the site for it,
+// unless the page's own control names show the requested name is not there.
+function locatorFeedback(step, controls, clickedBefore = false) {
   const at = `Step ${step.index + 1} (${step.action})`, count = step.before.count;
   const retry = 'retry the inspection on the same published snapshot. Do not change the site only to satisfy a locator. Requested behavior remains unverified.';
   if (count !== 0) return `${at} matched ${count} elements; a locator must match exactly one, so nothing was measured and later steps did not run. Use a more specific CSS selector such as an id, or a unique exact name, and ${retry}`;
+  const present = presentName(step, controls, clickedBefore);
+  if (present !== undefined) return `${at} matched no element, so nothing was measured and later steps did not run. At load, after the page scripts ran, a rendered ${step.locator.role} was named exactly ${JSON.stringify(present)}, so that name is on the page; this inspector's role/name matching compares the browser's own name verbatim, which can keep extra spacing (for example beside an aria-hidden icon). Address that ${step.locator.role} with a CSS selector such as its id in this step, keep the other steps unchanged, and ${retry}`;
+  const diagnosis = step.locator.role !== undefined && step.action !== 'assert-hidden' ? nameDiagnosis(step.locator, controls) : '';
+  if (diagnosis) return `${at} matched no element, so nothing was measured and later steps did not run.${diagnosis} If the owner required that exact name, the page does not meet it: correct the markup or script so the control's accessible name is exactly ${JSON.stringify(step.locator.name)}, republish, and inspect the new snapshot. Otherwise use the actual accessible name or a CSS selector such as an id, and retry the inspection on the same published snapshot. Requested behavior remains unverified.`;
   const semantic = step.locator.role !== undefined;
   const scope = !semantic ? '' : step.action !== 'assert-hidden'
     ? ` For ${step.action}, role/name locators match only rendered elements, so a hidden element is not matched.`
@@ -43,7 +87,8 @@ function locatorFeedback(step) {
 }
 function transitionCoverageFeedback(request, result) {
   const unmatched = result.steps?.find(step => step.errorCode === 'no_match' || step.errorCode === 'selector_not_unique');
-  if (unmatched) return locatorFeedback(unmatched);
+  if (unmatched) return locatorFeedback(unmatched, inspectionControls(result),
+    result.steps.some(step => step.index < unmatched.index && step.action === 'click'));
   const syntaxFailure = result.steps?.find(step => step.errorCode === 'invalid_selector');
   if (syntaxFailure) return `Step ${syntaxFailure.index + 1} has invalid CSS selector syntax; that step produced no visibility measurement and later steps were not executed. Use a standard CSS selector from the actual source, or a supported role with the exact accessible name and exact:true. Text-matching extensions such as :contains() are not CSS selectors. Correct the locator and retry the inspection on the same published snapshot; do not remove the requested behavior checks. For show/hide behavior, keep assertions of opposite visibility for the same affected element around the control click. Requested behavior remains unverified.`;
   if (result.status !== 'passed') return 'Requested behavior remains unverified; a failed inspection does not establish a visibility transition.';
@@ -184,10 +229,10 @@ export function validateWorkspacePreviewInspectionReceipt(value, request) {
     if(!exact(value,['schemaVersion','kind','status','errorCode','siteId','sha256','planSha256','scope'])||value.status!=='failed'||!['unavailable','output_limit','timeout','cancelled'].includes(value.errorCode)) throw Error('invalid inspection failure');
     return value;
   }
-  // pageErrors and renderedColors are optional: absent when none was observed
-  // or captured, or when an older capsule produced the receipt. Present, each
-  // must be exactly bounded.
-  if(!exact(value,['schemaVersion','kind','status','siteId','sha256','planSha256','viewport','steps','diagnostics','blockedRequests',...(value.pageErrors===undefined?[]:['pageErrors']),...(value.renderedColors===undefined?[]:['renderedColors']),'scope']) || (value.pageErrors!==undefined&&!pageErrorsValid(value.pageErrors)) || (value.renderedColors!==undefined&&!renderedColorsValid(value.renderedColors)) || canonical(value.viewport)!==canonical(request.viewport)||!Array.isArray(value.steps)||value.steps.length<1||value.steps.length>request.steps.length||!exact(value.diagnostics,['renderedHiddenAttributeCount','hiddenUntilFoundCount'])||Object.values(value.diagnostics).some(v=>!Number.isSafeInteger(v)||v<0||v>100000)||!Array.isArray(value.blockedRequests)||value.blockedRequests.length>32||value.blockedRequests.some(v=>!['navigation','network','popup','download','websocket'].includes(v))) throw Error('invalid inspection receipt');
+  // pageErrors, renderedColors and controls are optional: absent when none
+  // was observed or captured, or when an older capsule produced the receipt.
+  // Present, each must be exactly bounded.
+  if(!exact(value,['schemaVersion','kind','status','siteId','sha256','planSha256','viewport','steps','diagnostics','blockedRequests',...(value.pageErrors===undefined?[]:['pageErrors']),...(value.renderedColors===undefined?[]:['renderedColors']),...(value.controls===undefined?[]:['controls']),'scope']) || (value.pageErrors!==undefined&&!pageErrorsValid(value.pageErrors)) || (value.renderedColors!==undefined&&!renderedColorsValid(value.renderedColors)) || (value.controls!==undefined&&!controlsValid(value.controls)) || canonical(value.viewport)!==canonical(request.viewport)||!Array.isArray(value.steps)||value.steps.length<1||value.steps.length>request.steps.length||!exact(value.diagnostics,['renderedHiddenAttributeCount','hiddenUntilFoundCount'])||Object.values(value.diagnostics).some(v=>!Number.isSafeInteger(v)||v<0||v>100000)||!Array.isArray(value.blockedRequests)||value.blockedRequests.length>32||value.blockedRequests.some(v=>!['navigation','network','popup','download','websocket'].includes(v))) throw Error('invalid inspection receipt');
   value.steps.forEach((step,i)=>{
     if(step.errorCode==='invalid_selector') {
       if(!exact(step,['index','action','locator','stable','status','errorCode'])||step.index!==i||i!==value.steps.length-1||step.action!==request.steps[i].action||canonical(step.locator)!==canonical(request.steps[i].locator)||!exact(step.locator,['selector'])||step.stable!==false||step.status!=='failed'||value.status!=='failed') throw Error('invalid selector failure evidence');
@@ -202,6 +247,17 @@ export function validateWorkspacePreviewInspectionReceipt(value, request) {
   const passed=value.steps.length===request.steps.length&&value.steps.every(s=>s.status==='passed')&&value.blockedRequests.length===0;
   if((value.status==='passed')!==passed) throw Error('invalid inspection outcome');
   return value;
+}
+// The capsule receipt inside an incomplete result (TRANSITION_UNTESTED): the
+// passed receipt this tool validated before withholding "passed", bound to
+// the same snapshot and plan as the wrapper. Callers read only its load-time
+// observations (control names); it never binds interaction proof.
+export function validateIncompleteInspectionReceipt(value, request) {
+  if(!exact(value,['schemaVersion','kind','status','errorCode','siteId','sha256','planSha256','scope','receipt'])||value.schemaVersion!==1||
+    value.kind!==INSPECTION_KIND||value.status!=='incomplete'||value.errorCode!==TRANSITION_UNTESTED||value.scope!==INSPECTION_SCOPE) throw Error('invalid incomplete inspection');
+  const receipt=validateWorkspacePreviewInspectionReceipt(value.receipt,request);
+  if(receipt.status!=='passed'||receipt.siteId!==value.siteId||receipt.sha256!==value.sha256||receipt.planSha256!==value.planSha256) throw Error('invalid incomplete inspection');
+  return receipt;
 }
 function unixRequest(payload,{signal}={}) {
   return new Promise((resolve,reject)=>{
@@ -259,8 +315,9 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
           ? `Preview inspection ${result.status==='passed'?'steps passed, but':'failed, and'} ${pageErrorFeedback(pageErrors)}`
           : requirement ? transitionIncompleteFeedback(normalized, requirement)
             : `Preview inspection ${result.status}. ${transitionCoverageFeedback(normalized, result)}`;
-        // The palette is stated once, as its fixed line; the evidence copy omits it.
-        const {renderedColors,...rest}=result;
+        // The palette is stated once, as its fixed line; the evidence copy omits
+        // it and the load-time control names (used only for locator feedback).
+        const {renderedColors,controls,...rest}=result;
         const palette=renderedColors?` ${renderedColorsLine(renderedColors)}`:'';
         // An incomplete inspection's evidence copy never reads "passed" overall;
         // details.receipt keeps the capsule receipt unchanged.
