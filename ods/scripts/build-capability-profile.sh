@@ -9,7 +9,11 @@ ENV_MODE="false"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --output)
-            OUTPUT_FILE="${2:-}"
+            if [[ $# -lt 2 || -z "${2:-}" || "$2" == -* ]]; then
+                echo "ERROR: $1 requires an argument" >&2
+                exit 1
+            fi
+            OUTPUT_FILE="$2"
             shift 2
             ;;
         --env)

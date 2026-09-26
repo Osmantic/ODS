@@ -415,6 +415,7 @@ jobs:
       - name: Installer Contract Checks
         run: |
           bash tests/contracts/test-installer-contracts.sh
+          python3 tests/test_build_capability_profile_options.py
           bash tests/test-linux-ollama-port-override.sh
           bash tests/test-external-services.sh
           bash tests/test-resolve-compose-resilient.sh
