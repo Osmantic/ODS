@@ -1547,21 +1547,39 @@ function execResultHasNonCleanUnittestOutcome(event, { trustRunnerSummary = true
   );
 }
 
-// A test command that exited zero although every test it reported was
-// skipped: unittest "Ran N tests ... OK (skipped=N)", a pytest, Jest or
-// Vitest summary with skips and no pass, node:test "pass 0" with skips, cargo
-// "0 passed" with ignored tests, or go "[no tests to run]". Such a run proves
-// nothing about the code.
+// A test command that exited zero although no test it reported passed: every
+// test was skipped or an expected failure. Such a run proves nothing about the
+// code. Terminal colors are removed first (Python 3.14 and pytest color their
+// summaries on a pty), and unittest's outcome line is found as
+// unittestRunnerSummaryHasNonCleanOutcome finds it. Covered:
+// - unittest "Ran N tests", then "OK (skipped=S, expected failures=X)" with
+//   S + X >= N;
+// - a pytest summary line ("3 skipped in 0.01s", "2 xfailed in 0.02s",
+//   "1 skipped, 1 xpassed, 1 warning in 0.02s") without a nonzero "passed";
+// - a Jest or Vitest "Tests" line with counts and without a nonzero "passed";
+// - node:test "pass 0" with skipped or todo tests, cargo "0 passed" with
+//   ignored tests, or go "[no tests to run]".
+function unittestReportsNoPassingTest(text) {
+  const lines = text.split(/\r?\n/);
+  return lines.some((line, index) => {
+    const summary = line.match(UNITTEST_RUN_SUMMARY);
+    if (!summary) return false;
+    const outcome = (/^\s*$/.test(lines[index + 1] ?? "") ? lines[index + 2] : lines[index + 1]) ?? "";
+    if (!UNITTEST_CLEAN_RESULT.test(outcome)) return false;
+    const count = (name) => Number(new RegExp(String.raw`\b${name}=([0-9]+)`).exec(outcome)?.[1] ?? 0);
+    return count("skipped") + count("expected failures") >= Number(summary[1]);
+  });
+}
+
 function execResultReportsOnlySkippedTests(event) {
-  return execResultTexts(event).some((value) => {
-    const ran = /(?:^|\n)Ran ([0-9]+) tests? in /.exec(value);
-    const skipped = /(?:^|\n)OK \((?:[^)\n]*, )?skipped=([0-9]+)/.exec(value);
-    if (ran && skipped && Number(skipped[1]) >= Number(ran[1])) return true;
-    const summary = /(?:^|\n)[= ]*((?:[0-9]+ (?:passed|failed|skipped|deselected|xfailed|xpassed|errors?|warnings?)(?:, )?)+) in [0-9.]+s\b/.exec(value)?.[1];
-    if (summary && /\b[1-9][0-9]* skipped\b/.test(summary) && !/\b[1-9][0-9]* (?:passed|xpassed)\b/.test(summary)) return true;
+  return execResultTexts(event).map(withoutTerminalColors).some((value) => {
+    if (unittestReportsNoPassingTest(value)) return true;
+    for (const [, summary] of value.matchAll(/(?:^|\n)[= ]*((?:[0-9]+ (?:passed|failed|skipped|deselected|xfailed|xpassed|errors?|warnings?)(?:, )?)+) in [0-9.]+s\b/g)) {
+      if (!/\b[1-9][0-9]* passed\b/.test(summary)) return true;
+    }
     const jest = /(?:^|\n)\s*Tests:?\s+([^\n]*)/.exec(value)?.[1];
-    if (jest && /\b[1-9][0-9]* skipped\b/.test(jest) && !/\b[1-9][0-9]* passed\b/.test(jest)) return true;
-    if (/(?:^|\n)(?:#|\u2139) pass 0\b/.test(value) && /(?:^|\n)(?:#|\u2139) skipped [1-9]/.test(value)) return true;
+    if (jest && /\b[0-9]+ (?:passed|failed|skipped|todo|total)\b/.test(jest) && !/\b[1-9][0-9]* passed\b/.test(jest)) return true;
+    if (/(?:^|\n)(?:#|\u2139) pass 0\b/.test(value) && /(?:^|\n)(?:#|\u2139) (?:skipped|todo) [1-9]/.test(value)) return true;
     if (/(?:^|\n)test result: ok\. 0 passed; 0 failed; [1-9][0-9]* ignored\b/.test(value)) return true;
     return /\[no tests to run\]/.test(value);
   });
@@ -4897,10 +4915,20 @@ function verificationReceiptTarget(params) {
   return receiptCode(command) ? Object.freeze({command, directory}) : undefined;
 }
 
-// Whether a test directory contains one of these workspace-relative files.
+// Whether a test directory contains one of these workspace-relative files. The
+// workspace root contains only its own top-level files here: a test run from
+// the root of a Playground project's files may have tested another project
+// (`python3 -m unittest discover -s Playground/old-project`). A command that
+// names a parent, home or absolute path outside its directory can also test
+// something else, so it covers nothing.
 function receiptTargetCovers(target, entries) {
   const directory = target?.directory;
-  if (directory === "/workspace") return entries.length > 0;
+  if (typeof target?.command !== "string") return false;
+  for (const word of target.command.split(/\s+/).map((value) => value.replace(/^['"]+|['"]+$/g, ""))) {
+    if (/^~|(?:^|[=/])\.\.(?:\/|$)/.test(word)) return false;
+    if (/^\//.test(word) && word !== directory && !word.startsWith(`${directory}/`)) return false;
+  }
+  if (directory === "/workspace") return entries.some(({file}) => !file.includes("/"));
   if (typeof directory !== "string" || !directory.startsWith("/workspace/")) return false;
   const relative = directory.slice("/workspace/".length);
   return entries.some(({file}) => file.startsWith(`${relative}/`));
@@ -4908,13 +4936,25 @@ function receiptTargetCovers(target, entries) {
 
 // After a deletion refusal no model text reaches the owner, so a host receipt
 // can stand for the result only when the owner asked for a change to files and
-// for no written answer: no question, explanation, summary, comparison or
-// citation. "Can you write ...?" is a request, not a question.
+// for nothing to be said in the reply. The answer detector is deliberately
+// broad; a wrong match only keeps the run failed, as on main. It matches a
+// question, and any ask for reply content: an explanation, description,
+// summary, overview, report or results, usage or instructions, how it works or
+// how to run it, documentation, a walkthrough, a comparison or citations;
+// "tell me", "show me", "give me", "let me know"; "include ..."; or the
+// reply, answer or response itself. "Can you write ...?" is a request, not a
+// question.
 const RECEIPT_CHANGE_REQUEST =
   /\b(?:create|write|edit|update|build|implement|fix|repair|add|modify|generate|refactor|change|rename|make|patch|convert)\b/i;
 const RECEIPT_POLITE_REQUEST = /^(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?/i;
-const RECEIPT_ANSWER_REQUEST =
-  /^(?:what|why|how|which|who|when|where)\b|\b(?:explain|describe|summari[sz]e|compare|tell\s+me|show\s+me|walk\s+me\s+through|cite|citations?)\b/i;
+const RECEIPT_ANSWER_REQUEST = new RegExp([
+  String.raw`^(?:what|why|how|which|who|when|where)\b`,
+  String.raw`\b(?:explain\w*|explanations?|describ\w*|descriptions?|summar\w*|overviews?|report\w*|results?)\b`,
+  String.raw`\b(?:usage|instructions?|document\w*|walk\s*-?\s*through\w*|walk\s+(?:me|us)\b|compar\w*|cite|citations?)\b`,
+  String.raw`\b(?:tell|show|give|send)\s+(?:me|us)\b|\blet\s+(?:me|us)\s+know\b|\binclud\w*`,
+  String.raw`\bhow\s+(?:it|this|that|they|the|to|you|i|we)\b`,
+  String.raw`\b(?:repl(?:y|ies)|answer\w*|respon(?:d|se)\w*)\b`,
+].join("|"), "i");
 function ownerRequestAnswerableByReceipt(text) {
   const clauses = ownerLaneText(String(text ?? "").replace(/\n\n\[ODS (?:Portal|Pixel) delivery requirement:[\s\S]*$/, ""))
     .split(/(?<=[!?;\n])|(?<=\.)(?=\s|$)/).map((clause) => clause.trim()).filter(Boolean);
@@ -4938,7 +4978,8 @@ function recursiveDeleteRefusalReceipt({ files, target, testState, running, pass
   const testLine = {
     passed: `${latest} passed, and no tool call that could change the workspace ran after it.`,
     stale: `${latest} passed, but a later tool call or command could have changed the workspace, so that result is not current.`,
-    skipped: `${latest} exited successfully, but every test it reported was skipped.`,
+    overlapped: `${latest} passed, but another command was running in the background while it ran, so that result is not current.`,
+    skipped: `${latest} exited successfully, but no test it reported passed: each was skipped, not run or an expected failure.`,
     failed: `${latest} failed.`,
     pending: `${latest} had not finished, so its result is unknown.`,
   }[testState] ?? "No recognized test command ran.";
@@ -7482,6 +7523,7 @@ export function createToolLoopGuard({
         latestVerificationPassedGeneration: undefined,
         latestVerificationTarget: undefined,
         latestVerificationSkippedOnly: false,
+        latestVerificationOverlapped: false,
         wrappedExecFailurePending: false,
         suppressStaleExecWarning: false,
         recursiveDeleteAuthorized: false,
@@ -10854,6 +10896,8 @@ export function createToolLoopGuard({
       if (!pending) return;
       state.pendingExecSessions.delete(completion.sessionId);
       state.pendingExecBlocks.delete(completion.sessionId);
+      // This command ran while every command still pending ran.
+      for (const other of state.pendingExecSessions.values()) other.overlapped = true;
       const verificationFailed =
         completion.failed ||
         (
@@ -10891,6 +10935,9 @@ export function createToolLoopGuard({
           // call that ran while it was still running makes this pass stale.
           state.latestVerificationPassedGeneration = pending.generation;
           state.latestVerificationSkippedOnly = execResultReportsOnlySkippedTests(event);
+          // Another background command ran while this test ran: it started
+          // before or during the test, ended during it, or is still running.
+          state.latestVerificationOverlapped = pending.overlapped === true || state.pendingExecSessions.size > 0;
         }
       }
       if (pending.verificationFingerprint) {
@@ -10947,6 +10994,7 @@ export function createToolLoopGuard({
       state.latestVerificationFingerprint = verificationFingerprint;
       state.latestVerificationTarget = verificationTarget;
       state.latestVerificationSkippedOnly = false;
+      state.latestVerificationOverlapped = false;
     }
     const pendingSessionId = runningExecSessionId(execEvent);
     if (pendingSessionId) {
@@ -10954,11 +11002,16 @@ export function createToolLoopGuard({
         state.codingExhausted = true;
         return;
       }
+      // Background commands that run at the same time overlap each other: a
+      // test pass is not current when another command could have changed the
+      // workspace while the test ran.
+      for (const other of state.pendingExecSessions.values()) other.overlapped = true;
       state.pendingExecSessions.set(pendingSessionId, {
         fingerprint,
         verificationFingerprint,
         target: verificationTarget,
         generation: state.previewVerificationGeneration,
+        overlapped: state.pendingExecSessions.size > 0,
       });
       if (verificationFingerprint) state.latestVerificationStatus = "pending";
       return;
@@ -11026,6 +11079,9 @@ export function createToolLoopGuard({
         state.latestVerificationStatus = "passed";
         state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
         state.latestVerificationSkippedOnly = execResultReportsOnlySkippedTests(execEvent);
+        // A background command that had not been observed to end was running
+        // while this test ran.
+        state.latestVerificationOverlapped = state.pendingExecSessions.size > 0;
       }
     }
   }
@@ -12190,13 +12246,16 @@ export function createToolLoopGuard({
   // call in the run is refused and no model text is delivered. The owner gets
   // a host receipt instead of the model-directed refusal. The run keeps
   // 'passed' only when the receipt can stand for the whole result:
-  // - the owner asked for a change to files and for no written answer or
-  //   research, and a write, edit or patch succeeded in this run;
+  // - the owner asked for a change to files and for nothing to be said in the
+  //   reply (no question, explanation, summary, results or other answer text)
+  //   and no research, and a write, edit or patch succeeded in this run;
   // - the latest recognized test passed, did not skip every test, ran in a
-  //   directory containing a file this run changed, and is still current: no
-  //   call that could change the workspace was admitted after it (refused
-  //   calls never advance the generation; agent_end keeps a current pass
-  //   current), no background command ended after it, and none is running;
+  //   directory containing a file this run changed without naming a path
+  //   outside it, and is still current: no call that could change the
+  //   workspace was admitted after it (refused calls never advance the
+  //   generation; agent_end keeps a current pass current), no other
+  //   background command ran while it ran or ended after it, and none is
+  //   running;
   // - the rest of the task evaluation passed without a publication receipt.
   // Receipt-based work (Operations, exact downloads, previews, managed
   // extension or team work) and every other state stay 'failed'.
@@ -12206,9 +12265,10 @@ export function createToolLoopGuard({
     const current = status === "passed" && Number.isInteger(state.latestVerificationPassedGeneration) &&
       state.latestVerificationPassedGeneration === state.previewVerificationGeneration;
     const skipped = current && state.latestVerificationSkippedOnly === true;
+    const overlapped = current && state.latestVerificationOverlapped === true;
     const running = state.pendingExecSessions.size > 0;
     const files = receiptChangedFiles(state);
-    const passed = current && !skipped && !running && state.workspaceMutationSucceeded === true &&
+    const passed = current && !skipped && !overlapped && !running && state.workspaceMutationSucceeded === true &&
       receiptTargetCovers(state.latestVerificationTarget, files) &&
       state.receiptAnswersOwnerRequest === true && !state.completionAssurance.researchInvolved &&
       verification.status === "passed" && !verification.preview &&
@@ -12219,7 +12279,8 @@ export function createToolLoopGuard({
       text: recursiveDeleteRefusalReceipt({
         files,
         target: state.latestVerificationTarget,
-        testState: skipped ? "skipped" : current ? "passed" : status === "passed" ? "stale" : status ?? "not-run",
+        testState: skipped ? "skipped" : overlapped ? "overlapped" : current ? "passed"
+          : status === "passed" ? "stale" : status ?? "not-run",
         running,
         passed,
       }),

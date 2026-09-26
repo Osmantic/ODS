@@ -292,6 +292,75 @@ test('a background test pass is dated from its start, and a background command e
   assert.deepEqual(await generator.delivered(), {status: 'failed', text: LEAD + FILES + `- ${UNITTEST}${STALE}` + INCOMPLETE});
 });
 
+// Re-review, probes N01-N03: a background command that ran while the test
+// ran, or ended after it, could have changed what the test saw.
+const OVERLAPPED = ' passed, but another command was running in the background while it ran, so that result is not current.\n';
+test('a background command that ran while the passing test ran keeps the refusal failed', async t => {
+  const params = {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`};
+  const generator = {command: 'python3 make_fixture_photos.py', workdir: `/workspace/${PROJECT}`};
+  const cases = {
+    // N01: started before the background test and ended before it.
+    'ends first': async run => {
+      await run.call('exec', generator, running('c1'));
+      await run.call('exec', params, running('t1'));
+      await run.call('process', {action: 'poll', sessionId: 'c1'}, polled('c1', 0, 'overwrote rename_photos.py'));
+      await run.call('process', {action: 'poll', sessionId: 't1'}, polled('t1', 0, UNITTEST_OK));
+    },
+    // Started before a foreground test and observed to end after it.
+    'foreground test, ends after': async run => {
+      await run.call('exec', generator, running('c1'));
+      await run.call('exec', params, done(0, UNITTEST_OK));
+      await run.call('process', {action: 'poll', sessionId: 'c1'}, polled('c1', 0, 'wrote 40 fixtures'));
+    },
+    // Started while a background test ran, then both ended.
+    'started during a background test': async run => {
+      await run.call('exec', params, running('t1'));
+      await run.call('exec', generator, running('c1'));
+      await run.call('process', {action: 'poll', sessionId: 'c1'}, polled('c1', 0, 'wrote 40 fixtures'));
+      await run.call('process', {action: 'poll', sessionId: 't1'}, polled('t1', 0, UNITTEST_OK));
+    },
+  };
+  for (const [name, steps] of Object.entries(cases)) {
+    const run = session(t, {prompt: RECORDED.prompt});
+    await writeProject(run);
+    await steps(run);
+    assert.equal(run.guard.verificationStatus(run.context.runId), 'passed', name);
+    await refuse(run, 'rm -rf /tmp/x');
+    const verification = await run.delivered();
+    assert.equal(verification.status, 'failed', name);
+    assert.doesNotMatch(verification.text, /still running when tool use stopped/, name);
+    assert.ok(verification.text.endsWith(INCOMPLETE), name);
+  }
+  // The receipt says why for a pass that is otherwise current.
+  const first = session(t, {prompt: RECORDED.prompt});
+  await writeProject(first);
+  await cases['ends first'](first);
+  await refuse(first, 'rm -rf /tmp/x');
+  assert.deepEqual(await first.delivered(), {status: 'failed', text: LEAD + FILES + `- ${UNITTEST}${OVERLAPPED}` + INCOMPLETE});
+  // Control: a background command that ended before the test started.
+  const before = session(t, {prompt: RECORDED.prompt});
+  await writeProject(before);
+  await before.call('exec', generator, running('c1'));
+  await before.call('process', {action: 'poll', sessionId: 'c1'}, polled('c1', 0, 'wrote 40 fixtures'));
+  await before.call('exec', params, done(0, UNITTEST_OK));
+  await refuse(before, 'rm -rf /tmp/x');
+  assert.deepEqual(await before.delivered(), {status: 'passed', text: LEAD + FILES + `- ${UNITTEST}${CURRENT}` + COMPLETE});
+  // N02 and N03: ended or was killed after the pass.
+  for (const last of [
+    run => run.call('process', {action: 'poll', sessionId: 'c1'}, polled('c1', 0, 'overwrote rename_photos.py')),
+    run => run.call('process', {action: 'kill', sessionId: 'c1'}, text('Killed session c1')),
+  ]) {
+    const run = session(t, {prompt: RECORDED.prompt});
+    await writeProject(run);
+    await run.call('exec', generator, running('c1'));
+    await run.call('exec', params, running('t1'));
+    await run.call('process', {action: 'poll', sessionId: 't1'}, polled('t1', 0, UNITTEST_OK));
+    await last(run);
+    await refuse(run, 'rm -rf /tmp/x');
+    assert.equal((await run.delivered()).status, 'failed');
+  }
+});
+
 test('a still-running test keeps the refusal failed', async t => {
   const run = session(t, {prompt: RECORDED.prompt});
   await writeProject(run);
@@ -331,6 +400,53 @@ test('a pass without a change, or for a question, does not complete the run', as
   assert.equal((await polite.delivered()).status, 'passed');
 });
 
+// Re-review, probes N20-N27: after a refusal no model text reaches the owner,
+// so any ask for something to be said in the reply keeps the run failed, with
+// the same honest receipt.
+test('a request that asks for anything in the reply keeps the refusal failed', async t => {
+  const RECEIPT_FAILED = LEAD + FILES + `- ${UNITTEST}${CURRENT}` + INCOMPLETE;
+  const outcome = async prompt => {
+    const run = session(t, {prompt});
+    await writeProject(run);
+    await run.call('exec', {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`}, done(0, UNITTEST_OK));
+    await refuse(run, 'rm -rf /tmp/x');
+    const verification = await run.delivered();
+    // No model text is accepted in place of the receipt.
+    assert.equal(run.guard.replyPayloadSending({runId: run.context.runId, kind: 'final',
+      payload: {text: 'It renames photos by EXIF date; run it with python3 rename_photos.py <folder>.'}}).payload.text,
+    verification.text, prompt);
+    return verification;
+  };
+  // The reviewer's phrasings.
+  for (const prompt of [
+    'Write a python script that renames all photos in a folder by date taken, test it, and provide a brief explanation of how it works.',
+    'Write a python script that renames all photos in a folder by date taken and test it. Give me a short summary of what it does.',
+    'Write a python script that renames all photos in a folder by date taken, test it, and report which photos it renamed.',
+    'Write a python script that renames all photos in a folder by date taken, test it, and let me know the results.',
+    'Write a python script that renames all photos in a folder by date taken, test it, and include usage instructions in your reply.',
+    'Write a python script that renames all photos in a folder by date taken, test it, and give an overview of the design.',
+    'Write a python script that renames all photos in a folder by date taken, test it, and tell me how to run it.',
+    'Build a photo renamer that sorts by date taken. Test it and describe the edge cases you handled.',
+  ]) {
+    assert.deepEqual(await outcome(prompt), {status: 'failed', text: RECEIPT_FAILED}, prompt);
+  }
+  // Each reply-content ask on its own, after the same change request.
+  const ask = 'Write a python script that renames all photos in a folder by date taken and test it';
+  for (const tail of [
+    'then explain the approach', 'with an explanation', 'and a summary', 'then summarize it', 'then summarise it',
+    'and give an overview', 'then describe it', 'with a report', 'and share the results', 'and let me know',
+    'and tell me when done', 'and include the output', 'with usage notes', 'with instructions', 'and say how it works',
+    'and say how to run it', 'then document it', 'with a walkthrough', 'with a walk-through', 'and walk me through it',
+    'and show me the output', 'and answer in two lines', 'and reply with the file list',
+  ]) {
+    assert.equal((await outcome(`${ask} ${tail}.`)).status, 'failed', tail);
+  }
+  // Controls: a change request that asks for nothing in the reply.
+  for (const prompt of [RECORDED.prompt, `${ask}.`, 'Please write a python script that renames photos by date taken, then test it.']) {
+    assert.equal((await outcome(prompt)).status, 'passed', prompt);
+  }
+});
+
 // Probe Q: research answers and citations are model text, which a refusal
 // never delivers.
 test('research requests and runs that used web results stay failed', async t => {
@@ -362,7 +478,7 @@ test('a pass that skipped every test keeps the refusal failed', async t => {
     await refuse(run, 'rm -rf /tmp/x');
     assert.deepEqual(await run.delivered(), {status: 'failed', text: LEAD + FILES +
       `- The latest recognized test command, \`${command}\` in \`/workspace/Playground/photo-renamer\`, exited successfully, ` +
-      'but every test it reported was skipped.\n' + INCOMPLETE}, command);
+      'but no test it reported passed: each was skipped, not run or an expected failure.\n' + INCOMPLETE}, command);
   }
   // Some tests ran: the pass counts.
   const partial = session(t, {prompt: RECORDED.prompt});
@@ -371,6 +487,80 @@ test('a pass that skipped every test keeps the refusal failed', async t => {
     done(0, 'Ran 2 tests in 0.001s\n\nOK (skipped=1)'));
   await refuse(partial, 'rm -rf /tmp/x');
   assert.equal((await partial.delivered()).status, 'passed');
+});
+
+// Re-review, probes N04-N06: colored summaries (a pty exec) and runs where
+// nothing passed although nothing was skipped.
+test('a pass with no passing test keeps the refusal failed, colored or not', async t => {
+  const RULE = '-'.repeat(70);
+  const outcome = async (command, output) => {
+    const run = session(t, {prompt: RECORDED.prompt});
+    await writeProject(run);
+    await run.call('exec', {command, workdir: `/workspace/${PROJECT}`}, done(0, output));
+    assert.equal(run.guard.verificationStatus(run.context.runId), 'passed', output);
+    await refuse(run, 'rm -rf /tmp/x');
+    return run.delivered();
+  };
+  for (const [command, output] of [
+    // Python 3.14 on a pty.
+    ['python3 -m unittest -v', "test_a (test_rename.T.test_a) ... skipped 'todo'\r\n\r\n" + `${RULE}\r\nRan 1 test in 0.000s\r\n\r\n` +
+      '\x1b[32mOK\x1b[0m (\x1b[33mskipped=1\x1b[0m)\r\n'],
+    // pytest, colored and plain.
+    ['pytest -q', 's \x1b[32m[100%]\x1b[0m\n\x1b[33m1 skipped\x1b[0m\x1b[33m in 0.01s\x1b[0m'],
+    ['pytest -q', 'xx [100%]\n2 xfailed in 0.02s'],
+    ['pytest -q', '\x1b[33m1 skipped\x1b[0m, \x1b[33m1 xfailed\x1b[0m, \x1b[33m1 xpassed\x1b[0m\x1b[33m in 0.03s\x1b[0m'],
+    ['pytest', '============================== 3 deselected in 0.02s ==============================='],
+    // Jest and node:test.
+    ['npm test', 'Tests:       2 todo, 2 total\nTime:        0.5 s'],
+    ['npm test', 'ℹ tests 1\nℹ pass 0\nℹ fail 0\nℹ todo 1'],
+  ]) {
+    const verification = await outcome(command, output);
+    assert.equal(verification.status, 'failed', output);
+    assert.match(verification.text, /exited successfully, but no test it reported passed: each was skipped, not run or an expected failure\./, output);
+  }
+  // Something passed.
+  for (const [command, output] of [
+    ['pytest -q', '\x1b[32m1 passed\x1b[0m, \x1b[33m1 skipped\x1b[0m\x1b[32m in 0.02s\x1b[0m'],
+    ['pytest -q', '1 passed, 2 xfailed in 0.02s'],
+    ['python3 -m unittest -v', `${RULE}\r\nRan 3 tests in 0.000s\r\n\r\n\x1b[32mOK\x1b[0m (\x1b[33mskipped=1\x1b[0m)\r\n`],
+  ]) {
+    assert.equal((await outcome(command, output)).status, 'passed', output);
+  }
+});
+
+// A test run can name another directory than the one it runs in.
+test('a pass counts only for a test that stays in a directory with this run\'s changes', async t => {
+  const outcome = async (params, file = undefined) => {
+    const run = session(t, {prompt: file ? `Fix the bug in ${file} and run the tests.` : RECORDED.prompt});
+    if (file) {
+      await run.call('read', {path: file}, text('def rename(p):\n    return p\n'));
+      const edit = await run.call('edit', {path: file, edits: [{oldText: 'return p', newText: 'return str(p)'}]},
+        text('Successfully replaced 1 block(s)'));
+      assert.notEqual(edit?.block, true, edit?.blockReason);
+    } else {
+      await writeProject(run);
+    }
+    await run.call('exec', params, done(0, 'Ran 4 tests in 0.01s\n\nOK'));
+    await refuse(run, 'rm -rf /tmp/x');
+    return (await run.delivered()).status;
+  };
+  const inProject = `/workspace/${PROJECT}`;
+  for (const command of [
+    'python3 -m unittest discover -s ../old-project',
+    'python3 -m unittest discover --start-directory=../old-project',
+    'python3 -m unittest discover -s /workspace/Playground/old-project',
+    'python3 -m unittest discover -s ~/tests',
+    'python3 -m unittest discover -s tests -t ..',
+  ]) {
+    assert.equal(await outcome({command, workdir: inProject}), 'failed', command);
+  }
+  // Inside the project, relative or absolute.
+  for (const command of ['python3 -m unittest discover -s tests', `python3 -m unittest discover -s ${inProject}/tests`]) {
+    assert.equal(await outcome({command, workdir: inProject}), 'passed', command);
+  }
+  // The workspace root contains only its own top-level files.
+  assert.equal(await outcome({command: 'python3 -m unittest -v', workdir: '/workspace'}, 'rename_photos.py'), 'passed');
+  assert.equal(await outcome({command: 'python3 -m unittest -v', workdir: '/workspace'}, `${PROJECT}/rename_photos.py`), 'failed');
 });
 
 // Probe G: edit and apply_patch changes are listed; probe H: a pass in a
