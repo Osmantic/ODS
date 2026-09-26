@@ -68,6 +68,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   proxy translates, and the installer creates those empty targets before Pixel
   Edge starts. The daemon-side `/mnt/host/wsl/...` path stopped every fresh
   install with "is mounted on / but it is not a shared mount".
+- The WSL runtime bridge now names the check that refused (in its journal),
+  and the installer prints that journal when the bridge does not start,
+  instead of only "Could not install and start the private Pixel ingress".
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
   file. The 48 other re-pinned models download the same bytes: each sha256 was
