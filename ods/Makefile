@@ -57,6 +57,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== ods-doctor rootless subordinate IDs ==="
 	@bash tests/test-ods-doctor-rootless-subid.sh
+	@echo "=== ods-doctor GPU residency (partial offload fails) ==="
+	@python3 tests/test-llama-gpu-residency.py
+	@bash tests/test-ods-doctor-gpu-residency.sh
 	@echo "=== ods-test.sh reports HTTP 000 for a failed probe ==="
 	@bash tests/test-ods-test-http-code.sh
 	@echo "=== ods-test.sh completes and reports when checks fail ==="
@@ -88,6 +91,7 @@ test: ## Run unit and contract tests
 	@python3 tests/contracts/test-llama-cpp-compat.py
 	@python3 tests/contracts/test-llama-runtime-tunables.py
 	@python3 tests/contracts/test-llama-spec-default.py
+	@python3 tests/contracts/test-llama-placement-log.py
 	@bash tests/test-llama-mtp-args.sh
 	@python3 -m unittest tests/test_macos_runtime_llama_args.py tests/test_macos_checkpoint_args.py
 	@echo ""
