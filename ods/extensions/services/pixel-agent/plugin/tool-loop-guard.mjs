@@ -6281,8 +6281,8 @@ function guidedWorkspacePreviewDirectory(state) {
 const PREVIEW_DIRECTORY_RULE =
   "A preview directory must be workspace-relative, with at most 12 components and 512 characters total; each component must start with a letter or digit and contain only letters, digits, dots, underscores or hyphens (128 characters maximum), so hidden directories such as .site cannot be published. ";
 
-// Next step when the site's directory fails that rule. On mac-mini round
-// 106 the model wrote ".fleet-qualification-934ec2f819d5/index.html"; the
+// Next step when the site's directory fails that rule. In a recorded
+// qualification round the model wrote its site under a hidden directory; the
 // next step named that hidden directory and the publication check then
 // refused it. Fixed text; it never repeats the rejected name, and since the
 // owner may have asked for that hidden name, it suggests only the same name
@@ -6324,7 +6324,7 @@ const ECHOABLE_TOOL_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 // The inspection route: the model's own last plan of this run with each
 // locator in the accepted form (inside locator, exact:true on a role and
 // name), when only that form kept it from running on this run's current
-// publication (strixy round 107 call 8); otherwise the step shape with
+// publication (a recorded qualification round); otherwise the step shape with
 // placeholder locators, labelled as matching nothing.
 function inspectionRouteAnswer(state, direct) {
   const preview = state?.workspacePreview;
@@ -6348,8 +6348,8 @@ function inspectionRouteAnswer(state, direct) {
     (bound ? "." : ", and SITE_ID and SHA256 with the identifiers from the publication receipt.");
 }
 
-// Answer for a tool_call whose id is itself a control tool. On strixy round
-// 107 the model sent tool_call {id:"tool_describe", args:{id:
+// Answer for a tool_call whose id is itself a control tool. In a recorded
+// qualification round the model sent tool_call {id:"tool_describe", args:{id:
 // "pixel_ods_workspace_preview_inspect"}} and then {id:"tool_describe", args:
 // {id:"tool_describe"}}; each failure counted toward the stop. Fixed text apart
 // from the model's own tool id and, in the examples, this run's bound
@@ -11309,8 +11309,8 @@ export function createToolLoopGuard({
     // Keep one fixed refresh key per run, not an unbounded mutation counter.
     const stage = state.workspacePreviewVerifiedDirectory ? "workspace-preview-refresh" : "workspace-preview";
     if (!publishableWorkspaceDirectory(directory)) {
-      // The publication check always refuses this directory (mac-mini round
-      // 106 wrote a hidden one); like the next step, never prescribe it.
+      // The publication check always refuses this directory (a recorded
+      // round wrote a hidden one); like the next step, never prescribe it.
       const step = unpublishablePreviewDirectoryStep(state);
       return {stage, instruction: step === UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP
         ? `Do not reply yet. ${step}Do not start a sandbox server or claim another localhost URL.` : step.trimEnd()};

@@ -220,11 +220,11 @@ export function normalizeWorkspacePreviewInspectionParams(params) {
   return request;
 }
 // A rejected plan whose only defect is where its locators sit: a selector or
-// role/name beside action instead of inside locator (strixy round 107 calls
-// 8, 11 and 12), or a role/name locator without exact:true (laptop round 107
-// call 4). Returns the same identifiers, viewport and steps with each locator
-// nested, only when that alone makes the plan valid; else undefined. It never
-// guesses a locator, an action or an identifier.
+// role/name beside action instead of inside locator, or a role/name locator
+// without exact:true (both recorded in a qualification round). Returns the
+// same identifiers, viewport and steps with each locator nested, only when
+// that alone makes the plan valid; else undefined. It never guesses a
+// locator, an action or an identifier.
 export function correctedInspectionArgs(params) {
   if(!exact(params,['siteId','sha256','viewport','steps']) || !Array.isArray(params.steps)) return undefined;
   const steps=params.steps.map(step=>{
@@ -243,7 +243,7 @@ export function correctedInspectionArgs(params) {
   return args;
 }
 // Next step after rejected arguments. This tool is directly visible to Pixel;
-// the former "retry through tool_call" advice preceded strixy round 107's
+// the former "retry through tool_call" advice preceded a recorded round's
 // tool_call {id:"tool_describe"}, which OpenClaw cannot resolve. The corrected
 // plan is offered as ready only when its identifiers are those of the run's
 // current publication (the guard's, for this exact call); a plan for an
