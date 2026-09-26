@@ -1081,15 +1081,20 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     # so WSL2 + odd Linux variants are covered. Empty default keeps the
     # compose ${HOST_LAN_IP:-} fallback safe when binding to loopback.
     HOST_LAN_IP=""
+    HOST_LAN_IP=""
     if [[ "$BIND_ADDRESS" == "0.0.0.0" ]]; then
+        local _ip_candidate=""
         if command -v hostname >/dev/null 2>&1 && hostname -I >/dev/null 2>&1; then
-            HOST_LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+            _ip_candidate=$(hostname -I 2>/dev/null | awk '{print $1}')
         fi
-        if [[ -z "$HOST_LAN_IP" ]] && command -v ip >/dev/null 2>&1; then
-            HOST_LAN_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')
+        if [[ -z "$_ip_candidate" ]] && command -v ip >/dev/null 2>&1; then
+            _ip_candidate=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')
         fi
-        if [[ -z "$HOST_LAN_IP" ]] && command -v ifconfig >/dev/null 2>&1; then
-            HOST_LAN_IP=$(ifconfig 2>/dev/null | awk '/inet / && $2 != "127.0.0.1" {print $2; exit}')
+        if [[ -z "$_ip_candidate" ]] && command -v ifconfig >/dev/null 2>&1; then
+            _ip_candidate=$(ifconfig 2>/dev/null | awk '/inet / && $2 != "127.0.0.1" {print $2; exit}')
+        fi
+        if [[ "$_ip_candidate" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            HOST_LAN_IP="$_ip_candidate"
         fi
     fi
     # Preserve operator override across re-runs: if .env already has a value,
