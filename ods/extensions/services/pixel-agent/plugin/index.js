@@ -36,6 +36,7 @@ import {
   statusPayload,
 } from "./projection.mjs";
 import { promptContractForAgent } from "./prompt-contract.mjs";
+import { configuredMaxOutputTokens } from "./output-limit-recovery.mjs";
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import {
@@ -214,7 +215,8 @@ async function readAbortUser(req) {
   }
 }
 
-async function readVerificationRun(req) {
+// `flags` names boolean fields the body carries besides runId.
+async function readVerificationRun(req, flags = []) {
   if (req.method !== "POST") return { status: 405 };
   const contentType = String(req.headers["content-type"] ?? "").toLowerCase();
   if (contentType.split(";", 1)[0].trim() !== "application/json") return { status: 415 };
@@ -231,13 +233,14 @@ async function readVerificationRun(req) {
       !body ||
       typeof body !== "object" ||
       Array.isArray(body) ||
-      Object.keys(body).length !== 1 ||
+      Object.keys(body).length !== 1 + flags.length ||
       typeof body.runId !== "string" ||
-      !OPENAI_RUN_ID.test(body.runId)
+      !OPENAI_RUN_ID.test(body.runId) ||
+      flags.some(flag => typeof body[flag] !== "boolean")
     ) {
       return { status: 400 };
     }
-    return { status: 200, runId: body.runId };
+    return { status: 200, runId: body.runId, ...Object.fromEntries(flags.map(flag => [flag, body[flag]])) };
   } catch {
     return { status: 400 };
   }
@@ -346,7 +349,10 @@ export default definePluginEntry({
     // OpenClaw does not replay arbitrary plugin tools after an empty model
     // continuation. Give the Pixel agent an explicit, trusted prompt contract
     // so every ODS lookup is followed by a user-visible answer.
-    api.on("before_prompt_build", async (event, context) => {
+    api.on("before_prompt_build", async (turnEvent, context) => {
+      // An ingress output-limit continuation is classified as the owner
+      // message it continues; the model still receives the fixed message.
+      const event = toolLoopGuard.outputLimitContinuationEvent(context, AGENT_ID, turnEvent);
       const privateBrowserAccess = privateBrowserAccessForAgent(api.config, AGENT_ID);
       const workspaceRoot = api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
         ?? api.config?.agents?.defaults?.workspace;
@@ -359,6 +365,7 @@ export default definePluginEntry({
         configuredLeanPrompt,
         privateBrowserAccess,
         executionHost,
+        maxOutputTokens: configuredMaxOutputTokens(api.runtime?.config?.current?.() ?? api.config, AGENT_ID, context),
       });
       const repositoryEvidence = contract ? await extensionRepositoryContext(event,
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
@@ -587,6 +594,24 @@ export default definePluginEntry({
           }
         } catch { /* A missing or changed receipt never grants continuation. */ }
         sendJson(res, 200, {schemaVersion:1,kind:'ods-extension-read-only-continuation',eligible:false});
+        return true;
+      },
+    });
+    // One continuation turn for an owner turn whose final reply was cut at the
+    // output limit. The ingress submits a fixed message; nothing is replayed.
+    // It says whether OpenClaw answered with its incomplete-turn text.
+    api.registerHttpRoute({
+      path: "/pixel-ods/output-limit-continuation",
+      auth: "gateway",
+      match: "exact",
+      handler: async (req, res) => {
+        const parsed = await readVerificationRun(req, ["incompleteTurn"]);
+        if (parsed.status !== 200) {
+          sendJson(res, parsed.status, {error:"invalid continuation request"});
+          return true;
+        }
+        sendJson(res, 200, toolLoopGuard.outputLimitContinuationForRun(parsed.runId,
+          {incompleteTurn: parsed.incompleteTurn}));
         return true;
       },
     });

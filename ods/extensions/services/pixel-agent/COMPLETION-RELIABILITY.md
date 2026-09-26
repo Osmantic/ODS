@@ -522,6 +522,104 @@ real-harness fixtures `tests/runtime_progress_finalization.integration.mjs`,
 `tests/runtime_stop_synthesis.integration.mjs` and
 `tests/runtime_owner_visible_reply.integration.mjs` cover these paths.
 
+## Output limit
+
+A reply that reaches the model's output-token limit (`stopReason` `length`)
+ends the run, and OpenClaw never runs its unfinished tool call. On strixy
+(2026-09-25, Qwen3.6-35B-A3B, 8192 output tokens) the owner's forest-website
+request was one whole-page `write` cut after 220 s; nothing was saved.
+
+Prevention: the prompt contract states the running model's per-reply limit
+(`configuredMaxOutputTokens`, read from the host configuration the way
+OpenClaw 2026.6.33 applies it) and asks for several smaller files or writes,
+each well under half of it. The line depends only on the host's model, so it is
+byte-stable per host and sits before every per-request section. It limits one
+reply, not the size of the work.
+
+OpenClaw 2026.6.33 ends such a turn in one of two ways. Normally it skips
+`before_agent_finalize` and replaces the cut reply, text answers included, with
+its incomplete-turn text ("Agent couldn't generate a response", in either
+form). After a tool error (`attempt.lastToolError`: a failing last tool call,
+or a failed mutating call not retried identically) it instead delivers the cut
+reply's own text. Pixel cannot revise either inside the run.
+
+Continuation first. Only Pixel knows whether a run was cut, so the ingress asks
+`/pixel-ods/output-limit-continuation` after every completed owner turn it has
+not already continued, saying whether OpenClaw answered with its incomplete-turn
+text (`incompleteTurn`). The request is optional: any failure is a refusal and
+the turn's own receipt is delivered. Pixel grants one continuation, bound to
+the chat user, for an owner chat turn whose final reply was cut (after earlier
+tool calls too) when:
+
+- the turn is not cancelled, stopped, waiting on questions or operations, and
+  not a host operation, extension or exact-download request;
+- its receipt does not already settle it: a `passed` receipt (a verified
+  preview, a passing test run, a host observation) or a `pending` one gets no
+  continuation, because only the closing reply was cut or the host decides
+  what happens next;
+- OpenClaw answered with its incomplete-turn text, or the request is a
+  workspace task (a requested or observed file change). A written answer whose
+  own text OpenClaw delivered keeps it (below).
+
+The ingress then submits one new turn containing only the fixed
+`OUTPUT_LIMIT_CONTINUATION_PROMPT` (plus the request's trusted system
+messages); it never replays the owner's message or a tool. The Portal's live
+activity follows the continuation run from then on.
+
+Pixel classifies that continuation run as the owner message it continues
+(`outputLimitContinuationEvent`): the chat's next owner turn takes the grant,
+and when it is the fixed message it gets the owner request's prompt contract,
+routing and delivery checks, while the model still receives only the fixed
+message. A website request cut before its files exist is still checked as a
+website request; files the cut run wrote into a new Playground project stay
+that project, and count as inspected by the continuation, so it can publish a
+page whose `index.html` the cut run already saved without writing it again
+(OpenClaw ends a run on an identical rewrite). Any other next message, another
+chat or a non-owner run never uses the grant. A Stop that reaches Pixel after
+the grant and before the continuation starts withdraws it: Pixel acknowledges
+the Stop, so the ingress closes the continuation request, and a continuation
+run that still starts is cancelled as it begins.
+
+Report otherwise. When no continuation ran, or the continuation was cut too,
+an owner chat turn whose receipt is `none` or `failed` gets a `failed` receipt
+with a plain report in words that fit the request:
+
+- a workspace task hears that what the reply was still writing, such as a
+  large file, was not saved and that earlier files are kept;
+- a written answer hears that it was cut off, never that a file write was.
+  With no receipt of its own it is an `after-reply` receipt: the ingress (and
+  OpenClaw's reply delivery hook) keep OpenClaw's delivered part of the answer
+  and add the report after it, and use the report alone in place of
+  OpenClaw's incomplete-turn text;
+- a continuation that was cut again says so first.
+
+Otherwise the run's own receipt text follows the report when both fit the
+ingress's 32 KiB receipt bound, else the report stands alone. A verified
+(`passed`) or `pending` receipt is never reported over, and heartbeat, cron and
+team-worker runs keep their receipts. `continuationAllowed` (a `/goal` plan)
+reads the receipt without the report. A receipt that ends `failed` or
+`pending` (this report, a stopped mixed-task lane, a combined mixed-task
+receipt) drops `suppressStaleExecWarning`, which the ingress accepts only on
+`none` or `passed` receipts and on an `after-reply` receipt, whose kept reply
+still needs the stale warning removed.
+
+The continuation's run is never granted another pass. If the gateway answers
+the continuation with a non-200 status, the owner receives the cut turn's
+report and a line saying the automatic continuation did not complete (it is
+not retried), within the same bound. An invalid continuation response ends
+the turn with the ingress error, as the other ingress continuations do. An
+owner turn gets at most one continuation of any kind: no output-limit
+continuation after another ingress continuation. The continuation shares the
+owner turn's ingress timeout.
+
+`tests/output_limit_prevention.test.mjs`, `tests/output_limit_recovery.test.mjs`,
+`tests/output_limit_continuation.test.mjs` (the real ingress in front of a
+gateway double; the recovery file serves its Pixel routes from a real guard)
+and the real-harness fixture
+`tests/runtime_output_limit_continuation.integration.mjs` (the real plugin and
+ingress with a stand-in preview host, each cut case compared with the same
+model behaviour uncut) cover these paths.
+
 ## Owner cancellation
 
 Every recovery decision is bound to the run that armed it. An acknowledged
