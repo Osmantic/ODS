@@ -309,7 +309,9 @@ test('a pass without a change, or for a question, does not complete the run', as
   const baseline = session(t, {prompt: 'Fix the bug in Playground/photo-renamer/rename_photos.py so PNG files keep their EXIF date, then run the tests.'});
   await baseline.call('read', {path: `${PROJECT}/rename_photos.py`}, text('def rename(p):\n    return p\n'));
   await baseline.call('exec', {command: `cd /workspace/${PROJECT} && python3 -m unittest -v`}, done(0, UNITTEST_OK));
-  await refuse(baseline, `rm -rf /workspace/${PROJECT}/__pycache__`);
+  // A top-level target: open #6722 guides a first deletion inside a project
+  // (such as its __pycache__) instead of stopping the turn.
+  await refuse(baseline, 'rm -rf /workspace/test_manual');
   assert.deepEqual(await baseline.delivered(), {status: 'failed', text: LEAD + NO_FILES + `- ${UNITTEST}${CURRENT}` + INCOMPLETE});
   for (const prompt of ['What does Playground/photo-renamer/rename_photos.py do? Explain it briefly.',
     'Write a test for Playground/photo-renamer/rename_photos.py and tell me what it covers.']) {
