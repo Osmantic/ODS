@@ -5,9 +5,11 @@
 # only by install-core.sh inside Ubuntu.
 
 $script:ODSPortalMinimumFreeGB = 40
-# Docker Desktop's first start after turning on WSL integration was measured
-# at over 4 minutes on a real Windows 11 host; wait long enough for that.
+# Docker Desktop's first engine start can take several minutes.
 $script:ODSPortalDockerWaitSeconds = 600
+# Docker Desktop attaches its WSL integration a few seconds after a distro
+# starts, so a fresh Ubuntu may not see docker yet.
+$script:ODSPortalIntegrationWaitSeconds = 60
 $script:ODSPortalResumeValue = 'ODSPortalSetup'
 
 # ---------------------------------------------------------------- pure helpers
@@ -56,31 +58,6 @@ function New-ODSPortalResumeScript([string]$EntryScript, [System.Collections.IDi
     ) -join "`r`n"
 }
 
-function Update-ODSPortalDockerSettings([string]$Json, [string]$FileName, [string]$Distro) {
-    # Adds $Distro to Docker Desktop's per-distro WSL integration list.
-    # settings-store.json (current Docker Desktop) uses PascalCase keys and the
-    # older settings.json uses camelCase; an existing key's spelling wins.
-    # Returns $null when the WSL engine is off, which integration cannot fix.
-    # Check the document shape on the text: ConvertFrom-Json unrolls a
-    # one-element array, and [pscustomobject] matches any value in Windows
-    # PowerShell 5.1.
-    if (-not $Json.TrimStart().StartsWith('{')) { throw "Docker Desktop settings in $FileName are not a JSON object." }
-    $settings = ConvertFrom-Json -InputObject $Json
-    if ($settings -isnot [System.Management.Automation.PSCustomObject]) { throw "Docker Desktop settings in $FileName are not a JSON object." }
-    $names = @($settings.PSObject.Properties.Name)
-    $pascal = $FileName -eq 'settings-store.json'
-    foreach ($engineKey in @('WslEngineEnabled', 'wslEngineEnabled')) {
-        if ($names -ccontains $engineKey -and $settings.$engineKey -eq $false) { return $null }
-    }
-    $listKey = if ($names -ccontains 'IntegratedWslDistros') { 'IntegratedWslDistros' } elseif ($names -ccontains 'integratedWslDistros') { 'integratedWslDistros' } elseif ($pascal) { 'IntegratedWslDistros' } else { 'integratedWslDistros' }
-    $current = @()
-    if ($names -ccontains $listKey -and $null -ne $settings.$listKey) { $current = @($settings.$listKey | ForEach-Object { [string]$_ }) }
-    if ($current -contains $Distro) { return $Json }
-    $updated = [string[]]@($current + $Distro)
-    if ($names -ccontains $listKey) { $settings.$listKey = $updated } else { $settings | Add-Member -NotePropertyName $listKey -NotePropertyValue $updated }
-    return ($settings | ConvertTo-Json -Depth 64)
-}
-
 # ----------------------------------------------------------- host inspection
 
 function Test-ODSPortalVirtualization {
@@ -101,7 +78,11 @@ function Get-ODSPortalFreeSystemGB {
 function Assert-ODSPortalHostCapacity([bool]$WslReady) {
     $free = Get-ODSPortalFreeSystemGB
     if ($free -lt $script:ODSPortalMinimumFreeGB) {
-        throw "Only $free GB is free on the Windows drive that stores Ubuntu and Docker data. Free at least $($script:ODSPortalMinimumFreeGB) GB (Ubuntu, Docker images and the AI model), then rerun this command. Nothing was installed."
+        $need = "Ubuntu, Docker images and the AI model need about $($script:ODSPortalMinimumFreeGB) GB"
+        # With WSL already present this may be a rerun whose data is already
+        # on disk, so only warn; a missing model download still fails later.
+        if (-not $WslReady) { throw "Only $free GB is free on the Windows drive that stores Ubuntu and Docker data. $need. Free space, then rerun this command. Nothing was installed." }
+        Write-Host "Only $free GB is free on the Windows drive. $need; setup continues because WSL is already installed. If a download fails, free space and rerun." -ForegroundColor Yellow
     }
     if (-not $WslReady -and -not (Test-ODSPortalVirtualization)) {
         throw 'Hardware virtualization is turned off, and WSL2 cannot run without it. Restart into your BIOS/UEFI settings, enable Intel VT-x (Intel Virtualization Technology) or AMD SVM, save, start Windows and rerun this command. Your PC maker''s support site names the exact menu.'
@@ -159,38 +140,24 @@ function Wait-ODSPortalDockerEngine($Desktop) {
         if (Test-ODSPortalDockerEngine $Desktop) { return }
         Start-Sleep -Seconds 5
     }
-    throw "Docker Desktop is still not ready after $($script:ODSPortalDockerWaitSeconds / 60) minutes. Open Docker Desktop and accept any prompt it shows. If it stays on Starting, quit Docker Desktop (right-click the whale icon > Quit), run wsl --shutdown in PowerShell, then rerun this command; setup starts Docker again."
+    throw "Docker Desktop is still not ready after $($script:ODSPortalDockerWaitSeconds / 60) minutes. Open Docker Desktop and accept any prompt it shows. If it stays on Starting the Docker Engine, restart Windows, open Docker Desktop, wait until it shows Engine running, then rerun this command."
+}
+
+function Wait-ODSPortalDistroDocker([string]$Distro, [int]$Seconds) {
+    # Bounded readiness wait, not a retry: docker appears inside the distro
+    # once Docker Desktop has attached its WSL integration.
+    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    while ($true) {
+        if ((Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--exec', 'docker', 'info')).Code -eq 0) { return $true }
+        if ([DateTime]::UtcNow -ge $deadline) { return $false }
+        Start-Sleep -Seconds 5
+    }
 }
 
 function Start-ODSPortalDockerDesktop($Desktop) {
     Write-Host '         Starting Docker Desktop (the first start can take a few minutes)...'
     Start-Process -FilePath $Desktop.Exe | Out-Null
     Wait-ODSPortalDockerEngine $Desktop
-}
-
-function Enable-ODSPortalDockerWslIntegration($Desktop, [string]$Distro) {
-    $folder = Join-Path $env:APPDATA 'Docker'
-    $file = @('settings-store.json', 'settings.json') | ForEach-Object { Join-Path $folder $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    $manual = "Open Docker Desktop > Settings > Resources > WSL Integration, turn on $Distro, click Apply & restart, then rerun this command."
-    $hyperV = "Docker Desktop is using Hyper-V instead of WSL 2. In Docker Desktop > Settings > General, enable 'Use the WSL 2 based engine', apply, then rerun this command."
-    if (-not $file) { throw "Docker Desktop has not saved its settings yet. $manual" }
-    # Checked before stopping Docker so a Hyper-V setup is left running.
-    if ($null -eq (Update-ODSPortalDockerSettings ([IO.File]::ReadAllText($file)) (Split-Path -Leaf $file) $Distro)) { throw $hyperV }
-    # Docker Desktop writes its in-memory settings back when it stops, so the
-    # file is edited only while it is stopped.
-    Write-Host '         Restarting Docker Desktop with WSL integration for your Ubuntu...'
-    $stop = Invoke-ODSPortalDockerCli $Desktop.Cli @('desktop', 'stop')
-    if ($stop.Code -ne 0) { throw "Docker Desktop could not be stopped automatically. $manual" }
-    # Docker's data disk stays attached to the shared WSL VM for a moment after
-    # it stops. Starting again right away failed on a real host with "disk not
-    # found" and left the engine stuck starting; a WSL shutdown releases it.
-    $shutdown = Invoke-ODSPortalWsl -Arguments @('--shutdown')
-    if ($shutdown.Code -ne 0) { throw "WSL could not be shut down before restarting Docker Desktop: $($shutdown.Output) $($shutdown.Error)" }
-    $current = [IO.File]::ReadAllText($file)
-    $updated = Update-ODSPortalDockerSettings $current (Split-Path -Leaf $file) $Distro
-    if ($null -eq $updated) { throw $hyperV }
-    if ($updated -ne $current) { [IO.File]::WriteAllText($file, $updated, [Text.UTF8Encoding]::new($false)) }
-    Start-ODSPortalDockerDesktop $Desktop
 }
 
 # ------------------------------------------------------ Ubuntu first account
@@ -222,13 +189,20 @@ function ConvertFrom-ODSPortalSecureString([Security.SecureString]$Value) {
     try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
 }
 
+function Get-ODSPortalDistroLauncher([string]$Distro) {
+    $name = Get-ODSPortalDistroLauncherName $Distro
+    if (-not $name -or -not $env:LOCALAPPDATA) { return $null }
+    $launcher = Join-Path $env:LOCALAPPDATA ('Microsoft\WindowsApps\' + $name)
+    if (Test-Path -LiteralPath $launcher) { return $launcher }
+    return $null
+}
+
 function Register-ODSPortalDistro([string]$Distro) {
     # Store-packaged releases installed with --no-launch stay unregistered
     # until their launcher runs; "install --root" registers without the
     # interactive account wizard, which this setup replaces.
-    $name = Get-ODSPortalDistroLauncherName $Distro
-    $launcher = if ($name -and $env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA ('Microsoft\WindowsApps\' + $name) } else { $null }
-    if (-not $launcher -or -not (Test-Path -LiteralPath $launcher)) {
+    $launcher = Get-ODSPortalDistroLauncher $Distro
+    if (-not $launcher) {
         throw "$Distro was downloaded but Windows has not registered it yet. Open $Distro once from the Start menu, finish its setup, close it, then rerun this command."
     }
     $previousPreference = $ErrorActionPreference
@@ -275,7 +249,8 @@ function New-ODSPortalLinuxAccount([string]$Distro, $Account) {
     if ($password.Code -ne 0) { throw "Could not set the Ubuntu password for $($Account.Name). Open $Distro, run: sudo passwd $($Account.Name), then rerun this command." }
     $written = Set-ODSPortalWslConf $Distro @('user', 'default', $Account.Name, 'boot', 'systemd', 'true')
     if ($written.Code -ne 0) { throw "Could not make $($Account.Name) the default Ubuntu user: $($written.Output)" }
-    $null = Invoke-ODSPortalWsl -Arguments @('--terminate', $Distro)
+    $stopped = Invoke-ODSPortalWsl -Arguments @('--terminate', $Distro)
+    if ($stopped.Code -ne 0) { throw "Could not restart $Distro to apply the new default user: $($stopped.Output) $($stopped.Error)" }
 }
 
 function Set-ODSPortalWslConf([string]$Distro, [string[]]$Settings) {

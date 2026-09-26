@@ -68,15 +68,28 @@ function Initialize-ODSPortalUbuntuUser([string]$Distro) {
     return $process.ExitCode
 }
 
+function ConvertTo-ODSPortalLiteral([string]$Value) {
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
 function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro, [string[]]$LinuxArguments, [string]$InstallRoot, [bool]$OpenPortal) {
+    # windows.ps1 runs in a child PowerShell that shares this console. Calling
+    # it here would route wsl.exe output through this function's pipeline, so
+    # the Linux installer would see no terminal: no progress during image
+    # pulls, no cinematic UI and UTF-8 decoded with the OEM code page.
     $delegate = Join-Path $InstallerRoot 'windows.ps1'
-    $global:LASTEXITCODE = 0
-    & $delegate -Distro $Distro -InstallRoot $InstallRoot -OpenPortal:$OpenPortal -PassthroughArgs $LinuxArguments | Out-Host
-    $succeeded = $?
-    $code = $global:LASTEXITCODE
-    if ($code -ne 0) { return $code }
-    if (-not $succeeded) { return 1 }
-    return 0
+    $openFlag = if ($OpenPortal) { '$true' } else { '$false' }
+    $passthrough = @($LinuxArguments | ForEach-Object { ConvertTo-ODSPortalLiteral $_ }) -join ', '
+    $command = "`$global:LASTEXITCODE = 0; & $(ConvertTo-ODSPortalLiteral $delegate) -Distro $(ConvertTo-ODSPortalLiteral $Distro) -InstallRoot $(ConvertTo-ODSPortalLiteral $InstallRoot) -OpenPortal:$openFlag -PassthroughArgs @($passthrough); " +
+        "`$ok = `$?; if (`$global:LASTEXITCODE -ne 0) { exit `$global:LASTEXITCODE }; if (-not `$ok) { exit 1 }; exit 0"
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $shell = (Get-Process -Id $PID).Path
+    $process = Start-Process -FilePath $shell -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-EncodedCommand', $encoded) -NoNewWindow -PassThru
+    # Reading Handle keeps ExitCode available; WaitForExit waits for this
+    # process only (Start-Process -Wait also waits for a browser it opened).
+    $null = $process.Handle
+    $process.WaitForExit()
+    return $process.ExitCode
 }
 
 function Get-ODSPortalLinuxArguments([System.Collections.IDictionary]$Options) {
@@ -125,10 +138,13 @@ function Resolve-ODSPortalDistro([string]$Requested, [string[]]$Names) {
 function Assert-ODSPortalDistroRelease([string]$Distro) {
     # Same qualification as ods_pixel_host_qualified in pixel-integration.sh.
     $release = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--exec', 'cat', '/etc/os-release')
+    if ($release.Code -ne 0) {
+        throw "$Distro did not start (wsl exit $($release.Code)): $($release.Output) $($release.Error)".Trim()
+    }
     $id = if ($release.Output -match '(?m)^ID="?([A-Za-z0-9._-]+)"?\s*$') { $Matches[1] } else { 'unknown' }
     $version = if ($release.Output -match '(?m)^VERSION_ID="?([A-Za-z0-9._-]+)"?\s*$') { $Matches[1] } else { 'unknown' }
     $qualified = ($id -eq 'ubuntu' -and $version -in @('24.04', '26.04')) -or ($id -eq 'debian' -and $version -eq '12')
-    if ($release.Code -ne 0 -or -not $qualified) {
+    if (-not $qualified) {
         throw "$Distro runs $id $version, but Pixel requires Ubuntu 24.04/26.04 (or Debian 12). Rerun with -Distro Ubuntu-24.04 to install a separate Ubuntu 24.04; $Distro is not changed."
     }
 }
@@ -217,7 +233,12 @@ function Install-ODSPortalUbuntu([string]$Distro, [System.Collections.IDictionar
     $installed = Invoke-ODSPortalWsl -Arguments @('--install', '--distribution', $Distro, '--no-launch')
     if ($installed.Code -eq 3010) { return (Request-ODSPortalRestart $InstallerRoot $Options 'Windows needs a restart to finish installing Ubuntu.') }
     if ($installed.Code -ne 0) { throw ('Ubuntu installation did not complete: ' + $installed.Output + ' ' + $installed.Error) }
-    if ($Distro -notin (Get-ODSPortalDistroNames)) { Register-ODSPortalDistro $Distro }
+    if ($Distro -notin (Get-ODSPortalDistroNames)) {
+        # When Windows must restart to finish enabling WSL, wsl --install
+        # prints that and exits 0 without downloading the distribution.
+        if (-not (Get-ODSPortalDistroLauncher $Distro)) { return (Request-ODSPortalRestart $InstallerRoot $Options 'Windows needs a restart to finish enabling WSL before Ubuntu can be installed.') }
+        Register-ODSPortalDistro $Distro
+    }
     if ($Distro -notin (Get-ODSPortalDistroNames)) { throw "$Distro was downloaded but is not registered. Open it once from the Start menu, then rerun this command." }
     New-ODSPortalLinuxAccount $Distro (Read-ODSPortalLinuxAccount)
     return $null
@@ -232,10 +253,16 @@ function Initialize-ODSPortalDocker([string]$Distro, [System.Collections.IDictio
         return (Request-ODSPortalRestart $InstallerRoot $Options 'Docker Desktop was installed and needs a Windows restart before its first start.')
     }
     if (-not (Test-ODSPortalDockerEngine $desktop)) { Start-ODSPortalDockerDesktop $desktop }
-    $info = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--exec', 'docker', 'info')
-    if ($info.Code -ne 0) {
-        if (-not (Confirm-ODSPortalPreparation "Docker Desktop is running but is not connected to $Distro yet. Turn on Docker's WSL integration for ${Distro}? Docker Desktop and WSL restart, so running containers and open Ubuntu windows stop briefly." $NonInteractive)) { return 1 }
-        Enable-ODSPortalDockerWslIntegration $desktop $Distro
+    # Setup never edits Docker's settings or restarts Docker: its own
+    # Apply & restart is the supported way to change WSL integration.
+    if (-not (Wait-ODSPortalDistroDocker $Distro $script:ODSPortalIntegrationWaitSeconds)) {
+        $steps = "In Docker Desktop, open Settings (gear icon) > Resources > WSL integration, turn on $Distro, then click Apply & restart."
+        if ($NonInteractive) { throw "Docker Desktop is not connected to $Distro. $steps Then rerun this command." }
+        Write-Host "         Docker Desktop is running but is not connected to $Distro yet."
+        Write-Host "         $steps"
+        Write-Host "         Setup continues by itself as soon as Docker answers inside Ubuntu (up to $($script:ODSPortalDockerWaitSeconds / 60) minutes)."
+        Start-Process -FilePath $desktop.Exe
+        if (-not (Wait-ODSPortalDistroDocker $Distro $script:ODSPortalDockerWaitSeconds)) { throw "Docker Desktop is still not connected to $Distro. $steps Then rerun this command." }
     }
     foreach ($arguments in @(@('docker','info'), @('docker','compose','version'))) {
         $probe = Invoke-ODSPortalWsl -Arguments (@('--distribution', $Distro, '--exec') + $arguments)
